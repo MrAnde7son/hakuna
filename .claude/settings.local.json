@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -c \":*)",
+      "Bash(curl -s http://localhost:8000/api/scans)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s http://localhost:8000/docs)",
+      "Bash(curl -s \"http://localhost:8000/openapi.json\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\([p for p in d[''paths''].keys\\(\\)][:10]\\)\")",
+      "Bash(curl -s -X POST \"http://localhost:8001/api/upload\" -F \"file=@../nessus AD scan.html\")",
+      "Bash(curl -s \"http://localhost:8001/api/reports/summary?scan_id=1\")",
+      "Bash(curl -s -X POST \"http://localhost:8001/api/upload\" -F \"file=@../nessus basic scan.nessus\")",
+      "Bash(curl -s \"http://localhost:8001/api/reports/summary?scan_id=2\")",
+      "Bash(python3 -c \":*)",
+      "Bash(curl -s \"http://localhost:8001/api/remediation-queue?scan_id=2&limit=3\")"
+    ]
+  }
+}

@@ -1,0 +1,125 @@
+{
+  "enabled": true,
+  "apply_on_upload": true,
+  "assets": {
+    "enabled": true,
+    "key_fields": [
+      "ip",
+      "fqdn"
+    ],
+    "strategy": "merge",
+    "scope": "cross_scan"
+  },
+  "findings": {
+    "enabled": true,
+    "key_fields": [
+      "plugin_id",
+      "asset_id",
+      "port"
+    ],
+    "strategy": "keep_last",
+    "scope": "cross_scan"
+  },
+  "inventory": {
+    "users": {
+      "enabled": true,
+      "key_fields": [
+        "username",
+        "domain"
+      ],
+      "strategy": "merge"
+    },
+    "groups": {
+      "enabled": true,
+      "key_fields": [
+        "group_name",
+        "domain"
+      ],
+      "strategy": "merge"
+    },
+    "computers": {
+      "enabled": true,
+      "key_fields": [
+        "computer_name",
+        "sid"
+      ],
+      "strategy": "merge"
+    },
+    "services": {
+      "enabled": true,
+      "key_fields": [
+        "service_name",
+        "asset_id"
+      ],
+      "strategy": "merge"
+    },
+    "software": {
+      "enabled": true,
+      "key_fields": [
+        "name",
+        "version",
+        "asset_id"
+      ],
+      "strategy": "keep_first"
+    },
+    "shares": {
+      "enabled": true,
+      "key_fields": [
+        "share_name",
+        "asset_id"
+      ],
+      "strategy": "merge"
+    },
+    "netconns": {
+      "enabled": false,
+      "key_fields": [
+        "local_addr",
+        "local_port",
+        "remote_addr",
+        "remote_port",
+        "asset_id"
+      ],
+      "strategy": "keep_first"
+    },
+    "patches": {
+      "enabled": true,
+      "key_fields": [
+        "kb_id",
+        "asset_id"
+      ],
+      "strategy": "keep_last"
+    },
+    "security_controls": {
+      "enabled": true,
+      "key_fields": [
+        "control_type",
+        "asset_id"
+      ],
+      "strategy": "merge"
+    },
+    "password_policies": {
+      "enabled": true,
+      "key_fields": [
+        "domain"
+      ],
+      "strategy": "merge"
+    },
+    "logged_on": {
+      "enabled": true,
+      "key_fields": [
+        "username",
+        "domain",
+        "asset_id"
+      ],
+      "strategy": "keep_last"
+    },
+    "scheduled_tasks": {
+      "enabled": true,
+      "key_fields": [
+        "task_uri",
+        "asset_id"
+      ],
+      "strategy": "merge"
+    }
+  }
+}

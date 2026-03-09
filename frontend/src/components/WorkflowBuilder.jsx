@@ -1,0 +1,739 @@
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import {
+  Play, Save, ArrowLeft, Plus, Trash2, X,
+  GitBranch, Zap, Target, Clock, Upload, Server,
+  UserPlus, Tag, CheckCircle, AlertTriangle, Globe, Bell,
+  BarChart2, ChevronRight, Filter, Mail, MessageSquare,
+  Terminal, Ticket, History, Shield,
+} from 'lucide-react'
+import {
+  getWorkflow, updateWorkflow, executeWorkflow, getWorkflowExecutions,
+  getWorkflowExecution, getNodeCatalog,
+} from '../api.js'
+import { Button, Spinner, EmptyState, Pill } from './ui.jsx'
+
+// ─── Icon map ─────────────────────────────
+const ICON_MAP = {
+  Play, Target, Clock, Upload, GitBranch, BarChart2, Tag, Zap, Server,
+  UserPlus, CheckCircle, AlertTriangle, Globe, Bell, Filter, Mail,
+  MessageSquare, Terminal, Ticket, Shield,
+}
+
+const TYPE_COLORS = {
+  trigger: { bg: '#312e81', border: '#6366f1', text: '#c7d2fe', accent: '#818cf8', headerBg: '#3730a3' },
+  filter:  { bg: '#1a2e05', border: '#65a30d', text: '#d9f99d', accent: '#84cc16', headerBg: '#365314' },
+  action:  { bg: '#450a0a', border: '#dc2626', text: '#fecaca', accent: '#f87171', headerBg: '#7f1d1d' },
+}
+
+const NODE_WIDTH = 240
+const NODE_HEADER = 40
+const NODE_HEIGHT = 86
+const HANDLE_SIZE = 12
+
+export default function WorkflowBuilder() {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const canvasRef = useRef(null)
+
+  const [workflow, setWorkflow] = useState(null)
+  const [nodes, setNodes] = useState([])
+  const [edges, setEdges] = useState([])
+  const [catalog, setCatalog] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [executing, setExecuting] = useState(false)
+  const [selectedNode, setSelectedNode] = useState(null)
+  const [dragging, setDragging] = useState(null)
+  const [connecting, setConnecting] = useState(null)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [isPanning, setIsPanning] = useState(false)
+  const [panStart, setPanStart] = useState(null)
+  const [showNodePalette, setShowNodePalette] = useState(false)
+  const [showExecutions, setShowExecutions] = useState(false)
+  const [executions, setExecutions] = useState([])
+  const [executionDetail, setExecutionDetail] = useState(null)
+  const [dirty, setDirty] = useState(false)
+  const [lastExecResult, setLastExecResult] = useState(null)
+
+  useEffect(() => {
+    Promise.all([getWorkflow(id), getNodeCatalog()])
+      .then(([wf, cat]) => {
+        setWorkflow(wf)
+        setNodes(wf.nodes || [])
+        setEdges(wf.edges || [])
+        setCatalog(cat)
+        setLoading(false)
+      })
+      .catch(() => setLoading(false))
+  }, [id])
+
+  const allNodeDefs = useMemo(() => {
+    if (!catalog) return {}
+    const map = {}
+    for (const [type, defs] of Object.entries(catalog)) {
+      for (const d of defs) {
+        map[d.subtype] = { ...d, type: type.replace(/s$/, '') }
+      }
+    }
+    return map
+  }, [catalog])
+
+  // ─── Save ────────────────────────────────
+  const handleSave = useCallback(async () => {
+    setSaving(true)
+    try {
+      const data = {
+        nodes: nodes.map(n => ({
+          node_id: n.node_id, node_type: n.node_type, node_subtype: n.node_subtype,
+          label: n.label, config: n.config || {},
+          position_x: n.position_x, position_y: n.position_y,
+        })),
+        edges: edges.map(e => ({
+          edge_id: e.edge_id, source_node_id: e.source_node_id, target_node_id: e.target_node_id,
+          source_handle: e.source_handle || 'output', target_handle: e.target_handle || 'input',
+          label: e.label,
+        })),
+      }
+      const updated = await updateWorkflow(id, data)
+      setWorkflow(updated)
+      setDirty(false)
+    } catch (e) { console.error(e) }
+    setSaving(false)
+  }, [id, nodes, edges])
+
+  // ─── Execute ─────────────────────────────
+  const handleExecute = useCallback(async () => {
+    if (dirty) await handleSave()
+    setExecuting(true)
+    try {
+      const result = await executeWorkflow(id)
+      setLastExecResult(result)
+      const wf = await getWorkflow(id)
+      setWorkflow(wf)
+    } catch (e) {
+      setLastExecResult({ status: 'failed', error: e.message })
+    }
+    setExecuting(false)
+  }, [id, dirty, handleSave])
+
+  // ─── Add node ────────────────────────────
+  const addNode = useCallback((type, def_) => {
+    const nodeId = `node-${Date.now()}`
+    const existingXs = nodes.map(n => n.position_x)
+    const x = existingXs.length ? Math.max(...existingXs) + 300 : 100
+    const y = 200
+    setNodes(prev => [...prev, {
+      node_id: nodeId, node_type: type, node_subtype: def_.subtype,
+      label: def_.label, config: {}, position_x: x - pan.x, position_y: y - pan.y,
+    }])
+    setShowNodePalette(false)
+    setDirty(true)
+  }, [nodes, pan])
+
+  const deleteNode = useCallback((nodeId) => {
+    setNodes(prev => prev.filter(n => n.node_id !== nodeId))
+    setEdges(prev => prev.filter(e => e.source_node_id !== nodeId && e.target_node_id !== nodeId))
+    if (selectedNode === nodeId) setSelectedNode(null)
+    setDirty(true)
+  }, [selectedNode])
+
+  // ─── Dragging ────────────────────────────
+  const handleMouseDown = useCallback((e, nodeId) => {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    const node = nodes.find(n => n.node_id === nodeId)
+    if (!node) return
+    setDragging({ nodeId, startX: e.clientX, startY: e.clientY, origX: node.position_x, origY: node.position_y })
+    setSelectedNode(nodeId)
+  }, [nodes])
+
+  const handleMouseMove = useCallback((e) => {
+    if (dragging) {
+      const dx = e.clientX - dragging.startX
+      const dy = e.clientY - dragging.startY
+      setNodes(prev => prev.map(n =>
+        n.node_id === dragging.nodeId
+          ? { ...n, position_x: dragging.origX + dx, position_y: dragging.origY + dy }
+          : n
+      ))
+    } else if (connecting) {
+      setConnecting(prev => prev ? { ...prev, mouseX: e.clientX, mouseY: e.clientY } : null)
+    } else if (isPanning && panStart) {
+      const dx = e.clientX - panStart.x
+      const dy = e.clientY - panStart.y
+      setPan(prev => ({ x: prev.x + dx, y: prev.y + dy }))
+      setPanStart({ x: e.clientX, y: e.clientY })
+    }
+  }, [dragging, connecting, isPanning, panStart])
+
+  const handleMouseUp = useCallback(() => {
+    if (dragging) setDirty(true)
+    setDragging(null)
+    setIsPanning(false)
+    setPanStart(null)
+    if (connecting) setConnecting(null)
+  }, [dragging, connecting])
+
+  const handleCanvasMouseDown = useCallback((e) => {
+    if (e.button === 0 && e.target === canvasRef.current) {
+      setSelectedNode(null)
+      setIsPanning(true)
+      setPanStart({ x: e.clientX, y: e.clientY })
+    }
+  }, [])
+
+  // ─── Connections ─────────────────────────
+  const handleHandleMouseDown = useCallback((e, nodeId, handleType) => {
+    e.stopPropagation()
+    setConnecting({ sourceNodeId: nodeId, sourceHandle: handleType, mouseX: e.clientX, mouseY: e.clientY })
+  }, [])
+
+  const handleNodeDrop = useCallback((targetNodeId) => {
+    if (!connecting || connecting.sourceNodeId === targetNodeId) {
+      setConnecting(null)
+      return
+    }
+    const exists = edges.some(
+      e => e.source_node_id === connecting.sourceNodeId && e.target_node_id === targetNodeId
+        && e.source_handle === connecting.sourceHandle
+    )
+    if (!exists) {
+      const label = connecting.sourceHandle === 'remainder' ? 'No match' : undefined
+      setEdges(prev => [...prev, {
+        edge_id: `edge-${Date.now()}`,
+        source_node_id: connecting.sourceNodeId,
+        target_node_id: targetNodeId,
+        source_handle: connecting.sourceHandle || 'output',
+        target_handle: 'input',
+        label,
+      }])
+      setDirty(true)
+    }
+    setConnecting(null)
+  }, [connecting, edges])
+
+  const deleteEdge = useCallback((edgeId) => {
+    setEdges(prev => prev.filter(e => e.edge_id !== edgeId))
+    setDirty(true)
+  }, [])
+
+  // ─── Handle positions ───────────────────
+  const getHandlePos = useCallback((nodeId, handle) => {
+    const node = nodes.find(n => n.node_id === nodeId)
+    if (!node) return { x: 0, y: 0 }
+    const x = node.position_x + pan.x
+    const y = node.position_y + pan.y
+    if (handle === 'input') return { x, y: y + NODE_HEADER }
+    if (handle === 'remainder') return { x: x + NODE_WIDTH, y: y + NODE_HEIGHT * 0.78 }
+    return { x: x + NODE_WIDTH, y: y + NODE_HEIGHT * 0.4 }
+  }, [nodes, pan])
+
+  const updateNodeConfig = useCallback((nodeId, key, value) => {
+    setNodes(prev => prev.map(n =>
+      n.node_id === nodeId ? { ...n, config: { ...n.config, [key]: value } } : n
+    ))
+    setDirty(true)
+  }, [])
+
+  const updateNodeLabel = useCallback((nodeId, label) => {
+    setNodes(prev => prev.map(n => n.node_id === nodeId ? { ...n, label } : n))
+    setDirty(true)
+  }, [])
+
+  const loadExecutions = useCallback(async () => {
+    try {
+      const execs = await getWorkflowExecutions(id)
+      setExecutions(execs)
+      setShowExecutions(true)
+    } catch (e) { console.error(e) }
+  }, [id])
+
+  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner /> Loading workflow...</div>
+  if (!workflow) return <EmptyState icon={AlertTriangle} title="Workflow not found" />
+
+  const selectedNodeData = nodes.find(n => n.node_id === selectedNode)
+  const selectedDef = selectedNodeData ? allNodeDefs[selectedNodeData.node_subtype] : null
+
+  return (
+    <div style={{ height: 'calc(100vh - 36px)', display: 'flex', flexDirection: 'column' }}>
+      {/* Toolbar */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px',
+        background: '#fff', borderBottom: '1px solid var(--border)', flexShrink: 0,
+      }}>
+        <button onClick={() => navigate('/campaigns')}
+          style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 13 }}>
+          <ArrowLeft size={16} /> Back
+        </button>
+        <div style={{ width: 1, height: 24, background: 'var(--border)' }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>{workflow.name}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            {workflow.description || 'Custom workflow'}
+            {workflow.campaign_id && <span> · Linked to campaign #{workflow.campaign_id}</span>}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {dirty && <span style={{ fontSize: 11, color: '#d97706', fontWeight: 600 }}>Unsaved</span>}
+          {lastExecResult && (
+            <Pill color={lastExecResult.status === 'completed' ? '#22c55e' : '#ef4444'}>
+              {lastExecResult.status === 'completed'
+                ? `Done - ${lastExecResult.items_processed} items`
+                : `Failed${lastExecResult.error ? ': ' + lastExecResult.error : ''}`}
+            </Pill>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => setShowNodePalette(true)}>
+            <Plus size={14} /> Add Node
+          </Button>
+          <Button size="sm" variant="ghost" onClick={loadExecutions}>
+            <History size={14} /> History
+          </Button>
+          <Button size="sm" onClick={handleSave} disabled={saving || !dirty}>
+            <Save size={14} /> {saving ? 'Saving...' : 'Save'}
+          </Button>
+          <Button size="sm" variant="primary" onClick={handleExecute} disabled={executing}>
+            <Play size={14} /> {executing ? 'Running...' : 'Run'}
+          </Button>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+        {/* Canvas */}
+        <div
+          ref={canvasRef}
+          onMouseDown={handleCanvasMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          style={{
+            flex: 1, position: 'relative', overflow: 'hidden',
+            background: '#fafafa',
+            backgroundImage: 'radial-gradient(circle, #e5e7eb 1px, transparent 1px)',
+            backgroundSize: '20px 20px',
+            backgroundPosition: `${pan.x % 20}px ${pan.y % 20}px`,
+            cursor: isPanning ? 'grabbing' : dragging ? 'grabbing' : 'default',
+          }}
+        >
+          {/* SVG Edges */}
+          <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+            <defs>
+              <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8" />
+              </marker>
+              <marker id="arr-g" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                <polygon points="0 0, 10 3.5, 0 7" fill="#22c55e" />
+              </marker>
+              <marker id="arr-o" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                <polygon points="0 0, 10 3.5, 0 7" fill="#f59e0b" />
+              </marker>
+            </defs>
+            {edges.map(edge => {
+              const from = getHandlePos(edge.source_node_id, edge.source_handle || 'output')
+              const to = getHandlePos(edge.target_node_id, 'input')
+              const midX = (from.x + to.x) / 2
+              const isRemainder = edge.source_handle === 'remainder'
+              const color = isRemainder ? '#f59e0b' : '#94a3b8'
+              const marker = isRemainder ? 'url(#arr-o)' : 'url(#arr)'
+              return (
+                <g key={edge.edge_id} style={{ pointerEvents: 'auto', cursor: 'pointer' }}
+                   onClick={() => deleteEdge(edge.edge_id)}>
+                  <path d={`M${from.x},${from.y} C${midX},${from.y} ${midX},${to.y} ${to.x},${to.y}`}
+                    fill="none" stroke="transparent" strokeWidth={16} />
+                  <path d={`M${from.x},${from.y} C${midX},${from.y} ${midX},${to.y} ${to.x},${to.y}`}
+                    fill="none" stroke={color} strokeWidth={2}
+                    strokeDasharray={isRemainder ? '6,4' : 'none'} markerEnd={marker} />
+                  {edge.label && (
+                    <text x={midX} y={(from.y + to.y) / 2 - 8}
+                      textAnchor="middle" fill={color} style={{ fontSize: 11, fontWeight: 600 }}>
+                      {edge.label}
+                    </text>
+                  )}
+                </g>
+              )
+            })}
+            {connecting && canvasRef.current && (() => {
+              const rect = canvasRef.current.getBoundingClientRect()
+              const from = getHandlePos(connecting.sourceNodeId, connecting.sourceHandle || 'output')
+              const toX = connecting.mouseX - rect.left
+              const toY = connecting.mouseY - rect.top
+              const midX = (from.x + toX) / 2
+              return (
+                <path d={`M${from.x},${from.y} C${midX},${from.y} ${midX},${toY} ${toX},${toY}`}
+                  fill="none" stroke="#6366f1" strokeWidth={2} strokeDasharray="6,3"
+                  style={{ pointerEvents: 'none' }} />
+              )
+            })()}
+          </svg>
+
+          {/* Nodes */}
+          {nodes.map(node => {
+            const colors = TYPE_COLORS[node.node_type] || TYPE_COLORS.action
+            const def = allNodeDefs[node.node_subtype]
+            const Icon = def ? (ICON_MAP[def.icon] || Zap) : Zap
+            const isSelected = selectedNode === node.node_id
+            const isFilter = node.node_type === 'filter'
+            const x = node.position_x + pan.x
+            const y = node.position_y + pan.y
+
+            return (
+              <div
+                key={node.node_id}
+                onMouseDown={(e) => handleMouseDown(e, node.node_id)}
+                onMouseUp={() => connecting && handleNodeDrop(node.node_id)}
+                style={{
+                  position: 'absolute', left: x, top: y,
+                  width: NODE_WIDTH, minHeight: NODE_HEIGHT,
+                  background: '#fff',
+                  border: `2px solid ${isSelected ? colors.accent : '#e2e8f0'}`,
+                  borderRadius: 12,
+                  boxShadow: isSelected
+                    ? `0 0 0 3px ${colors.accent}33, 0 4px 12px rgba(0,0,0,0.1)`
+                    : '0 2px 8px rgba(0,0,0,0.06)',
+                  cursor: 'grab', userSelect: 'none', overflow: 'hidden',
+                  transition: dragging?.nodeId === node.node_id ? 'none' : 'box-shadow 0.15s',
+                }}
+              >
+                {/* Header */}
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '8px 10px', background: colors.headerBg,
+                  color: colors.text, fontSize: 12, fontWeight: 700,
+                }}>
+                  <Icon size={14} style={{ opacity: 0.9 }} />
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {node.label || def?.label || node.node_subtype}
+                  </span>
+                  <span style={{
+                    fontSize: 9, textTransform: 'uppercase', opacity: 0.7,
+                    padding: '1px 5px', background: 'rgba(255,255,255,0.1)', borderRadius: 4,
+                  }}>
+                    {node.node_type}
+                  </span>
+                </div>
+                {/* Body */}
+                <div style={{ padding: '8px 10px', fontSize: 11, color: '#64748b' }}>
+                  {def?.description || node.node_subtype}
+                  {node.config && Object.keys(node.config).length > 0 && (
+                    <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+                      {Object.entries(node.config).slice(0, 3).map(([k, v]) =>
+                        v ? (
+                          <span key={k} style={{
+                            fontSize: 10, padding: '1px 5px', background: '#f1f5f9',
+                            borderRadius: 4, color: '#475569',
+                          }}>
+                            {k}: {String(v).slice(0, 15)}
+                          </span>
+                        ) : null
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Input handle (left) */}
+                {node.node_type !== 'trigger' && (
+                  <div
+                    onMouseUp={(e) => { e.stopPropagation(); connecting && handleNodeDrop(node.node_id) }}
+                    style={{
+                      position: 'absolute', left: -HANDLE_SIZE / 2, top: NODE_HEADER,
+                      width: HANDLE_SIZE, height: HANDLE_SIZE, borderRadius: '50%',
+                      background: '#fff', border: '2px solid #94a3b8', cursor: 'crosshair', zIndex: 2,
+                    }}
+                  />
+                )}
+
+                {/* Output handle(s) */}
+                <div
+                  onMouseDown={(e) => handleHandleMouseDown(e, node.node_id, 'output')}
+                  style={{
+                    position: 'absolute', right: -HANDLE_SIZE / 2,
+                    top: isFilter ? NODE_HEIGHT * 0.4 - HANDLE_SIZE / 2 : NODE_HEIGHT / 2 - HANDLE_SIZE / 2,
+                    width: HANDLE_SIZE, height: HANDLE_SIZE, borderRadius: '50%',
+                    background: isFilter ? '#22c55e' : '#fff',
+                    border: `2px solid ${isFilter ? '#16a34a' : '#94a3b8'}`,
+                    cursor: 'crosshair', zIndex: 2,
+                  }}
+                  title={isFilter ? 'Matched items' : 'Output'}
+                />
+                {isFilter && (
+                  <div style={{
+                    position: 'absolute', right: HANDLE_SIZE + 2,
+                    top: NODE_HEIGHT * 0.4 - 6, fontSize: 9, color: '#22c55e', fontWeight: 700,
+                  }}>Match</div>
+                )}
+
+                {/* Remainder handle for filters */}
+                {isFilter && (
+                  <>
+                    <div
+                      onMouseDown={(e) => handleHandleMouseDown(e, node.node_id, 'remainder')}
+                      style={{
+                        position: 'absolute', right: -HANDLE_SIZE / 2,
+                        top: NODE_HEIGHT * 0.78 - HANDLE_SIZE / 2,
+                        width: HANDLE_SIZE, height: HANDLE_SIZE, borderRadius: '50%',
+                        background: '#f59e0b', border: '2px solid #d97706',
+                        cursor: 'crosshair', zIndex: 2,
+                      }}
+                      title="Remainder (non-matching items)"
+                    />
+                    <div style={{
+                      position: 'absolute', right: HANDLE_SIZE + 2,
+                      top: NODE_HEIGHT * 0.78 - 6, fontSize: 9, color: '#f59e0b', fontWeight: 700,
+                    }}>Rest</div>
+                  </>
+                )}
+              </div>
+            )
+          })}
+
+          {/* Empty state */}
+          {nodes.length === 0 && (
+            <div style={{
+              position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+              textAlign: 'center', color: '#94a3b8',
+            }}>
+              <GitBranch size={40} style={{ marginBottom: 12, opacity: 0.5 }} />
+              <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>Empty Workflow</div>
+              <div style={{ fontSize: 13, marginBottom: 16 }}>Start by adding a trigger node</div>
+              <Button size="sm" variant="primary" onClick={() => setShowNodePalette(true)}>
+                <Plus size={14} /> Add Node
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Config Panel */}
+        {selectedNodeData && (
+          <div style={{
+            width: 320, flexShrink: 0, background: '#fff', borderLeft: '1px solid var(--border)',
+            overflow: 'auto', display: 'flex', flexDirection: 'column',
+          }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '12px 14px', borderBottom: '1px solid var(--border)',
+            }}>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>Node Settings</div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button onClick={() => deleteNode(selectedNode)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', padding: 4, borderRadius: 4 }}
+                  title="Delete node"><Trash2 size={14} /></button>
+                <button onClick={() => setSelectedNode(null)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: 4 }}>
+                  <X size={14} /></button>
+              </div>
+            </div>
+            <div style={{ padding: 14, flex: 1 }}>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', display: 'block', marginBottom: 4 }}>Label</label>
+                <input value={selectedNodeData.label || ''}
+                  onChange={e => updateNodeLabel(selectedNode, e.target.value)}
+                  style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box' }}
+                />
+              </div>
+              <div style={{ marginBottom: 14, display: 'flex', gap: 6 }}>
+                <Pill color={TYPE_COLORS[selectedNodeData.node_type]?.accent || '#94a3b8'}>
+                  {selectedNodeData.node_type}
+                </Pill>
+                <Pill color="#64748b">{selectedNodeData.node_subtype}</Pill>
+              </div>
+
+              {/* Config fields from schema */}
+              {selectedDef?.config_schema && Object.entries(selectedDef.config_schema).map(([key, schema]) => (
+                <div key={key} style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', display: 'block', marginBottom: 4 }}>
+                    {schema.label || key}
+                  </label>
+                  {schema.type === 'enum' ? (
+                    <select
+                      value={selectedNodeData.config?.[key] || ''}
+                      onChange={e => updateNodeConfig(selectedNode, key, e.target.value)}
+                      style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box', background: '#fff' }}
+                    >
+                      <option value="">Select...</option>
+                      {(schema.options || []).map(opt => {
+                        const val = typeof opt === 'object' ? opt.value : opt
+                        const label = typeof opt === 'object' ? opt.label : opt
+                        return <option key={val} value={val}>{label}</option>
+                      })}
+                    </select>
+                  ) : schema.type === 'boolean' ? (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                      <input type="checkbox" checked={!!selectedNodeData.config?.[key]}
+                        onChange={e => updateNodeConfig(selectedNode, key, e.target.checked)} />
+                      {schema.label}
+                    </label>
+                  ) : (
+                    <input
+                      type={schema.type === 'number' ? 'number' : 'text'}
+                      value={selectedNodeData.config?.[key] || ''}
+                      onChange={e => updateNodeConfig(selectedNode, key, e.target.value)}
+                      placeholder={schema.placeholder || schema.label}
+                      style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box' }}
+                    />
+                  )}
+                </div>
+              ))}
+
+              {/* Connections */}
+              <div style={{ marginTop: 20, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 8 }}>Connections</div>
+                {edges.filter(e => e.source_node_id === selectedNode || e.target_node_id === selectedNode).map(e => {
+                  const isSource = e.source_node_id === selectedNode
+                  const otherNode = nodes.find(n => n.node_id === (isSource ? e.target_node_id : e.source_node_id))
+                  return (
+                    <div key={e.edge_id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#64748b', marginBottom: 4 }}>
+                      <ChevronRight size={12} />
+                      <span>{isSource ? 'To' : 'From'}: {otherNode?.label || '?'}</span>
+                      {e.source_handle === 'remainder' && <Pill color="#f59e0b">remainder</Pill>}
+                      {e.label && <Pill color="#94a3b8">{e.label}</Pill>}
+                      <button onClick={() => deleteEdge(e.edge_id)}
+                        style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
+                        <X size={12} />
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Node palette */}
+      {showNodePalette && catalog && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 100,
+          display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setShowNodePalette(false)}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, width: 580, maxHeight: '75vh',
+              overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>Add Node</div>
+              <button onClick={() => setShowNodePalette(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={18} /></button>
+            </div>
+            <div style={{ padding: '12px 20px' }}>
+              {Object.entries(catalog).map(([type, defs]) => {
+                const nodeType = type.replace(/s$/, '')
+                const colors = TYPE_COLORS[nodeType]
+                return (
+                  <div key={type} style={{ marginBottom: 16 }}>
+                    <div style={{
+                      fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                      color: colors?.accent || '#64748b', marginBottom: 8, letterSpacing: '0.05em',
+                    }}>{type}</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      {defs.map(def => {
+                        const Icon = ICON_MAP[def.icon] || Zap
+                        return (
+                          <button key={def.subtype} onClick={() => addNode(nodeType, def)}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 10,
+                              padding: '10px 12px', borderRadius: 10,
+                              border: '1px solid #e2e8f0', background: '#fff',
+                              cursor: 'pointer', textAlign: 'left', transition: 'all 0.15s',
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.borderColor = colors?.accent || '#94a3b8'; e.currentTarget.style.background = '#f8fafc' }}
+                            onMouseLeave={e => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.background = '#fff' }}
+                          >
+                            <div style={{
+                              width: 36, height: 36, borderRadius: 8,
+                              background: colors?.headerBg || '#374151',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                            }}>
+                              <Icon size={16} color={colors?.text || '#fff'} />
+                            </div>
+                            <div>
+                              <div style={{ fontSize: 13, fontWeight: 600 }}>{def.label}</div>
+                              <div style={{ fontSize: 11, color: '#94a3b8' }}>{def.description}</div>
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Execution history modal */}
+      {showExecutions && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 100,
+          display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => { setShowExecutions(false); setExecutionDetail(null) }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 16, width: 600, maxHeight: '70vh',
+              overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>
+                {executionDetail ? `Execution #${executionDetail.id}` : 'Execution History'}
+              </div>
+              <button onClick={() => { setShowExecutions(false); setExecutionDetail(null) }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={18} /></button>
+            </div>
+            <div style={{ padding: '12px 20px' }}>
+              {executionDetail ? (
+                <div>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                    <Pill color={executionDetail.status === 'completed' ? '#22c55e' : '#ef4444'}>{executionDetail.status}</Pill>
+                    <Pill color="#64748b">{executionDetail.items_processed} items</Pill>
+                    <Pill color="#6366f1">{executionDetail.trigger_type}</Pill>
+                  </div>
+                  {executionDetail.error && (
+                    <div style={{ padding: 10, background: '#fef2f2', borderRadius: 8, color: '#dc2626', fontSize: 12, marginBottom: 12 }}>{executionDetail.error}</div>
+                  )}
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: '#64748b' }}>Node Logs</div>
+                  {(executionDetail.logs || []).map((log, i) => (
+                    <div key={i} style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      padding: '8px 10px', borderRadius: 6,
+                      background: log.status === 'failed' ? '#fef2f2' : '#f8fafc',
+                      marginBottom: 4, fontSize: 12,
+                    }}>
+                      <Pill color={log.status === 'success' ? '#22c55e' : '#ef4444'}>{log.status}</Pill>
+                      <span style={{ fontWeight: 600 }}>{log.node_subtype}</span>
+                      <span style={{ color: '#94a3b8' }}>{log.items_in} in / {log.items_out} out</span>
+                      {log.output_data?.affected != null && <span style={{ color: '#6366f1' }}>{log.output_data.affected} affected</span>}
+                    </div>
+                  ))}
+                  <button onClick={() => setExecutionDetail(null)}
+                    style={{ marginTop: 12, fontSize: 12, color: '#6366f1', background: 'none', border: 'none', cursor: 'pointer' }}>
+                    <ArrowLeft size={12} style={{ verticalAlign: 'middle' }} /> Back to list
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  {executions.length === 0 && (
+                    <div style={{ textAlign: 'center', padding: 30, color: '#94a3b8', fontSize: 13 }}>No executions yet</div>
+                  )}
+                  {executions.map(ex => (
+                    <button key={ex.id}
+                      onClick={async () => { const d = await getWorkflowExecution(ex.id); setExecutionDetail(d) }}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                        padding: '10px 12px', borderRadius: 8, marginBottom: 4,
+                        border: '1px solid var(--border)', background: '#fff',
+                        cursor: 'pointer', textAlign: 'left', fontSize: 12,
+                      }}>
+                      <Pill color={ex.status === 'completed' ? '#22c55e' : '#ef4444'}>{ex.status}</Pill>
+                      <span>{ex.items_processed} items</span>
+                      <span style={{ color: '#94a3b8', marginLeft: 'auto' }}>
+                        {ex.started_at ? new Date(ex.started_at).toLocaleString() : ''}
+                      </span>
+                      <ChevronRight size={14} color="#94a3b8" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

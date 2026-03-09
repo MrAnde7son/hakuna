@@ -1,0 +1,505 @@
+/**
+ * Shared UI primitives
+ */
+import { useState, useEffect, useRef } from 'react'
+import { getTags } from '../api.js'
+
+export function SeverityBadge({ severity, label }) {
+  const SEV_COLORS = {
+    4: { bg: '#450a0a', text: '#fca5a5', border: '#991b1b' },
+    3: { bg: '#431407', text: '#fdba74', border: '#9a3412' },
+    2: { bg: '#451a03', text: '#fcd34d', border: '#92400e' },
+    1: { bg: '#1a2e05', text: '#86efac', border: '#166534' },
+    0: { bg: '#0c1a2e', text: '#7dd3fc', border: '#0369a1' },
+  }
+  const c = SEV_COLORS[severity] || SEV_COLORS[0]
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      background: c.bg, color: c.text, border: `1px solid ${c.border}`,
+      borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600,
+      textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap',
+    }}>
+      {label || ['Info', 'Low', 'Medium', 'High', 'Critical'][severity] || 'Info'}
+    </span>
+  )
+}
+
+export function ScoreBar({ score, max = 10, color }) {
+  const pct = Math.min((score / max) * 100, 100)
+  const c = color || (score >= 8 ? '#dc2626' : score >= 6 ? '#ea580c' : score >= 4 ? '#d97706' : '#65a30d')
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ flex: 1, height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: c, borderRadius: 3, transition: 'width 0.3s' }} />
+      </div>
+      <span style={{ fontSize: 12, color: c, fontWeight: 600, minWidth: 28 }}>{score?.toFixed(1)}</span>
+    </div>
+  )
+}
+
+export function Card({ children, style = {}, onClick }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        borderRadius: 10, padding: 20, ...style,
+        ...(onClick && { cursor: 'pointer', transition: 'border-color 0.15s' }),
+      }}
+      onMouseEnter={onClick ? e => e.currentTarget.style.borderColor = 'var(--accent)' : undefined}
+      onMouseLeave={onClick ? e => e.currentTarget.style.borderColor = 'var(--border)' : undefined}
+    >
+      {children}
+    </div>
+  )
+}
+
+export function StatCard({ label, value, sub, color, icon: Icon, onClick }) {
+  return (
+    <Card style={{ display: 'flex', flexDirection: 'column', gap: 8 }} onClick={onClick}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+        {Icon && <Icon size={16} color={color || 'var(--text-muted)'} />}
+      </div>
+      <div style={{ fontSize: 32, fontWeight: 700, color: color || 'var(--text-primary)' }}>{value}</div>
+      {sub && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{sub}</div>}
+    </Card>
+  )
+}
+
+export function Table({ columns, rows, onRowClick, onSort, sortBy, sortOrder, emptyMessage = 'No data' }) {
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--border)' }}>
+            {columns.map(col => {
+              const isSorted = sortBy === col.key
+              const canSort = col.sortable && onSort
+              return (
+                <th
+                  key={col.key}
+                  onClick={canSort ? () => onSort(col.key) : undefined}
+                  style={{
+                    padding: '10px 12px', textAlign: 'left', fontWeight: 600,
+                    color: isSorted ? 'var(--text-primary)' : 'var(--text-muted)',
+                    fontSize: 11, textTransform: 'uppercase',
+                    letterSpacing: '0.05em', whiteSpace: 'nowrap',
+                    width: col.width,
+                    cursor: canSort ? 'pointer' : 'default',
+                    userSelect: 'none',
+                  }}
+                >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    {col.label}
+                    {canSort && (
+                      <span style={{ fontSize: 10, opacity: isSorted ? 1 : 0.3 }}>
+                        {isSorted ? (sortOrder === 'asc' ? '▲' : '▼') : '⇅'}
+                      </span>
+                    )}
+                  </span>
+                </th>
+              )
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr><td colSpan={columns.length} style={{ padding: '32px 12px', textAlign: 'center', color: 'var(--text-muted)' }}>{emptyMessage}</td></tr>
+          ) : rows.map((row, i) => (
+            <tr
+              key={i}
+              onClick={() => onRowClick && onRowClick(row)}
+              style={{
+                borderBottom: '1px solid rgba(45,49,85,0.5)',
+                cursor: onRowClick ? 'pointer' : 'default',
+                transition: 'background 0.1s',
+              }}
+              onMouseEnter={e => onRowClick && (e.currentTarget.style.background = 'var(--bg-hover)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              {columns.map(col => (
+                <td key={col.key} style={{ padding: '10px 12px', color: 'var(--text-primary)', verticalAlign: 'middle' }}>
+                  {col.render ? col.render(row[col.key], row) : row[col.key]}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+export function FilterBar({ children }) {
+  return (
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+      {children}
+    </div>
+  )
+}
+
+export function Select({ value, onChange, options, placeholder }) {
+  return (
+    <select
+      value={value || ''}
+      onChange={e => onChange(e.target.value || null)}
+      style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        color: value ? 'var(--text-primary)' : 'var(--text-muted)',
+        borderRadius: 6, padding: '7px 12px', fontSize: 13, cursor: 'pointer',
+        outline: 'none',
+      }}
+    >
+      {placeholder && <option value="">{placeholder}</option>}
+      {options.map(o => (
+        <option key={o.value} value={o.value}>{o.label}</option>
+      ))}
+    </select>
+  )
+}
+
+export function Input({ value, onChange, placeholder, style = {} }) {
+  return (
+    <input
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+      style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        color: 'var(--text-primary)', borderRadius: 6, padding: '7px 12px',
+        fontSize: 13, outline: 'none', ...style
+      }}
+    />
+  )
+}
+
+export function Button({ children, onClick, variant = 'primary', size = 'md', disabled, style = {} }) {
+  const base = {
+    display: 'inline-flex', alignItems: 'center', gap: 6,
+    border: 'none', borderRadius: 6, cursor: disabled ? 'not-allowed' : 'pointer',
+    fontWeight: 600, transition: 'all 0.15s', fontSize: size === 'sm' ? 12 : 13,
+    padding: size === 'sm' ? '5px 10px' : '8px 16px',
+    opacity: disabled ? 0.5 : 1, ...style
+  }
+  const variants = {
+    primary: { background: 'var(--accent)', color: '#fff' },
+    danger: { background: '#dc2626', color: '#fff' },
+    ghost: { background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border)' },
+    success: { background: '#16a34a', color: '#fff' },
+    warning: { background: '#d97706', color: '#fff' },
+  }
+  return (
+    <button onClick={disabled ? undefined : onClick} style={{ ...base, ...variants[variant] }}>
+      {children}
+    </button>
+  )
+}
+
+export function Pill({ label, color = 'var(--text-muted)' }) {
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 8px', borderRadius: 999,
+      background: `${color}22`, color, border: `1px solid ${color}44`,
+      fontSize: 11, fontWeight: 600,
+    }}>{label}</span>
+  )
+}
+
+export function PageHeader({ title, subtitle, action }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+      <div>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>{title}</h1>
+        {subtitle && <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>{subtitle}</div>}
+      </div>
+      {action}
+    </div>
+  )
+}
+
+export function EmptyState({ icon: Icon, title, sub, children }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '64px 24px', gap: 12 }}>
+      {Icon && <Icon size={40} color="var(--text-muted)" />}
+      <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-secondary)' }}>{title}</div>
+      {sub && <div style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', maxWidth: 320 }}>{sub}</div>}
+      {children}
+    </div>
+  )
+}
+
+export function EffortBadge({ effort }) {
+  const MAP = {
+    quick_win: { label: 'Quick Win', color: '#16a34a' },
+    medium: { label: 'Medium Effort', color: '#d97706' },
+    complex: { label: 'Complex', color: '#dc2626' },
+  }
+  const c = MAP[effort] || { label: effort || '—', color: 'var(--text-muted)' }
+  return <Pill label={c.label} color={c.color} />
+}
+
+export function OwnerBadge({ owner }) {
+  const MAP = {
+    IT: '#0ea5e9',
+    DevOps: '#8b5cf6',
+    SecOps: '#dc2626',
+    AppSec: '#f59e0b',
+  }
+  return <Pill label={owner || '—'} color={MAP[owner] || 'var(--text-muted)'} />
+}
+
+export function Spinner() {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 48 }}>
+      <div style={{
+        width: 32, height: 32, border: '3px solid var(--border)',
+        borderTop: '3px solid var(--accent)', borderRadius: '50%',
+        animation: 'spin 0.8s linear infinite',
+      }} />
+      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────
+// Tag primitives
+// ─────────────────────────────────────────────────────────
+
+/**
+ * TagPill – displays a single tag with its color dot.
+ * onRemove: optional callback — renders an × button when provided.
+ */
+export function TagPill({ tag, onRemove, size = 'sm' }) {
+  const color = tag.color || '#6366f1'
+  const pad = size === 'xs' ? '1px 6px' : '2px 8px'
+  const fs = size === 'xs' ? 10 : 11
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      background: `${color}18`, color, border: `1px solid ${color}44`,
+      borderRadius: 999, padding: pad, fontSize: fs, fontWeight: 600,
+      whiteSpace: 'nowrap', lineHeight: 1.4,
+    }}>
+      <span style={{
+        width: size === 'xs' ? 5 : 6, height: size === 'xs' ? 5 : 6,
+        borderRadius: '50%', background: color, flexShrink: 0,
+      }} />
+      {tag.label || `${tag.category}:${tag.value}`}
+      {onRemove && (
+        <button
+          onClick={e => { e.stopPropagation(); onRemove(tag) }}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            color, padding: 0, lineHeight: 1, fontSize: fs + 1, opacity: 0.7,
+          }}
+          title="Remove tag"
+        >×</button>
+      )}
+    </span>
+  )
+}
+
+/**
+ * TagPicker – typeahead input for selecting/assigning tags.
+ * Props:
+ *   selectedTags: [{tag_id, label, category, value, color}]
+ *   onChange(tags): called with updated selection
+ *   placeholder: string
+ *   multi: boolean (default true)
+ */
+export function TagPicker({ selectedTags = [], onChange, placeholder = 'Add tag…', multi = true }) {
+  const [query, setQuery] = useState('')
+  const [allTags, setAllTags] = useState([])
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    getTags().then(setAllTags).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const selectedIds = new Set(selectedTags.map(t => t.tag_id))
+
+  const filtered = allTags.filter(t => {
+    if (selectedIds.has(t.id)) return false
+    const q = query.toLowerCase()
+    return !q || t.label.toLowerCase().includes(q) || t.category.toLowerCase().includes(q) || t.value.toLowerCase().includes(q)
+  })
+
+  // Group by category
+  const grouped = {}
+  for (const t of filtered) {
+    if (!grouped[t.category]) grouped[t.category] = []
+    grouped[t.category].push(t)
+  }
+
+  const select = (tag) => {
+    const entry = { tag_id: tag.id, label: tag.label, category: tag.category, value: tag.value, color: tag.color }
+    onChange(multi ? [...selectedTags, entry] : [entry])
+    setQuery('')
+    if (!multi) setOpen(false)
+  }
+
+  const remove = (tag) => onChange(selectedTags.filter(t => t.tag_id !== tag.tag_id))
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <div
+        style={{
+          display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center',
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 6, padding: '5px 8px', minHeight: 36, cursor: 'text',
+        }}
+        onClick={() => setOpen(true)}
+      >
+        {selectedTags.map(t => (
+          <TagPill key={t.tag_id} tag={t} onRemove={remove} />
+        ))}
+        <input
+          value={query}
+          onChange={e => { setQuery(e.target.value); setOpen(true) }}
+          onFocus={() => setOpen(true)}
+          placeholder={selectedTags.length === 0 ? placeholder : ''}
+          style={{
+            flex: 1, minWidth: 80, border: 'none', background: 'transparent',
+            outline: 'none', fontSize: 13, color: 'var(--text-primary)',
+          }}
+        />
+      </div>
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 200,
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 6, marginTop: 2, maxHeight: 280, overflowY: 'auto',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+        }}>
+          {Object.keys(grouped).length === 0 ? (
+            <div style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)' }}>
+              {allTags.length === 0 ? 'No tags defined yet' : 'No matching tags'}
+            </div>
+          ) : Object.entries(grouped).map(([cat, tags]) => (
+            <div key={cat}>
+              <div style={{
+                padding: '6px 12px 2px', fontSize: 10, fontWeight: 700,
+                color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em',
+              }}>{cat}</div>
+              {tags.map(t => (
+                <div
+                  key={t.id}
+                  onClick={() => select(t)}
+                  style={{
+                    padding: '6px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
+                    fontSize: 13, color: 'var(--text-primary)',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: t.color || '#6366f1', flexShrink: 0 }} />
+                  {t.label}
+                  {t.description && (
+                    <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {t.description}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * TagFilterBar – compact multi-tag filter with AND/OR toggle.
+ * Props: tags (array of tag objects with label/color), onChange, logic ('AND'|'OR'), onLogicChange
+ */
+export function TagFilterBar({ tags = [], onChange, logic = 'AND', onLogicChange }) {
+  const [allTags, setAllTags] = useState([])
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    getTags().then(setAllTags).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const selectedIds = new Set(tags.map(t => t.id || t.tag_id))
+  const filtered = allTags.filter(t => {
+    if (selectedIds.has(t.id)) return false
+    const q = query.toLowerCase()
+    return !q || t.label.toLowerCase().includes(q)
+  })
+
+  const add = (tag) => { onChange([...tags, tag]); setQuery(''); setOpen(false) }
+  const remove = (tag) => onChange(tags.filter(t => (t.id || t.tag_id) !== (tag.id || tag.tag_id)))
+
+  return (
+    <div ref={ref} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+      {tags.map((t, i) => (
+        <span key={t.id || t.tag_id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          {i > 0 && (
+            <button
+              onClick={() => onLogicChange && onLogicChange(logic === 'AND' ? 'OR' : 'AND')}
+              style={{
+                background: 'var(--bg-hover)', border: '1px solid var(--border)',
+                borderRadius: 4, padding: '1px 6px', fontSize: 10, cursor: 'pointer',
+                color: 'var(--text-muted)', fontWeight: 700,
+              }}
+              title="Click to toggle AND/OR"
+            >{logic}</button>
+          )}
+          <TagPill tag={t} onRemove={() => remove(t)} size="sm" />
+        </span>
+      ))}
+      <div style={{ position: 'relative' }}>
+        <input
+          value={query}
+          onChange={e => { setQuery(e.target.value); setOpen(true) }}
+          onFocus={() => setOpen(true)}
+          placeholder={tags.length === 0 ? 'Filter by tag…' : '+tag'}
+          style={{
+            background: 'var(--bg-card)', border: '1px solid var(--border)',
+            borderRadius: 6, padding: '5px 10px', fontSize: 12,
+            color: 'var(--text-primary)', outline: 'none', width: tags.length === 0 ? 140 : 80,
+          }}
+        />
+        {open && filtered.length > 0 && (
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, zIndex: 200, minWidth: 200,
+            background: 'var(--bg-card)', border: '1px solid var(--border)',
+            borderRadius: 6, marginTop: 2, maxHeight: 240, overflowY: 'auto',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+          }}>
+            {filtered.map(t => (
+              <div
+                key={t.id}
+                onClick={() => add(t)}
+                style={{ padding: '7px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: t.color || '#6366f1' }} />
+                {t.label}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

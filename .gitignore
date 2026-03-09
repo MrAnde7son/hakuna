@@ -1,0 +1,12 @@
+.DS_Store
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+*.db
+.env
+
+# Nessus scan files (may contain secrets)
+*.nessus
+*.csv
+nessus *.html

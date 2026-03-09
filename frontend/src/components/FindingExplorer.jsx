@@ -1,0 +1,528 @@
+import React, { useState, useEffect, useCallback } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Bug, Search, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock } from 'lucide-react'
+import { useScan } from '../App.jsx'
+import { getFindings, getPluginFamilies, getAssets, assignTags, unassignTags } from '../api.js'
+import {
+  Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, Input,
+  Spinner, EmptyState, Button, EffortBadge, OwnerBadge, Pill, TagPill, TagFilterBar, TagPicker
+} from './ui.jsx'
+
+const GROUP_OPTIONS = [
+  { value: 'severity', label: 'Severity' },
+  { value: 'plugin_family', label: 'Plugin Family' },
+  { value: 'asset', label: 'Asset' },
+  { value: 'owner_suggestion', label: 'Owner' },
+  { value: 'effort_level', label: 'Effort' },
+]
+
+const SEV_ORDER = { 4: 0, 3: 1, 2: 2, 1: 3, 0: 4 }
+const SEV_LABELS = { 4: 'Critical', 3: 'High', 2: 'Medium', 1: 'Low', 0: 'Info' }
+const SEV_COLORS = { 4: '#dc2626', 3: '#ea580c', 2: '#d97706', 1: '#65a30d', 0: '#6b7280' }
+
+function getGroupKey(finding, groupBy) {
+  if (groupBy === 'severity') return String(finding.severity)
+  if (groupBy === 'asset') return finding.asset_hostname || finding.asset_ip || 'Unknown'
+  return finding[groupBy] || 'Other'
+}
+
+function groupFindings(findings, groupBy) {
+  const map = {}
+  for (const f of findings) {
+    const key = getGroupKey(f, groupBy)
+    if (!map[key]) map[key] = []
+    map[key].push(f)
+  }
+  const entries = Object.entries(map)
+  if (groupBy === 'severity') {
+    entries.sort(([a], [b]) => (SEV_ORDER[Number(a)] ?? 99) - (SEV_ORDER[Number(b)] ?? 99))
+  } else {
+    entries.sort(([a], [b]) => a.localeCompare(b))
+  }
+  return entries
+}
+
+function GroupHeader({ groupBy, groupKey, count, open, onToggle }) {
+  const isSev = groupBy === 'severity'
+  const label = isSev ? SEV_LABELS[Number(groupKey)] : groupKey
+  const color = isSev ? SEV_COLORS[Number(groupKey)] : 'var(--text-secondary)'
+
+  return (
+    <button
+      onClick={onToggle}
+      style={{
+        width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        borderRadius: 8, padding: '10px 14px', cursor: 'pointer',
+        marginBottom: open ? 0 : 8, borderBottomLeftRadius: open ? 0 : 8,
+        borderBottomRightRadius: open ? 0 : 8,
+      }}
+    >
+      <span style={{ fontWeight: 600, fontSize: 13, color }}>{label}</span>
+      <span style={{
+        fontSize: 11, background: 'var(--bg-hover)', color: 'var(--text-muted)',
+        borderRadius: 10, padding: '1px 8px',
+      }}>{count}</span>
+      <span style={{ marginLeft: 'auto', color: 'var(--text-muted)' }}>
+        {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </span>
+    </button>
+  )
+}
+
+const SEV_OPTIONS = [
+  { value: '4', label: 'Critical' },
+  { value: '3', label: 'High' },
+  { value: '2', label: 'Medium' },
+  { value: '1', label: 'Low' },
+  { value: '0', label: 'Info' },
+]
+
+function SLABadge({ status, dueDate }) {
+  if (!status || status === 'n/a') return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+
+  const now = new Date()
+  const due = dueDate ? new Date(dueDate) : null
+  const daysLeft = due ? Math.ceil((due - now) / 86400000) : null
+
+  const cfg = {
+    resolved: { color: '#6366f1', bg: 'rgba(99,102,241,0.12)', label: 'Resolved' },
+    on_track: { color: '#16a34a', bg: 'rgba(22,163,74,0.1)',   label: daysLeft !== null ? `${daysLeft}d left` : 'On Track' },
+    at_risk:  { color: '#d97706', bg: 'rgba(217,119,6,0.12)',  label: daysLeft !== null ? `${daysLeft}d left` : 'At Risk' },
+    breached: { color: '#dc2626', bg: 'rgba(220,38,38,0.12)',  label: daysLeft !== null ? `${Math.abs(daysLeft)}d over` : 'Breached' },
+  }[status] || { color: '#6b7280', bg: 'transparent', label: status }
+
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      fontSize: 11, fontWeight: 600, padding: '2px 7px', borderRadius: 10,
+      background: cfg.bg, color: cfg.color, whiteSpace: 'nowrap',
+    }}>
+      <Clock size={10} />
+      {cfg.label}
+    </span>
+  )
+}
+
+function BulkTagModal({ findingIds, onClose, onDone }) {
+  const [selected, setSelected] = useState([])
+  const [saving, setSaving] = useState(false)
+
+  const apply = async () => {
+    if (!selected.length) return
+    setSaving(true)
+    try {
+      await assignTags({ tag_ids: selected.map(t => t.tag_id), finding_ids: findingIds })
+      onDone()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      <div style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12,
+        padding: 24, width: 420, display: 'flex', flexDirection: 'column', gap: 14,
+        boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>
+          Tag {findingIds.length} finding{findingIds.length !== 1 ? 's' : ''}
+        </div>
+        <TagPicker selectedTags={selected} onChange={setSelected} placeholder="Search tags…" />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button onClick={apply} disabled={saving || !selected.length}>
+            <Tag size={14} /> {saving ? 'Applying…' : 'Apply Tags'}
+          </Button>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default function FindingExplorer() {
+  const { activeScanId } = useScan()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  const [findings, setFindings] = useState([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [families, setFamilies] = useState([])
+  const [assets, setAssets] = useState([])
+  const [openGroups, setOpenGroups] = useState({})
+  const [selectedIds, setSelectedIds] = useState(new Set())
+  const [showBulkTag, setShowBulkTag] = useState(false)
+  const [tagFilter, setTagFilter] = useState([])
+  const [tagLogic, setTagLogic] = useState('AND')
+
+  // Derive all filter state from URL params
+  const search = searchParams.get('search') || ''
+  const severity = searchParams.has('severity') ? Number(searchParams.get('severity')) : null
+  const family = searchParams.get('family') || null
+  const hasExploit = searchParams.has('exploit') ? searchParams.get('exploit') === 'true' : null
+  const groupBy = searchParams.get('group') || null
+  const assetId = searchParams.get('asset_id') || null
+  const page = searchParams.has('page') ? Number(searchParams.get('page')) : 1
+  const pageSize = groupBy ? 500 : 50
+  const sortBy = searchParams.get('sort') || 'priority_score'
+  const sortOrder = searchParams.get('order') || 'desc'
+  const slaStatus = searchParams.get('sla_status') || null
+  const effortLevel = searchParams.get('effort_level') || null
+
+  const setFilter = useCallback((key, value) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (value === null || value === undefined || value === '') {
+        next.delete(key)
+      } else {
+        next.set(key, String(value))
+      }
+      // Reset pagination whenever a non-page filter changes
+      if (key !== 'page') next.delete('page')
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
+  const clearFilters = useCallback(() => {
+    setSearchParams(new URLSearchParams(), { replace: true })
+  }, [setSearchParams])
+
+  const handleSort = useCallback((key) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (prev.get('sort') === key) {
+        next.set('order', prev.get('order') === 'asc' ? 'desc' : 'asc')
+      } else {
+        next.set('sort', key)
+        next.set('order', 'desc')
+      }
+      next.delete('page')
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
+  const load = useCallback(() => {
+    setLoading(true)
+    const params = {
+      scan_id: activeScanId,
+      asset_id: assetId || null,
+      severity: severity !== null ? severity : undefined,
+      plugin_family: family,
+      has_exploit: hasExploit,
+      sla_status: slaStatus,
+      effort_level: effortLevel,
+      search: search || null,
+      sort_by: sortBy,
+      order: sortOrder,
+      page,
+      page_size: pageSize,
+    }
+    if (tagFilter.length) {
+      params.tags = tagFilter.map(t => t.label || `${t.category}:${t.value}`).join(',')
+      params.tag_logic = tagLogic
+    }
+    getFindings(params)
+      .then(data => {
+        setFindings(data.findings)
+        setTotal(data.total)
+      })
+      .finally(() => setLoading(false))
+  }, [activeScanId, assetId, severity, family, hasExploit, slaStatus, effortLevel, search, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic])
+
+  useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    getPluginFamilies(activeScanId).then(f => setFamilies(f)).catch(() => {})
+  }, [activeScanId])
+
+  useEffect(() => {
+    getAssets({ scan_id: activeScanId }).then(setAssets).catch(() => {})
+  }, [activeScanId])
+
+  // Open all groups by default when groupBy changes
+  useEffect(() => {
+    if (!groupBy) { setOpenGroups({}); return }
+    const keys = {}
+    for (const f of findings) keys[getGroupKey(f, groupBy)] = true
+    setOpenGroups(keys)
+  }, [groupBy, findings])
+
+  const toggleGroup = key => setOpenGroups(prev => ({ ...prev, [key]: !prev[key] }))
+
+  const totalPages = Math.ceil(total / pageSize)
+
+  const hasActiveFilters = severity !== null || family || hasExploit !== null || slaStatus || effortLevel || search || groupBy || assetId || tagFilter.length > 0
+
+  const toggleSelect = (id) => setSelectedIds(prev => {
+    const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next
+  })
+  const toggleSelectAll = () => setSelectedIds(prev =>
+    prev.size === findings.length ? new Set() : new Set(findings.map(f => f.id))
+  )
+  const handleUntagFinding = async (findingId, tag) => {
+    await unassignTags({ tag_ids: [tag.tag_id], finding_ids: [findingId] })
+    load()
+  }
+
+  const columns = [
+    {
+      key: '_select', label: (
+        <input type="checkbox" checked={findings.length > 0 && selectedIds.size === findings.length} onChange={toggleSelectAll} />
+      ), width: '36px',
+      render: (_, row) => (
+        <input type="checkbox" checked={selectedIds.has(row.id)} onChange={() => toggleSelect(row.id)} onClick={e => e.stopPropagation()} />
+      )
+    },
+    {
+      key: 'severity', label: 'Sev', width: '80px', sortable: true,
+      render: (v, row) => <SeverityBadge severity={v} label={row.severity_label} />
+    },
+    {
+      key: 'priority_score', label: 'Priority', width: '120px', sortable: true,
+      render: (v) => <ScoreBar score={v} />
+    },
+    {
+      key: 'plugin_name', label: 'Plugin / Finding', width: '30%', sortable: true,
+      render: (v, row) => (
+        <div>
+          <div style={{ fontWeight: 500, color: 'var(--text-primary)', fontSize: 13 }}>{v}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Plugin {row.plugin_id} · {row.plugin_family || '—'}</div>
+          {row.cves && row.cves.length > 0 && (
+            <div style={{ marginTop: 3, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {row.cves.slice(0, 3).map(cve => (
+                <Pill key={cve} label={cve} color="#f59e0b" />
+              ))}
+              {row.cves.length > 3 && <Pill label={`+${row.cves.length - 3}`} />}
+            </div>
+          )}
+          {row.tags?.length > 0 && (
+            <div style={{ marginTop: 4, display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+              {row.tags.map(t => (
+                <TagPill key={t.tag_id} tag={t} size="xs" onRemove={(tag) => handleUntagFinding(row.id, tag)} />
+              ))}
+            </div>
+          )}
+        </div>
+      )
+    },
+    {
+      key: 'asset_hostname', label: 'Asset', width: '15%', sortable: true,
+      render: (v, row) => (
+        <div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{v || row.asset_ip}</div>
+          {row.asset_ip && row.asset_ip !== v && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.asset_ip}</div>}
+        </div>
+      )
+    },
+    {
+      key: 'cvss3_score', label: 'CVSS3', width: '70px', sortable: true,
+      render: (v, row) => {
+        const score = v || row.cvss2_score
+        if (!score) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const color = score >= 9 ? '#dc2626' : score >= 7 ? '#ea580c' : score >= 4 ? '#d97706' : '#65a30d'
+        return <span style={{ fontWeight: 600, color, fontSize: 13 }}>{score.toFixed(1)}</span>
+      }
+    },
+    {
+      key: 'effort_level', label: 'Effort',
+      render: (v) => <EffortBadge effort={v} />
+    },
+    {
+      key: 'owner_suggestion', label: 'Owner',
+      render: (v) => <OwnerBadge owner={v} />
+    },
+    {
+      key: 'exploit_available', label: 'Exploit',
+      render: (v, row) => {
+        if (row.zero_day) return <Pill label="0-day" color="#dc2626" />
+        if (v) return <Pill label="Known" color="#ea580c" />
+        if (row.exploit_maturity === 'unproven') return <Pill label="Unproven" color="#d97706" />
+        return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+      }
+    },
+    {
+      key: 'sla_status', label: 'SLA', width: '90px', sortable: true,
+      render: (v, row) => <SLABadge status={v} dueDate={row.sla_due_date} />
+    },
+  ]
+
+  return (
+    <div>
+      <PageHeader
+        title="Findings"
+        subtitle={`${total.toLocaleString()} total findings`}
+        action={selectedIds.size > 0 ? (
+          <Button size="sm" variant="ghost" onClick={() => setShowBulkTag(true)}>
+            <Tag size={14} /> Tag {selectedIds.size} selected
+          </Button>
+        ) : null}
+      />
+
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+          <Search size={14} style={{ position: 'absolute', left: 10, color: 'var(--text-muted)' }} />
+          <input
+            value={search}
+            onChange={e => setFilter('search', e.target.value)}
+            placeholder="Search plugin name or ID..."
+            style={{
+              background: 'var(--bg-card)', border: '1px solid var(--border)',
+              color: 'var(--text-primary)', borderRadius: 6, padding: '7px 12px 7px 32px',
+              fontSize: 13, outline: 'none', width: 220,
+            }}
+          />
+        </div>
+
+        <Select
+          value={severity !== null ? String(severity) : null}
+          onChange={v => setFilter('severity', v)}
+          placeholder="All Severities"
+          options={SEV_OPTIONS}
+        />
+
+        <Select
+          value={family}
+          onChange={v => setFilter('family', v)}
+          placeholder="All Families"
+          options={families.map(f => ({ value: f, label: f }))}
+        />
+
+        <Select
+          value={hasExploit !== null ? String(hasExploit) : null}
+          onChange={v => setFilter('exploit', v)}
+          placeholder="All Exploit Status"
+          options={[{ value: 'true', label: 'Has Exploit' }, { value: 'false', label: 'No Exploit' }]}
+        />
+
+        <Select
+          value={searchParams.get('sla_status') || null}
+          onChange={v => setFilter('sla_status', v)}
+          placeholder="All SLA Status"
+          options={[
+            { value: 'breached', label: 'SLA Breached' },
+            { value: 'at_risk',  label: 'At Risk' },
+            { value: 'on_track', label: 'On Track' },
+            { value: 'resolved', label: 'Resolved' },
+          ]}
+        />
+
+        <Select
+          value={searchParams.get('effort_level') || null}
+          onChange={v => setFilter('effort_level', v)}
+          placeholder="All Effort Levels"
+          options={[
+            { value: 'quick_win', label: 'Quick Win' },
+            { value: 'medium',    label: 'Medium' },
+            { value: 'complex',   label: 'Complex' },
+          ]}
+        />
+
+        <Select
+          value={assetId}
+          onChange={v => setFilter('asset_id', v)}
+          placeholder="All Assets"
+          options={assets.map(a => ({ value: String(a.id), label: a.hostname || a.ip }))}
+        />
+
+        <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
+
+        <Select
+          value={groupBy}
+          onChange={v => setFilter('group', v)}
+          placeholder="No Grouping"
+          options={GROUP_OPTIONS}
+        />
+
+        <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
+
+        <TagFilterBar
+          tags={tagFilter}
+          onChange={setTagFilter}
+          logic={tagLogic}
+          onLogicChange={setTagLogic}
+        />
+
+        {hasActiveFilters && (
+          <Button variant="ghost" size="sm" onClick={() => { clearFilters(); setTagFilter([]) }}>Clear all</Button>
+        )}
+      </div>
+
+      {loading ? <Spinner /> : (
+        findings.length === 0 ? (
+          <EmptyState icon={Bug} title="No findings match" sub="Try adjusting your filters" />
+        ) : groupBy ? (
+          <>
+            {groupFindings(findings, groupBy).map(([key, rows]) => (
+              <div key={key} style={{ marginBottom: 8 }}>
+                <GroupHeader
+                  groupBy={groupBy} groupKey={key} count={rows.length}
+                  open={!!openGroups[key]}
+                  onToggle={() => toggleGroup(key)}
+                />
+                {openGroups[key] && (
+                  <Card style={{ padding: 0, borderTopLeftRadius: 0, borderTopRightRadius: 0, marginBottom: 0 }}>
+                    <Table
+                      columns={columns}
+                      rows={rows}
+                      onRowClick={row => navigate(`/findings/${row.id}`)}
+                      onSort={handleSort}
+                      sortBy={sortBy}
+                      sortOrder={sortOrder}
+                    />
+                  </Card>
+                )}
+              </div>
+            ))}
+            {total > findings.length && (
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', marginTop: 8 }}>
+                Showing first {findings.length.toLocaleString()} of {total.toLocaleString()} findings. Use filters to narrow results.
+              </p>
+            )}
+          </>
+        ) : (
+          <>
+            <Card style={{ padding: 0, marginBottom: 12 }}>
+              <Table
+                columns={columns}
+                rows={findings}
+                onRowClick={row => navigate(`/findings/${row.id}`)}
+                onSort={handleSort}
+                sortBy={sortBy}
+                sortOrder={sortOrder}
+              />
+            </Card>
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12 }}>
+                <Button variant="ghost" size="sm" disabled={page === 1} onClick={() => setFilter('page', page - 1)}>
+                  <ChevronLeft size={14} /> Prev
+                </Button>
+                <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                  Page {page} of {totalPages} ({total.toLocaleString()} findings)
+                </span>
+                <Button variant="ghost" size="sm" disabled={page >= totalPages} onClick={() => setFilter('page', page + 1)}>
+                  Next <ChevronRight size={14} />
+                </Button>
+              </div>
+            )}
+          </>
+        )
+      )}
+
+      {showBulkTag && (
+        <BulkTagModal
+          findingIds={[...selectedIds]}
+          onClose={() => setShowBulkTag(false)}
+          onDone={() => { setShowBulkTag(false); setSelectedIds(new Set()); load() }}
+        />
+      )}
+    </div>
+  )
+}
