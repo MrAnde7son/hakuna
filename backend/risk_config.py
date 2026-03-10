@@ -3,11 +3,11 @@ Configurable risk scoring and asset criticality engine.
 
 Asset Risk Score formula (weighted sum, normalized to 0-10):
   severity       — weighted avg of finding severity scores
-  exploitability — exploit availability + maturity bonus + VPR
-  intel          — max VPR / threat intel score
+  exploitability — exploit availability + maturity (zero-day, PoC, functional, weaponized)
+  intel          — real-world threat signals (KEV, EPSS, ransomware, trending, VPR)
   criticality    — asset criticality level (1-10) contribution
   controls       — penalty when compensating controls (AV/firewall) are absent
-  reachability   — established network connections as lateral movement risk
+  reachability   — port-aware: checks if finding ports are listening/established on the asset
 
 Asset criticality auto-rules:
   Rules are evaluated in order against asset properties.
@@ -81,19 +81,23 @@ DEFAULT_RISK_CONFIG: dict[str, Any] = {
         "9":  1.45,
         "10": 1.60,
     },
+    # ── Severity source for the "severity" component ──
+    # Which technical severity metric drives the severity weight in the finding formula.
+    # Options: cvss_best | cvss2 | cvss3 | cvss4 | vpr | epss
+    "severity_source": "cvss_best",
     # ── Finding priority score weights (should sum to 1.0) ──
     # Components:
-    #   severity       — CVSS score (v3 preferred, v2 fallback), normalized 0-1
-    #   intel          — VPR score normalized 0-1
+    #   severity       — Technical severity from the selected source, normalized 0-1
     #   exploitability — exploit availability & maturity bonus
+    #   intel          — threat intel signals (KEV, EPSS, ransomware, trending, VPR)
     #   criticality    — asset criticality (1-10) normalized 0-1
     #   family         — plugin family risk signal
     #   controls       — penalty when compensating controls absent (from asset inventory)
-    #   reachability   — established network connections (from asset inventory)
+    #   reachability   — port-aware: finding port listening/established on asset
     "finding_formula_weights": {
         "severity":       0.25,
-        "intel":          0.25,
-        "exploitability": 0.20,
+        "exploitability": 0.25,
+        "intel":          0.20,
         "criticality":    0.10,
         "family":         0.10,
         "controls":       0.05,
@@ -256,7 +260,7 @@ def compute_asset_risk_score(
         volume = min(critical_count * 0.5 + high_count * 0.25 + medium_count * 0.05, 10.0) / 10.0
         severity_component = min(0.70 * quality + 0.30 * volume, 1.0)
 
-    # ── 2. Exploitability component ──
+    # ── 2. Exploitability component (can it be exploited?) ──
     exploit_total = 0.0
     for f in findings:
         if f.get("exploit_available") or f.get("zero_day"):
@@ -264,15 +268,28 @@ def compute_asset_risk_score(
             exploit_total += mat_scores.get(mat, mat_scores.get("none", 0.0))
             if f.get("zero_day"):
                 exploit_total = max(exploit_total, 1.0)
-        # VPR adds partial credit
-        vpr = f.get("vpr_score")
-        if vpr:
-            exploit_total += (float(vpr) / 10.0) * 0.3
     exploitability_component = min(exploit_total / n, 1.0)
 
-    # ── 3. Intel component (highest VPR across findings) ──
-    vpr_scores = [float(f["vpr_score"]) for f in findings if f.get("vpr_score")]
-    intel_component = (max(vpr_scores) / 10.0) if vpr_scores else 0.0
+    # ── 3. Intel component (is it being exploited / relevant right now?) ──
+    # Uses real threat intel signals instead of raw VPR.
+    intel_scores = []
+    for f in findings:
+        signals = []
+        if f.get("is_kev"):
+            signals.append(0.9)
+        epss = f.get("epss_score")
+        if epss is not None and epss > 0:
+            signals.append(min(epss * 1.5, 1.0))
+        if f.get("ransomware_linked"):
+            signals.append(1.0)
+        if f.get("trending_in_news"):
+            signals.append(0.6)
+        vpr = f.get("vpr_score")
+        if vpr:
+            signals.append(float(vpr) / 10.0)
+        if signals:
+            intel_scores.append(max(signals))
+    intel_component = max(intel_scores) if intel_scores else 0.0
 
     # ── 4. Criticality component (normalize 1-10 → 0-1) ──
     criticality_component = (max(1, min(10, asset_criticality)) - 1) / 9.0
@@ -289,8 +306,26 @@ def compute_asset_risk_score(
         controls_component = 0.5    # unknown → neutral
 
     # ── 6. Reachability component ──
-    conns = int(inv.get("established_connections", 0))
-    reachability_component = min(conns / 20.0, 1.0)
+    # For asset-level: proportion of finding ports that are reachable.
+    listening_ports = inv.get("listening_ports") or set()
+    established_ports = inv.get("established_ports") or set()
+    if listening_ports or established_ports:
+        reachable_count = 0
+        port_findings = 0
+        for f in findings:
+            fp = f.get("port")
+            if fp and str(fp).isdigit():
+                port_findings += 1
+                port_int = int(fp)
+                if port_int in established_ports:
+                    reachable_count += 1
+                elif port_int in listening_ports:
+                    reachable_count += 0.7
+        reachability_component = (reachable_count / port_findings) if port_findings else 0.5
+    else:
+        # No port inventory data — fall back to connection count
+        conns = int(inv.get("established_connections", 0))
+        reachability_component = min(conns / 20.0, 1.0)
 
     # ── Weighted sum ──
     score = (

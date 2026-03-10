@@ -1,30 +1,39 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { Trash2, RefreshCw, AlertTriangle, Plus } from 'lucide-react'
-import { getRiskConfig, saveRiskConfig, recalculateRisk, getRuleEngineCatalog } from '../api.js'
+import { getRiskConfig, saveRiskConfig, recalculateRisk, getRuleEngineCatalog, exportConfig } from '../api.js'
 import RuleBuilder from './RuleBuilder.jsx'
 
 // ─── Finding weight labels ─────────────────────────────────────────────────────
 
+const SEVERITY_SOURCE_OPTIONS = [
+  { value: 'cvss_best',        label: 'Best Available CVSS',  desc: 'Prefers CVSS v4 → v3 → v2' },
+  { value: 'cvss2',            label: 'CVSS v2',              desc: 'CVSS v2 base score only' },
+  { value: 'cvss3',            label: 'CVSS v3',              desc: 'CVSS v3.x base score only' },
+  { value: 'cvss4',            label: 'CVSS v4',              desc: 'CVSS v4 base score only' },
+  { value: 'vpr',              label: 'VPR',                  desc: 'Tenable Vulnerability Priority Rating' },
+  { value: 'epss',             label: 'EPSS',                 desc: 'Exploit Prediction Scoring System (0–1)' },
+]
+
 const FINDING_WEIGHT_LABELS = {
-  severity:       { label: 'CVSS Severity',           desc: 'CVSS score (v3 preferred, v2 fallback), normalized 0–10' },
-  intel:          { label: 'Threat Intel (VPR)',       desc: 'Nessus VPR score, normalized 0–10' },
+  severity:       { label: 'Technical Severity',       desc: 'Score from the selected severity source below' },
   exploitability: { label: 'Exploitability',           desc: 'Exploit availability, maturity, and zero-day flag' },
+  intel:          { label: 'Threat Intelligence',      desc: 'KEV, EPSS, ransomware campaigns, trending in news, VPR' },
   criticality:    { label: 'Asset Criticality',        desc: 'Criticality level of the affected asset (1–10)' },
   family:         { label: 'Plugin Family Risk',       desc: 'Risk signal from the Nessus plugin family' },
   controls:       { label: 'Compensating Controls',    desc: 'Penalty when AV/firewall absent on the asset' },
-  reachability:   { label: 'Network Reachability',     desc: 'Established connections on the asset (lateral movement)' },
+  reachability:   { label: 'Network Reachability',     desc: 'Port-aware: checks if the finding port is open/connected' },
 }
-import { Card } from './ui.jsx'
+import { Card, ExportImportButtons } from './ui.jsx'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const WEIGHT_LABELS = {
   severity:       { label: 'Technical Severity',       desc: 'Weighted average of finding severity levels' },
-  exploitability: { label: 'Exploitability',           desc: 'Exploit availability, maturity, and VPR score' },
-  intel:          { label: 'Threat Intelligence',      desc: 'Highest VPR / CVE intel score for the asset' },
+  exploitability: { label: 'Exploitability',           desc: 'Exploit availability, maturity, and zero-day (pure capability)' },
+  intel:          { label: 'Threat Intelligence',      desc: 'KEV, EPSS, ransomware, trending in news, VPR (active threats)' },
   criticality:    { label: 'Asset Criticality',        desc: 'User-defined or auto-assigned criticality (1–10)' },
   controls:       { label: 'Compensating Controls',    desc: 'Penalty when AV/firewall controls are absent' },
-  reachability:   { label: 'Network Reachability',     desc: 'Established outbound connections (lateral movement)' },
+  reachability:   { label: 'Network Reachability',     desc: 'Port-aware: proportion of vuln ports open/connected on the asset' },
 }
 
 const SEV_LABELS = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', info: 'Info' }
@@ -415,7 +424,43 @@ export default function RiskSettings({ onSave }) {
             Total: {Math.round(findingTotal * 100)}%{!findingWeightsOk && ' (should be 100%)'}
           </div>
         </div>
-        <div style={{ marginTop: 14 }}>
+        {/* Severity source selector */}
+        <div style={{ marginTop: 14, marginBottom: 16, display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          <div style={{ minWidth: 200 }}>
+            <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)', marginBottom: 4 }}>Severity Source</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              Which metric drives the "Technical Severity" weight.
+            </div>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {SEVERITY_SOURCE_OPTIONS.map(opt => {
+                const active = (cfg.severity_source || 'cvss_best') === opt.value
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => setCfg(p => ({ ...p, severity_source: opt.value }))}
+                    title={opt.desc}
+                    style={{
+                      padding: '5px 12px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                      border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                      background: active ? 'rgba(99,102,241,0.15)' : 'transparent',
+                      color: active ? 'var(--accent)' : 'var(--text-muted)',
+                      fontWeight: active ? 600 : 400,
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                )
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              {SEVERITY_SOURCE_OPTIONS.find(o => o.value === (cfg.severity_source || 'cvss_best'))?.desc}
+            </div>
+          </div>
+        </div>
+
+        <div>
           {Object.entries(FINDING_WEIGHT_LABELS).map(([key, { label, desc }]) => (
             <WeightRow
               key={key} id={key}
@@ -429,7 +474,16 @@ export default function RiskSettings({ onSave }) {
 
       {/* ── Actions ── */}
       <Card>
-        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 12 }}>Apply Changes</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>Apply Changes</div>
+          <ExportImportButtons
+            configType="risk_config"
+            exportFn={() => exportConfig('risk_config')}
+            onImported={() => getRiskConfig().then(cfgData => setCfg({ ...cfgData, criticality_rules: (cfgData.criticality_rules || []).map(migrateRule) }))}
+            label="Risk Config"
+            showConflict={false}
+          />
+        </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <button
             onClick={handleSave}

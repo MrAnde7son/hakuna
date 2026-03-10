@@ -146,10 +146,19 @@ def fetch_nvd_cve(cve_id: str) -> Optional[dict]:
             (d["value"] for d in descriptions if d.get("lang") == "en"), ""
         )
 
-        # CVSS v3
+        # CVSS scores from NVD metrics
+        metrics = cve_data.get("metrics", {})
+
+        # CVSS v2
+        cvss2_score = None
+        for m in metrics.get("cvssMetricV2", []):
+            cvss_data = m.get("cvssData", {})
+            cvss2_score = cvss_data.get("baseScore")
+            break
+
+        # CVSS v3 (prefer 3.1 over 3.0)
         cvss3_score = None
         cvss3_vector = None
-        metrics = cve_data.get("metrics", {})
         for key in ("cvssMetricV31", "cvssMetricV30"):
             metric_list = metrics.get(key, [])
             if metric_list:
@@ -157,6 +166,15 @@ def fetch_nvd_cve(cve_id: str) -> Optional[dict]:
                 cvss3_score = cvss_data.get("baseScore")
                 cvss3_vector = cvss_data.get("vectorString")
                 break
+
+        # CVSS v4
+        cvss4_score = None
+        cvss4_vector = None
+        for m in metrics.get("cvssMetricV40", []):
+            cvss_data = m.get("cvssData", {})
+            cvss4_score = cvss_data.get("baseScore")
+            cvss4_vector = cvss_data.get("vectorString")
+            break
 
         # Affected products
         affected_products = []
@@ -183,8 +201,11 @@ def fetch_nvd_cve(cve_id: str) -> Optional[dict]:
         return {
             "cve_id": cve_id,
             "description": description,
+            "cvss2_score": cvss2_score,
             "cvss3_score": cvss3_score,
             "cvss3_vector": cvss3_vector,
+            "cvss4_score": cvss4_score,
+            "cvss4_vector": cvss4_vector,
             "published_date": cve_data.get("published", ""),
             "modified_date": cve_data.get("lastModified", ""),
             "affected_products": affected_products,
@@ -260,9 +281,14 @@ def sync_nvd_scores(db, batch_size: int = 50) -> dict:
     """
     import time
 
+    from sqlalchemy import or_
     records = (
         db.query(ThreatCVE)
-        .filter(ThreatCVE.cvss3_score.is_(None))
+        .filter(or_(
+            ThreatCVE.cvss3_score.is_(None),
+            ThreatCVE.cvss4_score.is_(None),
+            ThreatCVE.cvss2_score.is_(None),
+        ))
         .limit(batch_size)
         .all()
     )
@@ -283,10 +309,16 @@ def sync_nvd_scores(db, batch_size: int = 50) -> dict:
             failed += 1
             continue
 
-        if nvd_data.get("cvss3_score") is not None:
+        if nvd_data.get("cvss2_score") is not None and not record.cvss2_score:
+            record.cvss2_score = nvd_data["cvss2_score"]
+        if nvd_data.get("cvss3_score") is not None and not record.cvss3_score:
             record.cvss3_score = nvd_data["cvss3_score"]
-        if nvd_data.get("cvss3_vector"):
+        if nvd_data.get("cvss3_vector") and not record.cvss3_vector:
             record.cvss3_vector = nvd_data["cvss3_vector"]
+        if nvd_data.get("cvss4_score") is not None and not record.cvss4_score:
+            record.cvss4_score = nvd_data["cvss4_score"]
+        if nvd_data.get("cvss4_vector") and not record.cvss4_vector:
+            record.cvss4_vector = nvd_data["cvss4_vector"]
         if nvd_data.get("description") and not record.description:
             record.description = nvd_data["description"]
         if nvd_data.get("affected_products") and not record.affected_products:
@@ -693,3 +725,114 @@ def sync_mitre_groups_to_db(db) -> dict:
         "ttps_skipped": ttps_skipped,
         "links_added": links_added,
     }
+
+
+def enrich_findings_from_threat_intel(db, scan_id: int = None) -> dict:
+    """
+    Backfill Finding rows with threat intel data from the threat_cves table.
+
+    For each finding that has CVEs, look up the corresponding ThreatCVE records
+    and populate: is_kev, epss_score, epss_percentile, ransomware_linked,
+    trending_in_news.  Uses the *best* (most severe) value across all CVEs
+    on a finding.
+
+    Returns {"enriched": int, "skipped": int}.
+    """
+    # Build a lookup from all ThreatCVE records
+    all_threat_cves = db.query(ThreatCVE).all()
+    if not all_threat_cves:
+        return {"enriched": 0, "skipped": 0}
+
+    cve_lookup: Dict[str, ThreatCVE] = {r.cve_id: r for r in all_threat_cves}
+
+    # Query findings (optionally scoped to a scan)
+    fq = db.query(Finding).filter(Finding.cves.isnot(None))
+    if scan_id is not None:
+        fq = fq.filter(Finding.scan_id == scan_id)
+    findings = fq.all()
+
+    enriched = 0
+    skipped = 0
+
+    for f in findings:
+        if not f.cves:
+            skipped += 1
+            continue
+
+        best_epss = None
+        best_epss_pct = None
+        is_kev = False
+        ransomware = False
+        trending = False
+        best_cvss2 = None
+        best_cvss3 = None
+        best_cvss3_vec = None
+        best_cvss4 = None
+        best_cvss4_vec = None
+
+        for cve_id in f.cves:
+            tc = cve_lookup.get(cve_id.strip() if cve_id else None)
+            if not tc:
+                continue
+            if tc.in_kev:
+                is_kev = True
+            if tc.epss_score is not None:
+                if best_epss is None or tc.epss_score > best_epss:
+                    best_epss = tc.epss_score
+                    best_epss_pct = tc.epss_percentile
+            if tc.kev_ransomware_use and tc.kev_ransomware_use.lower() not in ("", "unknown"):
+                ransomware = True
+            if tc.trending_in_news:
+                trending = True
+            # CVSS backfill — pick highest score per version
+            if tc.cvss2_score is not None and (best_cvss2 is None or tc.cvss2_score > best_cvss2):
+                best_cvss2 = tc.cvss2_score
+            if tc.cvss3_score is not None and (best_cvss3 is None or tc.cvss3_score > best_cvss3):
+                best_cvss3 = tc.cvss3_score
+                best_cvss3_vec = tc.cvss3_vector
+            if tc.cvss4_score is not None and (best_cvss4 is None or tc.cvss4_score > best_cvss4):
+                best_cvss4 = tc.cvss4_score
+                best_cvss4_vec = tc.cvss4_vector
+
+        changed = False
+        if f.is_kev != is_kev:
+            f.is_kev = is_kev
+            changed = True
+        if best_epss is not None and f.epss_score != best_epss:
+            f.epss_score = best_epss
+            f.epss_percentile = best_epss_pct
+            changed = True
+        if f.ransomware_linked != ransomware:
+            f.ransomware_linked = ransomware
+            changed = True
+        if f.trending_in_news != trending:
+            f.trending_in_news = trending
+            changed = True
+        # Backfill CVSS scores only when the finding is missing them
+        if best_cvss2 is not None and not f.cvss2_score:
+            f.cvss2_score = best_cvss2
+            changed = True
+        if best_cvss3 is not None and not f.cvss3_score:
+            f.cvss3_score = best_cvss3
+            if best_cvss3_vec:
+                f.cvss3_vector = best_cvss3_vec
+            changed = True
+        if best_cvss4 is not None and not f.cvss4_score:
+            f.cvss4_score = best_cvss4
+            if best_cvss4_vec:
+                f.cvss4_vector = best_cvss4_vec
+            changed = True
+
+        if changed:
+            enriched += 1
+        else:
+            skipped += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("enrich_findings_from_threat_intel commit failed: %s", exc)
+        db.rollback()
+
+    logger.info("Finding enrichment: %d enriched, %d skipped", enriched, skipped)
+    return {"enriched": enriched, "skipped": skipped}

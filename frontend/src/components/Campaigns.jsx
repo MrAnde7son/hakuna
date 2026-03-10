@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Target, Plus, Play, Trash2, Clock, AlertTriangle, CheckCircle, PauseCircle,
-  ChevronRight, GitBranch, Zap, Settings,
+  ChevronRight, GitBranch, Zap, Settings, Download,
 } from 'lucide-react'
 import { useScan } from '../App.jsx'
-import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate } from '../api.js'
-import { Card, PageHeader, Button, Spinner, EmptyState, Pill } from './ui.jsx'
+import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig } from '../api.js'
+import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons } from './ui.jsx'
 
 const STATUS_META = {
   draft:     { label: 'Draft',     color: '#71717a', bg: '#27272a22', border: '#27272a44', icon: Clock },
@@ -183,6 +183,28 @@ function CampaignCard({ campaign, onDelete, onRun }) {
         >
           <Play size={12} />
           {running ? 'Running…' : 'Run'}
+        </button>
+
+        <button
+          onClick={async (e) => {
+            e.stopPropagation()
+            try {
+              const data = await exportConfig('campaign_workflow', { campaign_id: campaign.id })
+              const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = `campaign-${campaign.name.replace(/\s+/g, '-').toLowerCase()}.json`
+              document.body.appendChild(a)
+              a.click()
+              a.remove()
+              URL.revokeObjectURL(url)
+            } catch (err) { console.error('Export failed', err) }
+          }}
+          title="Export campaign template"
+          style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex' }}
+        >
+          <Download size={14} />
         </button>
 
         {confirming ? (
@@ -485,7 +507,15 @@ export default function Campaigns() {
         title="Campaigns & Workflows"
         subtitle="Targeted remediation campaigns and automated workflows"
         action={
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <ExportImportButtons
+              configType="campaign_workflow"
+              exportFn={null}
+              importFn={(file, conflict) => importConfig('campaign_workflow', file, conflict)}
+              onImported={load}
+              label="Campaign Template"
+              showConflict={true}
+            />
             <Button variant="ghost" onClick={() => setShowCreateWf(true)}>
               <GitBranch size={14} /> New Workflow
             </Button>

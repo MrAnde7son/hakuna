@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, or_
 
 from database import get_db, init_db
 from models import (
@@ -23,7 +23,7 @@ from models import (
     InventoryNetConn, InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
     InventoryShare, InventorySoftware, InventorySecurityControl,
     InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
-    InventoryAITool,
+    InventoryAITool, InventoryProcess,
     Campaign, CampaignFinding, FindingOwnership, AssetOwnership,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
 )
@@ -40,6 +40,8 @@ import integrations as integ_module
 import ownership_inference
 from models import Tag, TagAssignment, AutoTagRule, SLAConfig, IntegrationConfig, FindingException, ScanComparison
 from threat_intel_routes import router as threat_intel_router
+from export import router as export_router
+from config_portability import router as config_portability_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -63,6 +65,8 @@ app.add_middleware(
 )
 
 app.include_router(threat_intel_router)
+app.include_router(export_router)
+app.include_router(config_portability_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
@@ -92,6 +96,7 @@ def startup():
         "scheduled_tasks":   (InventoryScheduledTask,   [],                   ["is_enabled"]),
         "env_vars":          (InventoryEnvVar,           [],                   ["is_sensitive"]),
         "certificates":      (InventoryCertificate,      ["subject_alt_names"], ["is_expired", "is_ca", "is_self_signed"]),
+        "processes":         (InventoryProcess,          [],                    []),
     })
     # Start workflow scheduler for cron-based triggers
     from database import SessionLocal
@@ -478,6 +483,11 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             "scan_id", "asset_id", "source_plugin",
             "tool_name", "category",
         ]),
+        "processes": (InventoryProcess, [
+            "scan_id", "asset_id", "source_plugin",
+            "process_name", "pid", "ppid", "session_id",
+            "parent_name", "depth",
+        ]),
     }
 
     inv_counts = {}
@@ -535,6 +545,15 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     except Exception as e:
         logger.warning(f"Exception application failed (non-fatal): {e}")
 
+    # ── Enrich findings with threat intel (KEV, EPSS, ransomware, trending) ──
+    try:
+        import threat_intel_sync as _ti_sync
+        enrich_result = _ti_sync.enrich_findings_from_threat_intel(db, scan_id=scan.id)
+        if enrich_result["enriched"]:
+            logger.info(f"Threat intel enrichment: {enrich_result['enriched']} findings enriched")
+    except Exception as e:
+        logger.warning(f"Threat intel enrichment failed (non-fatal): {e}")
+
     total_findings = len(parsed["findings"])
     total_assets = len(asset_map)
     logger.info(f"Ingested scan '{file.filename}': {total_assets} assets, {total_findings} findings")
@@ -584,7 +603,7 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db)):
         InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
         InventoryShare, InventorySoftware, InventorySecurityControl,
         InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
-        InventoryAITool,
+        InventoryAITool, InventoryProcess,
     ]:
         db.query(InvModel).filter(InvModel.scan_id == scan_id).delete(synchronize_session=False)
     # Remove scan comparisons referencing this scan
@@ -757,6 +776,10 @@ def list_findings(
     severity: Optional[int] = None,
     plugin_family: Optional[str] = None,
     has_exploit: Optional[bool] = None,
+    is_kev: Optional[bool] = None,
+    ransomware_linked: Optional[bool] = None,
+    trending_in_news: Optional[bool] = None,
+    min_epss: Optional[float] = None,
     sla_status: Optional[str] = None,
     effort_level: Optional[str] = None,
     cve: Optional[str] = None,
@@ -781,6 +804,14 @@ def list_findings(
         q = q.filter(Finding.plugin_family == plugin_family)
     if has_exploit is not None:
         q = q.filter(Finding.exploit_available == has_exploit)
+    if is_kev is not None:
+        q = q.filter(Finding.is_kev == is_kev)
+    if ransomware_linked is not None:
+        q = q.filter(Finding.ransomware_linked == ransomware_linked)
+    if trending_in_news is not None:
+        q = q.filter(Finding.trending_in_news == trending_in_news)
+    if min_epss is not None:
+        q = q.filter(Finding.epss_score >= min_epss)
     if sla_status:
         q = q.filter(Finding.sla_status == sla_status)
     if request.query_params.get("workflow_status"):
@@ -862,6 +893,7 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dic
         "risk_factor": f.risk_factor,
         "cvss2_score": f.cvss2_score,
         "cvss3_score": f.cvss3_score,
+        "cvss4_score": f.cvss4_score,
         "vpr_score": f.vpr_score,
         "cves": f.cves or [],
         "synopsis": f.synopsis,
@@ -871,6 +903,11 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dic
         "exploit_available": f.exploit_available,
         "exploit_maturity": f.exploit_maturity,
         "zero_day": f.zero_day,
+        "is_kev": f.is_kev or False,
+        "epss_score": f.epss_score,
+        "epss_percentile": f.epss_percentile,
+        "ransomware_linked": f.ransomware_linked or False,
+        "trending_in_news": f.trending_in_news or False,
         "priority_score": f.priority_score,
         "effort_level": f.effort_level,
         "owner_suggestion": f.owner_suggestion,
@@ -903,6 +940,7 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dic
             "plugin_output": f.plugin_output,
             "cvss2_vector": f.cvss2_vector,
             "cvss3_vector": f.cvss3_vector,
+            "cvss4_vector": f.cvss4_vector,
             "plugin_pub_date": f.plugin_pub_date,
             "plugin_mod_date": f.plugin_mod_date,
             "remediation_steps": f.remediation_steps,
@@ -964,7 +1002,7 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
     report_q = finding_q
     if excluded_exception_ids:
         report_q = finding_q.filter(
-            ~Finding.exception_id.in_(excluded_exception_ids)
+            or_(Finding.exception_id.is_(None), ~Finding.exception_id.in_(excluded_exception_ids))
         )
 
     # Severity breakdown (excludes report-excluded exceptions)
@@ -980,7 +1018,7 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
     if scan_id:
         family_counts = family_counts.filter(Finding.scan_id == scan_id)
     if excluded_exception_ids:
-        family_counts = family_counts.filter(~Finding.exception_id.in_(excluded_exception_ids))
+        family_counts = family_counts.filter(or_(Finding.exception_id.is_(None), ~Finding.exception_id.in_(excluded_exception_ids)))
     family_counts = (
         family_counts
         .group_by(Finding.plugin_family)
@@ -1005,7 +1043,7 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
     if scan_id:
         owner_counts = owner_counts.filter(Finding.scan_id == scan_id)
     if excluded_exception_ids:
-        owner_counts = owner_counts.filter(~Finding.exception_id.in_(excluded_exception_ids))
+        owner_counts = owner_counts.filter(or_(Finding.exception_id.is_(None), ~Finding.exception_id.in_(excluded_exception_ids)))
     owner_counts = (
         owner_counts
         .group_by(Finding.owner_suggestion)
@@ -1490,7 +1528,12 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
     total_software = _q(InventorySoftware).count()
     total_controls = _q(InventorySecurityControl).count()
     total_computers = _q(InventoryComputer).count()
+    total_processes = _q(InventoryProcess).count()
     total_certs = _q(InventoryCertificate).count()
+    total_logged_on = _q(InventoryLoggedOn).count()
+    total_env_vars = _q(InventoryEnvVar).count()
+    total_password_policies = _q(InventoryPasswordPolicy).count()
+    total_ai_tools = _q(InventoryAITool).count()
     expired_certs = _q(InventoryCertificate).filter(InventoryCertificate.is_expired == True).count()
     expiring_soon = _q(InventoryCertificate).filter(
         InventoryCertificate.is_expired == False,
@@ -1552,6 +1595,8 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
     )
     # Weak password policies
     weak_policies = _q(InventoryPasswordPolicy).filter(InventoryPasswordPolicy.is_weak == True).count()
+    # Sensitive env vars
+    sensitive_env_vars = _q(InventoryEnvVar).filter(InventoryEnvVar.is_sensitive == True).count()
     # Domain controllers
     domain_controllers = _q(InventoryComputer).filter(InventoryComputer.is_domain_controller == True).all()
 
@@ -1568,6 +1613,11 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
             "security_controls": total_controls,
             "computers": total_computers,
             "certificates": total_certs,
+            "processes": total_processes,
+            "logged_on": total_logged_on,
+            "env_vars": total_env_vars,
+            "password_policies": total_password_policies,
+            "ai_tools": total_ai_tools,
         },
         "attack_surface": {
             "domain_admins": [_inv_user_to_dict(u) for u in domain_admins],
@@ -1605,6 +1655,7 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
             "expired_certs": expired_certs,
             "expiring_soon_certs": expiring_soon,
             "self_signed_certs": self_signed_certs,
+            "sensitive_env_vars": sensitive_env_vars,
         },
     }
 
@@ -1894,6 +1945,39 @@ def list_inventory_ai_tools(
     } for r in rows]
 
 
+@app.get("/api/inventory/processes")
+def list_inventory_processes(
+    scan_id: Optional[int] = None,
+    asset_id: Optional[int] = None,
+    search: Optional[str] = None,
+    session_id: Optional[int] = None,
+    sort_by: str = "process_name",
+    order: str = "asc",
+    db: Session = Depends(get_db),
+):
+    q = db.query(InventoryProcess)
+    if scan_id:
+        q = q.filter(InventoryProcess.scan_id == scan_id)
+    if asset_id:
+        q = q.filter(InventoryProcess.asset_id == asset_id)
+    if session_id is not None:
+        q = q.filter(InventoryProcess.session_id == session_id)
+    if search:
+        q = q.filter(InventoryProcess.process_name.ilike(f"%{search}%"))
+    q = _apply_sort(q, InventoryProcess, sort_by, order, InventoryProcess.process_name)
+    rows = q.all()
+    assets = _asset_lookup(db, {r.asset_id for r in rows})
+    return [{
+        "id": r.id, "scan_id": r.scan_id, "asset_id": r.asset_id,
+        "asset_label": _asset_label(assets.get(r.asset_id)),
+        "asset_ip": (assets.get(r.asset_id) or {}).get("ip"),
+        "asset_env": (assets.get(r.asset_id) or {}).get("environment_tag"),
+        "process_name": r.process_name, "pid": r.pid, "ppid": r.ppid,
+        "session_id": r.session_id, "parent_name": r.parent_name,
+        "depth": r.depth, "source_plugin": r.source_plugin,
+    } for r in rows]
+
+
 def _inv_user_to_dict(u: InventoryUser, assets: dict = None) -> dict:
     info = assets.get(u.asset_id) if assets else None
     return {
@@ -1963,15 +2047,28 @@ def _get_asset_inventory_context(db: Session, asset_id: int) -> dict:
         InventorySecurityControl.control_type == "firewall",
         InventorySecurityControl.is_enabled == True,
     ).first()
-    # Established connections
-    est_count = db.query(func.count(InventoryNetConn.id)).filter(
+    # Port-level reachability data
+    netconns = db.query(InventoryNetConn.local_port, InventoryNetConn.state).filter(
         InventoryNetConn.asset_id == asset_id,
-        InventoryNetConn.state.in_(["ESTABLISHED", "established"]),
-    ).scalar() or 0
+        InventoryNetConn.local_port.isnot(None),
+    ).all()
+    listening_ports = set()
+    established_ports = set()
+    for row in netconns:
+        if row.local_port is None:
+            continue
+        state = (row.state or "").upper()
+        if state in ("LISTEN", "LISTENING"):
+            listening_ports.add(row.local_port)
+        elif state == "ESTABLISHED":
+            established_ports.add(row.local_port)
+    est_count = len(established_ports)
     return {
         "has_av":                  av is not None if av is not None else None,
         "has_firewall":            fw is not None if fw is not None else None,
         "established_connections": est_count,
+        "listening_ports":         listening_ports,
+        "established_ports":       established_ports,
     }
 
 
@@ -1984,11 +2081,16 @@ def _recompute_risk_for_scan(db: Session, scan_id: int, cfg: Optional[dict] = No
         findings = db.query(Finding).filter(Finding.asset_id == asset.id).all()
         findings_dicts = [
             {
-                "severity":         f.severity,
+                "severity":          f.severity,
+                "port":              f.port,
                 "exploit_available": f.exploit_available,
                 "exploit_maturity":  f.exploit_maturity,
                 "vpr_score":         f.vpr_score,
                 "zero_day":          f.zero_day,
+                "is_kev":            f.is_kev or False,
+                "epss_score":        f.epss_score,
+                "ransomware_linked": f.ransomware_linked or False,
+                "trending_in_news":  f.trending_in_news or False,
             }
             for f in findings
         ]
@@ -2131,10 +2233,15 @@ def recalculate_risk(body: RecalculateBody, db: Session = Depends(get_db)):
         findings_dicts = [
             {
                 "severity":          f.severity,
+                "port":              f.port,
                 "exploit_available": f.exploit_available,
                 "exploit_maturity":  f.exploit_maturity,
                 "vpr_score":         f.vpr_score,
                 "zero_day":          f.zero_day,
+                "is_kev":            f.is_kev or False,
+                "epss_score":        f.epss_score,
+                "ransomware_linked": f.ransomware_linked or False,
+                "trending_in_news":  f.trending_in_news or False,
             }
             for f in findings
         ]
@@ -2155,13 +2262,19 @@ def recalculate_risk(body: RecalculateBody, db: Session = Depends(get_db)):
                     "plugin_name":      f.plugin_name,
                     "plugin_family":    f.plugin_family,
                     "severity":         f.severity,
+                    "port":             f.port,
                     "cvss2_score":      f.cvss2_score,
                     "cvss3_score":      f.cvss3_score,
+                    "cvss4_score":      f.cvss4_score,
                     "vpr_score":        f.vpr_score,
                     "cves":             f.cves or [],
                     "exploit_available": f.exploit_available,
                     "exploit_maturity":  f.exploit_maturity,
                     "zero_day":          f.zero_day,
+                    "is_kev":            f.is_kev or False,
+                    "epss_score":        f.epss_score,
+                    "ransomware_linked": f.ransomware_linked or False,
+                    "trending_in_news":  f.trending_in_news or False,
                     "solution":          f.solution,
                     "synopsis":          f.synopsis,
                 }
@@ -2348,6 +2461,7 @@ def _serialize_finding(f: Finding, asset: Asset = None) -> dict:
         "severity_label": f.severity_label,
         "cvss2_score": f.cvss2_score,
         "cvss3_score": f.cvss3_score,
+        "cvss4_score": f.cvss4_score,
         "vpr_score": f.vpr_score,
         "priority_score": f.priority_score,
         "effort_level": f.effort_level,
@@ -2358,6 +2472,11 @@ def _serialize_finding(f: Finding, asset: Asset = None) -> dict:
         "cves": f.cves or [],
         "exploit_available": f.exploit_available,
         "zero_day": f.zero_day,
+        "is_kev": f.is_kev or False,
+        "epss_score": f.epss_score,
+        "epss_percentile": f.epss_percentile,
+        "ransomware_linked": f.ransomware_linked or False,
+        "trending_in_news": f.trending_in_news or False,
         "port": f.port,
         "protocol": f.protocol,
         "asset_id": f.asset_id,
@@ -2643,6 +2762,136 @@ def update_campaign_finding(
 # Blast Radius / Attack Path
 # ─────────────────────────────────────────────
 
+@app.get("/api/blast-radius/bulk")
+def get_blast_radius_bulk(
+    scan_id: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Compute blast radius scores for ALL assets in a scan in one pass."""
+    from sqlalchemy import or_
+
+    all_assets = db.query(Asset).filter(Asset.scan_id == scan_id).all()
+    if not all_assets:
+        return {}
+
+    asset_map = {a.id: a for a in all_assets}
+    ip_to_asset_id = {a.ip: a.id for a in all_assets if a.ip}
+
+    # Pre-fetch all inventory data for this scan in bulk
+    all_conns = db.query(InventoryNetConn).filter(
+        InventoryNetConn.scan_id == scan_id,
+        InventoryNetConn.state.in_(["ESTABLISHED", "established"]),
+    ).all()
+    conns_by_asset = {}
+    for c in all_conns:
+        conns_by_asset.setdefault(c.asset_id, []).append(c)
+
+    all_logons = db.query(InventoryLoggedOn).filter(
+        InventoryLoggedOn.scan_id == scan_id,
+    ).all()
+    logons_by_asset = {}
+    for lo in all_logons:
+        logons_by_asset.setdefault(lo.asset_id, []).append(lo)
+
+    all_priv_users = db.query(InventoryUser).filter(
+        InventoryUser.scan_id == scan_id,
+        or_(
+            InventoryUser.is_domain_admin == True,
+            InventoryUser.is_local_admin == True,
+            InventoryUser.is_privileged == True,
+        ),
+    ).all()
+    priv_users_by_name = {}
+    for u in all_priv_users:
+        if u.username:
+            priv_users_by_name.setdefault(u.username, []).append(u)
+
+    admin_users = db.query(InventoryUser).filter(
+        InventoryUser.scan_id == scan_id,
+        or_(
+            InventoryUser.is_domain_admin == True,
+            InventoryUser.is_local_admin == True,
+        ),
+    ).all()
+    admins_by_asset = {}
+    for u in admin_users:
+        admins_by_asset.setdefault(u.asset_id, []).append(u)
+
+    dc_asset_ids = set(
+        r.asset_id for r in db.query(InventoryComputer.asset_id).filter(
+            InventoryComputer.scan_id == scan_id,
+            InventoryComputer.is_domain_controller == True,
+        ).all()
+    )
+
+    results = {}
+
+    for asset in all_assets:
+        asset_id = asset.id
+        reachable = set()
+        da_exposed = False
+        la_exposed = False
+        kerb_exposed = False
+        seen_users = set()
+
+        # 1. Network connections to other known assets
+        for conn in conns_by_asset.get(asset_id, []):
+            if conn.remote_addr and conn.remote_addr in ip_to_asset_id:
+                dst_id = ip_to_asset_id[conn.remote_addr]
+                if dst_id != asset_id:
+                    reachable.add(dst_id)
+
+        # 2. Privileged users logged on
+        for logon in logons_by_asset.get(asset_id, []):
+            if not logon.username:
+                continue
+            for u in priv_users_by_name.get(logon.username, []):
+                if u.id in seen_users:
+                    continue
+                seen_users.add(u.id)
+                if u.is_domain_admin:
+                    da_exposed = True
+                if u.is_local_admin:
+                    la_exposed = True
+                if u.spns:
+                    kerb_exposed = True
+
+        # 3. Admin accounts on this asset
+        for u in admins_by_asset.get(asset_id, []):
+            if u.id in seen_users:
+                continue
+            seen_users.add(u.id)
+            if u.is_domain_admin:
+                da_exposed = True
+                # DA exposes other assets they're on
+                for other in priv_users_by_name.get(u.username, []):
+                    if other.asset_id != asset_id and other.is_domain_admin:
+                        reachable.add(other.asset_id)
+            if u.is_local_admin:
+                la_exposed = True
+            if u.spns:
+                kerb_exposed = True
+
+        dc_reachable = bool(reachable & dc_asset_ids)
+
+        score = min(len(reachable) * 1.5, 5.0)
+        if dc_reachable:   score += 3.0
+        if da_exposed:     score += 2.0
+        elif la_exposed:   score += 1.0
+        if kerb_exposed:   score += 1.0
+        score = min(round(score, 1), 10.0)
+
+        results[str(asset_id)] = {
+            "asset_id": asset_id,
+            "score": score,
+            "reachable_assets": len(reachable),
+            "da_exposed": da_exposed,
+            "dc_reachable": dc_reachable,
+        }
+
+    return results
+
+
 @app.get("/api/blast-radius")
 def get_blast_radius(
     scan_id: int = Query(...),
@@ -2888,136 +3137,6 @@ def get_blast_radius(
         "nodes": list(nodes.values()),
         "edges": edges,
     }
-
-
-@app.get("/api/blast-radius/bulk")
-def get_blast_radius_bulk(
-    scan_id: int = Query(...),
-    db: Session = Depends(get_db),
-):
-    """Compute blast radius scores for ALL assets in a scan in one pass."""
-    from sqlalchemy import or_
-
-    all_assets = db.query(Asset).filter(Asset.scan_id == scan_id).all()
-    if not all_assets:
-        return {}
-
-    asset_map = {a.id: a for a in all_assets}
-    ip_to_asset_id = {a.ip: a.id for a in all_assets if a.ip}
-
-    # Pre-fetch all inventory data for this scan in bulk
-    all_conns = db.query(InventoryNetConn).filter(
-        InventoryNetConn.scan_id == scan_id,
-        InventoryNetConn.state.in_(["ESTABLISHED", "established"]),
-    ).all()
-    conns_by_asset = {}
-    for c in all_conns:
-        conns_by_asset.setdefault(c.asset_id, []).append(c)
-
-    all_logons = db.query(InventoryLoggedOn).filter(
-        InventoryLoggedOn.scan_id == scan_id,
-    ).all()
-    logons_by_asset = {}
-    for lo in all_logons:
-        logons_by_asset.setdefault(lo.asset_id, []).append(lo)
-
-    all_priv_users = db.query(InventoryUser).filter(
-        InventoryUser.scan_id == scan_id,
-        or_(
-            InventoryUser.is_domain_admin == True,
-            InventoryUser.is_local_admin == True,
-            InventoryUser.is_privileged == True,
-        ),
-    ).all()
-    priv_users_by_name = {}
-    for u in all_priv_users:
-        if u.username:
-            priv_users_by_name.setdefault(u.username, []).append(u)
-
-    admin_users = db.query(InventoryUser).filter(
-        InventoryUser.scan_id == scan_id,
-        or_(
-            InventoryUser.is_domain_admin == True,
-            InventoryUser.is_local_admin == True,
-        ),
-    ).all()
-    admins_by_asset = {}
-    for u in admin_users:
-        admins_by_asset.setdefault(u.asset_id, []).append(u)
-
-    dc_asset_ids = set(
-        r.asset_id for r in db.query(InventoryComputer.asset_id).filter(
-            InventoryComputer.scan_id == scan_id,
-            InventoryComputer.is_domain_controller == True,
-        ).all()
-    )
-
-    results = {}
-
-    for asset in all_assets:
-        asset_id = asset.id
-        reachable = set()
-        da_exposed = False
-        la_exposed = False
-        kerb_exposed = False
-        seen_users = set()
-
-        # 1. Network connections to other known assets
-        for conn in conns_by_asset.get(asset_id, []):
-            if conn.remote_addr and conn.remote_addr in ip_to_asset_id:
-                dst_id = ip_to_asset_id[conn.remote_addr]
-                if dst_id != asset_id:
-                    reachable.add(dst_id)
-
-        # 2. Privileged users logged on
-        for logon in logons_by_asset.get(asset_id, []):
-            if not logon.username:
-                continue
-            for u in priv_users_by_name.get(logon.username, []):
-                if u.id in seen_users:
-                    continue
-                seen_users.add(u.id)
-                if u.is_domain_admin:
-                    da_exposed = True
-                if u.is_local_admin:
-                    la_exposed = True
-                if u.spns:
-                    kerb_exposed = True
-
-        # 3. Admin accounts on this asset
-        for u in admins_by_asset.get(asset_id, []):
-            if u.id in seen_users:
-                continue
-            seen_users.add(u.id)
-            if u.is_domain_admin:
-                da_exposed = True
-                # DA exposes other assets they're on
-                for other in priv_users_by_name.get(u.username, []):
-                    if other.asset_id != asset_id and other.is_domain_admin:
-                        reachable.add(other.asset_id)
-            if u.is_local_admin:
-                la_exposed = True
-            if u.spns:
-                kerb_exposed = True
-
-        dc_reachable = bool(reachable & dc_asset_ids)
-
-        score = min(len(reachable) * 1.5, 5.0)
-        if dc_reachable:   score += 3.0
-        if da_exposed:     score += 2.0
-        elif la_exposed:   score += 1.0
-        if kerb_exposed:   score += 1.0
-        score = min(round(score, 1), 10.0)
-
-        results[str(asset_id)] = {
-            "asset_id": asset_id,
-            "score": score,
-            "reachable_assets": len(reachable),
-            "da_exposed": da_exposed,
-            "dc_reachable": dc_reachable,
-        }
-
-    return results
 
 
 # ─────────────────────────────────────────────

@@ -33,11 +33,12 @@
     "9": 1.45,
     "10": 1.6
   },
+  "severity_source": "epss",
   "finding_formula_weights": {
-    "severity": 1,
+    "severity": 0.8,
     "intel": 0,
     "exploitability": 0,
-    "criticality": 0,
+    "criticality": 0.2,
     "family": 0,
     "controls": 0,
     "reachability": 0

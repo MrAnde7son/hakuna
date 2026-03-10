@@ -1,7 +1,7 @@
 /**
  * Shared UI primitives
  */
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { getTags } from '../api.js'
 
 export function SeverityBadge({ severity, label }) {
@@ -471,6 +471,84 @@ export function TagPicker({ selectedTags = [], onChange, placeholder = 'Add tag�
 }
 
 /**
+ * ColumnSelector – dropdown menu to toggle column visibility.
+ * Props:
+ *   columns: [{key, label, defaultVisible?}] – all available columns
+ *   visible: {key: bool} – current visibility state
+ *   onChange(visible) – called with updated visibility map
+ *   storageKey: string – localStorage key for persistence
+ */
+export function ColumnSelector({ columns, visible, onChange }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const toggle = (key) => {
+    const next = { ...visible, [key]: !visible[key] }
+    onChange(next)
+  }
+
+  const toggleable = columns.filter(c => c.key !== '_select')
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 5,
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 6, padding: '6px 10px', fontSize: 12,
+          color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: 600,
+          whiteSpace: 'nowrap',
+        }}
+        title="Show/Hide columns"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+          <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+        </svg>
+        Columns
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', right: 0, zIndex: 200, minWidth: 200,
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 8, marginTop: 4, maxHeight: 360, overflowY: 'auto',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.18)', padding: '6px 0',
+        }}>
+          {toggleable.map(col => (
+            <label
+              key={col.key}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '6px 14px', cursor: 'pointer', fontSize: 13,
+                color: 'var(--text-primary)',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+            >
+              <input
+                type="checkbox"
+                checked={visible[col.key] !== false}
+                onChange={() => toggle(col.key)}
+                style={{ accentColor: 'var(--accent)' }}
+              />
+              {typeof col.label === 'string' ? col.label : col.key}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+/**
  * TagFilterBar – compact multi-tag filter with AND/OR toggle.
  * Props: tags (array of tag objects with label/color), onChange, logic ('AND'|'OR'), onLogicChange
  */
@@ -552,6 +630,113 @@ export function TagFilterBar({ tags = [], onChange, logic = 'AND', onLogicChange
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+
+/**
+ * Export / Import buttons for config portability.
+ *
+ * Props:
+ *   configType   — "risk_config" | "auto_tag_rules" | "report_template" | "campaign_workflow"
+ *   exportFn     — async () => envelope JSON (if custom, e.g. with params). Falls back to exportConfig(configType).
+ *   importFn     — async (file, conflict) => result. Falls back to importConfig(configType, file, conflict).
+ *   onImported   — callback after successful import (e.g. to refresh data)
+ *   label        — optional button label prefix (default: "Config")
+ *   showConflict — show skip/overwrite dropdown (default: true)
+ *   style        — wrapper style
+ */
+export function ExportImportButtons({
+  configType, exportFn, importFn, onImported, label = 'Config',
+  showConflict = true, style = {},
+}) {
+  const fileRef = useRef(null)
+  const [conflict, setConflict] = useState('skip')
+  const [status, setStatus] = useState(null) // {type: 'ok'|'error', msg: string}
+
+  const handleExport = useCallback(async () => {
+    try {
+      setStatus(null)
+      const data = exportFn ? await exportFn() : await (await import('../api.js')).exportConfig(configType)
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${configType}-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      setStatus({ type: 'ok', msg: 'Exported' })
+      setTimeout(() => setStatus(null), 2000)
+    } catch (e) {
+      setStatus({ type: 'error', msg: e.message || 'Export failed' })
+    }
+  }, [exportFn, configType])
+
+  const handleImport = useCallback(async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      setStatus(null)
+      const result = importFn
+        ? await importFn(file, conflict)
+        : await (await import('../api.js')).importConfig(configType, file, conflict)
+      const msg = result.message || `Imported${result.imported != null ? ` ${result.imported}` : ''}`
+      setStatus({ type: 'ok', msg })
+      onImported?.()
+      setTimeout(() => setStatus(null), 3000)
+    } catch (err) {
+      setStatus({ type: 'error', msg: err.message || 'Import failed' })
+    }
+    // Reset file input so same file can be re-selected
+    e.target.value = ''
+  }, [importFn, configType, conflict, onImported])
+
+  const btnStyle = {
+    display: 'inline-flex', alignItems: 'center', gap: 5,
+    padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+    cursor: 'pointer', border: '1px solid var(--border)',
+    background: 'transparent', color: 'var(--text)',
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', ...style }}>
+      {exportFn !== null && (
+        <button onClick={handleExport} style={btnStyle} title={`Export ${label}`}>
+          <span style={{ fontSize: 13 }}>{'\u2B07'}</span> Export
+        </button>
+      )}
+      <button onClick={() => fileRef.current?.click()} style={btnStyle} title={`Import ${label}`}>
+        <span style={{ fontSize: 13 }}>{'\u2B06'}</span> Import
+      </button>
+      <input
+        ref={fileRef} type="file" accept=".json"
+        style={{ display: 'none' }}
+        onChange={handleImport}
+      />
+      {showConflict && (
+        <select
+          value={conflict} onChange={e => setConflict(e.target.value)}
+          style={{
+            padding: '4px 8px', borderRadius: 6, fontSize: 11, border: '1px solid var(--border)',
+            background: 'var(--bg-secondary)', color: 'var(--text)',
+          }}
+          title="Conflict resolution on import"
+        >
+          <option value="skip">Skip duplicates</option>
+          <option value="overwrite">Overwrite</option>
+        </select>
+      )}
+      {status && (
+        <span style={{
+          fontSize: 11, fontWeight: 600,
+          color: status.type === 'ok' ? '#86efac' : '#fca5a5',
+        }}>
+          {status.msg}
+        </span>
+      )}
     </div>
   )
 }

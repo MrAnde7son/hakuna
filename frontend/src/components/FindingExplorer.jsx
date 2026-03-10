@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Bug, Search, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock } from 'lucide-react'
+import { Bug, Search, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download } from 'lucide-react'
 import { useScan } from '../App.jsx'
-import { getFindings, getPluginFamilies, getAssets, assignTags, unassignTags } from '../api.js'
+import { getFindings, getPluginFamilies, getAssets, assignTags, unassignTags, exportDownload } from '../api.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, Input,
-  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker
+  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector
 } from './ui.jsx'
 
 const GROUP_OPTIONS = [
@@ -172,6 +172,18 @@ export default function FindingExplorer() {
   const [tagFilter, setTagFilter] = useState([])
   const [tagLogic, setTagLogic] = useState('AND')
 
+  // Column visibility (persisted in localStorage)
+  const [colVis, setColVis] = useState(() => {
+    try {
+      const saved = localStorage.getItem('findingColumns')
+      return saved ? JSON.parse(saved) : {}
+    } catch { return {} }
+  })
+  const updateColVis = (next) => {
+    setColVis(next)
+    localStorage.setItem('findingColumns', JSON.stringify(next))
+  }
+
   // Derive all filter state from URL params
   const search = searchParams.get('search') || ''
   const severity = searchParams.has('severity') ? Number(searchParams.get('severity')) : null
@@ -186,6 +198,9 @@ export default function FindingExplorer() {
   const slaStatus = searchParams.get('sla_status') || null
   const effortLevel = searchParams.get('effort_level') || null
   const cveFilter = searchParams.get('cve') || null
+  const isKev = searchParams.has('is_kev') ? searchParams.get('is_kev') === 'true' : null
+  const ransomwareLinked = searchParams.has('ransomware') ? searchParams.get('ransomware') === 'true' : null
+  const trendingInNews = searchParams.has('trending') ? searchParams.get('trending') === 'true' : null
 
   const setFilter = useCallback((key, value) => {
     setSearchParams(prev => {
@@ -230,6 +245,9 @@ export default function FindingExplorer() {
       sla_status: slaStatus,
       effort_level: effortLevel,
       cve: cveFilter,
+      is_kev: isKev,
+      ransomware_linked: ransomwareLinked,
+      trending_in_news: trendingInNews,
       search: search || null,
       sort_by: sortBy,
       order: sortOrder,
@@ -246,7 +264,7 @@ export default function FindingExplorer() {
         setTotal(data.total)
       })
       .finally(() => setLoading(false))
-  }, [activeScanId, assetId, severity, family, hasExploit, slaStatus, effortLevel, cveFilter, search, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic])
+  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, slaStatus, effortLevel, cveFilter, search, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic])
 
   useEffect(() => { load() }, [load])
 
@@ -280,7 +298,7 @@ export default function FindingExplorer() {
   // Sync local state when URL param changes externally (e.g. clear all)
   useEffect(() => { setCveInput(cveFilter || '') }, [cveFilter])
 
-  const hasActiveFilters = severity !== null || family || hasExploit !== null || slaStatus || effortLevel || cveFilter || search || groupBy || assetId || tagFilter.length > 0
+  const hasActiveFilters = severity !== null || family || hasExploit !== null || isKev !== null || ransomwareLinked !== null || trendingInNews !== null || slaStatus || effortLevel || cveFilter || search || groupBy || assetId || tagFilter.length > 0
 
   const toggleSelect = (id) => setSelectedIds(prev => {
     const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next
@@ -293,7 +311,7 @@ export default function FindingExplorer() {
     load()
   }
 
-  const columns = [
+  const allColumns = [
     {
       key: '_select', label: (
         <input type="checkbox" checked={findings.length > 0 && selectedIds.size === findings.length} onChange={toggleSelectAll} />
@@ -353,6 +371,22 @@ export default function FindingExplorer() {
       }
     },
     {
+      key: 'cvss2_score', label: 'CVSS2', width: '70px', sortable: true,
+      render: (v) => {
+        if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const color = v >= 9 ? '#dc2626' : v >= 7 ? '#ea580c' : v >= 4 ? '#d97706' : '#65a30d'
+        return <span style={{ fontWeight: 600, color, fontSize: 13 }}>{v.toFixed(1)}</span>
+      }
+    },
+    {
+      key: 'cvss4_score', label: 'CVSS4', width: '70px', sortable: true,
+      render: (v) => {
+        if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const color = v >= 9 ? '#dc2626' : v >= 7 ? '#ea580c' : v >= 4 ? '#d97706' : '#65a30d'
+        return <span style={{ fontWeight: 600, color, fontSize: 13 }}>{v.toFixed(1)}</span>
+      }
+    },
+    {
       key: 'effort_level', label: 'Effort',
       render: (v) => <EffortBadge effort={v} />
     },
@@ -370,21 +404,61 @@ export default function FindingExplorer() {
       }
     },
     {
+      key: 'is_kev', label: 'KEV', sortable: true,
+      render: (v) => v ? <Pill label="KEV" color="#dc2626" /> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    },
+    {
+      key: 'epss_score', label: 'EPSS', width: '80px', sortable: true,
+      render: (v, row) => {
+        if (v == null) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const color = v >= 0.5 ? '#dc2626' : v >= 0.2 ? '#ea580c' : v >= 0.1 ? '#d97706' : '#65a30d'
+        return (
+          <div>
+            <span style={{ fontWeight: 600, color, fontSize: 13 }}>{(v * 100).toFixed(1)}%</span>
+            {row.epss_percentile != null && (
+              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>P{(row.epss_percentile * 100).toFixed(0)}</div>
+            )}
+          </div>
+        )
+      }
+    },
+    {
+      key: 'ransomware_linked', label: 'Ransomware', sortable: true,
+      render: (v) => v ? <Pill label="Ransomware" color="#7c3aed" /> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    },
+    {
+      key: 'trending_in_news', label: 'Trending', sortable: true,
+      render: (v) => v ? <Pill label="In News" color="#0ea5e9" /> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    },
+    {
       key: 'sla_status', label: 'SLA', width: '90px', sortable: true,
       render: (v, row) => <SLABadge status={v} dueDate={row.sla_due_date} />
     },
   ]
+
+  // Filter columns by visibility (all visible by default, KEV/EPSS/Ransomware/Trending hidden by default)
+  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news'])
+  const visibleColumns = allColumns.filter(c =>
+    c.key === '_select' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
+  )
 
   return (
     <div>
       <PageHeader
         title="Findings"
         subtitle={`${total.toLocaleString()} total findings`}
-        action={selectedIds.size > 0 ? (
-          <Button size="sm" variant="ghost" onClick={() => setShowBulkTag(true)}>
-            <Tag size={14} /> Tag {selectedIds.size} selected
-          </Button>
-        ) : null}
+        action={
+          <div style={{ display: 'flex', gap: 8 }}>
+            {selectedIds.size > 0 && (
+              <Button size="sm" variant="ghost" onClick={() => setShowBulkTag(true)}>
+                <Tag size={14} /> Tag {selectedIds.size} selected
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={() => exportDownload('findings', { scan_id: activeScanId, severity, plugin_family: family, has_exploit: hasExploit, is_kev: isKev, effort_level: effortLevel, search })}>
+              <Download size={14} /> Export CSV
+            </Button>
+          </div>
+        }
       />
 
       {/* Filters */}
@@ -485,6 +559,36 @@ export default function FindingExplorer() {
           onLogicChange={setTagLogic}
         />
 
+        <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
+
+        {/* Threat intel quick-filters */}
+        <Select
+          value={isKev !== null ? String(isKev) : null}
+          onChange={v => setFilter('is_kev', v)}
+          placeholder="KEV Status"
+          options={[{ value: 'true', label: 'In CISA KEV' }, { value: 'false', label: 'Not in KEV' }]}
+        />
+
+        <Select
+          value={ransomwareLinked !== null ? String(ransomwareLinked) : null}
+          onChange={v => setFilter('ransomware', v)}
+          placeholder="Ransomware"
+          options={[{ value: 'true', label: 'Ransomware Linked' }]}
+        />
+
+        <Select
+          value={trendingInNews !== null ? String(trendingInNews) : null}
+          onChange={v => setFilter('trending', v)}
+          placeholder="Trending"
+          options={[{ value: 'true', label: 'Trending in News' }]}
+        />
+
+        <ColumnSelector
+          columns={allColumns}
+          visible={colVis}
+          onChange={updateColVis}
+        />
+
         {hasActiveFilters && (
           <Button variant="ghost" size="sm" onClick={() => { clearFilters(); setTagFilter([]) }}>Clear all</Button>
         )}
@@ -505,7 +609,7 @@ export default function FindingExplorer() {
                 {openGroups[key] && (
                   <Card style={{ padding: 0, borderTopLeftRadius: 0, borderTopRightRadius: 0, marginBottom: 0 }}>
                     <Table
-                      columns={columns}
+                      columns={visibleColumns}
                       rows={rows}
                       onRowClick={row => navigate(`/findings/${row.id}`)}
                       onSort={handleSort}
@@ -526,7 +630,7 @@ export default function FindingExplorer() {
           <>
             <Card style={{ padding: 0, marginBottom: 12 }}>
               <Table
-                columns={columns}
+                columns={visibleColumns}
                 rows={findings}
                 onRowClick={row => navigate(`/findings/${row.id}`)}
                 onSort={handleSort}

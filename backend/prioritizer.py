@@ -81,8 +81,8 @@ ATTACK_SURFACE_PLUGIN_IDS = {
 
 _DEFAULT_FINDING_WEIGHTS = {
     "severity":       0.25,
-    "intel":          0.25,
-    "exploitability": 0.20,
+    "exploitability": 0.25,
+    "intel":          0.20,
     "criticality":    0.10,
     "family":         0.10,
     "controls":       0.05,
@@ -110,8 +110,29 @@ def compute_priority_score(
     """
     intel = intel or {}
 
-    # --- Base score: best available CVSS ---
-    cvss = finding.get("cvss3_score") or finding.get("cvss2_score") or 0.0
+    # --- Severity source (configurable via risk config) ---
+    sev_source = (risk_cfg or {}).get("severity_source", "cvss_best")
+    if sev_source == "cvss2":
+        sev_raw = finding.get("cvss2_score") or 0.0
+        sev_norm = sev_raw / 10.0
+    elif sev_source == "cvss3":
+        sev_raw = finding.get("cvss3_score") or 0.0
+        sev_norm = sev_raw / 10.0
+    elif sev_source == "cvss4":
+        sev_raw = finding.get("cvss4_score") or 0.0
+        sev_norm = sev_raw / 10.0
+    elif sev_source == "vpr":
+        sev_raw = finding.get("vpr_score") or 0.0
+        sev_norm = sev_raw / 10.0
+    elif sev_source == "epss":
+        sev_raw = finding.get("epss_score") or 0.0
+        sev_norm = min(sev_raw, 1.0)  # EPSS is already 0-1
+    else:  # cvss_best — prefer v4 > v3 > v2
+        sev_raw = finding.get("cvss4_score") or finding.get("cvss3_score") or finding.get("cvss2_score") or 0.0
+        sev_norm = sev_raw / 10.0
+
+    # Keep cvss for downstream use (effort calculation, intel fallback)
+    cvss = finding.get("cvss4_score") or finding.get("cvss3_score") or finding.get("cvss2_score") or 0.0
     cvss_norm = cvss / 10.0  # 0-1
 
     # --- VPR score ---
@@ -150,6 +171,28 @@ def compute_priority_score(
             cvss = cve_data["cvss3"]["base_score"]
             cvss_norm = cvss / 10.0
 
+    # --- Threat intel component (real-world threat signals) ---
+    # Separate from exploitability: this measures "is it being exploited / is it
+    # relevant right now" rather than "can it theoretically be exploited".
+    intel_signals = []
+    # KEV: CISA known-exploited vulnerabilities
+    if finding.get("is_kev"):
+        intel_signals.append(0.9)
+    # EPSS: probability of exploitation in next 30 days (0-1 scale)
+    epss = finding.get("epss_score")
+    if epss is not None and epss > 0:
+        intel_signals.append(min(epss * 1.5, 1.0))
+    # Ransomware-linked CVEs
+    if finding.get("ransomware_linked"):
+        intel_signals.append(1.0)
+    # Trending in news
+    if finding.get("trending_in_news"):
+        intel_signals.append(0.6)
+    # VPR as a baseline intel signal (Tenable's own threat rating)
+    if vpr > 0:
+        intel_signals.append(vpr_norm)
+    intel_factor = max(intel_signals) if intel_signals else 0.0
+
     # --- Asset criticality (1-10) normalized to 0-1 ---
     criticality_norm = (asset_criticality - 1) / 9.0
 
@@ -175,8 +218,23 @@ def compute_priority_score(
     else:
         controls_factor = 0.5    # unknown → neutral
 
-    conns = int(inv.get("established_connections", 0))
-    reachability_factor = min(conns / 20.0, 1.0)
+    # Port-aware reachability: check if the finding's specific port is
+    # listening or has established connections on the asset.
+    finding_port = finding.get("port")
+    listening_ports = inv.get("listening_ports") or set()
+    established_ports = inv.get("established_ports") or set()
+    if finding_port and str(finding_port).isdigit():
+        port_int = int(finding_port)
+        if port_int in established_ports:
+            reachability_factor = 1.0    # actively connected on this port
+        elif port_int in listening_ports:
+            reachability_factor = 0.7    # port is open/listening
+        else:
+            reachability_factor = 0.0    # port not reachable
+    else:
+        # No port on finding (e.g. local check) — fall back to general connectivity
+        conns = int(inv.get("established_connections", 0))
+        reachability_factor = min(conns / 20.0, 1.0)
 
     # --- Weighted score ---
     if risk_cfg is not None:
@@ -185,8 +243,8 @@ def compute_priority_score(
         # Legacy fallback — keeps backward-compatible behaviour
         w = {
             "severity":       0.30,
-            "intel":          0.30,
             "exploitability": 0.20,
+            "intel":          0.30,
             "criticality":    0.10,
             "family":         0.10,
             "controls":       0.0,
@@ -194,8 +252,8 @@ def compute_priority_score(
         }
 
     base_score = (
-        w.get("severity",       0.25) * cvss_norm +
-        w.get("intel",          0.25) * vpr_norm +
+        w.get("severity",       0.25) * sev_norm +
+        w.get("intel",          0.25) * intel_factor +
         w.get("exploitability", 0.20) * exploit_bonus +
         w.get("criticality",    0.10) * criticality_norm +
         w.get("family",         0.10) * family_bonus +

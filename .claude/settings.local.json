@@ -12,7 +12,29 @@
       "Bash(curl -s -X POST \"http://localhost:8001/api/upload\" -F \"file=@../nessus basic scan.nessus\")",
       "Bash(curl -s \"http://localhost:8001/api/reports/summary?scan_id=2\")",
       "Bash(python3 -c \":*)",
-      "Bash(curl -s \"http://localhost:8001/api/remediation-queue?scan_id=2&limit=3\")"
+      "Bash(curl -s \"http://localhost:8001/api/remediation-queue?scan_id=2&limit=3\")",
+      "Bash(python3:*)",
+      "Bash(sqlite3 backend/nessus_remediation.db \"SELECT plugin_id, plugin_name, substr\\(plugin_output, 1, 3000\\) FROM findings WHERE plugin_id IN \\(''70329'', ''70330'', ''70331'', ''10550''\\) LIMIT 10\")",
+      "Bash(python -c \":*)",
+      "Bash(npx vite build)",
+      "Bash(sqlite3 backend/nessus_remediation.db \"SELECT COUNT\\(*\\) FROM findings; SELECT COUNT\\(*\\) FROM assets; SELECT COUNT\\(*\\) FROM finding_exceptions WHERE is_active=1 AND exclude_from_reports=1;\")",
+      "Bash(sqlite3 backend/nessus_remediation.db \"SELECT id, name, condition_type, exclude_from_reports FROM finding_exceptions WHERE is_active=1 AND exclude_from_reports=1;\")",
+      "Bash(curl -s http://localhost:8000/api/reports/summary)",
+      "Bash(sqlite3 backend/nessus_remediation.db \"SELECT id, plugin_id, asset_ip, is_active, exclude_from_reports FROM finding_exceptions;\")",
+      "Bash(sqlite3 backend/nessus_remediation.db \"SELECT s.id, s.filename, s.scan_name, COUNT\\(f.id\\) as proc_count FROM scans s JOIN findings f ON f.scan_id = s.id WHERE f.plugin_id = ''70329'' GROUP BY s.id\")",
+      "Bash(sqlite3 backend/nessus_remediation.db \"SELECT COUNT\\(*\\) FROM findings WHERE exception_id=1;\")",
+      "Bash(sqlite3 backend/nessus_remediation.db \"SELECT COUNT\\(*\\) FROM findings WHERE exception_id IS NOT NULL;\")",
+      "Bash(sqlite3 backend/nessus_remediation.db \"SELECT COUNT\\(*\\) FROM inventory_processes\")",
+      "Bash(sqlite3 backend/nessus_remediation.db \"SELECT id, plugin_id, plugin_name, scan_id, asset_id FROM findings WHERE plugin_id = ''70329'' LIMIT 5\")",
+      "Bash(curl -v http://localhost:8000/api/reports/summary)",
+      "Bash(python -c \"from models import Finding; from threat_intel_models import ThreatCVE; from threat_intel_sync import enrich_findings_from_threat_intel, fetch_nvd_cve; from prioritizer import compute_priority_score; print\\(''All imports OK''\\)\")",
+      "Bash(wc -l /Users/itamar/Documents/Git/nessus-remediation/frontend/src/components/*.jsx)",
+      "Bash(grep -l \"canvas\\\\|Node\\\\|node\\\\|execute\" /Users/itamar/Documents/Git/nessus-remediation/frontend/src/components/*.jsx)",
+      "Bash(python -c \"import prioritizer; import risk_config; print\\(''OK''\\)\")",
+      "Bash(python -c \"from export import router; print\\(f''Export router OK: {len\\(router.routes\\)} routes''\\)\")",
+      "Bash(python -c \"from app import app; routes = [r.path for r in app.routes if hasattr\\(r, ''path''\\) and ''/export/'' in r.path]; print\\(f''{len\\(routes\\)} export routes:''\\); print\\(''\\\\n''.join\\(sorted\\(routes\\)\\)\\)\")",
+      "Bash(lsof -i :3000)",
+      "Bash(python -c \"from export import router; print\\(f''OK: {len\\(router.routes\\)} routes''\\)\")"
     ]
   }
 }

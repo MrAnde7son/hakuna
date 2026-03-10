@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Server, RefreshCw, Edit2, Tag, Search, X, UserCheck, Crosshair } from 'lucide-react'
+import { Server, RefreshCw, Edit2, Tag, Search, X, UserCheck, Crosshair, Download } from 'lucide-react'
 import { useScan } from '../App.jsx'
-import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner } from '../api.js'
-import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot } from './ui.jsx'
+import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload } from '../api.js'
+import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector } from './ui.jsx'
 import BlastRadiusPanel, { BlastRadiusScore } from './BlastRadiusPanel.jsx'
 
 function RiskScore({ score }) {
@@ -78,6 +78,44 @@ function CriticalityEditor({ asset, onUpdate }) {
 
 const ENV_COLORS = { internet: '#dc2626', dmz: '#ea580c', internal: '#65a30d', ot: '#d97706' }
 
+function ResizablePanel({ children, onClose }) {
+  const [width, setWidth] = useState(680)
+  const dragging = useRef(false)
+
+  useEffect(() => {
+    const onMouseMove = (e) => {
+      if (!dragging.current) return
+      const newWidth = Math.min(Math.max(window.innerWidth - e.clientX, 400), window.innerWidth * 0.9)
+      setWidth(newWidth)
+    }
+    const onMouseUp = () => { dragging.current = false; document.body.style.cursor = '' }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => { window.removeEventListener('mousemove', onMouseMove); window.removeEventListener('mouseup', onMouseUp) }
+  }, [])
+
+  return (
+    <div style={{
+      position: 'fixed', top: 0, right: 0, bottom: 0, zIndex: 901,
+      width, maxWidth: '90vw',
+      background: 'var(--bg-card)', borderLeft: '1px solid var(--border)',
+      boxShadow: '-4px 0 24px rgba(0,0,0,0.2)',
+      display: 'flex', flexDirection: 'column',
+      animation: 'slideInRight 0.2s ease-out',
+    }}>
+      {/* Drag handle */}
+      <div
+        onMouseDown={() => { dragging.current = true; document.body.style.cursor = 'col-resize' }}
+        style={{
+          position: 'absolute', top: 0, left: -3, bottom: 0, width: 6,
+          cursor: 'col-resize', zIndex: 10,
+        }}
+      />
+      {children}
+    </div>
+  )
+}
+
 // Blast radius score cell (uses pre-fetched bulk data)
 function BlastCell({ br, onExpand }) {
   return (
@@ -144,6 +182,10 @@ export default function AssetInventory() {
   const [showBulkTag, setShowBulkTag] = useState(false)
   const [tagFilter, setTagFilter] = useState([])
   const [tagLogic, setTagLogic] = useState('AND')
+  const [colVis, setColVis] = useState(() => {
+    try { const s = localStorage.getItem('assetColumns'); return s ? JSON.parse(s) : {} } catch { return {} }
+  })
+  const updateColVis = (next) => { setColVis(next); localStorage.setItem('assetColumns', JSON.stringify(next)) }
   const [filters, setFilters] = useState({
     search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '',
   })
@@ -193,8 +235,13 @@ export default function AssetInventory() {
     getAssets(params)
       .then(data => {
         setAssets(data)
-        if (activeScanId) {
-          getBlastRadiusBulk(activeScanId).then(setBlastMap).catch(() => {})
+        const scanIds = activeScanId
+          ? [activeScanId]
+          : [...new Set(data.map(a => a.scan_id).filter(Boolean))]
+        if (scanIds.length) {
+          Promise.all(scanIds.map(sid => getBlastRadiusBulk(sid)))
+            .then(results => setBlastMap(Object.assign({}, ...results)))
+            .catch(err => console.error('Blast radius bulk fetch failed:', err))
         }
       })
       .finally(() => setLoading(false))
@@ -229,7 +276,7 @@ export default function AssetInventory() {
     load()
   }
 
-  const columns = [
+  const allColumns = [
     {
       key: '_select', label: (
         <input type="checkbox" checked={assets.length > 0 && selectedIds.size === assets.length} onChange={toggleSelectAll} />
@@ -347,6 +394,10 @@ export default function AssetInventory() {
     },
   ]
 
+  const visibleColumns = allColumns.filter(c =>
+    c.key === '_select' || colVis[c.key] !== false
+  )
+
   return (
     <div>
       <PageHeader
@@ -359,6 +410,9 @@ export default function AssetInventory() {
                 <Tag size={14} /> Tag {selectedIds.size} selected
               </Button>
             )}
+            <Button variant="ghost" size="sm" onClick={() => exportDownload('assets', { scan_id: activeScanId, environment: filters.environment, search: filters.search })}>
+              <Download size={14} /> Export CSV
+            </Button>
             <Button variant="ghost" size="sm" onClick={load}>
               <RefreshCw size={14} /> Refresh
             </Button>
@@ -464,6 +518,12 @@ export default function AssetInventory() {
           onLogicChange={setTagLogic}
         />
 
+        <ColumnSelector
+          columns={allColumns}
+          visible={colVis}
+          onChange={updateColVis}
+        />
+
         {(activeFilterCount > 0 || tagFilter.length > 0) && (
           <Button size="sm" variant="ghost" onClick={() => { clearFilters(); setTagFilter([]) }}>
             <X size={13} /> Clear
@@ -477,7 +537,7 @@ export default function AssetInventory() {
         ) : (
           <Card style={{ padding: 0 }}>
             <Table
-              columns={columns}
+              columns={visibleColumns}
               rows={assets}
               onRowClick={row => navigate(`/findings?asset_id=${row.id}`)}
               onSort={handleSort}
@@ -498,7 +558,7 @@ export default function AssetInventory() {
       )}
 
       {/* Blast Radius sidebar */}
-      {expandedAsset && activeScanId && (
+      {expandedAsset && (activeScanId || assets.find(a => a.id === expandedAsset)?.scan_id) && (
         <>
           {/* Backdrop */}
           <div
@@ -509,14 +569,7 @@ export default function AssetInventory() {
             }}
           />
           {/* Slide-in panel */}
-          <div style={{
-            position: 'fixed', top: 0, right: 0, bottom: 0, zIndex: 901,
-            width: 520, maxWidth: '90vw',
-            background: 'var(--bg-card)', borderLeft: '1px solid var(--border)',
-            boxShadow: '-4px 0 24px rgba(0,0,0,0.2)',
-            display: 'flex', flexDirection: 'column',
-            animation: 'slideInRight 0.2s ease-out',
-          }}>
+          <ResizablePanel onClose={() => setExpandedAsset(null)}>
             {/* Header */}
             <div style={{
               display: 'flex', alignItems: 'center', gap: 10,
@@ -541,12 +594,12 @@ export default function AssetInventory() {
             {/* Content */}
             <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
               <BlastRadiusPanel
-                scanId={activeScanId}
+                scanId={activeScanId || assets.find(a => a.id === expandedAsset)?.scan_id}
                 assetId={expandedAsset}
                 defaultExpanded={true}
               />
             </div>
-          </div>
+          </ResizablePanel>
           <style>{`
             @keyframes slideInRight {
               from { transform: translateX(100%); }

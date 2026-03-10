@@ -151,7 +151,10 @@ export default function UploadScan() {
       {/* Existing scans */}
       {scans.length > 0 && (
         <Card>
-          <div style={{ fontWeight: 600, marginBottom: 16, fontSize: 14 }}>Uploaded Scans</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>Uploaded Scans</div>
+            <Button onClick={() => navigate('/')}>View Dashboard →</Button>
+          </div>
           {scans.map(scan => (
             <div key={scan.id} style={{
               display: 'flex', gap: 12, padding: '12px 0', borderBottom: '1px solid rgba(45,49,85,0.5)',

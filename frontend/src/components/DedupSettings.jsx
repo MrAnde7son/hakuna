@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, ShieldOff } from 'lucide-react'
-import { getDedupConfig, saveDedupConfig, runDedup } from '../api.js'
-import { Card } from './ui.jsx'
+import { getDedupConfig, saveDedupConfig, runDedup, exportConfig } from '../api.js'
+import { Card, ExportImportButtons } from './ui.jsx'
 import RiskSettings from './RiskSettings.jsx'
 import UploadScan from './UploadScan.jsx'
 import TagManager from './TagManager.jsx'
@@ -27,6 +27,9 @@ const KEY_FIELD_OPTIONS = {
   password_policies: ['domain'],
   logged_on: ['username', 'domain', 'asset_id'],
   scheduled_tasks: ['task_uri', 'asset_id'],
+  env_vars: ['name', 'asset_id'],
+  processes: ['process_name', 'pid', 'asset_id'],
+  certificates: ['subject_cn', 'serial_number', 'asset_id'],
 }
 
 const ENTITY_LABELS = {
@@ -44,6 +47,9 @@ const ENTITY_LABELS = {
   password_policies: 'Password Policies',
   logged_on: 'Logged-On Users',
   scheduled_tasks: 'Scheduled Tasks',
+  env_vars: 'Environment Variables',
+  processes: 'Processes',
+  certificates: 'Certificates',
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -361,7 +367,14 @@ export default function Settings() {
           <SettingsIcon size={16} color="var(--accent)" />
           <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>Deduplication</span>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <ExportImportButtons
+            configType="dedup_config"
+            exportFn={() => exportConfig('dedup_config')}
+            onImported={() => getDedupConfig().then(setCfg)}
+            label="Dedup Config"
+            showConflict={false}
+          />
           <button
             onClick={handleReset}
             style={{

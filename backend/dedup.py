@@ -36,6 +36,9 @@ KEY_FIELD_OPTIONS: dict[str, list[str]] = {
     "password_policies": ["domain"],
     "logged_on": ["username", "domain", "asset_id"],
     "scheduled_tasks": ["task_uri", "asset_id"],
+    "env_vars": ["name", "asset_id"],
+    "processes": ["process_name", "pid", "asset_id"],
+    "certificates": ["subject_cn", "serial_number", "asset_id"],
 }
 
 # ─────────────────────────────────────────────
@@ -117,6 +120,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "enabled": True,
             "key_fields": ["task_uri", "asset_id"],
             "strategy": "merge",
+        },
+        "env_vars": {
+            "enabled": True,
+            "key_fields": ["name", "asset_id"],
+            "strategy": "keep_last",
+        },
+        "processes": {
+            "enabled": False,
+            "key_fields": ["process_name", "pid", "asset_id"],
+            "strategy": "keep_last",
+        },
+        "certificates": {
+            "enabled": True,
+            "key_fields": ["subject_cn", "serial_number", "asset_id"],
+            "strategy": "keep_last",
         },
     },
 }
@@ -254,6 +272,9 @@ def dedup_inventory(inventory: dict, cfg: dict) -> dict:
         "security_controls": "security_controls",
         "computers": "computers",
         "password_policies": "password_policies",
+        "env_vars": "env_vars",
+        "processes": "processes",
+        "certificates": "certificates",
     }
 
     for inv_key, dedup_key in KEY_MAP.items():

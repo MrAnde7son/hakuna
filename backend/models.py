@@ -84,6 +84,8 @@ class Finding(Base):
     cvss2_vector = Column(String)
     cvss3_score = Column(Float)
     cvss3_vector = Column(String)
+    cvss4_score = Column(Float)
+    cvss4_vector = Column(String)
     vpr_score = Column(Float)
 
     # CVE references
@@ -106,6 +108,13 @@ class Finding(Base):
     exploit_available = Column(Boolean, default=False)
     exploit_maturity = Column(String)
     zero_day = Column(Boolean, default=False)
+
+    # Threat intel enrichment (populated from threat_cves table)
+    is_kev = Column(Boolean, default=False)
+    epss_score = Column(Float, nullable=True)
+    epss_percentile = Column(Float, nullable=True)
+    ransomware_linked = Column(Boolean, default=False)
+    trending_in_news = Column(Boolean, default=False)
 
     # Prioritization
     priority_score = Column(Float, default=0.0)
@@ -407,6 +416,23 @@ class InventoryPasswordPolicy(Base):
     lockout_window_mins = Column(Integer)
     # Risk flags
     is_weak = Column(Boolean, default=False)  # min_len < 8 or no complexity
+    source_plugin = Column(String)
+
+
+class InventoryProcess(Base):
+    """Running processes per host (from WMI process enumeration)."""
+    __tablename__ = "inventory_processes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+
+    process_name = Column(String, index=True)       # e.g. "svchost.exe"
+    pid = Column(Integer)
+    ppid = Column(Integer)                           # Parent PID (derived from tree)
+    session_id = Column(Integer)                     # Windows session ID (SID column)
+    parent_name = Column(String)                     # Parent process name
+    depth = Column(Integer, default=0)               # Tree depth level
     source_plugin = Column(String)
 
 
@@ -786,6 +812,19 @@ class FindingException(Base):
 # ─────────────────────────────────────────────────────────
 # Cross-Scan Delta Tracking
 # ─────────────────────────────────────────────────────────
+
+class ReportTemplate(Base):
+    """Saved report/dashboard template configuration."""
+    __tablename__ = "report_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)
+    description = Column(String, nullable=True)
+    config = Column(JSON, nullable=False, default=dict)  # {widgets: [...]}
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 class ScanComparison(Base):
     """Cached result of comparing two scans — tracks new/fixed/recurring findings."""

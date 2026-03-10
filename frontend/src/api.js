@@ -75,6 +75,7 @@ export const getInventoryPasswordPolicies = (params) => _inv('password-policies'
 export const getInventoryEnvVars = (params) => _inv('env-vars', params)
 export const getInventoryCertificates = (params) => _inv('certificates', params)
 export const getInventoryAITools = (params) => _inv('ai-tools', params)
+export const getInventoryProcesses = (params) => _inv('processes', params)
 
 // Ownership
 export const setAssetOwnership = (id, data) =>
@@ -337,6 +338,45 @@ export const backfillTemporal = (scanId) =>
   request(`/scans/${scanId}/backfill-temporal`, { method: 'POST' })
 export const backfillTemporalAll = () =>
   request('/scans/backfill-temporal-all', { method: 'POST' })
+
+// Export (CSV / JSON download)
+export const exportDownload = (entity, params = {}, fmt = 'csv') => {
+  const p = new URLSearchParams(Object.entries({ ...params, fmt }).filter(([, v]) => v != null && v !== ''))
+  const url = `/api/export/${entity}?${p}`
+  // Trigger browser download
+  const a = document.createElement('a')
+  a.href = url
+  a.download = ''
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+// Config Portability (export/import)
+export const exportConfig = (type, params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null))
+  return request(`/config/export/${type}?${q}`)
+}
+export const importConfig = async (type, file, conflict = 'skip') => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return request(`/config/import/${type}?conflict=${conflict}`, { method: 'POST', body: fd })
+}
+
+// Report Templates
+export const getReportTemplates = () => request('/report-templates')
+export const createReportTemplate = (data) => request('/report-templates', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const getReportTemplate = (id) => request(`/report-templates/${id}`)
+export const updateReportTemplate = (id, data) => request(`/report-templates/${id}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const deleteReportTemplate = (id) => request(`/report-templates/${id}`, { method: 'DELETE' })
 
 // Deduplication
 export const getDedupConfig = () => request('/dedup/config')

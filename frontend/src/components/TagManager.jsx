@@ -5,7 +5,8 @@ import {
   getAutoTagRules, createAutoTagRule, updateAutoTagRule, deleteAutoTagRule,
   runAutoTagRule,
 } from '../api.js'
-import { Card, PageHeader, Button, Input, Select, Spinner, EmptyState } from './ui.jsx'
+import { exportConfig } from '../api.js'
+import { Card, PageHeader, Button, Input, Select, Spinner, EmptyState, ExportImportButtons } from './ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
 
 // ─────────────────────────────────────────────────────────
@@ -435,7 +436,15 @@ export default function TagManager() {
         title="Tag Manager"
         subtitle="Organize assets and findings with hierarchical tags and auto-tagging rules"
         action={
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {tab === 'rules' && (
+              <ExportImportButtons
+                configType="auto_tag_rules"
+                exportFn={() => exportConfig('auto_tag_rules')}
+                onImported={load}
+                label="Auto-Tag Rules"
+              />
+            )}
             {tab === 'tags' && (
               <Button onClick={() => setEditingTag('new')} disabled={editingTag !== null}>
                 <Plus size={14} /> New Tag

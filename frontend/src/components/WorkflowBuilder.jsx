@@ -55,6 +55,8 @@ export default function WorkflowBuilder() {
   const [executionDetail, setExecutionDetail] = useState(null)
   const [dirty, setDirty] = useState(false)
   const [lastExecResult, setLastExecResult] = useState(null)
+  const [showExecPanel, setShowExecPanel] = useState(false)
+  const [execDetail, setExecDetail] = useState(null)
 
   useEffect(() => {
     Promise.all([getWorkflow(id), getNodeCatalog()])
@@ -102,17 +104,70 @@ export default function WorkflowBuilder() {
     setSaving(false)
   }, [id, nodes, edges])
 
+  // ─── Validation ─────────────────────────
+  const getValidationWarnings = useCallback(() => {
+    const warnings = []
+    if (nodes.length === 0) {
+      warnings.push({ level: 'error', message: 'Workflow has no nodes' })
+      return warnings
+    }
+    const triggers = nodes.filter(n => n.node_type === 'trigger')
+    if (triggers.length === 0) warnings.push({ level: 'error', message: 'No trigger node — workflow cannot start' })
+
+    // Check for disconnected nodes (no incoming edge and not a trigger)
+    const nodesWithIncoming = new Set(edges.map(e => e.target_node_id))
+    nodes.forEach(n => {
+      if (n.node_type !== 'trigger' && !nodesWithIncoming.has(n.node_id))
+        warnings.push({ level: 'warn', message: `"${n.label || n.node_subtype}" is disconnected — it won't receive any data` })
+    })
+
+    // Check for missing required config
+    nodes.forEach(n => {
+      const def = allNodeDefs[n.node_subtype]
+      if (!def?.config_schema) return
+      const config = n.config || {}
+      if (n.node_subtype === 'send_webhook' && !config.url)
+        warnings.push({ level: 'error', message: `"${n.label || 'Send Webhook'}" is missing a Webhook URL` })
+      if (n.node_subtype === 'send_email' && !config.to)
+        warnings.push({ level: 'warn', message: `"${n.label || 'Send Email'}" has no recipient email` })
+      if (n.node_subtype === 'slack_notify' && !config.webhook_url)
+        warnings.push({ level: 'warn', message: `"${n.label || 'Slack'}" has no webhook URL` })
+      if (n.node_subtype === 'teams_notify' && !config.webhook_url)
+        warnings.push({ level: 'warn', message: `"${n.label || 'Teams'}" has no webhook URL` })
+      if (n.node_subtype === 'create_ticket' && !config.integration)
+        warnings.push({ level: 'warn', message: `"${n.label || 'Create Ticket'}" has no integration selected` })
+    })
+
+    // Check if workflow has data source
+    if (triggers.length > 0 && !workflow?.campaign_id) {
+      const triggerSubtypes = triggers.map(t => t.node_subtype)
+      if (triggerSubtypes.includes('manual') || triggerSubtypes.includes('on_campaign_run'))
+        warnings.push({ level: 'info', message: 'Workflow is not linked to a campaign — it will run with 0 findings unless triggered with data' })
+    }
+    return warnings
+  }, [nodes, edges, allNodeDefs, workflow])
+
   // ─── Execute ─────────────────────────────
   const handleExecute = useCallback(async () => {
     if (dirty) await handleSave()
     setExecuting(true)
+    setExecDetail(null)
     try {
       const result = await executeWorkflow(id)
       setLastExecResult(result)
+      // Auto-fetch detailed execution logs
+      if (result.execution_id) {
+        try {
+          const detail = await getWorkflowExecution(result.execution_id)
+          setExecDetail(detail)
+        } catch (_) { /* detail fetch optional */ }
+      }
+      setShowExecPanel(true)
       const wf = await getWorkflow(id)
       setWorkflow(wf)
     } catch (e) {
       setLastExecResult({ status: 'failed', error: e.message })
+      setShowExecPanel(true)
     }
     setExecuting(false)
   }, [id, dirty, handleSave])
@@ -249,6 +304,21 @@ export default function WorkflowBuilder() {
     } catch (e) { console.error(e) }
   }, [id])
 
+  const validationWarnings = useMemo(() => getValidationWarnings(), [getValidationWarnings])
+  const hasErrors = validationWarnings.some(w => w.level === 'error')
+
+  // Map node_id → error from last execution detail for canvas indicators
+  const nodeErrors = useMemo(() => {
+    const map = {}
+    if (execDetail?.logs) {
+      for (const log of execDetail.logs) {
+        if (log.status === 'failed') map[log.node_id] = log.output_data?.error || log.error || 'Failed'
+        else if (log.status === 'success' && log.items_in === 0) map[log.node_id] = 'empty'
+      }
+    }
+    return map
+  }, [execDetail])
+
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner /> Loading workflow...</div>
   if (!workflow) return <EmptyState icon={AlertTriangle} title="Workflow not found" />
 
@@ -277,11 +347,15 @@ export default function WorkflowBuilder() {
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {dirty && <span style={{ fontSize: 11, color: '#d97706', fontWeight: 600 }}>Unsaved</span>}
           {lastExecResult && (
-            <Pill color={lastExecResult.status === 'completed' ? '#22c55e' : '#ef4444'}>
-              {lastExecResult.status === 'completed'
-                ? `Done - ${lastExecResult.items_processed} items`
-                : `Failed${lastExecResult.error ? ': ' + lastExecResult.error : ''}`}
-            </Pill>
+            <button onClick={() => setShowExecPanel(p => !p)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+              <Pill color={lastExecResult.status === 'completed' ? '#22c55e' : '#ef4444'}>
+                {lastExecResult.status === 'completed'
+                  ? `Done — ${lastExecResult.items_processed} items`
+                  : 'Failed'}{' '}
+                <span style={{ fontSize: 9, opacity: 0.8 }}>▾ details</span>
+              </Pill>
+            </button>
           )}
           <Button size="sm" variant="ghost" onClick={() => setShowNodePalette(true)}>
             <Plus size={14} /> Add Node
@@ -292,11 +366,125 @@ export default function WorkflowBuilder() {
           <Button size="sm" onClick={handleSave} disabled={saving || !dirty}>
             <Save size={14} /> {saving ? 'Saving...' : 'Save'}
           </Button>
-          <Button size="sm" variant="primary" onClick={handleExecute} disabled={executing}>
+          <Button size="sm" variant="primary" onClick={handleExecute} disabled={executing || hasErrors}
+            title={hasErrors ? validationWarnings.filter(w => w.level === 'error').map(w => w.message).join('; ') : ''}>
             <Play size={14} /> {executing ? 'Running...' : 'Run'}
           </Button>
         </div>
       </div>
+
+      {/* Validation warnings */}
+      {validationWarnings.length > 0 && (
+        <div style={{
+          display: 'flex', flexWrap: 'wrap', gap: 6, padding: '6px 16px',
+          background: hasErrors ? '#fef2f2' : '#fffbeb', borderBottom: '1px solid var(--border)', flexShrink: 0,
+        }}>
+          {validationWarnings.map((w, i) => (
+            <span key={i} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 500,
+              color: w.level === 'error' ? '#dc2626' : w.level === 'warn' ? '#d97706' : '#6b7280',
+              padding: '2px 8px', borderRadius: 6,
+              background: w.level === 'error' ? '#fee2e2' : w.level === 'warn' ? '#fef3c7' : '#f3f4f6',
+            }}>
+              {w.level === 'error' ? <AlertTriangle size={11} /> : w.level === 'warn' ? <AlertTriangle size={11} /> : <Zap size={11} />}
+              {w.message}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Execution result panel */}
+      {showExecPanel && lastExecResult && (
+        <div style={{
+          flexShrink: 0, borderBottom: '1px solid var(--border)',
+          background: lastExecResult.status === 'completed' ? '#f0fdf4' : '#fef2f2',
+          maxHeight: 220, overflow: 'auto',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px' }}>
+            {lastExecResult.status === 'completed'
+              ? <CheckCircle size={16} color="#16a34a" />
+              : <AlertTriangle size={16} color="#dc2626" />}
+            <span style={{
+              fontWeight: 700, fontSize: 13,
+              color: lastExecResult.status === 'completed' ? '#16a34a' : '#dc2626',
+            }}>
+              {lastExecResult.status === 'completed' ? 'Workflow completed' : 'Workflow failed'}
+            </span>
+            <span style={{ fontSize: 12, color: '#64748b' }}>
+              {lastExecResult.items_processed ?? 0} items processed
+              {lastExecResult.summary && ` · ${lastExecResult.summary.nodes_executed} nodes · ${lastExecResult.summary.actions_taken} actions`}
+            </span>
+            <button onClick={() => setShowExecPanel(false)}
+              style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: 4 }}>
+              <X size={14} />
+            </button>
+          </div>
+
+          {/* Top-level error */}
+          {lastExecResult.error && !execDetail && (
+            <div style={{ margin: '0 16px 8px', padding: '8px 12px', background: '#fee2e2', borderRadius: 8, fontSize: 12, color: '#991b1b' }}>
+              {lastExecResult.error}
+            </div>
+          )}
+
+          {/* Per-node execution logs */}
+          {execDetail?.logs && execDetail.logs.length > 0 && (
+            <div style={{ padding: '0 16px 10px' }}>
+              {execDetail.logs.map((log, i) => {
+                const isFail = log.status === 'failed'
+                const isEmpty = log.status === 'success' && log.items_in === 0 && log.node_type !== 'trigger'
+                return (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 8,
+                    padding: '6px 10px', borderRadius: 6, marginBottom: 3, fontSize: 12,
+                    background: isFail ? '#fee2e2' : isEmpty ? '#fefce8' : '#fff',
+                    border: `1px solid ${isFail ? '#fecaca' : isEmpty ? '#fef08a' : '#e2e8f0'}`,
+                  }}>
+                    <span style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 600, minWidth: 60,
+                      color: isFail ? '#dc2626' : isEmpty ? '#ca8a04' : '#16a34a',
+                    }}>
+                      {isFail ? <X size={11} /> : isEmpty ? <AlertTriangle size={11} /> : <CheckCircle size={11} />}
+                      {isFail ? 'FAIL' : isEmpty ? 'EMPTY' : 'OK'}
+                    </span>
+                    <span style={{ fontWeight: 600, color: '#334155', minWidth: 100 }}>{log.node_subtype}</span>
+                    <span style={{ color: '#64748b' }}>{log.items_in} in → {log.items_out} out</span>
+                    {log.output_data?.affected != null && (
+                      <span style={{ color: '#6366f1' }}>{log.output_data.affected} affected</span>
+                    )}
+                    {isFail && (log.output_data?.error || log.error) && (
+                      <span style={{ color: '#991b1b', flex: 1 }}>
+                        {log.output_data?.error || log.error}
+                      </span>
+                    )}
+                    {isEmpty && (
+                      <span style={{ color: '#92400e', fontStyle: 'italic' }}>
+                        No items reached this node
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Errors summary from result */}
+          {lastExecResult.summary?.errors?.length > 0 && !execDetail && (
+            <div style={{ padding: '0 16px 10px' }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#991b1b', marginBottom: 4 }}>Errors:</div>
+              {lastExecResult.summary.errors.map((err, i) => (
+                <div key={i} style={{
+                  padding: '6px 10px', background: '#fee2e2', borderRadius: 6,
+                  fontSize: 12, color: '#991b1b', marginBottom: 3,
+                  border: '1px solid #fecaca',
+                }}>
+                  <span style={{ fontWeight: 600 }}>{err.node_id}:</span> {err.error}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {/* Canvas */}
@@ -375,6 +563,9 @@ export default function WorkflowBuilder() {
             const isFilter = node.node_type === 'filter'
             const x = node.position_x + pan.x
             const y = node.position_y + pan.y
+            const nodeErr = nodeErrors[node.node_id]
+            const isFailed = nodeErr && nodeErr !== 'empty'
+            const isEmpty = nodeErr === 'empty'
 
             return (
               <div
@@ -384,10 +575,12 @@ export default function WorkflowBuilder() {
                 style={{
                   position: 'absolute', left: x, top: y,
                   width: NODE_WIDTH, minHeight: NODE_HEIGHT,
-                  background: '#fff',
-                  border: `2px solid ${isSelected ? colors.accent : '#e2e8f0'}`,
+                  background: isFailed ? '#fff5f5' : isEmpty ? '#fffef5' : '#fff',
+                  border: `2px solid ${isFailed ? '#ef4444' : isEmpty ? '#eab308' : isSelected ? colors.accent : '#e2e8f0'}`,
                   borderRadius: 12,
-                  boxShadow: isSelected
+                  boxShadow: isFailed
+                    ? '0 0 0 3px rgba(239,68,68,0.15), 0 4px 12px rgba(0,0,0,0.1)'
+                    : isSelected
                     ? `0 0 0 3px ${colors.accent}33, 0 4px 12px rgba(0,0,0,0.1)`
                     : '0 2px 8px rgba(0,0,0,0.06)',
                   cursor: 'grab', userSelect: 'none', overflow: 'hidden',
@@ -429,6 +622,26 @@ export default function WorkflowBuilder() {
                     </div>
                   )}
                 </div>
+
+                {/* Error/warning badge */}
+                {isFailed && (
+                  <div title={nodeErr} style={{
+                    position: 'absolute', top: -8, right: -8, width: 20, height: 20,
+                    borderRadius: '50%', background: '#ef4444', display: 'flex', alignItems: 'center',
+                    justifyContent: 'center', zIndex: 3, border: '2px solid #fff',
+                  }}>
+                    <X size={10} color="#fff" strokeWidth={3} />
+                  </div>
+                )}
+                {isEmpty && (
+                  <div title="No items reached this node" style={{
+                    position: 'absolute', top: -8, right: -8, width: 20, height: 20,
+                    borderRadius: '50%', background: '#eab308', display: 'flex', alignItems: 'center',
+                    justifyContent: 'center', zIndex: 3, border: '2px solid #fff',
+                  }}>
+                    <AlertTriangle size={10} color="#fff" strokeWidth={3} />
+                  </div>
+                )}
 
                 {/* Input handle (left) */}
                 {node.node_type !== 'trigger' && (

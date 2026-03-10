@@ -218,8 +218,11 @@ def get_cves(
         result.append({
             "cve_id": r.cve_id,
             "description": r.description or "",
+            "cvss2_score": r.cvss2_score,
             "cvss3_score": r.cvss3_score,
             "cvss3_vector": r.cvss3_vector,
+            "cvss4_score": r.cvss4_score,
+            "cvss4_vector": r.cvss4_vector,
             "epss_score": r.epss_score,
             "epss_percentile": r.epss_percentile,
             "in_kev": r.in_kev,
@@ -234,10 +237,28 @@ def get_cves(
             "nvd_url": r.nvd_url,
             "patch_urls": r.patch_urls or [],
             "published_date": r.published_date,
+            "trending_in_news": r.trending_in_news or False,
             "in_scan_count": in_scan_counts.get(r.cve_id, 0),
         })
 
     return {"total": total, "offset": offset, "limit": limit, "items": result}
+
+
+@router.patch("/cves/{cve_id}/trending")
+def toggle_trending(cve_id: str, trending: bool = True, db: Session = Depends(get_db)):
+    """Mark or unmark a CVE as trending in the news."""
+    record = db.query(ThreatCVE).filter(ThreatCVE.cve_id == cve_id.upper()).first()
+    if not record:
+        raise HTTPException(404, f"CVE {cve_id} not found in threat intel")
+    record.trending_in_news = trending
+    record.updated_at = datetime.utcnow()
+    db.commit()
+    # Propagate to findings
+    try:
+        sync_engine.enrich_findings_from_threat_intel(db)
+    except Exception:
+        pass
+    return {"cve_id": record.cve_id, "trending_in_news": record.trending_in_news}
 
 
 # ─────────────────────────────────────────────
@@ -547,6 +568,11 @@ def _run_sync_in_background(db: Session):
         sync_engine.sync_mitre_groups_to_db(db)
     except Exception as exc:
         logger.warning("Background MITRE sync failed: %s", exc)
+    # Enrich all findings with the freshly synced intel data
+    try:
+        sync_engine.enrich_findings_from_threat_intel(db)
+    except Exception as exc:
+        logger.warning("Background finding enrichment failed: %s", exc)
     logger.info("Background intel sync complete")
 
 
@@ -570,6 +596,13 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
         logger.warning("EPSS sync failed: %s", exc)
         epss_result = {"updated": 0}
 
+    # Enrich findings with freshly synced KEV + EPSS data
+    try:
+        enrich_result = sync_engine.enrich_findings_from_threat_intel(db)
+    except Exception as exc:
+        logger.warning("Finding enrichment failed: %s", exc)
+        enrich_result = {"enriched": 0}
+
     # NVD CVSS backfill — moderate speed (~3 req/s), run in background
     background_tasks.add_task(sync_engine.sync_nvd_scores, db)
 
@@ -581,9 +614,11 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
         "kev_updated": kev_result.get("updated", 0),
         "kev_total": kev_result.get("total", 0),
         "epss_updated": epss_result.get("updated", 0),
+        "findings_enriched": enrich_result.get("enriched", 0),
         "message": (
             f"KEV: +{kev_result.get('added', 0)} new, {kev_result.get('updated', 0)} updated. "
             f"EPSS: {epss_result.get('updated', 0)} refreshed. "
+            f"Findings enriched: {enrich_result.get('enriched', 0)}. "
             f"NVD CVSS + MITRE ATT&CK: syncing in background."
         ),
     }

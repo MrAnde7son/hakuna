@@ -72,6 +72,8 @@ class ThreatCVE(Base):
     cvss2_score = Column(Float)
     cvss3_score = Column(Float)
     cvss3_vector = Column(String)
+    cvss4_score = Column(Float)
+    cvss4_vector = Column(String)
     epss_score = Column(Float)
     epss_percentile = Column(Float)
     in_kev = Column(Boolean, default=False)
@@ -87,6 +89,7 @@ class ThreatCVE(Base):
     exploit_references = Column(JSON, default=list)  # list of {"source","url","description"} dicts
     cwe_ids = Column(JSON, default=list)
     nvd_url = Column(String)
+    trending_in_news = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

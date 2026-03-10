@@ -1499,6 +1499,74 @@ def extract_ai_tools(plugin_output: str, asset_id: int, scan_id: int) -> list[di
     return results
 
 
+# ─── Plugin 70329 — Microsoft Windows Process Information ──────────
+def extract_processes_70329(plugin_output: str, asset_id: int, scan_id: int) -> list[dict]:
+    """Parse WMI process tree output from plugin 70329.
+
+    Format:
+        SID: Process (PID)
+         0 : System Idle Process (0)
+         0 : |- System (4)
+         0 :    |- smss.exe (400)
+    """
+    results = []
+    # Stack of (depth, pid, name) for parent tracking
+    stack = []
+
+    for line in plugin_output.splitlines():
+        # Match:  " <sid> : <rest>" — capture everything after " : " literally
+        m = re.match(r"^\s*(\d+)\s*: (.*)$", line)
+        if not m:
+            continue
+
+        session_id = int(m.group(1))
+        rest = m.group(2)       # e.g. "   |- smss.exe (400) "
+
+        # Extract PID from trailing "(digits)"
+        pid_m = re.search(r"\((\d+)\)\s*$", rest)
+        if not pid_m:
+            continue
+        pid = int(pid_m.group(1))
+        rest_no_pid = rest[:pid_m.start()]  # e.g. "   |- smss.exe "
+
+        # Separate indent from process name
+        # rest_no_pid: "System Idle Process " or "|- System " or "   |- smss.exe "
+        proc_name = rest_no_pid.lstrip(" |─-").strip()
+        if not proc_name:
+            continue
+
+        # Depth from leading whitespace/tree chars
+        # root: "System Idle Process"  → 0 leading chars → depth 0
+        # child: "|- System"           → 3 chars ("|- ")  → depth 1
+        # grandchild: "   |- smss.exe" → 6 chars          → depth 2
+        indent_len = len(rest_no_pid) - len(rest_no_pid.lstrip(" |-"))
+        depth = indent_len // 3
+
+        # Update the stack to find parent
+        # Pop entries at same depth or deeper
+        while stack and stack[-1][0] >= depth:
+            stack.pop()
+
+        ppid = stack[-1][1] if stack else None
+        parent_name = stack[-1][2] if stack else None
+
+        stack.append((depth, pid, proc_name))
+
+        results.append({
+            "scan_id": scan_id,
+            "asset_id": asset_id,
+            "process_name": proc_name,
+            "pid": pid,
+            "ppid": ppid,
+            "session_id": session_id,
+            "parent_name": parent_name,
+            "depth": depth,
+            "source_plugin": "70329",
+        })
+
+    return results
+
+
 # Maps plugin_id → (extractor_fn, target_table_key)
 # target_table_key matches keys in the result dict returned by extract_all_inventory
 PLUGIN_DISPATCH = {
@@ -1528,6 +1596,7 @@ PLUGIN_DISPATCH = {
     "92364": ("env_vars", extract_env_vars),
     "10863": ("certificates", extract_ssl_certificate),
     "196906": ("ai_tools", extract_ai_tools),
+    "70329": ("processes", extract_processes_70329),
 }
 
 # User-producing plugins (their records go into InventoryUser)
@@ -1559,6 +1628,7 @@ def extract_inventory_from_findings(findings: list[dict]) -> dict:
         "env_vars": [],
         "certificates": [],
         "ai_tools": [],
+        "processes": [],
     }
 
     for finding in findings:

@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Users, Shield, Server, Network, Clock,
   LogIn, AlertTriangle, Key, UserCheck,
-  Activity, Layers, Share2, Package, Lock, Monitor, FileText, Terminal, Eye, EyeOff, BrainCircuit
+  Activity, Layers, Share2, Package, Lock, Monitor, FileText, Terminal, Eye, EyeOff, BrainCircuit,
+  ChevronDown, Download
 } from 'lucide-react'
 import {
   Card, StatCard, Table, FilterBar, Select, Input,
@@ -15,29 +16,122 @@ import {
   getInventoryPatches, getInventoryLoggedOn,
   getInventoryShares, getInventorySoftware, getInventorySecurityControls,
   getInventoryComputers, getInventoryPasswordPolicies, getInventoryEnvVars,
-  getInventoryCertificates, getInventoryAITools,
+  getInventoryCertificates, getInventoryAITools, getInventoryProcesses,
+  exportDownload,
 } from '../api.js'
 import { useScan } from '../App.jsx'
 
 // ─── Tab config ───────────────────────────────────────────
-const TABS = [
-  { key: 'surface',   label: 'Attack Surface',  icon: AlertTriangle },
-  { key: 'users',     label: 'Users',           icon: Users },
-  { key: 'groups',    label: 'Groups',          icon: Shield },
-  { key: 'computers', label: 'Computers',    icon: Monitor },
-  { key: 'services',  label: 'Services',        icon: Server },
-  { key: 'shares',    label: 'Shares',          icon: Share2 },
-  { key: 'software',  label: 'Software',        icon: Package },
-  { key: 'security',  label: 'Security Controls', icon: Lock },
-  { key: 'netconns',  label: 'Network',         icon: Network },
-  { key: 'tasks',     label: 'Sched. Tasks',    icon: Clock },
-  { key: 'patches',   label: 'Patches',         icon: Layers },
-  { key: 'policy',    label: 'Password Policy', icon: FileText },
-  { key: 'loggedon',  label: 'Logged On',       icon: LogIn },
-  { key: 'envvars',   label: 'Env Variables',   icon: Terminal },
-  { key: 'certs',     label: 'Certificates',    icon: Lock },
-  { key: 'aitools',   label: 'AI',        icon: BrainCircuit },
+const TAB_GROUPS = [
+  { key: 'surface', label: 'Attack Surface', icon: AlertTriangle },
+  { label: 'Identity', icon: Users, children: [
+    { key: 'users',     label: 'Users',     icon: Users },
+    { key: 'groups',    label: 'Groups',    icon: Shield },
+    { key: 'loggedon',  label: 'Logged On', icon: LogIn },
+  ]},
+  { label: 'Infrastructure', icon: Server, children: [
+    { key: 'computers', label: 'Computers', icon: Monitor },
+    { key: 'services',  label: 'Services',  icon: Server },
+    { key: 'software',  label: 'Software',  icon: Package },
+    { key: 'processes', label: 'Processes',  icon: Activity },
+  ]},
+  { label: 'Network', icon: Network, children: [
+    { key: 'netconns',  label: 'Connections', icon: Network },
+    { key: 'shares',    label: 'Shares',      icon: Share2 },
+  ]},
+  { label: 'Security', icon: Lock, children: [
+    { key: 'security',  label: 'Controls',        icon: Lock },
+    { key: 'patches',   label: 'Patches',         icon: Layers },
+    { key: 'policy',    label: 'Password Policy',  icon: FileText },
+    { key: 'certs',     label: 'Certificates',     icon: Lock },
+  ]},
+  { label: 'Configuration', icon: Terminal, children: [
+    { key: 'tasks',    label: 'Sched. Tasks',   icon: Clock },
+    { key: 'envvars',  label: 'Env Variables',  icon: Terminal },
+    { key: 'aitools',  label: 'AI Tools',       icon: BrainCircuit },
+  ]},
 ]
+
+// Flat list of all valid tab keys (for URL validation)
+const ALL_TABS = TAB_GROUPS.flatMap(g => g.children ? g.children.map(c => c.key) : [g.key])
+
+// Find which group a tab key belongs to
+function groupForTab(tabKey) {
+  for (const g of TAB_GROUPS) {
+    if (g.key === tabKey) return null
+    if (g.children?.some(c => c.key === tabKey)) return g.label
+  }
+  return null
+}
+
+// ─── Dropdown tab button ──────────────────────────────────
+function TabDropdown({ group, activeTab, onSelect }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const activeChild = group.children.find(c => c.key === activeTab)
+  const isActive = !!activeChild
+  const Icon = group.icon
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          padding: '9px 10px',
+          background: 'none', border: 'none', cursor: 'pointer',
+          fontSize: 12, fontWeight: isActive ? 700 : 500,
+          color: isActive ? 'var(--text-primary)' : 'var(--text-muted)',
+          borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+          marginBottom: -1,
+          whiteSpace: 'nowrap',
+          transition: 'color 0.15s',
+        }}
+      >
+        <Icon size={13} />
+        {isActive ? activeChild.label : group.label}
+        <ChevronDown size={11} style={{ opacity: 0.5, transition: 'transform 0.15s', transform: open ? 'rotate(180deg)' : 'none' }} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, zIndex: 50,
+          marginTop: 2, minWidth: 170,
+          background: 'var(--bg-primary)', border: '1px solid var(--border)',
+          borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+          padding: '4px 0',
+        }}>
+          {group.children.map(({ key, label, icon: CIcon }) => {
+            const active = activeTab === key
+            return (
+              <button
+                key={key}
+                onClick={() => { onSelect(key); setOpen(false) }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                  padding: '8px 14px', background: active ? 'var(--bg-muted)' : 'none',
+                  border: 'none', cursor: 'pointer', fontSize: 12,
+                  fontWeight: active ? 700 : 400,
+                  color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+                  textAlign: 'left',
+                }}
+              >
+                <CIcon size={13} />
+                {label}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
 
 // ─── Env tag colors ────────────────────────────────────────
 const ENV_COLORS = {
@@ -190,179 +284,210 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
 
   const { counts, attack_surface: as } = data
 
+  /* helper: section heading */
+  const SectionLabel = ({ children }) => (
+    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', padding: '4px 0' }}>
+      {children}
+    </div>
+  )
+
+  /* helper: posture row with severity dot */
+  const PostureRow = ({ label, value, severity }) => {
+    const dotColor = severity === 'critical' ? '#dc2626' : severity === 'warn' ? '#f59e0b' : severity === 'good' ? '#10b981' : 'var(--text-muted)'
+    const numColor = value > 0 ? dotColor : 'var(--text-muted)'
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0' }}>
+        <span style={{ width: 6, height: 6, borderRadius: '50%', background: value > 0 ? dotColor : 'var(--border)', flexShrink: 0 }} />
+        <span style={{ flex: 1, fontSize: 13 }}>{label}</span>
+        <span style={{ fontWeight: 700, fontSize: 13, color: numColor, fontVariantNumeric: 'tabular-nums' }}>{value}</span>
+      </div>
+    )
+  }
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {/* Inventory counts */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 12 }}>
-        <StatCard label="Users"          value={counts.users}           icon={Users}    color="#0ea5e9" onClick={() => onTabChange('users')} />
-        <StatCard label="Groups"         value={counts.groups}          icon={Shield}   color="#8b5cf6" onClick={() => onTabChange('groups')} />
-        <StatCard label="Computers"      value={counts.computers}       icon={Monitor}  color="#06b6d4" onClick={() => onTabChange('computers')} />
-        <StatCard label="Services"       value={counts.services}        icon={Server}   color="#64748b" onClick={() => onTabChange('services')} />
-        <StatCard label="Shares"         value={counts.shares}          icon={Share2}   color="#f59e0b" onClick={() => onTabChange('shares')} />
-        <StatCard label="Software"       value={counts.software}        icon={Package}  color="#10b981" onClick={() => onTabChange('software')} />
-        <StatCard label="Net Conns"      value={counts.netconns}        icon={Network}  color="#06b6d4" onClick={() => onTabChange('netconns')} />
-        <StatCard label="Sched. Tasks"   value={counts.scheduled_tasks} icon={Clock}    color="#f59e0b" onClick={() => onTabChange('tasks')} />
-        <StatCard label="Missing Patches"value={counts.missing_patches} icon={Layers}   color="#dc2626" onClick={() => onTabChange('patches')} />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+      {/* ── Inventory Overview ── */}
+      <div>
+        <SectionLabel>Inventory Overview</SectionLabel>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 10, marginTop: 8 }}>
+          <StatCard label="Users"          value={counts.users}           icon={Users}    color="#0ea5e9" onClick={() => onTabChange('users')} />
+          <StatCard label="Groups"         value={counts.groups}          icon={Shield}   color="#8b5cf6" onClick={() => onTabChange('groups')} />
+          <StatCard label="Computers"      value={counts.computers}       icon={Monitor}  color="#06b6d4" onClick={() => onTabChange('computers')} />
+          <StatCard label="Services"       value={counts.services}        icon={Server}   color="#64748b" onClick={() => onTabChange('services')} />
+          <StatCard label="Shares"         value={counts.shares}          icon={Share2}   color="#f59e0b" onClick={() => onTabChange('shares')} />
+          <StatCard label="Software"       value={counts.software}        icon={Package}  color="#10b981" onClick={() => onTabChange('software')} />
+          <StatCard label="Net Conns"      value={counts.netconns}        icon={Network}  color="#06b6d4" onClick={() => onTabChange('netconns')} />
+          <StatCard label="Sched. Tasks"   value={counts.scheduled_tasks} icon={Clock}    color="#f59e0b" onClick={() => onTabChange('tasks')} />
+        </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        {/* Domain Admins */}
-        <Card onClick={() => onTabChange('users')}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-            <UserCheck size={16} color="#dc2626" />
-            <span style={{ fontWeight: 700, fontSize: 14 }}>Domain Admins</span>
-            <Count n={as.domain_admins.length} />
-          </div>
-          {as.domain_admins.length === 0
-            ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>None detected</div>
-            : as.domain_admins.map((u, i) => (
-              <div key={i} style={{ padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
-                <span style={{ fontWeight: 600 }}>{u.domain}\{u.username}</span>
-                {u.spns?.length > 0 && <Pill label="Kerberoastable" color="#f59e0b" />}
-              </div>
-            ))
-          }
-        </Card>
+      {/* ── Security & Compliance ── */}
+      <div>
+        <SectionLabel>Security & Compliance</SectionLabel>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 10, marginTop: 8 }}>
+          <StatCard label="Missing Patches"value={counts.missing_patches} icon={Layers}   color="#dc2626" onClick={() => onTabChange('patches')} />
+          <StatCard label="Security Ctrl"  value={counts.security_controls} icon={Lock}   color="#10b981" onClick={() => onTabChange('security')} />
+          <StatCard label="Certificates"   value={counts.certificates}   icon={FileText}  color="#8b5cf6" onClick={() => onTabChange('certs')} />
+          <StatCard label="Pwd Policy"     value={counts.password_policies} icon={Lock}   color="#dc2626" onClick={() => onTabChange('policy')} />
+          <StatCard label="Logged On"      value={counts.logged_on}      icon={LogIn}     color="#0ea5e9" onClick={() => onTabChange('loggedon')} />
+          <StatCard label="Processes"      value={counts.processes}       icon={Activity}  color="#64748b" onClick={() => onTabChange('processes')} />
+          <StatCard label="Env Variables"  value={counts.env_vars}        icon={Terminal}  color="#f59e0b" onClick={() => onTabChange('envvars')} />
+          <StatCard label="AI Tools"       value={counts.ai_tools}        icon={BrainCircuit} color="#8b5cf6" onClick={() => onTabChange('aitools')} />
+        </div>
+      </div>
 
-        {/* Kerberoastable Accounts */}
-        <Card onClick={() => onTabChange('users')}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-            <Key size={16} color="#f59e0b" />
-            <span style={{ fontWeight: 700, fontSize: 14 }}>Kerberoastable Accounts</span>
-            <Count n={as.kerberoastable_accounts.length} />
-          </div>
-          {as.kerberoastable_accounts.length === 0
-            ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>None detected</div>
-            : as.kerberoastable_accounts.map((u, i) => (
-              <div key={i} style={{ padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
-                <div style={{ fontWeight: 600 }}>{u.domain}\{u.username}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {u.spns?.slice(0, 2).join(', ')}
-                  {u.spns?.length > 2 && ` +${u.spns.length - 2} more`}
+      {/* ── Critical Findings ── */}
+      <div>
+        <SectionLabel>Critical Findings</SectionLabel>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14, marginTop: 8 }}>
+
+          {/* Domain Admins */}
+          <Card onClick={() => onTabChange('users')} style={{ borderLeft: '3px solid #dc2626' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <UserCheck size={15} color="#dc2626" />
+              <span style={{ fontWeight: 700, fontSize: 13 }}>Domain Admins</span>
+              <span style={{ marginLeft: 'auto', background: as.domain_admins.length > 0 ? '#fef2f2' : 'var(--bg-muted)', color: as.domain_admins.length > 0 ? '#dc2626' : 'var(--text-muted)', fontWeight: 700, fontSize: 12, padding: '1px 8px', borderRadius: 10 }}>{as.domain_admins.length}</span>
+            </div>
+            {as.domain_admins.length === 0
+              ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>None detected</div>
+              : as.domain_admins.slice(0, 6).map((u, i) => (
+                <div key={i} style={{ padding: '5px 0', borderBottom: i < Math.min(as.domain_admins.length, 6) - 1 ? '1px solid var(--border)' : 'none', fontSize: 13 }}>
+                  <span style={{ fontWeight: 600 }}>{u.domain ? `${u.domain}\\` : ''}{u.username}</span>
+                  {u.spns?.length > 0 && <Pill label="Kerberoastable" color="#f59e0b" />}
                 </div>
-              </div>
-            ))
-          }
-        </Card>
+              ))
+            }
+            {as.domain_admins.length > 6 && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>+{as.domain_admins.length - 6} more</div>}
+          </Card>
 
-        {/* Lateral Movement Paths */}
-        <Card onClick={() => onTabChange('users')}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-            <Activity size={16} color="#dc2626" />
-            <span style={{ fontWeight: 700, fontSize: 14 }}>Lateral Movement Paths</span>
-            <Count n={as.lateral_movement_paths.length} />
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
-            Accounts that are local admin on multiple hosts
-          </div>
-          {as.lateral_movement_paths.length === 0
-            ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>None detected</div>
-            : as.lateral_movement_paths.map((p, i) => (
-              <div key={i} style={{ padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
-                <div style={{ fontWeight: 600 }}>{p.account}</div>
-                <div style={{ fontSize: 11, color: '#0ea5e9', marginTop: 2 }}>
-                  Admin on {p.asset_ids.length} hosts · asset IDs: {p.asset_ids.join(', ')}
+          {/* Kerberoastable Accounts */}
+          <Card onClick={() => onTabChange('users')} style={{ borderLeft: '3px solid #f59e0b' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <Key size={15} color="#f59e0b" />
+              <span style={{ fontWeight: 700, fontSize: 13 }}>Kerberoastable Accounts</span>
+              <span style={{ marginLeft: 'auto', background: as.kerberoastable_accounts.length > 0 ? '#fffbeb' : 'var(--bg-muted)', color: as.kerberoastable_accounts.length > 0 ? '#d97706' : 'var(--text-muted)', fontWeight: 700, fontSize: 12, padding: '1px 8px', borderRadius: 10 }}>{as.kerberoastable_accounts.length}</span>
+            </div>
+            {as.kerberoastable_accounts.length === 0
+              ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>None detected</div>
+              : as.kerberoastable_accounts.slice(0, 6).map((u, i) => (
+                <div key={i} style={{ padding: '5px 0', borderBottom: i < Math.min(as.kerberoastable_accounts.length, 6) - 1 ? '1px solid var(--border)' : 'none', fontSize: 13 }}>
+                  <div style={{ fontWeight: 600 }}>{u.domain ? `${u.domain}\\` : ''}{u.username}</div>
+                  {u.spns?.length > 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {u.spns.slice(0, 2).join(', ')}{u.spns.length > 2 && ` +${u.spns.length - 2}`}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))
-          }
-        </Card>
+              ))
+            }
+            {as.kerberoastable_accounts.length > 6 && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>+{as.kerberoastable_accounts.length - 6} more</div>}
+          </Card>
 
-        {/* Credential & Security Weaknesses */}
+          {/* Lateral Movement Paths */}
+          <Card onClick={() => onTabChange('users')} style={{ borderLeft: '3px solid #dc2626' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <Activity size={15} color="#dc2626" />
+              <span style={{ fontWeight: 700, fontSize: 13 }}>Lateral Movement Paths</span>
+              <span style={{ marginLeft: 'auto', background: as.lateral_movement_paths.length > 0 ? '#fef2f2' : 'var(--bg-muted)', color: as.lateral_movement_paths.length > 0 ? '#dc2626' : 'var(--text-muted)', fontWeight: 700, fontSize: 12, padding: '1px 8px', borderRadius: 10 }}>{as.lateral_movement_paths.length}</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+              Accounts that are local admin on multiple hosts
+            </div>
+            {as.lateral_movement_paths.length === 0
+              ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>None detected</div>
+              : as.lateral_movement_paths.slice(0, 6).map((p, i) => (
+                <div key={i} style={{ padding: '5px 0', borderBottom: i < Math.min(as.lateral_movement_paths.length, 6) - 1 ? '1px solid var(--border)' : 'none', fontSize: 13 }}>
+                  <div style={{ fontWeight: 600 }}>{p.account}</div>
+                  <div style={{ fontSize: 11, color: '#0ea5e9', marginTop: 2 }}>
+                    Admin on {p.asset_ids.length} hosts
+                  </div>
+                </div>
+              ))
+            }
+          </Card>
+        </div>
+      </div>
+
+      {/* ── Security Posture + Infrastructure ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+
+        {/* Security Posture */}
         <Card onClick={() => onTabChange('security')}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-            <Shield size={16} color="#f59e0b" />
-            <span style={{ fontWeight: 700, fontSize: 14 }}>Security Posture</span>
+            <Shield size={15} color="#f59e0b" />
+            <span style={{ fontWeight: 700, fontSize: 13 }}>Security Posture</span>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-              <span>Password never expires</span>
-              <span style={{ fontWeight: 700, color: as.password_never_expires_count > 0 ? '#f59e0b' : 'var(--text-muted)' }}>
-                {as.password_never_expires_count}
-              </span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-              <span>Never changed password</span>
-              <span style={{ fontWeight: 700, color: as.never_changed_password_count > 0 ? '#dc2626' : 'var(--text-muted)' }}>
-                {as.never_changed_password_count}
-              </span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-              <span>Writeable shares</span>
-              <span style={{ fontWeight: 700, color: (as.writeable_shares || 0) > 0 ? '#f59e0b' : 'var(--text-muted)' }}>
-                {as.writeable_shares || 0}
-              </span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-              <span>Hosts with AV enabled</span>
-              <span style={{ fontWeight: 700, color: '#10b981' }}>{as.hosts_with_av || 0}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-              <span>Weak password policies</span>
-              <span style={{ fontWeight: 700, color: (as.weak_password_policies || 0) > 0 ? '#dc2626' : 'var(--text-muted)' }}>
-                {as.weak_password_policies || 0}
-              </span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-              <span>Established connections</span>
-              <span style={{ fontWeight: 700, color: '#0ea5e9' }}>{as.established_connections}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-              <span>Local admin accounts</span>
-              <span style={{ fontWeight: 700 }}>{as.local_admins_count}</span>
-            </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+            <PostureRow label="Password never expires"  value={as.password_never_expires_count}  severity="warn" />
+            <PostureRow label="Weak password policies"  value={as.weak_password_policies || 0}   severity="critical" />
+            <PostureRow label="Never changed password"  value={as.never_changed_password_count}   severity="critical" />
+            <PostureRow label="Local admin accounts"    value={as.local_admins_count}             severity="warn" />
+            <PostureRow label="Writeable shares"        value={as.writeable_shares || 0}          severity="warn" />
+            <PostureRow label="Hosts with AV enabled"   value={as.hosts_with_av || 0}            severity="good" />
+            <PostureRow label="Established connections"  value={as.established_connections}        severity="info" />
+            <PostureRow label="Sensitive env variables"  value={as.sensitive_env_vars || 0}        severity="critical" />
+            <PostureRow label="Expired certificates"     value={as.expired_certs || 0}            severity="critical" />
+            <PostureRow label="Expiring soon (≤30d)"     value={as.expiring_soon_certs || 0}      severity="warn" />
+            <PostureRow label="Self-signed certificates" value={as.self_signed_certs || 0}        severity="warn" />
           </div>
         </Card>
+
+        {/* Right column: Domain Controllers + Logged On stacked */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Domain Controllers */}
+          {as.domain_controllers?.length > 0 && (
+            <Card onClick={() => onTabChange('computers')}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                <Monitor size={15} color="#dc2626" />
+                <span style={{ fontWeight: 700, fontSize: 13 }}>Domain Controllers</span>
+                <Count n={as.domain_controllers.length} />
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {as.domain_controllers.map((c, i) => (
+                  <div key={i} style={{
+                    background: 'var(--bg-muted)', border: '1px solid var(--border)',
+                    borderRadius: 6, padding: '4px 10px', fontSize: 12,
+                  }}>
+                    <span style={{ fontWeight: 600 }}>{c.computer_name}</span>
+                    {c.os && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}> · {c.os}</span>}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* Logged-on users */}
+          {as.logged_on_users?.length > 0 && (
+            <Card onClick={() => onTabChange('loggedon')}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                <LogIn size={15} color="#0ea5e9" />
+                <span style={{ fontWeight: 700, fontSize: 13 }}>Currently Logged On</span>
+                <Count n={as.logged_on_users.length} />
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {as.logged_on_users.map((u, i) => (
+                  <div key={i} style={{
+                    background: 'var(--bg-muted)', border: '1px solid var(--border)',
+                    borderRadius: 6, padding: '4px 10px', fontSize: 12,
+                  }}>
+                    <span style={{ fontWeight: 600 }}>{u.domain}\\{u.username}</span>
+                    <span style={{ color: 'var(--text-muted)', fontSize: 11 }}> · {u.asset_label}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+        </div>
       </div>
 
-      {/* Domain Controllers */}
-      {as.domain_controllers?.length > 0 && (
-        <Card onClick={() => onTabChange('computers')}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-            <Monitor size={16} color="#dc2626" />
-            <span style={{ fontWeight: 700, fontSize: 14 }}>Domain Controllers</span>
-            <Count n={as.domain_controllers.length} />
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {as.domain_controllers.map((c, i) => (
-              <div key={i} style={{
-                background: 'var(--bg-muted)', border: '1px solid var(--border)',
-                borderRadius: 6, padding: '6px 12px', fontSize: 13,
-              }}>
-                <span style={{ fontWeight: 600 }}>{c.computer_name}</span>
-                {c.os && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}> · {c.os}</span>}
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
-
-      {/* Logged-on users */}
-      {as.logged_on_users?.length > 0 && (
-        <Card onClick={() => onTabChange('loggedon')}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-            <LogIn size={16} color="#0ea5e9" />
-            <span style={{ fontWeight: 700, fontSize: 14 }}>Currently Logged On</span>
-            <Count n={as.logged_on_users.length} />
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {as.logged_on_users.map((u, i) => (
-              <div key={i} style={{
-                background: 'var(--bg-muted)', border: '1px solid var(--border)',
-                borderRadius: 6, padding: '6px 12px', fontSize: 13,
-              }}>
-                <span style={{ fontWeight: 600 }}>{u.domain}\{u.username}</span>
-                <span style={{ color: 'var(--text-muted)', fontSize: 11 }}> · {u.asset_label}</span>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
-
-      {/* Top missing patches */}
+      {/* ── Top Missing Patches ── */}
       {as.top_missing_patches?.length > 0 && (
         <Card onClick={() => onTabChange('patches')}>
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14 }}>Top Missing Patches</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+            <Layers size={15} color="#dc2626" />
+            <span style={{ fontWeight: 700, fontSize: 13 }}>Top Missing Patches</span>
+          </div>
           <Table
             columns={[
               { key: 'kb_id', label: 'Patch / Advisory', width: '40%' },
@@ -1006,77 +1131,85 @@ function PatchesTab({ scanId }) {
 
 // ─── Password Policy tab ───────────────────────────────────
 function PasswordPolicyTab({ scanId }) {
-  const [rows, setRows]       = useState([])
-  const [loading, setLoading] = useState(true)
+  const [rows, setRows]               = useState([])
+  const [loading, setLoading]         = useState(true)
+  const [groupByAsset, setGroupByAsset] = useState(false)
+  const [sortBy, setSortBy]           = useState('domain')
+  const [sortOrder, setSortOrder]     = useState('asc')
+
+  const handleSort = (key) => {
+    if (sortBy === key) { setSortOrder(o => o === 'asc' ? 'desc' : 'asc') }
+    else { setSortBy(key); setSortOrder('asc') }
+  }
 
   useEffect(() => {
     setLoading(true)
-    getInventoryPasswordPolicies({ scan_id: scanId })
+    getInventoryPasswordPolicies({ scan_id: scanId, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId])
+  }, [scanId, sortBy, sortOrder])
 
-  function PolicyBool({ val, goodIfTrue = true }) {
+  function policyBool(val, goodIfTrue = true) {
     if (val === null || val === undefined) return <Count n="—" />
     const good = goodIfTrue ? val : !val
     return <Pill label={val ? 'Yes' : 'No'} color={good ? '#16a34a' : '#dc2626'} />
   }
 
-  function PolicyNum({ val, warnBelow, warnAbove, unit = '' }) {
+  function policyNum(val, { warnBelow, warnAbove, unit = '' } = {}) {
     if (val === null || val === undefined) return <Count n="—" />
     const bad = (warnBelow !== undefined && val < warnBelow) || (warnAbove !== undefined && val > warnAbove)
     return <span style={{ fontWeight: 700, color: bad ? '#dc2626' : 'var(--text-primary)' }}>{val}{unit}</span>
   }
 
+  const columns = [
+    { key: 'domain', label: 'Domain', width: '15%', sortable: true,
+      render: (v, r) => (
+        <span style={{ fontWeight: 600 }}>
+          {v || 'Unknown'}{r.is_weak ? ' ' : ''}{r.is_weak && <Pill label="WEAK" color="#dc2626" />}
+        </span>
+      )
+    },
+    { key: 'asset_label', label: 'Asset', width: '15%',
+      render: (v, r) => <>{v}<EnvPill env={r.asset_env} /></>
+    },
+    { key: 'min_length', label: 'Min Length', width: '9%', sortable: true,
+      render: v => policyNum(v, { warnBelow: 8 })
+    },
+    { key: 'complexity_enabled', label: 'Complexity', width: '9%', sortable: true,
+      render: v => policyBool(v, true)
+    },
+    { key: 'history_count', label: 'History', width: '9%', sortable: true,
+      render: v => policyNum(v, { warnBelow: 5 })
+    },
+    { key: 'max_age_days', label: 'Max Age', width: '9%', sortable: true,
+      render: v => policyNum(v, { warnAbove: 365, unit: 'd' })
+    },
+    { key: 'lockout_threshold', label: 'Lockout', width: '10%', sortable: true,
+      render: v => v === 0
+        ? <Pill label="No lockout!" color="#dc2626" />
+        : <span style={{ fontWeight: 700 }}>{v} attempts</span>
+    },
+    { key: 'lockout_duration_mins', label: 'Lock Dur.', width: '9%', sortable: true,
+      render: v => policyNum(v, { unit: ' min' })
+    },
+    { key: 'reversible_encryption', label: 'Rev. Encrypt', width: '9%', sortable: true,
+      render: v => policyBool(v, false)
+    },
+  ]
+
   if (loading) return <Spinner />
   if (rows.length === 0) return <EmptyState icon={FileText} title="No password policy data" sub="Requires plugin 17651 in the scan." />
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {rows.map((p, i) => (
-        <Card key={i}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}>
-            <FileText size={16} color={p.is_weak ? '#dc2626' : '#16a34a'} />
-            <span style={{ fontWeight: 700, fontSize: 15 }}>
-              {p.domain || 'Unknown Domain'}
-            </span>
-            {p.is_weak && <Pill label="WEAK POLICY" color="#dc2626" />}
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>MIN PASSWORD LENGTH</div>
-              <PolicyNum val={p.min_length} warnBelow={8} />
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>COMPLEXITY REQUIRED</div>
-              <PolicyBool val={p.complexity_enabled} goodIfTrue={true} />
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>PASSWORD HISTORY</div>
-              <PolicyNum val={p.history_count} warnBelow={5} unit=" remembered" />
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>MAX PASSWORD AGE</div>
-              <PolicyNum val={p.max_age_days} warnAbove={365} unit=" days" />
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>LOCKOUT THRESHOLD</div>
-              <span style={{ fontWeight: 700, color: p.lockout_threshold === 0 ? '#dc2626' : 'var(--text-primary)' }}>
-                {p.lockout_threshold === 0 ? 'No lockout!' : `${p.lockout_threshold} attempts`}
-              </span>
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>LOCKOUT DURATION</div>
-              <PolicyNum val={p.lockout_duration_mins} unit=" min" />
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>REVERSIBLE ENCRYPTION</div>
-              <PolicyBool val={p.reversible_encryption} goodIfTrue={false} />
-            </div>
-          </div>
-        </Card>
-      ))}
-    </div>
+    <Card>
+      <FilterBar>
+        <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
+      </FilterBar>
+      {groupByAsset
+        ? <GroupedTable columns={columns} rows={rows} emptyMessage="No password policies found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+        : <Table columns={columns} rows={rows} emptyMessage="No password policies found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+      }
+      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} policies</div>
+    </Card>
   )
 }
 
@@ -1462,14 +1595,90 @@ function AIToolsTab({ scanId }) {
 }
 
 
+// ─── Processes Tab ──────────────────────────────────────────
+function ProcessesTab({ scanId }) {
+  const [rows, setRows]               = useState([])
+  const [loading, setLoading]         = useState(true)
+  const [search, setSearch]           = useState('')
+  const [groupByAsset, setGroupByAsset] = useState(false)
+  const [sortBy, setSortBy]           = useState('process_name')
+  const [sortOrder, setSortOrder]     = useState('asc')
+
+  const handleSort = (key) => {
+    if (sortBy === key) { setSortOrder(o => o === 'asc' ? 'desc' : 'asc') }
+    else { setSortBy(key); setSortOrder('asc') }
+  }
+
+  const load = useCallback(() => {
+    setLoading(true)
+    getInventoryProcesses({ scan_id: scanId, search: search || null, sort_by: sortBy, order: sortOrder })
+      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
+  }, [scanId, search, sortBy, sortOrder])
+
+  useEffect(() => { load() }, [load])
+
+  const columns = [
+    { key: 'process_name', label: 'Process', width: '28%', sortable: true,
+      render: (v, r) => (
+        <span style={{ paddingLeft: Math.min(r.depth, 6) * 16, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          {r.depth > 0 && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>└</span>}
+          <code style={{ fontSize: 12, fontWeight: 600, background: 'var(--bg-muted)', padding: '2px 6px', borderRadius: 4 }}>{v}</code>
+        </span>
+      )
+    },
+    { key: 'pid', label: 'PID', width: '10%', sortable: true,
+      render: v => <code style={{ fontSize: 11, color: 'var(--text-muted)' }}>{v}</code>
+    },
+    { key: 'ppid', label: 'PPID', width: '10%', sortable: true,
+      render: v => v != null ? <code style={{ fontSize: 11, color: 'var(--text-muted)' }}>{v}</code> : '—'
+    },
+    { key: 'parent_name', label: 'Parent', width: '18%', sortable: true,
+      render: v => v || '—'
+    },
+    { key: 'session_id', label: 'Session', width: '9%', sortable: true,
+      render: v => <Pill color={v === 0 ? '#6366f1' : '#f59e0b'}>{v}</Pill>
+    },
+    { key: 'asset_label', label: 'Asset', width: '25%',
+      render: (v, r) => <>{v}<EnvPill env={r.asset_env} /></>
+    },
+  ]
+
+  // Unique process name count
+  const uniqueNames = new Set(rows.map(r => r.process_name)).size
+
+  return (
+    <Card>
+      <FilterBar>
+        <Input value={search} onChange={setSearch} placeholder="Search process name…" style={{ width: 240 }} />
+        <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
+      </FilterBar>
+      {loading ? <Spinner /> : groupByAsset
+        ? <GroupedTable columns={columns} rows={rows} emptyMessage="No processes found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+        : <Table columns={columns} rows={rows} emptyMessage="No processes found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+      }
+      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} processes ({uniqueNames} unique)</div>
+    </Card>
+  )
+}
+
+
 // ─── Root ──────────────────────────────────────────────────
 export default function InventoryExplorer() {
   const { activeScanId } = useScan()
   const [searchParams, setSearchParams] = useSearchParams()
-  const VALID_TABS = TABS.map(t => t.key)
   const tabParam = searchParams.get('tab')
-  const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'surface'
+  const activeTab = ALL_TABS.includes(tabParam) ? tabParam : 'surface'
   const setActiveTab = (key) => setSearchParams(prev => { prev.set('tab', key); return prev })
+
+  const TAB_EXPORT_MAP = {
+    users: 'inventory/users', groups: 'inventory/groups', computers: 'inventory/computers',
+    services: 'inventory/services', shares: 'inventory/shares', software: 'inventory/software',
+    security: 'inventory/security-controls', netconns: 'inventory/netconns',
+    tasks: 'inventory/scheduled-tasks', patches: 'inventory/patches',
+    policy: 'inventory/password-policies', loggedon: 'inventory/logged-on',
+    envvars: 'inventory/env-vars', certs: 'inventory/certificates',
+    aitools: 'inventory/ai-tools', processes: 'inventory/processes',
+  }
 
   const TAB_COMPONENTS = {
     surface:   <AttackSurfaceTab     scanId={activeScanId} onTabChange={setActiveTab} />,
@@ -1488,6 +1697,7 @@ export default function InventoryExplorer() {
     envvars:   <EnvVarsTab           scanId={activeScanId} />,
     certs:     <CertificatesTab      scanId={activeScanId} />,
     aitools:   <AIToolsTab           scanId={activeScanId} />,
+    processes: <ProcessesTab         scanId={activeScanId} />,
   }
 
   return (
@@ -1495,36 +1705,46 @@ export default function InventoryExplorer() {
       <PageHeader
         title="Inventory"
         subtitle="Structured entities extracted from scan data — users, groups, computers, shares, software, security controls, and more."
+        action={TAB_EXPORT_MAP[activeTab] ? (
+          <Button variant="ghost" size="sm" onClick={() => exportDownload(TAB_EXPORT_MAP[activeTab], { scan_id: activeScanId })}>
+            <Download size={14} /> Export CSV
+          </Button>
+        ) : null}
       />
 
       {/* Tab bar */}
       <div style={{
         display: 'flex', gap: 2, marginBottom: 20,
         borderBottom: '1px solid var(--border)', paddingBottom: 0,
-        overflowX: 'auto',
       }}>
-        {TABS.map(({ key, label, icon: Icon }) => {
-          const active = activeTab === key
-          return (
-            <button
-              key={key}
-              onClick={() => setActiveTab(key)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6,
-                padding: '9px 12px',
-                background: 'none', border: 'none', cursor: 'pointer',
-                fontSize: 12, fontWeight: active ? 700 : 500,
-                color: active ? 'var(--text-primary)' : 'var(--text-muted)',
-                borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
-                marginBottom: -1,
-                whiteSpace: 'nowrap',
-                transition: 'color 0.15s',
-              }}
-            >
-              <Icon size={13} />
-              {label}
-            </button>
-          )
+        {TAB_GROUPS.map((group) => {
+          // Top-level tab (Attack Surface)
+          if (group.key) {
+            const active = activeTab === group.key
+            const Icon = group.icon
+            return (
+              <button
+                key={group.key}
+                onClick={() => setActiveTab(group.key)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '9px 12px',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  fontSize: 12, fontWeight: active ? 700 : 500,
+                  color: active ? 'var(--text-primary)' : 'var(--text-muted)',
+                  borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+                  marginBottom: -1,
+                  whiteSpace: 'nowrap',
+                  transition: 'color 0.15s',
+                }}
+              >
+                <Icon size={13} />
+                {group.label}
+              </button>
+            )
+          }
+          // Dropdown group
+          return <TabDropdown key={group.label} group={group} activeTab={activeTab} onSelect={setActiveTab} />
         })}
       </div>
 

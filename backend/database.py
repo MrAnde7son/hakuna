@@ -35,6 +35,7 @@ def init_db():
         Workflow, WorkflowNode, WorkflowEdge,
         WorkflowExecution, WorkflowExecutionLog,
         IntegrationConfig,
+        ReportTemplate,
     )
     from threat_intel_models import (  # noqa: F401
         ThreatGroup, TTP, ThreatGroupTTP,
@@ -58,6 +59,12 @@ def _migrate_add_columns():
             ("last_seen", "DATETIME"),
             ("times_seen", "INTEGER DEFAULT 1"),
             ("is_regression", "BOOLEAN DEFAULT 0"),
+            ("cvss4_score", "FLOAT"),
+            ("cvss4_vector", "VARCHAR"),
+        ],
+        "threat_cves": [
+            ("cvss4_score", "FLOAT"),
+            ("cvss4_vector", "VARCHAR"),
         ],
         "finding_exceptions": [
             ("conditions", "JSON"),

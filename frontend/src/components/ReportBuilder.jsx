@@ -20,22 +20,19 @@ import { useScan } from '../App.jsx'
 import {
   getSummary, getAssets, getFindings, getRemediationQueue, getPluginFamilies,
   getTrending, getSLASummary, getAutomateClicks, getScanDeltaTimeline, getMetricsTimeline,
-  getTemporalSummary, getRemediationVelocity
+  getTemporalSummary, getRemediationVelocity,
+  getReportTemplates, createReportTemplate, updateReportTemplate, deleteReportTemplate as apiDeleteTemplate,
+  exportConfig,
 } from '../api.js'
-import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill } from './ui.jsx'
+import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons } from './ui.jsx'
 
 // ─── Storage helpers ─────────────────────────────────────────────────────────
 
 const STORAGE_KEY = 'nessus_custom_reports'
+const MIGRATED_KEY = 'nessus_reports_migrated'
 const LANDING_KEY = 'nessus_landing_report'
 const DEFAULT_REPORT_ID = 'default-security-overview'
 
-function loadReports() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]') } catch { return [] }
-}
-function saveReports(reports) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(reports))
-}
 function loadLandingId() {
   return localStorage.getItem(LANDING_KEY) || DEFAULT_REPORT_ID
 }
@@ -44,6 +41,40 @@ function saveLandingId(id) {
 }
 function uid() {
   return Math.random().toString(36).slice(2, 10)
+}
+
+/** One-time migration: push localStorage reports to API, then clear. */
+async function migrateLocalStorageReports() {
+  if (localStorage.getItem(MIGRATED_KEY)) return
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) {
+      const local = JSON.parse(raw)
+      for (const r of local) {
+        try {
+          await createReportTemplate({
+            name: r.name || 'Untitled Report',
+            description: r.description || null,
+            config: { widgets: r.widgets || [], createdAt: r.createdAt },
+          })
+        } catch { /* skip duplicates */ }
+      }
+    }
+  } catch { /* ignore */ }
+  localStorage.setItem(MIGRATED_KEY, '1')
+}
+
+/** Convert API template to the internal report format used by Builder. */
+function templateToReport(t) {
+  return {
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    widgets: t.config?.widgets || [],
+    createdAt: t.config?.createdAt || t.created_at,
+    updatedAt: t.updated_at,
+    is_default: t.is_default,
+  }
 }
 
 const DEFAULT_DASHBOARD = {
@@ -1241,7 +1272,7 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
 
 // ─── Report list (landing) ────────────────────────────────────────────────────
 
-function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingId, onSetLanding }) {
+function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingId, onSetLanding, onRefresh }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
@@ -1249,12 +1280,20 @@ function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingI
           <h2 style={{ fontSize: 18, fontWeight: 700 }}>Reports</h2>
           <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>Build and save custom dashboards — set any as your landing page</div>
         </div>
-        <button
-          onClick={onCreate}
-          style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 18px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
-        >
-          <Plus size={16} /> New Report
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <ExportImportButtons
+            configType="report_template"
+            exportFn={() => exportConfig('report_template')}
+            onImported={onRefresh}
+            label="Report Templates"
+          />
+          <button
+            onClick={onCreate}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 18px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
+          >
+            <Plus size={16} /> New Report
+          </button>
+        </div>
       </div>
 
       {reports.length === 0 ? (
@@ -1341,27 +1380,40 @@ function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingI
 // ─── Root export ──────────────────────────────────────────────────────────────
 
 export default function ReportBuilder() {
-  const [reports, setReports] = useState(() => {
-    const saved = loadReports()
-    if (saved.length === 0) {
-      saveReports([DEFAULT_DASHBOARD])
-      return [DEFAULT_DASHBOARD]
-    }
-    return saved
-  })
+  const [reports, setReports] = useState([])
+  const [loading, setLoading] = useState(true)
   const [landingId, setLandingId] = useState(loadLandingId)
-  const [activeReport, setActiveReport] = useState(() => {
-    // Auto-open the landing report on first load
-    const id = loadLandingId()
-    const saved = loadReports()
-    const all = saved.length === 0 ? [DEFAULT_DASHBOARD] : saved
-    return all.find(r => r.id === id) || all[0] || null
-  })
+  const [activeReport, setActiveReport] = useState(null)
 
-  const persistAndSet = (newReports) => {
-    setReports(newReports)
-    saveReports(newReports)
-  }
+  const loadFromApi = useCallback(async () => {
+    try {
+      await migrateLocalStorageReports()
+      let templates = await getReportTemplates()
+      // Ensure default dashboard exists
+      if (templates.length === 0) {
+        await createReportTemplate({
+          name: DEFAULT_DASHBOARD.name,
+          config: { widgets: DEFAULT_DASHBOARD.widgets, createdAt: DEFAULT_DASHBOARD.createdAt },
+          is_default: true,
+        })
+        templates = await getReportTemplates()
+      }
+      const mapped = templates.map(templateToReport)
+      setReports(mapped)
+      // Auto-open landing report on first load
+      if (!activeReport) {
+        const lid = loadLandingId()
+        const found = mapped.find(r => String(r.id) === String(lid)) || mapped[0] || null
+        setActiveReport(found)
+      }
+    } catch (e) {
+      console.error('Failed to load report templates', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { loadFromApi() }, [loadFromApi])
 
   const setLanding = (id) => {
     setLandingId(id)
@@ -1369,37 +1421,62 @@ export default function ReportBuilder() {
   }
 
   const createReport = () => {
-    const report = { id: uid(), name: 'Untitled Report', createdAt: new Date().toISOString(), widgets: [] }
+    const report = { id: null, name: 'Untitled Report', createdAt: new Date().toISOString(), widgets: [] }
     setActiveReport(report)
   }
 
   const openReport = (report) => setActiveReport(report)
 
-  const saveReport = (updated) => {
-    const existing = reports.find(r => r.id === updated.id)
-    if (existing) {
-      persistAndSet(reports.map(r => r.id === updated.id ? { ...updated, updatedAt: new Date().toISOString() } : r))
-    } else {
-      persistAndSet([...reports, { ...updated, updatedAt: new Date().toISOString() }])
+  const saveReport = async (updated) => {
+    try {
+      if (updated.id) {
+        await updateReportTemplate(updated.id, {
+          name: updated.name,
+          config: { widgets: updated.widgets || [], createdAt: updated.createdAt },
+        })
+      } else {
+        const result = await createReportTemplate({
+          name: updated.name,
+          config: { widgets: updated.widgets || [], createdAt: updated.createdAt },
+        })
+        updated = { ...updated, id: result.id }
+      }
+      setActiveReport(updated)
+      loadFromApi()
+    } catch (e) {
+      console.error('Failed to save report', e)
     }
-    setActiveReport(updated)
   }
 
-  const deleteReport = (id) => {
+  const deleteReport = async (id) => {
     if (!confirm('Delete this report?')) return
-    const next = reports.filter(r => r.id !== id)
-    persistAndSet(next)
-    if (activeReport?.id === id) setActiveReport(null)
-    if (landingId === id) {
-      const fallback = next[0]?.id || DEFAULT_REPORT_ID
-      setLanding(fallback)
+    try {
+      await apiDeleteTemplate(id)
+      const next = reports.filter(r => r.id !== id)
+      setReports(next)
+      if (activeReport?.id === id) setActiveReport(null)
+      if (String(landingId) === String(id)) {
+        const fallback = next[0]?.id || DEFAULT_REPORT_ID
+        setLanding(fallback)
+      }
+    } catch (e) {
+      console.error('Failed to delete report', e)
     }
   }
 
-  const duplicateReport = (report) => {
-    const copy = { ...report, id: uid(), name: `${report.name} (copy)`, createdAt: new Date().toISOString(), widgets: report.widgets.map(w => ({ ...w, id: uid() })) }
-    persistAndSet([...reports, copy])
+  const duplicateReport = async (report) => {
+    try {
+      const result = await createReportTemplate({
+        name: `${report.name} (copy)`,
+        config: { widgets: (report.widgets || []).map(w => ({ ...w, id: uid() })), createdAt: new Date().toISOString() },
+      })
+      loadFromApi()
+    } catch (e) {
+      console.error('Failed to duplicate report', e)
+    }
   }
+
+  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner /> Loading reports...</div>
 
   if (activeReport) {
     return (
@@ -1424,6 +1501,7 @@ export default function ReportBuilder() {
       onDuplicate={duplicateReport}
       landingId={landingId}
       onSetLanding={setLanding}
+      onRefresh={loadFromApi}
     />
   )
 }
