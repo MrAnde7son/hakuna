@@ -47,6 +47,7 @@ export const getRemediationQueue = (params = {}) => {
 export const getSummary = (scanId) => request(`/reports/summary${scanId ? `?scan_id=${scanId}` : ''}`)
 export const getPluginFamilies = (scanId) => request(`/reports/plugin-families${scanId ? `?scan_id=${scanId}` : ''}`)
 export const getTrending = () => request('/reports/trending')
+export const getMetricsTimeline = () => request('/reports/metrics-timeline')
 
 // Automate
 export const logAutomateClick = (findingId) =>
@@ -88,6 +89,12 @@ export const setFindingOwnership = (id, data) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
+export const confirmAssetOwner = (id) =>
+  request(`/assets/${id}/confirm-owner`, { method: 'POST' })
+export const rerunOwnershipInference = (scanId) =>
+  request(`/scans/${scanId}/infer-ownership`, { method: 'POST' })
+export const getOwnershipSummary = (scanId) =>
+  request(`/scans/${scanId}/ownership-summary`)
 
 // Unified rule engine
 export const getRuleEngineCatalog = () => request('/rule-engine/catalog')
@@ -127,6 +134,8 @@ export const updateCampaignFinding = (campaignId, cfId, data) =>
 // Blast Radius
 export const getBlastRadius = (scan_id, asset_id) =>
   request(`/blast-radius?scan_id=${scan_id}&asset_id=${asset_id}`)
+export const getBlastRadiusBulk = (scan_id) =>
+  request(`/blast-radius/bulk?scan_id=${scan_id}`)
 
 // Risk scoring
 export const getRiskConfig = () => request('/risk/config')
@@ -188,7 +197,7 @@ export const runAutoTagRule = (id, scan_id = null) =>
   request(`/auto-tag-rules/${id}/run${scan_id ? `?scan_id=${scan_id}` : ''}`, { method: 'POST' })
 export const getTagConditionCatalog = () => request('/auto-tag-rules/condition-catalog')
 
-// SLA / MTTR
+// SLA
 export const getSLAConfig = () => request('/sla/config')
 export const saveSLAConfig = (configs) => request('/sla/config', {
   method: 'PUT',
@@ -266,6 +275,68 @@ export const deleteWorkflow = (id) => request(`/workflows/${id}`, { method: 'DEL
 export const executeWorkflow = (id) => request(`/workflows/${id}/execute`, { method: 'POST' })
 export const getWorkflowExecutions = (id) => request(`/workflows/${id}/executions`)
 export const getWorkflowExecution = (execId) => request(`/workflows/executions/${execId}`)
+
+// Integrations
+export const getIntegrations = () => request('/integrations')
+export const getIntegration = (provider) => request(`/integrations/${provider}`)
+export const saveIntegration = (provider, data) => request(`/integrations/${provider}`, {
+  method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+export const testIntegration = (provider) => request(`/integrations/${provider}/test`, { method: 'POST' })
+export const deleteIntegration = (provider) => request(`/integrations/${provider}`, { method: 'DELETE' })
+
+// Finding Workflow Status
+export const updateFindingStatus = (id, data) => request(`/findings/${id}/status`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const bulkUpdateFindingStatus = (data) => request('/findings/bulk-status', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+// Global Exceptions
+export const getExceptions = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/exceptions?${q}`)
+}
+export const getException = (id) => request(`/exceptions/${id}`)
+export const createException = (data) => request('/exceptions', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const updateException = (id, data) => request(`/exceptions/${id}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const deleteException = (id) => request(`/exceptions/${id}`, { method: 'DELETE' })
+export const applyAllExceptions = (scan_id = null) => request('/exceptions/apply-all', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ scan_id }),
+})
+export const getExceptionConditionCatalog = () => request('/exceptions/condition-catalog')
+
+// Scan Comparison / Delta
+export const compareScans = (baseScanId, compareScanId) =>
+  request(`/scans/compare?base_scan_id=${baseScanId}&compare_scan_id=${compareScanId}`)
+export const getScanDeltaTimeline = () => request('/scans/delta-timeline')
+
+// Temporal Analytics & Remediation Velocity
+export const getRegressions = (scanId) =>
+  request(`/reports/regressions${scanId ? `?scan_id=${scanId}` : ''}`)
+export const getTemporalSummary = (scanId) =>
+  request(`/reports/temporal-summary${scanId ? `?scan_id=${scanId}` : ''}`)
+export const getRemediationVelocity = (period = 'month') =>
+  request(`/reports/remediation-velocity?period=${period}`)
+export const backfillTemporal = (scanId) =>
+  request(`/scans/${scanId}/backfill-temporal`, { method: 'POST' })
+export const backfillTemporalAll = () =>
+  request('/scans/backfill-temporal-all', { method: 'POST' })
 
 // Deduplication
 export const getDedupConfig = () => request('/dedup/config')

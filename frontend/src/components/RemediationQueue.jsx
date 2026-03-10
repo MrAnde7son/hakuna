@@ -2,12 +2,11 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Wrench, Zap, ChevronRight, AlertTriangle } from 'lucide-react'
 import { useScan } from '../App.jsx'
-import { getRemediationQueue } from '../api.js'
+import { getRemediationQueue, createCampaign, runCampaign } from '../api.js'
 import {
   Card, SeverityBadge, ScoreBar, PageHeader, Select, Spinner,
-  EmptyState, Button, EffortBadge, OwnerBadge, Pill
+  EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill
 } from './ui.jsx'
-import AutomateModal from './AutomateModal.jsx'
 
 const EFFORT_OPTIONS = [
   { value: 'quick_win', label: 'Quick Win' },
@@ -24,9 +23,28 @@ const OWNER_OPTIONS = [
 
 const SEV_COLORS = ['#0ea5e9', '#65a30d', '#d97706', '#ea580c', '#dc2626']
 
-function FindingCard({ finding, rank, onAutomate }) {
+function FindingCard({ finding, rank, scanId }) {
   const navigate = useNavigate()
   const [expanded, setExpanded] = useState(false)
+  const [creatingCampaign, setCreatingCampaign] = useState(false)
+
+  const handleAutomate = async () => {
+    setCreatingCampaign(true)
+    try {
+      const query = [{ field: 'finding.plugin_id', op: 'eq', value: String(finding.plugin_id) }]
+      const campaign = await createCampaign({
+        name: `Remediate: ${finding.plugin_name}`,
+        description: `Campaign to remediate plugin ${finding.plugin_id} — ${finding.plugin_name}`,
+        scan_id: scanId,
+        query,
+        query_logic: 'AND',
+      })
+      await runCampaign(campaign.id)
+      navigate(`/campaigns/${campaign.id}`)
+    } finally {
+      setCreatingCampaign(false)
+    }
+  }
   const sevColor = SEV_COLORS[finding.severity] || '#0ea5e9'
 
   return (
@@ -54,7 +72,7 @@ function FindingCard({ finding, rank, onAutomate }) {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
             <SeverityBadge severity={finding.severity} label={finding.severity_label} />
             <EffortBadge effort={finding.effort_level} />
-            <OwnerBadge owner={finding.owner_suggestion} />
+            <ResolvedOwnerBadge resolved={finding.resolved_owner} />
             {finding.zero_day && <Pill label="0-DAY" color="#dc2626" />}
             {finding.exploit_available && !finding.zero_day && <Pill label="Exploit" color="#ea580c" />}
           </div>
@@ -104,11 +122,12 @@ function FindingCard({ finding, rank, onAutomate }) {
               View Details <ChevronRight size={13} />
             </Button>
             <Button
-              onClick={() => onAutomate(finding)}
+              onClick={handleAutomate}
+              disabled={creatingCampaign}
               size="sm"
               style={{ background: '#6366f122', color: '#818cf8', border: '1px solid #6366f144' }}
             >
-              <Zap size={13} /> Automate This
+              <Zap size={13} /> {creatingCampaign ? 'Creating…' : 'Automate This'}
             </Button>
           </div>
         </div>
@@ -124,8 +143,6 @@ export default function RemediationQueue() {
   const [effort, setEffort] = useState(null)
   const [owner, setOwner] = useState(null)
   const [minSev, setMinSev] = useState(2)
-  const [automating, setAutomating] = useState(null)
-
   useEffect(() => {
     setLoading(true)
     getRemediationQueue({ scan_id: activeScanId, effort, owner, min_severity: minSev, limit: 100 })
@@ -187,13 +204,12 @@ export default function RemediationQueue() {
         ) : (
           <div>
             {findings.map((f, i) => (
-              <FindingCard key={f.id} finding={f} rank={i + 1} onAutomate={setAutomating} />
+              <FindingCard key={f.id} finding={f} rank={i + 1} scanId={activeScanId} />
             ))}
           </div>
         )
       )}
 
-      {automating && <AutomateModal finding={automating} onClose={() => setAutomating(null)} />}
     </div>
   )
 }

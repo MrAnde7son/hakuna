@@ -10,7 +10,7 @@ import {
   Shield, Users, Server, Bug, Plus, Trash2, ChevronUp, ChevronDown,
   Save, Eye, EyeOff, ArrowLeft, Copy, Settings2, GripVertical,
   CheckCircle, LayoutGrid, Maximize2, Minimize2, X, PenLine,
-  TrendingUp, Zap, Clock, Home
+  TrendingUp, Zap, Clock, Home, Upload, GitCompare, Activity
 } from 'lucide-react'
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -19,7 +19,8 @@ import {
 import { useScan } from '../App.jsx'
 import {
   getSummary, getAssets, getFindings, getRemediationQueue, getPluginFamilies,
-  getTrending, getSLASummary, getAutomateClicks
+  getTrending, getSLASummary, getAutomateClicks, getScanDeltaTimeline, getMetricsTimeline,
+  getTemporalSummary, getRemediationVelocity
 } from '../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill } from './ui.jsx'
 
@@ -56,12 +57,15 @@ const DEFAULT_DASHBOARD = {
     { id: 'dw4', type: 'stat_card', title: 'Assets', width: 'quarter', config: { metric: 'total_assets', label: 'Assets Scanned' } },
     { id: 'dw5', type: 'severity_chart', title: 'Severity Breakdown', width: 'half', config: { chartType: 'donut' } },
     { id: 'dw6', type: 'trend_chart', title: 'Vulnerability Trend', width: 'half', config: {} },
-    { id: 'dw7', type: 'owner_chart', title: 'Findings by Owner', width: 'half', config: {} },
-    { id: 'dw8', type: 'sla_widget', title: 'SLA Compliance', width: 'half', config: {} },
-    { id: 'dw9', type: 'effort_chart', title: 'Remediation Effort', width: 'half', config: { chartType: 'donut' } },
-    { id: 'dw10', type: 'automation_wishlist', title: 'Automation Wishlist', width: 'half', config: { limit: 5 } },
-    { id: 'dw11', type: 'family_chart', title: 'Top Vulnerability Families', width: 'full', config: { limit: 8 } },
-    { id: 'dw12', type: 'remediation_queue', title: 'Remediation Queue', width: 'full', config: { limit: 8 } },
+    { id: 'dw7', type: 'metrics_timeline', title: 'Severity Over Time', width: 'full', config: { preset: 'severity', series: ['critical', 'high', 'medium', 'low'], chartType: 'line' } },
+    { id: 'dw7b', type: 'scan_delta_chart', title: 'Scan Delta — New vs Fixed', width: 'full', config: {} },
+    { id: 'dw8', type: 'owner_chart', title: 'Findings by Owner', width: 'half', config: {} },
+    { id: 'dw9', type: 'sla_widget', title: 'SLA Compliance', width: 'half', config: {} },
+    { id: 'dw10', type: 'effort_chart', title: 'Remediation Effort', width: 'half', config: { chartType: 'donut' } },
+    { id: 'dw11', type: 'automation_wishlist', title: 'Automation Wishlist', width: 'half', config: { limit: 5 } },
+    { id: 'dw12', type: 'scan_delta_table', title: 'Scan Delta History', width: 'full', config: {} },
+    { id: 'dw13', type: 'family_chart', title: 'Top Vulnerability Families', width: 'full', config: { limit: 8 } },
+    { id: 'dw14', type: 'remediation_queue', title: 'Remediation Queue', width: 'full', config: { limit: 8 } },
   ],
 }
 
@@ -102,8 +106,13 @@ const WIDGET_CATALOGUE = [
     category: 'Trends & Ops',
     items: [
       { type: 'trend_chart', label: 'Trend Chart', icon: TrendingUp, desc: 'Vulnerability trend across scans', defaultWidth: 'full', defaultConfig: {} },
+      { type: 'metrics_timeline', label: 'Metric Timeline', icon: TrendingUp, desc: 'Any metric over time (SLA, MTTR, risk, counts…)', defaultWidth: 'full', defaultConfig: { preset: 'severity', series: ['critical', 'high', 'medium', 'low'] } },
+      { type: 'scan_delta_chart', label: 'Scan Delta Chart', icon: GitCompare, desc: 'New vs fixed findings per scan', defaultWidth: 'full', defaultConfig: {} },
+      { type: 'scan_delta_table', label: 'Scan Delta History', icon: Activity, desc: 'Scan-over-scan change table', defaultWidth: 'full', defaultConfig: {} },
       { type: 'sla_widget', label: 'SLA Compliance', icon: Clock, desc: 'SLA status and MTTR by severity', defaultWidth: 'half', defaultConfig: {} },
       { type: 'automation_wishlist', label: 'Automation Wishlist', icon: Zap, desc: 'Most-requested automation findings', defaultWidth: 'half', defaultConfig: { limit: 5 } },
+      { type: 'temporal_summary', label: 'Finding Age & Regressions', icon: Clock, desc: 'Age distribution, zombie vulns, and regression alerts', defaultWidth: 'half', defaultConfig: {} },
+      { type: 'velocity_chart', label: 'Remediation Velocity', icon: Activity, desc: 'Findings resolved per month/week with trend', defaultWidth: 'half', defaultConfig: { period: 'month' } },
     ]
   },
 ]
@@ -150,8 +159,13 @@ function useWidgetData(type, scanId) {
       findings_table: () => getFindings({ scan_id: scanId, page_size: 50 }),
       remediation_queue: () => getRemediationQueue({ scan_id: scanId, limit: 20 }),
       trend_chart: () => getTrending(),
+      metrics_timeline: () => getMetricsTimeline(),
+      scan_delta_chart: () => getScanDeltaTimeline(),
+      scan_delta_table: () => getScanDeltaTimeline(),
       sla_widget: () => getSLASummary(scanId),
       automation_wishlist: () => getAutomateClicks(),
+      temporal_summary: () => getTemporalSummary(scanId),
+      velocity_chart: () => getRemediationVelocity('month'),
     }
 
     const fetch = fetchers[type]
@@ -429,6 +443,151 @@ function WidgetRenderer({ widget, scanId, preview }) {
       )
     }
 
+    case 'metrics_timeline': {
+      if (!Array.isArray(data) || data.length < 2) {
+        return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need at least 2 scans for timeline data</div>
+      }
+      const METRIC_SERIES_DEFS = {
+        critical:              { label: 'Critical',           color: '#dc2626' },
+        high:                  { label: 'High',               color: '#ea580c' },
+        medium:                { label: 'Medium',             color: '#d97706' },
+        low:                   { label: 'Low',                color: '#65a30d' },
+        info:                  { label: 'Info',               color: '#6b7280' },
+        total_findings:        { label: 'Total Findings',     color: '#6366f1' },
+        actionable_findings:   { label: 'Actionable',         color: '#8b5cf6' },
+        total_assets:          { label: 'Total Assets',       color: '#0ea5e9' },
+        exploit_count:         { label: 'Exploitable',        color: '#f59e0b' },
+        sla_on_track:          { label: 'SLA On Track',       color: '#16a34a' },
+        sla_at_risk:           { label: 'SLA At Risk',        color: '#d97706' },
+        sla_breached:          { label: 'SLA Breached',       color: '#dc2626' },
+        sla_resolved:          { label: 'SLA Resolved',       color: '#6366f1' },
+        sla_compliance_pct:    { label: 'SLA Compliance %',   color: '#16a34a' },
+        workflow_open:         { label: 'Open',               color: '#6b7280' },
+        workflow_in_progress:  { label: 'In Progress',        color: '#3b82f6' },
+        workflow_resolved:     { label: 'Resolved',           color: '#22c55e' },
+        workflow_excepted:     { label: 'Excepted',           color: '#d97706' },
+        avg_risk_score:        { label: 'Avg Risk Score',     color: '#ef4444' },
+        max_risk_score:        { label: 'Max Risk Score',     color: '#dc2626' },
+        avg_mttr_days:         { label: 'Avg MTTR (days)',    color: '#8b5cf6' },
+      }
+      const series = cfg.series || ['critical', 'high', 'medium', 'low']
+      const chartData = data.map(d => {
+        const point = { name: (d.scan_name || '').length > 18 ? (d.scan_name || '').slice(0, 18) + '…' : d.scan_name }
+        series.forEach(s => { point[s] = d[s] ?? null })
+        return point
+      })
+      const chartType = cfg.chartType || 'line'
+      return (
+        <ResponsiveContainer width="100%" height={240}>
+          {chartType === 'bar' ? (
+            <BarChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey="name" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
+              <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
+              <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{METRIC_SERIES_DEFS[v]?.label || v}</span>} />
+              {series.map(s => (
+                <Bar key={s} dataKey={s} fill={METRIC_SERIES_DEFS[s]?.color || '#6366f1'} radius={[3, 3, 0, 0]} />
+              ))}
+            </BarChart>
+          ) : chartType === 'area' ? (
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey="name" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
+              <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
+              <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{METRIC_SERIES_DEFS[v]?.label || v}</span>} />
+              {series.map(s => (
+                <Line key={s} type="monotone" dataKey={s} stroke={METRIC_SERIES_DEFS[s]?.color || '#6366f1'} strokeWidth={2} fill={METRIC_SERIES_DEFS[s]?.color || '#6366f1'} fillOpacity={0.1} dot={{ fill: METRIC_SERIES_DEFS[s]?.color, r: 3 }} connectNulls />
+              ))}
+            </LineChart>
+          ) : (
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey="name" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
+              <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
+              <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{METRIC_SERIES_DEFS[v]?.label || v}</span>} />
+              {series.map(s => (
+                <Line key={s} type="monotone" dataKey={s} stroke={METRIC_SERIES_DEFS[s]?.color || '#6366f1'} strokeWidth={2} dot={{ fill: METRIC_SERIES_DEFS[s]?.color, r: 3 }} connectNulls />
+              ))}
+            </LineChart>
+          )}
+        </ResponsiveContainer>
+      )
+    }
+
+    case 'scan_delta_chart': {
+      if (!Array.isArray(data) || data.length < 1) {
+        return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need at least 2 scans for delta data</div>
+      }
+      const deltaData = data.map(d => ({
+        name: (d.scan_name || '').length > 20 ? (d.scan_name || '').slice(0, 20) + '…' : d.scan_name,
+        'New': d.new_count,
+        'Fixed': -d.fixed_count,
+        'Net': d.net_change,
+      }))
+      return (
+        <div>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={deltaData} stackOffset="sign">
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey="name" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
+              <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
+              <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{v}</span>} />
+              <Bar dataKey="New" fill="#ef4444" stackId="a" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="Fixed" fill="#22c55e" stackId="a" radius={[0, 0, 3, 3]} />
+            </BarChart>
+          </ResponsiveContainer>
+          <div style={{ marginTop: 12 }}>
+            <ResponsiveContainer width="100%" height={100}>
+              <LineChart data={deltaData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis dataKey="name" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} hide />
+                <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+                <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
+                <Line type="monotone" dataKey="Net" stroke="#8b5cf6" strokeWidth={2} dot={{ fill: '#8b5cf6', r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )
+    }
+
+    case 'scan_delta_table': {
+      if (!Array.isArray(data) || data.length < 1) {
+        return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need at least 2 scans for delta data</div>
+      }
+      return (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ borderBottom: '2px solid var(--border)' }}>
+                {['Scan', 'Date', 'New', 'Fixed', 'Recurring', 'Net Change'].map(h => (
+                  <th key={h} style={{ padding: '8px 10px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((d, i) => (
+                <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '8px 10px', fontWeight: 500 }}>{d.scan_name || `Scan #${d.scan_id}`}</td>
+                  <td style={{ padding: '8px 10px', color: 'var(--text-muted)' }}>{d.scan_date ? new Date(d.scan_date).toLocaleDateString() : '—'}</td>
+                  <td style={{ padding: '8px 10px', color: '#ef4444', fontWeight: 600 }}>+{d.new_count}</td>
+                  <td style={{ padding: '8px 10px', color: '#22c55e', fontWeight: 600 }}>-{d.fixed_count}</td>
+                  <td style={{ padding: '8px 10px', color: 'var(--text-muted)' }}>{d.recurring_count}</td>
+                  <td style={{ padding: '8px 10px', fontWeight: 700, color: d.net_change > 0 ? '#ef4444' : d.net_change < 0 ? '#22c55e' : 'var(--text-muted)' }}>
+                    {d.net_change > 0 ? '+' : ''}{d.net_change}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+
     case 'sla_widget': {
       if (!data || !data.total_with_sla) {
         return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No SLA data — set deadlines on findings to track compliance</div>
@@ -496,6 +655,66 @@ function WidgetRenderer({ widget, scanId, preview }) {
               <span style={{ fontWeight: 600, color: '#818cf8', fontSize: 13 }}>{item.click_count}×</span>
             </div>
           ))}
+        </div>
+      )
+    }
+
+    case 'temporal_summary': {
+      const { regression_count = 0, zombie_count = 0, age_distribution = {} } = data || {}
+      const ageBars = [
+        { label: '< 30 days', value: age_distribution.under_30d || 0, color: '#16a34a' },
+        { label: '30–90 days', value: age_distribution['30_90d'] || 0, color: '#d97706' },
+        { label: '90–180 days', value: age_distribution['90_180d'] || 0, color: '#ea580c' },
+        { label: '> 180 days', value: age_distribution.over_180d || 0, color: '#dc2626' },
+      ]
+      const total = ageBars.reduce((s, b) => s + b.value, 0) || 1
+      return (
+        <div>
+          {ageBars.map(b => (
+            <div key={b.label} style={{ marginBottom: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
+                <span style={{ color: 'var(--text-secondary)' }}>{b.label}</span>
+                <span style={{ fontWeight: 600, color: b.color }}>{b.value}</span>
+              </div>
+              <div style={{ height: 5, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
+                <div style={{ width: `${(b.value / total) * 100}%`, height: '100%', background: b.color, borderRadius: 3 }} />
+              </div>
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 12, marginTop: 12, fontSize: 12 }}>
+            {regression_count > 0 && <span style={{ color: '#fca5a5' }}>{regression_count} regression{regression_count !== 1 ? 's' : ''}</span>}
+            {zombie_count > 0 && <span style={{ color: '#fdba74' }}>{zombie_count} zombie vuln{zombie_count !== 1 ? 's' : ''}</span>}
+          </div>
+        </div>
+      )
+    }
+
+    case 'velocity_chart': {
+      const { buckets = [], avg_per_period = 0, velocity_trend_pct, period = 'month' } = data || {}
+      const recent = buckets.slice(-8)
+      if (recent.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No resolved findings yet</div>
+      return (
+        <div>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 10, fontSize: 12, color: 'var(--text-muted)' }}>
+            <span>avg {avg_per_period}/{period}</span>
+            {velocity_trend_pct != null && (
+              <span style={{ fontWeight: 600, color: velocity_trend_pct > 0 ? '#16a34a' : velocity_trend_pct < 0 ? '#dc2626' : 'var(--text-muted)' }}>
+                {velocity_trend_pct > 0 ? '+' : ''}{velocity_trend_pct}% trend
+              </span>
+            )}
+          </div>
+          <ResponsiveContainer width="100%" height={160}>
+            <BarChart data={recent} margin={{ right: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey="period_label" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
+              <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 10 }} width={30} />
+              <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
+              <Bar dataKey="critical" stackId="a" fill="#dc2626" />
+              <Bar dataKey="high" stackId="a" fill="#ea580c" />
+              <Bar dataKey="medium" stackId="a" fill="#d97706" />
+              <Bar dataKey="low" stackId="a" fill="#65a30d" />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       )
     }
@@ -652,6 +871,62 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
             options={[{ value: '3', label: '3 items' }, { value: '5', label: '5 items' }, { value: '10', label: '10 items' }]} />
         </Field>
       )}
+
+      {widget.type === 'metrics_timeline' && (() => {
+        const PRESETS = [
+          { value: 'severity', label: 'Severity Counts', series: ['critical', 'high', 'medium', 'low'] },
+          { value: 'sla', label: 'SLA Status', series: ['sla_on_track', 'sla_at_risk', 'sla_breached', 'sla_compliance_pct'] },
+          { value: 'workflow', label: 'Workflow States', series: ['workflow_open', 'workflow_in_progress', 'workflow_resolved', 'workflow_excepted'] },
+          { value: 'risk', label: 'Risk Scores', series: ['avg_risk_score', 'max_risk_score'] },
+          { value: 'mttr', label: 'MTTR', series: ['avg_mttr_days'] },
+          { value: 'overview', label: 'Overview', series: ['total_findings', 'actionable_findings', 'total_assets', 'exploit_count'] },
+          { value: 'custom', label: 'Custom…' },
+        ]
+        const ALL_SERIES = [
+          { value: 'critical', label: 'Critical' }, { value: 'high', label: 'High' },
+          { value: 'medium', label: 'Medium' }, { value: 'low', label: 'Low' }, { value: 'info', label: 'Info' },
+          { value: 'total_findings', label: 'Total Findings' }, { value: 'actionable_findings', label: 'Actionable' },
+          { value: 'total_assets', label: 'Total Assets' }, { value: 'exploit_count', label: 'Exploitable' },
+          { value: 'sla_on_track', label: 'SLA On Track' }, { value: 'sla_at_risk', label: 'SLA At Risk' },
+          { value: 'sla_breached', label: 'SLA Breached' }, { value: 'sla_resolved', label: 'SLA Resolved' },
+          { value: 'sla_compliance_pct', label: 'SLA Compliance %' },
+          { value: 'workflow_open', label: 'Open' }, { value: 'workflow_in_progress', label: 'In Progress' },
+          { value: 'workflow_resolved', label: 'Resolved' }, { value: 'workflow_excepted', label: 'Excepted' },
+          { value: 'avg_risk_score', label: 'Avg Risk Score' }, { value: 'max_risk_score', label: 'Max Risk Score' },
+          { value: 'avg_mttr_days', label: 'Avg MTTR (days)' },
+        ]
+        const currentPreset = cfg.preset || 'severity'
+        const activeSeries = cfg.series || ['critical', 'high', 'medium', 'low']
+        const toggleSeries = (s) => {
+          const next = activeSeries.includes(s) ? activeSeries.filter(x => x !== s) : [...activeSeries, s]
+          if (next.length > 0) onUpdate({ ...widget, config: { ...cfg, series: next, preset: 'custom' } })
+        }
+        return (
+          <>
+            <Field label="Preset">
+              <Select value={currentPreset} onChange={v => {
+                const p = PRESETS.find(x => x.value === v)
+                if (p && p.series) onUpdate({ ...widget, config: { ...cfg, preset: v, series: p.series } })
+                else set('preset', v)
+              }} options={PRESETS} />
+            </Field>
+            <Field label="Chart Type">
+              <Select value={cfg.chartType || 'line'} onChange={v => set('chartType', v)}
+                options={[{ value: 'line', label: 'Line' }, { value: 'bar', label: 'Bar' }, { value: 'area', label: 'Area' }]} />
+            </Field>
+            <Field label="Active Series">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto' }}>
+                {ALL_SERIES.map(s => (
+                  <label key={s.value} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', padding: '2px 0' }}>
+                    <input type="checkbox" checked={activeSeries.includes(s.value)} onChange={() => toggleSeries(s.value)} />
+                    {s.label}
+                  </label>
+                ))}
+              </div>
+            </Field>
+          </>
+        )
+      })()}
     </div>
   )
 }
@@ -752,7 +1027,8 @@ function CanvasWidget({ widget, index, total, scanId, isSelected, onSelect, onUp
 // ─── Builder view ─────────────────────────────────────────────────────────────
 
 function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
-  const { activeScanId } = useScan()
+  const { activeScanId, scans } = useScan()
+  const navigate = useNavigate()
   const [widgets, setWidgets] = useState(report.widgets || [])
   const [name, setName] = useState(report.name || 'Untitled Report')
   const [selectedId, setSelectedId] = useState(null)
@@ -879,6 +1155,38 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
             <div style={{ maxWidth: 900, margin: '0 auto 20px', textAlign: 'center' }}>
               <h1 style={{ fontSize: 24, fontWeight: 800 }}>{name}</h1>
               <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>Custom Security Report · Generated {new Date().toLocaleDateString()}</div>
+            </div>
+          )}
+
+          {preview && (!scans || scans.length === 0) && (
+            <div style={{
+              maxWidth: 560, margin: '0 auto 28px', padding: '32px 28px',
+              background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.06))',
+              border: '1px solid rgba(99,102,241,0.25)', borderRadius: 14,
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, textAlign: 'center',
+            }}>
+              <div style={{
+                width: 52, height: 52, borderRadius: 14,
+                background: 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <Upload size={26} color="#818cf8" />
+              </div>
+              <div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--text-primary)' }}>Upload your first scan</div>
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.5 }}>
+                  Import a Nessus scan (.nessus, .csv, or .html) to populate your dashboard with vulnerability data, asset inventory, and remediation priorities.
+                </div>
+              </div>
+              <button
+                onClick={() => navigate('/upload')}
+                style={{
+                  marginTop: 4, padding: '10px 24px', background: 'var(--accent)', border: 'none',
+                  color: '#fff', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14,
+                  display: 'flex', alignItems: 'center', gap: 8,
+                }}
+              >
+                <Upload size={16} /> Upload Scan
+              </button>
             </div>
           )}
 

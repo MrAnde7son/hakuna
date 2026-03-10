@@ -214,6 +214,7 @@ def sync_kev_to_db(db) -> dict:
         existing = db.query(ThreatCVE).filter(ThreatCVE.cve_id == cve_id).first()
         if existing:
             existing.in_kev = True
+            existing.has_public_exploit = True
             existing.kev_date_added = entry.get("dateAdded", "")
             existing.kev_due_date = entry.get("dueDate", "")
             existing.kev_ransomware_use = entry.get("knownRansomwareCampaignUse", "")
@@ -225,6 +226,7 @@ def sync_kev_to_db(db) -> dict:
                 cve_id=cve_id,
                 description=entry.get("shortDescription", ""),
                 in_kev=True,
+                has_public_exploit=True,
                 kev_date_added=entry.get("dateAdded", ""),
                 kev_due_date=entry.get("dueDate", ""),
                 kev_ransomware_use=entry.get("knownRansomwareCampaignUse", ""),
@@ -235,6 +237,12 @@ def sync_kev_to_db(db) -> dict:
             db.add(record)
             added += 1
 
+    # Backfill: ensure all KEV CVEs have has_public_exploit=True
+    db.query(ThreatCVE).filter(
+        ThreatCVE.in_kev == True,
+        ThreatCVE.has_public_exploit != True,
+    ).update({"has_public_exploit": True, "updated_at": datetime.utcnow()})
+
     try:
         db.commit()
     except Exception as exc:
@@ -242,6 +250,65 @@ def sync_kev_to_db(db) -> dict:
         db.rollback()
 
     return {"added": added, "updated": updated, "total": len(entries)}
+
+
+def sync_nvd_scores(db, batch_size: int = 50) -> dict:
+    """
+    Backfill CVSS scores from NVD for ThreatCVE records missing cvss3_score.
+    Uses single-CVE lookups with a delay to respect NVD rate limits (~5 req/s without API key).
+    Returns {"updated": int, "failed": int, "skipped": int}.
+    """
+    import time
+
+    records = (
+        db.query(ThreatCVE)
+        .filter(ThreatCVE.cvss3_score.is_(None))
+        .limit(batch_size)
+        .all()
+    )
+
+    if not records:
+        return {"updated": 0, "failed": 0, "skipped": 0}
+
+    logger.info("NVD backfill: fetching CVSS for %d CVEs", len(records))
+    updated = 0
+    failed = 0
+
+    for i, record in enumerate(records):
+        if i > 0:
+            time.sleep(0.35)  # ~3 req/s to stay under NVD rate limit
+
+        nvd_data = fetch_nvd_cve(record.cve_id)
+        if nvd_data is None:
+            failed += 1
+            continue
+
+        if nvd_data.get("cvss3_score") is not None:
+            record.cvss3_score = nvd_data["cvss3_score"]
+        if nvd_data.get("cvss3_vector"):
+            record.cvss3_vector = nvd_data["cvss3_vector"]
+        if nvd_data.get("description") and not record.description:
+            record.description = nvd_data["description"]
+        if nvd_data.get("affected_products") and not record.affected_products:
+            record.affected_products = nvd_data["affected_products"]
+        if nvd_data.get("cwe_ids") and not record.cwe_ids:
+            record.cwe_ids = nvd_data["cwe_ids"]
+        if nvd_data.get("published_date") and not record.published_date:
+            record.published_date = nvd_data["published_date"]
+        if nvd_data.get("nvd_url") and not record.nvd_url:
+            record.nvd_url = nvd_data["nvd_url"]
+        record.updated_at = datetime.utcnow()
+        updated += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("sync_nvd_scores commit failed: %s", exc)
+        db.rollback()
+
+    skipped = len(records) - updated - failed
+    logger.info("NVD backfill done: %d updated, %d failed, %d skipped", updated, failed, skipped)
+    return {"updated": updated, "failed": failed, "skipped": skipped}
 
 
 def sync_epss_for_scan_cves(db, scan_id: int = None) -> dict:
@@ -346,6 +413,66 @@ def fetch_mitre_attack_groups() -> list:
     return groups
 
 
+def _infer_group_metadata(description: str, name: str, aliases: list) -> dict:
+    """
+    Infer country, motivation, is_nation_state, and is_ransomware from
+    MITRE ATT&CK group description text and known group naming patterns.
+    """
+    desc_lower = (description or "").lower()
+    name_lower = (name or "").lower()
+    all_text = desc_lower + " " + " ".join(a.lower() for a in (aliases or []))
+
+    # ── Country inference from description keywords ──
+    country_keywords = {
+        "China": ["china", "chinese", "prc", "pla", "mss"],
+        "Russia": ["russia", "russian", "gru", "fsb", "svr"],
+        "Iran": ["iran", "iranian", "irgc"],
+        "North Korea": ["north korea", "dprk", "korean", "lazarus"],
+        "Vietnam": ["vietnam", "vietnamese"],
+        "Pakistan": ["pakistan", "pakistani"],
+        "India": ["india", "indian"],
+        "Lebanon": ["lebanon", "lebanese", "hezbollah"],
+        "Israel": ["israel", "israeli"],
+        "Turkey": ["turkey", "turkish"],
+        "South Korea": ["south korea"],
+    }
+    country = None
+    for c, keywords in country_keywords.items():
+        if any(kw in desc_lower for kw in keywords):
+            country = c
+            break
+
+    # ── Motivation inference ──
+    motivation = None
+    if any(kw in desc_lower for kw in ["financial", "financially motivated", "profit", "banking", "payment", "e-crime"]):
+        motivation = "financial"
+    elif any(kw in desc_lower for kw in ["espionage", "intelligence", "cyber espionage", "nation-state", "government"]):
+        motivation = "espionage"
+    elif any(kw in desc_lower for kw in ["destruct", "wiper", "sabotage"]):
+        motivation = "destruction"
+    elif any(kw in desc_lower for kw in ["hacktivist", "activist", "ideological"]):
+        motivation = "hacktivism"
+
+    # ── Flags ──
+    is_nation_state = country is not None and motivation != "financial"
+    is_ransomware = any(kw in all_text for kw in [
+        "ransomware", "ransom", "lockbit", "ryuk", "conti", "revil",
+        "darkside", "blackmatter", "hive", "clop", "blackcat", "alphv",
+        "royal", "play", "akira", "ragnar",
+    ])
+
+    # Financial groups with ransomware are not nation-state
+    if is_ransomware and not motivation:
+        motivation = "financial"
+
+    return {
+        "country": country,
+        "motivation": motivation,
+        "is_nation_state": is_nation_state,
+        "is_ransomware": is_ransomware,
+    }
+
+
 def fetch_mitre_attack_techniques() -> list:
     """
     Fetch MITRE ATT&CK attack-pattern objects (techniques / sub-techniques).
@@ -382,28 +509,63 @@ def fetch_mitre_attack_techniques() -> list:
     return techniques
 
 
+def _fetch_mitre_relationships(bundle: dict) -> list:
+    """
+    Extract 'uses' relationships from the STIX bundle that link
+    intrusion-set (group) → attack-pattern (technique).
+    Returns list of (source_stix_id, target_stix_id) tuples.
+    """
+    rels = []
+    for obj in bundle.get("objects", []):
+        if (
+            obj.get("type") == "relationship"
+            and obj.get("relationship_type") == "uses"
+            and obj.get("source_ref", "").startswith("intrusion-set--")
+            and obj.get("target_ref", "").startswith("attack-pattern--")
+        ):
+            rels.append((obj["source_ref"], obj["target_ref"]))
+    return rels
+
+
 def sync_mitre_groups_to_db(db) -> dict:
     """
-    Fetch MITRE ATT&CK groups and techniques, then upsert ThreatGroup records.
-    Skips groups whose mitre_id already exists in the DB.
-    Returns {"added": int, "skipped": int}.
+    Fetch MITRE ATT&CK groups, techniques, and their relationships,
+    then upsert ThreatGroup, TTP, and ThreatGroupTTP records.
+    Returns {"groups_added", "groups_skipped", "ttps_added", "ttps_skipped", "links_added"}.
     """
+    bundle = _fetch_mitre_bundle()
     groups = fetch_mitre_attack_groups()
-    # Also prime the bundle cache for techniques (called together)
-    fetch_mitre_attack_techniques()
+    techniques = fetch_mitre_attack_techniques()
 
-    added = 0
-    skipped = 0
+    # ── 1. Upsert groups ──
+    groups_added = 0
+    groups_skipped = 0
 
     for group_data in groups:
         mitre_id = group_data.get("mitre_id", "")
         if not mitre_id:
-            skipped += 1
+            groups_skipped += 1
             continue
+
+        meta = _infer_group_metadata(
+            group_data.get("description", ""),
+            group_data.get("name", ""),
+            group_data.get("aliases", []),
+        )
 
         existing = db.query(ThreatGroup).filter(ThreatGroup.mitre_id == mitre_id).first()
         if existing:
-            skipped += 1
+            # Backfill metadata if missing
+            if not existing.motivation and meta["motivation"]:
+                existing.motivation = meta["motivation"]
+            if not existing.country and meta["country"]:
+                existing.country = meta["country"]
+            if not existing.is_nation_state and meta["is_nation_state"]:
+                existing.is_nation_state = meta["is_nation_state"]
+            if not existing.is_ransomware and meta["is_ransomware"]:
+                existing.is_ransomware = meta["is_ransomware"]
+            existing.updated_at = datetime.utcnow()
+            groups_skipped += 1
             continue
 
         record = ThreatGroup(
@@ -411,17 +573,123 @@ def sync_mitre_groups_to_db(db) -> dict:
             name=group_data.get("name", ""),
             aliases=group_data.get("aliases", []),
             description=group_data.get("description", ""),
+            country=meta["country"],
+            motivation=meta["motivation"],
+            is_nation_state=meta["is_nation_state"],
+            is_ransomware=meta["is_ransomware"],
             source="mitre",
+            source_url=f"https://attack.mitre.org/groups/{mitre_id}/",
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
         db.add(record)
-        added += 1
+        groups_added += 1
 
     try:
         db.commit()
     except Exception as exc:
-        logger.warning("sync_mitre_groups_to_db commit failed: %s", exc)
+        logger.warning("sync_mitre_groups_to_db groups commit failed: %s", exc)
         db.rollback()
 
-    return {"added": added, "skipped": skipped}
+    # ── 2. Upsert TTPs (techniques) ──
+    ttps_added = 0
+    ttps_skipped = 0
+
+    for tech in techniques:
+        tid = tech.get("technique_id", "")
+        if not tid:
+            ttps_skipped += 1
+            continue
+
+        existing = db.query(TTP).filter(TTP.technique_id == tid).first()
+        if existing:
+            ttps_skipped += 1
+            continue
+
+        parent_id = None
+        if tech.get("is_subtechnique") and "." in tid:
+            parent_id = tid.rsplit(".", 1)[0]
+
+        record = TTP(
+            technique_id=tid,
+            name=tech.get("name", ""),
+            tactic=tech.get("tactic", ""),
+            description=tech.get("description", ""),
+            platforms=tech.get("platforms", []),
+            detection=tech.get("detection", ""),
+            mitre_url=f"https://attack.mitre.org/techniques/{tid.replace('.', '/')}/",
+            is_subtechnique=tech.get("is_subtechnique", False),
+            parent_technique_id=parent_id,
+            created_at=datetime.utcnow(),
+        )
+        db.add(record)
+        ttps_added += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("sync_mitre_groups_to_db ttps commit failed: %s", exc)
+        db.rollback()
+
+    # ── 3. Link groups ↔ techniques via STIX relationships ──
+    relationships = _fetch_mitre_relationships(bundle)
+
+    # Build STIX-id → mitre-id lookup from bundle objects
+    stix_to_mitre: Dict[str, str] = {}
+    for obj in bundle.get("objects", []):
+        stix_id = obj.get("id", "")
+        ext_refs = obj.get("external_references", [])
+        for ref in ext_refs:
+            if ref.get("source_name") == "mitre-attack":
+                stix_to_mitre[stix_id] = ref.get("external_id", "")
+                break
+
+    # Cache DB lookups
+    group_id_map: Dict[str, int] = {
+        r.mitre_id: r.id for r in db.query(ThreatGroup.mitre_id, ThreatGroup.id).all()
+    }
+    ttp_id_map: Dict[str, int] = {
+        r.technique_id: r.id for r in db.query(TTP.technique_id, TTP.id).all()
+    }
+
+    # Existing links for dedup
+    existing_links: set = set()
+    for row in db.query(ThreatGroupTTP.group_id, ThreatGroupTTP.ttp_id).all():
+        existing_links.add((row[0], row[1]))
+
+    links_added = 0
+    for src_stix, tgt_stix in relationships:
+        group_mitre = stix_to_mitre.get(src_stix)
+        tech_mitre = stix_to_mitre.get(tgt_stix)
+        if not group_mitre or not tech_mitre:
+            continue
+
+        gid = group_id_map.get(group_mitre)
+        tid = ttp_id_map.get(tech_mitre)
+        if not gid or not tid:
+            continue
+
+        if (gid, tid) in existing_links:
+            continue
+
+        db.add(ThreatGroupTTP(group_id=gid, ttp_id=tid))
+        existing_links.add((gid, tid))
+        links_added += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("sync_mitre_groups_to_db links commit failed: %s", exc)
+        db.rollback()
+
+    logger.info(
+        "MITRE sync: %d groups added, %d TTPs added, %d links added",
+        groups_added, ttps_added, links_added,
+    )
+    return {
+        "groups_added": groups_added,
+        "groups_skipped": groups_skipped,
+        "ttps_added": ttps_added,
+        "ttps_skipped": ttps_skipped,
+        "links_added": links_added,
+    }

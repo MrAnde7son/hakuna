@@ -2,6 +2,7 @@
 Nessus Remediation Platform — FastAPI backend
 """
 import os
+import re
 import json
 import logging
 from pathlib import Path
@@ -35,7 +36,9 @@ import campaign_query as cq
 import tags as tag_engine
 import rule_engine
 import workflow_engine
-from models import Tag, TagAssignment, AutoTagRule, SLAConfig
+import integrations as integ_module
+import ownership_inference
+from models import Tag, TagAssignment, AutoTagRule, SLAConfig, IntegrationConfig, FindingException, ScanComparison
 from threat_intel_routes import router as threat_intel_router
 
 logging.basicConfig(level=logging.INFO)
@@ -90,6 +93,103 @@ def startup():
         "env_vars":          (InventoryEnvVar,           [],                   ["is_sensitive"]),
         "certificates":      (InventoryCertificate,      ["subject_alt_names"], ["is_expired", "is_ca", "is_self_signed"]),
     })
+    # Start workflow scheduler for cron-based triggers
+    from database import SessionLocal
+    workflow_engine.start_scheduler(SessionLocal)
+    logger.info("Workflow scheduler started")
+
+
+# ─────────────────────────────────────────────
+# Temporal Tracking Helpers
+# ─────────────────────────────────────────────
+
+def _parse_scan_date(scan) -> datetime:
+    """Best-effort parse of scan date for temporal tracking."""
+    if scan.created_at:
+        return scan.created_at
+    if scan.scan_date:
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d", "%b %d, %Y", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(scan.scan_date, fmt)
+            except (ValueError, TypeError):
+                continue
+    return datetime.utcnow()
+
+
+def _populate_temporal_fields(db: Session, scan):
+    """Set first_seen, last_seen, times_seen, is_regression for each finding
+    in the new scan by looking at historical findings across all other scans."""
+    scan_date = _parse_scan_date(scan)
+
+    # Build lookup of current scan findings keyed by (plugin_id, asset_ip)
+    new_findings = db.query(Finding, Asset.ip).join(
+        Asset, Finding.asset_id == Asset.id
+    ).filter(Finding.scan_id == scan.id).all()
+
+    if not new_findings:
+        return
+
+    # Build historical map: (plugin_id, ip) → {first_seen, last_seen, times_seen, was_resolved}
+    prior_scans = db.query(Scan).filter(Scan.id != scan.id).order_by(Scan.created_at).all()
+    if not prior_scans:
+        # First scan ever — just set first_seen = last_seen = scan_date
+        for f, ip in new_findings:
+            f.first_seen = scan_date
+            f.last_seen = scan_date
+            f.times_seen = 1
+        db.flush()
+        return
+
+    # Aggregate historical data efficiently
+    from sqlalchemy import and_
+    history_rows = db.query(
+        Finding.plugin_id, Asset.ip,
+        func.min(Scan.created_at).label("earliest"),
+        func.max(Scan.created_at).label("latest"),
+        func.count(Finding.id).label("cnt"),
+    ).join(Asset, Finding.asset_id == Asset.id).join(
+        Scan, Finding.scan_id == Scan.id
+    ).filter(Finding.scan_id != scan.id).group_by(
+        Finding.plugin_id, Asset.ip
+    ).all()
+
+    history = {}
+    for row in history_rows:
+        key = (row.plugin_id, row.ip or "")
+        history[key] = {
+            "first_seen": row.earliest,
+            "last_seen": row.latest,
+            "times_seen": row.cnt,
+        }
+
+    # Check for resolved findings that are reappearing (regression detection)
+    resolved_keys = set()
+    resolved_rows = db.query(Finding.plugin_id, Asset.ip).join(
+        Asset, Finding.asset_id == Asset.id
+    ).filter(
+        Finding.scan_id != scan.id,
+        Finding.workflow_status == "resolved",
+    ).all()
+    for row in resolved_rows:
+        resolved_keys.add((row.plugin_id, row.ip or ""))
+
+    for f, ip in new_findings:
+        key = (f.plugin_id, ip or "")
+        hist = history.get(key)
+        if hist:
+            f.first_seen = hist["first_seen"]
+            f.last_seen = scan_date
+            f.times_seen = hist["times_seen"] + 1
+            f.is_regression = key in resolved_keys
+        else:
+            f.first_seen = scan_date
+            f.last_seen = scan_date
+            f.times_seen = 1
+            f.is_regression = False
+
+    db.flush()
+    logger.info(f"Temporal tracking: {len(new_findings)} findings processed, "
+                f"{sum(1 for f, _ in new_findings if f.is_regression)} regressions detected")
 
 
 # ─────────────────────────────────────────────
@@ -151,7 +251,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     # Create Asset records
     asset_map = {}  # hostname/ip → Asset (populated with both keys for reliable lookup)
     for asset_data in parsed_assets:
-        # Determine criticality: auto-rules if configured, else default 3
+        # Determine criticality: auto-rules if configured, else default 5
         auto_crit = None
         if risk_cfg.get("auto_apply_rules_on_upload"):
             auto_crit = risk_engine.evaluate_criticality_rules(asset_data, risk_cfg)
@@ -166,7 +266,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             mac_address=asset_data.get("mac_address"),
             scan_start=asset_data.get("scan_start"),
             scan_end=asset_data.get("scan_end"),
-            criticality=auto_crit if auto_crit is not None else 3,
+            criticality=auto_crit if auto_crit is not None else 5,
             critical_count=asset_data.get("critical_count", 0),
             high_count=asset_data.get("high_count", 0),
             medium_count=asset_data.get("medium_count", 0),
@@ -249,6 +349,55 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         db.add(finding)
 
     db.flush()
+
+    # ── Recount severity per asset (covers placeholder assets created mid-loop) ──
+    from sqlalchemy import func as sa_func
+    sev_counts = (
+        db.query(
+            Finding.asset_id,
+            Finding.severity,
+            sa_func.count(Finding.id),
+        )
+        .filter(Finding.scan_id == scan.id)
+        .group_by(Finding.asset_id, Finding.severity)
+        .all()
+    )
+    count_map: dict[int, dict[int, int]] = {}
+    for asset_id, sev, cnt in sev_counts:
+        count_map.setdefault(asset_id, {})[sev] = cnt
+    sev_key = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}
+    for asset in asset_map.values():
+        counts = count_map.get(asset.id, {})
+        asset.critical_count = counts.get(4, 0)
+        asset.high_count = counts.get(3, 0)
+        asset.medium_count = counts.get(2, 0)
+        asset.low_count = counts.get(1, 0)
+        asset.info_count = counts.get(0, 0)
+
+    # ── Populate temporal tracking (first_seen / last_seen / regression) ──
+    _populate_temporal_fields(db, scan)
+
+    # ── Detect internet-facing assets via plugin 19506 scanner IP ──
+    import ipaddress as _ipaddress
+    plugin_19506_findings = db.query(Finding).filter(
+        Finding.scan_id == scan.id, Finding.plugin_id == "19506"
+    ).all()
+    for f19506 in plugin_19506_findings:
+        output = f19506.plugin_output or ""
+        m = re.search(r"Scanner IP\s*:\s*([\d.]+)", output)
+        if not m:
+            continue
+        scanner_ip = m.group(1)
+        asset = db.query(Asset).filter(Asset.id == f19506.asset_id).first()
+        if not asset:
+            continue
+        asset.scanner_ip = scanner_ip
+        try:
+            addr = _ipaddress.ip_address(scanner_ip)
+            asset.is_internet_facing = not addr.is_private
+        except ValueError:
+            asset.is_internet_facing = False
+
     db.commit()
 
     # ── Extract structured inventory from Info-level plugin outputs ──
@@ -343,6 +492,20 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
 
     logger.info(f"Inventory extracted: { {k: v for k, v in inv_counts.items() if v} }")
 
+    # ── Boost criticality for Domain Controllers discovered in inventory ──
+    dc_rows = db.query(InventoryComputer).filter(
+        InventoryComputer.scan_id == scan.id,
+        InventoryComputer.is_domain_controller == True,
+    ).all()
+    if dc_rows:
+        dc_asset_ids = {r.asset_id for r in dc_rows}
+        dc_assets = db.query(Asset).filter(Asset.id.in_(dc_asset_ids)).all()
+        for asset in dc_assets:
+            if (asset.criticality or 5) < 9:
+                asset.criticality = 9
+        db.commit()
+        logger.info(f"Boosted criticality to 9 (Critical) for {len(dc_assets)} domain controller(s)")
+
     # ── Recompute asset risk scores using full formula (findings + inventory) ──
     _recompute_risk_for_scan(db, scan.id, risk_cfg)
 
@@ -350,6 +513,27 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     tag_results = tag_engine.run_all_auto_tag_rules(db, scan_id=scan.id)
     if tag_results:
         logger.info(f"Auto-tag results: { {k: v for k, v in tag_results.items() if v} }")
+
+    # ── Infer asset ownership from inventory data ──
+    own_stats = ownership_inference.infer_asset_ownership(db, scan.id)
+    if own_stats["updated"]:
+        logger.info(f"Ownership inference: {own_stats}")
+
+    # ── Apply global exceptions to new scan findings ──
+    try:
+        active_exceptions = db.query(FindingException).filter(FindingException.is_active == True).all()
+        exc_applied = 0
+        now = datetime.utcnow()
+        for exc in active_exceptions:
+            if exc.expires_at and exc.expires_at < now:
+                exc.is_active = False
+                continue
+            exc_applied += _apply_exception_to_findings(db, exc, scan_id=scan.id)
+        if exc_applied:
+            logger.info(f"Applied {exc_applied} global exceptions to new scan")
+            db.flush()
+    except Exception as e:
+        logger.warning(f"Exception application failed (non-fatal): {e}")
 
     total_findings = len(parsed["findings"])
     total_assets = len(asset_map)
@@ -400,8 +584,19 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db)):
         InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
         InventoryShare, InventorySoftware, InventorySecurityControl,
         InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
+        InventoryAITool,
     ]:
         db.query(InvModel).filter(InvModel.scan_id == scan_id).delete(synchronize_session=False)
+    # Remove scan comparisons referencing this scan
+    db.query(ScanComparison).filter(
+        (ScanComparison.base_scan_id == scan_id) | (ScanComparison.compare_scan_id == scan_id)
+    ).delete(synchronize_session=False)
+    # Delete ownership & campaign rows that reference assets/findings (no ORM cascade)
+    asset_subq = db.query(Asset.id).filter(Asset.scan_id == scan_id).scalar_subquery()
+    finding_subq = db.query(Finding.id).filter(Finding.asset_id.in_(asset_subq)).scalar_subquery()
+    db.query(AssetOwnership).filter(AssetOwnership.asset_id.in_(asset_subq)).delete(synchronize_session=False)
+    db.query(FindingOwnership).filter(FindingOwnership.finding_id.in_(finding_subq)).delete(synchronize_session=False)
+    db.query(CampaignFinding).filter(CampaignFinding.finding_id.in_(finding_subq)).delete(synchronize_session=False)
     db.delete(scan)  # cascades to Asset → Finding → AutomateClick via ORM
     db.commit()
     return {"message": "Scan deleted"}
@@ -464,10 +659,19 @@ def list_assets(
     assets = q.all()
     asset_ids = [a.id for a in assets]
     tag_map = tag_engine.get_asset_tags(asset_ids, db)
+    # Batch-fetch DC status from inventory_computers
+    dc_asset_ids = set()
+    if asset_ids:
+        dc_rows = db.query(InventoryComputer.asset_id).filter(
+            InventoryComputer.asset_id.in_(asset_ids),
+            InventoryComputer.is_domain_controller == True,
+        ).all()
+        dc_asset_ids = {r[0] for r in dc_rows}
     result = []
     for a in assets:
         d = _asset_to_dict(a)
         d["tags"] = tag_map.get(a.id, [])
+        d["is_domain_controller"] = a.id in dc_asset_ids
         result.append(d)
     return result
 
@@ -492,7 +696,7 @@ def update_asset(
     if not asset:
         raise HTTPException(404, "Asset not found")
     if criticality is not None:
-        asset.criticality = max(1, min(5, criticality))
+        asset.criticality = max(1, min(10, criticality))
     if environment_tag is not None:
         asset.environment_tag = environment_tag
     if business_context is not None:
@@ -502,6 +706,8 @@ def update_asset(
 
 
 def _asset_to_dict(a: Asset) -> dict:
+    # Include manual ownership if present
+    own = a.ownership[0] if a.ownership else None
     return {
         "id": a.id,
         "scan_id": a.scan_id,
@@ -516,12 +722,26 @@ def _asset_to_dict(a: Asset) -> dict:
         "criticality": a.criticality,
         "environment_tag": a.environment_tag,
         "business_context": a.business_context,
+        "scanner_ip": a.scanner_ip,
+        "is_internet_facing": a.is_internet_facing or False,
         "risk_score": a.risk_score,
         "critical_count": a.critical_count,
         "high_count": a.high_count,
         "medium_count": a.medium_count,
         "low_count": a.low_count,
         "info_count": a.info_count,
+        # Inferred ownership
+        "inferred_primary_user": a.inferred_primary_user,
+        "inferred_admin_contacts": a.inferred_admin_contacts or [],
+        "inferred_team": a.inferred_team,
+        "owner_confidence": a.owner_confidence or "low",
+        # Manual ownership (if set)
+        "ownership": {
+            "owner_name": own.owner_name,
+            "owner_email": own.owner_email,
+            "owner_role": own.owner_role,
+            "team": own.team,
+        } if own else None,
     }
 
 
@@ -531,6 +751,7 @@ def _asset_to_dict(a: Asset) -> dict:
 
 @app.get("/api/findings")
 def list_findings(
+    request: Request,
     scan_id: Optional[int] = None,
     asset_id: Optional[int] = None,
     severity: Optional[int] = None,
@@ -538,6 +759,7 @@ def list_findings(
     has_exploit: Optional[bool] = None,
     sla_status: Optional[str] = None,
     effort_level: Optional[str] = None,
+    cve: Optional[str] = None,
     search: Optional[str] = None,
     tags: Optional[str] = None,
     tag_logic: str = "AND",
@@ -561,8 +783,21 @@ def list_findings(
         q = q.filter(Finding.exploit_available == has_exploit)
     if sla_status:
         q = q.filter(Finding.sla_status == sla_status)
+    if request.query_params.get("workflow_status"):
+        ws = request.query_params["workflow_status"]
+        if ws == "excepted":
+            q = q.filter(Finding.workflow_status.in_(["accepted_risk", "false_positive", "compensating_control"]))
+        else:
+            q = q.filter(Finding.workflow_status == ws)
+    if request.query_params.get("has_exception") == "true":
+        q = q.filter(Finding.exception_id != None)
+    elif request.query_params.get("has_exception") == "false":
+        q = q.filter(Finding.exception_id == None)
     if effort_level:
         q = q.filter(Finding.effort_level == effort_level)
+    if cve:
+        # Partial match within JSON-serialized cves array (case-insensitive)
+        q = q.filter(Finding.cves.ilike(f"%{cve}%"))
     if search:
         q = q.filter(
             Finding.plugin_name.ilike(f"%{search}%") |
@@ -610,6 +845,8 @@ def get_finding(finding_id: int, db: Session = Depends(get_db)):
 
 def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dict:
     asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
+    # Resolve effective owner through the full chain
+    resolved = ownership_inference.resolve_finding_owner(f, asset, db)
     base = {
         "id": f.id,
         "scan_id": f.scan_id,
@@ -637,12 +874,25 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dic
         "priority_score": f.priority_score,
         "effort_level": f.effort_level,
         "owner_suggestion": f.owner_suggestion,
+        # Resolved ownership (full chain)
+        "resolved_owner": resolved,
         # SLA tracking
         "sla_due_date": f.sla_due_date.isoformat() if f.sla_due_date else None,
         "resolved_at": f.resolved_at.isoformat() if f.resolved_at else None,
         "sla_status": f.sla_status or "n/a",
         # When the vulnerability was observed (from Nessus, not upload time)
         "sla_observed_date": asset.scan_start if asset else None,
+        # Workflow status
+        "workflow_status": f.workflow_status or "open",
+        "workflow_assigned_to": f.workflow_assigned_to,
+        "workflow_notes": f.workflow_notes,
+        "status_changed_at": f.status_changed_at.isoformat() if f.status_changed_at else None,
+        "exception_id": f.exception_id,
+        # Temporal tracking
+        "first_seen": f.first_seen.isoformat() if f.first_seen else None,
+        "last_seen": f.last_seen.isoformat() if f.last_seen else None,
+        "times_seen": f.times_seen or 1,
+        "is_regression": f.is_regression or False,
     }
     if include_full:
         base.update({
@@ -704,10 +954,23 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
     total_assets = asset_q.count()
     total_findings = finding_q.count()
 
-    # Severity breakdown
+    # Exclude findings with active exceptions that have exclude_from_reports=True
+    excluded_exception_ids = [
+        e.id for e in db.query(FindingException.id).filter(
+            FindingException.is_active == True,
+            FindingException.exclude_from_reports == True,
+        ).all()
+    ]
+    report_q = finding_q
+    if excluded_exception_ids:
+        report_q = finding_q.filter(
+            ~Finding.exception_id.in_(excluded_exception_ids)
+        )
+
+    # Severity breakdown (excludes report-excluded exceptions)
     severity_counts = {}
     for sev in range(5):
-        severity_counts[sev] = finding_q.filter(Finding.severity == sev).count()
+        severity_counts[sev] = report_q.filter(Finding.severity == sev).count()
 
     # Top plugin families
     family_counts = (
@@ -716,6 +979,8 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
     )
     if scan_id:
         family_counts = family_counts.filter(Finding.scan_id == scan_id)
+    if excluded_exception_ids:
+        family_counts = family_counts.filter(~Finding.exception_id.in_(excluded_exception_ids))
     family_counts = (
         family_counts
         .group_by(Finding.plugin_family)
@@ -730,7 +995,7 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
     # Effort breakdown
     effort_counts = {}
     for effort in ("quick_win", "medium", "complex"):
-        effort_counts[effort] = finding_q.filter(Finding.effort_level == effort, Finding.severity >= 1).count()
+        effort_counts[effort] = report_q.filter(Finding.effort_level == effort, Finding.severity >= 1).count()
 
     # Owner breakdown
     owner_counts = (
@@ -739,6 +1004,8 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
     )
     if scan_id:
         owner_counts = owner_counts.filter(Finding.scan_id == scan_id)
+    if excluded_exception_ids:
+        owner_counts = owner_counts.filter(~Finding.exception_id.in_(excluded_exception_ids))
     owner_counts = (
         owner_counts
         .group_by(Finding.owner_suggestion)
@@ -747,12 +1014,15 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
     )
 
     # Exploit availability
-    exploit_count = finding_q.filter(Finding.exploit_available == True).count()
-    high_priority_count = finding_q.filter(Finding.priority_score >= 7.0).count()
+    exploit_count = report_q.filter(Finding.exploit_available == True).count()
+    high_priority_count = report_q.filter(Finding.priority_score >= 7.0).count()
+
+    excepted_count = total_findings - report_q.count() if excluded_exception_ids else 0
 
     return {
         "total_assets": total_assets,
         "total_findings": total_findings,
+        "excepted_findings": excepted_count,
         "severity_breakdown": {
             "critical": severity_counts.get(4, 0),
             "high": severity_counts.get(3, 0),
@@ -803,6 +1073,102 @@ def get_trending(db: Session = Depends(get_db)):
             "medium": counts[2],
             "low": counts[1],
             "info": counts[0],
+        })
+    return result
+
+
+@app.get("/api/reports/metrics-timeline")
+def get_metrics_timeline(db: Session = Depends(get_db)):
+    """Return per-scan metrics for a configurable timeline widget.
+    Each scan gets a snapshot of: severity counts, total findings/assets,
+    exploit counts, SLA stats, workflow status breakdown, MTTR, and risk scores."""
+    from sqlalchemy import case as sa_case
+    scans = db.query(Scan).order_by(Scan.created_at).all()
+    result = []
+    sev_labels = {0: "info", 1: "low", 2: "medium", 3: "high", 4: "critical"}
+
+    for s in scans:
+        findings_q = db.query(Finding).filter(Finding.scan_id == s.id)
+        assets_q = db.query(Asset).filter(Asset.scan_id == s.id)
+
+        total_findings = findings_q.count()
+        total_assets = assets_q.count()
+
+        # Severity counts
+        sev_counts = {}
+        for sev in range(5):
+            sev_counts[sev_labels[sev]] = findings_q.filter(Finding.severity == sev).count()
+
+        # Exploitable
+        exploit_count = findings_q.filter(Finding.exploit_available == True).count()
+
+        # SLA stats
+        sla_on_track = findings_q.filter(Finding.sla_status == "on_track").count()
+        sla_at_risk = findings_q.filter(Finding.sla_status == "at_risk").count()
+        sla_breached = findings_q.filter(Finding.sla_status == "breached").count()
+        sla_resolved = findings_q.filter(Finding.sla_status == "resolved").count()
+        total_with_sla = sla_on_track + sla_at_risk + sla_breached + sla_resolved
+        sla_compliance = round(((sla_on_track + sla_resolved) / total_with_sla * 100) if total_with_sla else 0, 1)
+
+        # Workflow status
+        ws_open = findings_q.filter((Finding.workflow_status == "open") | (Finding.workflow_status == None)).count()
+        ws_in_progress = findings_q.filter(Finding.workflow_status == "in_progress").count()
+        ws_resolved = findings_q.filter(Finding.workflow_status == "resolved").count()
+        ws_excepted = findings_q.filter(Finding.workflow_status.in_(["accepted_risk", "false_positive", "compensating_control"])).count()
+
+        # MTTR for resolved findings in this scan
+        resolved_findings = findings_q.filter(Finding.resolved_at != None, Finding.sla_due_date != None).all()
+        if resolved_findings:
+            mttrs = []
+            for f in resolved_findings:
+                scan_obj = db.query(Scan).filter(Scan.id == f.scan_id).first()
+                if scan_obj and scan_obj.created_at and f.resolved_at:
+                    days = (f.resolved_at - scan_obj.created_at).total_seconds() / 86400
+                    if days >= 0:
+                        mttrs.append(days)
+            avg_mttr = round(sum(mttrs) / len(mttrs), 1) if mttrs else None
+        else:
+            avg_mttr = None
+
+        # Average risk score across assets
+        risk_scores = [a.risk_score for a in assets_q.all() if a.risk_score is not None and a.risk_score > 0]
+        avg_risk = round(sum(risk_scores) / len(risk_scores), 2) if risk_scores else 0
+        max_risk = round(max(risk_scores), 2) if risk_scores else 0
+
+        # Non-info findings (actionable)
+        actionable = total_findings - sev_counts["info"]
+
+        result.append({
+            "scan_id": s.id,
+            "scan_name": s.scan_name or s.filename,
+            "scan_date": s.scan_date or (s.created_at.isoformat() if s.created_at else None),
+            # Severity
+            "critical": sev_counts["critical"],
+            "high": sev_counts["high"],
+            "medium": sev_counts["medium"],
+            "low": sev_counts["low"],
+            "info": sev_counts["info"],
+            # Totals
+            "total_findings": total_findings,
+            "actionable_findings": actionable,
+            "total_assets": total_assets,
+            "exploit_count": exploit_count,
+            # SLA
+            "sla_on_track": sla_on_track,
+            "sla_at_risk": sla_at_risk,
+            "sla_breached": sla_breached,
+            "sla_resolved": sla_resolved,
+            "sla_compliance_pct": sla_compliance,
+            # Workflow
+            "workflow_open": ws_open,
+            "workflow_in_progress": ws_in_progress,
+            "workflow_resolved": ws_resolved,
+            "workflow_excepted": ws_excepted,
+            # Risk
+            "avg_risk_score": avg_risk,
+            "max_risk_score": max_risk,
+            # MTTR
+            "avg_mttr_days": avg_mttr,
         })
     return result
 
@@ -1629,7 +1995,7 @@ def _recompute_risk_for_scan(db: Session, scan_id: int, cfg: Optional[dict] = No
         inv_ctx = _get_asset_inventory_context(db, asset.id)
         asset.risk_score = risk_engine.compute_asset_risk_score(
             findings_dicts,
-            asset_criticality=asset.criticality or 3,
+            asset_criticality=asset.criticality or 5,
             inventory=inv_ctx,
             cfg=cfg,
         )
@@ -1714,6 +2080,15 @@ def recalculate_risk(body: RecalculateBody, db: Session = Depends(get_db)):
     for row in tag_rows:
         asset_tags_map.setdefault(row.asset_id, []).append(f"{row.category}:{row.value}")
 
+    # Batch-fetch DC asset IDs so we can enforce criticality floor
+    dc_asset_ids = set()
+    if asset_ids:
+        dc_rows = db.query(InventoryComputer.asset_id).filter(
+            InventoryComputer.asset_id.in_(asset_ids),
+            InventoryComputer.is_domain_controller == True,
+        ).all()
+        dc_asset_ids = {r[0] for r in dc_rows}
+
     updated_assets = 0
     updated_findings = 0
     for asset in assets:
@@ -1737,7 +2112,22 @@ def recalculate_risk(body: RecalculateBody, db: Session = Depends(get_db)):
             if new_crit is not None:
                 asset.criticality = new_crit
 
+        # Domain controllers get a criticality floor of 9
+        if asset.id in dc_asset_ids and (asset.criticality or 5) < 9:
+            asset.criticality = 9
+
         findings = db.query(Finding).filter(Finding.asset_id == asset.id).all()
+
+        # Recount severity from actual findings
+        sev_recount = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+        for f in findings:
+            sev_recount[f.severity] = sev_recount.get(f.severity, 0) + 1
+        asset.critical_count = sev_recount[4]
+        asset.high_count = sev_recount[3]
+        asset.medium_count = sev_recount[2]
+        asset.low_count = sev_recount[1]
+        asset.info_count = sev_recount[0]
+
         findings_dicts = [
             {
                 "severity":          f.severity,
@@ -1751,7 +2141,7 @@ def recalculate_risk(body: RecalculateBody, db: Session = Depends(get_db)):
         inv_ctx = _get_asset_inventory_context(db, asset.id)
         asset.risk_score = risk_engine.compute_asset_risk_score(
             findings_dicts,
-            asset_criticality=asset.criticality or 3,
+            asset_criticality=asset.criticality or 5,
             inventory=inv_ctx,
             cfg=cfg,
         )
@@ -1777,7 +2167,7 @@ def recalculate_risk(body: RecalculateBody, db: Session = Depends(get_db)):
                 }
                 priority_data = compute_priority_score(
                     finding_dict,
-                    asset_criticality=asset.criticality or 3,
+                    asset_criticality=asset.criticality or 5,
                     intel=intel,
                     risk_cfg=cfg,
                     asset_inventory=inv_ctx,
@@ -1840,6 +2230,81 @@ def set_finding_ownership(finding_id: int, body: OwnershipBody, db: Session = De
     own.notes = body.notes
     db.commit()
     return {"ok": True, "finding_id": finding_id, "owner_name": own.owner_name}
+
+
+@app.post("/api/scans/{scan_id}/infer-ownership")
+def rerun_ownership_inference(scan_id: int, db: Session = Depends(get_db)):
+    """Re-run ownership inference for a scan (e.g. after inventory update)."""
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+    stats = ownership_inference.infer_asset_ownership(db, scan_id)
+    return stats
+
+
+@app.post("/api/assets/{asset_id}/confirm-owner")
+def confirm_inferred_owner(asset_id: int, db: Session = Depends(get_db)):
+    """Promote inferred ownership to a manual AssetOwnership record."""
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+    if not asset.inferred_primary_user and not asset.inferred_team:
+        raise HTTPException(400, "No inferred ownership to confirm")
+
+    own = db.query(AssetOwnership).filter(AssetOwnership.asset_id == asset_id).first()
+    if not own:
+        own = AssetOwnership(asset_id=asset_id)
+        db.add(own)
+    own.owner_name = own.owner_name or asset.inferred_primary_user
+    own.owner_role = own.owner_role or asset.inferred_team
+    own.team = own.team or asset.inferred_team
+    db.commit()
+    return {"ok": True, "asset_id": asset_id, "owner_name": own.owner_name, "owner_role": own.owner_role}
+
+
+@app.get("/api/scans/{scan_id}/ownership-summary")
+def get_ownership_summary(scan_id: int, db: Session = Depends(get_db)):
+    """Summary of ownership coverage for a scan."""
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+
+    assets = db.query(Asset).filter(Asset.scan_id == scan_id).all()
+    total = len(assets)
+    manual = 0
+    inferred_high = 0
+    inferred_medium = 0
+    inferred_low = 0
+    team_counts = {}
+
+    for a in assets:
+        own = a.ownership[0] if a.ownership else None
+        if own and (own.owner_name or own.owner_role):
+            manual += 1
+            team = own.team or own.owner_role or "Unknown"
+        elif a.inferred_team or a.inferred_primary_user:
+            conf = a.owner_confidence or "low"
+            if conf == "high":
+                inferred_high += 1
+            elif conf == "medium":
+                inferred_medium += 1
+            else:
+                inferred_low += 1
+            team = a.inferred_team or "Unknown"
+        else:
+            inferred_low += 1
+            team = "Unassigned"
+        team_counts[team] = team_counts.get(team, 0) + 1
+
+    return {
+        "total_assets": total,
+        "manual_ownership": manual,
+        "inferred_high": inferred_high,
+        "inferred_medium": inferred_medium,
+        "inferred_low": inferred_low,
+        "unassigned": total - manual - inferred_high - inferred_medium,
+        "team_breakdown": [{"team": k, "count": v} for k, v in sorted(team_counts.items(), key=lambda x: -x[1])],
+    }
 
 
 # ─────────────────────────────────────────────
@@ -1910,7 +2375,8 @@ def _serialize_finding(f: Finding, asset: Asset = None) -> dict:
 
 def _group_findings_by_owner(campaign_findings: list) -> list:
     """
-    Group campaign findings by effective owner (campaign override > finding ownership > owner_suggestion).
+    Group campaign findings by effective owner.
+    Resolution: campaign override > finding ownership > asset ownership > inferred > plugin family.
     Returns list of {owner_key, owner_name, owner_role, team, findings[]}.
     """
     groups = {}
@@ -1918,22 +2384,23 @@ def _group_findings_by_owner(campaign_findings: list) -> list:
         f = cf.finding
         asset = f.asset if f else None
 
-        # Effective owner: campaign-level override > finding-level ownership > suggestion
+        # Campaign-level override always wins
         if cf.owner_role:
             owner_key = cf.owner_role
             owner_name = cf.owner_name or cf.owner_role
             owner_role = cf.owner_role
             team = cf.team
-        elif f and f.ownership:
-            own = f.ownership[0]
-            owner_key = own.owner_role or own.owner_name or "Unassigned"
-            owner_name = own.owner_name or owner_key
-            owner_role = own.owner_role
-            team = own.team
+        elif f:
+            # Use the full resolution chain from ownership_inference
+            resolved = ownership_inference.resolve_finding_owner(f, asset, None)
+            owner_role = resolved["owner_role"] or "Unassigned"
+            owner_name = resolved["owner_name"] or owner_role
+            owner_key = owner_role
+            team = resolved["owner_team"]
         else:
-            owner_key = (f.owner_suggestion if f else None) or "Unassigned"
-            owner_name = owner_key
-            owner_role = owner_key
+            owner_key = "Unassigned"
+            owner_name = "Unassigned"
+            owner_role = "Unassigned"
             team = None
 
         if owner_key not in groups:
@@ -2423,6 +2890,136 @@ def get_blast_radius(
     }
 
 
+@app.get("/api/blast-radius/bulk")
+def get_blast_radius_bulk(
+    scan_id: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Compute blast radius scores for ALL assets in a scan in one pass."""
+    from sqlalchemy import or_
+
+    all_assets = db.query(Asset).filter(Asset.scan_id == scan_id).all()
+    if not all_assets:
+        return {}
+
+    asset_map = {a.id: a for a in all_assets}
+    ip_to_asset_id = {a.ip: a.id for a in all_assets if a.ip}
+
+    # Pre-fetch all inventory data for this scan in bulk
+    all_conns = db.query(InventoryNetConn).filter(
+        InventoryNetConn.scan_id == scan_id,
+        InventoryNetConn.state.in_(["ESTABLISHED", "established"]),
+    ).all()
+    conns_by_asset = {}
+    for c in all_conns:
+        conns_by_asset.setdefault(c.asset_id, []).append(c)
+
+    all_logons = db.query(InventoryLoggedOn).filter(
+        InventoryLoggedOn.scan_id == scan_id,
+    ).all()
+    logons_by_asset = {}
+    for lo in all_logons:
+        logons_by_asset.setdefault(lo.asset_id, []).append(lo)
+
+    all_priv_users = db.query(InventoryUser).filter(
+        InventoryUser.scan_id == scan_id,
+        or_(
+            InventoryUser.is_domain_admin == True,
+            InventoryUser.is_local_admin == True,
+            InventoryUser.is_privileged == True,
+        ),
+    ).all()
+    priv_users_by_name = {}
+    for u in all_priv_users:
+        if u.username:
+            priv_users_by_name.setdefault(u.username, []).append(u)
+
+    admin_users = db.query(InventoryUser).filter(
+        InventoryUser.scan_id == scan_id,
+        or_(
+            InventoryUser.is_domain_admin == True,
+            InventoryUser.is_local_admin == True,
+        ),
+    ).all()
+    admins_by_asset = {}
+    for u in admin_users:
+        admins_by_asset.setdefault(u.asset_id, []).append(u)
+
+    dc_asset_ids = set(
+        r.asset_id for r in db.query(InventoryComputer.asset_id).filter(
+            InventoryComputer.scan_id == scan_id,
+            InventoryComputer.is_domain_controller == True,
+        ).all()
+    )
+
+    results = {}
+
+    for asset in all_assets:
+        asset_id = asset.id
+        reachable = set()
+        da_exposed = False
+        la_exposed = False
+        kerb_exposed = False
+        seen_users = set()
+
+        # 1. Network connections to other known assets
+        for conn in conns_by_asset.get(asset_id, []):
+            if conn.remote_addr and conn.remote_addr in ip_to_asset_id:
+                dst_id = ip_to_asset_id[conn.remote_addr]
+                if dst_id != asset_id:
+                    reachable.add(dst_id)
+
+        # 2. Privileged users logged on
+        for logon in logons_by_asset.get(asset_id, []):
+            if not logon.username:
+                continue
+            for u in priv_users_by_name.get(logon.username, []):
+                if u.id in seen_users:
+                    continue
+                seen_users.add(u.id)
+                if u.is_domain_admin:
+                    da_exposed = True
+                if u.is_local_admin:
+                    la_exposed = True
+                if u.spns:
+                    kerb_exposed = True
+
+        # 3. Admin accounts on this asset
+        for u in admins_by_asset.get(asset_id, []):
+            if u.id in seen_users:
+                continue
+            seen_users.add(u.id)
+            if u.is_domain_admin:
+                da_exposed = True
+                # DA exposes other assets they're on
+                for other in priv_users_by_name.get(u.username, []):
+                    if other.asset_id != asset_id and other.is_domain_admin:
+                        reachable.add(other.asset_id)
+            if u.is_local_admin:
+                la_exposed = True
+            if u.spns:
+                kerb_exposed = True
+
+        dc_reachable = bool(reachable & dc_asset_ids)
+
+        score = min(len(reachable) * 1.5, 5.0)
+        if dc_reachable:   score += 3.0
+        if da_exposed:     score += 2.0
+        elif la_exposed:   score += 1.0
+        if kerb_exposed:   score += 1.0
+        score = min(round(score, 1), 10.0)
+
+        results[str(asset_id)] = {
+            "asset_id": asset_id,
+            "score": score,
+            "reachable_assets": len(reachable),
+            "da_exposed": da_exposed,
+            "dc_reachable": dc_reachable,
+        }
+
+    return results
+
+
 # ─────────────────────────────────────────────
 # Tags
 # ─────────────────────────────────────────────
@@ -2726,7 +3323,7 @@ def _rule_to_dict(rule: AutoTagRule) -> dict:
 
 
 # ─────────────────────────────────────────────
-# SLA / MTTR Tracking
+# SLA Tracking
 # ─────────────────────────────────────────────
 
 # Default SLA windows (days) per severity
@@ -3254,6 +3851,907 @@ def _execution_to_dict(ex: WorkflowExecution) -> dict:
     }
 
 
+# ─────────────────────────────────────────────────────────
+# Integration Settings (Jira, ServiceNow, Email, Slack, Teams)
+# ─────────────────────────────────────────────────────────
+
+INTEGRATION_SCHEMAS = {
+    "jira": {
+        "display_name": "Jira",
+        "fields": [
+            {"key": "base_url", "label": "Jira Base URL", "type": "string", "placeholder": "https://yourcompany.atlassian.net"},
+            {"key": "email", "label": "Email", "type": "string", "placeholder": "user@company.com"},
+            {"key": "api_token", "label": "API Token", "type": "password"},
+            {"key": "default_project", "label": "Default Project Key", "type": "string", "placeholder": "SEC"},
+        ],
+    },
+    "servicenow": {
+        "display_name": "ServiceNow",
+        "fields": [
+            {"key": "instance_url", "label": "Instance URL", "type": "string", "placeholder": "https://yourcompany.service-now.com"},
+            {"key": "username", "label": "Username", "type": "string"},
+            {"key": "password", "label": "Password", "type": "password"},
+        ],
+    },
+    "email": {
+        "display_name": "Email (SMTP)",
+        "fields": [
+            {"key": "smtp_host", "label": "SMTP Host", "type": "string", "placeholder": "smtp.gmail.com"},
+            {"key": "smtp_port", "label": "SMTP Port", "type": "number", "placeholder": "587"},
+            {"key": "smtp_user", "label": "Username", "type": "string"},
+            {"key": "smtp_pass", "label": "Password", "type": "password"},
+            {"key": "from_address", "label": "From Address", "type": "string"},
+            {"key": "use_tls", "label": "Use TLS", "type": "boolean"},
+        ],
+    },
+    "slack": {
+        "display_name": "Slack",
+        "fields": [
+            {"key": "webhook_url", "label": "Incoming Webhook URL", "type": "string", "placeholder": "https://hooks.slack.com/services/..."},
+            {"key": "default_channel", "label": "Default Channel", "type": "string", "placeholder": "#security-alerts"},
+        ],
+    },
+    "teams": {
+        "display_name": "Microsoft Teams",
+        "fields": [
+            {"key": "webhook_url", "label": "Incoming Webhook URL", "type": "string", "placeholder": "https://outlook.office.com/webhook/..."},
+        ],
+    },
+}
+
+
+@app.get("/api/integrations")
+def list_integrations(db: Session = Depends(get_db)):
+    """List all integration providers with their config status."""
+    configs = {c.provider: c for c in db.query(IntegrationConfig).all()}
+    result = []
+    for provider, schema in INTEGRATION_SCHEMAS.items():
+        cfg = configs.get(provider)
+        result.append({
+            "provider": provider,
+            "display_name": schema["display_name"],
+            "is_enabled": cfg.is_enabled if cfg else False,
+            "is_configured": cfg is not None,
+            "last_test_status": cfg.last_test_status if cfg else None,
+            "last_test_at": cfg.last_test_at.isoformat() if cfg and cfg.last_test_at else None,
+            "last_test_detail": cfg.last_test_detail if cfg else None,
+            "updated_at": cfg.updated_at.isoformat() if cfg and cfg.updated_at else None,
+            "fields": schema["fields"],
+        })
+    return result
+
+
+@app.get("/api/integrations/{provider}")
+def get_integration(provider: str, db: Session = Depends(get_db)):
+    if provider not in INTEGRATION_SCHEMAS:
+        raise HTTPException(404, f"Unknown provider: {provider}")
+    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
+    schema = INTEGRATION_SCHEMAS[provider]
+
+    # Redact password fields
+    safe_config = {}
+    if cfg and cfg.config:
+        password_keys = {f["key"] for f in schema["fields"] if f["type"] == "password"}
+        for k, v in cfg.config.items():
+            if k in password_keys and v:
+                safe_config[k] = "••••" + str(v)[-4:] if len(str(v)) > 4 else "••••"
+            else:
+                safe_config[k] = v
+
+    return {
+        "provider": provider,
+        "display_name": schema["display_name"],
+        "is_enabled": cfg.is_enabled if cfg else False,
+        "config": safe_config,
+        "fields": schema["fields"],
+        "last_test_status": cfg.last_test_status if cfg else None,
+        "last_test_at": cfg.last_test_at.isoformat() if cfg and cfg.last_test_at else None,
+        "last_test_detail": cfg.last_test_detail if cfg else None,
+    }
+
+
+class IntegrationUpdate(BaseModel):
+    config: dict
+    is_enabled: bool = True
+
+
+@app.put("/api/integrations/{provider}")
+def save_integration(provider: str, data: IntegrationUpdate, db: Session = Depends(get_db)):
+    if provider not in INTEGRATION_SCHEMAS:
+        raise HTTPException(404, f"Unknown provider: {provider}")
+
+    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
+    if not cfg:
+        cfg = IntegrationConfig(
+            provider=provider,
+            display_name=INTEGRATION_SCHEMAS[provider]["display_name"],
+        )
+        db.add(cfg)
+
+    # Merge config — don't overwrite password fields if placeholder is sent
+    schema = INTEGRATION_SCHEMAS[provider]
+    password_keys = {f["key"] for f in schema["fields"] if f["type"] == "password"}
+    merged = dict(cfg.config or {})
+    for k, v in data.config.items():
+        if k in password_keys and isinstance(v, str) and v.startswith("••••"):
+            continue  # keep existing password
+        merged[k] = v
+    cfg.config = merged
+    cfg.is_enabled = data.is_enabled
+    cfg.updated_at = datetime.utcnow()
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/integrations/{provider}/test")
+def test_integration_endpoint(provider: str, db: Session = Depends(get_db)):
+    if provider not in INTEGRATION_SCHEMAS:
+        raise HTTPException(404, f"Unknown provider: {provider}")
+
+    result = integ_module.test_integration(db, provider)
+
+    # Update test status
+    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
+    if cfg:
+        cfg.last_test_at = datetime.utcnow()
+        cfg.last_test_status = result.get("status", "error")
+        cfg.last_test_detail = result.get("detail") or result.get("user") or result.get("host") or "ok"
+        db.commit()
+
+    return result
+
+
+@app.delete("/api/integrations/{provider}")
+def delete_integration(provider: str, db: Session = Depends(get_db)):
+    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
+    if cfg:
+        db.delete(cfg)
+        db.commit()
+    return {"status": "ok"}
+
+
+# ─────────────────────────────────────────────
+# Finding Workflow Status
+# ─────────────────────────────────────────────
+
+class FindingStatusUpdate(BaseModel):
+    status: str  # open / in_progress / resolved / accepted_risk / false_positive
+    assigned_to: Optional[str] = None
+    notes: Optional[str] = None
+
+VALID_WORKFLOW_STATUSES = {"open", "in_progress", "resolved", "accepted_risk", "false_positive"}
+
+
+@app.patch("/api/findings/{finding_id}/status")
+def update_finding_status(finding_id: int, body: FindingStatusUpdate, db: Session = Depends(get_db)):
+    """Update finding workflow status."""
+    finding = db.query(Finding).filter(Finding.id == finding_id).first()
+    if not finding:
+        raise HTTPException(404, "Finding not found")
+    if body.status not in VALID_WORKFLOW_STATUSES:
+        raise HTTPException(400, f"Invalid status. Must be one of: {', '.join(VALID_WORKFLOW_STATUSES)}")
+    finding.workflow_status = body.status
+    finding.status_changed_at = datetime.utcnow()
+    if body.assigned_to is not None:
+        finding.workflow_assigned_to = body.assigned_to
+    if body.notes is not None:
+        finding.workflow_notes = body.notes
+    # Sync resolved state with SLA system
+    if body.status == "resolved" and not finding.resolved_at:
+        finding.resolved_at = datetime.utcnow()
+        finding.sla_status = "resolved"
+    elif body.status == "open" and finding.resolved_at:
+        finding.resolved_at = None
+        configs = db.query(SLAConfig).all()
+        cfg_map = {c.severity: c for c in configs}
+        cfg = cfg_map.get(finding.severity)
+        warn = cfg.warn_days_before if cfg else 7
+        finding.sla_status = _compute_sla_status(finding.sla_due_date, None, warn)
+    db.commit()
+    return {
+        "ok": True, "finding_id": finding_id,
+        "workflow_status": finding.workflow_status,
+        "assigned_to": finding.workflow_assigned_to,
+    }
+
+
+@app.post("/api/findings/bulk-status")
+def bulk_update_finding_status(
+    body: dict,
+    db: Session = Depends(get_db),
+):
+    """Bulk update workflow status for multiple findings."""
+    finding_ids = body.get("finding_ids", [])
+    status = body.get("status", "open")
+    assigned_to = body.get("assigned_to")
+    if status not in VALID_WORKFLOW_STATUSES:
+        raise HTTPException(400, f"Invalid status: {status}")
+    updated = 0
+    for fid in finding_ids:
+        f = db.query(Finding).filter(Finding.id == fid).first()
+        if f:
+            f.workflow_status = status
+            f.status_changed_at = datetime.utcnow()
+            if assigned_to is not None:
+                f.workflow_assigned_to = assigned_to
+            if status == "resolved" and not f.resolved_at:
+                f.resolved_at = datetime.utcnow()
+                f.sla_status = "resolved"
+            updated += 1
+    db.commit()
+    return {"ok": True, "updated": updated}
+
+
+# ─────────────────────────────────────────────
+# Global Exceptions / Waivers
+# ─────────────────────────────────────────────
+
+class ExceptionCreate(BaseModel):
+    plugin_id: Optional[str] = None  # nullable when using conditions-only matching
+    plugin_name: Optional[str] = None
+    asset_ip: Optional[str] = None
+    scope_tags: Optional[list] = None  # ["env:prod", "net:dmz"]
+    exception_type: str = "accepted_risk"  # accepted_risk / false_positive / severity_override / compensating_control
+    override_severity: Optional[int] = None  # 0-4, only for severity_override
+    compensating_control_detail: Optional[str] = None  # description of control in place
+    conditions: Optional[list] = None  # [{field, op, value}, ...]
+    condition_logic: str = "AND"
+    reason: Optional[str] = None
+    approved_by: Optional[str] = None
+    exclude_from_reports: bool = True  # exclude matched findings from severity counts & totals
+    expires_at: Optional[str] = None  # ISO date string
+    review_by: Optional[str] = None  # ISO date string — recertification reminder
+
+class ExceptionUpdate(BaseModel):
+    plugin_id: Optional[str] = None
+    plugin_name: Optional[str] = None
+    asset_ip: Optional[str] = None
+    scope_tags: Optional[list] = None
+    reason: Optional[str] = None
+    approved_by: Optional[str] = None
+    exception_type: Optional[str] = None
+    override_severity: Optional[int] = None
+    compensating_control_detail: Optional[str] = None
+    conditions: Optional[list] = None
+    condition_logic: Optional[str] = None
+    exclude_from_reports: Optional[bool] = None
+    expires_at: Optional[str] = None
+    review_by: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+@app.get("/api/exceptions")
+def list_exceptions(
+    plugin_id: Optional[str] = None,
+    asset_ip: Optional[str] = None,
+    exception_type: Optional[str] = None,
+    active_only: bool = True,
+    db: Session = Depends(get_db),
+):
+    """List global exceptions/waivers."""
+    q = db.query(FindingException)
+    if active_only:
+        q = q.filter(FindingException.is_active == True)
+    if plugin_id:
+        q = q.filter(FindingException.plugin_id == plugin_id)
+    if asset_ip:
+        q = q.filter((FindingException.asset_ip == asset_ip) | (FindingException.asset_ip == None))
+    if exception_type:
+        q = q.filter(FindingException.exception_type == exception_type)
+    exceptions = q.order_by(desc(FindingException.created_at)).all()
+    return [
+        {
+            "id": e.id, "plugin_id": e.plugin_id, "plugin_name": e.plugin_name,
+            "asset_ip": e.asset_ip, "scope_tags": e.scope_tags or [],
+            "exception_type": e.exception_type,
+            "override_severity": e.override_severity,
+            "compensating_control_detail": e.compensating_control_detail,
+            "conditions": e.conditions or [],
+            "condition_logic": e.condition_logic or "AND",
+            "reason": e.reason, "approved_by": e.approved_by,
+            "exclude_from_reports": e.exclude_from_reports if e.exclude_from_reports is not None else True,
+            "expires_at": e.expires_at.isoformat() if e.expires_at else None,
+            "review_by": e.review_by.isoformat() if e.review_by else None,
+            "is_active": e.is_active,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+            "affected_findings": db.query(func.count(Finding.id)).filter(
+                Finding.exception_id == e.id,
+            ).scalar() if e.is_active else 0,
+        }
+        for e in exceptions
+    ]
+
+
+@app.get("/api/exceptions/condition-catalog")
+def get_exception_condition_catalog():
+    """Return the condition catalog for exception rules."""
+    return rule_engine.CONDITION_CATALOG
+
+
+@app.post("/api/exceptions")
+def create_exception(body: ExceptionCreate, db: Session = Depends(get_db)):
+    """Create a global exception / waiver."""
+    # Must have at least plugin_id or conditions
+    if not body.plugin_id and not body.conditions:
+        raise HTTPException(400, "Must specify plugin_id, conditions, or both")
+    if body.exception_type == "severity_override" and body.override_severity is None:
+        raise HTTPException(400, "override_severity is required for severity_override type")
+    exc = FindingException(
+        plugin_id=body.plugin_id or None,
+        plugin_name=body.plugin_name,
+        asset_ip=body.asset_ip or None,
+        scope_tags=body.scope_tags or None,
+        exception_type=body.exception_type,
+        override_severity=body.override_severity if body.exception_type == "severity_override" else None,
+        compensating_control_detail=body.compensating_control_detail if body.exception_type == "compensating_control" else None,
+        conditions=body.conditions or None,
+        condition_logic=body.condition_logic or "AND",
+        reason=body.reason,
+        approved_by=body.approved_by,
+        exclude_from_reports=body.exclude_from_reports,
+        expires_at=datetime.fromisoformat(body.expires_at) if body.expires_at else None,
+        review_by=datetime.fromisoformat(body.review_by) if body.review_by else None,
+    )
+    db.add(exc)
+    db.flush()
+    # Apply to existing findings
+    applied = _apply_exception_to_findings(db, exc)
+    db.commit()
+    return {"ok": True, "id": exc.id, "applied_to": applied}
+
+
+@app.get("/api/exceptions/{exception_id}")
+def get_exception(exception_id: int, db: Session = Depends(get_db)):
+    exc = db.query(FindingException).filter(FindingException.id == exception_id).first()
+    if not exc:
+        raise HTTPException(404, "Exception not found")
+    # Count affected findings
+    q = db.query(Finding).filter(Finding.plugin_id == exc.plugin_id)
+    if exc.asset_ip:
+        q = q.join(Asset, Finding.asset_id == Asset.id).filter(Asset.ip == exc.asset_ip)
+    affected = q.count()
+    return {
+        "id": exc.id, "plugin_id": exc.plugin_id, "plugin_name": exc.plugin_name,
+        "asset_ip": exc.asset_ip, "scope_tags": exc.scope_tags or [],
+        "exception_type": exc.exception_type,
+        "override_severity": exc.override_severity,
+        "compensating_control_detail": exc.compensating_control_detail,
+        "conditions": exc.conditions or [],
+        "condition_logic": exc.condition_logic or "AND",
+        "reason": exc.reason, "approved_by": exc.approved_by,
+        "exclude_from_reports": exc.exclude_from_reports if exc.exclude_from_reports is not None else True,
+        "expires_at": exc.expires_at.isoformat() if exc.expires_at else None,
+        "review_by": exc.review_by.isoformat() if exc.review_by else None,
+        "is_active": exc.is_active,
+        "created_at": exc.created_at.isoformat() if exc.created_at else None,
+        "affected_findings": affected,
+    }
+
+
+@app.patch("/api/exceptions/{exception_id}")
+def update_exception(exception_id: int, body: ExceptionUpdate, db: Session = Depends(get_db)):
+    exc = db.query(FindingException).filter(FindingException.id == exception_id).first()
+    if not exc:
+        raise HTTPException(404, "Exception not found")
+    if body.plugin_id is not None:
+        exc.plugin_id = body.plugin_id or None
+    if body.plugin_name is not None:
+        exc.plugin_name = body.plugin_name
+    if body.asset_ip is not None:
+        exc.asset_ip = body.asset_ip or None
+    if body.scope_tags is not None:
+        exc.scope_tags = body.scope_tags if body.scope_tags else None
+    if body.reason is not None:
+        exc.reason = body.reason
+    if body.approved_by is not None:
+        exc.approved_by = body.approved_by
+    if body.exception_type is not None:
+        exc.exception_type = body.exception_type
+    if body.override_severity is not None:
+        exc.override_severity = body.override_severity
+    if body.compensating_control_detail is not None:
+        exc.compensating_control_detail = body.compensating_control_detail
+    if body.conditions is not None:
+        exc.conditions = body.conditions if body.conditions else None
+    if body.condition_logic is not None:
+        exc.condition_logic = body.condition_logic
+    if body.exclude_from_reports is not None:
+        exc.exclude_from_reports = body.exclude_from_reports
+    if body.expires_at is not None:
+        exc.expires_at = datetime.fromisoformat(body.expires_at) if body.expires_at else None
+    if body.review_by is not None:
+        exc.review_by = datetime.fromisoformat(body.review_by) if body.review_by else None
+    if body.is_active is not None:
+        exc.is_active = body.is_active
+        if not body.is_active:
+            # Deactivated — unlink from findings
+            db.query(Finding).filter(Finding.exception_id == exc.id).update(
+                {"exception_id": None, "workflow_status": "open"}, synchronize_session=False
+            )
+        else:
+            _apply_exception_to_findings(db, exc)
+    db.commit()
+    return {"ok": True, "id": exc.id}
+
+
+@app.delete("/api/exceptions/{exception_id}")
+def delete_exception(exception_id: int, db: Session = Depends(get_db)):
+    exc = db.query(FindingException).filter(FindingException.id == exception_id).first()
+    if not exc:
+        raise HTTPException(404, "Exception not found")
+    # Unlink findings
+    db.query(Finding).filter(Finding.exception_id == exc.id).update(
+        {"exception_id": None, "workflow_status": "open"}, synchronize_session=False
+    )
+    db.delete(exc)
+    db.commit()
+    return {"ok": True}
+
+
+_SEVERITY_LABELS = {0: "Info", 1: "Low", 2: "Medium", 3: "High", 4: "Critical"}
+
+
+def _check_scope_tags(db: Session, asset_id: int, scope_tags: list) -> bool:
+    """Check if an asset matches any of the scope tags."""
+    from models import Tag, TagAssignment
+    rows = (
+        db.query(Tag.category, Tag.value)
+        .join(TagAssignment, TagAssignment.tag_id == Tag.id)
+        .filter(TagAssignment.asset_id == asset_id)
+        .all()
+    )
+    asset_tags = {f"{r.category}:{r.value}".lower() for r in rows}
+    return any(t.lower() in asset_tags for t in scope_tags)
+
+
+def _apply_exception_to_findings(db: Session, exc: FindingException, scan_id: int = None) -> int:
+    """Apply a single exception to all matching findings. Returns count of affected findings."""
+    import rule_engine as engine
+
+    q = db.query(Finding)
+    if exc.plugin_id:
+        q = q.filter(Finding.plugin_id == exc.plugin_id)
+    if scan_id:
+        q = q.filter(Finding.scan_id == scan_id)
+
+    # Asset-level scope: IP or tags (need join for either)
+    has_asset_join = False
+    if exc.asset_ip:
+        q = q.join(Asset, Finding.asset_id == Asset.id)
+        q = q.filter(Asset.ip == exc.asset_ip)
+        has_asset_join = True
+
+    conditions = exc.conditions or []
+    logic = exc.condition_logic or "AND"
+    scope_tags = exc.scope_tags or []
+    findings = q.all()
+    count = 0
+    now = datetime.utcnow()
+
+    for f in findings:
+        # Check scope_tags if set
+        if scope_tags and not _check_scope_tags(db, f.asset_id, scope_tags):
+            continue
+
+        # If conditions are set, evaluate them against the finding + its asset
+        if conditions:
+            parent_asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
+            asset_dict = {
+                "ip": parent_asset.ip, "hostname": parent_asset.hostname,
+                "fqdn": parent_asset.fqdn, "os": parent_asset.os,
+                "netbios_name": parent_asset.netbios_name,
+                "environment_tag": parent_asset.environment_tag,
+                "criticality": parent_asset.criticality or 5,
+                "risk_score": parent_asset.risk_score or 0.0,
+                "critical_count": parent_asset.critical_count or 0,
+                "high_count": parent_asset.high_count or 0,
+                "medium_count": parent_asset.medium_count or 0,
+                "low_count": parent_asset.low_count or 0,
+                "info_count": parent_asset.info_count or 0,
+            } if parent_asset else {}
+
+            # Split conditions: finding.* evaluated per-finding, rest per-asset
+            finding_conds = [c for c in conditions if c.get("field", "").startswith("finding.")]
+            asset_conds = [c for c in conditions if not c.get("field", "").startswith("finding.")]
+
+            finding_match = all(engine._eval_finding_row(c, f) for c in finding_conds) if finding_conds else True
+            asset_match = engine.evaluate_conditions(
+                asset_conds, logic, asset_dict=asset_dict,
+                db=db, asset_id=f.asset_id, scan_id=f.scan_id,
+            ) if asset_conds else True
+
+            if logic == "AND":
+                if not (finding_match and asset_match):
+                    continue
+            else:  # OR
+                if not (finding_match or asset_match):
+                    continue
+
+        f.exception_id = exc.id
+        f.status_changed_at = now
+
+        if exc.exception_type == "severity_override" and exc.override_severity is not None:
+            # Severity override: change severity instead of workflow status
+            f.severity = exc.override_severity
+            f.severity_label = _SEVERITY_LABELS.get(exc.override_severity, "Info")
+        else:
+            f.workflow_status = exc.exception_type  # accepted_risk / false_positive / compensating_control
+
+        count += 1
+    return count
+
+
+@app.post("/api/exceptions/apply-all")
+def apply_all_exceptions(
+    scan_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """Re-apply all active exceptions to findings (e.g. after a new scan upload)."""
+    exceptions = db.query(FindingException).filter(
+        FindingException.is_active == True
+    ).all()
+    now = datetime.utcnow()
+    total_applied = 0
+    for exc in exceptions:
+        if exc.expires_at and exc.expires_at < now:
+            exc.is_active = False
+            continue
+        total_applied += _apply_exception_to_findings(db, exc, scan_id=scan_id)
+    db.commit()
+    return {"ok": True, "exceptions_checked": len(exceptions), "findings_updated": total_applied}
+
+
+
+# ─────────────────────────────────────────────
+# Cross-Scan Delta Comparison
+# ─────────────────────────────────────────────
+
+@app.get("/api/scans/compare")
+def compare_scans(
+    base_scan_id: int,
+    compare_scan_id: int,
+    db: Session = Depends(get_db),
+):
+    """Compare two scans and return new/fixed/recurring findings."""
+    # Check if we have a cached comparison
+    cached = db.query(ScanComparison).filter(
+        ScanComparison.base_scan_id == base_scan_id,
+        ScanComparison.compare_scan_id == compare_scan_id,
+    ).first()
+    if cached:
+        return _format_comparison(cached, db)
+
+    # Compute delta
+    base_scan = db.query(Scan).filter(Scan.id == base_scan_id).first()
+    compare_scan = db.query(Scan).filter(Scan.id == compare_scan_id).first()
+    if not base_scan or not compare_scan:
+        raise HTTPException(404, "Scan not found")
+
+    result = _compute_scan_delta(db, base_scan_id, compare_scan_id)
+
+    # Cache it
+    comp = ScanComparison(
+        base_scan_id=base_scan_id,
+        compare_scan_id=compare_scan_id,
+        new_count=result["new_count"],
+        fixed_count=result["fixed_count"],
+        recurring_count=result["recurring_count"],
+        new_findings=result["new_findings"][:500],  # cap for storage
+        fixed_findings=result["fixed_findings"][:500],
+        new_by_severity=result["new_by_severity"],
+        fixed_by_severity=result["fixed_by_severity"],
+    )
+    db.add(comp)
+    db.commit()
+    return _format_comparison(comp, db)
+
+
+@app.get("/api/scans/delta-timeline")
+def scan_delta_timeline(db: Session = Depends(get_db)):
+    """Return a timeline of scan-over-scan deltas (each scan compared to previous)."""
+    scans = db.query(Scan).order_by(Scan.created_at).all()
+    if len(scans) < 2:
+        return []
+
+    timeline = []
+    for i in range(1, len(scans)):
+        base = scans[i - 1]
+        current = scans[i]
+        # Check cache
+        cached = db.query(ScanComparison).filter(
+            ScanComparison.base_scan_id == base.id,
+            ScanComparison.compare_scan_id == current.id,
+        ).first()
+        if cached:
+            delta = {
+                "new_count": cached.new_count,
+                "fixed_count": cached.fixed_count,
+                "recurring_count": cached.recurring_count,
+                "new_by_severity": cached.new_by_severity or {},
+                "fixed_by_severity": cached.fixed_by_severity or {},
+            }
+        else:
+            delta = _compute_scan_delta(db, base.id, current.id)
+            # Cache
+            comp = ScanComparison(
+                base_scan_id=base.id, compare_scan_id=current.id,
+                new_count=delta["new_count"], fixed_count=delta["fixed_count"],
+                recurring_count=delta["recurring_count"],
+                new_findings=delta["new_findings"][:500],
+                fixed_findings=delta["fixed_findings"][:500],
+                new_by_severity=delta["new_by_severity"],
+                fixed_by_severity=delta["fixed_by_severity"],
+            )
+            db.add(comp)
+
+        timeline.append({
+            "scan_id": current.id,
+            "scan_name": current.scan_name or current.filename,
+            "scan_date": current.scan_date or (current.created_at.isoformat() if current.created_at else None),
+            "base_scan_id": base.id,
+            "base_scan_name": base.scan_name or base.filename,
+            "new_count": delta["new_count"],
+            "fixed_count": delta["fixed_count"],
+            "recurring_count": delta["recurring_count"],
+            "new_by_severity": delta.get("new_by_severity", {}),
+            "fixed_by_severity": delta.get("fixed_by_severity", {}),
+            "net_change": delta["new_count"] - delta["fixed_count"],
+        })
+    db.commit()
+    return timeline
+
+
+def _compute_scan_delta(db: Session, base_scan_id: int, compare_scan_id: int) -> dict:
+    """Compute the set-difference between two scans' findings.
+    A finding is identified by (plugin_id, asset_ip)."""
+    # Build sets: {(plugin_id, asset_ip): finding_info}
+    def _build_finding_set(scan_id):
+        findings = db.query(Finding, Asset.ip).join(Asset, Finding.asset_id == Asset.id).filter(
+            Finding.scan_id == scan_id
+        ).all()
+        result = {}
+        for f, ip in findings:
+            key = (f.plugin_id, ip or "")
+            result[key] = {
+                "plugin_id": f.plugin_id, "plugin_name": f.plugin_name,
+                "severity": f.severity, "severity_label": f.severity_label,
+                "asset_ip": ip, "cvss3_score": f.cvss3_score,
+                "priority_score": f.priority_score,
+            }
+        return result
+
+    base_set = _build_finding_set(base_scan_id)
+    compare_set = _build_finding_set(compare_scan_id)
+
+    base_keys = set(base_set.keys())
+    compare_keys = set(compare_set.keys())
+
+    new_keys = compare_keys - base_keys
+    fixed_keys = base_keys - compare_keys
+    recurring_keys = base_keys & compare_keys
+
+    new_findings = [compare_set[k] for k in new_keys]
+    fixed_findings = [base_set[k] for k in fixed_keys]
+
+    # Severity breakdown
+    new_by_sev = {}
+    for f in new_findings:
+        s = f.get("severity", 0)
+        new_by_sev[s] = new_by_sev.get(s, 0) + 1
+    fixed_by_sev = {}
+    for f in fixed_findings:
+        s = f.get("severity", 0)
+        fixed_by_sev[s] = fixed_by_sev.get(s, 0) + 1
+
+    # Sort by severity desc then priority
+    new_findings.sort(key=lambda x: (-(x.get("severity") or 0), -(x.get("priority_score") or 0)))
+    fixed_findings.sort(key=lambda x: (-(x.get("severity") or 0), -(x.get("priority_score") or 0)))
+
+    return {
+        "new_count": len(new_keys),
+        "fixed_count": len(fixed_keys),
+        "recurring_count": len(recurring_keys),
+        "new_findings": new_findings,
+        "fixed_findings": fixed_findings,
+        "new_by_severity": new_by_sev,
+        "fixed_by_severity": fixed_by_sev,
+    }
+
+
+def _format_comparison(comp: ScanComparison, db: Session) -> dict:
+    """Format a cached ScanComparison for API response."""
+    sev_labels = {0: "Info", 1: "Low", 2: "Medium", 3: "High", 4: "Critical"}
+    base = db.query(Scan).filter(Scan.id == comp.base_scan_id).first()
+    compare = db.query(Scan).filter(Scan.id == comp.compare_scan_id).first()
+    return {
+        "base_scan": {"id": comp.base_scan_id, "name": base.scan_name if base else None,
+                       "date": base.scan_date if base else None},
+        "compare_scan": {"id": comp.compare_scan_id, "name": compare.scan_name if compare else None,
+                          "date": compare.scan_date if compare else None},
+        "new_count": comp.new_count,
+        "fixed_count": comp.fixed_count,
+        "recurring_count": comp.recurring_count,
+        "net_change": comp.new_count - comp.fixed_count,
+        "new_findings": comp.new_findings or [],
+        "fixed_findings": comp.fixed_findings or [],
+        "new_by_severity": {sev_labels.get(int(k), k): v for k, v in (comp.new_by_severity or {}).items()},
+        "fixed_by_severity": {sev_labels.get(int(k), k): v for k, v in (comp.fixed_by_severity or {}).items()},
+    }
+
+
+# ─────────────────────────────────────────────
+# Temporal Analytics & Remediation Velocity
+# ─────────────────────────────────────────────
+
+@app.get("/api/reports/regressions")
+def get_regressions(
+    scan_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """Return findings that are regressions (were resolved, then reappeared)."""
+    q = db.query(Finding).filter(Finding.is_regression == True)
+    if scan_id:
+        q = q.filter(Finding.scan_id == scan_id)
+    q = q.order_by(desc(Finding.severity), desc(Finding.priority_score))
+    findings = q.limit(200).all()
+
+    result = []
+    for f in findings:
+        asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
+        result.append({
+            "id": f.id,
+            "plugin_id": f.plugin_id,
+            "plugin_name": f.plugin_name,
+            "severity": f.severity,
+            "severity_label": f.severity_label,
+            "asset_ip": asset.ip if asset else None,
+            "asset_hostname": asset.hostname if asset else None,
+            "first_seen": f.first_seen.isoformat() if f.first_seen else None,
+            "last_seen": f.last_seen.isoformat() if f.last_seen else None,
+            "times_seen": f.times_seen,
+            "priority_score": f.priority_score,
+            "scan_id": f.scan_id,
+        })
+    return {
+        "total": len(result),
+        "regressions": result,
+    }
+
+
+@app.get("/api/reports/temporal-summary")
+def get_temporal_summary(
+    scan_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """Return temporal health summary: zombie vulns, regression count, age distribution."""
+    q = db.query(Finding)
+    if scan_id:
+        q = q.filter(Finding.scan_id == scan_id)
+
+    findings = q.filter(Finding.severity > 0).all()  # Exclude Info
+    now = datetime.utcnow()
+
+    regression_count = 0
+    age_buckets = {"under_30d": 0, "30_90d": 0, "90_180d": 0, "over_180d": 0}
+    zombie_count = 0  # Open > 180 days
+    total_with_temporal = 0
+
+    for f in findings:
+        if f.is_regression:
+            regression_count += 1
+        if f.first_seen:
+            total_with_temporal += 1
+            age_days = (now - f.first_seen).days
+            if age_days < 30:
+                age_buckets["under_30d"] += 1
+            elif age_days < 90:
+                age_buckets["30_90d"] += 1
+            elif age_days < 180:
+                age_buckets["90_180d"] += 1
+            else:
+                age_buckets["over_180d"] += 1
+                if f.workflow_status in ("open", None):
+                    zombie_count += 1
+
+    return {
+        "total_findings": len(findings),
+        "total_with_temporal": total_with_temporal,
+        "regression_count": regression_count,
+        "zombie_count": zombie_count,
+        "age_distribution": age_buckets,
+    }
+
+
+@app.get("/api/reports/remediation-velocity")
+def get_remediation_velocity(
+    period: str = "month",
+    db: Session = Depends(get_db),
+):
+    """Return remediation velocity: findings resolved per time period.
+    period: 'week' or 'month'"""
+    from datetime import timedelta
+    from collections import defaultdict
+
+    resolved = db.query(Finding).filter(Finding.resolved_at != None).all()
+    if not resolved:
+        return {"period": period, "buckets": [], "total_resolved": 0, "avg_per_period": 0}
+
+    # Group by period
+    buckets = defaultdict(lambda: {"resolved": 0, "critical": 0, "high": 0, "medium": 0, "low": 0})
+    for f in resolved:
+        dt = f.resolved_at
+        if period == "week":
+            # ISO week: Monday-start
+            key = f"{dt.isocalendar()[0]}-W{dt.isocalendar()[1]:02d}"
+        else:
+            key = f"{dt.year}-{dt.month:02d}"
+        buckets[key]["resolved"] += 1
+        sev_map = {4: "critical", 3: "high", 2: "medium", 1: "low"}
+        sev_key = sev_map.get(f.severity, "low")
+        buckets[key][sev_key] += 1
+
+    sorted_keys = sorted(buckets.keys())
+    result_buckets = []
+    for k in sorted_keys:
+        entry = buckets[k]
+        entry["period_label"] = k
+        result_buckets.append(entry)
+
+    total = len(resolved)
+    avg = round(total / max(len(sorted_keys), 1), 1)
+
+    # Compute velocity trend (last 3 periods vs prior 3)
+    trend = None
+    if len(sorted_keys) >= 6:
+        recent = sum(buckets[k]["resolved"] for k in sorted_keys[-3:])
+        prior = sum(buckets[k]["resolved"] for k in sorted_keys[-6:-3])
+        if prior > 0:
+            trend = round((recent - prior) / prior * 100, 1)
+
+    return {
+        "period": period,
+        "buckets": result_buckets,
+        "total_resolved": total,
+        "avg_per_period": avg,
+        "velocity_trend_pct": trend,
+    }
+
+
+@app.post("/api/scans/{scan_id}/backfill-temporal")
+def backfill_temporal(scan_id: int, db: Session = Depends(get_db)):
+    """Backfill temporal fields for an existing scan (for scans uploaded before this feature)."""
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+    _populate_temporal_fields(db, scan)
+    db.commit()
+    regressions = db.query(func.count(Finding.id)).filter(
+        Finding.scan_id == scan_id, Finding.is_regression == True
+    ).scalar()
+    return {
+        "ok": True,
+        "scan_id": scan_id,
+        "regressions_detected": regressions,
+    }
+
+
+@app.post("/api/scans/backfill-temporal-all")
+def backfill_temporal_all(db: Session = Depends(get_db)):
+    """Backfill temporal fields for ALL scans in chronological order."""
+    scans = db.query(Scan).order_by(Scan.created_at).all()
+    results = []
+    for scan in scans:
+        _populate_temporal_fields(db, scan)
+        db.flush()
+        regressions = db.query(func.count(Finding.id)).filter(
+            Finding.scan_id == scan.id, Finding.is_regression == True
+        ).scalar()
+        results.append({"scan_id": scan.id, "scan_name": scan.scan_name, "regressions": regressions})
+    db.commit()
+    return {"ok": True, "scans_processed": len(results), "details": results}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+

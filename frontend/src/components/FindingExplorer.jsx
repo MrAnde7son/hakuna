@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Bug, Search, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock } from 'lucide-react'
 import { useScan } from '../App.jsx'
 import { getFindings, getPluginFamilies, getAssets, assignTags, unassignTags } from '../api.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, Input,
-  Spinner, EmptyState, Button, EffortBadge, OwnerBadge, Pill, TagPill, TagFilterBar, TagPicker
+  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker
 } from './ui.jsx'
 
 const GROUP_OPTIONS = [
@@ -14,6 +14,7 @@ const GROUP_OPTIONS = [
   { value: 'asset', label: 'Asset' },
   { value: 'owner_suggestion', label: 'Owner' },
   { value: 'effort_level', label: 'Effort' },
+  { value: 'cve', label: 'CVE' },
 ]
 
 const SEV_ORDER = { 4: 0, 3: 1, 2: 2, 1: 3, 0: 4 }
@@ -28,10 +29,21 @@ function getGroupKey(finding, groupBy) {
 
 function groupFindings(findings, groupBy) {
   const map = {}
-  for (const f of findings) {
-    const key = getGroupKey(f, groupBy)
-    if (!map[key]) map[key] = []
-    map[key].push(f)
+  if (groupBy === 'cve') {
+    // A finding can have multiple CVEs — place it in each CVE group
+    for (const f of findings) {
+      const cves = f.cves && f.cves.length > 0 ? f.cves : ['No CVE']
+      for (const cve of cves) {
+        if (!map[cve]) map[cve] = []
+        map[cve].push(f)
+      }
+    }
+  } else {
+    for (const f of findings) {
+      const key = getGroupKey(f, groupBy)
+      if (!map[key]) map[key] = []
+      map[key].push(f)
+    }
   }
   const entries = Object.entries(map)
   if (groupBy === 'severity') {
@@ -173,6 +185,7 @@ export default function FindingExplorer() {
   const sortOrder = searchParams.get('order') || 'desc'
   const slaStatus = searchParams.get('sla_status') || null
   const effortLevel = searchParams.get('effort_level') || null
+  const cveFilter = searchParams.get('cve') || null
 
   const setFilter = useCallback((key, value) => {
     setSearchParams(prev => {
@@ -216,6 +229,7 @@ export default function FindingExplorer() {
       has_exploit: hasExploit,
       sla_status: slaStatus,
       effort_level: effortLevel,
+      cve: cveFilter,
       search: search || null,
       sort_by: sortBy,
       order: sortOrder,
@@ -232,7 +246,7 @@ export default function FindingExplorer() {
         setTotal(data.total)
       })
       .finally(() => setLoading(false))
-  }, [activeScanId, assetId, severity, family, hasExploit, slaStatus, effortLevel, search, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic])
+  }, [activeScanId, assetId, severity, family, hasExploit, slaStatus, effortLevel, cveFilter, search, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic])
 
   useEffect(() => { load() }, [load])
 
@@ -256,7 +270,17 @@ export default function FindingExplorer() {
 
   const totalPages = Math.ceil(total / pageSize)
 
-  const hasActiveFilters = severity !== null || family || hasExploit !== null || slaStatus || effortLevel || search || groupBy || assetId || tagFilter.length > 0
+  const [cveInput, setCveInput] = useState(cveFilter || '')
+  const cveDebounceRef = useRef(null)
+  const handleCveChange = (val) => {
+    setCveInput(val)
+    clearTimeout(cveDebounceRef.current)
+    cveDebounceRef.current = setTimeout(() => setFilter('cve', val), 400)
+  }
+  // Sync local state when URL param changes externally (e.g. clear all)
+  useEffect(() => { setCveInput(cveFilter || '') }, [cveFilter])
+
+  const hasActiveFilters = severity !== null || family || hasExploit !== null || slaStatus || effortLevel || cveFilter || search || groupBy || assetId || tagFilter.length > 0
 
   const toggleSelect = (id) => setSelectedIds(prev => {
     const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next
@@ -334,7 +358,7 @@ export default function FindingExplorer() {
     },
     {
       key: 'owner_suggestion', label: 'Owner',
-      render: (v) => <OwnerBadge owner={v} />
+      render: (_, row) => <ResolvedOwnerBadge resolved={row.resolved_owner} />
     },
     {
       key: 'exploit_available', label: 'Exploit',
@@ -422,6 +446,19 @@ export default function FindingExplorer() {
             { value: 'complex',   label: 'Complex' },
           ]}
         />
+
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+          <input
+            value={cveInput}
+            onChange={e => handleCveChange(e.target.value.toUpperCase())}
+            placeholder="Filter by CVE…"
+            style={{
+              background: 'var(--bg-card)', border: '1px solid var(--border)',
+              color: 'var(--text-primary)', borderRadius: 6, padding: '7px 12px',
+              fontSize: 13, outline: 'none', width: 160,
+            }}
+          />
+        </div>
 
         <Select
           value={assetId}

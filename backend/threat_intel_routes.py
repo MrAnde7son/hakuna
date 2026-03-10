@@ -9,7 +9,7 @@ from typing import Optional, List
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, or_
+from sqlalchemy import func, desc, asc, or_, text
 
 from database import get_db
 from models import Finding, Asset, Scan
@@ -62,13 +62,14 @@ def get_stats(db: Session = Depends(get_db)):
     active_campaigns = db.query(func.count(ThreatCampaign.id)).filter(ThreatCampaign.is_active == True).scalar() or 0
     remediation_campaigns = db.query(func.count(IntelRemediationCampaign.id)).scalar() or 0
 
-    # Affected assets: count unique asset IDs across all intel remediation campaigns
-    all_campaigns = db.query(IntelRemediationCampaign.affected_asset_ids).all()
-    asset_id_set = set()
-    for (ids,) in all_campaigns:
-        if ids:
-            asset_id_set.update(ids)
-    affected_assets = len(asset_id_set)
+    # Affected assets: count unique assets that have findings matching tracked intel CVEs
+    tracked_cve_ids = {r[0] for r in db.query(ThreatCVE.cve_id).all()}
+    affected_asset_set = set()
+    if tracked_cve_ids:
+        for (asset_id, cves) in db.query(Finding.asset_id, Finding.cves).filter(Finding.cves.isnot(None)).all():
+            if cves and any(c in tracked_cve_ids for c in cves):
+                affected_asset_set.add(asset_id)
+    affected_assets = len(affected_asset_set)
 
     avg_epss_row = db.query(func.avg(ThreatCVE.epss_score)).filter(ThreatCVE.epss_score.isnot(None)).scalar()
     avg_epss = round(float(avg_epss_row), 4) if avg_epss_row else 0.0
@@ -140,7 +141,9 @@ def get_cves(
     kev_only: bool = False,
     min_epss: Optional[float] = None,
     min_cvss: Optional[float] = None,
-    in_scan: Optional[int] = None,   # scan_id filter — only CVEs found in that scan
+    in_scan: Optional[str] = None,   # scan_id or "all" — only CVEs found in findings
+    sort_by: Optional[str] = Query(None, regex="^(cve_id|cvss3_score|epss_score|in_kev|published_date|kev_date_added)$"),
+    sort_dir: Optional[str] = Query("desc", regex="^(asc|desc)$"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -156,17 +159,47 @@ def get_cves(
     if min_cvss is not None:
         q = q.filter(ThreatCVE.cvss3_score >= min_cvss)
 
-    # Collect CVE IDs found in findings for a given scan
+    # Collect CVE IDs found in findings for a given scan (or all scans)
     scan_cve_ids: set = set()
     if in_scan:
-        rows = db.query(Finding.cves).filter(Finding.scan_id == in_scan).all()
-        for (cves,) in rows:
+        fq = db.query(Finding.cves).filter(Finding.cves.isnot(None))
+        if in_scan != "all":
+            fq = fq.filter(Finding.scan_id == int(in_scan))
+        for (cves,) in fq.all():
             if cves:
                 scan_cve_ids.update(c.strip() for c in cves if c)
-        q = q.filter(ThreatCVE.cve_id.in_(list(scan_cve_ids)))
+        if scan_cve_ids:
+            # Use a temp table to avoid SQLite's variable limit with large IN clauses
+            db.execute(text("CREATE TEMP TABLE IF NOT EXISTS _scan_cves (cve_id TEXT PRIMARY KEY)"))
+            db.execute(text("DELETE FROM _scan_cves"))
+            BATCH = 500
+            cve_list = list(scan_cve_ids)
+            for i in range(0, len(cve_list), BATCH):
+                batch = cve_list[i:i+BATCH]
+                db.execute(text("INSERT OR IGNORE INTO _scan_cves (cve_id) VALUES " +
+                    ",".join(["(:v%d)" % j for j in range(len(batch))])),
+                    {"v%d" % j: v for j, v in enumerate(batch)})
+            q = q.filter(ThreatCVE.cve_id.in_(text("SELECT cve_id FROM _scan_cves")))
+        else:
+            return {"items": [], "total": 0}
 
     total = q.count()
-    records = q.order_by(desc(ThreatCVE.epss_score), desc(ThreatCVE.cvss3_score)).offset(offset).limit(limit).all()
+
+    # Sorting
+    SORT_COLS = {
+        'cve_id': ThreatCVE.cve_id,
+        'cvss3_score': ThreatCVE.cvss3_score,
+        'epss_score': ThreatCVE.epss_score,
+        'in_kev': ThreatCVE.in_kev,
+        'published_date': ThreatCVE.published_date,
+        'kev_date_added': ThreatCVE.kev_date_added,
+    }
+    if sort_by and sort_by in SORT_COLS:
+        col = SORT_COLS[sort_by]
+        order = asc(col) if sort_dir == 'asc' else desc(col)
+        records = q.order_by(order).offset(offset).limit(limit).all()
+    else:
+        records = q.order_by(desc(ThreatCVE.kev_date_added), desc(ThreatCVE.epss_score), desc(ThreatCVE.cvss3_score)).offset(offset).limit(limit).all()
 
     # Build a lookup: how many findings across all scans reference each CVE
     cve_ids_page = [r.cve_id for r in records]
@@ -507,6 +540,10 @@ def _run_sync_in_background(db: Session):
     except Exception as exc:
         logger.warning("Background EPSS sync failed: %s", exc)
     try:
+        sync_engine.sync_nvd_scores(db)
+    except Exception as exc:
+        logger.warning("Background NVD CVSS sync failed: %s", exc)
+    try:
         sync_engine.sync_mitre_groups_to_db(db)
     except Exception as exc:
         logger.warning("Background MITRE sync failed: %s", exc)
@@ -533,22 +570,21 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
         logger.warning("EPSS sync failed: %s", exc)
         epss_result = {"updated": 0}
 
+    # NVD CVSS backfill — moderate speed (~3 req/s), run in background
+    background_tasks.add_task(sync_engine.sync_nvd_scores, db)
+
     # MITRE is slow (~30 MB download) — run in background
     background_tasks.add_task(sync_engine.sync_mitre_groups_to_db, db)
-    mitre_result = {"added": 0, "skipped": 0}
-
     return {
         "status": "ok",
         "kev_added": kev_result.get("added", 0),
         "kev_updated": kev_result.get("updated", 0),
         "kev_total": kev_result.get("total", 0),
         "epss_updated": epss_result.get("updated", 0),
-        "mitre_groups_added": mitre_result.get("added", 0),
-        "mitre_groups_skipped": mitre_result.get("skipped", 0),
         "message": (
             f"KEV: +{kev_result.get('added', 0)} new, {kev_result.get('updated', 0)} updated. "
             f"EPSS: {epss_result.get('updated', 0)} refreshed. "
-            f"MITRE: +{mitre_result.get('added', 0)} groups."
+            f"NVD CVSS + MITRE ATT&CK: syncing in background."
         ),
     }
 

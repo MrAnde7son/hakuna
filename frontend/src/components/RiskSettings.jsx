@@ -9,7 +9,7 @@ const FINDING_WEIGHT_LABELS = {
   severity:       { label: 'CVSS Severity',           desc: 'CVSS score (v3 preferred, v2 fallback), normalized 0–10' },
   intel:          { label: 'Threat Intel (VPR)',       desc: 'Nessus VPR score, normalized 0–10' },
   exploitability: { label: 'Exploitability',           desc: 'Exploit availability, maturity, and zero-day flag' },
-  criticality:    { label: 'Asset Criticality',        desc: 'Criticality level of the affected asset (1–5)' },
+  criticality:    { label: 'Asset Criticality',        desc: 'Criticality level of the affected asset (1–10)' },
   family:         { label: 'Plugin Family Risk',       desc: 'Risk signal from the Nessus plugin family' },
   controls:       { label: 'Compensating Controls',    desc: 'Penalty when AV/firewall absent on the asset' },
   reachability:   { label: 'Network Reachability',     desc: 'Established connections on the asset (lateral movement)' },
@@ -22,7 +22,7 @@ const WEIGHT_LABELS = {
   severity:       { label: 'Technical Severity',       desc: 'Weighted average of finding severity levels' },
   exploitability: { label: 'Exploitability',           desc: 'Exploit availability, maturity, and VPR score' },
   intel:          { label: 'Threat Intelligence',      desc: 'Highest VPR / CVE intel score for the asset' },
-  criticality:    { label: 'Asset Criticality',        desc: 'User-defined or auto-assigned criticality (1–5)' },
+  criticality:    { label: 'Asset Criticality',        desc: 'User-defined or auto-assigned criticality (1–10)' },
   controls:       { label: 'Compensating Controls',    desc: 'Penalty when AV/firewall controls are absent' },
   reachability:   { label: 'Network Reachability',     desc: 'Established outbound connections (lateral movement)' },
 }
@@ -109,10 +109,10 @@ function CritMultRow({ level, value, onChange }) {
   )
 }
 
-const CRIT_COLORS = { 1: '#0ea5e9', 2: '#65a30d', 3: '#d97706', 4: '#ea580c', 5: '#dc2626' }
+const CRIT_COLORS = { 1: '#0ea5e9', 2: '#38bdf8', 3: '#65a30d', 4: '#84cc16', 5: '#d97706', 6: '#f59e0b', 7: '#ea580c', 8: '#ef4444', 9: '#dc2626', 10: '#991b1b' }
 
 function RuleCard({ rule, index, onChange, onDelete, catalog }) {
-  const criticality = rule.criticality || 3
+  const criticality = rule.criticality || 5
   const critColor   = CRIT_COLORS[criticality] || 'var(--text)'
 
   return (
@@ -132,7 +132,7 @@ function RuleCard({ rule, index, onChange, onDelete, catalog }) {
           onChange={e => onChange({ ...rule, criticality: parseInt(e.target.value) })}
           style={{ ...selStyle, width: 60, fontWeight: 700, color: critColor }}
         >
-          {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n}</option>)}
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => <option key={n} value={n}>{n}</option>)}
         </select>
         <button onClick={onDelete} style={iconBtnStyle} title="Delete rule">
           <Trash2 size={13} color="#ef4444" />
@@ -214,7 +214,7 @@ export default function RiskSettings({ onSave }) {
       ...p,
       criticality_rules: [
         ...(p.criticality_rules || []),
-        { conditions: [{ field: 'environment_tag', op: 'eq', value: '' }], logic: 'AND', criticality: 4 },
+        { conditions: [{ field: 'environment_tag', op: 'eq', value: '' }], logic: 'AND', criticality: 7 },
       ],
     }))
   }
@@ -315,9 +315,9 @@ export default function RiskSettings({ onSave }) {
       <Card style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Criticality Multipliers</div>
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-          Final score multiplier applied based on asset criticality level (1 = lowest, 5 = highest).
+          Final score multiplier applied based on asset criticality level (1 = lowest, 10 = highest).
         </div>
-        {[1, 2, 3, 4, 5].map(level => (
+        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(level => (
           <CritMultRow
             key={level} level={level}
             value={cfg.criticality_multipliers?.[String(level)] ?? 1.0}

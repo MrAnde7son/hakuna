@@ -4,9 +4,9 @@ import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, Legend, CartesianGrid
 } from 'recharts'
-import { AlertTriangle, Bug, Server, Zap, TrendingUp, Shield, Clock, AlertCircle } from 'lucide-react'
+import { AlertTriangle, Bug, Server, Zap, TrendingUp, Shield, Clock, AlertCircle, RotateCcw, Skull, Activity } from 'lucide-react'
 import { useScan } from '../App.jsx'
-import { getSummary, getTrending, getSLASummary } from '../api.js'
+import { getSummary, getTrending, getSLASummary, getTemporalSummary, getRemediationVelocity } from '../api.js'
 import { Card, StatCard, ScoreBar, SeverityBadge, Spinner, EmptyState, Button } from './ui.jsx'
 
 const SEV_COLORS = ['#0ea5e9', '#65a30d', '#d97706', '#ea580c', '#dc2626']
@@ -155,21 +155,116 @@ function SLAWidget({ sla }) {
   )
 }
 
+function TemporalWidget({ temporal }) {
+  if (!temporal || temporal.total_with_temporal === 0) return null
+  const { regression_count, zombie_count, age_distribution } = temporal
+
+  const ageBars = [
+    { label: '< 30 days', value: age_distribution.under_30d, color: '#16a34a' },
+    { label: '30–90 days', value: age_distribution['30_90d'], color: '#d97706' },
+    { label: '90–180 days', value: age_distribution['90_180d'], color: '#ea580c' },
+    { label: '> 180 days', value: age_distribution.over_180d, color: '#dc2626' },
+  ]
+  const total = ageBars.reduce((s, b) => s + b.value, 0) || 1
+
+  return (
+    <Card>
+      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <Clock size={14} color="var(--accent)" /> Finding Age Distribution
+      </div>
+      {ageBars.map(b => (
+        <div key={b.label} style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
+            <span style={{ color: 'var(--text-secondary)' }}>{b.label}</span>
+            <span style={{ fontWeight: 600, color: b.color }}>{b.value}</span>
+          </div>
+          <div style={{ height: 5, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{ width: `${(b.value / total) * 100}%`, height: '100%', background: b.color, borderRadius: 3 }} />
+          </div>
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 14, marginTop: 14 }}>
+        {regression_count > 0 && (
+          <div style={{ padding: '8px 10px', background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.25)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#fca5a5' }}>
+            <RotateCcw size={12} /> {regression_count} regression{regression_count !== 1 ? 's' : ''}
+          </div>
+        )}
+        {zombie_count > 0 && (
+          <div style={{ padding: '8px 10px', background: 'rgba(234,88,12,0.08)', border: '1px solid rgba(234,88,12,0.25)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#fdba74' }}>
+            <Skull size={12} /> {zombie_count} zombie vuln{zombie_count !== 1 ? 's' : ''} (open &gt;180d)
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function VelocityWidget({ velocity }) {
+  if (!velocity || velocity.total_resolved === 0) return null
+  const { buckets, avg_per_period, velocity_trend_pct, period } = velocity
+  const recent = buckets.slice(-6)
+
+  return (
+    <Card>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Activity size={14} color="var(--accent)" /> Remediation Velocity
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            avg {avg_per_period}/{period}
+          </span>
+          {velocity_trend_pct != null && (
+            <span style={{
+              fontSize: 12, fontWeight: 600,
+              color: velocity_trend_pct > 0 ? '#16a34a' : velocity_trend_pct < 0 ? '#dc2626' : 'var(--text-muted)',
+            }}>
+              {velocity_trend_pct > 0 ? '+' : ''}{velocity_trend_pct}%
+            </span>
+          )}
+        </div>
+      </div>
+      <ResponsiveContainer width="100%" height={140}>
+        <BarChart data={recent} margin={{ right: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis dataKey="period_label" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
+          <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 10 }} width={30} />
+          <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
+          <Bar dataKey="critical" stackId="a" fill="#dc2626" />
+          <Bar dataKey="high" stackId="a" fill="#ea580c" />
+          <Bar dataKey="medium" stackId="a" fill="#d97706" />
+          <Bar dataKey="low" stackId="a" fill="#65a30d" />
+        </BarChart>
+      </ResponsiveContainer>
+    </Card>
+  )
+}
+
 export default function Dashboard() {
   const { activeScanId } = useScan()
   const [summary, setSummary] = useState(null)
   const [trending, setTrending] = useState([])
   const [sla, setSla] = useState(null)
+  const [temporal, setTemporal] = useState(null)
+  const [velocity, setVelocity] = useState(null)
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
 
   useEffect(() => {
     setLoading(true)
-    Promise.all([getSummary(activeScanId), getTrending(), getSLASummary(activeScanId)])
-      .then(([s, t, sl]) => {
+    Promise.all([
+      getSummary(activeScanId),
+      getTrending(),
+      getSLASummary(activeScanId),
+      getTemporalSummary(activeScanId).catch(() => null),
+      getRemediationVelocity('month').catch(() => null),
+    ])
+      .then(([s, t, sl, tmp, vel]) => {
         setSummary(s)
         setTrending(t)
         setSla(sl)
+        setTemporal(tmp)
+        setVelocity(vel)
       })
       .finally(() => setLoading(false))
   }, [activeScanId])
@@ -277,8 +372,14 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* SLA / MTTR */}
+      {/* SLA */}
       <SLAWidget sla={sla} />
+
+      {/* Temporal & Velocity */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, marginBottom: 20 }}>
+        <TemporalWidget temporal={temporal} />
+        <VelocityWidget velocity={velocity} />
+      </div>
 
       {/* Trend */}
       <TrendChart data={trending} />

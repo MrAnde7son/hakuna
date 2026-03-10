@@ -246,8 +246,60 @@ export function OwnerBadge({ owner }) {
     DevOps: '#8b5cf6',
     SecOps: '#dc2626',
     AppSec: '#f59e0b',
+    DBA: '#06b6d4',
   }
   return <Pill label={owner || '—'} color={MAP[owner] || 'var(--text-muted)'} />
+}
+
+const SOURCE_LABELS = {
+  manual_finding: 'Manual',
+  manual_asset: 'Asset',
+  inferred_service: 'Auto',
+  inferred_user: 'Auto',
+  plugin_family: 'Default',
+}
+const SOURCE_COLORS = {
+  manual_finding: '#22c55e',
+  manual_asset: '#22c55e',
+  inferred_service: '#60a5fa',
+  inferred_user: '#60a5fa',
+  plugin_family: 'var(--text-muted)',
+}
+
+export function ResolvedOwnerBadge({ resolved }) {
+  if (!resolved) return <OwnerBadge owner={null} />
+  const role = resolved.owner_role || '—'
+  const name = resolved.owner_name
+  const src = SOURCE_LABELS[resolved.source] || 'Default'
+  const srcColor = SOURCE_COLORS[resolved.source] || 'var(--text-muted)'
+  const MAP = { IT: '#0ea5e9', DevOps: '#8b5cf6', SecOps: '#dc2626', AppSec: '#f59e0b', DBA: '#06b6d4' }
+  const roleColor = MAP[role] || 'var(--text-muted)'
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        <Pill label={role} color={roleColor} />
+        <span style={{ fontSize: 9, color: srcColor, fontWeight: 600, textTransform: 'uppercase' }}>{src}</span>
+      </div>
+      {name && name !== role && (
+        <span style={{ fontSize: 11, color: 'var(--text-secondary)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              title={name}>
+          {name}
+        </span>
+      )}
+    </div>
+  )
+}
+
+export function ConfidenceDot({ confidence }) {
+  const colors = { high: '#22c55e', medium: '#f59e0b', low: '#6b7280' }
+  const c = colors[confidence] || colors.low
+  return (
+    <span title={`${confidence} confidence`} style={{
+      display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+      background: c, flexShrink: 0,
+    }} />
+  )
 }
 
 export function Spinner() {

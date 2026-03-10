@@ -95,11 +95,16 @@ CONDITION_CATALOG = [
                 "ops": ["eq", "neq", "gte", "lte", "gt", "lt"],
                 "value_type": "enum",
                 "options": [
-                    {"label": "1 — Minimal",  "value": 1},
-                    {"label": "2 — Low",      "value": 2},
-                    {"label": "3 — Medium",   "value": 3},
-                    {"label": "4 — High",     "value": 4},
-                    {"label": "5 — Critical", "value": 5},
+                    {"label": "1 — Minimal",    "value": 1},
+                    {"label": "2 — Very Low",   "value": 2},
+                    {"label": "3 — Low",        "value": 3},
+                    {"label": "4 — Low-Medium", "value": 4},
+                    {"label": "5 — Medium",     "value": 5},
+                    {"label": "6 — Medium-High","value": 6},
+                    {"label": "7 — High",       "value": 7},
+                    {"label": "8 — Very High",  "value": 8},
+                    {"label": "9 — Critical",   "value": 9},
+                    {"label": "10 — Maximum",   "value": 10},
                 ],
             },
             {
@@ -139,8 +144,14 @@ CONDITION_CATALOG = [
             {"field": "finding.zero_day",        "label": "Has Zero-Day",       "ops": ["is_true", "is_false"],           "value_type": "none"},
             {"field": "finding.has_cve",         "label": "Has CVE Reference",  "ops": ["is_true", "is_false"],           "value_type": "none"},
             {"field": "finding.missing_patches", "label": "Has Missing Patches","ops": ["is_true", "is_false"],           "value_type": "none"},
+            {"field": "finding.plugin_id",       "label": "Plugin ID",          "ops": ["eq", "neq", "contains", "startswith"],   "value_type": "string", "placeholder": "10287"},
             {"field": "finding.plugin_family",   "label": "Plugin Family",      "ops": ["eq", "neq", "contains", "not_contains"], "value_type": "string", "placeholder": "Windows"},
             {"field": "finding.plugin_name",     "label": "Plugin Name",        "ops": ["contains", "not_contains", "startswith", "eq"], "value_type": "string", "placeholder": "SSL"},
+            {"field": "finding.port",            "label": "Port",               "ops": ["eq", "neq", "gt", "lt", "gte", "lte"], "value_type": "integer", "placeholder": "443"},
+            {"field": "finding.protocol",        "label": "Protocol",           "ops": ["eq", "neq"],              "value_type": "enum", "options": [{"label": "TCP", "value": "tcp"}, {"label": "UDP", "value": "udp"}, {"label": "ICMP", "value": "icmp"}]},
+            {"field": "finding.synopsis",        "label": "Synopsis",           "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "remote code execution"},
+            {"field": "finding.description",     "label": "Description",        "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "buffer overflow"},
+            {"field": "finding.solution",        "label": "Solution",           "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "Upgrade to"},
             {"field": "finding.cve",             "label": "Affected by CVE",    "ops": ["contains", "eq"],                "value_type": "string", "placeholder": "CVE-2021-44228"},
             {
                 "field": "finding.effort", "label": "Effort Level",
@@ -365,6 +376,18 @@ def _eval_finding_row(cond: dict, finding) -> bool:
     if sub == "missing_patches":
         # This requires DB — only supported in asset-level context; return False for finding-row eval
         return False
+    if sub == "port":
+        return _num_op(float(finding.port or 0), op, value)
+    if sub == "protocol":
+        return _str_op((finding.protocol or "").lower(), op, str(value or "").lower())
+    if sub == "synopsis":
+        return _str_op(finding.synopsis or "", op, value)
+    if sub == "description":
+        return _str_op(finding.description or "", op, value)
+    if sub == "solution":
+        return _str_op(finding.solution or "", op, value)
+    if sub == "plugin_id":
+        return _str_op(str(finding.plugin_id or ""), op, value)
     if sub == "plugin_family":
         return _str_op(finding.plugin_family or "", op, value)
     if sub == "plugin_name":
@@ -669,7 +692,7 @@ def get_matching_assets(
                 "ip": a.ip, "hostname": a.hostname, "fqdn": a.fqdn,
                 "os": a.os, "netbios_name": a.netbios_name,
                 "environment_tag": a.environment_tag,
-                "criticality": a.criticality or 3,
+                "criticality": a.criticality or 5,
                 "risk_score": a.risk_score or 0.0,
                 "critical_count": a.critical_count or 0,
                 "high_count": a.high_count or 0,

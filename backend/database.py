@@ -1,7 +1,9 @@
-from sqlalchemy import create_engine
+import os
+
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-DATABASE_URL = "sqlite:///./nessus_remediation.db"
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./nessus_remediation.db")
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -32,9 +34,49 @@ def init_db():
         SLAConfig,
         Workflow, WorkflowNode, WorkflowEdge,
         WorkflowExecution, WorkflowExecutionLog,
+        IntegrationConfig,
     )
     from threat_intel_models import (  # noqa: F401
         ThreatGroup, TTP, ThreatGroupTTP,
         ThreatCVE, ThreatCampaign, IntelRemediationCampaign,
     )
     Base.metadata.create_all(bind=engine)
+    _migrate_add_columns()
+
+
+def _migrate_add_columns():
+    """Add columns to existing tables that create_all won't handle."""
+    migrations = {
+        "assets": [
+            ("inferred_primary_user", "VARCHAR"),
+            ("inferred_admin_contacts", "JSON"),
+            ("inferred_team", "VARCHAR"),
+            ("owner_confidence", 'VARCHAR DEFAULT "low"'),
+        ],
+        "findings": [
+            ("first_seen", "DATETIME"),
+            ("last_seen", "DATETIME"),
+            ("times_seen", "INTEGER DEFAULT 1"),
+            ("is_regression", "BOOLEAN DEFAULT 0"),
+        ],
+        "finding_exceptions": [
+            ("conditions", "JSON"),
+            ("condition_logic", 'VARCHAR DEFAULT "AND"'),
+            ("override_severity", "INTEGER"),
+            ("scope_tags", "JSON"),
+            ("compensating_control_detail", "TEXT"),
+            ("exclude_from_reports", "BOOLEAN DEFAULT 1"),
+            ("review_by", "DATETIME"),
+        ],
+    }
+    insp = inspect(engine)
+    with engine.connect() as conn:
+        for table, columns in migrations.items():
+            try:
+                existing = {c["name"] for c in insp.get_columns(table)}
+            except Exception:
+                continue
+            for col_name, col_type in columns:
+                if col_name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"))
+        conn.commit()

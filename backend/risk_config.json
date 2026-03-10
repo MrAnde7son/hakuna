@@ -22,11 +22,16 @@
     "none": 0
   },
   "criticality_multipliers": {
-    "1": 0.6,
-    "2": 0.8,
-    "3": 1,
-    "4": 1.3,
-    "5": 1.6
+    "1": 0.5,
+    "2": 0.6,
+    "3": 0.7,
+    "4": 0.8,
+    "5": 0.9,
+    "6": 1,
+    "7": 1.15,
+    "8": 1.3,
+    "9": 1.45,
+    "10": 1.6
   },
   "finding_formula_weights": {
     "severity": 1,
@@ -41,13 +46,13 @@
     {
       "conditions": [
         {
-          "field": "inventory.is_domain_controller",
+          "field": "inventory.privileged_user_logged_in",
           "op": "is_true",
           "value": null
         }
       ],
       "logic": "AND",
-      "criticality": 5
+      "criticality": 10
     }
   ],
   "criticality_rule_mode": "max",

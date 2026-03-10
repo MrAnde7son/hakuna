@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Settings, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock } from 'lucide-react'
+import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, ShieldOff } from 'lucide-react'
 import { getDedupConfig, saveDedupConfig, runDedup } from '../api.js'
 import { Card } from './ui.jsx'
 import RiskSettings from './RiskSettings.jsx'
 import UploadScan from './UploadScan.jsx'
 import TagManager from './TagManager.jsx'
 import SLASettings from './SLASettings.jsx'
+import IntegrationSettings from './IntegrationSettings.jsx'
+import GlobalExceptions from './GlobalExceptions.jsx'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -246,9 +248,9 @@ function EntityCard({ entityKey, cfg, onChange }) {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export default function DedupSettings() {
+export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla']
+  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla', 'exceptions', 'integrations']
   const tabParam = searchParams.get('tab')
   const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'upload'
   const setActiveTab = (id) => setSearchParams(prev => { prev.set('tab', id); return prev })
@@ -295,18 +297,20 @@ export default function DedupSettings() {
   }
 
   const TABS = [
-    { id: 'upload', label: 'Upload Scan',    icon: <Upload size={14} /> },
-    { id: 'dedup',  label: 'Deduplication', icon: <Settings size={14} /> },
-    { id: 'risk',   label: 'Risk Scoring',  icon: <ShieldAlert size={14} /> },
+    { id: 'upload', label: 'Scans',    icon: <Upload size={14} /> },
     { id: 'tags',   label: 'Tags',          icon: <Tag size={14} /> },
-    { id: 'sla',    label: 'SLA / MTTR',    icon: <Clock size={14} /> },
+    { id: 'sla',    label: 'SLA',           icon: <Clock size={14} /> },
+    { id: 'exceptions', label: 'Exceptions', icon: <ShieldOff size={14} /> },
+    { id: 'risk', label: 'Risk Score', icon: <ShieldAlert size={14} /> },
+    { id: 'dedup', label: 'Deduplication', icon: <SettingsIcon size={14} /> },
+    { id: 'integrations', label: 'Integrations', icon: <Plug size={14} /> },
   ]
 
   return (
     <div style={{ padding: 24, maxWidth: 860 }}>
       {/* Page header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
-        <Settings size={20} color="var(--accent)" />
+        <SettingsIcon size={20} color="var(--accent)" />
         <h1 style={{ fontSize: 20, fontWeight: 600, color: 'var(--text)', margin: 0 }}>Settings</h1>
       </div>
 
@@ -342,13 +346,19 @@ export default function DedupSettings() {
       {/* SLA tab */}
       {activeTab === 'sla' && <SLASettings />}
 
+      {/* Exceptions tab */}
+      {activeTab === 'exceptions' && <GlobalExceptions />}
+
+      {/* Integrations tab */}
+      {activeTab === 'integrations' && <IntegrationSettings />}
+
       {/* Dedup tab */}
       {activeTab === 'dedup' && <>
 
       {/* Dedup Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Settings size={16} color="var(--accent)" />
+          <SettingsIcon size={16} color="var(--accent)" />
           <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>Deduplication</span>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>

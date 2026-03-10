@@ -35,9 +35,19 @@ class Asset(Base):
     scan_start = Column(String)
     scan_end = Column(String)
     # User-defined
-    criticality = Column(Integer, default=3)  # 1-5
+    criticality = Column(Integer, default=5)  # 1-10
     environment_tag = Column(String, default="internal")
     business_context = Column(String)
+    # Inferred ownership (auto-populated from inventory data)
+    inferred_primary_user = Column(String)         # From InventoryLoggedOn — likely machine user
+    inferred_admin_contacts = Column(JSON, default=list)  # Local admins from InventoryUser
+    inferred_team = Column(String)                 # Derived from services running on host
+    owner_confidence = Column(String, default="low")  # high / medium / low
+
+    # Scanner context (per-asset, from plugin 19506)
+    scanner_ip = Column(String)
+    is_internet_facing = Column(Boolean, default=False)
+
     # Computed
     risk_score = Column(Float, default=0.0)
     critical_count = Column(Integer, default=0)
@@ -103,10 +113,25 @@ class Finding(Base):
     owner_suggestion = Column(String)  # IT / DevOps / SecOps / AppSec
     remediation_steps = Column(Text)
 
+    # Temporal tracking (cross-scan lifecycle)
+    first_seen = Column(DateTime, nullable=True)     # Earliest scan date where (plugin_id, asset_ip) appeared
+    last_seen = Column(DateTime, nullable=True)      # Latest scan date where (plugin_id, asset_ip) appeared
+    times_seen = Column(Integer, default=1)           # How many scans this finding has appeared in
+    is_regression = Column(Boolean, default=False)    # True if it was fixed then reappeared
+
     # SLA tracking
     sla_due_date = Column(DateTime, nullable=True)   # Computed: scan.created_at + SLA days
     resolved_at = Column(DateTime, nullable=True)    # When manually marked resolved
     sla_status = Column(String, nullable=True)       # on_track / at_risk / breached / resolved / n/a
+
+    # Workflow status (persists across campaigns)
+    workflow_status = Column(String, default="open")  # open / in_progress / resolved / accepted_risk / false_positive
+    workflow_assigned_to = Column(String, nullable=True)  # Assigned user/team
+    workflow_notes = Column(Text, nullable=True)
+    status_changed_at = Column(DateTime, nullable=True)
+
+    # Exception link (set when a global exception matches this finding)
+    exception_id = Column(Integer, ForeignKey("finding_exceptions.id"), nullable=True)
 
     scan = relationship("Scan", back_populates="findings")
     asset = relationship("Asset", back_populates="findings")
@@ -563,7 +588,7 @@ class Campaign(Base):
 
 
 # ─────────────────────────────────────────────────────────
-# SLA / MTTR Models
+# SLA Models
 # ─────────────────────────────────────────────────────────
 
 class SLAConfig(Base):
@@ -696,3 +721,91 @@ class WorkflowExecutionLog(Base):
     executed_at = Column(DateTime, default=datetime.utcnow)
 
     execution = relationship("WorkflowExecution", back_populates="logs")
+
+
+# ─────────────────────────────────────────────────────────
+# Integration Connectors Config
+# ─────────────────────────────────────────────────────────
+
+class IntegrationConfig(Base):
+    """Configuration for external integrations (Jira, ServiceNow, SMTP, Slack, Teams)."""
+    __tablename__ = "integration_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String, nullable=False, unique=True, index=True)  # jira, servicenow, email, slack, teams
+    display_name = Column(String)
+    is_enabled = Column(Boolean, default=False)
+    config = Column(JSON, default=dict)  # provider-specific config blob
+    last_test_at = Column(DateTime, nullable=True)
+    last_test_status = Column(String, nullable=True)  # ok / error
+    last_test_detail = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────
+# Global Exceptions / Waivers
+# ─────────────────────────────────────────────────────────
+
+class FindingException(Base):
+    """Global exception (accepted risk / false positive) that persists across scans.
+    Matched by plugin_id + optional asset scope (ip or all assets) + optional rule conditions."""
+    __tablename__ = "finding_exceptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plugin_id = Column(String, nullable=True, index=True)  # nullable when using conditions-only matching
+    plugin_name = Column(String)
+    # Scope: specific asset IP or null = all assets
+    asset_ip = Column(String, nullable=True, index=True)
+    # Type
+    exception_type = Column(String, nullable=False, default="accepted_risk")  # accepted_risk / false_positive / severity_override / compensating_control
+    override_severity = Column(Integer, nullable=True)  # target severity for severity_override (0-4)
+    # Compensating control detail (free-text description of the control in place)
+    compensating_control_detail = Column(Text, nullable=True)  # e.g. "WAF blocks exploitation", "Network segmentation isolates host"
+    # Scope: tag-based scoping (JSON array of "category:value" strings)
+    scope_tags = Column(JSON, nullable=True)  # ["env:prod", "net:dmz"]
+    # Rule-based matching (unified rule engine conditions)
+    conditions = Column(JSON, nullable=True)  # [{field, op, value}, ...]
+    condition_logic = Column(String, default="AND")  # AND / OR
+    # Details
+    reason = Column(Text)
+    approved_by = Column(String)
+    # Reporting
+    exclude_from_reports = Column(Boolean, default=True)  # exclude matched findings from severity counts & totals
+    # Lifecycle
+    expires_at = Column(DateTime, nullable=True)  # null = permanent
+    review_by = Column(DateTime, nullable=True)  # recertification date (soft reminder, does not deactivate)
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_exception_plugin_asset", "plugin_id", "asset_ip"),
+    )
+
+
+# ─────────────────────────────────────────────────────────
+# Cross-Scan Delta Tracking
+# ─────────────────────────────────────────────────────────
+
+class ScanComparison(Base):
+    """Cached result of comparing two scans — tracks new/fixed/recurring findings."""
+    __tablename__ = "scan_comparisons"
+
+    id = Column(Integer, primary_key=True, index=True)
+    base_scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
+    compare_scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
+    # Counts
+    new_count = Column(Integer, default=0)
+    fixed_count = Column(Integer, default=0)
+    recurring_count = Column(Integer, default=0)
+    # Detail lists (JSON arrays of {plugin_id, plugin_name, severity, asset_ip})
+    new_findings = Column(JSON, default=list)
+    fixed_findings = Column(JSON, default=list)
+    # Severity breakdown of changes
+    new_by_severity = Column(JSON, default=dict)    # {4: 5, 3: 10, ...}
+    fixed_by_severity = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("base_scan_id", "compare_scan_id", name="uq_scan_comparison"),
+    )

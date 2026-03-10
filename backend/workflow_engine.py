@@ -1,9 +1,10 @@
 """
 Workflow execution engine — walks the node graph and executes actions.
-Supports OOTB templates and custom workflows attached to campaigns.
+Supports OOTB templates, custom workflows, retry logic, and cron scheduling.
 """
 import logging
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from models import (
@@ -12,6 +13,7 @@ from models import (
     Finding, Asset, Campaign, CampaignFinding,
     Tag, TagAssignment, FindingOwnership, AssetOwnership,
 )
+import integrations
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +166,7 @@ NODE_CATALOG = {
             "icon": "AlertTriangle",
             "config_schema": {
                 "criticality": {"type": "enum", "label": "Criticality",
-                                "options": ["1", "2", "3", "4", "5"]},
+                                "options": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]},
             },
         },
         {
@@ -319,7 +321,7 @@ WORKFLOW_TEMPLATES = [
             {"node_id": "a1", "node_type": "action", "node_subtype": "add_tag",
              "label": "Tag as Urgent", "config": {"tag_category": "priority", "tag_value": "urgent", "target": "both"}, "position_x": 660, "position_y": 120},
             {"node_id": "a2", "node_type": "action", "node_subtype": "set_criticality",
-             "label": "Raise Criticality", "config": {"criticality": "5"}, "position_x": 660, "position_y": 320},
+             "label": "Raise Criticality", "config": {"criticality": "10"}, "position_x": 660, "position_y": 320},
             {"node_id": "a3", "node_type": "action", "node_subtype": "send_email",
              "label": "Email SecOps", "config": {"subject": "Exploitable findings detected",
              "body_template": "{{count}} findings with known exploits require immediate attention"}, "position_x": 960, "position_y": 200},
@@ -605,25 +607,40 @@ def _finding_to_item(finding: Finding, asset: Asset, campaign_finding_id: int = 
         "asset_ip": asset.ip if asset else None,
         "asset_hostname": asset.hostname if asset else None,
         "asset_os": asset.os if asset else None,
-        "asset_criticality": asset.criticality if asset else 3,
+        "asset_criticality": asset.criticality if asset else 5,
         "asset_environment": asset.environment_tag if asset else None,
         "asset_risk_score": asset.risk_score if asset else 0,
     }
 
 
+MAX_RETRIES = 2
+RETRY_DELAY = 1  # seconds
+
+
 def _execute_node(db: Session, node: WorkflowNode, items: list, execution: WorkflowExecution) -> dict:
-    """Execute a single node and return result."""
-    try:
-        if node.node_type == "trigger":
-            return {"status": "success", "items": items, "output": {"count": len(items)}}
-        elif node.node_type == "filter":
-            return _execute_filter(db, node, items)
-        elif node.node_type == "action":
-            return _execute_action(db, node, items)
-        return {"status": "skipped", "items": items}
-    except Exception as e:
-        logger.error(f"Node {node.node_id} ({node.node_subtype}) failed: {e}")
-        return {"status": "failed", "error": str(e), "items": items}
+    """Execute a single node with retry logic for action nodes."""
+    retries = MAX_RETRIES if node.node_type == "action" else 0
+    last_error = None
+
+    for attempt in range(retries + 1):
+        try:
+            if node.node_type == "trigger":
+                return {"status": "success", "items": items, "output": {"count": len(items)}}
+            elif node.node_type == "filter":
+                return _execute_filter(db, node, items)
+            elif node.node_type == "action":
+                return _execute_action(db, node, items)
+            return {"status": "skipped", "items": items}
+        except Exception as e:
+            last_error = e
+            if attempt < retries:
+                logger.warning(f"Node {node.node_id} ({node.node_subtype}) attempt {attempt + 1} failed: {e}, retrying...")
+                import time
+                time.sleep(RETRY_DELAY)
+            else:
+                logger.error(f"Node {node.node_id} ({node.node_subtype}) failed after {attempt + 1} attempts: {e}")
+
+    return {"status": "failed", "error": str(last_error), "items": items}
 
 
 def _execute_filter(db: Session, node: WorkflowNode, items: list) -> dict:
@@ -769,7 +786,7 @@ def _execute_action(db: Session, node: WorkflowNode, items: list) -> dict:
                     affected += 1
 
     elif subtype == "set_criticality":
-        crit = int(config.get("criticality", 3))
+        crit = int(config.get("criticality", 5))
         seen = set()
         for item in items:
             aid = item.get("asset_id")
@@ -781,41 +798,38 @@ def _execute_action(db: Session, node: WorkflowNode, items: list) -> dict:
                     affected += 1
 
     elif subtype == "send_email":
-        # MVP: log the email, don't actually send
-        to = config.get("to", "")
-        subject = config.get("subject", "Workflow notification")
-        body = _render_template(config.get("body_template", ""), items)
-        logger.info(f"[Workflow Email] To: {to} | Subject: {subject} | Body: {body} | {len(items)} items")
+        result = integrations.send_email(db, config, items)
+        logger.info(f"[Workflow Email] Sent to {result.get('recipients', [])}, {len(items)} items")
         affected = len(items)
 
     elif subtype == "send_webhook":
-        url = config.get("url", "")
-        method = config.get("method", "POST")
-        logger.info(f"[Workflow Webhook] {method} {url} with {len(items)} items")
+        result = integrations.send_webhook(config, items)
+        logger.info(f"[Workflow Webhook] {config.get('method', 'POST')} {config.get('url')} → {result.get('status_code')}")
         affected = len(items)
 
     elif subtype == "create_ticket":
         integration = config.get("integration", "jira")
-        group_by = config.get("group_by", "one_per_finding")
-        title_tpl = config.get("title_template", "{{plugin_name}}")
-        tickets = _group_for_tickets(items, group_by, title_tpl)
-        logger.info(f"[Workflow Ticket] {integration}: would create {len(tickets)} ticket(s)")
-        affected = len(tickets)
+        if integration == "servicenow":
+            result = integrations.create_servicenow_ticket(db, config, items)
+        else:
+            result = integrations.create_jira_ticket(db, config, items)
+        logger.info(f"[Workflow Ticket] {integration}: created {result.get('tickets_created', 0)} ticket(s)")
+        affected = result.get("tickets_created", 0)
 
     elif subtype == "slack_notify":
-        msg = _render_template(config.get("message_template", ""), items)
-        logger.info(f"[Workflow Slack] {msg}")
+        result = integrations.send_slack_notification(db, config, items)
+        logger.info(f"[Workflow Slack] Sent, {len(items)} items")
         affected = len(items)
 
     elif subtype == "teams_notify":
-        msg = _render_template(config.get("message_template", ""), items)
-        logger.info(f"[Workflow Teams] {msg}")
+        result = integrations.send_teams_notification(db, config, items)
+        logger.info(f"[Workflow Teams] Sent, {len(items)} items")
         affected = len(items)
 
     elif subtype == "run_script":
         script_type = config.get("script_type", "bash")
         script = config.get("script", "")
-        logger.info(f"[Workflow Script] {script_type}: {script} | {len(items)} targets")
+        logger.info(f"[Workflow Script] {script_type}: {script} | {len(items)} targets (dry-run)")
         affected = len(items)
 
     db.flush()
@@ -871,3 +885,82 @@ def _compare_str(a, op, b):
     ops = {"eq": lambda: a_l == b_l, "neq": lambda: a_l != b_l,
            "contains": lambda: b_l in a_l, "gte": lambda: a_l >= b_l, "lte": lambda: a_l <= b_l}
     return ops.get(op, lambda: False)()
+
+
+# ─────────────────────────────────────────────
+# Cron-style Scheduler
+# ─────────────────────────────────────────────
+
+INTERVAL_SECONDS = {
+    "hourly": 3600,
+    "daily": 86400,
+    "weekly": 604800,
+    "monthly": 2592000,
+}
+
+_scheduler_thread = None
+_scheduler_stop = threading.Event()
+
+
+def start_scheduler(session_factory):
+    """Start the background scheduler thread that runs scheduled workflows."""
+    global _scheduler_thread
+    if _scheduler_thread and _scheduler_thread.is_alive():
+        return  # already running
+
+    _scheduler_stop.clear()
+
+    def _scheduler_loop():
+        logger.info("Workflow scheduler started")
+        while not _scheduler_stop.wait(60):  # check every 60 seconds
+            try:
+                _check_scheduled_workflows(session_factory)
+            except Exception as e:
+                logger.error(f"Scheduler error: {e}")
+
+    _scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True, name="workflow-scheduler")
+    _scheduler_thread.start()
+
+
+def stop_scheduler():
+    """Stop the background scheduler."""
+    _scheduler_stop.set()
+
+
+def _check_scheduled_workflows(session_factory):
+    """Check for workflows with schedule triggers that are due to run."""
+    db = session_factory()
+    try:
+        # Find all enabled workflows with schedule trigger nodes
+        workflows = db.query(Workflow).filter(
+            Workflow.is_enabled == True,
+            Workflow.status == "active",
+        ).all()
+
+        now = datetime.utcnow()
+
+        for wf in workflows:
+            trigger = next(
+                (n for n in wf.nodes if n.node_type == "trigger" and n.node_subtype == "schedule"),
+                None,
+            )
+            if not trigger:
+                continue
+
+            interval_key = (trigger.config or {}).get("interval", "daily")
+            interval_secs = INTERVAL_SECONDS.get(interval_key, 86400)
+
+            # Check if enough time has passed since last run
+            if wf.last_run_at:
+                next_run = wf.last_run_at + timedelta(seconds=interval_secs)
+                if now < next_run:
+                    continue
+
+            # Time to run
+            logger.info(f"Scheduler: executing workflow '{wf.name}' (id={wf.id}, interval={interval_key})")
+            try:
+                execute_workflow(db, wf.id, trigger_data={"triggered_by": "scheduler"})
+            except Exception as e:
+                logger.error(f"Scheduler: workflow {wf.id} failed: {e}")
+    finally:
+        db.close()

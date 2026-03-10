@@ -92,7 +92,7 @@ _DEFAULT_FINDING_WEIGHTS = {
 
 def compute_priority_score(
     finding: dict,
-    asset_criticality: int = 3,
+    asset_criticality: int = 5,
     intel: dict = None,
     risk_cfg: dict = None,
     asset_inventory: dict = None,
@@ -102,7 +102,7 @@ def compute_priority_score(
 
     Args:
         finding:           finding dict (plugin_id, severity, cvss*, vpr_score, …)
-        asset_criticality: 1-5 asset criticality
+        asset_criticality: 1-10 asset criticality
         intel:             CVE enrichment dict from intel.json
         risk_cfg:          loaded risk config — when provided, uses finding_formula_weights
         asset_inventory:   {has_av, has_firewall, established_connections} for this asset
@@ -150,8 +150,8 @@ def compute_priority_score(
             cvss = cve_data["cvss3"]["base_score"]
             cvss_norm = cvss / 10.0
 
-    # --- Asset criticality (1-5) normalized to 0-1 ---
-    criticality_norm = (asset_criticality - 1) / 4.0
+    # --- Asset criticality (1-10) normalized to 0-1 ---
+    criticality_norm = (asset_criticality - 1) / 9.0
 
     # --- Plugin family weight ---
     family = finding.get("plugin_family", "")

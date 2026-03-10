@@ -1170,15 +1170,28 @@ def extract_password_policy(plugin_output: str, asset_id: int, scan_id: int) -> 
     domain_m = re.search(r"(?:Domain|Domaine)\s*:\s*(.+)", plugin_output, re.IGNORECASE)
     domain = domain_m.group(1).strip() if domain_m else None
 
-    min_length = _int(r"[Mm]inimum\s+[Pp]assword\s+[Ll]ength\s*:\s*(\d+)")
-    history = _int(r"[Pp]assword\s+[Hh]istory\s+[Ss]ize\s*:\s*(\d+)")
-    max_age = _int(r"[Mm]aximum\s+[Pp]assword\s+[Aa]ge\s*[:\(]?\s*(\d+)")
-    min_age = _int(r"[Mm]inimum\s+[Pp]assword\s+[Aa]ge\s*[:\(]?\s*(\d+)")
-    complexity = _bool_flag(r"[Pp]assword\s+[Cc]omplexity\s*:\s*(\w+)")
+    # Support both verbose ("Minimum Password Length") and short ("Minimum password len") forms
+    min_length = _int(r"[Mm]inimum\s+[Pp]assword\s+(?:[Ll]ength|[Ll]en)\s*:\s*(\d+)")
+    history = _int(r"[Pp]assword\s+[Hh]istory\s+(?:[Ss]ize|[Ll]en)\s*:\s*(\d+)")
+    max_age = _int(r"[Mm]aximum\s+[Pp]assword\s+[Aa]ge\s*(?:\([^)]*\))?\s*:\s*(\d+)")
+    min_age = _int(r"[Mm]inimum\s+[Pp]assword\s+[Aa]ge\s*(?:\([^)]*\))?\s*:\s*(\d+)")
+    # "Password must meet complexity requirements: Enabled" or "Password Complexity: Enabled"
+    complexity = _bool_flag(r"[Pp]assword\s+(?:[Cc]omplexity|must\s+meet\s+complexity\s+requirements)\s*:\s*(\w+)")
     reversible = _bool_flag(r"[Rr]eversible\s+[Ee]ncryption\s*:\s*(\w+)")
-    lockout_threshold = _int(r"[Ll]ockout\s+[Tt]hreshold\s*:\s*(\d+)")
-    lockout_duration = _int(r"[Ll]ockout\s+[Dd]uration\s*[:\(]?\s*(\d+)")
-    lockout_window = _int(r"[Ll]ockout\s+(?:[Oo]bservation\s+[Ww]indow|[Ww]indow)\s*[:\(]?\s*(\d+)")
+    # "Number of invalid logon before locked out (s): 0" or "Lockout Threshold: 0"
+    lockout_threshold = _int(r"(?:[Ll]ockout\s+[Tt]hreshold|[Nn]umber\s+of\s+invalid\s+logon\s+before\s+locked\s+out\s*(?:\([^)]*\))?)\s*:\s*(\d+)")
+    # "Locked account time (s): 1800" or "Lockout Duration (mins): 30"
+    lockout_duration_raw = _int(r"(?:[Ll]ockout\s+[Dd]uration|[Ll]ocked\s+account\s+time)\s*(?:\([^)]*\))?\s*:\s*(\d+)")
+    lockout_window_raw = _int(r"(?:[Ll]ockout\s+(?:[Oo]bservation\s+[Ww]indow|[Ww]indow)|[Tt]ime\s+between\s+failed\s+logon)\s*(?:\([^)]*\))?\s*:\s*(\d+)")
+
+    # Detect if values are in seconds (plugin uses "(s)") and convert to minutes
+    _in_seconds = bool(re.search(r"[Ll]ocked\s+account\s+time\s*\(s\)", plugin_output))
+    if _in_seconds:
+        lockout_duration = lockout_duration_raw // 60 if lockout_duration_raw is not None else None
+        lockout_window = lockout_window_raw // 60 if lockout_window_raw is not None else None
+    else:
+        lockout_duration = lockout_duration_raw
+        lockout_window = lockout_window_raw
 
     is_weak = (
         (min_length is not None and min_length < 8) or

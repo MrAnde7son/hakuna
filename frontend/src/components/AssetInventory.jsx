@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Server, RefreshCw, Edit2, Tag, Search, X } from 'lucide-react'
+import { Server, RefreshCw, Edit2, Tag, Search, X, UserCheck, Crosshair } from 'lucide-react'
 import { useScan } from '../App.jsx'
-import { getAssets, updateAsset, getBlastRadius, assignTags, unassignTags } from '../api.js'
-import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker } from './ui.jsx'
+import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner } from '../api.js'
+import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot } from './ui.jsx'
 import BlastRadiusPanel, { BlastRadiusScore } from './BlastRadiusPanel.jsx'
 
 function RiskScore({ score }) {
@@ -50,7 +50,7 @@ function CriticalityEditor({ asset, onUpdate }) {
     setEditing(false)
   }
 
-  const LABELS = { 1: 'Very Low', 2: 'Low', 3: 'Medium', 4: 'High', 5: 'Critical' }
+  const LABELS = { 1: 'Minimal', 2: 'Very Low', 3: 'Low', 4: 'Low-Med', 5: 'Medium', 6: 'Med-High', 7: 'High', 8: 'Very High', 9: 'Critical', 10: 'Maximum' }
 
   if (!editing) {
     return (
@@ -68,7 +68,7 @@ function CriticalityEditor({ asset, onUpdate }) {
         onChange={e => setVal(Number(e.target.value))}
         style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 4, padding: '2px 4px', fontSize: 12 }}
       >
-        {[1,2,3,4,5].map(n => <option key={n} value={n}>{n} – {LABELS[n]}</option>)}
+        {[1,2,3,4,5,6,7,8,9,10].map(n => <option key={n} value={n}>{n} – {LABELS[n]}</option>)}
       </select>
       <Button size="sm" onClick={save}>Save</Button>
       <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>✕</Button>
@@ -78,17 +78,8 @@ function CriticalityEditor({ asset, onUpdate }) {
 
 const ENV_COLORS = { internet: '#dc2626', dmz: '#ea580c', internal: '#65a30d', ot: '#d97706' }
 
-// Lazy-loaded blast radius score per asset
-function BlastCell({ scanId, assetId, onExpand }) {
-  const [br, setBr] = useState(null)
-
-  useEffect(() => {
-    if (!scanId || !assetId) return
-    getBlastRadius(scanId, assetId)
-      .then(setBr)
-      .catch(() => {})
-  }, [scanId, assetId])
-
+// Blast radius score cell (uses pre-fetched bulk data)
+function BlastCell({ br, onExpand }) {
   return (
     <BlastRadiusScore
       score={br?.score ?? null}
@@ -141,12 +132,13 @@ function BulkTagModal({ assetIds, onClose, onDone }) {
   )
 }
 
-const CRITICALITY_LABELS = { 1: 'Very Low', 2: 'Low', 3: 'Medium', 4: 'High', 5: 'Critical' }
+const CRITICALITY_LABELS = { 1: 'Minimal', 2: 'Very Low', 3: 'Low', 4: 'Low-Med', 5: 'Medium', 6: 'Med-High', 7: 'High', 8: 'Very High', 9: 'Critical', 10: 'Maximum' }
 
 export default function AssetInventory() {
   const { activeScanId } = useScan()
   const [assets, setAssets] = useState([])
   const [loading, setLoading] = useState(true)
+  const [blastMap, setBlastMap] = useState({})
   const [expandedAsset, setExpandedAsset] = useState(null)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [showBulkTag, setShowBulkTag] = useState(false)
@@ -199,7 +191,12 @@ export default function AssetInventory() {
       params.tag_logic = tagLogic
     }
     getAssets(params)
-      .then(setAssets)
+      .then(data => {
+        setAssets(data)
+        if (activeScanId) {
+          getBlastRadiusBulk(activeScanId).then(setBlastMap).catch(() => {})
+        }
+      })
       .finally(() => setLoading(false))
   }
 
@@ -227,6 +224,11 @@ export default function AssetInventory() {
     load()
   }
 
+  const handleConfirmOwner = async (assetId) => {
+    await confirmAssetOwner(assetId)
+    load()
+  }
+
   const columns = [
     {
       key: '_select', label: (
@@ -240,7 +242,16 @@ export default function AssetInventory() {
       key: 'hostname', label: 'Asset', width: '22%', sortable: true,
       render: (_, row) => (
         <div>
-          <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 13 }}>{row.hostname || row.ip}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 13 }}>{row.hostname || row.ip}</span>
+            {row.is_domain_controller && (
+              <span style={{
+                display: 'inline-block', padding: '1px 5px', borderRadius: 4,
+                background: '#dc262622', color: '#dc2626', border: '1px solid #dc262644',
+                fontSize: 10, fontWeight: 700, lineHeight: '16px',
+              }}>DC</span>
+            )}
+          </div>
           {row.fqdn && row.fqdn !== row.hostname && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.fqdn}</div>}
           {row.ip && row.ip !== row.hostname && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.ip}</div>}
           {row.tags?.length > 0 && (
@@ -279,6 +290,49 @@ export default function AssetInventory() {
       render: (_, row) => <SevCounts asset={row} />
     },
     {
+      key: 'inferred_team', label: 'Owner', width: '140px',
+      render: (_, row) => {
+        const own = row.ownership
+        if (own) {
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <OwnerBadge owner={own.owner_role || own.owner_name} />
+              {own.owner_name && <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{own.owner_name}</span>}
+              <span style={{ fontSize: 9, color: '#22c55e', fontWeight: 600 }}>MANUAL</span>
+            </div>
+          )
+        }
+        if (!row.inferred_primary_user && !row.inferred_team) {
+          return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>
+        }
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {row.inferred_team && <OwnerBadge owner={row.inferred_team} />}
+              <ConfidenceDot confidence={row.owner_confidence} />
+            </div>
+            {row.inferred_primary_user && (
+              <span style={{ fontSize: 11, color: 'var(--text-secondary)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    title={row.inferred_primary_user}>
+                {row.inferred_primary_user}
+              </span>
+            )}
+            <button
+              onClick={e => { e.stopPropagation(); handleConfirmOwner(row.id) }}
+              style={{
+                background: 'none', border: '1px solid var(--border)', borderRadius: 4,
+                color: 'var(--text-muted)', fontSize: 10, padding: '1px 6px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 3, width: 'fit-content',
+              }}
+              title="Promote to manual ownership"
+            >
+              <UserCheck size={10} /> Confirm
+            </button>
+          </div>
+        )
+      }
+    },
+    {
       key: 'risk_score', label: 'Risk Score', width: '130px', sortable: true,
       render: (v) => <RiskScore score={v} />
     },
@@ -286,8 +340,7 @@ export default function AssetInventory() {
       key: 'blast_radius', label: 'Blast Radius', width: '160px',
       render: (_, row) => (
         <BlastCell
-          scanId={activeScanId}
-          assetId={row.id}
+          br={blastMap[String(row.id)]}
           onExpand={() => setExpandedAsset(prev => prev === row.id ? null : row.id)}
         />
       )
@@ -348,7 +401,7 @@ export default function AssetInventory() {
           value={filters.criticality}
           onChange={v => setFilters(f => ({ ...f, criticality: v }))}
           placeholder="Any Criticality"
-          options={[1,2,3,4,5].map(n => ({ value: String(n), label: `${n} – ${CRITICALITY_LABELS[n]}` }))}
+          options={[1,2,3,4,5,6,7,8,9,10].map(n => ({ value: String(n), label: `${n} – ${CRITICALITY_LABELS[n]}` }))}
         />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -422,44 +475,17 @@ export default function AssetInventory() {
         assets.length === 0 ? (
           <EmptyState icon={Server} title="No assets found" sub="Upload a Nessus scan to populate asset inventory" />
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-            <Card style={{ padding: 0 }}>
-              <Table
-                columns={columns}
-                rows={assets}
-                onRowClick={row => navigate(`/findings?asset_id=${row.id}`)}
-                onSort={handleSort}
-                sortBy={sortBy}
-                sortOrder={sortOrder}
-                emptyMessage="No assets match the current filters"
-              />
-            </Card>
-
-            {/* Inline blast radius panel for expanded asset */}
-            {expandedAsset && activeScanId && (
-              <Card style={{ marginTop: 12, padding: 0 }}>
-                <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)',
-                  display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                    Blast Radius — {assets.find(a => a.id === expandedAsset)?.hostname ||
-                                    assets.find(a => a.id === expandedAsset)?.ip}
-                  </span>
-                  <button
-                    onClick={() => setExpandedAsset(null)}
-                    style={{ marginLeft: 'auto', background: 'none', border: 'none',
-                      cursor: 'pointer', color: 'var(--text-muted)', fontSize: 18, lineHeight: 1 }}
-                  >×</button>
-                </div>
-                <div style={{ padding: 16 }}>
-                  <BlastRadiusPanel
-                    scanId={activeScanId}
-                    assetId={expandedAsset}
-                    defaultExpanded={true}
-                  />
-                </div>
-              </Card>
-            )}
-          </div>
+          <Card style={{ padding: 0 }}>
+            <Table
+              columns={columns}
+              rows={assets}
+              onRowClick={row => navigate(`/findings?asset_id=${row.id}`)}
+              onSort={handleSort}
+              sortBy={sortBy}
+              sortOrder={sortOrder}
+              emptyMessage="No assets match the current filters"
+            />
+          </Card>
         )
       )}
 
@@ -469,6 +495,65 @@ export default function AssetInventory() {
           onClose={() => setShowBulkTag(false)}
           onDone={() => { setShowBulkTag(false); setSelectedIds(new Set()); load() }}
         />
+      )}
+
+      {/* Blast Radius sidebar */}
+      {expandedAsset && activeScanId && (
+        <>
+          {/* Backdrop */}
+          <div
+            onClick={() => setExpandedAsset(null)}
+            style={{
+              position: 'fixed', inset: 0, zIndex: 900,
+              background: 'rgba(0,0,0,0.3)',
+            }}
+          />
+          {/* Slide-in panel */}
+          <div style={{
+            position: 'fixed', top: 0, right: 0, bottom: 0, zIndex: 901,
+            width: 520, maxWidth: '90vw',
+            background: 'var(--bg-card)', borderLeft: '1px solid var(--border)',
+            boxShadow: '-4px 0 24px rgba(0,0,0,0.2)',
+            display: 'flex', flexDirection: 'column',
+            animation: 'slideInRight 0.2s ease-out',
+          }}>
+            {/* Header */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '14px 20px', borderBottom: '1px solid var(--border)', flexShrink: 0,
+            }}>
+              <Crosshair size={15} color="var(--accent)" />
+              <span style={{ flex: 1, fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
+                Blast Radius — {assets.find(a => a.id === expandedAsset)?.hostname ||
+                                assets.find(a => a.id === expandedAsset)?.ip}
+              </span>
+              <button
+                onClick={() => setExpandedAsset(null)}
+                style={{
+                  background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                  borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
+                  fontSize: 13, color: 'var(--text-muted)', lineHeight: 1,
+                }}
+              >
+                <X size={14} />
+              </button>
+            </div>
+            {/* Content */}
+            <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+              <BlastRadiusPanel
+                scanId={activeScanId}
+                assetId={expandedAsset}
+                defaultExpanded={true}
+              />
+            </div>
+          </div>
+          <style>{`
+            @keyframes slideInRight {
+              from { transform: translateX(100%); }
+              to { transform: translateX(0); }
+            }
+          `}</style>
+        </>
       )}
     </div>
   )

@@ -3,6 +3,7 @@
  * Comprehensive Threat Intelligence hub — newsroom, CVE intel, threat groups, impact analysis, campaigns.
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import {
   Shield, AlertTriangle, Zap, Globe, Users, Activity, RefreshCw,
   Search, Filter, ChevronDown, ChevronUp, ChevronRight, ExternalLink,
@@ -487,6 +488,32 @@ function NewsroomTab({ cves, onSearchCve }) {
 
 // ─── CVE Intel Tab ────────────────────────────────────────────────────────────
 
+const SOURCE_DEFS = [
+  { key: 'nvd',  label: 'NVD',  color: '#2563eb', test: cve => cve.cvss3_score != null || cve.description },
+  { key: 'epss', label: 'EPSS', color: '#7c3aed', test: cve => cve.epss_score != null },
+  { key: 'kev',  label: 'KEV',  color: '#dc2626', test: cve => cve.in_kev },
+  { key: 'exploit', label: 'ExploitDB', color: '#ea580c', test: cve => cve.has_public_exploit },
+]
+
+function CveSources({ cve }) {
+  const active = SOURCE_DEFS.filter(s => s.test(cve))
+  if (active.length === 0) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+  return (
+    <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+      {active.map(s => (
+        <span key={s.key} style={{
+          display: 'inline-block', padding: '1px 5px', borderRadius: 3,
+          fontSize: 10, fontWeight: 700, letterSpacing: '0.02em',
+          background: `${s.color}18`, color: s.color, border: `1px solid ${s.color}30`,
+          whiteSpace: 'nowrap',
+        }}>
+          {s.label}
+        </span>
+      ))}
+    </div>
+  )
+}
+
 function CveRow({ cve, expanded, onToggle }) {
   return (
     <>
@@ -552,6 +579,9 @@ function CveRow({ cve, expanded, onToggle }) {
           ) : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>}
         </td>
         <td style={{ padding: '9px 12px' }}>
+          <CveSources cve={cve} />
+        </td>
+        <td style={{ padding: '9px 12px' }}>
           {cve.in_scan_count > 0 ? (
             <CountBadge count={cve.in_scan_count} color="#6366f1" />
           ) : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>0</span>}
@@ -562,7 +592,7 @@ function CveRow({ cve, expanded, onToggle }) {
       </tr>
       {expanded && (
         <tr style={{ background: 'var(--bg-muted)' }}>
-          <td colSpan={7} style={{ padding: '0 12px 14px 12px' }}>
+          <td colSpan={8} style={{ padding: '0 12px 14px 12px' }}>
             <div style={{
               borderTop: '1px solid var(--border)', paddingTop: 12,
               display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16,
@@ -625,6 +655,10 @@ function CveIntelTab({ initialSearch = '' }) {
   const [minCvss, setMinCvss] = useState(0)
   const [inScanOnly, setInScanOnly] = useState(false)
 
+  // Sorting
+  const [sortBy, setSortBy] = useState(null)
+  const [sortDir, setSortDir] = useState('desc')
+
   // Sync external search (e.g. from Newsroom)
   useEffect(() => {
     if (initialSearch) { setSearch(initialSearch); setPage(0) }
@@ -642,7 +676,8 @@ function CveIntelTab({ initialSearch = '' }) {
       if (kevOnly) params.set('kev_only', 'true')
       if (minEpss > 0) params.set('min_epss', minEpss)
       if (minCvss > 0) params.set('min_cvss', minCvss)
-      if (inScanOnly && activeScanId) params.set('in_scan', activeScanId)
+      if (inScanOnly) params.set('in_scan', activeScanId || 'all')
+      if (sortBy) { params.set('sort_by', sortBy); params.set('sort_dir', sortDir) }
       const r = await fetch(`/api/threat-intel/cves?${params}`)
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       const data = await r.json()
@@ -654,7 +689,7 @@ function CveIntelTab({ initialSearch = '' }) {
     } finally {
       setLoading(false)
     }
-  }, [search, kevOnly, minEpss, minCvss, inScanOnly, activeScanId, page])
+  }, [search, kevOnly, minEpss, minCvss, inScanOnly, activeScanId, page, sortBy, sortDir])
 
   useEffect(() => { fetchCves() }, [fetchCves])
 
@@ -682,8 +717,8 @@ function CveIntelTab({ initialSearch = '' }) {
           <input type="checkbox" checked={kevOnly} onChange={e => { setKevOnly(e.target.checked); setPage(0) }} />
           KEV Only
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: inScanOnly && !activeScanId ? '#d97706' : 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }} title={!activeScanId ? 'Select a scan in the sidebar first' : ''}>
-          <input type="checkbox" checked={inScanOnly} onChange={e => { setInScanOnly(e.target.checked); setPage(0) }} disabled={!activeScanId} />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }} title={activeScanId ? 'CVEs found in the selected scan' : 'CVEs found across all uploaded scans'}>
+          <input type="checkbox" checked={inScanOnly} onChange={e => { setInScanOnly(e.target.checked); setPage(0) }} />
           In My Environment
         </label>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
@@ -724,19 +759,48 @@ function CveIntelTab({ initialSearch = '' }) {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                  {['CVE ID', 'CVSS', 'EPSS', 'KEV', 'Exploit', 'In Scans', 'Published'].map(h => (
-                    <th key={h} style={{
-                      padding: '10px 12px', textAlign: 'left', fontWeight: 600,
-                      fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em',
-                      color: 'var(--text-muted)', whiteSpace: 'nowrap',
-                    }}>{h}</th>
-                  ))}
+                  {[
+                    { label: 'CVE ID', key: 'cve_id' },
+                    { label: 'CVSS', key: 'cvss3_score' },
+                    { label: 'EPSS', key: 'epss_score' },
+                    { label: 'KEV', key: 'in_kev' },
+                    { label: 'Exploit', key: null },
+                    { label: 'Sources', key: null },
+                    { label: 'In Scans', key: null },
+                    { label: 'Published', key: 'published_date' },
+                  ].map(h => {
+                    const active = sortBy === h.key
+                    return (
+                      <th key={h.label}
+                        onClick={h.key ? () => {
+                          if (active) {
+                            setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+                          } else {
+                            setSortBy(h.key)
+                            setSortDir('desc')
+                          }
+                          setPage(0)
+                        } : undefined}
+                        style={{
+                          padding: '10px 12px', textAlign: 'left', fontWeight: 600,
+                          fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em',
+                          color: active ? 'var(--accent)' : 'var(--text-muted)', whiteSpace: 'nowrap',
+                          cursor: h.key ? 'pointer' : 'default', userSelect: 'none',
+                        }}
+                      >
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          {h.label}
+                          {active && (sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
+                        </span>
+                      </th>
+                    )
+                  })}
                 </tr>
               </thead>
               <tbody>
                 {cves.length === 0 ? (
                   <tr>
-                    <td colSpan={7} style={{ padding: '40px 12px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    <td colSpan={8} style={{ padding: '40px 12px', textAlign: 'center', color: 'var(--text-muted)' }}>
                       No CVEs match current filters
                     </td>
                   </tr>
@@ -992,7 +1056,11 @@ function ThreatGroupsTab() {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function ThreatIntelCenter() {
-  const [tab, setTab] = useState('newsroom')
+  const { tab: tabParam } = useParams()
+  const navigate = useNavigate()
+  const VALID_TABS = TABS.map(t => t.key)
+  const tab = VALID_TABS.includes(tabParam) ? tabParam : 'newsroom'
+  const setTab = (t) => navigate(`/threat-intel/${t}`, { replace: true })
   const [stats, setStats] = useState(null)
   const [cves, setCves] = useState([])
   const [loadingStats, setLoadingStats] = useState(false)

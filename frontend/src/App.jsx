@@ -5,7 +5,7 @@ import {
   Bug,
   BarChart3,
   Database,
-  Settings,
+  Settings as SettingsIcon,
   Target,
   ShieldAlert,
 } from 'lucide-react'
@@ -16,7 +16,7 @@ import Campaigns from './components/Campaigns.jsx'
 import CampaignDetail from './components/CampaignDetail.jsx'
 import Reports from './components/Reports.jsx'
 import InventoryExplorer from './components/InventoryExplorer.jsx'
-import DedupSettings from './components/DedupSettings.jsx'
+import Settings from './components/DedupSettings.jsx'
 import UploadScan from './components/UploadScan.jsx'
 import TagManager from './components/TagManager.jsx'
 import ThreatIntelCenter from './components/ThreatIntelCenter.jsx'
@@ -34,7 +34,7 @@ const NAV_ITEMS = [
   { path: '/inventory', label: 'Inventory', icon: Database },
   { path: '/campaigns', label: 'Campaigns', icon: Target },
   { path: '/threat-intel', label: 'Threat Intel', icon: ShieldAlert },
-  { path: '/settings', label: 'Settings', icon: Settings },
+  { path: '/settings', label: 'Settings', icon: SettingsIcon },
 ]
 
 function Sidebar({ collapsed, onToggle }) {
@@ -243,8 +243,8 @@ function AppShell() {
               <Route path="/workflows/:id" element={<WorkflowBuilder />} />
               <Route path="/inventory" element={<InventoryExplorer />} />
               <Route path="/tags" element={<TagManager />} />
-              <Route path="/threat-intel" element={<ThreatIntelCenter />} />
-              <Route path="/settings" element={<DedupSettings />} />
+              <Route path="/threat-intel/:tab?" element={<ThreatIntelCenter />} />
+              <Route path="/settings" element={<Settings />} />
               <Route path="/upload" element={<UploadScan />} />
             </Routes>
           </main>

@@ -13,7 +13,6 @@ import {
   executeWorkflow, getWorkflowTemplates,
 } from '../api.js'
 import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill } from './ui.jsx'
-import AutomateModal from './AutomateModal.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
 
 // ─── Condition chip colors ───────────────────────────────
@@ -183,7 +182,6 @@ function CampaignFindingCard({ finding, campaignId, onOwnerUpdate }) {
   const navigate = useNavigate()
   const [expanded, setExpanded] = useState(false)
   const [editingOwner, setEditingOwner] = useState(false)
-  const [automating, setAutomating] = useState(false)
   const [status, setStatus] = useState(finding.campaign_status || 'open')
 
   const sevColor = SEV_COLORS[finding.severity] || SEV_COLORS[0]
@@ -324,18 +322,9 @@ function CampaignFindingCard({ finding, campaignId, onOwnerUpdate }) {
             <Button variant='ghost' size='sm' onClick={() => navigate(`/findings/${finding.id}`)}>
               View Details <ChevronRight size={12} />
             </Button>
-            <Button
-              size='sm'
-              onClick={() => setAutomating(true)}
-              style={{ background: '#6366f122', color: '#818cf8', border: '1px solid #6366f144' }}
-            >
-              <Zap size={12} /> Automate
-            </Button>
           </div>
         </div>
       )}
-
-      {automating && <AutomateModal finding={finding} onClose={() => setAutomating(false)} />}
     </div>
   )
 }
@@ -804,74 +793,75 @@ function CampaignWorkflows({ campaignId, hasResults }) {
 
       {/* Workflow list */}
       {workflows.length === 0 ? (
-        <EmptyState
-          icon={GitBranch}
-          title="No workflows attached"
-          sub="Add a workflow from a template or create a custom one to automate remediation actions."
-        >
-          <Button onClick={() => setShowAdd(true)}><GitBranch size={14} /> Add Workflow</Button>
-        </EmptyState>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {workflows.map(wf => {
-            const result = execResults[wf.id]
-            return (
-              <Card key={wf.id} style={{ padding: '14px 18px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{
-                    width: 38, height: 38, borderRadius: 10, background: '#312e8133',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                  }}>
-                    <GitBranch size={16} color='#818cf8' />
-                  </div>
-
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}>
-                      <span style={{ fontWeight: 600, fontSize: 14 }}>{wf.name}</span>
-                      <Pill color={wf.status === 'active' ? '#22c55e' : '#71717a'}>{wf.status}</Pill>
+          <EmptyState
+            icon={GitBranch}
+            title="No workflows attached"
+            sub="Add a workflow from a template or create a custom one to automate remediation actions."
+          >
+            <Button onClick={() => setShowAdd(true)}><GitBranch size={14} /> Add Workflow</Button>
+          </EmptyState>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {workflows.map(wf => {
+              const result = execResults[wf.id]
+              return (
+                <Card key={wf.id} style={{ padding: '14px 18px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{
+                      width: 38, height: 38, borderRadius: 10, background: '#312e8133',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    }}>
+                      <GitBranch size={16} color='#818cf8' />
                     </div>
-                    {wf.description && (
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {wf.description}
-                      </div>
-                    )}
-                    <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                      <span>{wf.node_count || 0} nodes</span>
-                      <span>{wf.run_count || 0} runs</span>
-                      {wf.last_run_at && <span>Last: {new Date(wf.last_run_at).toLocaleString()}</span>}
-                    </div>
-                    {result && (
-                      <div style={{ marginTop: 6 }}>
-                        <Pill color={result.status === 'completed' ? '#22c55e' : '#ef4444'}>
-                          {result.status === 'completed'
-                            ? `Completed - ${result.items_processed} items processed`
-                            : `Failed: ${result.error || 'Unknown error'}`}
-                        </Pill>
-                      </div>
-                    )}
-                  </div>
 
-                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                    <Button size="sm" variant="ghost"
-                      onClick={() => navigate(`/workflows/${wf.id}`)}>
-                      <Edit2 size={12} /> Edit
-                    </Button>
-                    <Button size="sm" variant="primary"
-                      onClick={() => handleRun(wf.id)}
-                      disabled={executing === wf.id || !hasResults}>
-                      <Play size={12} /> {executing === wf.id ? 'Running...' : 'Run'}
-                    </Button>
-                    <button onClick={() => handleDelete(wf.id)}
-                      style={{ padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex' }}>
-                      <Trash2 size={14} />
-                    </button>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}>
+                        <span style={{ fontWeight: 600, fontSize: 14 }}>{wf.name}</span>
+                        <Pill color={wf.status === 'active' ? '#22c55e' : '#71717a'}>{wf.status}</Pill>
+                      </div>
+                      {wf.description && (
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {wf.description}
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                        <span>{wf.node_count || 0} nodes</span>
+                        <span>{wf.run_count || 0} runs</span>
+                        {wf.last_run_at && <span>Last: {new Date(wf.last_run_at).toLocaleString()}</span>}
+                      </div>
+                      {result && (
+                        <div style={{ marginTop: 6 }}>
+                          <Pill color={result.status === 'completed' ? '#22c55e' : '#ef4444'}>
+                            {result.status === 'completed'
+                              ? `Completed - ${result.items_processed} items processed`
+                              : `Failed: ${result.error || 'Unknown error'}`}
+                          </Pill>
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      <Button size="sm" variant="ghost"
+                        onClick={() => navigate(`/workflows/${wf.id}`)}>
+                        <Edit2 size={12} /> Edit
+                      </Button>
+                      <Button size="sm" variant="primary"
+                        onClick={() => handleRun(wf.id)}
+                        disabled={executing === wf.id || !hasResults}>
+                        <Play size={12} /> {executing === wf.id ? 'Running...' : 'Run'}
+                      </Button>
+                      <button onClick={() => handleDelete(wf.id)}
+                        style={{ padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex' }}>
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              </Card>
-            )
-          })}
-        </div>
-      )}
+                </Card>
+              )
+            })}
+          </div>
+        )
+      }
 
       {/* Add workflow modal */}
       {showAdd && (

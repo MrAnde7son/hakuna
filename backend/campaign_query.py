@@ -39,7 +39,7 @@ def run_query(db: Session, conditions: list, logic: str, scan_id) -> list:
             "ip": asset.ip, "hostname": asset.hostname, "fqdn": asset.fqdn,
             "os": asset.os, "netbios_name": asset.netbios_name,
             "environment_tag": asset.environment_tag,
-            "criticality": asset.criticality or 3,
+            "criticality": asset.criticality or 5,
             "risk_score": asset.risk_score or 0.0,
             "critical_count": asset.critical_count or 0,
             "high_count": asset.high_count or 0,

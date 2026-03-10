@@ -5,7 +5,7 @@ Asset Risk Score formula (weighted sum, normalized to 0-10):
   severity       — weighted avg of finding severity scores
   exploitability — exploit availability + maturity bonus + VPR
   intel          — max VPR / threat intel score
-  criticality    — asset criticality level (1-5) contribution
+  criticality    — asset criticality level (1-10) contribution
   controls       — penalty when compensating controls (AV/firewall) are absent
   reachability   — established network connections as lateral movement risk
 
@@ -70,18 +70,23 @@ DEFAULT_RISK_CONFIG: dict[str, Any] = {
     },
     # ── Criticality level → final score multiplier ──
     "criticality_multipliers": {
-        "1": 0.60,
-        "2": 0.80,
-        "3": 1.00,
-        "4": 1.30,
-        "5": 1.60,
+        "1":  0.50,
+        "2":  0.60,
+        "3":  0.70,
+        "4":  0.80,
+        "5":  0.90,
+        "6":  1.00,
+        "7":  1.15,
+        "8":  1.30,
+        "9":  1.45,
+        "10": 1.60,
     },
     # ── Finding priority score weights (should sum to 1.0) ──
     # Components:
     #   severity       — CVSS score (v3 preferred, v2 fallback), normalized 0-1
     #   intel          — VPR score normalized 0-1
     #   exploitability — exploit availability & maturity bonus
-    #   criticality    — asset criticality (1-5) normalized 0-1
+    #   criticality    — asset criticality (1-10) normalized 0-1
     #   family         — plugin family risk signal
     #   controls       — penalty when compensating controls absent (from asset inventory)
     #   reachability   — established network connections (from asset inventory)
@@ -147,7 +152,7 @@ def save_config(cfg: dict) -> None:
 def evaluate_criticality_rules(asset: dict, cfg: dict) -> int | None:
     """
     Apply criticality auto-rules to an asset dict.
-    Returns the resolved criticality (int 1-5) or None if no rules match.
+    Returns the resolved criticality (int 1-10) or None if no rules match.
 
     Supports:
     - New compound format: {conditions: [{field, op, value}], logic: "AND"|"OR", criticality}
@@ -167,7 +172,7 @@ def evaluate_criticality_rules(asset: dict, cfg: dict) -> int | None:
     matched: list[int] = []
 
     for rule in rules:
-        crit = int(rule.get("criticality", 3))
+        crit = int(rule.get("criticality", 5))
 
         if "conditions" in rule:
             conditions = rule.get("conditions") or []
@@ -203,7 +208,7 @@ def evaluate_criticality_rules(asset: dict, cfg: dict) -> int | None:
 
 def compute_asset_risk_score(
     findings: list[dict],
-    asset_criticality: int = 3,
+    asset_criticality: int = 5,
     inventory: dict | None = None,
     cfg: dict | None = None,
 ) -> float:
@@ -213,7 +218,7 @@ def compute_asset_risk_score(
     Args:
         findings:          list of finding dicts — must contain at minimum:
                            {severity, exploit_available, exploit_maturity, vpr_score}
-        asset_criticality: 1-5 integer
+        asset_criticality: 1-10 integer
         inventory:         optional dict with compensating/reachability context:
                            {has_av: bool|None, has_firewall: bool|None, established_connections: int}
         cfg:               loaded risk config (defaults loaded if None)
@@ -269,8 +274,8 @@ def compute_asset_risk_score(
     vpr_scores = [float(f["vpr_score"]) for f in findings if f.get("vpr_score")]
     intel_component = (max(vpr_scores) / 10.0) if vpr_scores else 0.0
 
-    # ── 4. Criticality component (normalize 1-5 → 0-1) ──
-    criticality_component = (max(1, min(5, asset_criticality)) - 1) / 4.0
+    # ── 4. Criticality component (normalize 1-10 → 0-1) ──
+    criticality_component = (max(1, min(10, asset_criticality)) - 1) / 9.0
 
     # ── 5. Controls component ──
     inv = inventory or {}

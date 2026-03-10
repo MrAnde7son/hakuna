@@ -36,7 +36,7 @@ const TABS = [
   { key: 'loggedon',  label: 'Logged On',       icon: LogIn },
   { key: 'envvars',   label: 'Env Variables',   icon: Terminal },
   { key: 'certs',     label: 'Certificates',    icon: Lock },
-  { key: 'aitools',   label: 'AI / LLM',        icon: BrainCircuit },
+  { key: 'aitools',   label: 'AI',        icon: BrainCircuit },
 ]
 
 // ─── Env tag colors ────────────────────────────────────────

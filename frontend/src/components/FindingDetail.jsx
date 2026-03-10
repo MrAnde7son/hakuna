@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw } from 'lucide-react'
-import { getFinding, resolveFinding, unresolveFinding } from '../api.js'
-import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, OwnerBadge, Pill } from './ui.jsx'
-import AutomateModal from './AutomateModal.jsx'
+import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare } from 'lucide-react'
+import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, createException, createCampaign, runCampaign } from '../api.js'
+import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input } from './ui.jsx'
 import BlastRadiusPanel from './BlastRadiusPanel.jsx'
 
 function Section({ title, icon: Icon, children }) {
@@ -72,14 +71,36 @@ export default function FindingDetail() {
   const navigate = useNavigate()
   const [finding, setFinding] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [showAutomate, setShowAutomate] = useState(false)
+  const [creatingCampaign, setCreatingCampaign] = useState(false)
   const [resolving, setResolving] = useState(false)
+  const [statusUpdating, setStatusUpdating] = useState(false)
+  const [showExceptionForm, setShowExceptionForm] = useState(false)
+  const [exceptionReason, setExceptionReason] = useState('')
 
   useEffect(() => {
     getFinding(id)
       .then(setFinding)
       .finally(() => setLoading(false))
   }, [id])
+
+  const handleCreateCampaign = async () => {
+    if (!finding) return
+    setCreatingCampaign(true)
+    try {
+      const query = [{ field: 'finding.plugin_id', op: 'eq', value: String(finding.plugin_id) }]
+      const campaign = await createCampaign({
+        name: `Remediate: ${finding.plugin_name}`,
+        description: `Campaign to remediate plugin ${finding.plugin_id} — ${finding.plugin_name}`,
+        scan_id: finding.scan_id,
+        query,
+        query_logic: 'AND',
+      })
+      await runCampaign(campaign.id)
+      navigate(`/campaigns/${campaign.id}`)
+    } finally {
+      setCreatingCampaign(false)
+    }
+  }
 
   const handleResolve = async () => {
     setResolving(true)
@@ -98,6 +119,33 @@ export default function FindingDetail() {
       setFinding(prev => ({ ...prev, sla_status: res.sla_status, resolved_at: null }))
     } finally {
       setResolving(false)
+    }
+  }
+
+  const handleStatusChange = async (newStatus) => {
+    setStatusUpdating(true)
+    try {
+      await updateFindingStatus(id, { status: newStatus })
+      setFinding(prev => ({ ...prev, workflow_status: newStatus, status_changed_at: new Date().toISOString() }))
+    } finally {
+      setStatusUpdating(false)
+    }
+  }
+
+  const handleCreateException = async (type) => {
+    try {
+      await createException({
+        plugin_id: finding.plugin_id,
+        plugin_name: finding.plugin_name,
+        asset_ip: null, // global
+        exception_type: type,
+        reason: exceptionReason || `Created from finding #${finding.id}`,
+      })
+      setFinding(prev => ({ ...prev, workflow_status: type, exception_id: -1 }))
+      setShowExceptionForm(false)
+      setExceptionReason('')
+    } catch (e) {
+      alert('Failed to create exception: ' + e.message)
     }
   }
 
@@ -135,8 +183,8 @@ export default function FindingDetail() {
             </div>
           </div>
 
-          <Button onClick={() => setShowAutomate(true)} style={{ flexShrink: 0, padding: '10px 18px' }}>
-            <Zap size={16} /> Automate This
+          <Button onClick={handleCreateCampaign} disabled={creatingCampaign} style={{ flexShrink: 0, padding: '10px 18px' }}>
+            <Zap size={16} /> {creatingCampaign ? 'Creating…' : 'Automate This'}
           </Button>
         </div>
 
@@ -166,7 +214,7 @@ export default function FindingDetail() {
           </div>
           <div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>OWNER</div>
-            <OwnerBadge owner={finding.owner_suggestion} />
+            <ResolvedOwnerBadge resolved={finding.resolved_owner} />
           </div>
         </div>
 
@@ -240,6 +288,125 @@ export default function FindingDetail() {
         )
       })()}
 
+      {/* Temporal Tracking */}
+      {(finding.first_seen || finding.is_regression) && (
+        <Card style={{
+          marginBottom: 14,
+          ...(finding.is_regression ? { background: 'rgba(220,38,38,0.06)', borderColor: 'rgba(220,38,38,0.25)' } : {}),
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            {finding.is_regression && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 4, background: 'rgba(220,38,38,0.15)', color: '#fca5a5', fontSize: 12, fontWeight: 600 }}>
+                <RotateCcw size={11} /> Regression
+              </span>
+            )}
+            {finding.first_seen && (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                First seen: {new Date(finding.first_seen).toLocaleDateString()}
+              </span>
+            )}
+            {finding.last_seen && (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                · Last seen: {new Date(finding.last_seen).toLocaleDateString()}
+              </span>
+            )}
+            {finding.times_seen > 1 && (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                · Seen in {finding.times_seen} scan{finding.times_seen !== 1 ? 's' : ''}
+              </span>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* Workflow Status */}
+      <Card style={{ marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
+          <UserCheck size={16} color="var(--accent)" />
+          <span style={{ fontWeight: 600, fontSize: 14 }}>Workflow Status</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          {[
+            { value: 'open', label: 'Open', color: '#6b7280' },
+            { value: 'in_progress', label: 'In Progress', color: '#3b82f6' },
+            { value: 'resolved', label: 'Resolved', color: '#22c55e' },
+          ].map(s => (
+            <button
+              key={s.value}
+              disabled={statusUpdating}
+              onClick={() => handleStatusChange(s.value)}
+              style={{
+                padding: '6px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                border: '2px solid ' + s.color,
+                background: (finding.workflow_status || 'open') === s.value ? s.color : 'transparent',
+                color: (finding.workflow_status || 'open') === s.value ? '#fff' : s.color,
+                cursor: statusUpdating ? 'wait' : 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              {s.label}
+            </button>
+          ))}
+          <div style={{ borderLeft: '1px solid var(--border)', margin: '0 4px' }} />
+          <button
+            disabled={statusUpdating}
+            onClick={() => setShowExceptionForm(!showExceptionForm)}
+            style={{
+              padding: '6px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+              border: '2px solid #d97706',
+              background: ['accepted_risk', 'false_positive', 'compensating_control'].includes(finding.workflow_status) ? '#d97706' : 'transparent',
+              color: ['accepted_risk', 'false_positive', 'compensating_control'].includes(finding.workflow_status) ? '#fff' : '#d97706',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+            }}
+          >
+            <ShieldOff size={13} />
+            {finding.exception_id ? 'Has Exception' : 'Create Exception'}
+          </button>
+        </div>
+
+        {finding.workflow_assigned_to && (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+            Assigned to: <span style={{ color: 'var(--text)', fontWeight: 500 }}>{finding.workflow_assigned_to}</span>
+          </div>
+        )}
+        {finding.status_changed_at && (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            Last status change: {new Date(finding.status_changed_at).toLocaleString()}
+          </div>
+        )}
+
+        {showExceptionForm && (
+          <div style={{ marginTop: 12, padding: 14, background: 'var(--bg-muted)', borderRadius: 8, border: '1px solid var(--border)' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Create Global Exception for Plugin {finding.plugin_id}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+              This will apply to all findings with this plugin across all scans.
+            </div>
+            <textarea
+              value={exceptionReason}
+              onChange={e => setExceptionReason(e.target.value)}
+              placeholder="Reason for exception..."
+              style={{
+                width: '100%', minHeight: 60, padding: '8px 12px', borderRadius: 8,
+                border: '1px solid var(--border)', fontSize: 12, resize: 'vertical',
+                background: '#fff', marginBottom: 10, boxSizing: 'border-box',
+              }}
+            />
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Button size="sm" onClick={() => handleCreateException('accepted_risk')} style={{ background: '#d97706' }}>
+                Accept Risk
+              </Button>
+              <Button size="sm" onClick={() => handleCreateException('false_positive')} style={{ background: '#3b82f6' }}>
+                False Positive
+              </Button>
+              <Button size="sm" onClick={() => handleCreateException('compensating_control')} style={{ background: '#10b981' }}>
+                Compensating Control
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setShowExceptionForm(false)}>Cancel</Button>
+            </div>
+          </div>
+        )}
+      </Card>
+
       {/* Remediation */}
       <Section title="Remediation Steps" icon={Shield}>
         <RemediationSteps text={finding.remediation_steps} />
@@ -250,8 +417,8 @@ export default function FindingDetail() {
           </div>
         )}
         <div style={{ marginTop: 16 }}>
-          <Button onClick={() => setShowAutomate(true)} style={{ width: '100%', justifyContent: 'center', padding: '11px 16px' }}>
-            <Zap size={16} /> Automate This Remediation
+          <Button onClick={handleCreateCampaign} disabled={creatingCampaign} style={{ width: '100%', justifyContent: 'center', padding: '11px 16px' }}>
+            <Zap size={16} /> {creatingCampaign ? 'Creating…' : 'Automate This Remediation'}
           </Button>
         </div>
       </Section>
@@ -323,7 +490,6 @@ export default function FindingDetail() {
         )}
       </Section>
 
-      {showAutomate && <AutomateModal finding={finding} onClose={() => setShowAutomate(false)} />}
     </div>
   )
 }
