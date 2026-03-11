@@ -92,7 +92,12 @@
       "Bash(backend/.venv/bin/python3 -c \"import sys; print\\(sys.path\\)\")",
       "Bash(backend/.venv/bin/python3 -m pytest --version)",
       "Bash(backend/.venv/bin/python3 --version)",
-      "Bash(backend/.venv/bin/python3.11 -m pytest --version)"
+      "Bash(backend/.venv/bin/python3.11 -m pytest --version)",
+      "Bash(backend/.venv/bin/python3.11 -m pytest tests/test_prioritizer.py tests/test_auth.py tests/test_parser.py -v)",
+      "Bash(backend/.venv/bin/python3.11 -c \":*)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''app.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(curl -s -X POST http://localhost:8000/api/auth/login -H \"Content-Type: application/json\" -d '{\"\"\"\"email\"\"\"\":\"\"\"\"moshe@example.com\"\"\"\",\"\"\"\"password\"\"\"\":\"\"\"\"password\"\"\"\"}')",
+      "Bash(curl -s -X POST http://localhost:8000/api/auth/login -H \"Content-Type: application/json\" -d '{\"\"email\"\":\"\"moshe@example.com\"\",\"\"password\"\":\"\"password\"\"}')"
     ]
   }
 }
