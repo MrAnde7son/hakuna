@@ -200,11 +200,17 @@ class TestApplyOrgFilter:
         assert filtered.count() == db.query(Organization).count()
 
     def test_filters_by_org_id(self, db, std_org, mssp_org):
-        q = db.query(Organization)
-        filtered = auth.apply_org_filter(q, Organization, org_ids=[std_org.id])
+        """apply_org_filter uses model.org_id — use Tag which has org_id."""
+        from models import Tag
+        t1 = Tag(org_id=std_org.id, category="env", value="prod", color="#fff")
+        t2 = Tag(org_id=mssp_org.id, category="env", value="staging", color="#000")
+        db.add_all([t1, t2])
+        db.commit()
+        q = db.query(Tag)
+        filtered = auth.apply_org_filter(q, Tag, org_ids=[std_org.id])
         results = filtered.all()
         assert len(results) == 1
-        assert results[0].id == std_org.id
+        assert results[0].org_id == std_org.id
 
     def test_model_without_org_id_returns_unchanged(self, db, std_org):
         """Models without org_id should not be filtered."""

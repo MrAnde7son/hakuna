@@ -13,7 +13,11 @@ from prioritizer import compute_priority_score, compute_asset_risk_score
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def make_finding(**kwargs):
-    """Minimal finding dict with sensible defaults."""
+    """Minimal finding dict with sensible defaults.
+
+    Default solution is neutral (no patch/complex keywords) so effort level
+    is determined by severity + exploitability, not solution text.
+    """
     defaults = {
         "plugin_id": "99999",
         "plugin_name": "Test Plugin",
@@ -31,7 +35,7 @@ def make_finding(**kwargs):
         "is_kev": False,
         "ransomware_linked": False,
         "trending_in_news": False,
-        "solution": "Apply patch.",
+        "solution": "Review vendor documentation.",  # neutral — no patch/complex keywords
         "port": None,
     }
     defaults.update(kwargs)
@@ -182,40 +186,63 @@ class TestSeveritySource:
 
 class TestEffortLevels:
     def test_info_finding_is_quick_win(self):
+        # Low severity, no complex/patch family, no complex solution → quick_win
         finding = make_finding(severity=0)
         result = compute_priority_score(finding)
         assert result["effort_level"] == "quick_win"
 
-    def test_low_cvss_no_exploit_is_quick_win(self):
+    def test_low_severity_is_quick_win(self):
+        # severity=1 falls into quick_win branch of the decision tree
         finding = make_finding(severity=1, cvss3_score=2.0, exploit_available=False)
         result = compute_priority_score(finding)
         assert result["effort_level"] == "quick_win"
 
-    def test_critical_is_complex(self):
-        finding = make_finding(severity=4, cvss3_score=9.5)
+    def test_critical_with_weaponized_exploit_is_complex(self):
+        # severity=4 AND exploit_bonus >= 0.7 → complex (per decision tree)
+        finding = make_finding(severity=4, cvss3_score=9.5, exploit_maturity="weaponized")
         result = compute_priority_score(finding)
         assert result["effort_level"] == "complex"
 
-    def test_weaponized_exploit_is_complex(self):
-        finding = make_finding(severity=3, cvss3_score=7.0, exploit_maturity="weaponized")
+    def test_critical_no_exploit_is_medium(self):
+        # severity=4 but no exploit → falls to the else branch → medium
+        finding = make_finding(severity=4, cvss3_score=9.5)
         result = compute_priority_score(finding)
-        assert result["effort_level"] == "complex"
+        assert result["effort_level"] == "medium"
+
+    def test_high_severity_without_exploit_is_medium(self):
+        # severity=3, no exploit, neutral solution → medium
+        finding = make_finding(severity=3, cvss3_score=7.0, exploit_available=False)
+        result = compute_priority_score(finding)
+        assert result["effort_level"] == "medium"
 
     def test_medium_severity_without_exploit_is_medium(self):
         finding = make_finding(severity=2, cvss3_score=6.0, exploit_available=False)
         result = compute_priority_score(finding)
         assert result["effort_level"] == "medium"
 
-    def test_patch_family_overrides_to_quick_win(self):
-        finding = make_finding(
-            severity=3, cvss3_score=7.0,
-            plugin_family="Windows : Microsoft Bulletins"
-        )
+    def test_patch_solution_keyword_produces_quick_win(self):
+        # 'upgrade to' is in _PATCH_KEYWORDS; default asset_criticality=5 → no reboot/server worry
+        finding = make_finding(severity=3, cvss3_score=7.0, solution="Upgrade to version 2.0.")
         result = compute_priority_score(finding)
         assert result["effort_level"] == "quick_win"
 
-    def test_backdoor_family_overrides_to_complex(self):
+    def test_patch_family_is_quick_win_for_workstation(self):
+        # Patch family + low criticality (workstation proxy) → quick_win
+        finding = make_finding(
+            severity=3, cvss3_score=7.0,
+            plugin_family="Windows : Microsoft Bulletins",
+            asset_criticality=3,
+        )
+        result = compute_priority_score(finding, asset_criticality=3)
+        assert result["effort_level"] == "quick_win"
+
+    def test_backdoor_family_is_complex(self):
         finding = make_finding(severity=2, cvss3_score=5.0, plugin_family="Backdoors")
+        result = compute_priority_score(finding)
+        assert result["effort_level"] == "complex"
+
+    def test_complex_solution_keyword_is_complex(self):
+        finding = make_finding(severity=2, cvss3_score=5.0, solution="Reconfigure the network architecture.")
         result = compute_priority_score(finding)
         assert result["effort_level"] == "complex"
 
