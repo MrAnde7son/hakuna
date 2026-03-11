@@ -81,7 +81,18 @@
       "Bash(node -e \"const icons = require\\(''''lucide-react''''\\); const names = Object.keys\\(icons\\).filter\\(k => k.toLowerCase\\(\\).includes\\(''''present''''\\) || k.toLowerCase\\(\\).includes\\(''''slide''''\\) || k.toLowerCase\\(\\).includes\\(''''file''''\\)\\); console.log\\(names.slice\\(0,20\\)\\)\")",
       "Bash(python -c \"from nlp_search import parse_nlp_query; from app import app; print\\(''''OK''''\\)\")",
       "Bash(node --input-type=module --eval \":*)",
-      "Bash(find /Users/itamar/Documents/Git/nessus-remediation -name *.png -o -name *.svg -o -name *.ico -o -name *.jpg)"
+      "Bash(find /Users/itamar/Documents/Git/nessus-remediation -name *.png -o -name *.svg -o -name *.ico -o -name *.jpg)",
+      "Bash(wc -l /Users/itamar/Documents/Git/nessus-remediation/backend/*.py)",
+      "Bash(python -m pytest tests/test_prioritizer.py tests/test_auth.py tests/test_parser.py -v)",
+      "Bash(python -c \"import pytest; print\\(pytest.__version__\\)\")",
+      "Bash(backend/.venv/bin/pip install:*)",
+      "Bash(backend/.venv/bin/python -m pytest tests/test_prioritizer.py tests/test_auth.py tests/test_parser.py -v)",
+      "Bash(backend/.venv/bin/python -c \"import pytest; print\\(pytest.__version__\\)\")",
+      "Bash(backend/.venv/bin/pip show:*)",
+      "Bash(backend/.venv/bin/python3 -c \"import sys; print\\(sys.path\\)\")",
+      "Bash(backend/.venv/bin/python3 -m pytest --version)",
+      "Bash(backend/.venv/bin/python3 --version)",
+      "Bash(backend/.venv/bin/python3.11 -m pytest --version)"
     ]
   }
 }

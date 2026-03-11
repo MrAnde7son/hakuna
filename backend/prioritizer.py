@@ -43,11 +43,49 @@ EXPLOIT_MATURITY_MULTIPLIERS = {
     None: 1.0,
 }
 
-EFFORT_THRESHOLDS = {
-    # Plugin IDs or families known to be quick wins
-    "quick_win_families": {"Windows : Microsoft Bulletins", "Patch Management"},
-    "complex_families": {"Gain a shell remotely", "Backdoors", "Credentials"},
+# Families where remediation is always a package/patch apply (no reboot caveat applies to workstations)
+PATCH_FAMILIES = {
+    "Windows : Microsoft Bulletins",
+    "Patch Management",
+    "Ubuntu Local Security Checks",
+    "Red Hat Local Security Checks",
+    "CentOS Local Security Checks",
+    "Debian Local Security Checks",
+    "Fedora Local Security Checks",
+    "Amazon Linux Local Security Checks",
+    "SuSE Local Security Checks",
+    "Oracle Linux Local Security Checks",
+    "Scientific Linux Local Security Checks",
+    "Alma Linux Local Security Checks",
+    "Rocky Linux Local Security Checks",
 }
+
+COMPLEX_FAMILIES = {
+    "Gain a shell remotely",
+    "Backdoors",
+    "Credentials",
+    "Firewalls",
+    "SCADA",
+}
+
+# Solution text keywords that indicate a reboot is likely needed
+_REBOOT_KEYWORDS = {"reboot", "restart the system", "restart windows", "kernel update", "restart your computer"}
+
+# Solution text keywords that indicate patch/update (lower effort)
+_PATCH_KEYWORDS = {"apply patch", "apply the patch", "upgrade to", "update to", "install the update",
+                   "apply update", "apply the update", "apply the fix", "install kb", "apply kb"}
+
+# Solution text keywords that indicate complex architectural change
+_COMPLEX_KEYWORDS = {"redesign", "implement", "replace the", "reconfigure", "segment", "migrate",
+                     "rewrite", "architect"}
+
+# OS strings that indicate a server (vs workstation)
+_SERVER_OS_KEYWORDS = {
+    "server", "linux", "ubuntu", "debian", "centos", "red hat", "rhel", "fedora",
+    "suse", "oracle linux", "amazon linux", "alma", "rocky", "esxi", "vmware",
+    "freebsd", "solaris", "aix", "hp-ux",
+}
+_WORKSTATION_OS_KEYWORDS = {"windows 10", "windows 11", "macos", "mac os x", "darwin"}
 
 OWNER_MAP = {
     "Windows": "IT",
@@ -275,18 +313,52 @@ def compute_priority_score(
     priority_score = round(min(base_score, 10.0), 2)
 
     # --- Effort level ---
-    if severity <= 1 or (cvss <= 4.0 and not exploit_bonus):
-        effort_level = "quick_win"
-    elif severity == 4 or exploit_bonus >= 0.7:
-        effort_level = "complex"
-    else:
-        effort_level = "medium"
+    # Effort is about remediation complexity, NOT risk severity.
+    # Key signals: remediation type (patch vs config vs architectural),
+    #              whether a reboot is needed, and whether it's a server or workstation.
 
-    # Quick win override for well-known patch families
-    if family in EFFORT_THRESHOLDS["quick_win_families"]:
-        effort_level = "quick_win"
-    if family in EFFORT_THRESHOLDS["complex_families"]:
+    solution_lower = (finding.get("solution") or "").lower()
+    plugin_name_lower = (finding.get("plugin_name") or "").lower()
+    asset_os = (finding.get("asset_os") or "").lower()
+
+    is_patch_family = family in PATCH_FAMILIES
+    is_complex_family = family in COMPLEX_FAMILIES
+
+    solution_is_patch = any(kw in solution_lower for kw in _PATCH_KEYWORDS)
+    solution_is_complex = any(kw in solution_lower for kw in _COMPLEX_KEYWORDS)
+    likely_needs_reboot = any(kw in solution_lower or kw in plugin_name_lower for kw in _REBOOT_KEYWORDS)
+    # Windows KB patches almost always need a reboot
+    if is_patch_family and "windows" in family.lower():
+        likely_needs_reboot = True
+
+    # Determine if this is a server asset or workstation
+    is_workstation = any(kw in asset_os for kw in _WORKSTATION_OS_KEYWORDS)
+    is_server = not is_workstation and any(kw in asset_os for kw in _SERVER_OS_KEYWORDS)
+    # Fallback: use asset criticality as proxy (high criticality = likely server)
+    if not asset_os:
+        is_server = asset_criticality >= 7
+        is_workstation = asset_criticality <= 4
+
+    # --- Decision tree ---
+    if is_complex_family or solution_is_complex:
         effort_level = "complex"
+    elif is_patch_family or solution_is_patch:
+        # Patch-based remediation: effort depends on reboot + asset type
+        if likely_needs_reboot and is_server:
+            # Server reboot = change management, maintenance window, coordination
+            effort_level = "medium" if asset_criticality < 9 else "complex"
+        else:
+            # Workstation patch/reboot or server patch without reboot → straightforward
+            effort_level = "quick_win"
+    else:
+        # Config change or unknown — use severity + exploitability as tiebreaker
+        if severity <= 1:
+            effort_level = "quick_win"
+        elif severity == 4 and exploit_bonus >= 0.7:
+            # Critical + actively exploited → likely needs emergency process = complex
+            effort_level = "complex"
+        else:
+            effort_level = "medium"
 
     # --- Owner suggestion ---
     owner = OWNER_MAP.get(family, "SecOps")

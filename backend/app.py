@@ -64,9 +64,11 @@ def _apply_sort(q, model, sort_by: str, order: str, default_attr):
 
 app = FastAPI(title="Nessus Remediation Platform", version="1.0.0")
 
+_cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -351,6 +353,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
 
         # Compute priority (risk_cfg passed for configurable weights;
         # asset_inventory not available yet at upload time — defaults to neutral)
+        finding_data["asset_os"] = asset.os or ""
         priority_data = compute_priority_score(
             finding_data,
             asset_criticality=asset.criticality,
@@ -2482,6 +2485,9 @@ def recalculate_risk(body: RecalculateBody, db: Session = Depends(get_db)):
                     "trending_in_news":  f.trending_in_news or False,
                     "solution":          f.solution,
                     "synopsis":          f.synopsis,
+                    "asset_os":          asset.os or "",
+                    "plugin_name":       f.plugin_name,
+                    "plugin_family":     f.plugin_family,
                 }
                 priority_data = compute_priority_score(
                     finding_dict,
