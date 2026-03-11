@@ -776,6 +776,7 @@ function ServicesTab({ scanId }) {
 function SharesTab({ scanId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
+  const [search, setSearch]           = useState('')
   const [writeableOnly, setWriteable] = useState(false)
   const [groupByAsset, setGroupByAsset] = useState(false)
   const [sortBy, setSortBy]           = useState('share_name')
@@ -786,11 +787,13 @@ function SharesTab({ scanId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true)
-    getInventoryShares({ scan_id: scanId, is_writeable: writeableOnly || null, sort_by: sortBy, order: sortOrder })
+    getInventoryShares({ scan_id: scanId, search: search || null, is_writeable: writeableOnly || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, writeableOnly, sortBy, sortOrder])
+  }, [scanId, search, writeableOnly, sortBy, sortOrder])
+
+  useEffect(() => { load() }, [load])
 
   const columns = [
     { key: 'share_name', label: 'Share Name', width: '17%', sortable: true,
@@ -821,6 +824,7 @@ function SharesTab({ scanId }) {
   return (
     <Card>
       <FilterBar>
+        <Input value={search} onChange={setSearch} placeholder="Search share name, path, comment…" style={{ width: 260 }} />
         <Button variant={writeableOnly ? 'danger' : 'ghost'} size="sm" onClick={() => setWriteable(p => !p)}>
           {writeableOnly ? '✕ Writeable only' : 'Show writeable only'}
         </Button>
@@ -959,6 +963,7 @@ function SecurityControlsTab({ scanId }) {
 function NetconnsTab({ scanId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
+  const [search, setSearch]           = useState('')
   const [state, setState]             = useState(null)
   const [groupByAsset, setGroupByAsset] = useState(false)
   const [sortBy, setSortBy]           = useState('local_port')
@@ -969,11 +974,13 @@ function NetconnsTab({ scanId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true)
-    getInventoryNetconns({ scan_id: scanId, state: state || null, sort_by: sortBy, order: sortOrder })
+    getInventoryNetconns({ scan_id: scanId, search: search || null, state: state || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, state, sortBy, sortOrder])
+  }, [scanId, search, state, sortBy, sortOrder])
+
+  useEffect(() => { load() }, [load])
 
   const columns = [
     { key: 'proto',      label: 'Proto',          width: '7%',  sortable: true },
@@ -997,6 +1004,7 @@ function NetconnsTab({ scanId }) {
   return (
     <Card>
       <FilterBar>
+        <Input value={search} onChange={setSearch} placeholder="Search IP address, protocol…" style={{ width: 240 }} />
         <Select value={state} onChange={setState} placeholder="All states" options={[
           { value: 'listen',      label: 'Listening' },
           { value: 'established', label: 'Established' },
@@ -1017,6 +1025,8 @@ function NetconnsTab({ scanId }) {
 function TasksTab({ scanId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
+  const [search, setSearch]           = useState('')
+  const [triggerType, setTriggerType] = useState(null)
   const [groupByAsset, setGroupByAsset] = useState(false)
   const [sortBy, setSortBy]           = useState('task_uri')
   const [sortOrder, setSortOrder]     = useState('asc')
@@ -1026,11 +1036,13 @@ function TasksTab({ scanId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true)
-    getInventoryTasks({ scan_id: scanId, sort_by: sortBy, order: sortOrder })
+    getInventoryTasks({ scan_id: scanId, search: search || null, trigger_type: triggerType || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, sortBy, sortOrder])
+  }, [scanId, search, triggerType, sortBy, sortOrder])
+
+  useEffect(() => { load() }, [load])
 
   const columns = [
     { key: 'task_uri', label: 'Task URI', width: '22%', sortable: true,
@@ -1060,6 +1072,15 @@ function TasksTab({ scanId }) {
   return (
     <Card>
       <FilterBar>
+        <Input value={search} onChange={setSearch} placeholder="Search task, author, command…" style={{ width: 250 }} />
+        <Select value={triggerType} onChange={setTriggerType} placeholder="All trigger types" options={[
+          { value: 'daily',    label: 'Daily' },
+          { value: 'weekly',   label: 'Weekly' },
+          { value: 'monthly',  label: 'Monthly' },
+          { value: 'logon',    label: 'Logon' },
+          { value: 'startup',  label: 'Startup' },
+          { value: 'ondemand', label: 'On Demand' },
+        ]} />
         <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
       </FilterBar>
       {loading ? <Spinner /> : groupByAsset

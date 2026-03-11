@@ -1,12 +1,14 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Bug, Search, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download } from 'lucide-react'
+import { Bug, Search, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon } from 'lucide-react'
 import { useScan } from '../App.jsx'
-import { getFindings, getPluginFamilies, getAssets, assignTags, unassignTags, exportDownload } from '../api.js'
+import { getFindings, getPluginFamilies, getAssets, assignTags, unassignTags, exportDownload, advancedSearch } from '../api.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, Input,
-  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector
+  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal
 } from './ui.jsx'
+import RuleBuilder from './RuleBuilder.jsx'
+import { filtersToConditions } from '../utils/filtersToConditions.js'
 
 const GROUP_OPTIONS = [
   { value: 'severity', label: 'Severity' },
@@ -169,8 +171,15 @@ export default function FindingExplorer() {
   const [openGroups, setOpenGroups] = useState({})
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [showBulkTag, setShowBulkTag] = useState(false)
+  const [showSaveAs, setShowSaveAs] = useState(false)
   const [tagFilter, setTagFilter] = useState([])
   const [tagLogic, setTagLogic] = useState('AND')
+
+  // Advanced rule-engine search
+  const [advancedMode, setAdvancedMode] = useState(false)
+  const [advancedConditions, setAdvancedConditions] = useState([])
+  const [advancedLogic, setAdvancedLogic] = useState('AND')
+  const [advancedLoading, setAdvancedLoading] = useState(false)
 
   // Column visibility (persisted in localStorage)
   const [colVis, setColVis] = useState(() => {
@@ -266,7 +275,38 @@ export default function FindingExplorer() {
       .finally(() => setLoading(false))
   }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, slaStatus, effortLevel, cveFilter, search, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { if (!advancedMode) load() }, [load, advancedMode])
+
+  const runAdvancedSearch = useCallback((page = 1) => {
+    if (!advancedConditions.length) return
+    setAdvancedLoading(true)
+    advancedSearch({
+      query: advancedConditions,
+      query_logic: advancedLogic,
+      scan_id: activeScanId,
+      type: 'finding',
+      page,
+      page_size: pageSize,
+    }).then(data => {
+      setFindings(data.findings)
+      setTotal(data.total)
+    }).finally(() => setAdvancedLoading(false))
+  }, [advancedConditions, advancedLogic, activeScanId, pageSize])
+
+  const enterAdvancedMode = () => {
+    // Pre-populate from current simple filters
+    const conds = filtersToConditions({ search, severity, family, hasExploit, cveFilter, effortLevel, tagFilter }, 'finding')
+    setAdvancedConditions(conds)
+    setAdvancedLogic('AND')
+    setAdvancedMode(true)
+  }
+
+  const exitAdvancedMode = () => {
+    setAdvancedMode(false)
+    setAdvancedConditions([])
+    setFindings([])
+    setTotal(0)
+  }
 
   useEffect(() => {
     getPluginFamilies(activeScanId).then(f => setFamilies(f)).catch(() => {})
@@ -299,6 +339,13 @@ export default function FindingExplorer() {
   useEffect(() => { setCveInput(cveFilter || '') }, [cveFilter])
 
   const hasActiveFilters = severity !== null || family || hasExploit !== null || isKev !== null || ransomwareLinked !== null || trendingInNews !== null || slaStatus || effortLevel || cveFilter || search || groupBy || assetId || tagFilter.length > 0
+
+  const saveAsConditions = useMemo(
+    () => advancedMode
+      ? advancedConditions
+      : filtersToConditions({ search, severity, family, hasExploit, cveFilter, effortLevel, tagFilter }, 'finding'),
+    [advancedMode, advancedConditions, search, severity, family, hasExploit, cveFilter, effortLevel, tagFilter]
+  )
 
   const toggleSelect = (id) => setSelectedIds(prev => {
     const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next
@@ -446,7 +493,7 @@ export default function FindingExplorer() {
     <div>
       <PageHeader
         title="Findings"
-        subtitle={`${total.toLocaleString()} total findings`}
+        subtitle={advancedMode ? `${total.toLocaleString()} findings matched` : `${total.toLocaleString()} total findings`}
         action={
           <div style={{ display: 'flex', gap: 8 }}>
             {selectedIds.size > 0 && (
@@ -461,8 +508,49 @@ export default function FindingExplorer() {
         }
       />
 
+      {/* Advanced search panel */}
+      {advancedMode && (
+        <Card style={{ marginBottom: 16, padding: '16px 18px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <SlidersHorizontal size={14} style={{ color: 'var(--accent)' }} />
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Advanced Search</span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— uses the full rule engine condition catalog</span>
+            </div>
+            <button onClick={exitAdvancedMode} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+              <XIcon size={13} /> Exit advanced
+            </button>
+          </div>
+          <RuleBuilder
+            conditions={advancedConditions}
+            logic={advancedLogic}
+            onChange={(conds, lgc) => { setAdvancedConditions(conds); setAdvancedLogic(lgc) }}
+            showLogic
+            addLabel="Add condition"
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12 }}>
+            <Button
+              onClick={() => runAdvancedSearch(1)}
+              disabled={advancedLoading || !advancedConditions.length}
+            >
+              {advancedLoading ? 'Searching…' : 'Run Search'}
+            </Button>
+            {total > 0 && !advancedLoading && (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{total.toLocaleString()}</span> findings matched
+              </span>
+            )}
+            {saveAsConditions.length > 0 && (
+              <Button variant="ghost" size="sm" onClick={() => setShowSaveAs(true)} style={{ marginLeft: 'auto' }}>
+                <Bookmark size={13} /> Save as…
+              </Button>
+            )}
+          </div>
+        </Card>
+      )}
+
       {/* Filters */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: advancedMode ? 0 : 16, display: advancedMode ? 'none' : 'flex' }}>
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
           <Search size={14} style={{ position: 'absolute', left: 10, color: 'var(--text-muted)' }} />
           <input
@@ -589,14 +677,26 @@ export default function FindingExplorer() {
           onChange={updateColVis}
         />
 
+        <Button variant="ghost" size="sm" onClick={enterAdvancedMode} title="Switch to rule-engine query builder">
+          <SlidersHorizontal size={13} /> Advanced
+        </Button>
+
         {hasActiveFilters && (
-          <Button variant="ghost" size="sm" onClick={() => { clearFilters(); setTagFilter([]) }}>Clear all</Button>
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setShowSaveAs(true)}>
+              <Bookmark size={13} /> Save as…
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => { clearFilters(); setTagFilter([]) }}>Clear all</Button>
+          </>
         )}
       </div>
 
-      {loading ? <Spinner /> : (
+      {(loading || advancedLoading) ? <Spinner /> : (
         findings.length === 0 ? (
-          <EmptyState icon={Bug} title="No findings match" sub="Try adjusting your filters" />
+          <EmptyState icon={Bug}
+            title={advancedMode ? "No findings matched" : "No findings match"}
+            sub={advancedMode ? "Build conditions above and click Run Search" : "Try adjusting your filters"}
+          />
         ) : groupBy ? (
           <>
             {groupFindings(findings, groupBy).map(([key, rows]) => (
@@ -662,6 +762,18 @@ export default function FindingExplorer() {
           findingIds={[...selectedIds]}
           onClose={() => setShowBulkTag(false)}
           onDone={() => { setShowBulkTag(false); setSelectedIds(new Set()); load() }}
+        />
+      )}
+
+      {showSaveAs && (
+        <SaveAsRuleModal
+          conditions={saveAsConditions}
+          scanId={activeScanId}
+          onClose={() => setShowSaveAs(false)}
+          onCreated={(type, result) => {
+            setShowSaveAs(false)
+            if (type === 'campaign') navigate(`/campaigns/${result.id}`)
+          }}
         />
       )}
     </div>

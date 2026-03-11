@@ -2,7 +2,7 @@
  * Shared UI primitives
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { getTags } from '../api.js'
+import { getTags, createCampaign, createAutoTagRule } from '../api.js'
 
 export function SeverityBadge({ severity, label }) {
   const SEV_COLORS = {
@@ -737,6 +737,175 @@ export function ExportImportButtons({
           {status.msg}
         </span>
       )}
+    </div>
+  )
+}
+
+// ─── Save as Campaign / Auto-tag Rule modal ───────────────────────────────────
+// Converts a filter conditions array (from filtersToConditions) into a Campaign
+// or Auto-tag Rule. Caller is responsible for navigation after creation.
+export function SaveAsRuleModal({ conditions = [], scanId, onClose, onCreated }) {
+  const [tab, setTab] = useState('campaign')
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+  const [success, setSuccess] = useState(null)
+
+  // Auto-tag specific
+  const [selectedTag, setSelectedTag] = useState([])
+  const [targetType, setTargetType] = useState('asset')
+
+  const hasConditions = conditions.length > 0
+
+  const handleCreateCampaign = async () => {
+    if (!name.trim()) { setError('Name is required'); return }
+    if (!hasConditions) { setError('No mappable filters — add at least one supported filter first'); return }
+    setSaving(true); setError(null)
+    try {
+      const result = await createCampaign({
+        name: name.trim(),
+        description: description.trim() || null,
+        scan_id: scanId || null,
+        query: conditions,
+        query_logic: 'AND',
+        status: 'planned',
+      })
+      onCreated('campaign', result)
+    } catch (e) {
+      setError(e.message || 'Failed to create campaign')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleCreateRule = async () => {
+    if (!name.trim()) { setError('Name is required'); return }
+    if (!selectedTag.length) { setError('Select a tag to apply'); return }
+    if (!hasConditions) { setError('No mappable filters — add at least one supported filter first'); return }
+    setSaving(true); setError(null)
+    try {
+      const tagId = selectedTag[0]?.tag_id || selectedTag[0]?.id
+      await createAutoTagRule({
+        name: name.trim(),
+        tag_id: Number(tagId),
+        target_type: targetType,
+        conditions,
+        condition_logic: 'AND',
+        is_enabled: true,
+      })
+      setSuccess('Rule created!')
+      setTimeout(() => { onClose(); onCreated('autotag', null) }, 1500)
+    } catch (e) {
+      setError(e.message || 'Failed to create rule')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const tabStyle = (active) => ({
+    flex: 1, padding: '8px 0', fontSize: 13, fontWeight: active ? 600 : 400,
+    color: active ? 'var(--accent)' : 'var(--text-muted)',
+    background: 'none', border: 'none', borderBottom: `2px solid ${active ? 'var(--accent)' : 'transparent'}`,
+    cursor: 'pointer', marginBottom: -1,
+  })
+
+  const inp = {
+    width: '100%', background: 'var(--bg)', border: '1px solid var(--border)',
+    color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px',
+    fontSize: 13, outline: 'none', boxSizing: 'border-box',
+  }
+  const lbl = { fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12,
+        padding: 24, width: 460, maxWidth: '95vw', display: 'flex', flexDirection: 'column', gap: 16,
+      }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>Save as…</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
+            ✕
+          </button>
+        </div>
+
+        {/* Conditions preview */}
+        <div style={{
+          fontSize: 12, color: 'var(--text-muted)', background: 'var(--bg-secondary)',
+          borderRadius: 6, padding: '8px 12px', border: '1px solid var(--border)',
+        }}>
+          {hasConditions
+            ? <><span style={{ color: 'var(--accent)', fontWeight: 600 }}>{conditions.length}</span> condition{conditions.length !== 1 ? 's' : ''} from your current filters will define the scope</>
+            : <span style={{ color: '#f87171' }}>No mappable filters active — set severity, family, hostname, etc. first</span>
+          }
+        </div>
+
+        {/* Tab bar */}
+        <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: -8 }}>
+          <button style={tabStyle(tab === 'campaign')} onClick={() => { setTab('campaign'); setError(null) }}>Campaign</button>
+          <button style={tabStyle(tab === 'autotag')} onClick={() => { setTab('autotag'); setError(null) }}>Auto-tag Rule</button>
+        </div>
+
+        {/* Campaign form */}
+        {tab === 'campaign' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div>
+              <label style={lbl}>Campaign name *</label>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Critical Windows — Q1 2026" style={inp} autoFocus />
+            </div>
+            <div>
+              <label style={lbl}>Description</label>
+              <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Optional description" rows={2}
+                style={{ ...inp, resize: 'vertical', fontFamily: 'inherit' }} />
+            </div>
+          </div>
+        )}
+
+        {/* Auto-tag rule form */}
+        {tab === 'autotag' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div>
+              <label style={lbl}>Rule name *</label>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Tag critical findings" style={inp} autoFocus />
+            </div>
+            <div>
+              <label style={lbl}>Apply tag *</label>
+              <TagPicker selectedTags={selectedTag} onChange={setSelectedTag} placeholder="Search tags…" multi={false} />
+            </div>
+            <div>
+              <label style={lbl}>Applies to</label>
+              <select value={targetType} onChange={e => setTargetType(e.target.value)} style={inp}>
+                <option value="asset">Assets only</option>
+                <option value="finding">Findings only</option>
+                <option value="both">Assets + Findings</option>
+              </select>
+            </div>
+          </div>
+        )}
+
+        {/* Error / success */}
+        {error && <div style={{ fontSize: 12, color: '#dc2626', background: '#450a0a', borderRadius: 6, padding: '6px 10px' }}>{error}</div>}
+        {success && <div style={{ fontSize: 12, color: '#22c55e', background: '#052e16', borderRadius: 6, padding: '6px 10px' }}>✓ {success}</div>}
+
+        {/* Footer */}
+        {!success && (
+          <div style={{ display: 'flex', gap: 8, paddingTop: 4 }}>
+            <Button
+              onClick={tab === 'campaign' ? handleCreateCampaign : handleCreateRule}
+              disabled={saving || !hasConditions}
+              style={{ flex: 1 }}
+            >
+              {saving ? 'Creating…' : tab === 'campaign' ? 'Create Campaign' : 'Create Rule'}
+            </Button>
+            <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

@@ -1406,6 +1406,7 @@ def list_inventory_netconns(
     scan_id: Optional[int] = None,
     asset_id: Optional[int] = None,
     state: Optional[str] = None,
+    search: Optional[str] = None,
     sort_by: str = "local_port",
     order: str = "asc",
     db: Session = Depends(get_db),
@@ -1419,6 +1420,13 @@ def list_inventory_netconns(
         q = q.filter(InventoryNetConn.asset_id == asset_id)
     if state:
         q = q.filter(InventoryNetConn.state.ilike(state))
+    if search:
+        s = f"%{search}%"
+        q = q.filter(or_(
+            InventoryNetConn.local_addr.ilike(s),
+            InventoryNetConn.remote_addr.ilike(s),
+            InventoryNetConn.proto.ilike(s),
+        ))
     q = _apply_sort(q, InventoryNetConn, sort_by, order, InventoryNetConn.local_port)
     conns = q.all()
     assets = _asset_lookup(db, {c.asset_id for c in conns})
@@ -1444,6 +1452,8 @@ def list_inventory_netconns(
 def list_inventory_tasks(
     scan_id: Optional[int] = None,
     asset_id: Optional[int] = None,
+    search: Optional[str] = None,
+    trigger_type: Optional[str] = None,
     sort_by: str = "task_uri",
     order: str = "asc",
     db: Session = Depends(get_db),
@@ -1455,6 +1465,16 @@ def list_inventory_tasks(
         q = q.filter(InventoryScheduledTask.scan_id == scan_id)
     if asset_id:
         q = q.filter(InventoryScheduledTask.asset_id == asset_id)
+    if search:
+        s = f"%{search}%"
+        q = q.filter(or_(
+            InventoryScheduledTask.task_uri.ilike(s),
+            InventoryScheduledTask.author.ilike(s),
+            InventoryScheduledTask.command.ilike(s),
+            InventoryScheduledTask.run_as_user.ilike(s),
+        ))
+    if trigger_type:
+        q = q.filter(InventoryScheduledTask.trigger_type.ilike(trigger_type))
     q = _apply_sort(q, InventoryScheduledTask, sort_by, order, InventoryScheduledTask.task_uri)
     tasks = q.all()
     assets = _asset_lookup(db, {t.asset_id for t in tasks})
@@ -1704,6 +1724,7 @@ def list_inventory_shares(
     scan_id: Optional[int] = None,
     asset_id: Optional[int] = None,
     is_writeable: Optional[bool] = None,
+    search: Optional[str] = None,
     sort_by: str = "share_name",
     order: str = "asc",
     db: Session = Depends(get_db),
@@ -1717,6 +1738,13 @@ def list_inventory_shares(
         q = q.filter(InventoryShare.asset_id == asset_id)
     if is_writeable is not None:
         q = q.filter(InventoryShare.is_writeable == is_writeable)
+    if search:
+        s = f"%{search}%"
+        q = q.filter(or_(
+            InventoryShare.share_name.ilike(s),
+            InventoryShare.comment.ilike(s),
+            InventoryShare.path.ilike(s),
+        ))
     q = _apply_sort(q, InventoryShare, sort_by, order, InventoryShare.share_name)
     shares = q.all()
     assets = _asset_lookup(db, {s.asset_id for s in shares})
@@ -2652,6 +2680,61 @@ def preview_campaign_query(body: CampaignCreateBody, db: Session = Depends(get_d
             for r in results
         ]
     }
+
+
+class AdvancedSearchBody(BaseModel):
+    query: list = []
+    query_logic: str = "AND"
+    scan_id: Optional[int] = None
+    type: str = "finding"   # "finding" | "asset"
+    page: int = 1
+    page_size: int = 50
+
+
+@app.post("/api/search/advanced")
+def advanced_search(body: AdvancedSearchBody, db: Session = Depends(get_db)):
+    """Run a rule-engine query and return findings or assets in table format."""
+    results = cq.run_query(db, body.query, body.query_logic, body.scan_id)
+
+    if body.type == "asset":
+        asset_ids = [r["asset"].id for r in results]
+        tag_map = tag_engine.get_asset_tags(asset_ids, db)
+        dc_asset_ids = set()
+        if asset_ids:
+            dc_rows = db.query(InventoryComputer.asset_id).filter(
+                InventoryComputer.asset_id.in_(asset_ids),
+                InventoryComputer.is_domain_controller == True,
+            ).all()
+            dc_asset_ids = {r[0] for r in dc_rows}
+        assets_out = []
+        for r in results:
+            a = r["asset"]
+            d = _asset_to_dict(a)
+            d["tags"] = tag_map.get(a.id, [])
+            d["is_domain_controller"] = a.id in dc_asset_ids
+            assets_out.append(d)
+        total = len(assets_out)
+        start = (body.page - 1) * body.page_size
+        return {"total": total, "page": body.page, "page_size": body.page_size, "assets": assets_out[start:start + body.page_size]}
+
+    # findings mode — flatten all findings from all matched assets
+    all_findings = []
+    for r in results:
+        all_findings.extend(r["findings"])
+    # deduplicate (same finding can only appear once since each asset is unique)
+    all_findings.sort(key=lambda f: f.priority_score or 0, reverse=True)
+    total = len(all_findings)
+    start = (body.page - 1) * body.page_size
+    page_findings = all_findings[start:start + body.page_size]
+
+    finding_ids = [f.id for f in page_findings]
+    tag_map = tag_engine.get_finding_tags(finding_ids, db)
+    findings_out = []
+    for f in page_findings:
+        d = _finding_to_dict(f, db)
+        d["tags"] = tag_map.get(f.id, [])
+        findings_out.append(d)
+    return {"total": total, "page": body.page, "page_size": body.page_size, "findings": findings_out}
 
 
 @app.post("/api/campaigns")

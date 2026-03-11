@@ -9,7 +9,7 @@ import {
   Bot, Plus, Trash2, Play, ChevronDown, ChevronRight, Clock, CheckCircle,
   XCircle, Loader2, Settings2, MessageSquare, Wrench, Shield, Brain,
   Zap, Calendar, Copy, Clipboard, Briefcase, Target, Ticket, Radio, AlarmClock,
-  Download, Upload, GitBranch,
+  Download, Upload, Tag,
 } from 'lucide-react'
 import {
   getAgents, createAgent, updateAgent, deleteAgent,
@@ -17,7 +17,6 @@ import {
   getAgentTemplates, createAgentFromTemplate,
   getAgentSchedules, createAgentSchedule, updateAgentSchedule, deleteAgentSchedule,
   exportAgent, importAgent,
-  getAgentPipelines, runAgentPipeline,
 } from '../api.js'
 
 const MODELS = [
@@ -51,7 +50,7 @@ const STATUS_ICON = {
 
 const TEMPLATE_ICONS = {
   clipboard: Clipboard, calendar: Calendar, briefcase: Briefcase,
-  alarm: AlarmClock, radar: Radio, ticket: Ticket, target: Target,
+  alarm: AlarmClock, radar: Radio, ticket: Ticket, target: Target, tag: Tag,
 }
 
 export default function AgentBuilder() {
@@ -65,7 +64,7 @@ export default function AgentBuilder() {
   const [streamEvents, setStreamEvents] = useState([])
   const [runInput, setRunInput] = useState('')
   const [running, setRunning] = useState(false)
-  const [tab, setTab] = useState('config') // config | runs | schedule
+  const [tab, setTab] = useState('runs') // config | runs | schedule
   const [saving, setSaving] = useState(false)
   const [showTemplates, setShowTemplates] = useState(false)
   const [schedules, setSchedules] = useState([])
@@ -85,7 +84,7 @@ export default function AgentBuilder() {
   const selectAgent = (agent) => {
     setSelected(agent)
     setEditing({ ...agent })
-    setTab('config')
+    setTab('runs')
     setActiveRun(null)
     setStreamEvents([])
     getAgentRuns(agent.id).then(setRuns).catch(() => setRuns([]))
@@ -408,10 +407,9 @@ export default function AgentBuilder() {
           {/* Tabs */}
           <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)' }}>
             {[
-              { key: 'config', label: 'Configure', icon: Settings2 },
               { key: 'runs', label: 'Runs', icon: Clock },
+              { key: 'config', label: 'Configure', icon: Settings2 },
               { key: 'schedule', label: 'Schedule', icon: Calendar },
-              { key: 'pipelines', label: 'Pipelines', icon: GitBranch },
             ].map(t => (
               <button
                 key={t.key}
@@ -448,14 +446,12 @@ export default function AgentBuilder() {
                 streamEvents={streamEvents}
                 running={running}
               />
-            ) : tab === 'schedule' ? (
+            ) : (
               <SchedulePanel
                 agentId={selected.id}
                 schedules={schedules.filter(s => s.agent_id === selected.id)}
                 onRefresh={() => getAgentSchedules().then(setSchedules).catch(() => {})}
               />
-            ) : (
-              <PipelinePanel />
             )}
           </div>
 
@@ -1003,161 +999,6 @@ function SchedulePanel({ agentId, schedules, onRefresh }) {
 }
 
 
-// ── Pipeline Panel ────────────────────────────────────────────────────
-
-function PipelinePanel() {
-  const [pipelines, setPipelines] = useState([])
-  const [pipeInput, setPipeInput] = useState('')
-  const [running, setRunning] = useState(false)
-  const [result, setResult] = useState(null)
-
-  useEffect(() => {
-    getAgentPipelines().then(setPipelines).catch(() => {})
-  }, [])
-
-  const handleRun = async (pipelineId) => {
-    if (!pipeInput.trim() || running) return
-    setRunning(true)
-    setResult(null)
-    try {
-      const res = await runAgentPipeline(pipelineId, pipeInput.trim())
-      setResult(res)
-    } catch (e) {
-      setResult({ success: false, error: e.message })
-    } finally {
-      setRunning(false)
-    }
-  }
-
-  const TIER_COLORS = {
-    reasoning: { bg: '#dbeafe', text: '#1d4ed8' },
-    deterministic: { bg: '#dcfce7', text: '#166534' },
-    balanced: { bg: '#f3e8ff', text: '#6b21a8' },
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, paddingTop: 8 }}>
-      <Section icon={GitBranch} title="Multi-Stage Pipelines">
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-          Pipelines chain multiple specialized agents together. Each stage has a single responsibility
-          and passes structured data to the next.
-        </div>
-
-        {/* Pipeline input */}
-        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-          <input
-            value={pipeInput}
-            onChange={e => setPipeInput(e.target.value)}
-            placeholder="Describe what you want the pipeline to do..."
-            style={{
-              flex: 1, padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)',
-              background: 'var(--bg)', color: 'var(--text-primary)', fontSize: 12, outline: 'none',
-            }}
-          />
-        </div>
-
-        {/* Pipeline cards */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {pipelines.map(p => (
-            <Card key={p.id} style={{ padding: 14 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-                <div>
-                  <div style={{ fontSize: 14, fontWeight: 700 }}>{p.name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                    {p.stages.length} stages
-                  </div>
-                </div>
-                <button
-                  onClick={() => handleRun(p.id)}
-                  disabled={running || !pipeInput.trim()}
-                  style={{
-                    padding: '6px 14px', borderRadius: 6, border: 'none', fontSize: 11, fontWeight: 600,
-                    background: running ? 'var(--border)' : 'var(--accent)', color: '#fff',
-                    cursor: running ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 4,
-                  }}
-                >
-                  {running ? <Loader2 size={12} className="spin" /> : <Play size={12} />}
-                  Run
-                </button>
-              </div>
-
-              {/* Stage flow */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                {p.stages.map((s, i) => {
-                  const tc = TIER_COLORS[s.model_tier] || TIER_COLORS.balanced
-                  return (
-                    <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <div style={{
-                        padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
-                        background: tc.bg, color: tc.text,
-                      }} title={`${s.description} (${s.tools.length} tools)`}>
-                        {s.name}
-                      </div>
-                      {i < p.stages.length - 1 && (
-                        <ChevronRight size={12} color="var(--text-muted)" />
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            </Card>
-          ))}
-        </div>
-
-        {/* Pipeline result */}
-        {result && (
-          <Card style={{ padding: 14, marginTop: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-              {result.success ? (
-                <StatusBadge status="done" />
-              ) : (
-                <StatusBadge status="failed" />
-              )}
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                {result.stages?.length || 0} stages executed
-              </span>
-            </div>
-
-            {/* Stage results */}
-            {result.stages?.map((s, i) => (
-              <div key={i} style={{
-                padding: 8, marginBottom: 6, borderRadius: 6,
-                border: `1px solid ${s.success ? 'var(--border)' : '#991b1b'}`,
-                background: s.success ? 'var(--bg)' : '#450a0a',
-              }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4, color: s.success ? 'var(--accent)' : '#fca5a5' }}>
-                  {s.stage} — {s.model_used} ({s.steps_used} steps)
-                </div>
-                {s.error && (
-                  <div style={{ fontSize: 11, color: '#fca5a5' }}>{s.error.message}</div>
-                )}
-                {s.output && (
-                  <div style={{
-                    fontSize: 11, color: 'var(--text-secondary)', maxHeight: 100,
-                    overflow: 'auto', whiteSpace: 'pre-wrap',
-                  }}>
-                    {s.output.slice(0, 500)}
-                  </div>
-                )}
-              </div>
-            ))}
-
-            {/* Final output */}
-            {result.final_output && (
-              <div style={{
-                marginTop: 8, padding: 12, borderRadius: 6, background: 'var(--bg)',
-                border: '1px solid var(--border)', fontSize: 13, lineHeight: 1.6,
-                whiteSpace: 'pre-wrap', maxHeight: 300, overflowY: 'auto',
-              }}>
-                {result.final_output}
-              </div>
-            )}
-          </Card>
-        )}
-      </Section>
-    </div>
-  )
-}
 
 
 // ── Shared components ─────────────────────────────────────────────────

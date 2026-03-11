@@ -507,6 +507,22 @@ AGENT_TEMPLATES = [
         "guardrails": {"max_steps": 15, "read_only": True},
         "suggested_input": "Give me a threat intel briefing — which active threat groups and campaigns are relevant to our latest scan?",
     },
+    {
+        "id": "auto_tagger",
+        "name": "Auto-Tagger",
+        "description": "Automatically classify assets and findings with meaningful tags — environment, role, owner, risk type — using pattern detection and auto-tag rules.",
+        "icon": "tag",
+        "system_prompt": ENHANCED_PROMPTS["auto_tagger"],
+        "tools": [
+            "list_scans", "get_scan_summary", "list_tags", "create_tag",
+            "run_auto_tag_rules", "query_assets", "query_findings",
+            "tag_assets", "bulk_tag_findings",
+            "get_asset_profile", "get_finding_detail",
+            "read_scratchpad", "write_scratchpad", "request_clarification",
+        ],
+        "guardrails": {"max_steps": 20, "read_only": False},
+        "suggested_input": "Automatically tag all assets and critical findings in the latest scan.",
+    },
 ]
 
 

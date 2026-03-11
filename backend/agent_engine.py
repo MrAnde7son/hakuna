@@ -213,7 +213,8 @@ def _check_guardrails(agent: Agent, tool_name: str, step: int):
         raise ValueError(f"Tool '{tool_name}' is a write operation but agent is read-only")
 
 
-def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: dict, step: int, trace: list):
+def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: dict | None, step: int, trace: list):
+    tool_input = tool_input or {}
     """Execute a tool call and return the result string.
 
     Injects _agent_id for scratchpad tools and compresses output for LLM context.
@@ -340,7 +341,7 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            result_str = _execute_tool(agent, db, block.name, block.input, step, trace)
+            result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
@@ -640,7 +641,7 @@ def _stream_anthropic(agent, user_input, db, run, model):
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            result_str = _execute_tool(agent, db, block.name, block.input, step, trace)
+            result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
             yield {"type": "tool_result", "name": block.name, "result": result_str[:2000], "step": step}
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_str})
 

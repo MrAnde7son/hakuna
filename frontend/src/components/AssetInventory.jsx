@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Server, RefreshCw, Edit2, Tag, Search, X, UserCheck, Crosshair, Download } from 'lucide-react'
+import { Server, RefreshCw, Edit2, Tag, Search, X, UserCheck, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon } from 'lucide-react'
 import { useScan } from '../App.jsx'
-import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload } from '../api.js'
-import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector } from './ui.jsx'
+import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch } from '../api.js'
+import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal } from './ui.jsx'
+import RuleBuilder from './RuleBuilder.jsx'
+import { filtersToConditions } from '../utils/filtersToConditions.js'
 import BlastRadiusPanel, { BlastRadiusScore } from './BlastRadiusPanel.jsx'
 
 function RiskScore({ score }) {
@@ -180,8 +182,15 @@ export default function AssetInventory() {
   const [expandedAsset, setExpandedAsset] = useState(null)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [showBulkTag, setShowBulkTag] = useState(false)
+  const [showSaveAs, setShowSaveAs] = useState(false)
   const [tagFilter, setTagFilter] = useState([])
   const [tagLogic, setTagLogic] = useState('AND')
+
+  // Advanced rule-engine search
+  const [advancedMode, setAdvancedMode] = useState(false)
+  const [advancedConditions, setAdvancedConditions] = useState([])
+  const [advancedLogic, setAdvancedLogic] = useState('AND')
+  const [advancedLoading, setAdvancedLoading] = useState(false)
   const [colVis, setColVis] = useState(() => {
     try { const s = localStorage.getItem('assetColumns'); return s ? JSON.parse(s) : {} } catch { return {} }
   })
@@ -249,10 +258,36 @@ export default function AssetInventory() {
 
   const debounceRef = useRef(null)
   useEffect(() => {
+    if (advancedMode) return
     clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(load, filters.search ? 300 : 0)
     return () => clearTimeout(debounceRef.current)
-  }, [activeScanId, sortBy, sortOrder, tagFilter, tagLogic, filters])
+  }, [activeScanId, sortBy, sortOrder, tagFilter, tagLogic, filters, advancedMode])
+
+  const runAdvancedSearch = () => {
+    if (!advancedConditions.length) return
+    setAdvancedLoading(true)
+    advancedSearch({
+      query: advancedConditions,
+      query_logic: advancedLogic,
+      scan_id: activeScanId,
+      type: 'asset',
+    }).then(data => setAssets(data.assets || []))
+      .finally(() => setAdvancedLoading(false))
+  }
+
+  const enterAdvancedMode = () => {
+    const conds = filtersToConditions({ ...filters, tagFilter }, 'asset')
+    setAdvancedConditions(conds)
+    setAdvancedLogic('AND')
+    setAdvancedMode(true)
+  }
+
+  const exitAdvancedMode = () => {
+    setAdvancedMode(false)
+    setAdvancedConditions([])
+    setAssets([])
+  }
 
   const toggleSelect = (id) => {
     setSelectedIds(prev => {
@@ -402,7 +437,7 @@ export default function AssetInventory() {
     <div>
       <PageHeader
         title="Assets"
-        subtitle={`${assets.length} assets discovered`}
+        subtitle={advancedMode ? `${assets.length} assets matched` : `${assets.length} assets discovered`}
         action={
           <div style={{ display: 'flex', gap: 8 }}>
             {selectedIds.size > 0 && (
@@ -420,8 +455,49 @@ export default function AssetInventory() {
         }
       />
 
+      {/* Advanced search panel */}
+      {advancedMode && (
+        <Card style={{ marginBottom: 16, padding: '16px 18px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <SlidersHorizontal size={14} style={{ color: 'var(--accent)' }} />
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Advanced Search</span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— uses the full rule engine condition catalog</span>
+            </div>
+            <button onClick={exitAdvancedMode} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+              <XIcon size={13} /> Exit advanced
+            </button>
+          </div>
+          <RuleBuilder
+            conditions={advancedConditions}
+            logic={advancedLogic}
+            onChange={(conds, lgc) => { setAdvancedConditions(conds); setAdvancedLogic(lgc) }}
+            showLogic
+            addLabel="Add condition"
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12 }}>
+            <Button
+              onClick={runAdvancedSearch}
+              disabled={advancedLoading || !advancedConditions.length}
+            >
+              {advancedLoading ? 'Searching…' : 'Run Search'}
+            </Button>
+            {assets.length > 0 && !advancedLoading && (
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{assets.length}</span> assets matched
+              </span>
+            )}
+            {advancedConditions.length > 0 && (
+              <Button variant="ghost" size="sm" onClick={() => setShowSaveAs(true)} style={{ marginLeft: 'auto' }}>
+                <Bookmark size={13} /> Save as…
+              </Button>
+            )}
+          </div>
+        </Card>
+      )}
+
       {/* Filters */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
+      <div style={{ display: advancedMode ? 'none' : 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
           <Search size={14} style={{ position: 'absolute', left: 10, color: 'var(--text-muted)' }} />
           <input
@@ -524,16 +600,28 @@ export default function AssetInventory() {
           onChange={updateColVis}
         />
 
+        <Button size="sm" variant="ghost" onClick={enterAdvancedMode} title="Switch to rule-engine query builder">
+          <SlidersHorizontal size={13} /> Advanced
+        </Button>
+
         {(activeFilterCount > 0 || tagFilter.length > 0) && (
-          <Button size="sm" variant="ghost" onClick={() => { clearFilters(); setTagFilter([]) }}>
-            <X size={13} /> Clear
-          </Button>
+          <>
+            <Button size="sm" variant="ghost" onClick={() => setShowSaveAs(true)}>
+              <Bookmark size={13} /> Save as…
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => { clearFilters(); setTagFilter([]) }}>
+              <X size={13} /> Clear
+            </Button>
+          </>
         )}
       </div>
 
-      {loading ? <Spinner /> : (
+      {(loading || advancedLoading) ? <Spinner /> : (
         assets.length === 0 ? (
-          <EmptyState icon={Server} title="No assets found" sub="Upload a Nessus scan to populate asset inventory" />
+          <EmptyState icon={Server}
+            title={advancedMode ? "No assets matched" : "No assets found"}
+            sub={advancedMode ? "Build conditions above and click Run Search" : "Upload a Nessus scan to populate asset inventory"}
+          />
         ) : (
           <Card style={{ padding: 0 }}>
             <Table
@@ -554,6 +642,18 @@ export default function AssetInventory() {
           assetIds={[...selectedIds]}
           onClose={() => setShowBulkTag(false)}
           onDone={() => { setShowBulkTag(false); setSelectedIds(new Set()); load() }}
+        />
+      )}
+
+      {showSaveAs && (
+        <SaveAsRuleModal
+          conditions={advancedMode ? advancedConditions : filtersToConditions({ ...filters, tagFilter }, 'asset')}
+          scanId={activeScanId}
+          onClose={() => setShowSaveAs(false)}
+          onCreated={(type, result) => {
+            setShowSaveAs(false)
+            if (type === 'campaign') navigate(`/campaigns/${result.id}`)
+          }}
         />
       )}
 

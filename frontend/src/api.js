@@ -207,6 +207,12 @@ export const previewCampaignQuery = (data) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
+export const advancedSearch = (data) =>
+  request('/search/advanced', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
 export const getCampaigns = (scan_id) =>
   request(`/campaigns${scan_id ? `?scan_id=${scan_id}` : ''}`)
 export const createCampaign = (data) =>
