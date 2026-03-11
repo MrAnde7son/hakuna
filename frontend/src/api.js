@@ -1,13 +1,112 @@
 const BASE = '/api'
 
+// ── Auth token helpers ──────────────────────────────────
+
+export function getStoredToken() {
+  return localStorage.getItem('auth_token')
+}
+
+export function setStoredToken(token) {
+  localStorage.setItem('auth_token', token)
+}
+
+export function clearStoredToken() {
+  localStorage.removeItem('auth_token')
+  localStorage.removeItem('org_context')
+}
+
+export function getOrgContext() {
+  return localStorage.getItem('org_context')
+}
+
+export function setOrgContext(orgId) {
+  if (orgId) localStorage.setItem('org_context', orgId)
+  else localStorage.removeItem('org_context')
+}
+
+// ── Core request function with auth ─────────────────────
+
 async function request(path, opts = {}) {
-  const res = await fetch(`${BASE}${path}`, opts)
+  const token = getStoredToken()
+  const orgContext = getOrgContext()
+
+  const headers = { ...(opts.headers || {}) }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  if (orgContext) headers['X-Org-Context'] = orgContext
+
+  const res = await fetch(`${BASE}${path}`, { ...opts, headers })
+
+  // Handle 401 — redirect to login
+  if (res.status === 401) {
+    clearStoredToken()
+    if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
+      window.location.href = '/login'
+    }
+    throw new Error('Authentication required')
+  }
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail || 'Request failed')
   }
   return res.json()
 }
+
+// ── Auth API ────────────────────────────────────────────
+
+export const authRegister = (data) => request('/auth/register', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const authLogin = (data) => request('/auth/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const authMe = () => request('/auth/me')
+
+export const authChangePassword = (data) => request('/auth/change-password', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const authInviteUser = (data) => request('/auth/invite', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const authListUsers = () => request('/auth/users')
+
+export const authUpdateUser = (userId, data) => request(`/auth/users/${userId}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const authListOrgs = () => request('/auth/orgs')
+
+export const authCreateOrg = (data) => request('/auth/orgs', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const authDeleteUser = (userId) => request(`/auth/users/${userId}`, { method: 'DELETE' })
+
+export const authUpdateOrg = (orgId, data) => request(`/auth/orgs/${orgId}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const authDeleteOrg = (orgId) => request(`/auth/orgs/${orgId}`, { method: 'DELETE' })
+
+export const authMSSPClients = () => request('/auth/mssp/clients')
 
 // Scans
 export const getScans = () => request('/scans')
@@ -378,6 +477,12 @@ export const updateReportTemplate = (id, data) => request(`/report-templates/${i
 })
 export const deleteReportTemplate = (id) => request(`/report-templates/${id}`, { method: 'DELETE' })
 
+// Tag-based Risk Reports
+export const getRiskByTags = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/reports/risk-by-tags?${q}`)
+}
+
 // Deduplication
 export const getDedupConfig = () => request('/dedup/config')
 export const saveDedupConfig = (cfg) => request('/dedup/config', {
@@ -389,4 +494,63 @@ export const runDedup = (entity_type, scan_id = null) => request('/dedup/run', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ entity_type, scan_id }),
+})
+
+// Mini Agents
+export const getAgentToolCatalog = () => request('/agents/tool-catalog')
+export const getAgents = () => request('/agents')
+export const createAgent = (data) => request('/agents', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const getAgent = (id) => request(`/agents/${id}`)
+export const updateAgent = (id, data) => request(`/agents/${id}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const deleteAgent = (id) => request(`/agents/${id}`, { method: 'DELETE' })
+export const runAgent = (id, input) => request(`/agents/${id}/run`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ input }),
+})
+export const getAgentRuns = (id, limit = 20) => request(`/agents/${id}/runs?limit=${limit}`)
+export const getAgentRun = (agentId, runId) => request(`/agents/${agentId}/runs/${runId}`)
+export const getAgentTemplates = () => request('/agents/templates')
+export const createAgentFromTemplate = (data) => request('/agents/from-template', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+// Agent Export/Import
+export const exportAgent = (id) => request(`/agents/export/${id}`)
+export const importAgent = (data) => request('/agents/import', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+// Agent Schedules
+export const getAgentSchedules = () => request('/agents/schedules')
+export const createAgentSchedule = (data) => request('/agents/schedules', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const updateAgentSchedule = (id, data) => request(`/agents/schedules/${id}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const deleteAgentSchedule = (id) => request(`/agents/schedules/${id}`, { method: 'DELETE' })
+
+// Agent Pipelines
+export const getAgentPipelines = () => request('/agents/pipelines')
+export const runAgentPipeline = (pipelineId, input, modelOverrides = {}) => request(`/agents/pipelines/${pipelineId}/run`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ input, model_overrides: modelOverrides }),
 })

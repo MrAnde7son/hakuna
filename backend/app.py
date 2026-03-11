@@ -6,7 +6,7 @@ import re
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Query, Request
@@ -18,6 +18,7 @@ from sqlalchemy import func, desc, or_
 
 from database import get_db, init_db
 from models import (
+    Organization, User,
     Scan, Asset, Finding, AutomateClick,
     InventoryUser, InventoryGroup, InventoryService,
     InventoryNetConn, InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
@@ -39,9 +40,15 @@ import workflow_engine
 import integrations as integ_module
 import ownership_inference
 from models import Tag, TagAssignment, AutoTagRule, SLAConfig, IntegrationConfig, FindingException, ScanComparison
+from auth import (
+    get_current_user, require_auth, require_role,
+    get_accessible_org_ids, apply_org_filter, apply_scan_org_filter,
+)
+from auth_routes import router as auth_router
 from threat_intel_routes import router as threat_intel_router
 from export import router as export_router
 from config_portability import router as config_portability_router
+from agent_routes import router as agent_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -64,9 +71,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
 app.include_router(threat_intel_router)
 app.include_router(export_router)
 app.include_router(config_portability_router)
+app.include_router(agent_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
@@ -102,6 +111,10 @@ def startup():
     from database import SessionLocal
     workflow_engine.start_scheduler(SessionLocal)
     logger.info("Workflow scheduler started")
+    # Start agent scheduler for cron-based agent runs
+    from agent_scheduler import start_scheduler as start_agent_scheduler
+    start_agent_scheduler()
+    logger.info("Agent scheduler started")
 
 
 # ─────────────────────────────────────────────
@@ -202,7 +215,7 @@ def _populate_temporal_fields(db: Session, scan):
 # ─────────────────────────────────────────────
 
 @app.post("/api/upload")
-async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     """Upload and parse a Nessus scan (HTML, .nessus XML, or CSV)."""
     fname = (file.filename or "").lower()
     allowed = (".html", ".htm", ".nessus", ".csv")
@@ -224,6 +237,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     # Create Scan record
     scan_data = parsed["scan"]
     scan = Scan(
+        org_id=user.org_id if user else None,
         filename=file.filename,
         scan_name=scan_data.get("scan_name") or file.filename,
         scan_date=scan_data.get("scan_date"),
@@ -572,8 +586,9 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
 # ─────────────────────────────────────────────
 
 @app.get("/api/scans")
-def list_scans(db: Session = Depends(get_db)):
-    scans = db.query(Scan).order_by(desc(Scan.created_at)).all()
+def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    q = apply_org_filter(db.query(Scan), Scan, org_ids)
+    scans = q.order_by(desc(Scan.created_at)).all()
     result = []
     for s in scans:
         asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == s.id).scalar()
@@ -593,8 +608,9 @@ def list_scans(db: Session = Depends(get_db)):
 
 
 @app.delete("/api/scans/{scan_id}")
-def delete_scan(scan_id: int, db: Session = Depends(get_db)):
-    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+def delete_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    q = apply_org_filter(db.query(Scan), Scan, org_ids)
+    scan = q.filter(Scan.id == scan_id).first()
     if not scan:
         raise HTTPException(404, "Scan not found")
     # Inventory models have no ORM cascade from Scan, so delete them explicitly
@@ -642,8 +658,10 @@ def list_assets(
     sort_by: str = "risk_score",
     order: str = "desc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(Asset)
+    q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(Asset.scan_id == scan_id)
     if min_risk is not None:
@@ -792,8 +810,10 @@ def list_findings(
     page: int = 1,
     page_size: int = 50,
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(Finding)
+    q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(Finding.scan_id == scan_id)
     if asset_id:
@@ -960,9 +980,11 @@ def get_remediation_queue(
     min_severity: int = 2,
     limit: int = 100,
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Return prioritized remediation queue (non-info findings, sorted by priority)."""
-    q = db.query(Finding).filter(Finding.severity >= min_severity)
+    q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id).filter(Finding.severity >= min_severity)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(Finding.scan_id == scan_id)
     if effort:
@@ -980,10 +1002,12 @@ def get_remediation_queue(
 # ─────────────────────────────────────────────
 
 @app.get("/api/reports/summary")
-def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
+def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return summary statistics for the dashboard."""
-    asset_q = db.query(Asset)
-    finding_q = db.query(Finding)
+    asset_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
+    finding_q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+    asset_q = apply_scan_org_filter(asset_q, org_ids)
+    finding_q = apply_scan_org_filter(finding_q, org_ids)
 
     if scan_id:
         asset_q = asset_q.filter(Asset.scan_id == scan_id)
@@ -1082,9 +1106,10 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
 
 
 @app.get("/api/reports/plugin-families")
-def get_plugin_families(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
+def get_plugin_families(scan_id: Optional[int] = None, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return all unique plugin families for filter dropdowns."""
-    q = db.query(Finding.plugin_family).distinct()
+    q = db.query(Finding.plugin_family).join(Scan, Finding.scan_id == Scan.id).distinct()
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(Finding.scan_id == scan_id)
     families = [row[0] for row in q.all() if row[0]]
@@ -1287,8 +1312,10 @@ def list_inventory_users(
     sort_by: str = "username",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryUser)
+    q = db.query(InventoryUser).join(Scan, InventoryUser.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryUser.scan_id == scan_id)
     if asset_id:
@@ -1320,8 +1347,10 @@ def list_inventory_groups(
     sort_by: str = "group_name",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryGroup)
+    q = db.query(InventoryGroup).join(Scan, InventoryGroup.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryGroup.scan_id == scan_id)
     if asset_id:
@@ -1342,8 +1371,10 @@ def list_inventory_services(
     sort_by: str = "display_name",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryService)
+    q = db.query(InventoryService).join(Scan, InventoryService.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryService.scan_id == scan_id)
     if asset_id:
@@ -1378,8 +1409,10 @@ def list_inventory_netconns(
     sort_by: str = "local_port",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryNetConn)
+    q = db.query(InventoryNetConn).join(Scan, InventoryNetConn.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryNetConn.scan_id == scan_id)
     if asset_id:
@@ -1414,8 +1447,10 @@ def list_inventory_tasks(
     sort_by: str = "task_uri",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryScheduledTask)
+    q = db.query(InventoryScheduledTask).join(Scan, InventoryScheduledTask.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryScheduledTask.scan_id == scan_id)
     if asset_id:
@@ -1450,8 +1485,10 @@ def list_inventory_patches(
     sort_by: str = "vuln_count",
     order: str = "desc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryPatch)
+    q = db.query(InventoryPatch).join(Scan, InventoryPatch.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryPatch.scan_id == scan_id)
     if asset_id:
@@ -1481,8 +1518,10 @@ def list_inventory_logged_on(
     sort_by: str = "username",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryLoggedOn)
+    q = db.query(InventoryLoggedOn).join(Scan, InventoryLoggedOn.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryLoggedOn.scan_id == scan_id)
     if asset_id:
@@ -1505,7 +1544,7 @@ def list_inventory_logged_on(
 
 
 @app.get("/api/inventory/summary")
-def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
+def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """
     Cross-entity summary for attack path analysis.
     Returns counts + high-value entities (privileged users, domain admins,
@@ -1668,8 +1707,10 @@ def list_inventory_shares(
     sort_by: str = "share_name",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryShare)
+    q = db.query(InventoryShare).join(Scan, InventoryShare.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryShare.scan_id == scan_id)
     if asset_id:
@@ -1699,8 +1740,10 @@ def list_inventory_software(
     sort_by: str = "name",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventorySoftware)
+    q = db.query(InventorySoftware).join(Scan, InventorySoftware.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventorySoftware.scan_id == scan_id)
     if asset_id:
@@ -1728,8 +1771,10 @@ def list_inventory_security_controls(
     sort_by: str = "product_name",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventorySecurityControl)
+    q = db.query(InventorySecurityControl).join(Scan, InventorySecurityControl.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventorySecurityControl.scan_id == scan_id)
     if asset_id:
@@ -1760,8 +1805,10 @@ def list_inventory_computers(
     sort_by: str = "computer_name",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryComputer)
+    q = db.query(InventoryComputer).join(Scan, InventoryComputer.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryComputer.scan_id == scan_id)
     if asset_id:
@@ -1794,8 +1841,10 @@ def list_inventory_password_policies(
     sort_by: str = "domain",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryPasswordPolicy)
+    q = db.query(InventoryPasswordPolicy).join(Scan, InventoryPasswordPolicy.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryPasswordPolicy.scan_id == scan_id)
     q = _apply_sort(q, InventoryPasswordPolicy, sort_by, order, InventoryPasswordPolicy.domain)
@@ -1827,8 +1876,10 @@ def list_inventory_env_vars(
     sort_by: str = "name",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryEnvVar)
+    q = db.query(InventoryEnvVar).join(Scan, InventoryEnvVar.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryEnvVar.scan_id == scan_id)
     if asset_id:
@@ -1866,8 +1917,10 @@ def list_inventory_certificates(
     sort_by: str = "not_after",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryCertificate)
+    q = db.query(InventoryCertificate).join(Scan, InventoryCertificate.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryCertificate.scan_id == scan_id)
     if asset_id:
@@ -1922,8 +1975,10 @@ def list_inventory_ai_tools(
     sort_by: str = "tool_name",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryAITool)
+    q = db.query(InventoryAITool).join(Scan, InventoryAITool.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryAITool.scan_id == scan_id)
     if asset_id:
@@ -1954,8 +2009,10 @@ def list_inventory_processes(
     sort_by: str = "process_name",
     order: str = "asc",
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(InventoryProcess)
+    q = db.query(InventoryProcess).join(Scan, InventoryProcess.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(InventoryProcess.scan_id == scan_id)
     if asset_id:
@@ -2598,9 +2655,10 @@ def preview_campaign_query(body: CampaignCreateBody, db: Session = Depends(get_d
 
 
 @app.post("/api/campaigns")
-def create_campaign(body: CampaignCreateBody, db: Session = Depends(get_db)):
+def create_campaign(body: CampaignCreateBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     """Create a new remediation campaign."""
     campaign = Campaign(
+        org_id=user.org_id if user else None,
         name=body.name,
         description=body.description,
         scan_id=body.scan_id,
@@ -2615,9 +2673,9 @@ def create_campaign(body: CampaignCreateBody, db: Session = Depends(get_db)):
 
 
 @app.get("/api/campaigns")
-def list_campaigns(scan_id: Optional[int] = None, db: Session = Depends(get_db)):
+def list_campaigns(scan_id: Optional[int] = None, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """List all campaigns, optionally filtered by scan."""
-    q = db.query(Campaign)
+    q = apply_org_filter(db.query(Campaign), Campaign, org_ids)
     if scan_id:
         q = q.filter((Campaign.scan_id == scan_id) | (Campaign.scan_id == None))
     campaigns = q.order_by(Campaign.created_at.desc()).all()
@@ -3186,7 +3244,7 @@ class AutoTagRuleUpdate(BaseModel):
 
 
 @app.post("/api/tags")
-def create_tag(body: TagCreate, db: Session = Depends(get_db)):
+def create_tag(body: TagCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     existing = db.query(Tag).filter(Tag.category == body.category, Tag.value == body.value).first()
     if existing:
         raise HTTPException(409, f"Tag '{body.category}:{body.value}' already exists")
@@ -3195,6 +3253,7 @@ def create_tag(body: TagCreate, db: Session = Depends(get_db)):
         if not parent:
             raise HTTPException(404, "Parent tag not found")
     tag = Tag(
+        org_id=user.org_id if user else None,
         category=body.category,
         value=body.value,
         parent_id=body.parent_id,
@@ -3212,8 +3271,9 @@ def list_tags(
     category: Optional[str] = None,
     tree: bool = False,
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(Tag)
+    q = apply_org_filter(db.query(Tag), Tag, org_ids)
     if category:
         q = q.filter(Tag.category == category)
     q = q.order_by(Tag.category, Tag.value)
@@ -3349,17 +3409,18 @@ def get_tag_condition_catalog():
 
 
 @app.get("/api/auto-tag-rules")
-def list_auto_tag_rules(db: Session = Depends(get_db)):
+def list_auto_tag_rules(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     rules = db.query(AutoTagRule).order_by(AutoTagRule.id).all()
     return [_rule_to_dict(r) for r in rules]
 
 
 @app.post("/api/auto-tag-rules")
-def create_auto_tag_rule(body: AutoTagRuleCreate, db: Session = Depends(get_db)):
+def create_auto_tag_rule(body: AutoTagRuleCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     tag = db.query(Tag).filter(Tag.id == body.tag_id).first()
     if not tag:
         raise HTTPException(404, "Tag not found")
     rule = AutoTagRule(
+        org_id=user.org_id if user else None,
         name=body.name,
         description=body.description,
         tag_id=body.tag_id,
@@ -3552,10 +3613,10 @@ def _recalculate_sla_for_scan(db: Session, scan_id: int, configs: list):
 
 
 @app.get("/api/sla/config")
-def get_sla_config(db: Session = Depends(get_db)):
+def get_sla_config(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return SLA configuration for all severity levels."""
     _ensure_sla_defaults(db)
-    rows = db.query(SLAConfig).order_by(SLAConfig.severity.desc()).all()
+    rows = apply_org_filter(db.query(SLAConfig), SLAConfig, org_ids).order_by(SLAConfig.severity.desc()).all()
     return [
         {
             "id": r.id,
@@ -3773,8 +3834,9 @@ class WorkflowUpdate(BaseModel):
 
 
 @app.post("/api/workflows")
-def create_workflow(body: WorkflowCreate, db: Session = Depends(get_db)):
+def create_workflow(body: WorkflowCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     wf = Workflow(
+        org_id=user.org_id if user else None,
         name=body.name,
         description=body.description,
         campaign_id=body.campaign_id,
@@ -3789,8 +3851,9 @@ def create_workflow(body: WorkflowCreate, db: Session = Depends(get_db)):
 def list_workflows(
     campaign_id: Optional[int] = None,
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(Workflow).order_by(desc(Workflow.updated_at))
+    q = apply_org_filter(db.query(Workflow), Workflow, org_ids).order_by(desc(Workflow.updated_at))
     if campaign_id is not None:
         q = q.filter(Workflow.campaign_id == campaign_id)
     return [_workflow_to_dict(w) for w in q.all()]
@@ -4016,13 +4079,51 @@ INTEGRATION_SCHEMAS = {
             {"key": "webhook_url", "label": "Incoming Webhook URL", "type": "string", "placeholder": "https://outlook.office.com/webhook/..."},
         ],
     },
+    "anthropic": {
+        "display_name": "Anthropic (Claude AI)",
+        "fields": [
+            {"key": "api_key", "label": "API Key", "type": "password", "placeholder": "sk-ant-..."},
+            {"key": "default_model", "label": "Default Model", "type": "select", "options": [
+                "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001",
+            ]},
+        ],
+    },
+    "openai": {
+        "display_name": "OpenAI (ChatGPT)",
+        "fields": [
+            {"key": "api_key", "label": "API Key", "type": "password", "placeholder": "sk-..."},
+            {"key": "default_model", "label": "Default Model", "type": "select", "options": [
+                "gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "o3", "o3-mini", "o4-mini",
+            ]},
+        ],
+    },
+    "google_gemini": {
+        "display_name": "Google Gemini",
+        "fields": [
+            {"key": "api_key", "label": "API Key", "type": "password", "placeholder": "AIza..."},
+            {"key": "default_model", "label": "Default Model", "type": "select", "options": [
+                "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash",
+            ]},
+        ],
+    },
+    "groq": {
+        "display_name": "Groq",
+        "fields": [
+            {"key": "api_key", "label": "API Key", "type": "password", "placeholder": "gsk_..."},
+            {"key": "default_model", "label": "Default Model", "type": "select", "options": [
+                "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-3.1-70b-versatile",
+                "mixtral-8x7b-32768", "gemma2-9b-it",
+            ]},
+        ],
+    },
 }
 
 
 @app.get("/api/integrations")
-def list_integrations(db: Session = Depends(get_db)):
+def list_integrations(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """List all integration providers with their config status."""
-    configs = {c.provider: c for c in db.query(IntegrationConfig).all()}
+    ic_q = apply_org_filter(db.query(IntegrationConfig), IntegrationConfig, org_ids)
+    configs = {c.provider: c for c in ic_q.all()}
     result = []
     for provider, schema in INTEGRATION_SCHEMAS.items():
         cfg = configs.get(provider)
@@ -4246,9 +4347,10 @@ def list_exceptions(
     exception_type: Optional[str] = None,
     active_only: bool = True,
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """List global exceptions/waivers."""
-    q = db.query(FindingException)
+    q = apply_org_filter(db.query(FindingException), FindingException, org_ids)
     if active_only:
         q = q.filter(FindingException.is_active == True)
     if plugin_id:
@@ -4288,7 +4390,7 @@ def get_exception_condition_catalog():
 
 
 @app.post("/api/exceptions")
-def create_exception(body: ExceptionCreate, db: Session = Depends(get_db)):
+def create_exception(body: ExceptionCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     """Create a global exception / waiver."""
     # Must have at least plugin_id or conditions
     if not body.plugin_id and not body.conditions:
@@ -4296,6 +4398,7 @@ def create_exception(body: ExceptionCreate, db: Session = Depends(get_db)):
     if body.exception_type == "severity_override" and body.override_severity is None:
         raise HTTPException(400, "override_severity is required for severity_override type")
     exc = FindingException(
+        org_id=user.org_id if user else None,
         plugin_id=body.plugin_id or None,
         plugin_name=body.plugin_name,
         asset_ip=body.asset_ip or None,
@@ -4868,6 +4971,129 @@ def backfill_temporal_all(db: Session = Depends(get_db)):
         results.append({"scan_id": scan.id, "scan_name": scan.scan_name, "regressions": regressions})
     db.commit()
     return {"ok": True, "scans_processed": len(results), "details": results}
+
+
+# ── Tag-based Risk Report ─────────────────────────────────────────────────────
+
+
+@app.get("/api/reports/risk-by-tags")
+def get_risk_by_tags(
+    category: Optional[str] = None,
+    scan_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Risk breakdown grouped by tag category (business unit, environment, etc.).
+    Returns severity counts, avg risk score, finding density, grade, and SLA per group."""
+    from collections import defaultdict
+
+    # Get all tags, optionally filtered by category
+    tag_q = db.query(Tag)
+    if org_ids:
+        tag_q = tag_q.filter(or_(Tag.org_id.in_(org_ids), Tag.org_id.is_(None)))
+    if category:
+        tag_q = tag_q.filter(func.lower(Tag.category) == category.lower())
+    tags = tag_q.all()
+
+    # Available categories for the picker
+    cat_q = db.query(Tag.category).distinct()
+    if org_ids:
+        cat_q = cat_q.filter(or_(Tag.org_id.in_(org_ids), Tag.org_id.is_(None)))
+    available_categories = sorted([r[0] for r in cat_q.all() if r[0]])
+
+    if not tags:
+        return {"category": category, "groups": [], "org_avg_risk": 0, "available_categories": available_categories}
+
+    # Get all tag assignments for assets
+    ta_q = db.query(TagAssignment).filter(
+        TagAssignment.tag_id.in_([t.id for t in tags]),
+        TagAssignment.asset_id.isnot(None),
+    )
+    assignments = ta_q.all()
+
+    # Map asset_ids per tag
+    tag_assets = defaultdict(set)
+    for ta in assignments:
+        tag_assets[ta.tag_id].add(ta.asset_id)
+
+    # Build scoped asset/finding queries
+    asset_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
+    asset_q = apply_scan_org_filter(asset_q, org_ids)
+    finding_q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+    finding_q = apply_scan_org_filter(finding_q, org_ids)
+    if scan_id:
+        asset_q = asset_q.filter(Asset.scan_id == scan_id)
+        finding_q = finding_q.filter(Finding.scan_id == scan_id)
+
+    # Pre-validate asset IDs in scope
+    all_asset_ids = set()
+    for ids in tag_assets.values():
+        all_asset_ids.update(ids)
+    if scan_id and all_asset_ids:
+        valid_asset_ids = {a.id for a in asset_q.filter(Asset.id.in_(all_asset_ids)).all()}
+    else:
+        valid_asset_ids = all_asset_ids
+
+    groups = []
+    for tag in tags:
+        asset_ids = tag_assets.get(tag.id, set()) & valid_asset_ids
+        if not asset_ids:
+            continue
+
+        tag_findings_q = finding_q.filter(Finding.asset_id.in_(asset_ids))
+        sev_counts = {}
+        for sev, label in [(4, "critical"), (3, "high"), (2, "medium"), (1, "low"), (0, "info")]:
+            sev_counts[label] = tag_findings_q.filter(Finding.severity == sev).count()
+
+        total_findings = sum(sev_counts.values())
+        exploit_count = tag_findings_q.filter(Finding.exploit_available == True).count()
+
+        # SLA compliance
+        sla_on = tag_findings_q.filter(Finding.sla_status == "on_track").count()
+        sla_resolved = tag_findings_q.filter(Finding.sla_status == "resolved").count()
+        sla_breached = tag_findings_q.filter(Finding.sla_status == "breached").count()
+        sla_at_risk = tag_findings_q.filter(Finding.sla_status == "at_risk").count()
+        sla_total = sla_on + sla_resolved + sla_breached + sla_at_risk
+        sla_compliance = round((sla_on + sla_resolved) / sla_total * 100, 1) if sla_total else None
+
+        # Risk scores
+        risk_scores = [a.risk_score for a in db.query(Asset).filter(Asset.id.in_(asset_ids)).all()
+                       if a.risk_score and a.risk_score > 0]
+        avg_risk = round(sum(risk_scores) / len(risk_scores), 2) if risk_scores else 0
+
+        # Grade
+        grade = "A" if avg_risk <= 2 else "B" if avg_risk <= 4 else "C" if avg_risk <= 6 else "D" if avg_risk <= 8 else "F"
+
+        groups.append({
+            "tag_id": tag.id,
+            "category": tag.category,
+            "value": tag.value,
+            "color": tag.color,
+            "asset_count": len(asset_ids),
+            "finding_count": total_findings,
+            "finding_density": round(total_findings / len(asset_ids), 1),
+            "severity": sev_counts,
+            "avg_risk_score": avg_risk,
+            "sla_compliance": sla_compliance,
+            "exploit_count": exploit_count,
+            "grade": grade,
+        })
+
+    # Sort by risk desc, assign rank
+    groups.sort(key=lambda g: g["avg_risk_score"], reverse=True)
+    for i, g in enumerate(groups):
+        g["rank"] = i + 1
+
+    # Org-wide average for benchmark comparison
+    all_risk = [a.risk_score for a in asset_q.all() if a.risk_score and a.risk_score > 0]
+    org_avg = round(sum(all_risk) / len(all_risk), 2) if all_risk else 0
+
+    return {
+        "category": category,
+        "groups": groups,
+        "org_avg_risk": org_avg,
+        "available_categories": available_categories,
+    }
 
 
 if __name__ == "__main__":

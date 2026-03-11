@@ -1,5 +1,5 @@
 import React, { useState, useEffect, createContext, useContext } from 'react'
-import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, NavLink, Navigate, useNavigate } from 'react-router-dom'
 import {
   Server,
   Bug,
@@ -8,6 +8,11 @@ import {
   Settings as SettingsIcon,
   Target,
   ShieldAlert,
+  Bot,
+  LogOut,
+  Building2,
+  MoreVertical,
+  User,
 } from 'lucide-react'
 import AssetInventory from './components/AssetInventory.jsx'
 import FindingExplorer from './components/FindingExplorer.jsx'
@@ -21,7 +26,12 @@ import UploadScan from './components/UploadScan.jsx'
 import TagManager from './components/TagManager.jsx'
 import ThreatIntelCenter from './components/ThreatIntelCenter.jsx'
 import WorkflowBuilder from './components/WorkflowBuilder.jsx'
-import { getScans } from './api.js'
+import AgentBuilder from './components/AgentBuilder.jsx'
+import Login from './components/Login.jsx'
+import Register from './components/Register.jsx'
+import UserManagement from './components/UserManagement.jsx'
+import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
+import { getScans, setOrgContext } from './api.js'
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {} })
@@ -33,9 +43,176 @@ const NAV_ITEMS = [
   { path: '/findings', label: 'Findings', icon: Bug },
   { path: '/inventory', label: 'Inventory', icon: Database },
   { path: '/campaigns', label: 'Campaigns', icon: Target },
+  { path: '/agents', label: 'Agents', icon: Bot },
   { path: '/threat-intel', label: 'Threat Intel', icon: ShieldAlert },
   { path: '/settings', label: 'Settings', icon: SettingsIcon },
 ]
+
+function ProtectedRoute({ children }) {
+  const { isAuthenticated, isLoading } = useAuth()
+  if (isLoading) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: '#71717a' }}>
+        Loading...
+      </div>
+    )
+  }
+  if (!isAuthenticated) return <Navigate to="/login" replace />
+  return children
+}
+
+function OrgSwitcher({ collapsed }) {
+  const { accessibleOrgs, currentOrgContext, switchOrg, isMSSP, isSuperadmin, org } = useAuth()
+
+  if (!isMSSP && !isSuperadmin) return null
+  if (accessibleOrgs.length <= 1) return null
+
+  return (
+    <div style={{
+      padding: collapsed ? '8px 6px' : '12px',
+      borderTop: '1px solid var(--border)',
+    }}>
+      <div style={{
+        fontSize: collapsed ? 9 : 11,
+        color: 'var(--muted)',
+        textTransform: 'uppercase',
+        letterSpacing: '0.06em',
+        marginBottom: 4,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 4,
+      }}>
+        <Building2 size={10} />
+        {!collapsed && 'Org Context'}
+      </div>
+      <select
+        value={currentOrgContext || ''}
+        onChange={e => switchOrg(e.target.value || null)}
+        style={{
+          width: '100%',
+          background: '#fff',
+          border: '1px solid var(--border)',
+          borderRadius: 10,
+          padding: collapsed ? '4px 4px' : '5px 8px',
+          fontSize: collapsed ? 9 : 11,
+          cursor: 'pointer',
+        }}
+      >
+        <option value="">All Organizations</option>
+        {accessibleOrgs.map(o => (
+          <option key={o.id} value={o.id}>{o.name}</option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
+function UserMenu({ collapsed }) {
+  const { user, org, logout } = useAuth()
+  const navigate = useNavigate()
+  const [open, setOpen] = useState(false)
+  const menuRef = React.useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handleClick = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
+
+  if (!user) return null
+
+  const initials = (user.display_name || user.email || '?').slice(0, 2).toUpperCase()
+
+  return (
+    <div ref={menuRef} style={{
+      padding: collapsed ? '8px 6px' : '10px 12px',
+      borderTop: '1px solid var(--border)',
+      position: 'relative',
+    }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        justifyContent: collapsed ? 'center' : 'space-between',
+      }}>
+        {!collapsed && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <div style={{
+              width: 28, height: 28, borderRadius: '50%',
+              background: '#18181b', color: '#fff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 11, fontWeight: 700, flexShrink: 0,
+            }}>
+              {initials}
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#18181b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.display_name}</div>
+              <div style={{ fontSize: 10, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{org?.name}</div>
+            </div>
+          </div>
+        )}
+        <button
+          onClick={() => setOpen(prev => !prev)}
+          title="Menu"
+          style={{
+            width: 28, height: 28, borderRadius: 6,
+            border: '1px solid var(--border)', background: '#fff',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', padding: 0, flexShrink: 0,
+          }}
+        >
+          <MoreVertical size={14} color="#71717a" />
+        </button>
+      </div>
+
+      {open && (
+        <div style={{
+          position: 'absolute',
+          bottom: '100%',
+          left: collapsed ? '50%' : 12,
+          transform: collapsed ? 'translateX(-50%)' : 'none',
+          marginBottom: 4,
+          background: '#fff',
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.10)',
+          minWidth: 160,
+          zIndex: 100,
+          overflow: 'hidden',
+        }}>
+          <button
+            onClick={() => { setOpen(false); navigate('/profile') }}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+              padding: '9px 14px', border: 'none', background: 'transparent',
+              cursor: 'pointer', fontSize: 13, color: '#18181b', textAlign: 'left',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = '#f4f4f5'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <User size={14} /> View Profile
+          </button>
+          <div style={{ height: 1, background: 'var(--border)' }} />
+          <button
+            onClick={() => { setOpen(false); logout() }}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+              padding: '9px 14px', border: 'none', background: 'transparent',
+              cursor: 'pointer', fontSize: 13, color: '#ef4444', textAlign: 'left',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = '#fef2f2'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <LogOut size={14} /> Log out
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function Sidebar({ collapsed, onToggle }) {
   const width = collapsed ? 56 : 220
@@ -142,13 +319,15 @@ function Sidebar({ collapsed, onToggle }) {
         ))}
       </nav>
 
-      {/* Active scan selector – always available, compact when collapsed */}
+      {/* Org switcher (MSSP / superadmin) */}
+      <OrgSwitcher collapsed={collapsed} />
+
+      {/* Active scan selector */}
       {scans.length > 0 && (
         <div
           style={{
             padding: collapsed ? '8px 6px' : '12px',
             borderTop: '1px solid var(--border)',
-            marginTop: 16
           }}
         >
           <div
@@ -186,6 +365,8 @@ function Sidebar({ collapsed, onToggle }) {
         </div>
       )}
 
+      {/* User menu */}
+      <UserMenu collapsed={collapsed} />
     </aside>
   )
 }
@@ -242,10 +423,12 @@ function AppShell() {
               <Route path="/campaigns/:id" element={<CampaignDetail />} />
               <Route path="/workflows/:id" element={<WorkflowBuilder />} />
               <Route path="/inventory" element={<InventoryExplorer />} />
+              <Route path="/agents" element={<AgentBuilder />} />
               <Route path="/tags" element={<TagManager />} />
               <Route path="/threat-intel/:tab?" element={<ThreatIntelCenter />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/upload" element={<UploadScan />} />
+              <Route path="/profile" element={<UserManagement />} />
             </Routes>
           </main>
         </div>
@@ -257,7 +440,17 @@ function AppShell() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AppShell />
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/*" element={
+            <ProtectedRoute>
+              <AppShell />
+            </ProtectedRoute>
+          } />
+        </Routes>
+      </AuthProvider>
     </BrowserRouter>
   )
 }

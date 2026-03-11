@@ -4,10 +4,75 @@ from sqlalchemy.orm import relationship
 from database import Base
 
 
+# ─────────────────────────────────────────────────────────
+# Auth & Multi-Tenancy Models
+# ─────────────────────────────────────────────────────────
+
+class Organization(Base):
+    """Tenant — a company, team, or MSSP client."""
+    __tablename__ = "organizations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    slug = Column(String, nullable=False, unique=True, index=True)
+    org_type = Column(String, default="standard")  # standard | mssp
+    parent_org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+    is_active = Column(Boolean, default=True)
+    settings = Column(JSON, default=dict)  # org-level config overrides
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    parent = relationship("Organization", remote_side=[id], backref="children")
+    users = relationship("User", back_populates="organization")
+
+
+class User(Base):
+    """Platform user — belongs to one organization."""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, nullable=False, unique=True, index=True)
+    hashed_password = Column(String, nullable=False)
+    display_name = Column(String)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    role = Column(String, default="analyst")  # superadmin | org_admin | analyst | viewer
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login_at = Column(DateTime, nullable=True)
+
+    organization = relationship("Organization", back_populates="users")
+
+    __table_args__ = (
+        Index("ix_user_org", "org_id"),
+    )
+
+
+class MSSPOrgAccess(Base):
+    """Grants an MSSP org access to a client org's data."""
+    __tablename__ = "mssp_org_access"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mssp_org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    client_org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    mssp_org = relationship("Organization", foreign_keys=[mssp_org_id])
+    client_org = relationship("Organization", foreign_keys=[client_org_id])
+
+    __table_args__ = (
+        UniqueConstraint("mssp_org_id", "client_org_id", name="uq_mssp_client"),
+    )
+
+
+# ─────────────────────────────────────────────────────────
+# Core Data Models
+# ─────────────────────────────────────────────────────────
+
 class Scan(Base):
     __tablename__ = "scans"
 
     id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
     filename = Column(String, nullable=False)
     scan_name = Column(String)
     scan_date = Column(String)
@@ -17,6 +82,7 @@ class Scan(Base):
     policy_used = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    organization = relationship("Organization")
     assets = relationship("Asset", back_populates="scan", cascade="all, delete-orphan")
     findings = relationship("Finding", back_populates="scan", cascade="all, delete-orphan")
 
@@ -535,6 +601,7 @@ class Tag(Base):
     __tablename__ = "tags"
 
     id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
     category = Column(String, nullable=False, index=True)
     value = Column(String, nullable=False)
     parent_id = Column(Integer, ForeignKey("tags.id"), nullable=True)
@@ -575,6 +642,7 @@ class AutoTagRule(Base):
     __tablename__ = "auto_tag_rules"
 
     id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     tag_id = Column(Integer, ForeignKey("tags.id"), nullable=False)
@@ -595,6 +663,7 @@ class Campaign(Base):
     __tablename__ = "campaigns"
 
     id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
     scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True, index=True)  # None = all scans
 
     name = Column(String, nullable=False)
@@ -622,7 +691,8 @@ class SLAConfig(Base):
     __tablename__ = "sla_configs"
 
     id = Column(Integer, primary_key=True, index=True)
-    severity = Column(Integer, unique=True, nullable=False)  # 0=Info,1=Low,2=Med,3=High,4=Critical
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    severity = Column(Integer, nullable=False)  # 0=Info,1=Low,2=Med,3=High,4=Critical
     severity_label = Column(String)
     days_to_remediate = Column(Integer, nullable=False)  # SLA window in calendar days
     is_enabled = Column(Boolean, default=True)
@@ -659,6 +729,7 @@ class Workflow(Base):
     __tablename__ = "workflows"
 
     id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(Text)
@@ -758,7 +829,8 @@ class IntegrationConfig(Base):
     __tablename__ = "integration_configs"
 
     id = Column(Integer, primary_key=True, index=True)
-    provider = Column(String, nullable=False, unique=True, index=True)  # jira, servicenow, email, slack, teams
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    provider = Column(String, nullable=False, index=True)  # jira, servicenow, email, slack, teams
     display_name = Column(String)
     is_enabled = Column(Boolean, default=False)
     config = Column(JSON, default=dict)  # provider-specific config blob
@@ -778,6 +850,7 @@ class FindingException(Base):
     __tablename__ = "finding_exceptions"
 
     id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
     plugin_id = Column(String, nullable=True, index=True)  # nullable when using conditions-only matching
     plugin_name = Column(String)
     # Scope: specific asset IP or null = all assets
@@ -818,7 +891,8 @@ class ReportTemplate(Base):
     __tablename__ = "report_templates"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False, unique=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     config = Column(JSON, nullable=False, default=dict)  # {widgets: [...]}
     is_default = Column(Boolean, default=False)
@@ -848,3 +922,57 @@ class ScanComparison(Base):
     __table_args__ = (
         UniqueConstraint("base_scan_id", "compare_scan_id", name="uq_scan_comparison"),
     )
+
+
+# ── Mini Agents ──────────────────────────────────────────────────────
+
+class Agent(Base):
+    """User-defined mini agent with instructions, tools, guardrails, and memory."""
+    __tablename__ = "agents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String)
+    system_prompt = Column(Text, nullable=False)          # agent instructions
+    tools = Column(JSON, default=list)                    # list of tool names from registry
+    guardrails = Column(JSON, default=dict)               # {max_steps, read_only, blocked_tools, scope_scan_id}
+    memory = Column(JSON, default=dict)                   # persistent key-value memory
+    model = Column(String, default="claude-sonnet-4-6")   # which Claude model to use
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    runs = relationship("AgentRun", back_populates="agent", cascade="all, delete-orphan")
+
+
+class AgentRun(Base):
+    """A single execution of a mini agent."""
+    __tablename__ = "agent_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=False, index=True)
+    input = Column(Text, nullable=False)
+    output = Column(Text)
+    trace = Column(JSON, default=list)       # step-by-step log [{role, content, tool_calls, ...}]
+    status = Column(String, default="pending")  # pending / running / done / failed
+    error = Column(Text)
+    steps_used = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime)
+
+    agent = relationship("Agent", back_populates="runs")
+
+
+class AgentSchedule(Base):
+    """Cron schedule for automated agent runs."""
+    __tablename__ = "agent_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=False, index=True)
+    cron_expression = Column(String, nullable=False)  # e.g. "0 8 * * 1-5"
+    input_template = Column(Text)                      # default input for scheduled runs
+    is_enabled = Column(Boolean, default=True)
+    last_run_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    agent = relationship("Agent")

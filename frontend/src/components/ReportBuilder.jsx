@@ -14,7 +14,8 @@ import {
 } from 'lucide-react'
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, Legend, CartesianGrid, LineChart, Line
+  ResponsiveContainer, Legend, CartesianGrid, LineChart, Line,
+  AreaChart, Area
 } from 'recharts'
 import { useScan } from '../App.jsx'
 import {
@@ -23,6 +24,11 @@ import {
   getTemporalSummary, getRemediationVelocity,
   getReportTemplates, createReportTemplate, updateReportTemplate, deleteReportTemplate as apiDeleteTemplate,
   exportConfig,
+  getRiskByTags,
+  getInventorySummary, getInventoryUsers, getInventoryGroups, getInventoryServices,
+  getInventoryNetconns, getInventoryTasks, getInventoryPatches, getInventoryLoggedOn,
+  getInventoryShares, getInventorySoftware, getInventorySecurityControls, getInventoryComputers,
+  getInventoryPasswordPolicies, getInventoryCertificates, getInventoryAITools, getInventoryProcesses,
 } from '../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons } from './ui.jsx'
 
@@ -76,156 +82,819 @@ function templateToReport(t) {
     is_default: t.is_default,
   }
 }
+// ─── Data layer ──────────────────────────────────────────────────────────────
+
+const SEV_COLORS = ['#0ea5e9', '#65a30d', '#d97706', '#ea580c', '#dc2626']
+const PALETTE = ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#0ea5e9', '#22c55e', '#ef4444', '#14b8a6']
+
+const DATA_SOURCES = {
+  summary:            (scanId, f) => getSummary(scanId),
+  sla:                (scanId, f) => getSLASummary(scanId),
+  trending:           (scanId, f) => getTrending(),
+  metrics_timeline:   (scanId, f) => getMetricsTimeline(),
+  delta_timeline:     (scanId, f) => getScanDeltaTimeline(),
+  velocity:           (scanId, f) => getRemediationVelocity(f?.period || 'month'),
+  temporal:           (scanId, f) => getTemporalSummary(scanId),
+  assets:             (scanId, f) => getAssets({ scan_id: scanId, search: f?.search, min_risk: f?.min_risk, max_risk: f?.max_risk, environment: f?.environment, min_critical: f?.min_critical, min_high: f?.min_high, has_findings: f?.has_findings, sort_by: f?.sort_by || 'risk_score', order: f?.order || 'desc', tags: f?.tags, tag_logic: f?.tag_logic }),
+  findings:           (scanId, f) => getFindings({ scan_id: scanId, severity: f?.severity, plugin_family: f?.plugin_family, has_exploit: f?.has_exploit, effort_level: f?.effort_level, sla_status: f?.sla_status, search: f?.search, sort_by: f?.sort_by || 'priority_score', order: f?.order || 'desc', page_size: f?.page_size || 50, tags: f?.tags, tag_logic: f?.tag_logic }),
+  remediation_queue:  (scanId, f) => getRemediationQueue({ scan_id: scanId, effort: f?.effort, owner: f?.owner, min_severity: f?.min_severity, limit: f?.limit || 20 }),
+  automation_wishlist:(scanId, f) => getAutomateClicks(),
+  risk_by_tags:       (scanId, f) => getRiskByTags({ scan_id: scanId, category: f?.category }),
+  plugin_families:    (scanId, f) => getPluginFamilies(scanId),
+  inv_summary:        (scanId, f) => getInventorySummary(scanId),
+  inv_users:          (scanId, f) => getInventoryUsers({ scan_id: scanId, user_type: f?.user_type, is_admin: f?.is_admin, is_domain_admin: f?.is_domain_admin, is_privileged: f?.is_privileged, search: f?.search }),
+  inv_groups:         (scanId, f) => getInventoryGroups({ scan_id: scanId, is_privileged: f?.is_privileged }),
+  inv_services:       (scanId, f) => getInventoryServices({ scan_id: scanId, search: f?.search }),
+  inv_netconns:       (scanId, f) => getInventoryNetconns({ scan_id: scanId, state: f?.state }),
+  inv_tasks:          (scanId, f) => getInventoryTasks({ scan_id: scanId }),
+  inv_patches:        (scanId, f) => getInventoryPatches({ scan_id: scanId }),
+  inv_logged_on:      (scanId, f) => getInventoryLoggedOn({ scan_id: scanId }),
+  inv_shares:         (scanId, f) => getInventoryShares({ scan_id: scanId, is_writeable: f?.is_writeable }),
+  inv_software:       (scanId, f) => getInventorySoftware({ scan_id: scanId, search: f?.search }),
+  inv_security_ctrls: (scanId, f) => getInventorySecurityControls({ scan_id: scanId, control_type: f?.control_type }),
+  inv_computers:      (scanId, f) => getInventoryComputers({ scan_id: scanId, is_dc: f?.is_dc, search: f?.search }),
+  inv_pw_policies:    (scanId, f) => getInventoryPasswordPolicies({ scan_id: scanId }),
+  inv_certificates:   (scanId, f) => getInventoryCertificates({ scan_id: scanId, expired_only: f?.expired_only, expiring_days: f?.expiring_days, self_signed_only: f?.self_signed_only }),
+  inv_ai_tools:       (scanId, f) => getInventoryAITools({ scan_id: scanId, category: f?.category }),
+  inv_processes:      (scanId, f) => getInventoryProcesses({ scan_id: scanId, search: f?.search }),
+}
+
+// Filter definitions per source — drives ConfigPanel filter UI
+const SOURCE_FILTERS = {
+  findings: [
+    { key: 'severity', label: 'Severity', type: 'select', options: [{ value: '', label: 'All' }, { value: '4', label: 'Critical' }, { value: '3', label: 'High' }, { value: '2', label: 'Medium' }, { value: '1', label: 'Low' }, { value: '0', label: 'Info' }] },
+    { key: 'has_exploit', label: 'Has Exploit', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }] },
+    { key: 'effort_level', label: 'Effort', type: 'select', options: [{ value: '', label: 'All' }, { value: 'quick_win', label: 'Quick Win' }, { value: 'medium', label: 'Medium' }, { value: 'complex', label: 'Complex' }] },
+    { key: 'sla_status', label: 'SLA Status', type: 'select', options: [{ value: '', label: 'All' }, { value: 'on_track', label: 'On Track' }, { value: 'at_risk', label: 'At Risk' }, { value: 'breached', label: 'Breached' }] },
+    { key: 'plugin_family', label: 'Plugin Family', type: 'text', placeholder: 'e.g. Windows' },
+    { key: 'search', label: 'Search', type: 'text', placeholder: 'Keyword...' },
+  ],
+  assets: [
+    { key: 'environment', label: 'Environment', type: 'text', placeholder: 'e.g. production' },
+    { key: 'min_risk', label: 'Min Risk Score', type: 'number', placeholder: '0' },
+    { key: 'max_risk', label: 'Max Risk Score', type: 'number', placeholder: '10' },
+    { key: 'min_critical', label: 'Min Critical Count', type: 'number', placeholder: '0' },
+    { key: 'has_findings', label: 'Has Findings', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }] },
+    { key: 'search', label: 'Search', type: 'text', placeholder: 'Hostname, IP...' },
+  ],
+  remediation_queue: [
+    { key: 'effort', label: 'Effort', type: 'select', options: [{ value: '', label: 'All' }, { value: 'quick_win', label: 'Quick Win' }, { value: 'medium', label: 'Medium' }, { value: 'complex', label: 'Complex' }] },
+    { key: 'owner', label: 'Owner', type: 'select', options: [{ value: '', label: 'All' }, { value: 'IT', label: 'IT' }, { value: 'DevOps', label: 'DevOps' }, { value: 'SecOps', label: 'SecOps' }, { value: 'AppSec', label: 'AppSec' }] },
+    { key: 'min_severity', label: 'Min Severity', type: 'select', options: [{ value: '', label: 'Medium+ (default)' }, { value: '4', label: 'Critical only' }, { value: '3', label: 'High+' }, { value: '1', label: 'Low+' }] },
+  ],
+  risk_by_tags: [
+    { key: 'category', label: 'Tag Category', type: 'text', placeholder: 'e.g. business_unit (blank = all)' },
+  ],
+  velocity: [
+    { key: 'period', label: 'Period', type: 'select', options: [{ value: 'month', label: 'Monthly' }, { value: 'week', label: 'Weekly' }] },
+  ],
+  inv_users: [
+    { key: 'user_type', label: 'User Type', type: 'select', options: [{ value: '', label: 'All' }, { value: 'domain_user', label: 'Domain User' }, { value: 'local_user', label: 'Local User' }, { value: 'computer_account', label: 'Computer Account' }, { value: 'service_account', label: 'Service Account' }] },
+    { key: 'is_admin', label: 'Local Admin', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }] },
+    { key: 'is_domain_admin', label: 'Domain Admin', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }] },
+    { key: 'is_privileged', label: 'Privileged', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }] },
+    { key: 'search', label: 'Search', type: 'text', placeholder: 'Username...' },
+  ],
+  inv_groups: [
+    { key: 'is_privileged', label: 'Privileged Only', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }] },
+  ],
+  inv_services: [
+    { key: 'search', label: 'Search', type: 'text', placeholder: 'Service name...' },
+  ],
+  inv_netconns: [
+    { key: 'state', label: 'State', type: 'select', options: [{ value: '', label: 'All' }, { value: 'ESTABLISHED', label: 'Established' }, { value: 'LISTEN', label: 'Listening' }, { value: 'TIME_WAIT', label: 'Time Wait' }] },
+  ],
+  inv_shares: [
+    { key: 'is_writeable', label: 'Writeable', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }] },
+  ],
+  inv_software: [
+    { key: 'search', label: 'Search', type: 'text', placeholder: 'Software name...' },
+  ],
+  inv_security_ctrls: [
+    { key: 'control_type', label: 'Type', type: 'select', options: [{ value: '', label: 'All' }, { value: 'antivirus', label: 'Antivirus' }, { value: 'firewall', label: 'Firewall' }, { value: 'edr', label: 'EDR' }] },
+  ],
+  inv_computers: [
+    { key: 'is_dc', label: 'Domain Controllers', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }] },
+    { key: 'search', label: 'Search', type: 'text', placeholder: 'Computer name...' },
+  ],
+  inv_certificates: [
+    { key: 'expired_only', label: 'Expired Only', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }] },
+    { key: 'expiring_days', label: 'Expiring Within (days)', type: 'number', placeholder: 'e.g. 30' },
+    { key: 'self_signed_only', label: 'Self-Signed Only', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }] },
+  ],
+  inv_ai_tools: [
+    { key: 'category', label: 'Category', type: 'text', placeholder: 'e.g. chatbot' },
+  ],
+  inv_processes: [
+    { key: 'search', label: 'Search', type: 'text', placeholder: 'Process name...' },
+  ],
+}
+
+const DATA_PRESETS = {
+  // ── Metrics (card) ──
+  critical_count:   { label: 'Critical Findings', group: 'Severity',  source: 'summary', type: 'metric', extract: d => d?.severity_breakdown?.critical ?? 0, color: '#dc2626' },
+  high_count:       { label: 'High Findings',     group: 'Severity',  source: 'summary', type: 'metric', extract: d => d?.severity_breakdown?.high ?? 0, color: '#ea580c' },
+  medium_count:     { label: 'Medium Findings',    group: 'Severity',  source: 'summary', type: 'metric', extract: d => d?.severity_breakdown?.medium ?? 0, color: '#d97706' },
+  low_count:        { label: 'Low Findings',       group: 'Severity',  source: 'summary', type: 'metric', extract: d => d?.severity_breakdown?.low ?? 0, color: '#65a30d' },
+  info_count:       { label: 'Info Findings',      group: 'Severity',  source: 'summary', type: 'metric', extract: d => d?.severity_breakdown?.info ?? 0, color: '#0ea5e9' },
+  total_findings:   { label: 'Total Findings',     group: 'Severity',  source: 'summary', type: 'metric', extract: d => d?.total_findings ?? 0, color: 'var(--text-primary)' },
+  excepted_findings:{ label: 'Excepted Findings',  group: 'Severity',  source: 'summary', type: 'metric', extract: d => d?.excepted_findings ?? 0, color: '#a78bfa' },
+  total_assets:     { label: 'Total Assets',       group: 'Assets & Findings', source: 'summary', type: 'metric', extract: d => d?.total_assets ?? 0, color: '#6366f1' },
+  exploit_count:    { label: 'Known Exploits',     group: 'Risk',      source: 'summary', type: 'metric', extract: d => d?.exploit_count ?? 0, color: '#f59e0b' },
+  high_priority:    { label: 'High Priority',      group: 'Risk',      source: 'summary', type: 'metric', extract: d => d?.high_priority_count ?? 0, color: '#ea580c' },
+  sla_compliance:   { label: 'SLA Compliance',     group: 'SLA & Ops', source: 'sla',     type: 'metric', extract: d => d?.compliance_pct ?? 0, format: 'pct', color: '#16a34a' },
+  sla_breached:     { label: 'SLA Breached',       group: 'SLA & Ops', source: 'sla',     type: 'metric', extract: d => d?.breached ?? 0, color: '#dc2626' },
+  sla_on_track:     { label: 'SLA On Track',       group: 'SLA & Ops', source: 'sla',     type: 'metric', extract: d => d?.on_track ?? 0, color: '#16a34a' },
+  sla_at_risk:      { label: 'SLA At Risk',        group: 'SLA & Ops', source: 'sla',     type: 'metric', extract: d => d?.at_risk ?? 0, color: '#d97706' },
+  quick_wins:       { label: 'Quick Wins',         group: 'SLA & Ops', source: 'summary', type: 'metric', extract: d => d?.effort_breakdown?.quick_win ?? 0, color: '#16a34a' },
+  complex_findings: { label: 'Complex Findings',   group: 'SLA & Ops', source: 'summary', type: 'metric', extract: d => d?.effort_breakdown?.complex ?? 0, color: '#dc2626' },
+  zombie_count:     { label: 'Zombie Vulns',       group: 'Temporal',  source: 'temporal', type: 'metric', extract: d => d?.zombie_count ?? 0, color: '#7c3aed' },
+  regression_count: { label: 'Regressions',        group: 'Temporal',  source: 'temporal', type: 'metric', extract: d => d?.regression_count ?? 0, color: '#ef4444' },
+  finding_count_filtered: { label: 'Finding Count', group: 'Filtered', source: 'findings', type: 'metric', extract: d => d?.total ?? d?.findings?.length ?? 0, color: '#6366f1' },
+  asset_count_filtered:   { label: 'Asset Count',   group: 'Filtered', source: 'assets',   type: 'metric', extract: d => Array.isArray(d) ? d.length : 0, color: '#6366f1' },
+  // ── Inventory metrics ──
+  inv_domain_admins:      { label: 'Domain Admins',        group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.domain_admins ?? 0, color: '#dc2626' },
+  inv_local_admins:       { label: 'Local Admins',         group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.local_admins_count ?? 0, color: '#ea580c' },
+  inv_kerberoastable:     { label: 'Kerberoastable',       group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.kerberoastable_accounts ?? 0, color: '#f59e0b' },
+  inv_pw_never_expires:   { label: 'Password Never Expires', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.password_never_expires_count ?? 0, color: '#d97706' },
+  inv_pw_never_changed:   { label: 'Never Changed Password', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.never_changed_password_count ?? 0, color: '#ea580c' },
+  inv_lateral_paths:      { label: 'Lateral Movement Paths', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.lateral_movement_paths ?? 0, color: '#ef4444' },
+  inv_established_conns:  { label: 'Established Connections', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.established_connections ?? 0, color: '#6366f1' },
+  inv_logged_on_count:    { label: 'Logged On Users',      group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.logged_on_users ?? 0, color: '#8b5cf6' },
+  inv_writeable_shares:   { label: 'Writeable Shares',     group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.writeable_shares ?? 0, color: '#f59e0b' },
+  inv_hosts_with_av:      { label: 'Hosts with AV',        group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.hosts_with_av ?? 0, color: '#16a34a' },
+  inv_weak_pw_policies:   { label: 'Weak Password Policies', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.weak_password_policies ?? 0, color: '#dc2626' },
+  inv_domain_controllers: { label: 'Domain Controllers',   group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.domain_controllers ?? 0, color: '#7c3aed' },
+  inv_expired_certs:      { label: 'Expired Certificates', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.expired_certs ?? 0, color: '#dc2626' },
+  inv_expiring_certs:     { label: 'Expiring Soon Certs',  group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.expiring_soon_certs ?? 0, color: '#d97706' },
+  inv_self_signed_certs:  { label: 'Self-Signed Certs',    group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.self_signed_certs ?? 0, color: '#f59e0b' },
+  inv_sensitive_env_vars: { label: 'Sensitive Env Vars',   group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.sensitive_env_vars ?? 0, color: '#ef4444' },
+  inv_total_users:        { label: 'Total Users',          group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.counts?.users ?? 0, color: '#6366f1' },
+  inv_total_services:     { label: 'Total Services',       group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.counts?.services ?? 0, color: '#0ea5e9' },
+  inv_total_software:     { label: 'Total Software',       group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.counts?.software ?? 0, color: '#14b8a6' },
+  inv_total_processes:    { label: 'Total Processes',       group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.counts?.processes ?? 0, color: '#8b5cf6' },
+  inv_total_computers:    { label: 'Total Computers',       group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.counts?.computers ?? 0, color: '#6366f1' },
+  inv_total_certificates: { label: 'Total Certificates',    group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.counts?.certificates ?? 0, color: '#f59e0b' },
+
+  // ── Categories (pie/donut/bar) ──
+  severity_breakdown: {
+    label: 'Severity Breakdown', group: 'Severity', source: 'summary', type: 'categories',
+    extract: d => {
+      const s = d?.severity_breakdown || {}
+      return ['Info', 'Low', 'Medium', 'High', 'Critical'].map((n, i) => ({ name: n, value: s[n.toLowerCase()] || 0, color: SEV_COLORS[i] })).filter(r => r.value > 0)
+    },
+  },
+  effort_breakdown: {
+    label: 'Effort Distribution', group: 'SLA & Ops', source: 'summary', type: 'categories',
+    extract: d => {
+      const e = d?.effort_breakdown || {}
+      return [
+        { name: 'Quick Win', value: e.quick_win || 0, color: '#16a34a' },
+        { name: 'Medium', value: e.medium || 0, color: '#d97706' },
+        { name: 'Complex', value: e.complex || 0, color: '#dc2626' },
+      ].filter(r => r.value > 0)
+    },
+  },
+  owner_breakdown: {
+    label: 'Owner Breakdown', group: 'Assets & Findings', source: 'summary', type: 'categories',
+    extract: d => (d?.owner_breakdown || []).map(o => ({ name: o.owner || 'Unknown', value: o.count })),
+  },
+  sla_status: {
+    label: 'SLA Status', group: 'SLA & Ops', source: 'sla', type: 'categories',
+    extract: d => {
+      if (!d) return []
+      return [
+        { name: 'On Track', value: d.on_track || 0, color: '#16a34a' },
+        { name: 'At Risk', value: d.at_risk || 0, color: '#d97706' },
+        { name: 'Breached', value: d.breached || 0, color: '#dc2626' },
+        { name: 'Resolved', value: d.resolved || 0, color: '#6366f1' },
+      ].filter(r => r.value > 0)
+    },
+  },
+  family_breakdown: {
+    label: 'Plugin Families', group: 'Assets & Findings', source: 'summary', type: 'categories',
+    extract: d => (d?.top_plugin_families || []).slice(0, 10).map(f => ({ name: f.family || 'Unknown', value: f.count })),
+  },
+  risk_by_tags: {
+    label: 'Risk by Tags', group: 'Tags', source: 'risk_by_tags', type: 'categories',
+    extract: d => (d?.groups || []).filter(g => g.asset_count > 0).map(g => ({
+      name: g.category ? `${g.category}: ${g.value}` : g.value,
+      value: parseFloat(g.avg_risk_score) || 0,
+      color: g.color || (g.avg_risk_score > 6 ? '#ef4444' : g.avg_risk_score > 4 ? '#f97316' : '#22c55e'),
+    })),
+  },
+  tag_finding_count: {
+    label: 'Findings by Tag', group: 'Tags', source: 'risk_by_tags', type: 'categories',
+    extract: d => (d?.groups || []).filter(g => g.finding_count > 0).map(g => ({
+      name: g.category ? `${g.category}: ${g.value}` : g.value,
+      value: g.finding_count,
+      color: g.color || PALETTE[(d?.groups || []).indexOf(g) % PALETTE.length],
+    })),
+  },
+  tag_asset_count: {
+    label: 'Assets by Tag', group: 'Tags', source: 'risk_by_tags', type: 'categories',
+    extract: d => (d?.groups || []).filter(g => g.asset_count > 0).map(g => ({
+      name: g.category ? `${g.category}: ${g.value}` : g.value,
+      value: g.asset_count,
+      color: g.color || PALETTE[(d?.groups || []).indexOf(g) % PALETTE.length],
+    })),
+  },
+  age_distribution: {
+    label: 'Finding Age Distribution', group: 'Temporal', source: 'temporal', type: 'categories',
+    extract: d => {
+      const a = d?.age_distribution || {}
+      return [
+        { name: '< 30 days', value: a.under_30d || 0, color: '#22c55e' },
+        { name: '30-90 days', value: a['30_90d'] || 0, color: '#eab308' },
+        { name: '90-180 days', value: a['90_180d'] || 0, color: '#f97316' },
+        { name: '> 180 days', value: a.over_180d || 0, color: '#ef4444' },
+      ].filter(r => r.value > 0)
+    },
+  },
+  sla_breached_by_sev: {
+    label: 'SLA Breached by Severity', group: 'SLA & Ops', source: 'sla', type: 'categories',
+    extract: d => {
+      const b = d?.breached_by_severity || {}
+      return [
+        { name: 'Critical', value: b.critical || 0, color: '#dc2626' },
+        { name: 'High', value: b.high || 0, color: '#ea580c' },
+        { name: 'Medium', value: b.medium || 0, color: '#d97706' },
+        { name: 'Low', value: b.low || 0, color: '#65a30d' },
+      ].filter(r => r.value > 0)
+    },
+  },
+  mttr_by_severity: {
+    label: 'Avg MTTR by Severity', group: 'SLA & Ops', source: 'sla', type: 'categories',
+    extract: d => {
+      const m = d?.avg_mttr_days || {}
+      return [
+        { name: 'Critical', value: m.critical || 0, color: '#dc2626' },
+        { name: 'High', value: m.high || 0, color: '#ea580c' },
+        { name: 'Medium', value: m.medium || 0, color: '#d97706' },
+        { name: 'Low', value: m.low || 0, color: '#65a30d' },
+      ].filter(r => r.value > 0)
+    },
+  },
+  os_breakdown: {
+    label: 'OS Distribution', group: 'Assets & Findings', source: 'assets', type: 'categories',
+    extract: d => {
+      if (!Array.isArray(d)) return []
+      const counts = {}
+      d.forEach(a => { const os = a.os || 'Unknown'; counts[os] = (counts[os] || 0) + 1 })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  // ── Inventory categories ──
+  inv_user_type_breakdown: {
+    label: 'User Types', group: 'Inventory', source: 'inv_users', type: 'categories',
+    extract: d => {
+      if (!Array.isArray(d)) return []
+      const counts = {}
+      d.forEach(u => { const t = u.user_type || 'unknown'; counts[t] = (counts[t] || 0) + 1 })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name: name.replace(/_/g, ' '), value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  inv_attack_surface: {
+    label: 'Attack Surface', group: 'Inventory', source: 'inv_summary', type: 'categories',
+    extract: d => {
+      const a = d?.attack_surface || {}
+      return [
+        { name: 'Domain Admins', value: a.domain_admins || 0, color: '#dc2626' },
+        { name: 'Local Admins', value: a.local_admins_count || 0, color: '#ea580c' },
+        { name: 'Kerberoastable', value: a.kerberoastable_accounts || 0, color: '#f59e0b' },
+        { name: 'Pwd Never Expires', value: a.password_never_expires_count || 0, color: '#d97706' },
+        { name: 'Lateral Paths', value: a.lateral_movement_paths || 0, color: '#ef4444' },
+        { name: 'Writeable Shares', value: a.writeable_shares || 0, color: '#8b5cf6' },
+      ].filter(r => r.value > 0)
+    },
+  },
+  inv_entity_counts: {
+    label: 'Inventory Entity Counts', group: 'Inventory', source: 'inv_summary', type: 'categories',
+    extract: d => {
+      const c = d?.counts || {}
+      return Object.entries(c).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({
+        name: name.replace(/_/g, ' '), value, color: PALETTE[i % PALETTE.length],
+      }))
+    },
+  },
+  inv_netconn_states: {
+    label: 'Connection States', group: 'Inventory', source: 'inv_netconns', type: 'categories',
+    extract: d => {
+      if (!Array.isArray(d)) return []
+      const counts = {}
+      d.forEach(c => { const s = c.state || 'UNKNOWN'; counts[s] = (counts[s] || 0) + 1 })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  inv_software_vendors: {
+    label: 'Top Software Vendors', group: 'Inventory', source: 'inv_software', type: 'categories',
+    extract: d => {
+      if (!Array.isArray(d)) return []
+      const counts = {}
+      d.forEach(s => { const v = s.vendor || 'Unknown'; counts[v] = (counts[v] || 0) + 1 })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  inv_security_ctrl_types: {
+    label: 'Security Control Types', group: 'Inventory', source: 'inv_security_ctrls', type: 'categories',
+    extract: d => {
+      if (!Array.isArray(d)) return []
+      const counts = {}
+      d.forEach(c => { const t = c.control_type || 'unknown'; counts[t] = (counts[t] || 0) + 1 })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  inv_cert_status: {
+    label: 'Certificate Status', group: 'Inventory', source: 'inv_certificates', type: 'categories',
+    extract: d => {
+      if (!Array.isArray(d)) return []
+      let expired = 0, expiring = 0, valid = 0, selfSigned = 0
+      d.forEach(c => {
+        if (c.is_expired) expired++
+        else if (c.days_until_expiry != null && c.days_until_expiry <= 30) expiring++
+        else valid++
+        if (c.is_self_signed) selfSigned++
+      })
+      return [
+        { name: 'Expired', value: expired, color: '#dc2626' },
+        { name: 'Expiring <30d', value: expiring, color: '#f59e0b' },
+        { name: 'Valid', value: valid, color: '#16a34a' },
+        { name: 'Self-Signed', value: selfSigned, color: '#8b5cf6' },
+      ].filter(r => r.value > 0)
+    },
+  },
+  inv_ai_tool_categories: {
+    label: 'AI Tool Categories', group: 'Inventory', source: 'inv_ai_tools', type: 'categories',
+    extract: d => {
+      if (!Array.isArray(d)) return []
+      const counts = {}
+      d.forEach(t => { const c = t.category || 'unknown'; counts[c] = (counts[c] || 0) + 1 })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+
+  // ── Series (line/area/bar-over-time) ──
+  severity_trend: {
+    label: 'Severity Trend', group: 'Severity', source: 'trending', type: 'series',
+    extract: d => Array.isArray(d) ? d : [],
+    xField: 'scan_name', fields: ['critical', 'high', 'medium', 'low'],
+    colors: { critical: '#dc2626', high: '#ea580c', medium: '#d97706', low: '#65a30d' },
+  },
+  risk_trend: {
+    label: 'Risk Score Trend', group: 'Risk', source: 'metrics_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d : [],
+    xField: 'scan_name', fields: ['avg_risk_score', 'max_risk_score'],
+    colors: { avg_risk_score: '#ef4444', max_risk_score: '#dc2626' },
+  },
+  sla_trend: {
+    label: 'SLA Compliance Trend', group: 'SLA & Ops', source: 'metrics_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d : [],
+    xField: 'scan_name', fields: ['sla_compliance_pct'],
+    colors: { sla_compliance_pct: '#16a34a' },
+  },
+  scan_delta: {
+    label: 'Scan Delta', group: 'SLA & Ops', source: 'delta_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d.map(r => ({ ...r, fixed_count: -(r.fixed_count || 0) })) : [],
+    xField: 'scan_name', fields: ['new_count', 'fixed_count'],
+    colors: { new_count: '#ef4444', fixed_count: '#22c55e' },
+  },
+  velocity_trend: {
+    label: 'Remediation Velocity', group: 'SLA & Ops', source: 'velocity', type: 'series',
+    extract: d => (d?.buckets || []).slice(-8),
+    xField: 'period_label', fields: ['resolved', 'critical', 'high'],
+    colors: { resolved: '#6366f1', critical: '#dc2626', high: '#ea580c' },
+  },
+  metrics_overview: {
+    label: 'Metrics Overview', group: 'Risk', source: 'metrics_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d : [],
+    xField: 'scan_name', fields: ['total_findings', 'actionable_findings', 'exploit_count'],
+    colors: { total_findings: '#6366f1', actionable_findings: '#8b5cf6', exploit_count: '#f59e0b' },
+  },
+  workflow_trend: {
+    label: 'Workflow States', group: 'SLA & Ops', source: 'metrics_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d : [],
+    xField: 'scan_name', fields: ['workflow_open', 'workflow_in_progress', 'workflow_resolved'],
+    colors: { workflow_open: '#6b7280', workflow_in_progress: '#3b82f6', workflow_resolved: '#22c55e' },
+  },
+  critical_trend: {
+    label: 'Critical Trend', group: 'Severity', source: 'metrics_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d : [],
+    xField: 'scan_name', fields: ['critical'],
+    colors: { critical: '#dc2626' },
+  },
+  high_trend: {
+    label: 'High Trend', group: 'Severity', source: 'metrics_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d : [],
+    xField: 'scan_name', fields: ['high'],
+    colors: { high: '#ea580c' },
+  },
+  exploit_trend: {
+    label: 'Exploit Count Trend', group: 'Risk', source: 'metrics_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d : [],
+    xField: 'scan_name', fields: ['exploit_count'],
+    colors: { exploit_count: '#f59e0b' },
+  },
+  asset_count_trend: {
+    label: 'Asset Count Trend', group: 'Assets & Findings', source: 'metrics_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d : [],
+    xField: 'scan_name', fields: ['total_assets'],
+    colors: { total_assets: '#6366f1' },
+  },
+  finding_count_trend: {
+    label: 'Finding Count Trend', group: 'Assets & Findings', source: 'metrics_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d : [],
+    xField: 'scan_name', fields: ['total_findings', 'actionable_findings'],
+    colors: { total_findings: '#6366f1', actionable_findings: '#8b5cf6' },
+  },
+  sla_breakdown_trend: {
+    label: 'SLA Breakdown Trend', group: 'SLA & Ops', source: 'metrics_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d : [],
+    xField: 'scan_name', fields: ['sla_on_track', 'sla_at_risk', 'sla_breached'],
+    colors: { sla_on_track: '#16a34a', sla_at_risk: '#d97706', sla_breached: '#dc2626' },
+  },
+  mttr_trend: {
+    label: 'MTTR Trend (days)', group: 'SLA & Ops', source: 'metrics_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d.filter(r => r.avg_mttr_days != null) : [],
+    xField: 'scan_name', fields: ['avg_mttr_days'],
+    colors: { avg_mttr_days: '#8b5cf6' },
+  },
+  full_severity_trend: {
+    label: 'Full Severity Trend', group: 'Severity', source: 'metrics_timeline', type: 'series',
+    extract: d => Array.isArray(d) ? d : [],
+    xField: 'scan_name', fields: ['critical', 'high', 'medium', 'low', 'info'],
+    colors: { critical: '#dc2626', high: '#ea580c', medium: '#d97706', low: '#65a30d', info: '#0ea5e9' },
+  },
+
+  // ── Tables ──
+  top_assets: {
+    label: 'Top Risky Assets', group: 'Assets & Findings', source: 'summary', type: 'table',
+    extract: d => (d?.top_risky_assets || []),
+    columns: [
+      { key: 'hostname', label: 'Asset' },
+      { key: 'os', label: 'OS' },
+      { key: 'critical_count', label: 'C' },
+      { key: 'high_count', label: 'H' },
+      { key: 'medium_count', label: 'M' },
+      { key: 'risk_score', label: 'Risk', render: v => v?.toFixed?.(1) },
+    ],
+  },
+  tag_benchmark: {
+    label: 'Tag Benchmark', group: 'Tags', source: 'risk_by_tags', type: 'table',
+    extract: d => (d?.groups || []).filter(g => g.asset_count > 0),
+    columns: [
+      { key: 'rank', label: '#' },
+      { key: 'value', label: 'Group' },
+      { key: 'grade', label: 'Grade' },
+      { key: 'avg_risk_score', label: 'Risk' },
+      { key: 'asset_count', label: 'Assets' },
+      { key: 'finding_count', label: 'Findings' },
+      { key: 'finding_density', label: 'Density' },
+      { key: 'sla_compliance', label: 'SLA', render: v => v != null ? `${v}%` : 'N/A' },
+    ],
+  },
+  remediation_queue_data: {
+    label: 'Remediation Queue', group: 'Assets & Findings', source: 'remediation_queue', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'plugin_name', label: 'Finding' },
+      { key: 'severity_label', label: 'Sev' },
+      { key: 'asset_hostname', label: 'Asset', fallback: 'asset_ip' },
+      { key: 'effort_level', label: 'Effort' },
+      { key: 'priority_score', label: 'Priority', render: v => v?.toFixed?.(1) },
+    ],
+  },
+  findings_list: {
+    label: 'Findings List', group: 'Assets & Findings', source: 'findings', type: 'table',
+    extract: d => d?.findings || [],
+    columns: [
+      { key: 'severity_label', label: 'Sev' },
+      { key: 'plugin_name', label: 'Plugin' },
+      { key: 'asset_hostname', label: 'Asset', fallback: 'asset_ip' },
+      { key: 'priority_score', label: 'Priority', render: v => v?.toFixed?.(1) },
+    ],
+  },
+  scan_delta_history: {
+    label: 'Scan Delta History', group: 'SLA & Ops', source: 'delta_timeline', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'scan_name', label: 'Scan' },
+      { key: 'scan_date', label: 'Date', render: v => v ? new Date(v).toLocaleDateString() : '—' },
+      { key: 'new_count', label: 'New' },
+      { key: 'fixed_count', label: 'Fixed' },
+      { key: 'recurring_count', label: 'Recurring' },
+      { key: 'net_change', label: 'Net' },
+    ],
+  },
+  automation_wishlist: {
+    label: 'Automation Wishlist', group: 'SLA & Ops', source: 'automation_wishlist', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'plugin_name', label: 'Finding' },
+      { key: 'click_count', label: 'Requests' },
+      { key: 'severity_label', label: 'Severity' },
+      { key: 'plugin_family', label: 'Family' },
+    ],
+  },
+  asset_list: {
+    label: 'Asset List', group: 'Assets & Findings', source: 'assets', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'hostname', label: 'Hostname', fallback: 'ip' },
+      { key: 'os', label: 'OS' },
+      { key: 'environment_tag', label: 'Env' },
+      { key: 'critical_count', label: 'C' },
+      { key: 'high_count', label: 'H' },
+      { key: 'risk_score', label: 'Risk', render: v => v?.toFixed?.(1) },
+    ],
+  },
+  // ── Inventory tables ──
+  inv_users_table: {
+    label: 'Users', group: 'Inventory', source: 'inv_users', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'username', label: 'Username' },
+      { key: 'domain', label: 'Domain' },
+      { key: 'user_type', label: 'Type' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+      { key: 'is_local_admin', label: 'Admin', render: v => v ? 'Yes' : '' },
+      { key: 'is_domain_admin', label: 'DA', render: v => v ? 'Yes' : '' },
+      { key: 'is_privileged', label: 'Priv', render: v => v ? 'Yes' : '' },
+    ],
+  },
+  inv_groups_table: {
+    label: 'Groups', group: 'Inventory', source: 'inv_groups', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'group_name', label: 'Group' },
+      { key: 'domain', label: 'Domain' },
+      { key: 'is_privileged', label: 'Privileged', render: v => v ? 'Yes' : '' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+      { key: 'members', label: 'Members', render: v => Array.isArray(v) ? v.length : 0 },
+    ],
+  },
+  inv_services_table: {
+    label: 'Services', group: 'Inventory', source: 'inv_services', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'display_name', label: 'Service', fallback: 'service_name' },
+      { key: 'is_running', label: 'Running', render: v => v ? 'Yes' : 'No' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
+  inv_software_table: {
+    label: 'Software', group: 'Inventory', source: 'inv_software', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'name', label: 'Name' },
+      { key: 'version', label: 'Version' },
+      { key: 'vendor', label: 'Vendor' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
+  inv_logged_on_table: {
+    label: 'Logged On Users', group: 'Inventory', source: 'inv_logged_on', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'username', label: 'Username' },
+      { key: 'domain', label: 'Domain' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
+  inv_netconns_table: {
+    label: 'Network Connections', group: 'Inventory', source: 'inv_netconns', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'local_addr', label: 'Local' },
+      { key: 'local_port', label: 'Port' },
+      { key: 'remote_addr', label: 'Remote' },
+      { key: 'remote_port', label: 'R.Port' },
+      { key: 'state', label: 'State' },
+      { key: 'proto', label: 'Proto' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
+  inv_patches_table: {
+    label: 'Missing Patches', group: 'Inventory', source: 'inv_patches', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'kb_id', label: 'KB' },
+      { key: 'vuln_count', label: 'Vulns' },
+      { key: 'description', label: 'Description' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
+  inv_shares_table: {
+    label: 'Network Shares', group: 'Inventory', source: 'inv_shares', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'share_name', label: 'Share' },
+      { key: 'path', label: 'Path' },
+      { key: 'is_writeable', label: 'Writeable', render: v => v ? 'Yes' : '' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
+  inv_tasks_table: {
+    label: 'Scheduled Tasks', group: 'Inventory', source: 'inv_tasks', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'task_uri', label: 'Task' },
+      { key: 'command', label: 'Command' },
+      { key: 'run_as_user', label: 'Run As', fallback: 'run_as_sid' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
+  inv_computers_table: {
+    label: 'Computers', group: 'Inventory', source: 'inv_computers', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'computer_name', label: 'Name' },
+      { key: 'os', label: 'OS' },
+      { key: 'is_domain_controller', label: 'DC', render: v => v ? 'Yes' : '' },
+      { key: 'is_disabled', label: 'Disabled', render: v => v ? 'Yes' : '' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
+  inv_certificates_table: {
+    label: 'Certificates', group: 'Inventory', source: 'inv_certificates', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'subject_cn', label: 'Subject' },
+      { key: 'issuer_cn', label: 'Issuer' },
+      { key: 'not_after', label: 'Expires', render: v => v ? new Date(v).toLocaleDateString() : '—' },
+      { key: 'is_expired', label: 'Expired', render: v => v ? 'Yes' : '' },
+      { key: 'is_self_signed', label: 'Self-Signed', render: v => v ? 'Yes' : '' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
+  inv_pw_policies_table: {
+    label: 'Password Policies', group: 'Inventory', source: 'inv_pw_policies', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'domain', label: 'Domain' },
+      { key: 'min_length', label: 'Min Len' },
+      { key: 'max_age_days', label: 'Max Age' },
+      { key: 'complexity_enabled', label: 'Complexity', render: v => v ? 'Yes' : 'No' },
+      { key: 'lockout_threshold', label: 'Lockout' },
+      { key: 'is_weak', label: 'Weak', render: v => v ? 'Yes' : '' },
+    ],
+  },
+  inv_security_ctrls_table: {
+    label: 'Security Controls', group: 'Inventory', source: 'inv_security_ctrls', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'product_name', label: 'Product' },
+      { key: 'control_type', label: 'Type' },
+      { key: 'is_enabled', label: 'Enabled', render: v => v ? 'Yes' : 'No' },
+      { key: 'is_up_to_date', label: 'Updated', render: v => v ? 'Yes' : 'No' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
+  inv_ai_tools_table: {
+    label: 'AI Tools', group: 'Inventory', source: 'inv_ai_tools', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'tool_name', label: 'Tool' },
+      { key: 'category', label: 'Category' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
+  inv_processes_table: {
+    label: 'Processes', group: 'Inventory', source: 'inv_processes', type: 'table',
+    extract: d => Array.isArray(d) ? d : [],
+    columns: [
+      { key: 'process_name', label: 'Process' },
+      { key: 'pid', label: 'PID' },
+      { key: 'parent_name', label: 'Parent' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
+  inv_top_patches: {
+    label: 'Top Missing Patches', group: 'Inventory', source: 'inv_summary', type: 'table',
+    extract: d => (d?.attack_surface?.top_missing_patches || []),
+    columns: [
+      { key: 'kb_id', label: 'KB' },
+      { key: 'vuln_count', label: 'Vulns' },
+      { key: 'affected_hosts', label: 'Hosts' },
+    ],
+  },
+}
+
+const PRESET_GROUPS = ['Severity', 'Risk', 'Temporal', 'SLA & Ops', 'Tags', 'Assets & Findings', 'Inventory', 'Filtered']
+
+// ─── Widget catalogue ────────────────────────────────────────────────────────
+
+const WIDGET_CATALOGUE = [
+  {
+    category: 'Charts',
+    items: [
+      { type: 'bar_chart',  label: 'Bar Chart',  icon: BarChart2,    desc: 'Vertical or horizontal bars', defaultWidth: 'full',  defaultConfig: { preset: 'severity_breakdown' } },
+      { type: 'line_chart', label: 'Line Chart',  icon: TrendingUp,   desc: 'Line or area over time',      defaultWidth: 'full',  defaultConfig: { preset: 'severity_trend' } },
+      { type: 'pie_chart',  label: 'Pie / Donut', icon: PieChartIcon, desc: 'Proportional breakdown',      defaultWidth: 'half',  defaultConfig: { preset: 'severity_breakdown', donut: true } },
+    ],
+  },
+  {
+    category: 'Data',
+    items: [
+      { type: 'card',    label: 'Metric Card', icon: Hash,     desc: 'Single number highlight', defaultWidth: 'quarter', defaultConfig: { preset: 'critical_count' } },
+      { type: 'table',   label: 'Data Table',  icon: Table2,   desc: 'Tabular data view',       defaultWidth: 'full',    defaultConfig: { preset: 'top_assets', limit: 10 } },
+      { type: 'heatmap', label: 'Heatmap',     icon: LayoutGrid, desc: 'Severity by family matrix', defaultWidth: 'full', defaultConfig: {} },
+    ],
+  },
+  {
+    category: 'Layout',
+    items: [
+      { type: 'header',  label: 'Header',  icon: PenLine,   desc: 'Section title & subtitle', defaultWidth: 'full', defaultConfig: { title: 'Section Title', subtitle: '' } },
+      { type: 'divider', label: 'Divider',  icon: AlignLeft, desc: 'Horizontal rule',          defaultWidth: 'full', defaultConfig: {} },
+      { type: 'image',   label: 'Image',    icon: Upload,    desc: 'Embed an image via URL',   defaultWidth: 'half', defaultConfig: { url: '' } },
+    ],
+  },
+]
+
+const WIDTH_OPTIONS = [
+  { value: 'quarter', label: '1/4 Width' },
+  { value: 'third', label: '1/3 Width' },
+  { value: 'half', label: '1/2 Width' },
+  { value: 'two-thirds', label: '2/3 Width' },
+  { value: 'full', label: 'Full Width' },
+]
+const WIDTH_COL = { quarter: 1, third: 1, half: 2, 'two-thirds': 3, full: 4 }
+
+// ─── OOTB templates ──────────────────────────────────────────────────────────
 
 const DEFAULT_DASHBOARD = {
   id: DEFAULT_REPORT_ID,
   name: 'Security Overview',
   createdAt: new Date(0).toISOString(),
   widgets: [
-    { id: 'dw1', type: 'stat_card', title: 'Critical', width: 'quarter', config: { metric: 'critical', label: 'Critical Findings' } },
-    { id: 'dw2', type: 'stat_card', title: 'High', width: 'quarter', config: { metric: 'high', label: 'High Findings' } },
-    { id: 'dw3', type: 'stat_card', title: 'With Exploit', width: 'quarter', config: { metric: 'exploit_count', label: 'Known Exploits' } },
-    { id: 'dw4', type: 'stat_card', title: 'Assets', width: 'quarter', config: { metric: 'total_assets', label: 'Assets Scanned' } },
-    { id: 'dw5', type: 'severity_chart', title: 'Severity Breakdown', width: 'half', config: { chartType: 'donut' } },
-    { id: 'dw6', type: 'trend_chart', title: 'Vulnerability Trend', width: 'half', config: {} },
-    { id: 'dw7', type: 'metrics_timeline', title: 'Severity Over Time', width: 'full', config: { preset: 'severity', series: ['critical', 'high', 'medium', 'low'], chartType: 'line' } },
-    { id: 'dw7b', type: 'scan_delta_chart', title: 'Scan Delta — New vs Fixed', width: 'full', config: {} },
-    { id: 'dw8', type: 'owner_chart', title: 'Findings by Owner', width: 'half', config: {} },
-    { id: 'dw9', type: 'sla_widget', title: 'SLA Compliance', width: 'half', config: {} },
-    { id: 'dw10', type: 'effort_chart', title: 'Remediation Effort', width: 'half', config: { chartType: 'donut' } },
-    { id: 'dw11', type: 'automation_wishlist', title: 'Automation Wishlist', width: 'half', config: { limit: 5 } },
-    { id: 'dw12', type: 'scan_delta_table', title: 'Scan Delta History', width: 'full', config: {} },
-    { id: 'dw13', type: 'family_chart', title: 'Top Vulnerability Families', width: 'full', config: { limit: 8 } },
-    { id: 'dw14', type: 'remediation_queue', title: 'Remediation Queue', width: 'full', config: { limit: 8 } },
+    { id: 'dw1', type: 'card',      title: 'Critical',              width: 'quarter', config: { preset: 'critical_count' } },
+    { id: 'dw2', type: 'card',      title: 'High',                  width: 'quarter', config: { preset: 'high_count' } },
+    { id: 'dw3', type: 'card',      title: 'With Exploit',          width: 'quarter', config: { preset: 'exploit_count' } },
+    { id: 'dw4', type: 'card',      title: 'Assets',                width: 'quarter', config: { preset: 'total_assets' } },
+    { id: 'dw5', type: 'pie_chart', title: 'Severity Breakdown',    width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
+    { id: 'dw6', type: 'line_chart',title: 'Vulnerability Trend',   width: 'half',    config: { preset: 'severity_trend' } },
+    { id: 'dw7', type: 'bar_chart', title: 'Top Plugin Families',   width: 'full',    config: { preset: 'family_breakdown' } },
+    { id: 'dw8', type: 'line_chart',title: 'Risk Score Trend',      width: 'full',    config: { preset: 'risk_trend' } },
+    { id: 'dw9', type: 'pie_chart', title: 'Effort Distribution',   width: 'half',    config: { preset: 'effort_breakdown', donut: true } },
+    { id: 'dw10',type: 'pie_chart', title: 'SLA Status',            width: 'half',    config: { preset: 'sla_status', donut: true } },
+    { id: 'dw11',type: 'table',     title: 'Top Risky Assets',      width: 'full',    config: { preset: 'top_assets', limit: 10 } },
+    { id: 'dw12',type: 'table',     title: 'Remediation Queue',     width: 'full',    config: { preset: 'remediation_queue_data', limit: 10 } },
   ],
 }
 
-// ─── Widget catalogue ────────────────────────────────────────────────────────
-
-const WIDGET_CATALOGUE = [
-  {
-    category: 'Summary',
-    items: [
-      { type: 'stat_card', label: 'Stat Card', icon: Hash, desc: 'Single metric number', defaultWidth: 'quarter', defaultConfig: { metric: 'critical', label: 'Critical Findings' } },
-      { type: 'severity_chart', label: 'Severity Breakdown', icon: PieChartIcon, desc: 'Findings by severity level', defaultWidth: 'half', defaultConfig: { chartType: 'pie' } },
-      { type: 'effort_chart', label: 'Effort Distribution', icon: Wrench, desc: 'Quick win vs complex split', defaultWidth: 'half', defaultConfig: { chartType: 'donut' } },
-      { type: 'owner_chart', label: 'Owner Breakdown', icon: Users, desc: 'Findings by responsible team', defaultWidth: 'half', defaultConfig: {} },
-    ]
-  },
-  {
-    category: 'Assets & Findings',
-    items: [
-      { type: 'asset_table', label: 'Asset Risk Table', icon: Server, desc: 'Assets ranked by risk score', defaultWidth: 'full', defaultConfig: { limit: 10 } },
-      { type: 'family_chart', label: 'Plugin Families', icon: BarChart2, desc: 'Top vulnerability families', defaultWidth: 'full', defaultConfig: { limit: 8 } },
-      { type: 'findings_table', label: 'Findings Table', icon: Bug, desc: 'Filterable findings list', defaultWidth: 'full', defaultConfig: { limit: 10, severity: '', family: '' } },
-    ]
-  },
-  {
-    category: 'Remediation',
-    items: [
-      { type: 'remediation_queue', label: 'Remediation Queue', icon: Shield, desc: 'Top prioritized findings', defaultWidth: 'full', defaultConfig: { limit: 8, effort: '', owner: '' } },
-    ]
-  },
-  {
-    category: 'Custom',
-    items: [
-      { type: 'text_block', label: 'Text / Notes', icon: AlignLeft, desc: 'Free-text annotation block', defaultWidth: 'full', defaultConfig: { content: 'Add your notes here...', fontSize: '14' } },
-      { type: 'section_header', label: 'Section Header', icon: PenLine, desc: 'Visual divider with title', defaultWidth: 'full', defaultConfig: { title: 'Section Title', subtitle: '' } },
-    ]
-  },
-  {
-    category: 'Trends & Ops',
-    items: [
-      { type: 'trend_chart', label: 'Trend Chart', icon: TrendingUp, desc: 'Vulnerability trend across scans', defaultWidth: 'full', defaultConfig: {} },
-      { type: 'metrics_timeline', label: 'Metric Timeline', icon: TrendingUp, desc: 'Any metric over time (SLA, MTTR, risk, counts…)', defaultWidth: 'full', defaultConfig: { preset: 'severity', series: ['critical', 'high', 'medium', 'low'] } },
-      { type: 'scan_delta_chart', label: 'Scan Delta Chart', icon: GitCompare, desc: 'New vs fixed findings per scan', defaultWidth: 'full', defaultConfig: {} },
-      { type: 'scan_delta_table', label: 'Scan Delta History', icon: Activity, desc: 'Scan-over-scan change table', defaultWidth: 'full', defaultConfig: {} },
-      { type: 'sla_widget', label: 'SLA Compliance', icon: Clock, desc: 'SLA status and MTTR by severity', defaultWidth: 'half', defaultConfig: {} },
-      { type: 'automation_wishlist', label: 'Automation Wishlist', icon: Zap, desc: 'Most-requested automation findings', defaultWidth: 'half', defaultConfig: { limit: 5 } },
-      { type: 'temporal_summary', label: 'Finding Age & Regressions', icon: Clock, desc: 'Age distribution, zombie vulns, and regression alerts', defaultWidth: 'half', defaultConfig: {} },
-      { type: 'velocity_chart', label: 'Remediation Velocity', icon: Activity, desc: 'Findings resolved per month/week with trend', defaultWidth: 'half', defaultConfig: { period: 'month' } },
-    ]
-  },
-]
-
-const WIDTH_OPTIONS = [
-  { value: 'quarter', label: '¼ Width' },
-  { value: 'third', label: '⅓ Width' },
-  { value: 'half', label: '½ Width' },
-  { value: 'two-thirds', label: '⅔ Width' },
-  { value: 'full', label: 'Full Width' },
-]
-const WIDTH_COL = { quarter: 1, third: 1, half: 2, 'two-thirds': 3, full: 4 }
-
-const STAT_METRICS = [
-  { value: 'critical', label: 'Critical Findings' },
-  { value: 'high', label: 'High Findings' },
-  { value: 'medium', label: 'Medium Findings' },
-  { value: 'total_findings', label: 'Total Findings' },
-  { value: 'total_assets', label: 'Total Assets' },
-  { value: 'exploit_count', label: 'With Known Exploit' },
-  { value: 'high_priority_count', label: 'High Priority (≥7.0)' },
-]
+const EXECUTIVE_DASHBOARD = {
+  id: 'default-executive-overview',
+  name: 'Executive Overview',
+  createdAt: new Date(0).toISOString(),
+  widgets: [
+    { id: 'ex1', type: 'card',      title: 'Critical',              width: 'quarter', config: { preset: 'critical_count' } },
+    { id: 'ex2', type: 'card',      title: 'SLA Compliance',        width: 'quarter', config: { preset: 'sla_compliance' } },
+    { id: 'ex3', type: 'card',      title: 'Exploitable',           width: 'quarter', config: { preset: 'exploit_count' } },
+    { id: 'ex4', type: 'card',      title: 'Quick Wins',            width: 'quarter', config: { preset: 'quick_wins' } },
+    { id: 'ex5', type: 'pie_chart', title: 'Severity Distribution', width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
+    { id: 'ex6', type: 'pie_chart', title: 'SLA Status',            width: 'half',    config: { preset: 'sla_status', donut: true } },
+    { id: 'ex7', type: 'bar_chart', title: 'Risk by Business Unit', width: 'full',    config: { preset: 'risk_by_tags', horizontal: true } },
+    { id: 'ex8', type: 'table',     title: 'Business Unit Benchmark', width: 'full',  config: { preset: 'tag_benchmark' } },
+    { id: 'ex9', type: 'line_chart',title: 'Risk Score Trend',      width: 'half',    config: { preset: 'risk_trend' } },
+    { id: 'ex10',type: 'line_chart',title: 'SLA Compliance Trend',  width: 'half',    config: { preset: 'sla_trend', areaFill: true } },
+    { id: 'ex11',type: 'bar_chart', title: 'Remediation Velocity',  width: 'half',    config: { preset: 'velocity_trend', stacked: true } },
+    { id: 'ex12',type: 'line_chart',title: 'Severity Trend',        width: 'half',    config: { preset: 'severity_trend' } },
+  ],
+}
 
 // ─── Live widget renderers ────────────────────────────────────────────────────
 
-const SEV_COLORS = ['#0ea5e9', '#65a30d', '#d97706', '#ea580c', '#dc2626']
-const EFFORT_COLORS = { quick_win: '#16a34a', medium: '#d97706', complex: '#dc2626' }
-
-function useWidgetData(type, scanId) {
+function useWidgetData(sourceId, scanId, filters) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const filtersKey = JSON.stringify(filters || {})
 
   useEffect(() => {
+    if (!sourceId || !DATA_SOURCES[sourceId]) { setLoading(false); return }
     setLoading(true)
     let cancelled = false
-
-    const fetchers = {
-      stat_card: () => getSummary(scanId),
-      severity_chart: () => getSummary(scanId),
-      effort_chart: () => getSummary(scanId),
-      owner_chart: () => getSummary(scanId),
-      family_chart: () => getSummary(scanId),
-      asset_table: () => getAssets({ scan_id: scanId }),
-      findings_table: () => getFindings({ scan_id: scanId, page_size: 50 }),
-      remediation_queue: () => getRemediationQueue({ scan_id: scanId, limit: 20 }),
-      trend_chart: () => getTrending(),
-      metrics_timeline: () => getMetricsTimeline(),
-      scan_delta_chart: () => getScanDeltaTimeline(),
-      scan_delta_table: () => getScanDeltaTimeline(),
-      sla_widget: () => getSLASummary(scanId),
-      automation_wishlist: () => getAutomateClicks(),
-      temporal_summary: () => getTemporalSummary(scanId),
-      velocity_chart: () => getRemediationVelocity('month'),
-    }
-
-    const fetch = fetchers[type]
-    if (!fetch) { setLoading(false); return }
-
-    fetch().then(d => { if (!cancelled) { setData(d); setLoading(false) } })
-           .catch(() => { if (!cancelled) setLoading(false) })
-
+    DATA_SOURCES[sourceId](scanId, filters)
+      .then(d => { if (!cancelled) { setData(d); setLoading(false) } })
+      .catch(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [type, scanId])
+  }, [sourceId, scanId, filtersKey])
 
   return { data, loading }
 }
 
+const TOOLTIP_STYLE = { background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }
+const TICK_STYLE = { fill: 'var(--text-muted)', fontSize: 11 }
+
+function truncLabel(s, max = 18) { return (s || '').length > max ? s.slice(0, max) + '...' : s || '' }
+
 function WidgetRenderer({ widget, scanId, preview }) {
-  const { data, loading } = useWidgetData(widget.type, scanId)
-  const navigate = useNavigate()
-  const go = (path) => navigate(path)
   const cfg = widget.config || {}
+  const preset = DATA_PRESETS[cfg.preset]
+  const sourceId = preset?.source || null
+  const filters = { ...(cfg.filters || {}), category: cfg.category, period: cfg.period }
+  const { data, loading } = useWidgetData(sourceId, scanId, filters)
 
-  if (widget.type === 'text_block') {
-    return (
-      <div style={{ fontSize: parseInt(cfg.fontSize || 14), color: 'var(--text-secondary)', lineHeight: 1.7, whiteSpace: 'pre-wrap', minHeight: 60 }}>
-        {cfg.content || 'No content set.'}
-      </div>
-    )
-  }
-
-  if (widget.type === 'section_header') {
+  // Layout widgets — no data needed
+  if (widget.type === 'header') {
     return (
       <div style={{ borderLeft: '3px solid var(--accent)', paddingLeft: 14 }}>
         <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)' }}>{cfg.title || 'Section'}</div>
@@ -233,384 +902,156 @@ function WidgetRenderer({ widget, scanId, preview }) {
       </div>
     )
   }
+  if (widget.type === 'divider') {
+    return <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '8px 0' }} />
+  }
+  if (widget.type === 'image') {
+    return cfg.url
+      ? <img src={cfg.url} alt={widget.title || 'Image'} style={{ maxWidth: '100%', borderRadius: 8 }} />
+      : <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Set an image URL in widget config</div>
+  }
 
+  // Data widgets
   if (loading) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 100 }}><Spinner /></div>
-  if (!data) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data available</div>
+  if (!data || !preset) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data available</div>
+
+  const extracted = preset.extract(data)
 
   switch (widget.type) {
-    case 'stat_card': {
-      const summary = data
-      const metricValues = {
-        critical: summary.severity_breakdown?.critical ?? 0,
-        high: summary.severity_breakdown?.high ?? 0,
-        medium: summary.severity_breakdown?.medium ?? 0,
-        total_findings: summary.total_findings ?? 0,
-        total_assets: summary.total_assets ?? 0,
-        exploit_count: summary.exploit_count ?? 0,
-        high_priority_count: summary.high_priority_count ?? 0,
-      }
-      const METRIC_COLORS = {
-        critical: '#dc2626', high: '#ea580c', medium: '#d97706',
-        total_findings: 'var(--text-primary)', total_assets: '#6366f1',
-        exploit_count: '#f59e0b', high_priority_count: '#ea580c',
-      }
-      const METRIC_LINKS = {
-        critical: '/findings?severity=4', high: '/findings?severity=3', medium: '/findings?severity=2',
-        total_findings: '/findings', total_assets: '/assets',
-        exploit_count: '/findings?exploit=true', high_priority_count: '/findings',
-      }
-      const val = metricValues[cfg.metric] ?? 0
-      const color = METRIC_COLORS[cfg.metric] || 'var(--text-primary)'
-      const link = METRIC_LINKS[cfg.metric]
+    case 'card': {
+      const val = typeof extracted === 'number' ? extracted : 0
+      const display = preset.format === 'pct' ? `${val}%` : val.toLocaleString()
+      const color = preset.color || 'var(--text-primary)'
       return (
-        <div onClick={link ? () => go(link) : undefined}
-          style={{ textAlign: 'center', padding: '8px 0', cursor: link ? 'pointer' : 'default' }}>
-          <div style={{ fontSize: 48, fontWeight: 800, color, lineHeight: 1 }}>{val.toLocaleString()}</div>
-          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8 }}>{cfg.label || 'Findings'}</div>
+        <div style={{ textAlign: 'center', padding: '8px 0' }}>
+          <div style={{ fontSize: 48, fontWeight: 800, color, lineHeight: 1 }}>{display}</div>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8 }}>{cfg.label || preset.label}</div>
         </div>
       )
     }
 
-    case 'severity_chart': {
-      const sev = data.severity_breakdown || {}
-      const labels = ['Info', 'Low', 'Medium', 'High', 'Critical']
-      const pieData = labels.map((l, i) => ({ name: l, severity: i, value: sev[l.toLowerCase()] || 0, color: SEV_COLORS[i] })).filter(d => d.value > 0)
-      const isBar = cfg.chartType === 'bar'
-      const tooltipStyle = { background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }
+    case 'pie_chart': {
+      if (!Array.isArray(extracted) || extracted.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data</div>
+      const items = extracted.map((d, i) => ({ ...d, color: d.color || PALETTE[i % PALETTE.length] }))
       return (
-        <ResponsiveContainer width="100%" height={180}>
-          {isBar ? (
-            <BarChart data={pieData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="name" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
-              <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Bar dataKey="value" radius={[4, 4, 0, 0]} cursor="pointer"
-                onClick={e => go(`/findings?severity=${e.severity}`)}>
-                {pieData.map((e, i) => <Cell key={i} fill={e.color} />)}
-              </Bar>
-            </BarChart>
-          ) : (
-            <PieChart>
-              <Pie data={pieData} cx="50%" cy="50%" innerRadius={cfg.chartType === 'donut' ? 50 : 0} outerRadius={70} paddingAngle={2} dataKey="value"
-                cursor="pointer"
-                onClick={e => go(`/findings?severity=${e.severity}`)}>
-                {pieData.map((e, i) => <Cell key={i} fill={e.color} />)}
-              </Pie>
-              <Tooltip contentStyle={tooltipStyle} />
-              <Legend iconType="circle" iconSize={9} formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{v}</span>} />
-            </PieChart>
-          )}
-        </ResponsiveContainer>
-      )
-    }
-
-    case 'effort_chart': {
-      const eb = data.effort_breakdown || {}
-      const EFFORT_KEYS = { 'Quick Win': 'quick_win', 'Medium': 'medium', 'Complex': 'complex' }
-      const effortData = [
-        { name: 'Quick Win', value: eb.quick_win || 0, color: '#16a34a' },
-        { name: 'Medium', value: eb.medium || 0, color: '#d97706' },
-        { name: 'Complex', value: eb.complex || 0, color: '#dc2626' },
-      ].filter(d => d.value > 0)
-      return (
-        <ResponsiveContainer width="100%" height={180}>
+        <ResponsiveContainer width="100%" height={200}>
           <PieChart>
-            <Pie data={effortData} cx="50%" cy="50%" innerRadius={50} outerRadius={70} paddingAngle={2} dataKey="value"
-              cursor="pointer"
-              onClick={e => go(`/findings?effort=${EFFORT_KEYS[e.name] || ''}`)}>
-              {effortData.map((e, i) => <Cell key={i} fill={e.color} />)}
+            <Pie data={items} cx="50%" cy="50%" innerRadius={cfg.donut ? 50 : 0} outerRadius={70} paddingAngle={2} dataKey="value">
+              {items.map((e, i) => <Cell key={i} fill={e.color} />)}
             </Pie>
-            <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
+            <Tooltip contentStyle={TOOLTIP_STYLE} />
             <Legend iconType="circle" iconSize={9} formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{v}</span>} />
           </PieChart>
         </ResponsiveContainer>
       )
     }
 
-    case 'owner_chart': {
-      const ownerData = (data.owner_breakdown || []).map(o => ({ name: o.owner || 'Unknown', value: o.count }))
-      return (
-        <ResponsiveContainer width="100%" height={180}>
-          <BarChart data={ownerData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-            <XAxis dataKey="name" tick={{ fill: 'var(--text-secondary)', fontSize: 12 }} />
-            <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
-            <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-            <Bar dataKey="value" fill="#6366f1" radius={[4, 4, 0, 0]} cursor="pointer"
-              onClick={e => go(`/findings?owner=${encodeURIComponent(e.name)}`)} />
-          </BarChart>
-        </ResponsiveContainer>
-      )
-    }
-
-    case 'family_chart': {
-      const limit = parseInt(cfg.limit || 8)
-      const families = (data.top_plugin_families || []).slice(0, limit).map(f => ({ family: f.family || 'Unknown', count: f.count }))
-      return (
-        <ResponsiveContainer width="100%" height={Math.max(160, families.length * 28)}>
-          <BarChart data={families} layout="vertical">
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
-            <XAxis type="number" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
-            <YAxis type="category" dataKey="family" tick={{ fill: 'var(--text-secondary)', fontSize: 11 }} width={160} />
-            <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-            <Bar dataKey="count" fill="#6366f1" radius={[0, 4, 4, 0]} cursor="pointer"
-              onClick={e => e.family && go(`/findings?family=${encodeURIComponent(e.family)}`)} />
-          </BarChart>
-        </ResponsiveContainer>
-      )
-    }
-
-    case 'asset_table': {
-      const limit = parseInt(cfg.limit || 10)
-      const assets = (Array.isArray(data) ? data : []).slice(0, limit)
-      return (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead>
-            <tr style={{ borderBottom: '1px solid var(--border)' }}>
-              {['Asset', 'OS', 'C', 'H', 'M', 'Risk Score'].map(h => (
-                <th key={h} style={{ padding: '6px 8px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase' }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {assets.map((a, i) => (
-              <tr key={i} onClick={() => go(`/assets?id=${a.id}`)}
-                style={{ borderBottom: '1px solid rgba(45,49,85,0.4)', cursor: 'pointer', transition: 'opacity 0.15s' }}
-                onMouseEnter={e => e.currentTarget.style.opacity = '0.75'}
-                onMouseLeave={e => e.currentTarget.style.opacity = '1'}>
-                <td style={{ padding: '6px 8px', fontWeight: 500 }}>{a.hostname || a.ip}</td>
-                <td style={{ padding: '6px 8px', color: 'var(--text-muted)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.os ? a.os.split(' ').slice(0, 3).join(' ') : '—'}</td>
-                <td style={{ padding: '6px 8px', color: '#dc2626', fontWeight: 600 }}>{a.critical_count}</td>
-                <td style={{ padding: '6px 8px', color: '#ea580c', fontWeight: 600 }}>{a.high_count}</td>
-                <td style={{ padding: '6px 8px', color: '#d97706', fontWeight: 600 }}>{a.medium_count}</td>
-                <td style={{ padding: '6px 8px', minWidth: 120 }}><ScoreBar score={a.risk_score} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )
-    }
-
-    case 'findings_table': {
-      const limit = parseInt(cfg.limit || 10)
-      const findings = (data.findings || []).slice(0, limit)
-      return (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead>
-            <tr style={{ borderBottom: '1px solid var(--border)' }}>
-              {['Sev', 'Plugin', 'Asset', 'Priority'].map(h => (
-                <th key={h} style={{ padding: '6px 8px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase' }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {findings.map((f, i) => (
-              <tr key={i} onClick={() => go(`/findings/${f.id}`)}
-                style={{ borderBottom: '1px solid rgba(45,49,85,0.4)', cursor: 'pointer', transition: 'opacity 0.15s' }}
-                onMouseEnter={e => e.currentTarget.style.opacity = '0.75'}
-                onMouseLeave={e => e.currentTarget.style.opacity = '1'}>
-                <td style={{ padding: '6px 8px' }}><SeverityBadge severity={f.severity} label={f.severity_label} /></td>
-                <td style={{ padding: '6px 8px', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}>{f.plugin_name}</td>
-                <td style={{ padding: '6px 8px', color: 'var(--text-muted)' }}>{f.asset_hostname || f.asset_ip}</td>
-                <td style={{ padding: '6px 8px', minWidth: 100 }}><ScoreBar score={f.priority_score} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )
-    }
-
-    case 'remediation_queue': {
-      const limit = parseInt(cfg.limit || 8)
-      const findings = (Array.isArray(data) ? data : [])
-        .filter(f => !cfg.effort || f.effort_level === cfg.effort)
-        .filter(f => !cfg.owner || f.owner_suggestion === cfg.owner)
-        .slice(0, limit)
-      return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {findings.map((f, i) => (
-            <div key={i} onClick={() => go(`/findings/${f.id}`)} style={{
-              display: 'flex', gap: 10, padding: '8px 10px', borderRadius: 8,
-              background: 'var(--bg-secondary)', border: '1px solid var(--border)',
-              borderLeft: `3px solid ${SEV_COLORS[f.severity] || '#0ea5e9'}`,
-              alignItems: 'center', cursor: 'pointer',
-              transition: 'opacity 0.15s',
-            }}
-              onMouseEnter={e => e.currentTarget.style.opacity = '0.75'}
-              onMouseLeave={e => e.currentTarget.style.opacity = '1'}>
-              <span style={{ fontWeight: 700, color: 'var(--text-muted)', minWidth: 20, fontSize: 12 }}>{i + 1}</span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 12, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.plugin_name}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{f.asset_hostname || f.asset_ip}</div>
-              </div>
-              <SeverityBadge severity={f.severity} label={f.severity_label} />
-              <EffortBadge effort={f.effort_level} />
-            </div>
-          ))}
-        </div>
-      )
-    }
-
-    case 'trend_chart': {
-      if (!Array.isArray(data) || data.length < 2) {
-        return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need at least 2 scans for trend data</div>
-      }
-      const TREND_COLORS = { critical: '#dc2626', high: '#ea580c', medium: '#d97706', low: '#65a30d' }
-      return (
-        <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-            <XAxis dataKey="scan_name" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
-            <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
-            <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-            <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{v}</span>} />
-            <Line type="monotone" dataKey="critical" stroke={TREND_COLORS.critical} strokeWidth={2} dot={{ fill: TREND_COLORS.critical }} />
-            <Line type="monotone" dataKey="high" stroke={TREND_COLORS.high} strokeWidth={2} dot={{ fill: TREND_COLORS.high }} />
-            <Line type="monotone" dataKey="medium" stroke={TREND_COLORS.medium} strokeWidth={2} dot={{ fill: TREND_COLORS.medium }} />
-            <Line type="monotone" dataKey="low" stroke={TREND_COLORS.low} strokeWidth={2} dot={{ fill: TREND_COLORS.low }} />
-          </LineChart>
-        </ResponsiveContainer>
-      )
-    }
-
-    case 'metrics_timeline': {
-      if (!Array.isArray(data) || data.length < 2) {
-        return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need at least 2 scans for timeline data</div>
-      }
-      const METRIC_SERIES_DEFS = {
-        critical:              { label: 'Critical',           color: '#dc2626' },
-        high:                  { label: 'High',               color: '#ea580c' },
-        medium:                { label: 'Medium',             color: '#d97706' },
-        low:                   { label: 'Low',                color: '#65a30d' },
-        info:                  { label: 'Info',               color: '#6b7280' },
-        total_findings:        { label: 'Total Findings',     color: '#6366f1' },
-        actionable_findings:   { label: 'Actionable',         color: '#8b5cf6' },
-        total_assets:          { label: 'Total Assets',       color: '#0ea5e9' },
-        exploit_count:         { label: 'Exploitable',        color: '#f59e0b' },
-        sla_on_track:          { label: 'SLA On Track',       color: '#16a34a' },
-        sla_at_risk:           { label: 'SLA At Risk',        color: '#d97706' },
-        sla_breached:          { label: 'SLA Breached',       color: '#dc2626' },
-        sla_resolved:          { label: 'SLA Resolved',       color: '#6366f1' },
-        sla_compliance_pct:    { label: 'SLA Compliance %',   color: '#16a34a' },
-        workflow_open:         { label: 'Open',               color: '#6b7280' },
-        workflow_in_progress:  { label: 'In Progress',        color: '#3b82f6' },
-        workflow_resolved:     { label: 'Resolved',           color: '#22c55e' },
-        workflow_excepted:     { label: 'Excepted',           color: '#d97706' },
-        avg_risk_score:        { label: 'Avg Risk Score',     color: '#ef4444' },
-        max_risk_score:        { label: 'Max Risk Score',     color: '#dc2626' },
-        avg_mttr_days:         { label: 'Avg MTTR (days)',    color: '#8b5cf6' },
-      }
-      const series = cfg.series || ['critical', 'high', 'medium', 'low']
-      const chartData = data.map(d => {
-        const point = { name: (d.scan_name || '').length > 18 ? (d.scan_name || '').slice(0, 18) + '…' : d.scan_name }
-        series.forEach(s => { point[s] = d[s] ?? null })
-        return point
-      })
-      const chartType = cfg.chartType || 'line'
-      return (
-        <ResponsiveContainer width="100%" height={240}>
-          {chartType === 'bar' ? (
-            <BarChart data={chartData}>
+    case 'bar_chart': {
+      if (preset.type === 'categories') {
+        const items = Array.isArray(extracted) ? extracted : []
+        if (items.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data</div>
+        const colored = items.map((d, i) => ({ ...d, color: d.color || PALETTE[i % PALETTE.length] }))
+        if (cfg.horizontal) {
+          return (
+            <ResponsiveContainer width="100%" height={Math.max(160, colored.length * 30)}>
+              <BarChart data={colored} layout="vertical" margin={{ left: 10, right: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
+                <XAxis type="number" tick={TICK_STYLE} />
+                <YAxis type="category" dataKey="name" tick={{ ...TICK_STYLE, fontSize: 11 }} width={140} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                  {colored.map((e, i) => <Cell key={i} fill={e.color} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )
+        }
+        return (
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={colored}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="name" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
-              <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
-              <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-              <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{METRIC_SERIES_DEFS[v]?.label || v}</span>} />
-              {series.map(s => (
-                <Bar key={s} dataKey={s} fill={METRIC_SERIES_DEFS[s]?.color || '#6366f1'} radius={[3, 3, 0, 0]} />
-              ))}
-            </BarChart>
-          ) : chartType === 'area' ? (
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="name" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
-              <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
-              <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-              <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{METRIC_SERIES_DEFS[v]?.label || v}</span>} />
-              {series.map(s => (
-                <Line key={s} type="monotone" dataKey={s} stroke={METRIC_SERIES_DEFS[s]?.color || '#6366f1'} strokeWidth={2} fill={METRIC_SERIES_DEFS[s]?.color || '#6366f1'} fillOpacity={0.1} dot={{ fill: METRIC_SERIES_DEFS[s]?.color, r: 3 }} connectNulls />
-              ))}
-            </LineChart>
-          ) : (
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="name" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
-              <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
-              <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-              <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{METRIC_SERIES_DEFS[v]?.label || v}</span>} />
-              {series.map(s => (
-                <Line key={s} type="monotone" dataKey={s} stroke={METRIC_SERIES_DEFS[s]?.color || '#6366f1'} strokeWidth={2} dot={{ fill: METRIC_SERIES_DEFS[s]?.color, r: 3 }} connectNulls />
-              ))}
-            </LineChart>
-          )}
-        </ResponsiveContainer>
-      )
-    }
-
-    case 'scan_delta_chart': {
-      if (!Array.isArray(data) || data.length < 1) {
-        return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need at least 2 scans for delta data</div>
-      }
-      const deltaData = data.map(d => ({
-        name: (d.scan_name || '').length > 20 ? (d.scan_name || '').slice(0, 20) + '…' : d.scan_name,
-        'New': d.new_count,
-        'Fixed': -d.fixed_count,
-        'Net': d.net_change,
-      }))
-      return (
-        <div>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={deltaData} stackOffset="sign">
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="name" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
-              <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
-              <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-              <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{v}</span>} />
-              <Bar dataKey="New" fill="#ef4444" stackId="a" radius={[3, 3, 0, 0]} />
-              <Bar dataKey="Fixed" fill="#22c55e" stackId="a" radius={[0, 0, 3, 3]} />
+              <XAxis dataKey="name" tick={TICK_STYLE} />
+              <YAxis tick={TICK_STYLE} />
+              <Tooltip contentStyle={TOOLTIP_STYLE} />
+              <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                {colored.map((e, i) => <Cell key={i} fill={e.color} />)}
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
-          <div style={{ marginTop: 12 }}>
-            <ResponsiveContainer width="100%" height={100}>
-              <LineChart data={deltaData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="name" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} hide />
-                <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
-                <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-                <Line type="monotone" dataKey="Net" stroke="#8b5cf6" strokeWidth={2} dot={{ fill: '#8b5cf6', r: 3 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+        )
+      }
+      // series type
+      const rows = Array.isArray(extracted) ? extracted : []
+      if (rows.length < 2) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need 2+ data points</div>
+      const fields = preset.fields || []
+      const chartData = rows.map(r => ({ name: truncLabel(r[preset.xField]), ...Object.fromEntries(fields.map(f => [f, r[f] ?? null])) }))
+      return (
+        <ResponsiveContainer width="100%" height={200}>
+          <BarChart data={chartData} stackOffset={cfg.stacked ? 'sign' : 'none'}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+            <XAxis dataKey="name" tick={{ ...TICK_STYLE, fontSize: 10 }} />
+            <YAxis tick={TICK_STYLE} />
+            <Tooltip contentStyle={TOOLTIP_STYLE} />
+            <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{v}</span>} />
+            {fields.map(f => (
+              <Bar key={f} dataKey={f} fill={preset.colors?.[f] || PALETTE[fields.indexOf(f) % PALETTE.length]} radius={[3, 3, 0, 0]} stackId={cfg.stacked ? 'a' : undefined} />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
       )
     }
 
-    case 'scan_delta_table': {
-      if (!Array.isArray(data) || data.length < 1) {
-        return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need at least 2 scans for delta data</div>
-      }
+    case 'line_chart': {
+      const rows = Array.isArray(extracted) ? extracted : []
+      if (rows.length < 2) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need 2+ data points</div>
+      const fields = preset.fields || []
+      const chartData = rows.map(r => ({ name: truncLabel(r[preset.xField]), ...Object.fromEntries(fields.map(f => [f, r[f] ?? null])) }))
+      const ChartComp = cfg.areaFill ? AreaChart : LineChart
+      return (
+        <ResponsiveContainer width="100%" height={220}>
+          <ChartComp data={chartData}>
+            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+            <XAxis dataKey="name" tick={{ ...TICK_STYLE, fontSize: 10 }} />
+            <YAxis tick={TICK_STYLE} />
+            <Tooltip contentStyle={TOOLTIP_STYLE} />
+            <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{v}</span>} />
+            {fields.map(f => {
+              const color = preset.colors?.[f] || PALETTE[fields.indexOf(f) % PALETTE.length]
+              return cfg.areaFill
+                ? <Area key={f} type="monotone" dataKey={f} stroke={color} fill={color} fillOpacity={0.15} strokeWidth={2} dot={{ fill: color, r: 3 }} connectNulls />
+                : <Line key={f} type="monotone" dataKey={f} stroke={color} strokeWidth={2} dot={{ fill: color, r: 3 }} connectNulls />
+            })}
+          </ChartComp>
+        </ResponsiveContainer>
+      )
+    }
+
+    case 'table': {
+      const rows = Array.isArray(extracted) ? extracted : []
+      const limit = parseInt(cfg.limit || 10)
+      const display = rows.slice(0, limit)
+      const cols = preset.columns || []
+      if (display.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data</div>
       return (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ borderBottom: '2px solid var(--border)' }}>
-                {['Scan', 'Date', 'New', 'Fixed', 'Recurring', 'Net Change'].map(h => (
-                  <th key={h} style={{ padding: '8px 10px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{h}</th>
+                {cols.map(c => (
+                  <th key={c.key} style={{ padding: '6px 8px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{c.label}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {data.map((d, i) => (
+              {display.map((row, i) => (
                 <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                  <td style={{ padding: '8px 10px', fontWeight: 500 }}>{d.scan_name || `Scan #${d.scan_id}`}</td>
-                  <td style={{ padding: '8px 10px', color: 'var(--text-muted)' }}>{d.scan_date ? new Date(d.scan_date).toLocaleDateString() : '—'}</td>
-                  <td style={{ padding: '8px 10px', color: '#ef4444', fontWeight: 600 }}>+{d.new_count}</td>
-                  <td style={{ padding: '8px 10px', color: '#22c55e', fontWeight: 600 }}>-{d.fixed_count}</td>
-                  <td style={{ padding: '8px 10px', color: 'var(--text-muted)' }}>{d.recurring_count}</td>
-                  <td style={{ padding: '8px 10px', fontWeight: 700, color: d.net_change > 0 ? '#ef4444' : d.net_change < 0 ? '#22c55e' : 'var(--text-muted)' }}>
-                    {d.net_change > 0 ? '+' : ''}{d.net_change}
-                  </td>
+                  {cols.map(c => {
+                    const raw = row[c.key] ?? (c.fallback ? row[c.fallback] : null) ?? ''
+                    const val = c.render ? c.render(raw) : raw
+                    return (
+                      <td key={c.key} style={{ padding: '6px 8px', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{val}</td>
+                    )
+                  })}
                 </tr>
               ))}
             </tbody>
@@ -619,133 +1060,38 @@ function WidgetRenderer({ widget, scanId, preview }) {
       )
     }
 
-    case 'sla_widget': {
-      if (!data || !data.total_with_sla) {
-        return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No SLA data — set deadlines on findings to track compliance</div>
-      }
-      const { on_track, at_risk, breached, resolved, total_with_sla, compliance_pct, avg_mttr_days } = data
-      const bars = [
-        { label: 'On Track', value: on_track, color: '#16a34a' },
-        { label: 'At Risk', value: at_risk, color: '#d97706' },
-        { label: 'Breached', value: breached, color: '#dc2626' },
-        { label: 'Resolved', value: resolved, color: '#6366f1' },
-      ]
-      const mttrEntries = Object.entries(avg_mttr_days || {})
+    case 'heatmap': {
+      // Simple severity x family matrix
+      const families = data?.top_plugin_families || []
+      const sevLabels = ['Critical', 'High', 'Medium', 'Low']
+      const sevKeys = ['critical', 'high', 'medium', 'low']
+      const heatColors = ['#dc2626', '#ea580c', '#d97706', '#65a30d']
+      if (families.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No family data</div>
       return (
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Compliance</span>
-            <span style={{ fontSize: 24, fontWeight: 800, color: compliance_pct >= 80 ? '#16a34a' : compliance_pct >= 50 ? '#d97706' : '#dc2626' }}>
-              {compliance_pct}%
-            </span>
-          </div>
-          {bars.map(b => (
-            <div key={b.label} style={{ marginBottom: 8 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 3 }}>
-                <span style={{ color: 'var(--text-secondary)' }}>{b.label}</span>
-                <span style={{ fontWeight: 600, color: b.color }}>{b.value}</span>
-              </div>
-              <div style={{ height: 4, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
-                <div style={{ width: `${Math.min((b.value / total_with_sla) * 100, 100)}%`, height: '100%', background: b.color, borderRadius: 3 }} />
-              </div>
-            </div>
-          ))}
-          {mttrEntries.length > 0 && (
-            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>Avg MTTR (days)</div>
-              <div style={{ display: 'flex', gap: 16 }}>
-                {mttrEntries.map(([sev, days]) => {
-                  const color = sev === 'critical' ? '#dc2626' : sev === 'high' ? '#ea580c' : sev === 'medium' ? '#d97706' : '#65a30d'
-                  return (
-                    <div key={sev} style={{ textAlign: 'center' }}>
-                      <div style={{ fontSize: 20, fontWeight: 700, color }}>{Math.round(days)}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'capitalize' }}>{sev}</div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-      )
-    }
-
-    case 'automation_wishlist': {
-      const limit = parseInt(cfg.limit || 5)
-      const items = (Array.isArray(data) ? data : []).slice(0, limit)
-      if (items.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No automation requests yet — click "Automate This" on findings</div>
-      return (
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          {items.map((item, i) => (
-            <div key={i} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: '1px solid rgba(45,49,85,0.4)', alignItems: 'center' }}>
-              <span style={{ fontWeight: 700, color: '#6366f1', minWidth: 22, fontSize: 13 }}>#{i + 1}</span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.plugin_name || `Plugin ${item.plugin_id}`}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Plugin {item.plugin_id}</div>
-              </div>
-              <span style={{ fontWeight: 600, color: '#818cf8', fontSize: 13 }}>{item.click_count}×</span>
-            </div>
-          ))}
-        </div>
-      )
-    }
-
-    case 'temporal_summary': {
-      const { regression_count = 0, zombie_count = 0, age_distribution = {} } = data || {}
-      const ageBars = [
-        { label: '< 30 days', value: age_distribution.under_30d || 0, color: '#16a34a' },
-        { label: '30–90 days', value: age_distribution['30_90d'] || 0, color: '#d97706' },
-        { label: '90–180 days', value: age_distribution['90_180d'] || 0, color: '#ea580c' },
-        { label: '> 180 days', value: age_distribution.over_180d || 0, color: '#dc2626' },
-      ]
-      const total = ageBars.reduce((s, b) => s + b.value, 0) || 1
-      return (
-        <div>
-          {ageBars.map(b => (
-            <div key={b.label} style={{ marginBottom: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
-                <span style={{ color: 'var(--text-secondary)' }}>{b.label}</span>
-                <span style={{ fontWeight: 600, color: b.color }}>{b.value}</span>
-              </div>
-              <div style={{ height: 5, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
-                <div style={{ width: `${(b.value / total) * 100}%`, height: '100%', background: b.color, borderRadius: 3 }} />
-              </div>
-            </div>
-          ))}
-          <div style={{ display: 'flex', gap: 12, marginTop: 12, fontSize: 12 }}>
-            {regression_count > 0 && <span style={{ color: '#fca5a5' }}>{regression_count} regression{regression_count !== 1 ? 's' : ''}</span>}
-            {zombie_count > 0 && <span style={{ color: '#fdba74' }}>{zombie_count} zombie vuln{zombie_count !== 1 ? 's' : ''}</span>}
-          </div>
-        </div>
-      )
-    }
-
-    case 'velocity_chart': {
-      const { buckets = [], avg_per_period = 0, velocity_trend_pct, period = 'month' } = data || {}
-      const recent = buckets.slice(-8)
-      if (recent.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No resolved findings yet</div>
-      return (
-        <div>
-          <div style={{ display: 'flex', gap: 12, marginBottom: 10, fontSize: 12, color: 'var(--text-muted)' }}>
-            <span>avg {avg_per_period}/{period}</span>
-            {velocity_trend_pct != null && (
-              <span style={{ fontWeight: 600, color: velocity_trend_pct > 0 ? '#16a34a' : velocity_trend_pct < 0 ? '#dc2626' : 'var(--text-muted)' }}>
-                {velocity_trend_pct > 0 ? '+' : ''}{velocity_trend_pct}% trend
-              </span>
-            )}
-          </div>
-          <ResponsiveContainer width="100%" height={160}>
-            <BarChart data={recent} margin={{ right: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="period_label" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
-              <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 10 }} width={30} />
-              <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-              <Bar dataKey="critical" stackId="a" fill="#dc2626" />
-              <Bar dataKey="high" stackId="a" fill="#ea580c" />
-              <Bar dataKey="medium" stackId="a" fill="#d97706" />
-              <Bar dataKey="low" stackId="a" fill="#65a30d" />
-            </BarChart>
-          </ResponsiveContainer>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+            <thead>
+              <tr>
+                <th style={{ padding: '6px 8px', textAlign: 'left', color: 'var(--text-muted)' }}>Family</th>
+                {sevLabels.map(s => <th key={s} style={{ padding: '6px 8px', textAlign: 'center', color: 'var(--text-muted)' }}>{s}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {families.slice(0, 10).map((f, i) => (
+                <tr key={i}>
+                  <td style={{ padding: '6px 8px', fontWeight: 500, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.family}</td>
+                  {sevKeys.map((s, si) => {
+                    const v = f[s] || 0
+                    return (
+                      <td key={s} style={{ padding: '6px 8px', textAlign: 'center' }}>
+                        {v > 0 && <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, background: `${heatColors[si]}20`, color: heatColors[si], fontWeight: 600, fontSize: 11 }}>{v}</span>}
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )
     }
@@ -769,23 +1115,54 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
       {children}
     </div>
   )
-
   const Select = ({ value, onChange, options }) => (
     <select value={value || ''} onChange={e => onChange(e.target.value)}
       style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13 }}>
       {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
     </select>
   )
-
   const TextInput = ({ value, onChange, placeholder }) => (
     <input value={value || ''} onChange={e => onChange(e.target.value)} placeholder={placeholder}
       style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13, boxSizing: 'border-box' }} />
   )
-
-  const Textarea = ({ value, onChange, rows = 5 }) => (
-    <textarea value={value || ''} onChange={e => onChange(e.target.value)} rows={rows}
-      style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13, resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit' }} />
+  const Toggle = ({ checked, onChange, label }) => (
+    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+      <input type="checkbox" checked={!!checked} onChange={e => onChange(e.target.checked)} />
+      {label}
+    </label>
   )
+
+  const presetType = widget.type === 'card' ? 'metric'
+    : widget.type === 'pie_chart' ? 'categories'
+    : widget.type === 'bar_chart' ? null // categories or series
+    : widget.type === 'line_chart' ? 'series'
+    : widget.type === 'table' ? 'table'
+    : null
+
+  const compatiblePresets = presetType
+    ? Object.entries(DATA_PRESETS).filter(([, p]) => p.type === presetType)
+    : widget.type === 'bar_chart'
+      ? Object.entries(DATA_PRESETS).filter(([, p]) => p.type === 'categories' || p.type === 'series')
+      : []
+
+  const presetOptions = (() => {
+    const grouped = {}
+    for (const [id, p] of compatiblePresets) {
+      const g = p.group || 'Other'
+      if (!grouped[g]) grouped[g] = []
+      grouped[g].push({ value: id, label: p.label })
+    }
+    const result = []
+    for (const g of PRESET_GROUPS) {
+      if (grouped[g]) {
+        result.push({ value: `__group_${g}`, label: `── ${g} ──`, disabled: true })
+        result.push(...grouped[g])
+      }
+    }
+    return result
+  })()
+
+  const isDataWidget = ['card', 'pie_chart', 'bar_chart', 'line_chart', 'table'].includes(widget.type)
 
   return (
     <div style={{ width: 260, flexShrink: 0, background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', padding: 16, overflowY: 'auto' }}>
@@ -801,91 +1178,58 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
       <Field label="Widget Title">
         <TextInput value={widget.title} onChange={setTitle} placeholder="Widget title..." />
       </Field>
-
       <Field label="Width">
         <Select value={widget.width} onChange={setWidth} options={WIDTH_OPTIONS} />
       </Field>
 
-      {/* Type-specific config */}
-      {widget.type === 'stat_card' && (
+      {isDataWidget && presetOptions.length > 0 && (
+        <Field label="Data Preset">
+          <select value={cfg.preset || ''} onChange={e => set('preset', e.target.value)}
+            style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13 }}>
+            {presetOptions.map(o => <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>)}
+          </select>
+        </Field>
+      )}
+
+      {widget.type === 'card' && (
+        <Field label="Display Label">
+          <TextInput value={cfg.label} onChange={v => set('label', v)} placeholder={DATA_PRESETS[cfg.preset]?.label || 'Label'} />
+        </Field>
+      )}
+
+      {widget.type === 'pie_chart' && (
+        <Field label="Donut">
+          <Toggle checked={cfg.donut} onChange={v => set('donut', v)} label="Donut hole" />
+        </Field>
+      )}
+
+      {widget.type === 'bar_chart' && (
         <>
-          <Field label="Metric">
-            <Select value={cfg.metric} onChange={v => set('metric', v)}
-              options={STAT_METRICS} />
+          <Field label="Horizontal">
+            <Toggle checked={cfg.horizontal} onChange={v => set('horizontal', v)} label="Horizontal layout" />
           </Field>
-          <Field label="Display Label">
-            <TextInput value={cfg.label} onChange={v => set('label', v)} placeholder="e.g. Critical Findings" />
-          </Field>
+          {DATA_PRESETS[cfg.preset]?.type === 'series' && (
+            <Field label="Stacked">
+              <Toggle checked={cfg.stacked} onChange={v => set('stacked', v)} label="Stack bars" />
+            </Field>
+          )}
         </>
       )}
 
-      {widget.type === 'severity_chart' && (
-        <Field label="Chart Type">
-          <Select value={cfg.chartType} onChange={v => set('chartType', v)}
-            options={[{ value: 'pie', label: 'Pie Chart' }, { value: 'donut', label: 'Donut Chart' }, { value: 'bar', label: 'Bar Chart' }]} />
+      {widget.type === 'line_chart' && (
+        <Field label="Area Fill">
+          <Toggle checked={cfg.areaFill} onChange={v => set('areaFill', v)} label="Fill area under lines" />
         </Field>
       )}
 
-      {widget.type === 'effort_chart' && (
-        <Field label="Chart Type">
-          <Select value={cfg.chartType} onChange={v => set('chartType', v)}
-            options={[{ value: 'donut', label: 'Donut Chart' }, { value: 'pie', label: 'Pie Chart' }]} />
-        </Field>
-      )}
-
-      {widget.type === 'family_chart' && (
-        <Field label="Max Families">
-          <Select value={String(cfg.limit || 8)} onChange={v => set('limit', v)}
-            options={[{ value: '5', label: 'Top 5' }, { value: '8', label: 'Top 8' }, { value: '10', label: 'Top 10' }, { value: '15', label: 'Top 15' }]} />
-        </Field>
-      )}
-
-      {widget.type === 'asset_table' && (
-        <Field label="Max Rows">
+      {widget.type === 'table' && (
+        <Field label="Row Limit">
           <Select value={String(cfg.limit || 10)} onChange={v => set('limit', v)}
-            options={[{ value: '5', label: '5 rows' }, { value: '10', label: '10 rows' }, { value: '20', label: '20 rows' }]} />
+            options={[{ value: '5', label: '5 rows' }, { value: '10', label: '10 rows' }, { value: '20', label: '20 rows' }, { value: '50', label: '50 rows' }]} />
         </Field>
       )}
 
-      {widget.type === 'findings_table' && (
-        <>
-          <Field label="Max Rows">
-            <Select value={String(cfg.limit || 10)} onChange={v => set('limit', v)}
-              options={[{ value: '5', label: '5 rows' }, { value: '10', label: '10 rows' }, { value: '20', label: '20 rows' }, { value: '50', label: '50 rows' }]} />
-          </Field>
-        </>
-      )}
-
-      {widget.type === 'remediation_queue' && (
-        <>
-          <Field label="Max Items">
-            <Select value={String(cfg.limit || 8)} onChange={v => set('limit', v)}
-              options={[{ value: '5', label: '5 items' }, { value: '8', label: '8 items' }, { value: '10', label: '10 items' }, { value: '15', label: '15 items' }]} />
-          </Field>
-          <Field label="Filter by Effort">
-            <Select value={cfg.effort || ''} onChange={v => set('effort', v)}
-              options={[{ value: '', label: 'All efforts' }, { value: 'quick_win', label: 'Quick Wins' }, { value: 'medium', label: 'Medium' }, { value: 'complex', label: 'Complex' }]} />
-          </Field>
-          <Field label="Filter by Owner">
-            <Select value={cfg.owner || ''} onChange={v => set('owner', v)}
-              options={[{ value: '', label: 'All owners' }, { value: 'IT', label: 'IT' }, { value: 'DevOps', label: 'DevOps' }, { value: 'SecOps', label: 'SecOps' }, { value: 'AppSec', label: 'AppSec' }]} />
-          </Field>
-        </>
-      )}
-
-      {widget.type === 'text_block' && (
-        <>
-          <Field label="Content">
-            <Textarea value={cfg.content} onChange={v => set('content', v)} rows={8} />
-          </Field>
-          <Field label="Font Size">
-            <Select value={String(cfg.fontSize || 14)} onChange={v => set('fontSize', v)}
-              options={[{ value: '12', label: 'Small (12px)' }, { value: '14', label: 'Normal (14px)' }, { value: '16', label: 'Large (16px)' }]} />
-          </Field>
-        </>
-      )}
-
-      {widget.type === 'section_header' && (
+      {widget.type === 'header' && (
         <>
           <Field label="Title">
             <TextInput value={cfg.title} onChange={v => set('title', v)} placeholder="Section title" />
@@ -896,65 +1240,35 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
         </>
       )}
 
-      {widget.type === 'automation_wishlist' && (
-        <Field label="Max Items">
-          <Select value={String(cfg.limit || 5)} onChange={v => set('limit', v)}
-            options={[{ value: '3', label: '3 items' }, { value: '5', label: '5 items' }, { value: '10', label: '10 items' }]} />
+      {widget.type === 'image' && (
+        <Field label="Image URL">
+          <TextInput value={cfg.url} onChange={v => set('url', v)} placeholder="https://..." />
         </Field>
       )}
 
-      {widget.type === 'metrics_timeline' && (() => {
-        const PRESETS = [
-          { value: 'severity', label: 'Severity Counts', series: ['critical', 'high', 'medium', 'low'] },
-          { value: 'sla', label: 'SLA Status', series: ['sla_on_track', 'sla_at_risk', 'sla_breached', 'sla_compliance_pct'] },
-          { value: 'workflow', label: 'Workflow States', series: ['workflow_open', 'workflow_in_progress', 'workflow_resolved', 'workflow_excepted'] },
-          { value: 'risk', label: 'Risk Scores', series: ['avg_risk_score', 'max_risk_score'] },
-          { value: 'mttr', label: 'MTTR', series: ['avg_mttr_days'] },
-          { value: 'overview', label: 'Overview', series: ['total_findings', 'actionable_findings', 'total_assets', 'exploit_count'] },
-          { value: 'custom', label: 'Custom…' },
-        ]
-        const ALL_SERIES = [
-          { value: 'critical', label: 'Critical' }, { value: 'high', label: 'High' },
-          { value: 'medium', label: 'Medium' }, { value: 'low', label: 'Low' }, { value: 'info', label: 'Info' },
-          { value: 'total_findings', label: 'Total Findings' }, { value: 'actionable_findings', label: 'Actionable' },
-          { value: 'total_assets', label: 'Total Assets' }, { value: 'exploit_count', label: 'Exploitable' },
-          { value: 'sla_on_track', label: 'SLA On Track' }, { value: 'sla_at_risk', label: 'SLA At Risk' },
-          { value: 'sla_breached', label: 'SLA Breached' }, { value: 'sla_resolved', label: 'SLA Resolved' },
-          { value: 'sla_compliance_pct', label: 'SLA Compliance %' },
-          { value: 'workflow_open', label: 'Open' }, { value: 'workflow_in_progress', label: 'In Progress' },
-          { value: 'workflow_resolved', label: 'Resolved' }, { value: 'workflow_excepted', label: 'Excepted' },
-          { value: 'avg_risk_score', label: 'Avg Risk Score' }, { value: 'max_risk_score', label: 'Max Risk Score' },
-          { value: 'avg_mttr_days', label: 'Avg MTTR (days)' },
-        ]
-        const currentPreset = cfg.preset || 'severity'
-        const activeSeries = cfg.series || ['critical', 'high', 'medium', 'low']
-        const toggleSeries = (s) => {
-          const next = activeSeries.includes(s) ? activeSeries.filter(x => x !== s) : [...activeSeries, s]
-          if (next.length > 0) onUpdate({ ...widget, config: { ...cfg, series: next, preset: 'custom' } })
-        }
+      {/* Dynamic filters based on data source */}
+      {(() => {
+        const preset = DATA_PRESETS[cfg.preset]
+        const sourceFilters = preset ? SOURCE_FILTERS[preset.source] : null
+        if (!sourceFilters || sourceFilters.length === 0) return null
+        const filters = cfg.filters || {}
+        const setFilter = (key, val) => set('filters', { ...filters, [key]: val || undefined })
         return (
           <>
-            <Field label="Preset">
-              <Select value={currentPreset} onChange={v => {
-                const p = PRESETS.find(x => x.value === v)
-                if (p && p.series) onUpdate({ ...widget, config: { ...cfg, preset: v, series: p.series } })
-                else set('preset', v)
-              }} options={PRESETS} />
-            </Field>
-            <Field label="Chart Type">
-              <Select value={cfg.chartType || 'line'} onChange={v => set('chartType', v)}
-                options={[{ value: 'line', label: 'Line' }, { value: 'bar', label: 'Bar' }, { value: 'area', label: 'Area' }]} />
-            </Field>
-            <Field label="Active Series">
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto' }}>
-                {ALL_SERIES.map(s => (
-                  <label key={s.value} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', padding: '2px 0' }}>
-                    <input type="checkbox" checked={activeSeries.includes(s.value)} onChange={() => toggleSeries(s.value)} />
-                    {s.label}
-                  </label>
-                ))}
-              </div>
-            </Field>
+            <div style={{ height: 1, background: 'var(--border)', margin: '10px 0 14px' }} />
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Filters</div>
+            {sourceFilters.map(f => (
+              <Field key={f.key} label={f.label}>
+                {f.type === 'select' ? (
+                  <Select value={filters[f.key] || ''} onChange={v => setFilter(f.key, v)} options={f.options} />
+                ) : f.type === 'number' ? (
+                  <input type="number" value={filters[f.key] || ''} onChange={e => setFilter(f.key, e.target.value)} placeholder={f.placeholder}
+                    style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13, boxSizing: 'border-box' }} />
+                ) : (
+                  <TextInput value={filters[f.key] || ''} onChange={v => setFilter(f.key, v)} placeholder={f.placeholder} />
+                )}
+              </Field>
+            ))}
           </>
         )
       })()}
@@ -1389,13 +1703,31 @@ export default function ReportBuilder() {
     try {
       await migrateLocalStorageReports()
       let templates = await getReportTemplates()
-      // Ensure default dashboard exists
-      if (templates.length === 0) {
-        await createReportTemplate({
-          name: DEFAULT_DASHBOARD.name,
-          config: { widgets: DEFAULT_DASHBOARD.widgets, createdAt: DEFAULT_DASHBOARD.createdAt },
-          is_default: true,
-        })
+      let needsReload = false
+
+      // Ensure default dashboards exist and stay up-to-date
+      const ootb = [DEFAULT_DASHBOARD, EXECUTIVE_DASHBOARD]
+      for (const dash of ootb) {
+        const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}`).join('|')
+        const existing = templates.find(t => t.name === dash.name)
+        if (!existing) {
+          await createReportTemplate({
+            name: dash.name,
+            config: { widgets: dash.widgets, createdAt: dash.createdAt, _fp: fingerprint },
+            is_default: true,
+          })
+          needsReload = true
+        } else if (existing.config?._fp !== fingerprint) {
+          // Widget definitions changed — update the template
+          await updateReportTemplate(existing.id, {
+            name: dash.name,
+            config: { widgets: dash.widgets, createdAt: dash.createdAt, _fp: fingerprint },
+          })
+          needsReload = true
+        }
+      }
+
+      if (needsReload) {
         templates = await getReportTemplates()
       }
       const mapped = templates.map(templateToReport)

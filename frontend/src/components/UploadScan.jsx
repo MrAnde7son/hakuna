@@ -120,7 +120,7 @@ export default function UploadScan() {
     <div style={{ maxWidth: 700 }}>
       <PageHeader
         title="Upload"
-        subtitle="Import a Nessus HTML report to analyze findings"
+        subtitle="Import a Nessus scan to analyze findings"
       />
 
       <Card style={{ marginBottom: 20 }}>

@@ -34,10 +34,13 @@ def get_integration_config(db: Session, provider: str) -> Optional[dict]:
 
 
 def test_integration(db: Session, provider: str) -> dict:
-    """Test connectivity for a given integration."""
-    cfg = get_integration_config(db, provider)
-    if not cfg:
-        return {"status": "error", "detail": f"{provider} not configured or disabled"}
+    """Test connectivity for a given integration (works even if disabled)."""
+    row = db.query(IntegrationConfig).filter(
+        IntegrationConfig.provider == provider,
+    ).first()
+    if not row or not row.config:
+        return {"status": "error", "detail": f"{provider} not configured"}
+    cfg = row.config
 
     try:
         if provider == "jira":
@@ -50,6 +53,14 @@ def test_integration(db: Session, provider: str) -> dict:
             return _test_slack(cfg)
         elif provider == "teams":
             return _test_teams(cfg)
+        elif provider == "anthropic":
+            return _test_anthropic(cfg)
+        elif provider == "openai":
+            return _test_openai(cfg)
+        elif provider == "google_gemini":
+            return _test_google_gemini(cfg)
+        elif provider == "groq":
+            return _test_groq(cfg)
         return {"status": "error", "detail": f"Unknown provider: {provider}"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
@@ -500,3 +511,80 @@ def _group_items(items: list, group_by: str) -> dict:
         return groups
     else:  # one_per_finding
         return {str(item.get("finding_id", i)): [item] for i, item in enumerate(items)}
+
+
+# ─────────────────────────────────────────────
+# Anthropic (Claude AI) Connector
+# ─────────────────────────────────────────────
+
+def _test_anthropic(cfg: dict) -> dict:
+    """Test Anthropic API key by making a minimal API call."""
+    api_key = cfg.get("api_key")
+    if not api_key:
+        return {"status": "error", "detail": "API key not set"}
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model=cfg.get("default_model") or "claude-sonnet-4-6",
+            max_tokens=10,
+            messages=[{"role": "user", "content": "Hi"}],
+        )
+        return {"status": "ok", "detail": f"Connected — model: {resp.model}"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _test_openai(cfg: dict) -> dict:
+    """Test OpenAI API key by making a minimal API call."""
+    api_key = cfg.get("api_key")
+    if not api_key:
+        return {"status": "error", "detail": "API key not set"}
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model=cfg.get("default_model") or "gpt-4o-mini",
+            max_tokens=10,
+            messages=[{"role": "user", "content": "Hi"}],
+        )
+        return {"status": "ok", "detail": f"Connected — model: {resp.model}"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _test_google_gemini(cfg: dict) -> dict:
+    """Test Google Gemini API key."""
+    api_key = cfg.get("api_key")
+    if not api_key:
+        return {"status": "error", "detail": "API key not set"}
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+        client = genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model=cfg.get("default_model") or "gemini-2.0-flash",
+            contents="Hi",
+            config=genai_types.GenerateContentConfig(max_output_tokens=10),
+        )
+        return {"status": "ok", "detail": f"Connected — Gemini API ready"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+def _test_groq(cfg: dict) -> dict:
+    """Test Groq API key by making a minimal API call."""
+    api_key = cfg.get("api_key")
+    if not api_key:
+        return {"status": "error", "detail": "API key not set"}
+    try:
+        from groq import Groq
+        client = Groq(api_key=api_key)
+        resp = client.chat.completions.create(
+            model=cfg.get("default_model") or "llama-3.1-8b-instant",
+            max_tokens=10,
+            messages=[{"role": "user", "content": "Hi"}],
+        )
+        return {"status": "ok", "detail": f"Connected — model: {resp.model}"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}

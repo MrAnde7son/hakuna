@@ -23,6 +23,7 @@ def get_db():
 
 def init_db():
     from models import (  # noqa: F401
+        Organization, User, MSSPOrgAccess,
         Scan, Asset, Finding, AutomateClick,
         InventoryUser, InventoryGroup, InventoryService,
         InventoryNetConn, InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
@@ -36,6 +37,7 @@ def init_db():
         WorkflowExecution, WorkflowExecutionLog,
         IntegrationConfig,
         ReportTemplate,
+        Agent, AgentRun, AgentSchedule,
     )
     from threat_intel_models import (  # noqa: F401
         ThreatGroup, TTP, ThreatGroupTTP,
@@ -74,7 +76,18 @@ def _migrate_add_columns():
             ("compensating_control_detail", "TEXT"),
             ("exclude_from_reports", "BOOLEAN DEFAULT 1"),
             ("review_by", "DATETIME"),
+            ("org_id", "INTEGER"),
         ],
+        # Multi-tenancy: add org_id to all tenant-scoped tables
+        "scans": [("org_id", "INTEGER")],
+        "tags": [("org_id", "INTEGER")],
+        "auto_tag_rules": [("org_id", "INTEGER")],
+        "campaigns": [("org_id", "INTEGER")],
+        "workflows": [("org_id", "INTEGER")],
+        "sla_configs": [("org_id", "INTEGER")],
+        "integration_configs": [("org_id", "INTEGER")],
+        "report_templates": [("org_id", "INTEGER")],
+        "agent_schedules": [("next_run_at", "DATETIME")],
     }
     insp = inspect(engine)
     with engine.connect() as conn:
