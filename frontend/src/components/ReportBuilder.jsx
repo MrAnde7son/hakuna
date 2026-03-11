@@ -11,8 +11,9 @@ import {
   Save, Eye, EyeOff, ArrowLeft, Copy, Settings2, GripVertical,
   CheckCircle, LayoutGrid, Maximize2, Minimize2, X, PenLine,
   TrendingUp, Zap, Clock, Home, Upload, GitCompare, Activity,
-  Download, FileImage, FileText, FileBarChart2
+  Download, FileImage, FileText, FileBarChart2, Sparkles
 } from 'lucide-react'
+import NLPReportBuilder from './NLPReportBuilder.jsx'
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, Legend, CartesianGrid, LineChart, Line,
@@ -887,12 +888,77 @@ const TICK_STYLE = { fill: 'var(--text-muted)', fontSize: 11 }
 
 function truncLabel(s, max = 18) { return (s || '').length > max ? s.slice(0, max) + '...' : s || '' }
 
+// ─── Drill-down URL map ───────────────────────────────────────────────────────
+// For 'card' presets: a string URL or () => url
+// For 'categories' presets: a (name) => url function
+const DRILL_DOWN = {
+  // Cards → findings filtered by severity
+  critical_count:   '/findings?severity=4',
+  high_count:       '/findings?severity=3',
+  medium_count:     '/findings?severity=2',
+  low_count:        '/findings?severity=1',
+  info_count:       '/findings?severity=0',
+  total_findings:   '/findings',
+  exploit_count:    '/findings?exploit=true',
+  high_priority:    '/findings?sort=priority_score',
+  quick_wins:       '/findings?effort_level=quick_win',
+  complex_findings: '/findings?effort_level=complex',
+  sla_breached:     '/findings?sla_status=breached',
+  sla_on_track:     '/findings?sla_status=on_track',
+  sla_at_risk:      '/findings?sla_status=at_risk',
+  total_assets:     '/assets',
+  // Inventory cards
+  inv_domain_admins:   '/inventory?tab=users&is_domain_admin=true',
+  inv_local_admins:    '/inventory?tab=users&is_admin=true',
+  inv_kerberoastable:  '/inventory?tab=users',
+  inv_writeable_shares:'/inventory?tab=shares&is_writeable=true',
+  inv_expired_certs:   '/inventory?tab=certificates&expired_only=true',
+  inv_total_users:     '/inventory?tab=users',
+  inv_total_services:  '/inventory?tab=services',
+  inv_total_software:  '/inventory?tab=software',
+  inv_total_computers: '/inventory?tab=computers',
+
+  // Categories (pie/bar) → function(name) => url
+  severity_breakdown: name => {
+    const map = { Critical: 4, High: 3, Medium: 2, Low: 1, Info: 0 }
+    const sev = map[name]
+    return sev != null ? `/findings?severity=${sev}` : '/findings'
+  },
+  sla_status: name => {
+    const slug = name.toLowerCase().replace(/\s+/g, '_')
+    return `/findings?sla_status=${slug}`
+  },
+  effort_breakdown: name => {
+    const map = { 'Quick Win': 'quick_win', Medium: 'medium', Complex: 'complex' }
+    return map[name] ? `/findings?effort_level=${map[name]}` : '/findings'
+  },
+  sla_breached_by_sev: name => {
+    const map = { Critical: 4, High: 3, Medium: 2, Low: 1 }
+    const sev = map[name]
+    return sev != null ? `/findings?severity=${sev}&sla_status=breached` : '/findings?sla_status=breached'
+  },
+  family_breakdown: name => `/findings?family=${encodeURIComponent(name)}`,
+  inv_user_type_breakdown: name => `/inventory?tab=users&user_type=${name.replace(/\s+/g, '_')}`,
+  inv_netconn_states: name => `/inventory?tab=netconns&state=${name}`,
+}
+
 function WidgetRenderer({ widget, scanId, preview }) {
+  const navigate = useNavigate()
   const cfg = widget.config || {}
   const preset = DATA_PRESETS[cfg.preset]
   const sourceId = preset?.source || null
   const filters = { ...(cfg.filters || {}), category: cfg.category, period: cfg.period }
   const { data, loading } = useWidgetData(sourceId, scanId, filters)
+
+  const drillDown = DRILL_DOWN[cfg.preset]
+  const handleCardClick = drillDown ? () => {
+    const url = typeof drillDown === 'function' ? drillDown() : drillDown
+    navigate(url)
+  } : null
+  const handleSliceClick = (entry) => {
+    if (!drillDown || typeof drillDown !== 'function') return
+    navigate(drillDown(entry?.name))
+  }
 
   // Layout widgets — no data needed
   if (widget.type === 'header') {
@@ -924,9 +990,20 @@ function WidgetRenderer({ widget, scanId, preview }) {
       const display = preset.format === 'pct' ? `${val}%` : val.toLocaleString()
       const color = preset.color || 'var(--text-primary)'
       return (
-        <div style={{ textAlign: 'center', padding: '8px 0' }}>
+        <div
+          onClick={handleCardClick || undefined}
+          style={{
+            textAlign: 'center', padding: '8px 0',
+            cursor: handleCardClick ? 'pointer' : 'default',
+            borderRadius: 8,
+            transition: 'background 0.15s',
+          }}
+          onMouseEnter={handleCardClick ? e => { e.currentTarget.style.background = 'var(--bg-hover)' } : undefined}
+          onMouseLeave={handleCardClick ? e => { e.currentTarget.style.background = 'transparent' } : undefined}
+        >
           <div style={{ fontSize: 48, fontWeight: 800, color, lineHeight: 1 }}>{display}</div>
           <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8 }}>{cfg.label || preset.label}</div>
+          {handleCardClick && <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6, opacity: 0.7 }}>Click to drill down →</div>}
         </div>
       )
     }
@@ -934,10 +1011,16 @@ function WidgetRenderer({ widget, scanId, preview }) {
     case 'pie_chart': {
       if (!Array.isArray(extracted) || extracted.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data</div>
       const items = extracted.map((d, i) => ({ ...d, color: d.color || PALETTE[i % PALETTE.length] }))
+      const hasDrill = drillDown && typeof drillDown === 'function'
       return (
         <ResponsiveContainer width="100%" height={200}>
           <PieChart>
-            <Pie data={items} cx="50%" cy="50%" innerRadius={cfg.donut ? 50 : 0} outerRadius={70} paddingAngle={2} dataKey="value">
+            <Pie
+              data={items} cx="50%" cy="50%"
+              innerRadius={cfg.donut ? 50 : 0} outerRadius={70} paddingAngle={2} dataKey="value"
+              onClick={hasDrill ? (data) => handleSliceClick(data) : undefined}
+              cursor={hasDrill ? 'pointer' : 'default'}
+            >
               {items.map((e, i) => <Cell key={i} fill={e.color} />)}
             </Pie>
             <Tooltip contentStyle={TOOLTIP_STYLE} />
@@ -952,6 +1035,8 @@ function WidgetRenderer({ widget, scanId, preview }) {
         const items = Array.isArray(extracted) ? extracted : []
         if (items.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data</div>
         const colored = items.map((d, i) => ({ ...d, color: d.color || PALETTE[i % PALETTE.length] }))
+        const hasDrill = drillDown && typeof drillDown === 'function'
+        const onBarClick = hasDrill ? (data) => handleSliceClick(data) : undefined
         if (cfg.horizontal) {
           return (
             <ResponsiveContainer width="100%" height={Math.max(160, colored.length * 30)}>
@@ -960,7 +1045,7 @@ function WidgetRenderer({ widget, scanId, preview }) {
                 <XAxis type="number" tick={TICK_STYLE} />
                 <YAxis type="category" dataKey="name" tick={{ ...TICK_STYLE, fontSize: 11 }} width={140} />
                 <Tooltip contentStyle={TOOLTIP_STYLE} />
-                <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                <Bar dataKey="value" radius={[0, 4, 4, 0]} onClick={onBarClick} cursor={hasDrill ? 'pointer' : 'default'}>
                   {colored.map((e, i) => <Cell key={i} fill={e.color} />)}
                 </Bar>
               </BarChart>
@@ -974,7 +1059,7 @@ function WidgetRenderer({ widget, scanId, preview }) {
               <XAxis dataKey="name" tick={TICK_STYLE} />
               <YAxis tick={TICK_STYLE} />
               <Tooltip contentStyle={TOOLTIP_STYLE} />
-              <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+              <Bar dataKey="value" radius={[4, 4, 0, 0]} onClick={onBarClick} cursor={hasDrill ? 'pointer' : 'default'}>
                 {colored.map((e, i) => <Cell key={i} fill={e.color} />)}
               </Bar>
             </BarChart>
@@ -1993,11 +2078,46 @@ function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingI
 
 // ─── Root export ──────────────────────────────────────────────────────────────
 
+function TabBar({ active, onChange }) {
+  const tabs = [
+    { id: 'reports', label: 'Reports', icon: BarChart2 },
+    { id: 'ai-query', label: 'AI Query', icon: Sparkles },
+  ]
+  return (
+    <div style={{
+      display: 'flex', gap: 4,
+      borderBottom: '1px solid var(--border)',
+      padding: '0 18px',
+      background: 'var(--bg)',
+    }}>
+      {tabs.map(({ id, label, icon: Icon }) => (
+        <button
+          key={id}
+          onClick={() => onChange(id)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '10px 14px', border: 'none', background: 'transparent',
+            fontSize: 13, fontWeight: 600, cursor: 'pointer',
+            color: active === id ? '#6366f1' : 'var(--muted)',
+            borderBottom: active === id ? '2px solid #6366f1' : '2px solid transparent',
+            marginBottom: -1,
+            transition: 'color 0.15s',
+          }}
+        >
+          <Icon size={15} />
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export default function ReportBuilder() {
   const [reports, setReports] = useState([])
   const [loading, setLoading] = useState(true)
   const [landingId, setLandingId] = useState(loadLandingId)
   const [activeReport, setActiveReport] = useState(null)
+  const [activeTab, setActiveTab] = useState('reports')
 
   const loadFromApi = useCallback(async () => {
     try {
@@ -2125,15 +2245,24 @@ export default function ReportBuilder() {
   }
 
   return (
-    <ReportList
-      reports={reports}
-      onCreate={createReport}
-      onOpen={openReport}
-      onDelete={deleteReport}
-      onDuplicate={duplicateReport}
-      landingId={landingId}
-      onSetLanding={setLanding}
-      onRefresh={loadFromApi}
-    />
+    <div style={{ margin: '-18px', display: 'flex', flexDirection: 'column', minHeight: 'calc(100vh - 32px)' }}>
+      <TabBar active={activeTab} onChange={setActiveTab} />
+      <div style={{ flex: 1, padding: 18, overflowY: 'auto' }}>
+        {activeTab === 'ai-query' ? (
+          <NLPReportBuilder />
+        ) : (
+          <ReportList
+            reports={reports}
+            onCreate={createReport}
+            onOpen={openReport}
+            onDelete={deleteReport}
+            onDuplicate={duplicateReport}
+            landingId={landingId}
+            onSetLanding={setLanding}
+            onRefresh={loadFromApi}
+          />
+        )}
+      </div>
+    </div>
   )
 }

@@ -931,6 +931,7 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(String)
     system_prompt = Column(Text, nullable=False)          # agent instructions

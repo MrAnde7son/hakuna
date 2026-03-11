@@ -97,7 +97,8 @@
       "Bash(backend/.venv/bin/python3.11 -c \":*)",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''app.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
       "Bash(curl -s -X POST http://localhost:8000/api/auth/login -H \"Content-Type: application/json\" -d '{\"\"\"\"email\"\"\"\":\"\"\"\"moshe@example.com\"\"\"\",\"\"\"\"password\"\"\"\":\"\"\"\"password\"\"\"\"}')",
-      "Bash(curl -s -X POST http://localhost:8000/api/auth/login -H \"Content-Type: application/json\" -d '{\"\"email\"\":\"\"moshe@example.com\"\",\"\"password\"\":\"\"password\"\"}')"
+      "Bash(curl -s -X POST http://localhost:8000/api/auth/login -H \"Content-Type: application/json\" -d '{\"\"email\"\":\"\"moshe@example.com\"\",\"\"password\"\":\"\"password\"\"}')",
+      "Bash(python -c \"import agent_routes; print\\(''OK''\\)\")"
     ]
   }
 }

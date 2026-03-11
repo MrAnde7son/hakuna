@@ -6,13 +6,14 @@ import asyncio
 from typing import Optional, List, Dict
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db, SessionLocal
-from models import Agent, AgentRun, AgentSchedule
+from models import Agent, AgentRun, AgentSchedule, User
+from auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from agent_tools import get_tool_catalog
 from agent_engine import run_agent, run_agent_streaming, update_agent_memory
 from agent_pipeline import get_available_pipelines, PIPELINE_REGISTRY
@@ -55,14 +56,16 @@ def tool_catalog():
 # ── Agent CRUD ───────────────────────────────────────────────────────
 
 @router.get("")
-def list_agents(db: Session = Depends(get_db)):
-    agents = db.query(Agent).order_by(Agent.updated_at.desc()).all()
-    return [_agent_to_dict(a) for a in agents]
+def list_agents(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    q = db.query(Agent).order_by(Agent.updated_at.desc())
+    q = apply_org_filter(q, Agent, org_ids)
+    return [_agent_to_dict(a) for a in q.all()]
 
 
 @router.post("")
-def create_agent(body: AgentCreate, db: Session = Depends(get_db)):
+def create_agent(body: AgentCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     agent = Agent(
+        org_id=user.org_id if user else None,
         name=body.name,
         description=body.description,
         system_prompt=body.system_prompt,
@@ -117,7 +120,7 @@ def list_templates():
 
 
 @router.post("/from-template")
-def create_from_template(body: dict, db: Session = Depends(get_db)):
+def create_from_template(body: dict, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     """Create an agent from a template."""
     template_id = body.get("template_id")
     template = next((t for t in AGENT_TEMPLATES if t["id"] == template_id), None)
@@ -125,6 +128,7 @@ def create_from_template(body: dict, db: Session = Depends(get_db)):
         raise HTTPException(404, f"Template '{template_id}' not found")
 
     agent = Agent(
+        org_id=user.org_id if user else None,
         name=body.get("name", template["name"]),
         description=template["description"],
         system_prompt=template["system_prompt"],
@@ -141,9 +145,11 @@ def create_from_template(body: dict, db: Session = Depends(get_db)):
 # ── Export / Import (must be before /{agent_id}) ─────────────────────
 
 @router.get("/export/{agent_id}")
-def export_agent(agent_id: int, db: Session = Depends(get_db)):
+def export_agent(agent_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Export an agent as a shareable JSON config."""
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    q = db.query(Agent).filter(Agent.id == agent_id)
+    q = apply_org_filter(q, Agent, org_ids)
+    agent = q.first()
     if not agent:
         raise HTTPException(404, "Agent not found")
     return {
@@ -159,7 +165,7 @@ def export_agent(agent_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/import")
-def import_agent(body: dict, db: Session = Depends(get_db)):
+def import_agent(body: dict, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     """Import an agent from a JSON config."""
     name = body.get("name")
     system_prompt = body.get("system_prompt")
@@ -167,6 +173,7 @@ def import_agent(body: dict, db: Session = Depends(get_db)):
         raise HTTPException(400, "Agent config must include 'name' and 'system_prompt'")
 
     agent = Agent(
+        org_id=user.org_id if user else None,
         name=body.get("name"),
         description=body.get("description"),
         system_prompt=body.get("system_prompt"),
@@ -196,16 +203,20 @@ class ScheduleUpdate(BaseModel):
 
 
 @router.get("/schedules")
-def list_schedules(db: Session = Depends(get_db)):
-    """List all agent schedules."""
-    schedules = db.query(AgentSchedule).order_by(AgentSchedule.created_at.desc()).all()
+def list_schedules(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    """List all agent schedules (scoped to accessible agents)."""
+    q = db.query(AgentSchedule).join(Agent, Agent.id == AgentSchedule.agent_id)
+    q = apply_org_filter(q, Agent, org_ids)
+    schedules = q.order_by(AgentSchedule.created_at.desc()).all()
     return [_schedule_to_dict(s) for s in schedules]
 
 
 @router.post("/schedules")
-def create_schedule(body: ScheduleCreate, db: Session = Depends(get_db)):
+def create_schedule(body: ScheduleCreate, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Create a new agent schedule."""
-    agent = db.query(Agent).filter(Agent.id == body.agent_id).first()
+    q = db.query(Agent).filter(Agent.id == body.agent_id)
+    q = apply_org_filter(q, Agent, org_ids)
+    agent = q.first()
     if not agent:
         raise HTTPException(404, "Agent not found")
 
@@ -261,16 +272,20 @@ def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
 # ── Agent by ID (parameterized routes last) ──────────────────────────
 
 @router.get("/{agent_id}")
-def get_agent(agent_id: int, db: Session = Depends(get_db)):
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+def get_agent(agent_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    q = db.query(Agent).filter(Agent.id == agent_id)
+    q = apply_org_filter(q, Agent, org_ids)
+    agent = q.first()
     if not agent:
         raise HTTPException(404, "Agent not found")
     return _agent_to_dict(agent)
 
 
 @router.patch("/{agent_id}")
-def update_agent(agent_id: int, body: AgentUpdate, db: Session = Depends(get_db)):
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+def update_agent(agent_id: int, body: AgentUpdate, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    q = db.query(Agent).filter(Agent.id == agent_id)
+    q = apply_org_filter(q, Agent, org_ids)
+    agent = q.first()
     if not agent:
         raise HTTPException(404, "Agent not found")
     for field, val in body.model_dump(exclude_unset=True).items():
@@ -281,8 +296,10 @@ def update_agent(agent_id: int, body: AgentUpdate, db: Session = Depends(get_db)
 
 
 @router.delete("/{agent_id}")
-def delete_agent(agent_id: int, db: Session = Depends(get_db)):
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+def delete_agent(agent_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    q = db.query(Agent).filter(Agent.id == agent_id)
+    q = apply_org_filter(q, Agent, org_ids)
+    agent = q.first()
     if not agent:
         raise HTTPException(404, "Agent not found")
     db.delete(agent)
@@ -293,8 +310,10 @@ def delete_agent(agent_id: int, db: Session = Depends(get_db)):
 # ── Run agent ────────────────────────────────────────────────────────
 
 @router.post("/{agent_id}/run")
-def run_agent_endpoint(agent_id: int, body: AgentRunRequest, db: Session = Depends(get_db)):
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+def run_agent_endpoint(agent_id: int, body: AgentRunRequest, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    q = db.query(Agent).filter(Agent.id == agent_id)
+    q = apply_org_filter(q, Agent, org_ids)
+    agent = q.first()
     if not agent:
         raise HTTPException(404, "Agent not found")
     result = run_agent(agent, body.input, db)
@@ -304,9 +323,11 @@ def run_agent_endpoint(agent_id: int, body: AgentRunRequest, db: Session = Depen
 # ── Streaming run (SSE) ──────────────────────────────────────────────
 
 @router.post("/{agent_id}/run/stream")
-async def run_agent_stream(agent_id: int, body: AgentRunRequest, db: Session = Depends(get_db)):
+async def run_agent_stream(agent_id: int, body: AgentRunRequest, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Run an agent with Server-Sent Events streaming."""
-    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    q = db.query(Agent).filter(Agent.id == agent_id)
+    q = apply_org_filter(q, Agent, org_ids)
+    agent = q.first()
     if not agent:
         raise HTTPException(404, "Agent not found")
 

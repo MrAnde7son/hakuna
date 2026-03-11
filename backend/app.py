@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
 
-from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Query, Request
+from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Query, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -61,6 +61,79 @@ def _apply_sort(q, model, sort_by: str, order: str, default_attr):
     if col is None:
         col = default_attr
     return q.order_by(desc(col) if order == "desc" else col)
+
+
+# Mapping from asset dedup key fields → (InventoryComputer field, Asset field(s))
+# Used by _resolve_dc_asset_ids to match DC objects to their scanned assets.
+_COMPUTER_TO_ASSET_FIELD_MAP = {
+    "fqdn":        ("dns_hostname", ["fqdn"]),
+    "hostname":    ("computer_name", ["hostname"]),
+    "netbios_name": ("computer_name", ["netbios_name"]),
+    # "ip" is not present on InventoryComputer — skipped
+}
+
+
+def _resolve_dc_asset_ids(db, scan_id=None, restrict_to_asset_ids=None) -> set:
+    """Return IDs of Asset records that ARE Domain Controllers.
+
+    InventoryComputer.asset_id is the SOURCE asset that ran the AD enumeration plugin,
+    not the DC itself.  We resolve the actual DC asset by matching computer name/fqdn
+    against Asset fields using the same key fields as the asset dedup config.
+    """
+    # Determine which fields to match on from the dedup config
+    dedup_cfg = dedup_engine.load_config()
+    key_fields = dedup_cfg.get("assets", {}).get("key_fields", ["ip", "fqdn"])
+    match_pairs = [
+        _COMPUTER_TO_ASSET_FIELD_MAP[f]
+        for f in key_fields
+        if f in _COMPUTER_TO_ASSET_FIELD_MAP
+    ]
+    # Always include hostname as fallback (computer_name ↔ hostname / netbios_name)
+    if not any(af[0] == "computer_name" for af in match_pairs):
+        match_pairs.append(("computer_name", ["hostname", "netbios_name"]))
+
+    q = db.query(
+        InventoryComputer.scan_id,
+        InventoryComputer.computer_name,
+        InventoryComputer.dns_hostname,
+    ).filter(InventoryComputer.is_domain_controller == True)
+    if scan_id:
+        q = q.filter(InventoryComputer.scan_id == scan_id)
+    elif restrict_to_asset_ids:
+        scan_ids = [
+            r[0] for r in db.query(Asset.scan_id)
+            .filter(Asset.id.in_(restrict_to_asset_ids))
+            .distinct().all()
+        ]
+        if scan_ids:
+            q = q.filter(InventoryComputer.scan_id.in_(scan_ids))
+    dc_computers = q.all()
+    if not dc_computers:
+        return set()
+
+    result = set()
+    comp_field_map = {"dns_hostname": lambda row: row[2], "computer_name": lambda row: row[1]}
+    for dc_row in dc_computers:
+        dc_scan_id = dc_row[0]
+        conditions = []
+        for comp_field, asset_fields in match_pairs:
+            val = comp_field_map.get(comp_field, lambda r: None)(dc_row)
+            if not val:
+                continue
+            vl = val.lower()
+            for af in asset_fields:
+                col = getattr(Asset, af, None)
+                if col is not None:
+                    conditions.append(func.lower(col) == vl)
+        if not conditions:
+            continue
+        aq = db.query(Asset.id).filter(Asset.scan_id == dc_scan_id, or_(*conditions))
+        if restrict_to_asset_ids:
+            aq = aq.filter(Asset.id.in_(restrict_to_asset_ids))
+        for row in aq.all():
+            result.add(row[0])
+    return result
+
 
 app = FastAPI(title="Nessus Remediation Platform", version="1.0.0")
 
@@ -118,6 +191,14 @@ def startup():
     from agent_scheduler import start_scheduler as start_agent_scheduler
     start_agent_scheduler()
     logger.info("Agent scheduler started")
+    # Schedule threat intel auto-update every 24 hours
+    from intel_updater import update_intel
+    from apscheduler.schedulers.background import BackgroundScheduler as _BGScheduler
+    from apscheduler.triggers.interval import IntervalTrigger as _IntervalTrigger
+    _intel_scheduler = _BGScheduler()
+    _intel_scheduler.add_job(update_intel, _IntervalTrigger(hours=24), id="intel_update", replace_existing=True)
+    _intel_scheduler.start()
+    logger.info("Intel auto-update scheduled (every 24h)")
     # Seed SLA defaults and backfill any scans that have no SLA due dates yet
     try:
         from database import SessionLocal as _SL
@@ -244,7 +325,7 @@ def _populate_temporal_fields(db: Session, scan):
 # ─────────────────────────────────────────────
 
 @app.post("/api/upload")
-async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
     """Upload and parse a Nessus scan (HTML, .nessus XML, or CSV)."""
     fname = (file.filename or "").lower()
     allowed = (".html", ".htm", ".nessus", ".csv")
@@ -265,8 +346,10 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
 
     # Create Scan record
     scan_data = parsed["scan"]
+    # Use X-Org-Context if set (e.g. superadmin uploading into a specific org)
+    effective_org_id = int(x_org_context) if x_org_context else (user.org_id if user else None)
     scan = Scan(
-        org_id=user.org_id if user else None,
+        org_id=effective_org_id,
         filename=file.filename,
         scan_name=scan_data.get("scan_name") or file.filename,
         scan_date=scan_data.get("scan_date"),
@@ -547,12 +630,8 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     logger.info(f"Inventory extracted: { {k: v for k, v in inv_counts.items() if v} }")
 
     # ── Boost criticality for Domain Controllers discovered in inventory ──
-    dc_rows = db.query(InventoryComputer).filter(
-        InventoryComputer.scan_id == scan.id,
-        InventoryComputer.is_domain_controller == True,
-    ).all()
-    if dc_rows:
-        dc_asset_ids = {r.asset_id for r in dc_rows}
+    dc_asset_ids = _resolve_dc_asset_ids(db, scan_id=scan.id)
+    if dc_asset_ids:
         dc_assets = db.query(Asset).filter(Asset.id.in_(dc_asset_ids)).all()
         for asset in dc_assets:
             if (asset.criticality or 5) < 9:
@@ -819,14 +898,8 @@ def list_assets(
     assets = q.all()
     asset_ids = [a.id for a in assets]
     tag_map = tag_engine.get_asset_tags(asset_ids, db)
-    # Batch-fetch DC status from inventory_computers
-    dc_asset_ids = set()
-    if asset_ids:
-        dc_rows = db.query(InventoryComputer.asset_id).filter(
-            InventoryComputer.asset_id.in_(asset_ids),
-            InventoryComputer.is_domain_controller == True,
-        ).all()
-        dc_asset_ids = {r[0] for r in dc_rows}
+    # Batch-fetch DC status: match by hostname/fqdn (not by source asset_id)
+    dc_asset_ids = _resolve_dc_asset_ids(db, restrict_to_asset_ids=asset_ids) if asset_ids else set()
     result = []
     for a in assets:
         d = _asset_to_dict(a)
@@ -1264,12 +1337,12 @@ def get_trending(db: Session = Depends(get_db)):
 
 
 @app.get("/api/reports/metrics-timeline")
-def get_metrics_timeline(db: Session = Depends(get_db)):
+def get_metrics_timeline(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return per-scan metrics for a configurable timeline widget.
     Each scan gets a snapshot of: severity counts, total findings/assets,
     exploit counts, SLA stats, workflow status breakdown, MTTR, and risk scores."""
     from sqlalchemy import case as sa_case
-    scans = db.query(Scan).order_by(Scan.created_at).all()
+    scans = apply_org_filter(db.query(Scan), Scan, org_ids).order_by(Scan.created_at).all()
     result = []
     sev_labels = {0: "info", 1: "low", 2: "medium", 3: "high", 4: "critical"}
 
@@ -1694,7 +1767,8 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
     kerberoastable accounts, lateral movement paths via shared admins, etc.)
     """
     def _q(Model):
-        q = db.query(Model)
+        q = db.query(Model).join(Scan, Model.scan_id == Scan.id)
+        q = apply_scan_org_filter(q, org_ids)
         if scan_id:
             q = q.filter(Model.scan_id == scan_id)
         return q
@@ -2391,13 +2465,7 @@ def recalculate_risk(body: RecalculateBody, db: Session = Depends(get_db)):
         asset_tags_map.setdefault(row.asset_id, []).append(f"{row.category}:{row.value}")
 
     # Batch-fetch DC asset IDs so we can enforce criticality floor
-    dc_asset_ids = set()
-    if asset_ids:
-        dc_rows = db.query(InventoryComputer.asset_id).filter(
-            InventoryComputer.asset_id.in_(asset_ids),
-            InventoryComputer.is_domain_controller == True,
-        ).all()
-        dc_asset_ids = {r[0] for r in dc_rows}
+    dc_asset_ids = _resolve_dc_asset_ids(db, restrict_to_asset_ids=asset_ids) if asset_ids else set()
 
     updated_assets = 0
     updated_findings = 0
@@ -2825,13 +2893,7 @@ def advanced_search(body: AdvancedSearchBody, db: Session = Depends(get_db)):
     if body.type == "asset":
         asset_ids = [r["asset"].id for r in results]
         tag_map = tag_engine.get_asset_tags(asset_ids, db)
-        dc_asset_ids = set()
-        if asset_ids:
-            dc_rows = db.query(InventoryComputer.asset_id).filter(
-                InventoryComputer.asset_id.in_(asset_ids),
-                InventoryComputer.is_domain_controller == True,
-            ).all()
-            dc_asset_ids = {r[0] for r in dc_rows}
+        dc_asset_ids = _resolve_dc_asset_ids(db, restrict_to_asset_ids=asset_ids) if asset_ids else set()
         assets_out = []
         for r in results:
             a = r["asset"]
@@ -3084,12 +3146,7 @@ def get_blast_radius_bulk(
     for u in admin_users:
         admins_by_asset.setdefault(u.asset_id, []).append(u)
 
-    dc_asset_ids = set(
-        r.asset_id for r in db.query(InventoryComputer.asset_id).filter(
-            InventoryComputer.scan_id == scan_id,
-            InventoryComputer.is_domain_controller == True,
-        ).all()
-    )
+    dc_asset_ids = _resolve_dc_asset_ids(db, scan_id=scan_id)
 
     results = {}
 
@@ -3896,10 +3953,12 @@ def recalculate_sla(
 def get_sla_summary(
     scan_id: Optional[int] = None,
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Return SLA compliance stats and MTTR for a scan (or all scans)."""
     _ensure_sla_defaults(db)
-    q = db.query(Finding)
+    q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(Finding.scan_id == scan_id)
 
@@ -5197,17 +5256,13 @@ def get_risk_by_tags(
     from collections import defaultdict
 
     # Get all tags, optionally filtered by category
-    tag_q = db.query(Tag)
-    if org_ids:
-        tag_q = tag_q.filter(or_(Tag.org_id.in_(org_ids), Tag.org_id.is_(None)))
+    tag_q = apply_org_filter(db.query(Tag), Tag, org_ids)
     if category:
         tag_q = tag_q.filter(func.lower(Tag.category) == category.lower())
     tags = tag_q.all()
 
     # Available categories for the picker
-    cat_q = db.query(Tag.category).distinct()
-    if org_ids:
-        cat_q = cat_q.filter(or_(Tag.org_id.in_(org_ids), Tag.org_id.is_(None)))
+    cat_q = apply_org_filter(db.query(Tag.category).distinct(), Tag, org_ids)
     available_categories = sorted([r[0] for r in cat_q.all() if r[0]])
 
     if not tags:
@@ -5302,6 +5357,176 @@ def get_risk_by_tags(
         "groups": groups,
         "org_avg_risk": org_avg,
         "available_categories": available_categories,
+    }
+
+
+# ─────────────────────────────────────────────────────────
+# NLP Report Query
+# ─────────────────────────────────────────────────────────
+
+class NLPReportQueryRequest(BaseModel):
+    query: str
+    scan_id: Optional[int] = None
+
+@app.post("/api/reports/nlp-query")
+def nlp_report_query(
+    body: NLPReportQueryRequest,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Parse a natural language query and return matching findings + assets as a structured report."""
+    parsed = parse_nlp_query(body.query)
+    af = parsed["asset_filters"]
+    ff = parsed["finding_filters"]
+    scan_id = body.scan_id
+
+    # ── Assets ────────────────────────────────────────────
+    aq = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
+    aq = apply_scan_org_filter(aq, org_ids)
+    if scan_id:
+        aq = aq.filter(Asset.scan_id == scan_id)
+    if af.get("search"):
+        pat = f"%{af['search']}%"
+        aq = aq.filter(
+            Asset.hostname.ilike(pat) | Asset.ip.ilike(pat) |
+            Asset.os.ilike(pat) | Asset.fqdn.ilike(pat)
+        )
+    if af.get("environment"):
+        aq = aq.filter(Asset.environment_tag.ilike(f"%{af['environment']}%"))
+    if af.get("min_risk") is not None:
+        aq = aq.filter(Asset.risk_score >= float(af["min_risk"]))
+    if af.get("min_critical") is not None:
+        aq = aq.filter(Asset.critical_count >= int(af["min_critical"]))
+    if af.get("min_high") is not None:
+        aq = aq.filter(Asset.high_count >= int(af["min_high"]))
+    aq = aq.order_by(desc(Asset.risk_score))
+    total_assets = aq.count()
+    assets = aq.limit(20).all()
+
+    # ── Findings ──────────────────────────────────────────
+    fq = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+    fq = apply_scan_org_filter(fq, org_ids)
+    if scan_id:
+        fq = fq.filter(Finding.scan_id == scan_id)
+    if ff.get("severity") is not None:
+        fq = fq.filter(Finding.severity == int(ff["severity"]))
+    if ff.get("has_exploit"):
+        fq = fq.filter(Finding.exploit_available == True)
+    if ff.get("is_kev"):
+        fq = fq.filter(Finding.is_kev == True)
+    if ff.get("ransomware_linked"):
+        fq = fq.filter(Finding.ransomware_linked == True)
+    if ff.get("trending_in_news"):
+        fq = fq.filter(Finding.trending_in_news == True)
+    if ff.get("min_epss") is not None:
+        fq = fq.filter(Finding.epss_score >= float(ff["min_epss"]))
+    if ff.get("min_cvss") is not None:
+        fq = fq.filter(
+            or_(Finding.cvss3_score >= float(ff["min_cvss"]),
+                Finding.cvss2_score >= float(ff["min_cvss"]))
+        )
+    if ff.get("sla_status"):
+        fq = fq.filter(Finding.sla_status == ff["sla_status"])
+    if ff.get("effort_level"):
+        fq = fq.filter(Finding.effort_level == ff["effort_level"])
+    if ff.get("plugin_family"):
+        fq = fq.filter(Finding.plugin_family.ilike(f"%{ff['plugin_family']}%"))
+    if ff.get("cve"):
+        fq = fq.filter(Finding.cves.ilike(f"%{ff['cve']}%"))
+    if ff.get("search"):
+        pat = f"%{ff['search']}%"
+        fq = fq.filter(
+            Finding.plugin_name.ilike(pat) | Finding.synopsis.ilike(pat) |
+            Finding.plugin_id.ilike(pat)
+        )
+    # If asset filters produced an asset set, scope findings to those assets
+    if af and total_assets > 0:
+        asset_ids = [a.id for a in assets]
+        if len(asset_ids) < total_assets:
+            # Get all matching asset IDs for scoping
+            all_asset_ids = [r[0] for r in aq.with_entities(Asset.id).limit(500).all()]
+            fq = fq.filter(Finding.asset_id.in_(all_asset_ids))
+        else:
+            fq = fq.filter(Finding.asset_id.in_(asset_ids))
+
+    sort_col = Finding.priority_score
+    if parsed.get("sort"):
+        sort_field = parsed["sort"].get("sort_by", "priority_score")
+        sort_col = getattr(Finding, sort_field, Finding.priority_score)
+        if parsed["sort"].get("order", "desc") == "asc":
+            fq = fq.order_by(sort_col)
+        else:
+            fq = fq.order_by(desc(sort_col))
+    else:
+        fq = fq.order_by(desc(sort_col))
+
+    total_findings = fq.count()
+    findings = fq.limit(50).all()
+
+    # ── Severity breakdown ─────────────────────────────────
+    sev_labels = {4: "critical", 3: "high", 2: "medium", 1: "low", 0: "info"}
+    by_severity = {}
+    for sev_int, sev_label in sev_labels.items():
+        by_severity[sev_label] = fq.filter(Finding.severity == sev_int).count()
+
+    # Reset filter chain for sev counts on the already-filtered query
+    # Re-run with the same base query to get severity breakdown
+    sev_breakdown = {sev_labels[s]: fq.filter(Finding.severity == s).count() for s in sev_labels}
+
+    # ── Serialise ──────────────────────────────────────────
+    def _finding(f):
+        return {
+            "id": f.id,
+            "plugin_id": f.plugin_id,
+            "plugin_name": f.plugin_name,
+            "plugin_family": f.plugin_family,
+            "severity": f.severity,
+            "severity_label": f.severity_label or ["Info","Low","Medium","High","Critical"][f.severity],
+            "cvss3_score": f.cvss3_score,
+            "vpr_score": f.vpr_score,
+            "priority_score": f.priority_score,
+            "effort_level": f.effort_level,
+            "exploit_available": f.exploit_available,
+            "is_kev": f.is_kev,
+            "synopsis": f.synopsis,
+            "solution": f.solution,
+            "asset_id": f.asset_id,
+            "cves": f.cves or [],
+            "sla_status": f.sla_status,
+            "workflow_status": f.workflow_status,
+        }
+
+    def _asset(a):
+        return {
+            "id": a.id,
+            "ip": a.ip,
+            "hostname": a.hostname,
+            "fqdn": a.fqdn,
+            "os": a.os,
+            "risk_score": a.risk_score,
+            "criticality": a.criticality,
+            "environment_tag": a.environment_tag,
+            "critical_count": a.critical_count,
+            "high_count": a.high_count,
+            "medium_count": a.medium_count,
+            "low_count": a.low_count,
+        }
+
+    return {
+        "original_query": body.query,
+        "explanation": parsed["explanation"],
+        "parsed_filters": {
+            "asset_filters": af,
+            "finding_filters": ff,
+            "sort": parsed.get("sort"),
+        },
+        "summary": {
+            "total_findings": total_findings,
+            "total_assets": total_assets,
+            "by_severity": sev_breakdown,
+        },
+        "findings": [_finding(f) for f in findings],
+        "assets": [_asset(a) for a in assets],
     }
 
 

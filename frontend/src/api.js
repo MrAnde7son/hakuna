@@ -124,6 +124,14 @@ export const nlpSearch = (q, scan_id) => {
   return request(`/search/nlp?${params}`)
 }
 
+// NLP Report Query
+export const nlpReportQuery = (query, scan_id = null) =>
+  request('/reports/nlp-query', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, scan_id }),
+  })
+
 // Assets
 export const getAssets = (params = {}) => {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))

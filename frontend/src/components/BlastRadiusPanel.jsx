@@ -22,7 +22,11 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import dagre from '@dagrejs/dagre'
-import { Server, Users, AlertTriangle, Network, Shield, ChevronDown, ChevronRight, Crosshair, Maximize2, Minimize2 } from 'lucide-react'
+import {
+  Server, User, Users, Monitor, Database,
+  UserCheck, UserCog,
+  ChevronDown, ChevronRight, Crosshair, Maximize2, Minimize2,
+} from 'lucide-react'
 import { getBlastRadius } from '../api.js'
 
 // ── Colours ─────────────────────────────────────────────────────────────
@@ -71,8 +75,10 @@ function AssetNode({ data }) {
 
   const bg = isStart ? '#f0fdf4' : data.is_dc ? '#fff7ed' : '#ffffff'
   const borderColor = isStart ? '#16a34a' : data.is_dc ? '#ea580c' : '#cbd5e1'
+  const iconColor = isStart ? '#16a34a' : data.is_dc ? '#ea580c' : '#64748b'
   const shadow = isStart ? '0 0 0 3px #16a34a22, 0 2px 8px rgba(0,0,0,0.08)'
     : '0 1px 4px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.04)'
+  const AssetIcon = data.is_dc ? Database : Server
 
   return (
     <div style={{
@@ -82,8 +88,13 @@ function AssetNode({ data }) {
     }}>
       <Handle type="target" position={Position.Left} style={{ background: '#94a3b8', width: 7, height: 7, border: '1.5px solid #fff' }} />
       <Handle type="source" position={Position.Right} style={{ background: '#94a3b8', width: 7, height: 7, border: '1.5px solid #fff' }} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 2 }}>
-        <Server size={10} color={isStart ? '#16a34a' : data.is_dc ? '#ea580c' : '#64748b'} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+        <div style={{
+          width: 22, height: 22, borderRadius: 5, background: iconColor + '18',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+        }}>
+          <AssetIcon size={13} color={iconColor} />
+        </div>
         {isStart && <NBadge bg="#dcfce7" fg="#15803d" border="#86efac">START</NBadge>}
         {data.is_dc && <NBadge bg="#ffedd5" fg="#c2410c" border="#fed7aa">DC</NBadge>}
         <span style={{ fontSize: 11, fontWeight: 700, color: '#0f172a', flex: 1,
@@ -104,6 +115,15 @@ function AssetNode({ data }) {
   )
 }
 
+// Map user_type → { icon, label, iconColor, iconBg }
+const USER_TYPE_CFG = {
+  domain_user:      { Icon: User,     label: 'Domain User',    iconColor: '#3b82f6', iconBg: '#eff6ff' },
+  local_user:       { Icon: UserCheck,label: 'Local User',     iconColor: '#64748b', iconBg: '#f8fafc' },
+  service_account:  { Icon: UserCog,  label: 'Service Acct',   iconColor: '#8b5cf6', iconBg: '#f5f3ff' },
+  computer_account: { Icon: Monitor,  label: 'Computer',       iconColor: '#0ea5e9', iconBg: '#f0f9ff' },
+  group:            { Icon: Users,    label: 'Group',          iconColor: '#10b981', iconBg: '#ecfdf5' },
+}
+
 function UserNode({ data }) {
   const bc = data.is_domain_admin ? '#ef4444'
     : data.kerberoastable ? '#a855f7'
@@ -113,6 +133,10 @@ function UserNode({ data }) {
     : data.kerberoastable ? '#faf5ff'
     : data.is_local_admin ? '#fffbeb'
     : '#eff6ff'
+
+  const typeCfg = USER_TYPE_CFG[data.user_type] || USER_TYPE_CFG.domain_user
+  const { Icon, iconColor, iconBg } = typeCfg
+
   return (
     <div style={{
       background: bg, border: `2px solid ${bc}`,
@@ -121,8 +145,14 @@ function UserNode({ data }) {
     }}>
       <Handle type="target" position={Position.Left} style={{ background: '#94a3b8', width: 7, height: 7, border: '1.5px solid #fff' }} />
       <Handle type="source" position={Position.Right} style={{ background: '#94a3b8', width: 7, height: 7, border: '1.5px solid #fff' }} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}>
-        <Users size={10} color={bc} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+        <div style={{
+          width: 22, height: 22, borderRadius: 5, background: iconBg,
+          border: `1px solid ${iconColor}33`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+        }}>
+          <Icon size={13} color={iconColor} />
+        </div>
         <span style={{ fontSize: 11, fontWeight: 700, color: '#0f172a', flex: 1,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {data.label}
@@ -239,6 +269,33 @@ function BlastRadiusFlow({ data }) {
               Click same node to clear
             </span>
           ) : 'Click node for blast radius'}
+        </div>
+      </Panel>
+      <Panel position="top-left">
+        <div style={{
+          background: 'rgba(255,255,255,0.95)', border: '1px solid var(--border)',
+          borderRadius: 6, padding: '6px 10px', fontSize: 10,
+          display: 'flex', flexDirection: 'column', gap: 4,
+        }}>
+          {[
+            { Icon: Server,   color: '#64748b', bg: '#f8fafc', label: 'Server' },
+            { Icon: Database, color: '#ea580c', bg: '#fff7ed', label: 'Domain Controller' },
+            { Icon: User,     color: '#3b82f6', bg: '#eff6ff', label: 'Domain User' },
+            { Icon: UserCheck,color: '#64748b', bg: '#f8fafc', label: 'Local User' },
+            { Icon: UserCog,  color: '#8b5cf6', bg: '#f5f3ff', label: 'Service Account' },
+            { Icon: Monitor,  color: '#0ea5e9', bg: '#f0f9ff', label: 'Computer Account' },
+          ].map(({ Icon, color, bg, label }) => (
+            <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{
+                width: 18, height: 18, borderRadius: 4, background: bg,
+                border: `1px solid ${color}33`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <Icon size={11} color={color} />
+              </div>
+              <span style={{ color: '#475569' }}>{label}</span>
+            </div>
+          ))}
         </div>
       </Panel>
     </ReactFlow>
