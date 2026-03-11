@@ -13,7 +13,7 @@
       }
 
       :root {
-        /* Light theme tokens inspired by Hakuna demo */
+        /* Light theme tokens */
         --bg: #ffffff;
         --bg-muted: #fafafa;
         --card: #ffffff;
@@ -37,7 +37,7 @@
           Helvetica, Arial, sans-serif;
         --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 
-        /* Backwards-compatible aliases for existing components */
+        /* Backwards-compatible aliases */
         --critical: #dc2626;
         --high: #ea580c;
         --medium: #d97706;
@@ -46,17 +46,68 @@
         --bg-primary: var(--bg);
         --bg-secondary: var(--bg);
         --bg-card: var(--card);
-        --bg-hover: #f8fafc;
+        --bg-hover: #f1f5f9;
         --text-primary: var(--text);
         --text-secondary: var(--muted);
         --text-muted: var(--muted-2);
         --accent: var(--primary);
         --accent-hover: #1d4ed8;
+
+        /* Component-specific tokens */
+        --nav-active-bg: #18181b;
+        --nav-active-text: #ffffff;
+        --avatar-bg: #18181b;
+        --avatar-text: #ffffff;
+        --surface: #ffffff;
+        --danger-subtle: #fef2f2;
+      }
+
+      [data-theme="dark"] {
+        --bg: #0d1117;
+        --bg-muted: #090c10;
+        --card: #161b22;
+        --popover: #1c2128;
+        --border: #30363d;
+        --input: #30363d;
+        --ring: rgba(88, 166, 255, 0.35);
+        --text: #e6edf3;
+        --muted: #8b949e;
+        --muted-2: #6e7681;
+        --primary: #58a6ff;
+        --primary-foreground: #0d1117;
+        --secondary: #21262d;
+        --secondary-foreground: #c9d1d9;
+        --danger: #f85149;
+        --warning: #e3b341;
+        --success: #3fb950;
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.3);
+
+        --critical: #f85149;
+        --high: #fb923c;
+        --medium: #e3b341;
+        --low: #7ee787;
+        --info: #58a6ff;
+        --bg-primary: var(--bg);
+        --bg-secondary: var(--bg);
+        --bg-card: var(--card);
+        --bg-hover: #1c2128;
+        --text-primary: var(--text);
+        --text-secondary: var(--muted);
+        --text-muted: var(--muted-2);
+        --accent: var(--primary);
+        --accent-hover: #79b8ff;
+
+        --nav-active-bg: #e6edf3;
+        --nav-active-text: #0d1117;
+        --avatar-bg: #21262d;
+        --avatar-text: #e6edf3;
+        --surface: #161b22;
+        --danger-subtle: #2d1515;
       }
 
       body {
         font-family: var(--sans);
-        background: linear-gradient(180deg, #ffffff, #fbfbfb);
+        background: var(--bg);
         color: var(--text);
       }
     </style>

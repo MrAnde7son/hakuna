@@ -118,6 +118,12 @@ export const uploadScan = (file) => {
   return request('/upload', { method: 'POST', body: fd })
 }
 
+// NLP Search
+export const nlpSearch = (q, scan_id) => {
+  const params = new URLSearchParams({ q, ...(scan_id ? { scan_id } : {}) })
+  return request(`/search/nlp?${params}`)
+}
+
 // Assets
 export const getAssets = (params = {}) => {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))

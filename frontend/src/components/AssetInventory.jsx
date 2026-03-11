@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Server, RefreshCw, Edit2, Tag, Search, X, UserCheck, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon } from 'lucide-react'
+import { Server, RefreshCw, Edit2, Tag, X, UserCheck, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle } from 'lucide-react'
 import { useScan } from '../App.jsx'
 import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch } from '../api.js'
 import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal } from './ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
 import { filtersToConditions } from '../utils/filtersToConditions.js'
 import BlastRadiusPanel, { BlastRadiusScore } from './BlastRadiusPanel.jsx'
+import NLPSearchBar from './NLPSearchBar.jsx'
 
 function RiskScore({ score }) {
   const color = score >= 8 ? '#dc2626' : score >= 6 ? '#ea580c' : score >= 4 ? '#d97706' : '#65a30d'
@@ -79,6 +80,70 @@ function CriticalityEditor({ asset, onUpdate }) {
 }
 
 const ENV_COLORS = { internet: '#dc2626', dmz: '#ea580c', internal: '#65a30d', ot: '#d97706' }
+
+function RowActions({ row, onNavigate }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const items = [
+    { icon: AlertTriangle, label: 'View Findings', action: () => onNavigate(`/findings?asset_id=${row.id}`) },
+    { icon: Database, label: 'View Inventory', action: () => onNavigate(`/inventory?asset_id=${row.id}&asset_name=${encodeURIComponent(row.hostname || row.ip)}`) },
+  ]
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }} onClick={e => e.stopPropagation()}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          width: 28, height: 28, borderRadius: 6,
+          background: open ? 'var(--bg-muted)' : 'transparent',
+          border: '1px solid transparent',
+          cursor: 'pointer', color: 'var(--text-muted)',
+          transition: 'all 0.15s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-muted)'; e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-primary)' }}
+        onMouseLeave={e => { if (!open) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)' } }}
+        title="Actions"
+      >
+        <MoreHorizontal size={15} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', right: 0, top: '100%', marginTop: 4, zIndex: 200,
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+          padding: '4px 0', minWidth: 170,
+        }}>
+          {items.map(({ icon: Icon, label, action }) => (
+            <button
+              key={label}
+              onClick={() => { setOpen(false); action() }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 9, width: '100%',
+                padding: '8px 14px', background: 'none', border: 'none',
+                cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)',
+                textAlign: 'left',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-muted)'; e.currentTarget.style.color = 'var(--text-primary)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-secondary)' }}
+            >
+              <Icon size={13} style={{ flexShrink: 0 }} />
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function ResizablePanel({ children, onClose }) {
   const [width, setWidth] = useState(680)
@@ -427,10 +492,14 @@ export default function AssetInventory() {
         />
       )
     },
+    {
+      key: '_actions', label: '', width: '40px',
+      render: (_, row) => <RowActions row={row} onNavigate={navigate} />,
+    },
   ]
 
   const visibleColumns = allColumns.filter(c =>
-    c.key === '_select' || colVis[c.key] !== false
+    c.key === '_select' || c.key === '_actions' || colVis[c.key] !== false
   )
 
   return (
@@ -497,18 +566,29 @@ export default function AssetInventory() {
       )}
 
       {/* Filters */}
-      <div style={{ display: advancedMode ? 'none' : 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
-        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-          <Search size={14} style={{ position: 'absolute', left: 10, color: 'var(--text-muted)' }} />
-          <input
-            value={filters.search}
-            onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
-            placeholder="Search hostname, IP, OS…"
-            style={{
-              background: 'var(--bg-card)', border: '1px solid var(--border)',
-              color: 'var(--text-primary)', borderRadius: 6, padding: '7px 12px 7px 32px',
-              fontSize: 13, outline: 'none', width: 220,
+      <div style={{ display: advancedMode ? 'none' : 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'flex-start' }}>
+        <div style={{ flex: '1 1 280px', minWidth: 280, maxWidth: 480 }}>
+          <NLPSearchBar
+            scanId={activeScanId}
+            onResult={({ asset_filters, sort }) => {
+              setFilters(f => ({
+                ...f,
+                search: asset_filters.search || '',
+                env: asset_filters.environment || f.env,
+                minRisk: asset_filters.min_risk != null ? String(asset_filters.min_risk) : f.minRisk,
+                minCritical: asset_filters.min_critical != null ? String(asset_filters.min_critical) : f.minCritical,
+                minHigh: asset_filters.min_high != null ? String(asset_filters.min_high) : f.minHigh,
+              }))
+              if (sort) {
+                setSearchParams(prev => {
+                  const next = new URLSearchParams(prev)
+                  next.set('sort', sort.sort_by)
+                  next.set('order', sort.order)
+                  return next
+                }, { replace: true })
+              }
             }}
+            onClear={() => setFilters(f => ({ ...f, search: '', env: '', minRisk: '', minCritical: '', minHigh: '' }))}
           />
         </div>
 

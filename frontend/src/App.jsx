@@ -13,6 +13,8 @@ import {
   Building2,
   MoreVertical,
   User,
+  Moon,
+  Sun,
 } from 'lucide-react'
 import AssetInventory from './components/AssetInventory.jsx'
 import FindingExplorer from './components/FindingExplorer.jsx'
@@ -31,6 +33,7 @@ import Login from './components/Login.jsx'
 import Register from './components/Register.jsx'
 import UserManagement from './components/UserManagement.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
+import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
 import { getScans, setOrgContext } from './api.js'
 
 // Global scan context
@@ -90,11 +93,12 @@ function OrgSwitcher({ collapsed }) {
         onChange={e => switchOrg(e.target.value || null)}
         style={{
           width: '100%',
-          background: '#fff',
+          background: 'var(--bg)',
           border: '1px solid var(--border)',
           borderRadius: 10,
           padding: collapsed ? '4px 4px' : '5px 8px',
           fontSize: collapsed ? 9 : 11,
+          color: 'var(--text)',
           cursor: 'pointer',
         }}
       >
@@ -109,6 +113,7 @@ function OrgSwitcher({ collapsed }) {
 
 function UserMenu({ collapsed }) {
   const { user, org, logout } = useAuth()
+  const { theme, toggleTheme } = useTheme()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const menuRef = React.useRef(null)
@@ -142,14 +147,14 @@ function UserMenu({ collapsed }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
             <div style={{
               width: 28, height: 28, borderRadius: '50%',
-              background: '#18181b', color: '#fff',
+              background: 'var(--avatar-bg)', color: 'var(--avatar-text)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 11, fontWeight: 700, flexShrink: 0,
             }}>
               {initials}
             </div>
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#18181b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.display_name}</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.display_name}</div>
               <div style={{ fontSize: 10, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{org?.name}</div>
             </div>
           </div>
@@ -159,7 +164,7 @@ function UserMenu({ collapsed }) {
           title="Menu"
           style={{
             width: 28, height: 28, borderRadius: 6,
-            border: '1px solid var(--border)', background: '#fff',
+            border: '1px solid var(--border)', background: 'var(--bg)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             cursor: 'pointer', padding: 0, flexShrink: 0,
           }}
@@ -175,22 +180,36 @@ function UserMenu({ collapsed }) {
           left: collapsed ? '50%' : 12,
           transform: collapsed ? 'translateX(-50%)' : 'none',
           marginBottom: 4,
-          background: '#fff',
+          background: 'var(--popover)',
           border: '1px solid var(--border)',
           borderRadius: 8,
-          boxShadow: '0 4px 16px rgba(0,0,0,0.10)',
+          boxShadow: 'var(--shadow)',
           minWidth: 160,
           zIndex: 100,
           overflow: 'hidden',
         }}>
           <button
+            onClick={toggleTheme}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+              padding: '9px 14px', border: 'none', background: 'transparent',
+              cursor: 'pointer', fontSize: 13, color: 'var(--text)', textAlign: 'left',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+            {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+          </button>
+          <div style={{ height: 1, background: 'var(--border)' }} />
+          <button
             onClick={() => { setOpen(false); navigate('/profile') }}
             style={{
               width: '100%', display: 'flex', alignItems: 'center', gap: 8,
               padding: '9px 14px', border: 'none', background: 'transparent',
-              cursor: 'pointer', fontSize: 13, color: '#18181b', textAlign: 'left',
+              cursor: 'pointer', fontSize: 13, color: 'var(--text)', textAlign: 'left',
             }}
-            onMouseEnter={e => e.currentTarget.style.background = '#f4f4f5'}
+            onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
             onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
           >
             <User size={14} /> View Profile
@@ -201,9 +220,9 @@ function UserMenu({ collapsed }) {
             style={{
               width: '100%', display: 'flex', alignItems: 'center', gap: 8,
               padding: '9px 14px', border: 'none', background: 'transparent',
-              cursor: 'pointer', fontSize: 13, color: '#ef4444', textAlign: 'left',
+              cursor: 'pointer', fontSize: 13, color: 'var(--danger)', textAlign: 'left',
             }}
-            onMouseEnter={e => e.currentTarget.style.background = '#fef2f2'}
+            onMouseEnter={e => e.currentTarget.style.background = 'var(--danger-subtle)'}
             onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
           >
             <LogOut size={14} /> Log out
@@ -256,7 +275,7 @@ function Sidebar({ collapsed, onToggle }) {
             height: 32,
             borderRadius: 8,
             border: '1px solid var(--border)',
-            background: '#fff',
+            background: 'var(--bg)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -304,8 +323,8 @@ function Sidebar({ collapsed, onToggle }) {
               gap: 10,
               padding: '8px 10px',
               borderRadius: 6,
-              color: isActive ? '#fff' : '#71717a',
-              background: isActive ? '#18181b' : 'transparent',
+              color: isActive ? 'var(--nav-active-text)' : 'var(--muted)',
+              background: isActive ? 'var(--nav-active-bg)' : 'transparent',
               textDecoration: 'none',
               cursor: 'pointer',
               boxShadow: isActive ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
@@ -346,11 +365,12 @@ function Sidebar({ collapsed, onToggle }) {
             onChange={e => setActiveScanId(e.target.value ? parseInt(e.target.value) : null)}
             style={{
               width: '100%',
-              background: '#fff',
+              background: 'var(--bg)',
               border: '1px solid var(--border)',
               borderRadius: 10,
               padding: collapsed ? '4px 6px' : '6px 10px',
               fontSize: collapsed ? 10 : 12,
+              color: 'var(--text)',
               cursor: 'pointer',
               boxShadow: '0 1px 2px rgba(0,0,0,0.03)'
             }}
@@ -439,18 +459,20 @@ function AppShell() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-          <Route path="/*" element={
-            <ProtectedRoute>
-              <AppShell />
-            </ProtectedRoute>
-          } />
-        </Routes>
-      </AuthProvider>
-    </BrowserRouter>
+    <ThemeProvider>
+      <BrowserRouter>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+            <Route path="/*" element={
+              <ProtectedRoute>
+                <AppShell />
+              </ProtectedRoute>
+            } />
+          </Routes>
+        </AuthProvider>
+      </BrowserRouter>
+    </ThemeProvider>
   )
 }

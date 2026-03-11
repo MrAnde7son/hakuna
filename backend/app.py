@@ -37,6 +37,7 @@ import campaign_query as cq
 import tags as tag_engine
 import rule_engine
 import workflow_engine
+from nlp_search import parse_nlp_query
 import integrations as integ_module
 import ownership_inference
 from models import Tag, TagAssignment, AutoTagRule, SLAConfig, IntegrationConfig, FindingException, ScanComparison
@@ -115,6 +116,32 @@ def startup():
     from agent_scheduler import start_scheduler as start_agent_scheduler
     start_agent_scheduler()
     logger.info("Agent scheduler started")
+    # Seed SLA defaults and backfill any scans that have no SLA due dates yet
+    try:
+        from database import SessionLocal as _SL
+        _db = _SL()
+        try:
+            _ensure_sla_defaults(_db)
+            _sla_configs = _db.query(SLAConfig).filter(SLAConfig.is_enabled == True).all()
+            if _sla_configs:
+                # Find scans that have findings without sla_due_date
+                scan_ids_needing_sla = (
+                    _db.query(Finding.scan_id)
+                    .filter(Finding.sla_due_date == None)
+                    .distinct()
+                    .all()
+                )
+                scan_id_set = {row[0] for row in scan_ids_needing_sla}
+                scans_needing_sla = _db.query(Scan).filter(Scan.id.in_(scan_id_set)).all() if scan_id_set else []
+                if scans_needing_sla:
+                    all_configs = _db.query(SLAConfig).all()
+                    for s in scans_needing_sla:
+                        _recalculate_sla_for_scan(_db, s.id, all_configs)
+                    logger.info(f"SLA backfilled for {len(scans_needing_sla)} scan(s)")
+        finally:
+            _db.close()
+    except Exception as _e:
+        logger.warning(f"SLA startup seeding failed (non-fatal): {_e}")
 
 
 # ─────────────────────────────────────────────
@@ -568,6 +595,16 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     except Exception as e:
         logger.warning(f"Threat intel enrichment failed (non-fatal): {e}")
 
+    # ── Compute SLA due dates for all findings in this scan ──
+    try:
+        _ensure_sla_defaults(db)
+        sla_configs = db.query(SLAConfig).all()
+        sla_updated = _recalculate_sla_for_scan(db, scan.id, sla_configs)
+        if sla_updated:
+            logger.info(f"SLA computed for {sla_updated} findings")
+    except Exception as e:
+        logger.warning(f"SLA computation failed (non-fatal): {e}")
+
     total_findings = len(parsed["findings"])
     total_assets = len(asset_map)
     logger.info(f"Ingested scan '{file.filename}': {total_assets} assets, {total_findings} findings")
@@ -635,6 +672,89 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[L
     db.delete(scan)  # cascades to Asset → Finding → AutomateClick via ORM
     db.commit()
     return {"message": "Scan deleted"}
+
+
+# ─────────────────────────────────────────────
+# NLP Search
+# ─────────────────────────────────────────────
+
+@app.get("/api/search/nlp")
+def nlp_search(
+    q: str,
+    scan_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Parse a natural language query and return matching asset/finding counts + filter params."""
+    parsed = parse_nlp_query(q)
+
+    af = dict(parsed["asset_filters"])
+    ff = dict(parsed["finding_filters"])
+
+    # ── Count matching assets ──────────────────────────────────────────────────
+    aq = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
+    aq = apply_scan_org_filter(aq, org_ids)
+    if scan_id:
+        aq = aq.filter(Asset.scan_id == scan_id)
+    if af.get("min_critical") is not None:
+        aq = aq.filter(Asset.critical_count >= af["min_critical"])
+    if af.get("min_high") is not None:
+        aq = aq.filter(Asset.high_count >= af["min_high"])
+    if af.get("min_risk") is not None:
+        aq = aq.filter(Asset.risk_score >= af["min_risk"])
+    if af.get("environment"):
+        aq = aq.filter(Asset.environment_tag == af["environment"])
+    if af.get("search"):
+        from sqlalchemy import or_
+        pat = f"%{af['search']}%"
+        aq = aq.filter(or_(
+            Asset.hostname.ilike(pat), Asset.ip.ilike(pat),
+            Asset.fqdn.ilike(pat), Asset.os.ilike(pat),
+        ))
+    asset_count = aq.count()
+
+    # ── Count matching findings ────────────────────────────────────────────────
+    fq = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+    fq = apply_scan_org_filter(fq, org_ids)
+    if scan_id:
+        fq = fq.filter(Finding.scan_id == scan_id)
+    if ff.get("severity") is not None:
+        fq = fq.filter(Finding.severity == ff["severity"])
+    if ff.get("has_exploit"):
+        fq = fq.filter(Finding.exploit_available == True)
+    if ff.get("is_kev"):
+        fq = fq.filter(Finding.is_kev == True)
+    if ff.get("ransomware_linked"):
+        fq = fq.filter(Finding.ransomware_linked == True)
+    if ff.get("trending_in_news"):
+        fq = fq.filter(Finding.trending_in_news == True)
+    if ff.get("min_epss") is not None:
+        fq = fq.filter(Finding.epss_score >= ff["min_epss"])
+    if ff.get("effort_level"):
+        fq = fq.filter(Finding.effort_level == ff["effort_level"])
+    if ff.get("sla_status"):
+        fq = fq.filter(Finding.sla_status == ff["sla_status"])
+    if ff.get("cve"):
+        fq = fq.filter(Finding.cves.ilike(f"%{ff['cve']}%"))
+    if ff.get("plugin_family"):
+        fq = fq.filter(Finding.plugin_family == ff["plugin_family"])
+    if ff.get("min_cvss") is not None:
+        fq = fq.filter(
+            (Finding.cvss3_base_score >= ff["min_cvss"]) |
+            (Finding.cvss2_base_score >= ff["min_cvss"])
+        )
+    if ff.get("search"):
+        fq = fq.filter(
+            Finding.plugin_name.ilike(f"%{ff['search']}%") |
+            Finding.synopsis.ilike(f"%{ff['search']}%")
+        )
+    finding_count = fq.count()
+
+    return {
+        **parsed,
+        "asset_count": asset_count,
+        "finding_count": finding_count,
+    }
 
 
 # ─────────────────────────────────────────────

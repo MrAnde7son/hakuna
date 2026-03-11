@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Bug, Search, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon } from 'lucide-react'
+import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon } from 'lucide-react'
 import { useScan } from '../App.jsx'
 import { getFindings, getPluginFamilies, getAssets, assignTags, unassignTags, exportDownload, advancedSearch } from '../api.js'
 import {
@@ -9,6 +9,7 @@ import {
 } from './ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
 import { filtersToConditions } from '../utils/filtersToConditions.js'
+import NLPSearchBar from './NLPSearchBar.jsx'
 
 const GROUP_OPTIONS = [
   { value: 'severity', label: 'Severity' },
@@ -227,6 +228,44 @@ export default function FindingExplorer() {
 
   const clearFilters = useCallback(() => {
     setSearchParams(new URLSearchParams(), { replace: true })
+  }, [setSearchParams])
+
+  // NLP filter keys that we apply/remove as a unit
+  const NLP_PARAM_KEYS = ['severity', 'exploit', 'is_kev', 'ransomware', 'trending', 'effort_level', 'sla_status', 'cve', 'search', 'sort', 'order', 'plugin_family']
+  const nlpAppliedRef = useRef([])
+
+  const applyNlpFilters = useCallback(({ finding_filters, sort }) => {
+    const ff = finding_filters || {}
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      // Clear previously NLP-applied keys
+      nlpAppliedRef.current.forEach(k => next.delete(k))
+      const applied = []
+      const set = (key, val) => { if (val != null && val !== '') { next.set(key, String(val)); applied.push(key) } }
+      set('severity', ff.severity)
+      if (ff.has_exploit) { next.set('exploit', 'true'); applied.push('exploit') }
+      if (ff.is_kev) { next.set('is_kev', 'true'); applied.push('is_kev') }
+      if (ff.ransomware_linked) { next.set('ransomware', 'true'); applied.push('ransomware') }
+      if (ff.trending_in_news) { next.set('trending', 'true'); applied.push('trending') }
+      set('effort_level', ff.effort_level)
+      set('sla_status', ff.sla_status)
+      set('cve', ff.cve)
+      set('search', ff.search)
+      if (ff.plugin_family) { next.set('plugin_family', ff.plugin_family); applied.push('plugin_family') }
+      if (sort) { next.set('sort', sort.sort_by); next.set('order', sort.order); applied.push('sort', 'order') }
+      next.delete('page')
+      nlpAppliedRef.current = applied
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
+  const clearNlpFilters = useCallback(() => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      nlpAppliedRef.current.forEach(k => next.delete(k))
+      nlpAppliedRef.current = []
+      return next
+    }, { replace: true })
   }, [setSearchParams])
 
   const handleSort = useCallback((key) => {
@@ -550,18 +589,12 @@ export default function FindingExplorer() {
       )}
 
       {/* Filters */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: advancedMode ? 0 : 16, display: advancedMode ? 'none' : 'flex' }}>
-        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-          <Search size={14} style={{ position: 'absolute', left: 10, color: 'var(--text-muted)' }} />
-          <input
-            value={search}
-            onChange={e => setFilter('search', e.target.value)}
-            placeholder="Search plugin name or ID..."
-            style={{
-              background: 'var(--bg-card)', border: '1px solid var(--border)',
-              color: 'var(--text-primary)', borderRadius: 6, padding: '7px 12px 7px 32px',
-              fontSize: 13, outline: 'none', width: 220,
-            }}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: advancedMode ? 0 : 16, display: advancedMode ? 'none' : 'flex', alignItems: 'flex-start' }}>
+        <div style={{ flex: '1 1 280px', minWidth: 280, maxWidth: 480 }}>
+          <NLPSearchBar
+            scanId={activeScanId}
+            onResult={applyNlpFilters}
+            onClear={clearNlpFilters}
           />
         </div>
 

@@ -73,7 +73,15 @@
       "Bash(/Users/itamar/Documents/Git/nessus-remediation/backend/.venv/bin/pip show:*)",
       "Bash(PYTHONPATH=.venv/lib/python3.11/site-packages .venv/bin/python3.11 -c \":*)",
       "Bash(grep -r annotations .venv/lib/python3.11/site-packages/anthropic/types/ --include=*.py -l)",
-      "Bash(grep -rn annotations .venv/lib/python3.11/site-packages/anthropic/types/*.py)"
+      "Bash(grep -rn annotations .venv/lib/python3.11/site-packages/anthropic/types/*.py)",
+      "Bash(grep -r \"Recharts\\\\|Chart\\\\|Dashboard\" /Users/itamar/Documents/Git/nessus-remediation/frontend/src/components/*.jsx)",
+      "Bash(grep -l \"recharts\\\\|PieChart\\\\|BarChart\" /Users/itamar/Documents/Git/nessus-remediation/frontend/src/components/*.jsx)",
+      "Bash(npm list:*)",
+      "Bash(python -c \"from nlp_search import parse_nlp_query; print\\(parse_nlp_query\\(''critical Windows servers with exploits in DMZ''\\)\\)\")",
+      "Bash(node -e \"const icons = require\\(''''lucide-react''''\\); const names = Object.keys\\(icons\\).filter\\(k => k.toLowerCase\\(\\).includes\\(''''present''''\\) || k.toLowerCase\\(\\).includes\\(''''slide''''\\) || k.toLowerCase\\(\\).includes\\(''''file''''\\)\\); console.log\\(names.slice\\(0,20\\)\\)\")",
+      "Bash(python -c \"from nlp_search import parse_nlp_query; from app import app; print\\(''''OK''''\\)\")",
+      "Bash(node --input-type=module --eval \":*)",
+      "Bash(find /Users/itamar/Documents/Git/nessus-remediation -name *.png -o -name *.svg -o -name *.ico -o -name *.jpg)"
     ]
   }
 }

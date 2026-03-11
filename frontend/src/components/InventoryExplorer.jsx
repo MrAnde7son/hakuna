@@ -4,7 +4,7 @@ import {
   Users, Shield, Server, Network, Clock,
   LogIn, AlertTriangle, Key, UserCheck,
   Activity, Layers, Share2, Package, Lock, Monitor, FileText, Terminal, Eye, EyeOff, BrainCircuit,
-  ChevronDown, Download
+  ChevronDown, Download, Database, X
 } from 'lucide-react'
 import {
   Card, StatCard, Table, FilterBar, Select, Input,
@@ -504,7 +504,7 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
 }
 
 // ─── Users tab ─────────────────────────────────────────────
-function UsersTab({ scanId }) {
+function UsersTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
@@ -524,6 +524,7 @@ function UsersTab({ scanId }) {
     setLoading(true)
     getInventoryUsers({
       scan_id: scanId,
+      asset_id: assetId || null,
       search: search || null,
       user_type: userType,
       is_admin: isAdmin,
@@ -531,7 +532,7 @@ function UsersTab({ scanId }) {
       sort_by: sortBy,
       order: sortOrder,
     }).then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, search, userType, isAdmin, isDA, sortBy, sortOrder])
+  }, [scanId, assetId, search, userType, isAdmin, isDA, sortBy, sortOrder])
 
   useEffect(() => { load() }, [load])
 
@@ -593,7 +594,7 @@ function UsersTab({ scanId }) {
 }
 
 // ─── Groups tab ────────────────────────────────────────────
-function GroupsTab({ scanId }) {
+function GroupsTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [privOnly, setPrivOnly]       = useState(false)
@@ -608,9 +609,9 @@ function GroupsTab({ scanId }) {
 
   useEffect(() => {
     setLoading(true)
-    getInventoryGroups({ scan_id: scanId, is_privileged: privOnly || null, sort_by: sortBy, order: sortOrder })
+    getInventoryGroups({ scan_id: scanId, asset_id: assetId || null, is_privileged: privOnly || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, privOnly, sortBy, sortOrder])
+  }, [scanId, assetId, privOnly, sortBy, sortOrder])
 
   const columns = [
     { key: 'group_name', label: 'Group Name', width: '23%', sortable: true, render: (v, r) => (
@@ -649,7 +650,7 @@ function GroupsTab({ scanId }) {
 }
 
 // ─── Computers tab ──────────────────────────────────────
-function ComputersTab({ scanId }) {
+function ComputersTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
@@ -665,9 +666,9 @@ function ComputersTab({ scanId }) {
 
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryComputers({ scan_id: scanId, search: search || null, is_dc: dcOnly || null, sort_by: sortBy, order: sortOrder })
+    getInventoryComputers({ scan_id: scanId, asset_id: assetId || null, search: search || null, is_dc: dcOnly || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, search, dcOnly, sortBy, sortOrder])
+  }, [scanId, assetId, search, dcOnly, sortBy, sortOrder])
 
   useEffect(() => { load() }, [load])
 
@@ -721,7 +722,7 @@ function ComputersTab({ scanId }) {
 }
 
 // ─── Services tab ──────────────────────────────────────────
-function ServicesTab({ scanId }) {
+function ServicesTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
@@ -736,9 +737,9 @@ function ServicesTab({ scanId }) {
 
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryServices({ scan_id: scanId, search: search || null, sort_by: sortBy, order: sortOrder })
+    getInventoryServices({ scan_id: scanId, asset_id: assetId || null, search: search || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, search, sortBy, sortOrder])
+  }, [scanId, assetId, search, sortBy, sortOrder])
 
   useEffect(() => { load() }, [load])
 
@@ -773,7 +774,7 @@ function ServicesTab({ scanId }) {
 }
 
 // ─── Shares tab ────────────────────────────────────────────
-function SharesTab({ scanId }) {
+function SharesTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
@@ -789,9 +790,9 @@ function SharesTab({ scanId }) {
 
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryShares({ scan_id: scanId, search: search || null, is_writeable: writeableOnly || null, sort_by: sortBy, order: sortOrder })
+    getInventoryShares({ scan_id: scanId, asset_id: assetId || null, search: search || null, is_writeable: writeableOnly || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, search, writeableOnly, sortBy, sortOrder])
+  }, [scanId, assetId, search, writeableOnly, sortBy, sortOrder])
 
   useEffect(() => { load() }, [load])
 
@@ -840,7 +841,7 @@ function SharesTab({ scanId }) {
 }
 
 // ─── Software tab ───────────────────────────────────────────
-function SoftwareTab({ scanId }) {
+function SoftwareTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
@@ -855,9 +856,9 @@ function SoftwareTab({ scanId }) {
 
   const load = useCallback(() => {
     setLoading(true)
-    getInventorySoftware({ scan_id: scanId, search: search || null, sort_by: sortBy, order: sortOrder })
+    getInventorySoftware({ scan_id: scanId, asset_id: assetId || null, search: search || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, search, sortBy, sortOrder])
+  }, [scanId, assetId, search, sortBy, sortOrder])
 
   useEffect(() => { load() }, [load])
 
@@ -895,7 +896,7 @@ function SoftwareTab({ scanId }) {
 }
 
 // ─── Security Controls tab ─────────────────────────────────
-function SecurityControlsTab({ scanId }) {
+function SecurityControlsTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [ctrlType, setCtrlType]       = useState(null)
@@ -910,9 +911,9 @@ function SecurityControlsTab({ scanId }) {
 
   useEffect(() => {
     setLoading(true)
-    getInventorySecurityControls({ scan_id: scanId, control_type: ctrlType, sort_by: sortBy, order: sortOrder })
+    getInventorySecurityControls({ scan_id: scanId, asset_id: assetId || null, control_type: ctrlType, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, ctrlType, sortBy, sortOrder])
+  }, [scanId, assetId, ctrlType, sortBy, sortOrder])
 
   const CTRL_COLORS = { av: '#10b981', firewall: '#0ea5e9', edr: '#8b5cf6', backup: '#f59e0b' }
 
@@ -960,7 +961,7 @@ function SecurityControlsTab({ scanId }) {
 }
 
 // ─── Network tab ───────────────────────────────────────────
-function NetconnsTab({ scanId }) {
+function NetconnsTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
@@ -976,9 +977,9 @@ function NetconnsTab({ scanId }) {
 
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryNetconns({ scan_id: scanId, search: search || null, state: state || null, sort_by: sortBy, order: sortOrder })
+    getInventoryNetconns({ scan_id: scanId, asset_id: assetId || null, search: search || null, state: state || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, search, state, sortBy, sortOrder])
+  }, [scanId, assetId, search, state, sortBy, sortOrder])
 
   useEffect(() => { load() }, [load])
 
@@ -1022,7 +1023,7 @@ function NetconnsTab({ scanId }) {
 }
 
 // ─── Scheduled Tasks tab ───────────────────────────────────
-function TasksTab({ scanId }) {
+function TasksTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
@@ -1038,9 +1039,9 @@ function TasksTab({ scanId }) {
 
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryTasks({ scan_id: scanId, search: search || null, trigger_type: triggerType || null, sort_by: sortBy, order: sortOrder })
+    getInventoryTasks({ scan_id: scanId, asset_id: assetId || null, search: search || null, trigger_type: triggerType || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, search, triggerType, sortBy, sortOrder])
+  }, [scanId, assetId, search, triggerType, sortBy, sortOrder])
 
   useEffect(() => { load() }, [load])
 
@@ -1093,7 +1094,7 @@ function TasksTab({ scanId }) {
 }
 
 // ─── Patches tab ───────────────────────────────────────────
-function PatchesTab({ scanId }) {
+function PatchesTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [groupByAsset, setGroupByAsset] = useState(false)
@@ -1107,9 +1108,9 @@ function PatchesTab({ scanId }) {
 
   useEffect(() => {
     setLoading(true)
-    getInventoryPatches({ scan_id: scanId, sort_by: sortBy, order: sortOrder })
+    getInventoryPatches({ scan_id: scanId, asset_id: assetId || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, sortBy, sortOrder])
+  }, [scanId, assetId, sortBy, sortOrder])
 
   const columns = [
     { key: 'kb_id', label: 'Patch / Advisory', width: '25%', sortable: true,
@@ -1151,7 +1152,7 @@ function PatchesTab({ scanId }) {
 }
 
 // ─── Password Policy tab ───────────────────────────────────
-function PasswordPolicyTab({ scanId }) {
+function PasswordPolicyTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [groupByAsset, setGroupByAsset] = useState(false)
@@ -1165,9 +1166,9 @@ function PasswordPolicyTab({ scanId }) {
 
   useEffect(() => {
     setLoading(true)
-    getInventoryPasswordPolicies({ scan_id: scanId, sort_by: sortBy, order: sortOrder })
+    getInventoryPasswordPolicies({ scan_id: scanId, asset_id: assetId || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, sortBy, sortOrder])
+  }, [scanId, assetId, sortBy, sortOrder])
 
   function policyBool(val, goodIfTrue = true) {
     if (val === null || val === undefined) return <Count n="—" />
@@ -1235,7 +1236,7 @@ function PasswordPolicyTab({ scanId }) {
 }
 
 // ─── Logged On tab ─────────────────────────────────────────
-function LoggedOnTab({ scanId }) {
+function LoggedOnTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [groupByAsset, setGroupByAsset] = useState(false)
@@ -1249,9 +1250,9 @@ function LoggedOnTab({ scanId }) {
 
   useEffect(() => {
     setLoading(true)
-    getInventoryLoggedOn({ scan_id: scanId, sort_by: sortBy, order: sortOrder })
+    getInventoryLoggedOn({ scan_id: scanId, asset_id: assetId || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, sortBy, sortOrder])
+  }, [scanId, assetId, sortBy, sortOrder])
 
   const columns = [
     { key: 'domain',   label: 'Domain',   width: '22%', sortable: true },
@@ -1281,7 +1282,7 @@ function LoggedOnTab({ scanId }) {
 }
 
 // ─── Env Variables tab ─────────────────────────────────────
-function EnvVarsTab({ scanId }) {
+function EnvVarsTab({ scanId, assetId }) {
   const [rows, setRows]                 = useState([])
   const [loading, setLoading]           = useState(true)
   const [search, setSearch]             = useState('')
@@ -1299,9 +1300,9 @@ function EnvVarsTab({ scanId }) {
 
   useEffect(() => {
     setLoading(true)
-    getInventoryEnvVars({ scan_id: scanId, scope: scope || null, sensitive_only: sensitiveOnly || null, search: search || null, sort_by: sortBy, order: sortOrder })
+    getInventoryEnvVars({ scan_id: scanId, asset_id: assetId || null, scope: scope || null, sensitive_only: sensitiveOnly || null, search: search || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, scope, sensitiveOnly, search, sortBy, sortOrder])
+  }, [scanId, assetId, scope, sensitiveOnly, search, sortBy, sortOrder])
 
   const sensitiveCount = rows.filter(r => r.is_sensitive).length
 
@@ -1377,7 +1378,7 @@ function EnvVarsTab({ scanId }) {
 
 
 // ─── Certificates tab ──────────────────────────────────────
-function CertificatesTab({ scanId }) {
+function CertificatesTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
@@ -1396,13 +1397,14 @@ function CertificatesTab({ scanId }) {
     setLoading(true)
     getInventoryCertificates({
       scan_id: scanId,
+      asset_id: assetId || null,
       search: search || null,
       expired_only: expiredOnly || null,
       self_signed_only: selfSignedOnly || null,
       sort_by: sortBy,
       order: sortOrder,
     }).then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, search, expiredOnly, selfSignedOnly, sortBy, sortOrder])
+  }, [scanId, assetId, search, expiredOnly, selfSignedOnly, sortBy, sortOrder])
 
   const expiredCount    = rows.filter(r => r.is_expired).length
   const expiringSoon    = rows.filter(r => !r.is_expired && r.days_until_expiry != null && r.days_until_expiry <= 30).length
@@ -1525,7 +1527,7 @@ function CategoryPill({ category }) {
   )
 }
 
-function AIToolsTab({ scanId }) {
+function AIToolsTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
@@ -1543,12 +1545,13 @@ function AIToolsTab({ scanId }) {
     setLoading(true)
     getInventoryAITools({
       scan_id: scanId,
+      asset_id: assetId || null,
       search: search || null,
       category: category || null,
       sort_by: sortBy,
       order: sortOrder,
     }).then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, search, category, sortBy, sortOrder])
+  }, [scanId, assetId, search, category, sortBy, sortOrder])
 
   useEffect(() => { load() }, [load])
 
@@ -1617,7 +1620,7 @@ function AIToolsTab({ scanId }) {
 
 
 // ─── Processes Tab ──────────────────────────────────────────
-function ProcessesTab({ scanId }) {
+function ProcessesTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
@@ -1632,9 +1635,9 @@ function ProcessesTab({ scanId }) {
 
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryProcesses({ scan_id: scanId, search: search || null, sort_by: sortBy, order: sortOrder })
+    getInventoryProcesses({ scan_id: scanId, asset_id: assetId || null, search: search || null, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, search, sortBy, sortOrder])
+  }, [scanId, assetId, search, sortBy, sortOrder])
 
   useEffect(() => { load() }, [load])
 
@@ -1690,6 +1693,8 @@ export default function InventoryExplorer() {
   const tabParam = searchParams.get('tab')
   const activeTab = ALL_TABS.includes(tabParam) ? tabParam : 'surface'
   const setActiveTab = (key) => setSearchParams(prev => { prev.set('tab', key); return prev })
+  const assetId = searchParams.get('asset_id')
+  const assetName = searchParams.get('asset_name')
 
   const TAB_EXPORT_MAP = {
     users: 'inventory/users', groups: 'inventory/groups', computers: 'inventory/computers',
@@ -1703,22 +1708,22 @@ export default function InventoryExplorer() {
 
   const TAB_COMPONENTS = {
     surface:   <AttackSurfaceTab     scanId={activeScanId} onTabChange={setActiveTab} />,
-    users:     <UsersTab             scanId={activeScanId} />,
-    groups:    <GroupsTab            scanId={activeScanId} />,
-    computers: <ComputersTab         scanId={activeScanId} />,
-    services:  <ServicesTab          scanId={activeScanId} />,
-    shares:    <SharesTab            scanId={activeScanId} />,
-    software:  <SoftwareTab          scanId={activeScanId} />,
-    security:  <SecurityControlsTab  scanId={activeScanId} />,
-    netconns:  <NetconnsTab          scanId={activeScanId} />,
-    tasks:     <TasksTab             scanId={activeScanId} />,
-    patches:   <PatchesTab           scanId={activeScanId} />,
-    policy:    <PasswordPolicyTab    scanId={activeScanId} />,
-    loggedon:  <LoggedOnTab          scanId={activeScanId} />,
-    envvars:   <EnvVarsTab           scanId={activeScanId} />,
-    certs:     <CertificatesTab      scanId={activeScanId} />,
-    aitools:   <AIToolsTab           scanId={activeScanId} />,
-    processes: <ProcessesTab         scanId={activeScanId} />,
+    users:     <UsersTab             scanId={activeScanId} assetId={assetId} />,
+    groups:    <GroupsTab            scanId={activeScanId} assetId={assetId} />,
+    computers: <ComputersTab         scanId={activeScanId} assetId={assetId} />,
+    services:  <ServicesTab          scanId={activeScanId} assetId={assetId} />,
+    shares:    <SharesTab            scanId={activeScanId} assetId={assetId} />,
+    software:  <SoftwareTab          scanId={activeScanId} assetId={assetId} />,
+    security:  <SecurityControlsTab  scanId={activeScanId} assetId={assetId} />,
+    netconns:  <NetconnsTab          scanId={activeScanId} assetId={assetId} />,
+    tasks:     <TasksTab             scanId={activeScanId} assetId={assetId} />,
+    patches:   <PatchesTab           scanId={activeScanId} assetId={assetId} />,
+    policy:    <PasswordPolicyTab    scanId={activeScanId} assetId={assetId} />,
+    loggedon:  <LoggedOnTab          scanId={activeScanId} assetId={assetId} />,
+    envvars:   <EnvVarsTab           scanId={activeScanId} assetId={assetId} />,
+    certs:     <CertificatesTab      scanId={activeScanId} assetId={assetId} />,
+    aitools:   <AIToolsTab           scanId={activeScanId} assetId={assetId} />,
+    processes: <ProcessesTab         scanId={activeScanId} assetId={assetId} />,
   }
 
   return (
@@ -1732,6 +1737,23 @@ export default function InventoryExplorer() {
           </Button>
         ) : null}
       />
+
+      {assetId && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12,
+          padding: '8px 14px', background: '#1e3a5f', border: '1px solid #2563eb44',
+          borderRadius: 8, fontSize: 13, color: '#93c5fd',
+        }}>
+          <Database size={14} style={{ color: '#60a5fa', flexShrink: 0 }} />
+          <span>Filtered to: <strong style={{ color: '#fff' }}>{assetName || `Asset #${assetId}`}</strong></span>
+          <button
+            onClick={() => setSearchParams(prev => { const n = new URLSearchParams(prev); n.delete('asset_id'); n.delete('asset_name'); return n })}
+            style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#93c5fd', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}
+          >
+            <X size={12} /> Clear filter
+          </button>
+        </div>
+      )}
 
       {/* Tab bar */}
       <div style={{
