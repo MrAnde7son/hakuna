@@ -330,7 +330,7 @@ export default function WorkflowBuilder() {
       {/* Toolbar */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, padding: '10px 16px',
-        background: '#fff', borderBottom: '1px solid var(--border)', flexShrink: 0,
+        background: 'var(--card)', borderBottom: '1px solid var(--border)', flexShrink: 0,
       }}>
         <button onClick={() => navigate('/campaigns')}
           style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 13 }}>
@@ -377,14 +377,14 @@ export default function WorkflowBuilder() {
       {validationWarnings.length > 0 && (
         <div style={{
           display: 'flex', flexWrap: 'wrap', gap: 6, padding: '6px 16px',
-          background: hasErrors ? '#fef2f2' : '#fffbeb', borderBottom: '1px solid var(--border)', flexShrink: 0,
+          background: hasErrors ? 'var(--danger-subtle)' : 'var(--warning-subtle)', borderBottom: '1px solid var(--border)', flexShrink: 0,
         }}>
           {validationWarnings.map((w, i) => (
             <span key={i} style={{
               display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 500,
               color: w.level === 'error' ? '#dc2626' : w.level === 'warn' ? '#d97706' : '#6b7280',
               padding: '2px 8px', borderRadius: 6,
-              background: w.level === 'error' ? '#fee2e2' : w.level === 'warn' ? '#fef3c7' : '#f3f4f6',
+              background: w.level === 'error' ? 'var(--danger-subtle)' : w.level === 'warn' ? 'var(--warning-subtle)' : 'var(--secondary)',
             }}>
               {w.level === 'error' ? <AlertTriangle size={11} /> : w.level === 'warn' ? <AlertTriangle size={11} /> : <Zap size={11} />}
               {w.message}
@@ -397,7 +397,7 @@ export default function WorkflowBuilder() {
       {showExecPanel && lastExecResult && (
         <div style={{
           flexShrink: 0, borderBottom: '1px solid var(--border)',
-          background: lastExecResult.status === 'completed' ? '#f0fdf4' : '#fef2f2',
+          background: lastExecResult.status === 'completed' ? 'var(--success-subtle)' : 'var(--danger-subtle)',
           maxHeight: 220, overflow: 'auto',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px' }}>
@@ -437,8 +437,8 @@ export default function WorkflowBuilder() {
                   <div key={i} style={{
                     display: 'flex', alignItems: 'flex-start', gap: 8,
                     padding: '6px 10px', borderRadius: 6, marginBottom: 3, fontSize: 12,
-                    background: isFail ? '#fee2e2' : isEmpty ? '#fefce8' : '#fff',
-                    border: `1px solid ${isFail ? '#fecaca' : isEmpty ? '#fef08a' : '#e2e8f0'}`,
+                    background: isFail ? 'var(--danger-subtle)' : isEmpty ? 'var(--warning-subtle)' : 'var(--card)',
+                    border: `1px solid ${isFail ? 'var(--danger)' : isEmpty ? 'var(--warning)' : 'var(--border)'}`,
                   }}>
                     <span style={{
                       display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 600, minWidth: 60,
@@ -496,8 +496,8 @@ export default function WorkflowBuilder() {
           onMouseLeave={handleMouseUp}
           style={{
             flex: 1, position: 'relative', overflow: 'hidden',
-            background: '#fafafa',
-            backgroundImage: 'radial-gradient(circle, #e5e7eb 1px, transparent 1px)',
+            background: 'var(--bg-muted)',
+            backgroundImage: 'radial-gradient(circle, var(--border) 1px, transparent 1px)',
             backgroundSize: '20px 20px',
             backgroundPosition: `${pan.x % 20}px ${pan.y % 20}px`,
             cursor: isPanning ? 'grabbing' : dragging ? 'grabbing' : 'default',
@@ -575,8 +575,8 @@ export default function WorkflowBuilder() {
                 style={{
                   position: 'absolute', left: x, top: y,
                   width: NODE_WIDTH, minHeight: NODE_HEIGHT,
-                  background: isFailed ? '#fff5f5' : isEmpty ? '#fffef5' : '#fff',
-                  border: `2px solid ${isFailed ? '#ef4444' : isEmpty ? '#eab308' : isSelected ? colors.accent : '#e2e8f0'}`,
+                  background: isFailed ? 'var(--danger-subtle)' : isEmpty ? 'var(--warning-subtle)' : 'var(--card)',
+                  border: `2px solid ${isFailed ? 'var(--danger)' : isEmpty ? 'var(--warning)' : isSelected ? colors.accent : 'var(--border)'}`,
                   borderRadius: 12,
                   boxShadow: isFailed
                     ? '0 0 0 3px rgba(239,68,68,0.15), 0 4px 12px rgba(0,0,0,0.1)'
@@ -605,15 +605,15 @@ export default function WorkflowBuilder() {
                   </span>
                 </div>
                 {/* Body */}
-                <div style={{ padding: '8px 10px', fontSize: 11, color: '#64748b' }}>
+                <div style={{ padding: '8px 10px', fontSize: 11, color: 'var(--muted)' }}>
                   {def?.description || node.node_subtype}
                   {node.config && Object.keys(node.config).length > 0 && (
                     <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 3 }}>
                       {Object.entries(node.config).slice(0, 3).map(([k, v]) =>
                         v ? (
                           <span key={k} style={{
-                            fontSize: 10, padding: '1px 5px', background: '#f1f5f9',
-                            borderRadius: 4, color: '#475569',
+                            fontSize: 10, padding: '1px 5px', background: 'var(--secondary)',
+                            borderRadius: 4, color: 'var(--muted)',
                           }}>
                             {k}: {String(v).slice(0, 15)}
                           </span>
@@ -650,7 +650,7 @@ export default function WorkflowBuilder() {
                     style={{
                       position: 'absolute', left: -HANDLE_SIZE / 2, top: NODE_HEADER,
                       width: HANDLE_SIZE, height: HANDLE_SIZE, borderRadius: '50%',
-                      background: '#fff', border: '2px solid #94a3b8', cursor: 'crosshair', zIndex: 2,
+                      background: 'var(--card)', border: '2px solid #94a3b8', cursor: 'crosshair', zIndex: 2,
                     }}
                   />
                 )}
@@ -662,7 +662,7 @@ export default function WorkflowBuilder() {
                     position: 'absolute', right: -HANDLE_SIZE / 2,
                     top: isFilter ? NODE_HEIGHT * 0.4 - HANDLE_SIZE / 2 : NODE_HEIGHT / 2 - HANDLE_SIZE / 2,
                     width: HANDLE_SIZE, height: HANDLE_SIZE, borderRadius: '50%',
-                    background: isFilter ? '#22c55e' : '#fff',
+                    background: isFilter ? '#22c55e' : 'var(--card)',
                     border: `2px solid ${isFilter ? '#16a34a' : '#94a3b8'}`,
                     cursor: 'crosshair', zIndex: 2,
                   }}
@@ -718,7 +718,7 @@ export default function WorkflowBuilder() {
         {/* Config Panel */}
         {selectedNodeData && (
           <div style={{
-            width: 320, flexShrink: 0, background: '#fff', borderLeft: '1px solid var(--border)',
+            width: 320, flexShrink: 0, background: 'var(--card)', borderLeft: '1px solid var(--border)',
             overflow: 'auto', display: 'flex', flexDirection: 'column',
           }}>
             <div style={{
@@ -737,10 +737,10 @@ export default function WorkflowBuilder() {
             </div>
             <div style={{ padding: 14, flex: 1 }}>
               <div style={{ marginBottom: 14 }}>
-                <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', display: 'block', marginBottom: 4 }}>Label</label>
+                <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Label</label>
                 <input value={selectedNodeData.label || ''}
                   onChange={e => updateNodeLabel(selectedNode, e.target.value)}
-                  style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box' }}
+                  style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box', background: 'var(--bg)', color: 'var(--text)' }}
                 />
               </div>
               <div style={{ marginBottom: 14, display: 'flex', gap: 6 }}>
@@ -753,14 +753,14 @@ export default function WorkflowBuilder() {
               {/* Config fields from schema */}
               {selectedDef?.config_schema && Object.entries(selectedDef.config_schema).map(([key, schema]) => (
                 <div key={key} style={{ marginBottom: 12 }}>
-                  <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', display: 'block', marginBottom: 4 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>
                     {schema.label || key}
                   </label>
                   {schema.type === 'enum' ? (
                     <select
                       value={selectedNodeData.config?.[key] || ''}
                       onChange={e => updateNodeConfig(selectedNode, key, e.target.value)}
-                      style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box', background: '#fff' }}
+                      style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box', background: 'var(--bg)', color: 'var(--text)' }}
                     >
                       <option value="">Select...</option>
                       {(schema.options || []).map(opt => {
@@ -781,7 +781,7 @@ export default function WorkflowBuilder() {
                       value={selectedNodeData.config?.[key] || ''}
                       onChange={e => updateNodeConfig(selectedNode, key, e.target.value)}
                       placeholder={schema.placeholder || schema.label}
-                      style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box' }}
+                      style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box', background: 'var(--bg)', color: 'var(--text)' }}
                     />
                   )}
                 </div>
@@ -789,12 +789,12 @@ export default function WorkflowBuilder() {
 
               {/* Connections */}
               <div style={{ marginTop: 20, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 8 }}>Connections</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', marginBottom: 8 }}>Connections</div>
                 {edges.filter(e => e.source_node_id === selectedNode || e.target_node_id === selectedNode).map(e => {
                   const isSource = e.source_node_id === selectedNode
                   const otherNode = nodes.find(n => n.node_id === (isSource ? e.target_node_id : e.source_node_id))
                   return (
-                    <div key={e.edge_id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#64748b', marginBottom: 4 }}>
+                    <div key={e.edge_id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--muted)', marginBottom: 4 }}>
                       <ChevronRight size={12} />
                       <span>{isSource ? 'To' : 'From'}: {otherNode?.label || '?'}</span>
                       {e.source_handle === 'remainder' && <Pill color="#f59e0b">remainder</Pill>}
@@ -818,7 +818,7 @@ export default function WorkflowBuilder() {
           display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           onClick={() => setShowNodePalette(false)}>
           <div onClick={e => e.stopPropagation()}
-            style={{ background: '#fff', borderRadius: 16, width: 580, maxHeight: '75vh',
+            style={{ background: 'var(--card)', borderRadius: 16, width: 580, maxHeight: '75vh',
               overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
@@ -844,11 +844,11 @@ export default function WorkflowBuilder() {
                             style={{
                               display: 'flex', alignItems: 'center', gap: 10,
                               padding: '10px 12px', borderRadius: 10,
-                              border: '1px solid #e2e8f0', background: '#fff',
+                              border: '1px solid var(--border)', background: 'var(--card)',
                               cursor: 'pointer', textAlign: 'left', transition: 'all 0.15s',
                             }}
-                            onMouseEnter={e => { e.currentTarget.style.borderColor = colors?.accent || '#94a3b8'; e.currentTarget.style.background = '#f8fafc' }}
-                            onMouseLeave={e => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.background = '#fff' }}
+                            onMouseEnter={e => { e.currentTarget.style.borderColor = colors?.accent || '#94a3b8'; e.currentTarget.style.background = 'var(--bg-hover)' }}
+                            onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--card)' }}
                           >
                             <div style={{
                               width: 36, height: 36, borderRadius: 8,
@@ -859,7 +859,7 @@ export default function WorkflowBuilder() {
                             </div>
                             <div>
                               <div style={{ fontSize: 13, fontWeight: 600 }}>{def.label}</div>
-                              <div style={{ fontSize: 11, color: '#94a3b8' }}>{def.description}</div>
+                              <div style={{ fontSize: 11, color: 'var(--muted-2)' }}>{def.description}</div>
                             </div>
                           </button>
                         )
@@ -879,7 +879,7 @@ export default function WorkflowBuilder() {
           display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           onClick={() => { setShowExecutions(false); setExecutionDetail(null) }}>
           <div onClick={e => e.stopPropagation()}
-            style={{ background: '#fff', borderRadius: 16, width: 600, maxHeight: '70vh',
+            style={{ background: 'var(--card)', borderRadius: 16, width: 600, maxHeight: '70vh',
               overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
@@ -898,14 +898,14 @@ export default function WorkflowBuilder() {
                     <Pill color="#6366f1">{executionDetail.trigger_type}</Pill>
                   </div>
                   {executionDetail.error && (
-                    <div style={{ padding: 10, background: '#fef2f2', borderRadius: 8, color: '#dc2626', fontSize: 12, marginBottom: 12 }}>{executionDetail.error}</div>
+                    <div style={{ padding: 10, background: 'var(--danger-subtle)', borderRadius: 8, color: 'var(--danger)', fontSize: 12, marginBottom: 12 }}>{executionDetail.error}</div>
                   )}
-                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: '#64748b' }}>Node Logs</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: 'var(--muted)' }}>Node Logs</div>
                   {(executionDetail.logs || []).map((log, i) => (
                     <div key={i} style={{
                       display: 'flex', alignItems: 'center', gap: 8,
                       padding: '8px 10px', borderRadius: 6,
-                      background: log.status === 'failed' ? '#fef2f2' : '#f8fafc',
+                      background: log.status === 'failed' ? 'var(--danger-subtle)' : 'var(--secondary)',
                       marginBottom: 4, fontSize: 12,
                     }}>
                       <Pill color={log.status === 'success' ? '#22c55e' : '#ef4444'}>{log.status}</Pill>
@@ -930,7 +930,7 @@ export default function WorkflowBuilder() {
                       style={{
                         display: 'flex', alignItems: 'center', gap: 8, width: '100%',
                         padding: '10px 12px', borderRadius: 8, marginBottom: 4,
-                        border: '1px solid var(--border)', background: '#fff',
+                        border: '1px solid var(--border)', background: 'var(--card)',
                         cursor: 'pointer', textAlign: 'left', fontSize: 12,
                       }}>
                       <Pill color={ex.status === 'completed' ? '#22c55e' : '#ef4444'}>{ex.status}</Pill>

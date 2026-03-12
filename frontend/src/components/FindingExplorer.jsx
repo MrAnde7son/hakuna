@@ -2,10 +2,10 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon } from 'lucide-react'
 import { useScan } from '../App.jsx'
-import { getFindings, getPluginFamilies, getAssets, assignTags, unassignTags, exportDownload, advancedSearch } from '../api.js'
+import { getFindings, getPluginFamilies, getAssets, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership } from '../api.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, Input,
-  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal
+  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover
 } from './ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
 import { filtersToConditions } from '../utils/filtersToConditions.js'
@@ -210,6 +210,7 @@ export default function FindingExplorer() {
   const [showSaveAs, setShowSaveAs] = useState(false)
   const [tagFilter, setTagFilter] = useState([])
   const [tagLogic, setTagLogic] = useState('AND')
+  const [ownershipEdit, setOwnershipEdit] = useState(null) // { findingId, current }
 
   // Advanced rule-engine search
   const [advancedMode, setAdvancedMode] = useState(false)
@@ -250,6 +251,8 @@ export default function FindingExplorer() {
   const tacticFilter = searchParams.get('tactic') || null
   const techniqueFilter = searchParams.get('technique_id') || null
   const threatGroupId = searchParams.get('threat_group_id') ? Number(searchParams.get('threat_group_id')) : null
+  const workflowStatus = searchParams.get('workflow_status') || null
+  const hasException = searchParams.has('has_exception') ? searchParams.get('has_exception') === 'true' : null
 
   const setFilter = useCallback((key, value) => {
     setSearchParams(prev => {
@@ -339,6 +342,8 @@ export default function FindingExplorer() {
       tactic: tacticFilter,
       technique_id: techniqueFilter,
       threat_group_id: threatGroupId,
+      workflow_status: workflowStatus,
+      has_exception: hasException,
       search: search || null,
       sort_by: sortBy,
       order: sortOrder,
@@ -355,7 +360,7 @@ export default function FindingExplorer() {
         setTotal(data.total)
       })
       .finally(() => setLoading(false))
-  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic])
+  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException])
 
   useEffect(() => { if (!advancedMode) load() }, [load, advancedMode])
 
@@ -412,7 +417,7 @@ export default function FindingExplorer() {
   const totalPages = Math.ceil(total / pageSize)
 
 
-  const hasActiveFilters = severity !== null || family || hasExploit !== null || isKev !== null || ransomwareLinked !== null || trendingInNews !== null || hasTtps !== null || tacticFilter || techniqueFilter || threatGroupId || slaStatus || effortLevel || cveFilter || search || groupBy || assetId || tagFilter.length > 0
+  const hasActiveFilters = severity !== null || family || hasExploit !== null || isKev !== null || ransomwareLinked !== null || trendingInNews !== null || hasTtps !== null || tacticFilter || techniqueFilter || threatGroupId || slaStatus || effortLevel || cveFilter || search || groupBy || assetId || tagFilter.length > 0 || workflowStatus || hasException !== null
 
   const saveAsConditions = useMemo(
     () => advancedMode
@@ -525,7 +530,34 @@ export default function FindingExplorer() {
     },
     {
       key: 'owner_suggestion', label: 'Owner',
-      render: (_, row) => <ResolvedOwnerBadge resolved={row.resolved_owner} />
+      render: (_, row) => {
+        const isOpen = ownershipEdit?.findingId === row.id
+        const manualOwn = row.resolved_owner?.source === 'manual' ? row.resolved_owner : null
+        return (
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={e => { e.stopPropagation(); setOwnershipEdit(isOpen ? null : { findingId: row.id, current: manualOwn }) }}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}
+              title="Click to edit ownership"
+            >
+              {row.resolved_owner
+                ? <ResolvedOwnerBadge resolved={row.resolved_owner} />
+                : <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>+ Set owner</span>}
+            </button>
+            {isOpen && (
+              <OwnershipEditPopover
+                current={manualOwn}
+                onClose={() => setOwnershipEdit(null)}
+                onSave={async (data) => {
+                  await setFindingOwnership(row.id, data)
+                  setOwnershipEdit(null)
+                  load()
+                }}
+              />
+            )}
+          </div>
+        )
+      }
     },
     {
       key: 'exploit_available', label: 'Exploit',
@@ -568,6 +600,61 @@ export default function FindingExplorer() {
       render: (v, row) => <SLABadge status={v} dueDate={row.sla_due_date} />
     },
     {
+      key: 'vulnerability_state', label: 'State',
+      render: (v) => {
+        if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const color = v === 'Active' ? '#dc2626' : v === 'New' ? '#16a34a' : v === 'Resurfaced' ? '#d97706' : '#6b7280'
+        return <Pill label={v} color={color} />
+      }
+    },
+    {
+      key: 'vpr_score', label: 'VPR', width: '70px', sortable: true,
+      render: (v) => {
+        if (v == null) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const color = v >= 7 ? '#dc2626' : v >= 5 ? '#ea580c' : '#65a30d'
+        return <span style={{ fontWeight: 600, color, fontSize: 13 }}>{v.toFixed(1)}</span>
+      }
+    },
+    {
+      key: 'risk_factor', label: 'Risk Factor',
+      render: (v) => {
+        if (!v || v === 'None') return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const color = v === 'Critical' ? '#dc2626' : v === 'High' ? '#ea580c' : v === 'Medium' ? '#d97706' : v === 'Low' ? '#65a30d' : '#6b7280'
+        return <span style={{ fontSize: 12, fontWeight: 600, color }}>{v}</span>
+      }
+    },
+    {
+      key: 'port', label: 'Port', width: '80px',
+      render: (v, row) => {
+        if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{v}/{row.protocol || '?'}</span>
+      }
+    },
+    {
+      key: 'workflow_status', label: 'Status',
+      render: (v) => {
+        if (!v || v === 'open') return <Pill label="Open" color="#6b7280" />
+        const colorMap = { in_progress: '#0891b2', resolved: '#16a34a', accepted_risk: '#7c3aed', false_positive: '#6b7280', compensating_control: '#0891b2' }
+        const color = colorMap[v] || '#6b7280'
+        const label = v.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+        return <Pill label={label} color={color} />
+      }
+    },
+    {
+      key: 'workflow_assigned_to', label: 'Assigned To',
+      render: (v) => v ? <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{v}</span> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    },
+    {
+      key: 'exploit_maturity', label: 'Maturity',
+      render: (v) => {
+        if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const colorMap = { weaponized: '#dc2626', functional: '#ea580c', poc: '#d97706', unproven: '#6b7280' }
+        const color = colorMap[v] || '#6b7280'
+        const label = v.charAt(0).toUpperCase() + v.slice(1)
+        return <Pill label={label} color={color} />
+      }
+    },
+    {
       key: 'first_seen', label: 'First Seen', width: '100px', sortable: true,
       render: (v, row) => {
         if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
@@ -600,7 +687,7 @@ export default function FindingExplorer() {
   ]
 
   // Filter columns by visibility (all visible by default, KEV/EPSS/Ransomware/Trending hidden by default)
-  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen'])
+  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen', 'vulnerability_state', 'vpr_score', 'risk_factor', 'port', 'workflow_status', 'workflow_assigned_to', 'exploit_maturity'])
   const visibleColumns = allColumns.filter(c =>
     c.key === '_select' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
   )

@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Server, RefreshCw, Edit2, Tag, X, UserCheck, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle } from 'lucide-react'
+import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle } from 'lucide-react'
 import { useScan } from '../App.jsx'
-import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch } from '../api.js'
-import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal } from './ui.jsx'
+import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership } from '../api.js'
+import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover } from './ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
 import { filtersToConditions } from '../utils/filtersToConditions.js'
 import BlastRadiusPanel, { BlastRadiusScore } from './BlastRadiusPanel.jsx'
@@ -250,6 +250,7 @@ export default function AssetInventory() {
   const [showSaveAs, setShowSaveAs] = useState(false)
   const [tagFilter, setTagFilter] = useState([])
   const [tagLogic, setTagLogic] = useState('AND')
+  const [ownershipEdit, setOwnershipEdit] = useState(null) // { assetId, current, anchorRef }
 
   // Advanced rule-engine search
   const [advancedMode, setAdvancedMode] = useState(false)
@@ -371,11 +372,6 @@ export default function AssetInventory() {
     load()
   }
 
-  const handleConfirmOwner = async (assetId) => {
-    await confirmAssetOwner(assetId)
-    load()
-  }
-
   const allColumns = [
     {
       key: '_select', label: (
@@ -440,41 +436,51 @@ export default function AssetInventory() {
       key: 'inferred_team', label: 'Owner', width: '140px',
       render: (_, row) => {
         const own = row.ownership
-        if (own) {
-          return (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <OwnerBadge owner={own.owner_role || own.owner_name} />
-              {own.owner_name && <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{own.owner_name}</span>}
-              <span style={{ fontSize: 9, color: '#22c55e', fontWeight: 600 }}>MANUAL</span>
-            </div>
-          )
-        }
-        if (!row.inferred_primary_user && !row.inferred_team) {
-          return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>
-        }
-        return (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              {row.inferred_team && <OwnerBadge owner={row.inferred_team} />}
-              <ConfidenceDot confidence={row.owner_confidence} />
-            </div>
-            {row.inferred_primary_user && (
-              <span style={{ fontSize: 11, color: 'var(--text-secondary)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                    title={row.inferred_primary_user}>
-                {row.inferred_primary_user}
-              </span>
+        const isOpen = ownershipEdit?.assetId === row.id
+        const trigger = (
+          <button
+            onClick={e => { e.stopPropagation(); setOwnershipEdit(isOpen ? null : { assetId: row.id, current: own }) }}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}
+            title="Click to edit ownership"
+          >
+            {own ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <OwnerBadge owner={own.owner_role || own.owner_name} />
+                {own.owner_name && <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{own.owner_name}</span>}
+                <span style={{ fontSize: 9, color: '#22c55e', fontWeight: 600 }}>MANUAL</span>
+              </div>
+            ) : row.inferred_team ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <OwnerBadge owner={row.inferred_team} />
+                  <ConfidenceDot confidence={row.owner_confidence} />
+                </div>
+                {row.inferred_primary_user && (
+                  <span style={{ fontSize: 11, color: 'var(--text-secondary)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                        title={row.inferred_primary_user}>
+                    {row.inferred_primary_user}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>+ Set owner</span>
             )}
-            <button
-              onClick={e => { e.stopPropagation(); handleConfirmOwner(row.id) }}
-              style={{
-                background: 'none', border: '1px solid var(--border)', borderRadius: 4,
-                color: 'var(--text-muted)', fontSize: 10, padding: '1px 6px', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', gap: 3, width: 'fit-content',
-              }}
-              title="Promote to manual ownership"
-            >
-              <UserCheck size={10} /> Confirm
-            </button>
+          </button>
+        )
+        return (
+          <div style={{ position: 'relative' }}>
+            {trigger}
+            {isOpen && (
+              <OwnershipEditPopover
+                current={own}
+                onClose={() => setOwnershipEdit(null)}
+                onSave={async (data) => {
+                  await setAssetOwnership(row.id, data)
+                  setOwnershipEdit(null)
+                  load()
+                }}
+              />
+            )}
           </div>
         )
       }
@@ -493,13 +499,34 @@ export default function AssetInventory() {
       )
     },
     {
+      key: 'is_internet_facing', label: 'Internet Facing',
+      render: (v) => v
+        ? <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 999, background: '#dc262622', color: '#dc2626', border: '1px solid #dc262644', fontSize: 11, fontWeight: 600 }}>Internet</span>
+        : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    },
+    {
+      key: 'scan_start', label: 'Scan Start', width: '110px',
+      render: (v) => {
+        if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const date = new Date(v)
+        return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{date.toLocaleDateString()}</span>
+      }
+    },
+    {
+      key: 'business_context', label: 'Business Context',
+      render: (v) => v
+        ? <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{v}</span>
+        : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    },
+    {
       key: '_actions', label: '', width: '40px',
       render: (_, row) => <RowActions row={row} onNavigate={navigate} />,
     },
   ]
 
+  const defaultHidden = new Set(['is_internet_facing', 'scan_start', 'business_context'])
   const visibleColumns = allColumns.filter(c =>
-    c.key === '_select' || c.key === '_actions' || colVis[c.key] !== false
+    c.key === '_select' || c.key === '_actions' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
   )
 
   return (

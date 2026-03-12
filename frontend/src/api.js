@@ -345,6 +345,8 @@ export const updateAutoTagRule = (id, data) => request(`/auto-tag-rules/${id}`, 
 export const deleteAutoTagRule = (id) => request(`/auto-tag-rules/${id}`, { method: 'DELETE' })
 export const runAutoTagRule = (id, scan_id = null) =>
   request(`/auto-tag-rules/${id}/run${scan_id ? `?scan_id=${scan_id}` : ''}`, { method: 'POST' })
+export const runAllAutoTagRules = (scan_id = null) =>
+  request(`/auto-tag-rules/run-all${scan_id ? `?scan_id=${scan_id}` : ''}`, { method: 'POST' })
 export const getTagConditionCatalog = () => request('/auto-tag-rules/condition-catalog')
 
 // Ownership Rules
@@ -362,8 +364,13 @@ export const updateOwnershipRule = (id, data) => request(`/ownership-rules/${id}
 export const deleteOwnershipRule = (id) => request(`/ownership-rules/${id}`, { method: 'DELETE' })
 export const runOwnershipRule = (id, scan_id = null) =>
   request(`/ownership-rules/${id}/run${scan_id ? `?scan_id=${scan_id}` : ''}`, { method: 'POST' })
-export const runAllOwnershipRules = (scan_id = null) =>
-  request(`/ownership-rules/run-all${scan_id ? `?scan_id=${scan_id}` : ''}`, { method: 'POST' })
+export const runAllOwnershipRules = (scan_id = null, overwrite = null) => {
+  const params = new URLSearchParams()
+  if (scan_id) params.set('scan_id', scan_id)
+  if (overwrite !== null) params.set('overwrite', overwrite)
+  const qs = params.toString()
+  return request(`/ownership-rules/run-all${qs ? `?${qs}` : ''}`, { method: 'POST' })
+}
 
 // External Tag Sources
 export const getExternalTagSources = () => request('/external-tag-sources')

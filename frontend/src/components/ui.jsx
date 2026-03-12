@@ -291,6 +291,79 @@ export function ResolvedOwnerBadge({ resolved }) {
   )
 }
 
+const ROLE_OPTIONS = ['', 'IT', 'DevOps', 'SecOps', 'AppSec', 'DBA', 'Networking', 'CloudOps']
+
+export function OwnershipEditPopover({ current, onSave, onClose }) {
+  const [form, setForm] = useState({
+    owner_name:  current?.owner_name  || '',
+    owner_email: current?.owner_email || '',
+    owner_role:  current?.owner_role  || '',
+    team:        current?.team        || '',
+    notes:       current?.notes       || '',
+  })
+  const [saving, setSaving] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose() }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [onClose])
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  const handleSave = async () => {
+    setSaving(true)
+    try { await onSave(form) } finally { setSaving(false) }
+  }
+
+  const fieldStyle = {
+    background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6,
+    color: 'var(--text-primary)', fontSize: 12, padding: '5px 8px', width: '100%', outline: 'none',
+  }
+
+  return (
+    <div ref={ref} onClick={e => e.stopPropagation()} style={{
+      position: 'absolute', zIndex: 1000, background: 'var(--bg-card)',
+      border: '1px solid var(--border)', borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+      padding: 14, width: 260, display: 'flex', flexDirection: 'column', gap: 8,
+    }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Edit Ownership</div>
+      {[
+        { key: 'owner_name',  label: 'Name' },
+        { key: 'owner_email', label: 'Email' },
+        { key: 'team',        label: 'Team' },
+        { key: 'notes',       label: 'Notes' },
+      ].map(({ key, label }) => (
+        <div key={key}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>{label}</div>
+          <input value={form[key]} onChange={e => set(key, e.target.value)} style={fieldStyle} placeholder={label} />
+        </div>
+      ))}
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>Role</div>
+        <select value={form.owner_role} onChange={e => set('owner_role', e.target.value)} style={fieldStyle}>
+          {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r || '— none —'}</option>)}
+        </select>
+      </div>
+      <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+        <button onClick={handleSave} disabled={saving} style={{
+          flex: 1, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6,
+          fontSize: 12, fontWeight: 600, padding: '6px 0', cursor: 'pointer',
+        }}>
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button onClick={onClose} style={{
+          flex: 1, background: 'var(--bg-hover)', color: 'var(--text-secondary)', border: '1px solid var(--border)',
+          borderRadius: 6, fontSize: 12, padding: '6px 0', cursor: 'pointer',
+        }}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function ConfidenceDot({ confidence }) {
   const colors = { high: '#22c55e', medium: '#f59e0b', low: '#6b7280' }
   const c = colors[confidence] || colors.low

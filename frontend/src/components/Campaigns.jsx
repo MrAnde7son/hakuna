@@ -357,8 +357,8 @@ function CreateWorkflowModal({ onClose, onCreate }) {
             <button key={t.key} onClick={() => setMode(t.key)} style={{
               padding: '8px 16px', fontSize: 13, fontWeight: 600,
               background: 'none', border: 'none', cursor: 'pointer',
-              color: mode === t.key ? '#18181b' : '#94a3b8',
-              borderBottom: mode === t.key ? '2px solid #18181b' : '2px solid transparent',
+              color: mode === t.key ? 'var(--text)' : 'var(--muted-2)',
+              borderBottom: mode === t.key ? '2px solid var(--text)' : '2px solid transparent',
               marginBottom: -1,
             }}>{t.label}</button>
           ))}
@@ -376,7 +376,7 @@ function CreateWorkflowModal({ onClose, onCreate }) {
                     style={{
                       display: 'flex', alignItems: 'center', gap: 12,
                       padding: '14px 16px', borderRadius: 10,
-                      border: '1px solid var(--border)', background: '#fff',
+                      border: '1px solid var(--border)', background: 'var(--card)',
                       cursor: 'pointer', textAlign: 'left', width: '100%',
                       transition: 'border-color 0.15s',
                     }}
@@ -539,8 +539,8 @@ export default function Campaigns() {
               display: 'flex', alignItems: 'center', gap: 6,
               padding: '10px 18px', fontSize: 13, fontWeight: 600,
               background: 'none', border: 'none', cursor: 'pointer',
-              color: tab === t.key ? '#18181b' : '#94a3b8',
-              borderBottom: tab === t.key ? '2px solid #18181b' : '2px solid transparent',
+              color: tab === t.key ? 'var(--text)' : '#94a3b8',
+              borderBottom: tab === t.key ? '2px solid var(--text)' : '2px solid transparent',
               marginBottom: -1,
             }}
           >
@@ -548,8 +548,8 @@ export default function Campaigns() {
             {t.label}
             <span style={{
               fontSize: 11, padding: '1px 6px', borderRadius: 10,
-              background: tab === t.key ? '#18181b' : '#e5e7eb',
-              color: tab === t.key ? '#fff' : '#64748b',
+              background: tab === t.key ? 'var(--text)' : 'var(--secondary)',
+              color: tab === t.key ? 'var(--bg)' : 'var(--muted)',
             }}>{t.count}</span>
           </button>
         ))}

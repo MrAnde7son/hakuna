@@ -202,6 +202,7 @@ function OwnershipMappingRow({ mapping, catalog, onSave, onDelete }) {
         condition_logic: 'AND',
         priority: 100,
         is_enabled: true,
+        overwrite_existing: true,
       }
       let ruleId = mapping?.id
       if (mapping) await updateOwnershipRule(mapping.id, payload)
@@ -270,10 +271,22 @@ function OwnershipMappingRow({ mapping, catalog, onSave, onDelete }) {
 }
 
 function OwnershipMappingTab() {
-  const [mappings, setMappings]   = useState([])
-  const [catalog, setCatalog]     = useState([])
-  const [loading, setLoading]     = useState(true)
-  const [addingNew, setAddingNew] = useState(false)
+  const [mappings, setMappings]     = useState([])
+  const [catalog, setCatalog]       = useState([])
+  const [loading, setLoading]       = useState(true)
+  const [addingNew, setAddingNew]   = useState(false)
+  const [runAllStatus, setRunAllStatus] = useState(null)
+  const [overwriteExisting, setOverwriteExisting] = useState(true)
+
+  const handleRunAll = async () => {
+    setRunAllStatus('running')
+    try {
+      const res = await runAllOwnershipRules(null, overwriteExisting)
+      setRunAllStatus(res.total_updated ?? 0)
+    } catch {
+      setRunAllStatus('error')
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -304,10 +317,33 @@ function OwnershipMappingTab() {
           Read a field's value from each asset or finding and use it directly as the owner name, role, or team.
           For example: map <code>assetOwner</code> → Owner Name to set each asset's owner from that scan field.
         </div>
-        <Button size="sm" onClick={() => setAddingNew(true)} disabled={addingNew}>
-          <Plus size={13} /> Add Mapping
-        </Button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {mappings.length > 0 && (
+            <>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none' }}>
+                <input
+                  type="checkbox"
+                  checked={overwriteExisting}
+                  onChange={e => setOverwriteExisting(e.target.checked)}
+                  style={{ cursor: 'pointer' }}
+                />
+                Overwrite existing
+              </label>
+              <Button size="sm" variant="ghost" onClick={handleRunAll} disabled={runAllStatus === 'running'}>
+                <Play size={12} /> {runAllStatus === 'running' ? 'Running…' : 'Run All'}
+              </Button>
+            </>
+          )}
+          <Button size="sm" onClick={() => setAddingNew(true)} disabled={addingNew}>
+            <Plus size={13} /> Add Mapping
+          </Button>
+        </div>
       </div>
+      {runAllStatus !== null && (
+        <div style={{ fontSize: 12, color: runAllStatus === 'error' ? '#dc2626' : '#22c55e', padding: '6px 10px', background: 'var(--bg-hover)', borderRadius: 6 }}>
+          {runAllStatus === 'running' ? 'Running all mappings…' : runAllStatus === 'error' ? 'Run failed' : `✓ ${runAllStatus} ownership record(s) updated`}
+        </div>
+      )}
 
       {(mappings.length === 0 && !addingNew) ? (
         <Card style={{ textAlign: 'center', padding: '40px 24px' }}>

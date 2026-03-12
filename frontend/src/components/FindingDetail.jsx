@@ -31,13 +31,52 @@ function KeyVal({ label, value, mono }) {
 
 function PreText({ text }) {
   if (!text) return <span style={{ color: 'var(--text-muted)' }}>—</span>
+  const lines = text.split('\n')
   return (
-    <div style={{
-      background: 'var(--bg-secondary)', borderRadius: 8, padding: '14px 16px',
-      fontFamily: 'monospace', fontSize: 12, color: '#a5f3fc', lineHeight: 1.6,
-      whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 400, overflowY: 'auto',
-    }}>
-      {text}
+    <div style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)', fontFamily: 'monospace' }}>
+      {/* Terminal title bar */}
+      <div style={{
+        background: '#1e1e2e', padding: '8px 14px',
+        display: 'flex', alignItems: 'center', gap: 10,
+        borderBottom: '1px solid rgba(255,255,255,0.08)',
+      }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <span style={{ width: 11, height: 11, borderRadius: '50%', background: '#ff5f57', display: 'inline-block' }} />
+          <span style={{ width: 11, height: 11, borderRadius: '50%', background: '#febc2e', display: 'inline-block' }} />
+          <span style={{ width: 11, height: 11, borderRadius: '50%', background: '#28c840', display: 'inline-block' }} />
+        </div>
+        <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, letterSpacing: '0.04em' }}>plugin output</span>
+        <span style={{ marginLeft: 'auto', color: 'rgba(255,255,255,0.2)', fontSize: 10 }}>{lines.length} lines</span>
+      </div>
+      {/* Content */}
+      <div style={{
+        background: '#0d1117', padding: '12px 0',
+        maxHeight: 420, overflowY: 'auto',
+        fontSize: 12, lineHeight: 1.65,
+      }}>
+        {lines.map((line, i) => (
+          <div key={i} style={{ display: 'flex', minHeight: '1.65em' }}>
+            <span style={{
+              width: 44, minWidth: 44, textAlign: 'right', paddingRight: 16,
+              color: 'rgba(255,255,255,0.18)', userSelect: 'none', fontSize: 11,
+              paddingTop: 1,
+            }}>
+              {i + 1}
+            </span>
+            <span style={{
+              flex: 1, paddingRight: 16,
+              color: line.trim().startsWith('#') ? 'rgba(255,255,255,0.35)'
+                   : line.match(/^\s*(error|fail|critical|warning)/i) ? '#ff7b7b'
+                   : line.match(/^\s*(ok|success|pass|found|enabled)/i) ? '#7ec8a4'
+                   : line.trim() === '' ? 'transparent'
+                   : '#c9d1d9',
+              whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+            }}>
+              {line || ' '}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

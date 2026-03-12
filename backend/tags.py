@@ -403,7 +403,7 @@ def run_all_auto_tag_rules(db: Session, scan_id: Optional[int] = None) -> dict:
 # Ownership Rule Engine
 # ─────────────────────────────────────────────────────────
 
-def run_ownership_rule(rule: OwnershipRule, db: Session, scan_id: Optional[int] = None) -> int:
+def run_ownership_rule(rule: OwnershipRule, db: Session, scan_id: Optional[int] = None, overwrite: Optional[bool] = None) -> int:
     """Execute one ownership rule. Returns number of assets/findings updated."""
     conditions = engine.migrate_conditions(rule.conditions or [], mode="autotag")
     logic = rule.condition_logic or "AND"
@@ -415,6 +415,8 @@ def run_ownership_rule(rule: OwnershipRule, db: Session, scan_id: Optional[int] 
         field = cond0.get("field", "")
         assign_to = cond0.get("value", "owner_name")  # which ownership attr to set
 
+        should_overwrite = overwrite if overwrite is not None else True  # passthrough always overwrites by default
+
         if rule.target_type in ("asset", "both"):
             aq = db.query(Asset)
             if scan_id:
@@ -424,7 +426,7 @@ def run_ownership_rule(rule: OwnershipRule, db: Session, scan_id: Optional[int] 
                 if raw is None:
                     continue
                 ownership = db.query(AssetOwnership).filter(AssetOwnership.asset_id == asset.id).first()
-                if ownership and not rule.overwrite_existing:
+                if ownership and not should_overwrite:
                     continue
                 if not ownership:
                     ownership = AssetOwnership(asset_id=asset.id)
@@ -443,7 +445,7 @@ def run_ownership_rule(rule: OwnershipRule, db: Session, scan_id: Optional[int] 
                 if raw is None:
                     continue
                 ownership = db.query(FindingOwnership).filter(FindingOwnership.finding_id == finding.id).first()
-                if ownership and not rule.overwrite_existing:
+                if ownership and not should_overwrite:
                     continue
                 if not ownership:
                     ownership = FindingOwnership(finding_id=finding.id)
@@ -469,6 +471,8 @@ def run_ownership_rule(rule: OwnershipRule, db: Session, scan_id: Optional[int] 
     if not action:
         return 0
 
+    should_overwrite = overwrite if overwrite is not None else rule.overwrite_existing
+
     if rule.target_type in ("asset", "both"):
         aq = db.query(Asset)
         if scan_id:
@@ -481,7 +485,7 @@ def run_ownership_rule(rule: OwnershipRule, db: Session, scan_id: Optional[int] 
             ):
                 continue
             ownership = db.query(AssetOwnership).filter(AssetOwnership.asset_id == asset.id).first()
-            if ownership and not rule.overwrite_existing:
+            if ownership and not should_overwrite:
                 continue
             if not ownership:
                 ownership = AssetOwnership(asset_id=asset.id)
@@ -500,7 +504,7 @@ def run_ownership_rule(rule: OwnershipRule, db: Session, scan_id: Optional[int] 
             if not engine.evaluate_conditions_for_finding(conditions, logic, finding, asset_dict=ad):
                 continue
             ownership = db.query(FindingOwnership).filter(FindingOwnership.finding_id == finding.id).first()
-            if ownership and not rule.overwrite_existing:
+            if ownership and not should_overwrite:
                 continue
             if not ownership:
                 ownership = FindingOwnership(finding_id=finding.id)
@@ -516,7 +520,7 @@ def run_ownership_rule(rule: OwnershipRule, db: Session, scan_id: Optional[int] 
     return count
 
 
-def run_all_ownership_rules(db: Session, scan_id: Optional[int] = None) -> dict:
+def run_all_ownership_rules(db: Session, scan_id: Optional[int] = None, overwrite: Optional[bool] = None) -> dict:
     """Run all enabled ownership rules ordered by priority. Returns {rule_id: count}."""
     rules = (
         db.query(OwnershipRule)
@@ -524,7 +528,7 @@ def run_all_ownership_rules(db: Session, scan_id: Optional[int] = None) -> dict:
         .order_by(OwnershipRule.priority)
         .all()
     )
-    return {r.id: run_ownership_rule(r, db, scan_id=scan_id) for r in rules}
+    return {r.id: run_ownership_rule(r, db, scan_id=scan_id, overwrite=overwrite) for r in rules}
 
 
 # ─────────────────────────────────────────────────────────

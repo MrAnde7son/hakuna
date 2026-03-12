@@ -3,7 +3,7 @@ import { Tag, Plus, ChevronRight, ChevronDown, Trash2, Edit2, Play, ToggleLeft, 
 import {
   getTags, createTag, updateTag, deleteTag,
   getAutoTagRules, createAutoTagRule, updateAutoTagRule, deleteAutoTagRule,
-  runAutoTagRule, exportConfig,
+  runAutoTagRule, runAllAutoTagRules, exportConfig,
 } from '../api.js'
 import { Card, PageHeader, Button, Input, Select, Spinner, EmptyState, ExportImportButtons } from './ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
@@ -341,6 +341,7 @@ export default function TagManager() {
   const [deletingTag, setDeletingTag] = useState(null)
   const [editingRule, setEditingRule] = useState(null) // null | 'new' | ruleObj
   const [runStatus, setRunStatus] = useState({})
+  const [runAllStatus, setRunAllStatus] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -377,6 +378,17 @@ export default function TagManager() {
       load()
     } catch (e) {
       setRunStatus(s => ({ ...s, [rule.id]: 'error' }))
+    }
+  }
+
+  const handleRunAll = async () => {
+    setRunAllStatus('running')
+    try {
+      const res = await runAllAutoTagRules()
+      setRunAllStatus(res.total_tagged ?? 0)
+      load()
+    } catch (e) {
+      setRunAllStatus('error')
     }
   }
 
@@ -524,10 +536,20 @@ export default function TagManager() {
                   onImported={load}
                   label="Auto-Tag Rules"
                 />
+                {rules.length > 0 && (
+                  <Button size="sm" variant="ghost" onClick={handleRunAll} disabled={runAllStatus === 'running'}>
+                    <Play size={12} /> {runAllStatus === 'running' ? 'Running…' : 'Run All'}
+                  </Button>
+                )}
                 <Button size="sm" onClick={() => setEditingRule('new')} disabled={editingRule !== null}>
                   <Plus size={13} /> New Rule
                 </Button>
               </div>
+              {runAllStatus !== null && (
+                <div style={{ fontSize: 12, color: runAllStatus === 'error' ? '#dc2626' : '#22c55e', padding: '6px 10px', background: 'var(--bg-hover)', borderRadius: 6, marginTop: 8 }}>
+                  {runAllStatus === 'running' ? 'Running all rules…' : runAllStatus === 'error' ? 'Run failed' : `✓ ${runAllStatus} asset/finding(s) tagged`}
+                </div>
+              )}
             </div>
 
             {/* Rule list */}

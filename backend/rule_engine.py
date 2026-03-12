@@ -187,6 +187,58 @@ CONDITION_CATALOG = [
                     {"label": "AppSec", "value": "AppSec"},
                 ],
             },
+            {"field": "finding.cvss4",               "label": "CVSS4 Score",           "ops": ["gte", "lte", "gt", "lt", "eq"], "value_type": "float",   "placeholder": "7.0"},
+            {"field": "finding.epss_score",           "label": "EPSS Score",            "ops": ["gte", "lte", "gt", "lt", "eq"], "value_type": "float",   "placeholder": "0.5"},
+            {
+                "field": "finding.vulnerability_state", "label": "Vulnerability State",
+                "ops": ["eq", "neq"],
+                "value_type": "enum",
+                "options": [
+                    {"label": "Active",     "value": "Active"},
+                    {"label": "New",        "value": "New"},
+                    {"label": "Resurfaced", "value": "Resurfaced"},
+                    {"label": "Fixed",      "value": "Fixed"},
+                ],
+            },
+            {
+                "field": "finding.exploit_maturity", "label": "Exploit Maturity",
+                "ops": ["eq", "neq"],
+                "value_type": "enum",
+                "options": [
+                    {"label": "Weaponized", "value": "weaponized"},
+                    {"label": "Functional", "value": "functional"},
+                    {"label": "PoC",        "value": "poc"},
+                    {"label": "Unproven",   "value": "unproven"},
+                ],
+            },
+            {"field": "finding.is_regression",   "label": "Is Regression",        "ops": ["is_true", "is_false"], "value_type": "none"},
+            {"field": "finding.times_seen",       "label": "Times Seen (# Scans)", "ops": ["gte", "lte", "gt", "lt", "eq"], "value_type": "integer", "placeholder": "3"},
+            {
+                "field": "finding.workflow_status", "label": "Workflow Status",
+                "ops": ["eq", "neq"],
+                "value_type": "enum",
+                "options": [
+                    {"label": "Open",                 "value": "open"},
+                    {"label": "In Progress",          "value": "in_progress"},
+                    {"label": "Resolved",             "value": "resolved"},
+                    {"label": "Accepted Risk",        "value": "accepted_risk"},
+                    {"label": "False Positive",       "value": "false_positive"},
+                    {"label": "Compensating Control", "value": "compensating_control"},
+                ],
+            },
+            {"field": "finding.has_exception",   "label": "Has Exception",        "ops": ["is_true", "is_false"], "value_type": "none"},
+            {
+                "field": "finding.risk_factor", "label": "Risk Factor",
+                "ops": ["eq", "neq"],
+                "value_type": "enum",
+                "options": [
+                    {"label": "Critical", "value": "Critical"},
+                    {"label": "High",     "value": "High"},
+                    {"label": "Medium",   "value": "Medium"},
+                    {"label": "Low",      "value": "Low"},
+                    {"label": "None",     "value": "None"},
+                ],
+            },
         ],
     },
     {
@@ -462,6 +514,26 @@ def _eval_finding_row(cond: dict, finding) -> bool:
         except (ValueError, TypeError):
             return False
         return _num_op(finding.sla_due_date.toordinal(), op, threshold.toordinal())
+    if sub == "cvss4":
+        return _num_op(float(finding.cvss4_score or 0), op, value)
+    if sub == "epss_score":
+        return _num_op(float(finding.epss_score or 0), op, value)
+    if sub == "vulnerability_state":
+        return _str_op(finding.vulnerability_state or "", op, str(value or ""))
+    if sub == "exploit_maturity":
+        return _str_op(finding.exploit_maturity or "", op, str(value or ""))
+    if sub == "is_regression":
+        result = bool(finding.is_regression)
+        return result if op == "is_true" else not result
+    if sub == "times_seen":
+        return _num_op(float(finding.times_seen or 1), op, value)
+    if sub == "workflow_status":
+        return _str_op(finding.workflow_status or "open", op, str(value or ""))
+    if sub == "has_exception":
+        result = finding.exception_id is not None
+        return result if op == "is_true" else not result
+    if sub == "risk_factor":
+        return _str_op(finding.risk_factor or "", op, str(value or ""))
     if sub == "is_kev":
         result = bool(finding.is_kev)
         return result if op == "is_true" else not result

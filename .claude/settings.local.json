@@ -118,7 +118,11 @@
       "Bash(python -m py_compile app.py)",
       "Bash(python -c \"import requests; print\\(''requests ok''\\)\")",
       "Bash(python -c \"import tags; print\\(''tags.py ok''\\)\")",
-      "Bash(npx vite:*)"
+      "Bash(npx vite:*)",
+      "Bash(git -C /Users/itamar/Documents/Git/nessus-remediation/.claude/worktrees/agent-a27508a7 diff HEAD main --stat)",
+      "Bash(git -C /Users/itamar/Documents/Git/nessus-remediation/.claude/worktrees/agent-a27508a7 log --oneline -5)",
+      "Bash(git -C /Users/itamar/Documents/Git/nessus-remediation/.claude/worktrees/agent-a27508a7 show --stat HEAD)",
+      "Bash(git -C /Users/itamar/Documents/Git/nessus-remediation/.claude/worktrees/agent-a27508a7 status)"
     ],
     "additionalDirectories": [
       "/Users/itamar/Documents/Git/nessus-remediation"

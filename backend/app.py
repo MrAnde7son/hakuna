@@ -4200,6 +4200,15 @@ def delete_auto_tag_rule(rule_id: int, db: Session = Depends(get_db)):
     return {"message": "Rule deleted"}
 
 
+@app.post("/api/auto-tag-rules/run-all")
+def run_all_auto_tag_rules_endpoint(
+    scan_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    results = tag_engine.run_all_auto_tag_rules(db, scan_id=scan_id)
+    return {"results": results, "total_tagged": sum(results.values())}
+
+
 @app.post("/api/auto-tag-rules/{rule_id}/run")
 def run_auto_tag_rule(
     rule_id: int,
@@ -4360,9 +4369,10 @@ def run_ownership_rule_endpoint(
 @app.post("/api/ownership-rules/run-all")
 def run_all_ownership_rules_endpoint(
     scan_id: Optional[int] = None,
+    overwrite: Optional[bool] = None,
     db: Session = Depends(get_db),
 ):
-    results = tag_engine.run_all_ownership_rules(db, scan_id=scan_id)
+    results = tag_engine.run_all_ownership_rules(db, scan_id=scan_id, overwrite=overwrite)
     return {"results": results, "total_updated": sum(results.values())}
 
 
@@ -6414,6 +6424,111 @@ def get_audit_log(
         "entity_types": [r[0] for r in db.query(AuditLog.entity_type).distinct().all()],
         "actions": [r[0] for r in db.query(AuditLog.action).distinct().all()],
     }
+
+
+@app.post("/api/scans/{scan_id}/reextract-inventory")
+def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
+    """Re-run inventory extraction for an existing scan (backfills missing inventory)."""
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    findings_for_inventory = []
+    for f in db.query(Finding).filter(Finding.scan_id == scan_id).all():
+        asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
+        findings_for_inventory.append({
+            "plugin_id": f.plugin_id,
+            "plugin_output": f.plugin_output,
+            "asset_id": f.asset_id,
+            "scan_id": f.scan_id,
+            "asset_hostname": asset.hostname if asset else "",
+            "port": f.port,
+            "protocol": f.protocol,
+        })
+
+    inventory = extract_inventory_from_findings(findings_for_inventory)
+
+    MODEL_MAP = {
+        "users": (InventoryUser, ["scan_id", "asset_id", "source_plugin", "user_type",
+                                   "username", "domain", "sid", "rid", "dn", "uac",
+                                   "spns", "member_of", "password_last_set", "date_joined",
+                                   "is_local_admin", "is_domain_admin", "is_privileged",
+                                   "is_disabled", "password_never_expires", "never_logged_in",
+                                   "never_changed_password", "last_logon_host"]),
+        "groups": (InventoryGroup, ["scan_id", "asset_id", "source_plugin",
+                                     "group_name", "domain", "sid", "dn",
+                                     "description", "members", "is_privileged"]),
+        "services": (InventoryService, ["scan_id", "asset_id", "source_plugin",
+                                         "service_name", "display_name", "is_running"]),
+        "netconns": (InventoryNetConn, ["scan_id", "asset_id", "source_plugin",
+                                         "proto", "state", "local_addr", "local_port",
+                                         "remote_addr", "remote_port", "pid"]),
+        "scheduled_tasks": (InventoryScheduledTask, ["scan_id", "asset_id", "source_plugin",
+                                                       "task_uri", "author", "run_as_sid",
+                                                       "run_as_user", "command", "arguments",
+                                                       "trigger_type", "logon_type", "is_enabled"]),
+        "patches": (InventoryPatch, ["scan_id", "asset_id", "source_plugin",
+                                      "kb_id", "vuln_count", "description", "cves"]),
+        "logged_on": (InventoryLoggedOn, ["scan_id", "asset_id", "source_plugin",
+                                           "sid", "domain", "username"]),
+        "shares": (InventoryShare, ["scan_id", "asset_id", "source_plugin",
+                                     "share_name", "share_type", "comment", "path",
+                                     "max_users", "acl", "is_writeable", "is_default_share"]),
+        "software": (InventorySoftware, ["scan_id", "asset_id", "source_plugin",
+                                          "name", "version", "installed_on", "vendor"]),
+        "security_controls": (InventorySecurityControl, ["scan_id", "asset_id", "source_plugin",
+                                                          "control_type", "product_name", "vendor",
+                                                          "version", "is_enabled", "is_up_to_date",
+                                                          "signature_date", "details"]),
+        "computers": (InventoryComputer, ["scan_id", "asset_id", "source_plugin",
+                                           "computer_name", "dns_hostname", "os", "os_version",
+                                           "sid", "dn", "is_domain_controller", "is_disabled",
+                                           "uac", "date_joined"]),
+        "password_policies": (InventoryPasswordPolicy, ["scan_id", "asset_id", "source_plugin",
+                                                         "domain", "min_length", "history_count",
+                                                         "max_age_days", "min_age_days",
+                                                         "complexity_enabled", "reversible_encryption",
+                                                         "lockout_threshold", "lockout_duration_mins",
+                                                         "lockout_window_mins", "is_weak"]),
+        "env_vars": (InventoryEnvVar, ["scan_id", "asset_id", "source_plugin",
+                                        "name", "value", "scope", "is_sensitive"]),
+        "certificates": (InventoryCertificate, [
+            "scan_id", "asset_id", "source_plugin",
+            "subject_cn", "subject_o", "subject_ou", "subject_c", "subject_email",
+            "issuer_cn", "issuer_o", "issuer_ou", "issuer_c",
+            "serial_number", "not_before", "not_after",
+            "is_expired", "days_until_expiry",
+            "signature_algorithm", "key_algorithm", "key_bits",
+            "subject_alt_names", "is_ca", "is_self_signed",
+            "port", "protocol",
+        ]),
+        "ai_tools": (InventoryAITool, [
+            "scan_id", "asset_id", "source_plugin",
+            "tool_name", "category",
+        ]),
+        "processes": (InventoryProcess, [
+            "scan_id", "asset_id", "source_plugin",
+            "process_name", "pid", "ppid", "session_id",
+            "parent_name", "depth",
+        ]),
+    }
+
+    # Delete existing inventory for this scan before re-inserting
+    for Model, _ in MODEL_MAP.values():
+        db.query(Model).filter(Model.scan_id == scan_id).delete()
+    db.commit()
+
+    inv_counts = {}
+    for key, (Model, fields) in MODEL_MAP.items():
+        records = inventory.get(key, [])
+        for rec in records:
+            obj = Model(**{f: rec.get(f) for f in fields if f in rec})
+            db.add(obj)
+        inv_counts[key] = len(records)
+        if records:
+            db.commit()
+
+    return {"scan_id": scan_id, "extracted": {k: v for k, v in inv_counts.items() if v}}
 
 
 if __name__ == "__main__":
