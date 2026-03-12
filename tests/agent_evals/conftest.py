@@ -16,8 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "backend"
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from database import Base
-from models import Scan, Asset, Finding, Agent, AgentRun
+from core.database import Base
+from models.models import Scan, Asset, Finding, Agent, AgentRun
 
 
 @pytest.fixture

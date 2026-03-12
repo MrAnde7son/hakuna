@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-from prioritizer import compute_priority_score, compute_asset_risk_score
+from services.prioritizer import compute_priority_score, compute_asset_risk_score
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
