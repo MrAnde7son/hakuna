@@ -57,6 +57,8 @@ def _migrate_add_columns():
             ("inferred_admin_contacts", "JSON"),
             ("inferred_team", "VARCHAR"),
             ("owner_confidence", 'VARCHAR DEFAULT "low"'),
+            ("environment_confirmed", "BOOLEAN DEFAULT 0"),
+            ("business_context_confirmed", "BOOLEAN DEFAULT 0"),
         ],
         "findings": [
             ("first_seen", "DATETIME"),

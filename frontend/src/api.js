@@ -219,6 +219,7 @@ export const getInventoryEnvVars = (params) => _inv('env-vars', params)
 export const getInventoryCertificates = (params) => _inv('certificates', params)
 export const getInventoryAITools = (params) => _inv('ai-tools', params)
 export const getInventoryProcesses = (params) => _inv('processes', params)
+export const getInventoryDatabases = (params) => _inv('databases', params)
 
 // Ownership
 export const setAssetOwnership = (id, data) =>

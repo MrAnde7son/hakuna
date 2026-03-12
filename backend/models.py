@@ -171,7 +171,9 @@ class Asset(Base):
     # User-defined
     criticality = Column(Integer, default=5)  # 1-10
     environment_tag = Column(String, default="internal")
+    environment_confirmed = Column(Boolean, default=False)
     business_context = Column(String)
+    business_context_confirmed = Column(Boolean, default=False)
     # Inferred ownership (auto-populated from inventory data)
     inferred_primary_user = Column(String)         # From InventoryLoggedOn — likely machine user
     inferred_admin_contacts = Column(JSON, default=list)  # Local admins from InventoryUser

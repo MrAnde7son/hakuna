@@ -150,8 +150,8 @@ export default function Register() {
               padding: '10px 0',
               borderRadius: 8,
               border: 'none',
-              background: '#18181b',
-              color: '#fff',
+              background: 'var(--nav-active-bg)',
+              color: 'var(--nav-active-text)',
               fontSize: 14,
               fontWeight: 600,
               cursor: loading ? 'not-allowed' : 'pointer',
@@ -164,7 +164,7 @@ export default function Register() {
 
         <div style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: 'var(--muted, #71717a)' }}>
           Already have an account?{' '}
-          <Link to="/login" style={{ color: '#18181b', fontWeight: 600, textDecoration: 'none' }}>
+          <Link to="/login" style={{ color: 'var(--text-primary)', fontWeight: 600, textDecoration: 'none' }}>
             Sign in
           </Link>
         </div>

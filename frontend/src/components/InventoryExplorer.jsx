@@ -17,6 +17,7 @@ import {
   getInventoryShares, getInventorySoftware, getInventorySecurityControls,
   getInventoryComputers, getInventoryPasswordPolicies, getInventoryEnvVars,
   getInventoryCertificates, getInventoryAITools, getInventoryProcesses,
+  getInventoryDatabases,
   getSecurityCoverage,
   exportDownload,
 } from '../api.js'
@@ -32,6 +33,7 @@ const TAB_GROUPS = [
   ]},
   { label: 'Infrastructure', icon: Server, children: [
     { key: 'computers', label: 'Computers', icon: Monitor },
+    { key: 'databases', label: 'Databases', icon: Database },
     { key: 'services',  label: 'Services',  icon: Server },
     { key: 'software',  label: 'Software',  icon: Package },
     { key: 'processes', label: 'Processes',  icon: Activity },
@@ -311,10 +313,11 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
       {/* ── Inventory Overview ── */}
       <div>
         <SectionLabel>Inventory Overview</SectionLabel>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 10, marginTop: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: 10, marginTop: 8 }}>
           <StatCard label="Users"          value={counts.users}           icon={Users}    color="#0ea5e9" onClick={() => onTabChange('users')} />
           <StatCard label="Groups"         value={counts.groups}          icon={Shield}   color="#8b5cf6" onClick={() => onTabChange('groups')} />
           <StatCard label="Computers"      value={counts.computers}       icon={Monitor}  color="#06b6d4" onClick={() => onTabChange('computers')} />
+          <StatCard label="Databases"      value={counts.database_instances} icon={Database} color="#f59e0b" onClick={() => onTabChange('databases')} />
           <StatCard label="Services"       value={counts.services}        icon={Server}   color="#64748b" onClick={() => onTabChange('services')} />
           <StatCard label="Shares"         value={counts.shares}          icon={Share2}   color="#f59e0b" onClick={() => onTabChange('shares')} />
           <StatCard label="Software"       value={counts.software}        icon={Package}  color="#10b981" onClick={() => onTabChange('software')} />
@@ -718,6 +721,94 @@ function ComputersTab({ scanId, assetId }) {
         : <Table columns={columns} rows={rows} emptyMessage="No AD computer objects found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
       <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} computers</div>
+    </Card>
+  )
+}
+
+// ─── Databases tab ─────────────────────────────────────────
+const DB_TYPE_COLORS = {
+  mssql:      { label: 'MSSQL',      bg: '#0ea5e922', color: '#0ea5e9' },
+  mysql:      { label: 'MySQL',      bg: '#f59e0b22', color: '#f59e0b' },
+  postgresql: { label: 'PostgreSQL', bg: '#6366f122', color: '#818cf8' },
+  oracle:     { label: 'Oracle',     bg: '#dc262622', color: '#f87171' },
+  mongodb:    { label: 'MongoDB',    bg: '#10b98122', color: '#34d399' },
+  redis:      { label: 'Redis',      bg: '#ef444422', color: '#f87171' },
+}
+
+function DbTypePill({ type }) {
+  const cfg = DB_TYPE_COLORS[type] || { label: type, bg: '#6b728022', color: '#9ca3af' }
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 7px', borderRadius: 4,
+      background: cfg.bg, color: cfg.color, fontSize: 11, fontWeight: 700,
+    }}>{cfg.label}</span>
+  )
+}
+
+function DatabasesTab({ scanId, assetId }) {
+  const [rows, setRows]     = useState([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [dbType, setDbType] = useState('')
+  const [sortBy, setSortBy] = useState('db_type')
+  const [sortOrder, setSortOrder] = useState('asc')
+
+  const handleSort = (key) => {
+    if (sortBy === key) { setSortOrder(o => o === 'asc' ? 'desc' : 'asc') }
+    else { setSortBy(key); setSortOrder('asc') }
+  }
+
+  const load = useCallback(() => {
+    setLoading(true)
+    getInventoryDatabases({ scan_id: scanId, asset_id: assetId || null, search: search || null, db_type: dbType || null, sort_by: sortBy, order: sortOrder })
+      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
+  }, [scanId, assetId, search, dbType, sortBy, sortOrder])
+
+  useEffect(() => { load() }, [load])
+
+  const columns = [
+    { key: 'db_type', label: 'Type', width: '10%', sortable: true,
+      render: v => <DbTypePill type={v} />
+    },
+    { key: 'instance_name', label: 'Instance', width: '18%', sortable: true,
+      render: v => <span style={{ fontWeight: 600 }}>{v || <span style={{ color: 'var(--text-muted)' }}>default</span>}</span>
+    },
+    { key: 'version', label: 'Version', width: '22%', sortable: true,
+      render: v => <span style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{v || '—'}</span>
+    },
+    { key: 'port', label: 'Port', width: '8%', sortable: true,
+      render: v => v ? <span style={{ fontSize: 12, fontFamily: 'monospace' }}>{v}</span> : <span style={{ color: 'var(--text-muted)' }}>—</span>
+    },
+    { key: 'is_running', label: 'State', width: '9%',
+      render: v => <Pill label={v ? 'Running' : 'Stopped'} color={v ? '#16a34a' : '#64748b'} />
+    },
+    { key: 'asset_label', label: 'Asset', width: '15%',
+      render: (v, r) => <>{v}<EnvPill env={r.asset_env} /></>
+    },
+    { key: 'asset_ip', label: 'IP', width: '12%',
+      render: v => <span style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{v || '—'}</span>
+    },
+  ]
+
+  const dbTypes = [...new Set(rows.map(r => r.db_type).filter(Boolean))]
+
+  return (
+    <Card>
+      <FilterBar>
+        <Input value={search} onChange={setSearch} placeholder="Search instance or version…" style={{ width: 220 }} />
+        <select
+          value={dbType}
+          onChange={e => setDbType(e.target.value)}
+          style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: dbType ? 'var(--text-primary)' : 'var(--text-muted)', borderRadius: 6, padding: '5px 8px', fontSize: 12 }}
+        >
+          <option value="">All Types</option>
+          {dbTypes.map(t => <option key={t} value={t}>{DB_TYPE_COLORS[t]?.label || t}</option>)}
+        </select>
+      </FilterBar>
+      {loading ? <Spinner /> : (
+        <Table columns={columns} rows={rows} emptyMessage="No database instances detected. Upload a scan that includes MSSQL (plugin 10144), MySQL (10719), PostgreSQL (26028), or Oracle (22689) detection results." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+      )}
+      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} instance{rows.length !== 1 ? 's' : ''}</div>
     </Card>
   )
 }
@@ -1899,6 +1990,7 @@ export default function InventoryExplorer() {
 
   const TAB_EXPORT_MAP = {
     users: 'inventory/users', groups: 'inventory/groups', computers: 'inventory/computers',
+    databases: 'inventory/databases',
     services: 'inventory/services', shares: 'inventory/shares', software: 'inventory/software',
     security: 'inventory/security-controls', netconns: 'inventory/netconns',
     tasks: 'inventory/scheduled-tasks', patches: 'inventory/patches',
@@ -1912,6 +2004,7 @@ export default function InventoryExplorer() {
     users:     <UsersTab             scanId={activeScanId} assetId={assetId} />,
     groups:    <GroupsTab            scanId={activeScanId} assetId={assetId} />,
     computers: <ComputersTab         scanId={activeScanId} assetId={assetId} />,
+    databases: <DatabasesTab         scanId={activeScanId} assetId={assetId} />,
     services:  <ServicesTab          scanId={activeScanId} assetId={assetId} />,
     shares:    <SharesTab            scanId={activeScanId} assetId={assetId} />,
     software:  <SoftwareTab          scanId={activeScanId} assetId={assetId} />,

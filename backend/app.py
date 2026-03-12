@@ -31,6 +31,7 @@ from models import (
 from parser import detect_and_parse, load_intel_json
 from prioritizer import compute_priority_score
 from inventory_extractor import extract_inventory_from_findings, _cn_from_dn
+from asset_classifier import classify_asset
 import dedup as dedup_engine
 import risk_config as risk_engine
 import campaign_query as cq
@@ -485,6 +486,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         if risk_cfg.get("auto_apply_rules_on_upload"):
             auto_crit = risk_engine.evaluate_criticality_rules(asset_data, risk_cfg)
 
+        ctx = classify_asset(asset_data)
         asset = Asset(
             scan_id=scan.id,
             ip=asset_data.get("ip"),
@@ -501,6 +503,8 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             medium_count=asset_data.get("medium_count", 0),
             low_count=asset_data.get("low_count", 0),
             info_count=asset_data.get("info_count", 0),
+            environment_tag=ctx["environment_tag"],
+            business_context=ctx["business_context"],
         )
         db.add(asset)
         db.flush()
@@ -1082,7 +1086,9 @@ def update_asset(
     asset_id: int,
     criticality: Optional[int] = None,
     environment_tag: Optional[str] = None,
+    environment_confirmed: Optional[bool] = None,
     business_context: Optional[str] = None,
+    business_context_confirmed: Optional[bool] = None,
     db: Session = Depends(get_db),
 ):
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
@@ -1092,8 +1098,14 @@ def update_asset(
         asset.criticality = max(1, min(10, criticality))
     if environment_tag is not None:
         asset.environment_tag = environment_tag
+        asset.environment_confirmed = True  # editing always confirms
+    if environment_confirmed is not None:
+        asset.environment_confirmed = environment_confirmed
     if business_context is not None:
         asset.business_context = business_context
+        asset.business_context_confirmed = True  # editing always confirms
+    if business_context_confirmed is not None:
+        asset.business_context_confirmed = business_context_confirmed
     db.commit()
     return _asset_to_dict(asset)
 
@@ -1114,7 +1126,9 @@ def _asset_to_dict(a: Asset) -> dict:
         "scan_end": a.scan_end,
         "criticality": a.criticality,
         "environment_tag": a.environment_tag,
+        "environment_confirmed": bool(a.environment_confirmed),
         "business_context": a.business_context,
+        "business_context_confirmed": bool(a.business_context_confirmed),
         "scanner_ip": a.scanner_ip,
         "is_internet_facing": a.is_internet_facing or False,
         "risk_score": a.risk_score,

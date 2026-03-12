@@ -125,7 +125,9 @@
       "Bash(git -C /Users/itamar/Documents/Git/nessus-remediation/.claude/worktrees/agent-a27508a7 status)",
       "Bash(grep -rn \"server.*role\\\\|server.*type\\\\|sql.*server\\\\|database.*server\\\\|dns.*server\\\\|web.*server\\\\|http.*server\" /Users/itamar/Documents/Git/nessus-remediation/backend/*.py -i)",
       "Bash(grep -rn \"role.*database\\\\|role.*web\\\\|role.*sql\\\\|role.*dns\\\\|infer.*role\\\\|detect.*role\\\\|server.*role\" /Users/itamar/Documents/Git/nessus-remediation/backend/*.py -i)",
-      "Bash(python -c \"import models; print\\(''models.py OK''\\)\")"
+      "Bash(python -c \"import models; print\\(''models.py OK''\\)\")",
+      "Bash(python -c \"import rule_engine; print\\(''rule_engine.py OK''\\)\")",
+      "WebFetch(domain:www.cisa.gov)"
     ],
     "additionalDirectories": [
       "/Users/itamar/Documents/Git/nessus-remediation"

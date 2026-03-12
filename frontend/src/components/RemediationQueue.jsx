@@ -21,7 +21,7 @@ const OWNER_OPTIONS = [
   { value: 'AppSec', label: 'AppSec' },
 ]
 
-const SEV_COLORS = ['#0ea5e9', '#65a30d', '#d97706', '#ea580c', '#dc2626']
+const SEV_COLORS = ['var(--info)', 'var(--low)', 'var(--medium)', 'var(--high)', 'var(--critical)']
 
 function FindingCard({ finding, rank, scanId }) {
   const navigate = useNavigate()
@@ -45,7 +45,7 @@ function FindingCard({ finding, rank, scanId }) {
       setCreatingCampaign(false)
     }
   }
-  const sevColor = SEV_COLORS[finding.severity] || '#0ea5e9'
+  const sevColor = SEV_COLORS[finding.severity] || 'var(--info)'
 
   return (
     <div style={{
@@ -73,8 +73,8 @@ function FindingCard({ finding, rank, scanId }) {
             <SeverityBadge severity={finding.severity} label={finding.severity_label} />
             <EffortBadge effort={finding.effort_level} />
             <ResolvedOwnerBadge resolved={finding.resolved_owner} />
-            {finding.zero_day && <Pill label="0-DAY" color="#dc2626" />}
-            {finding.exploit_available && !finding.zero_day && <Pill label="Exploit" color="#ea580c" />}
+            {finding.zero_day && <Pill label="0-DAY" color="var(--critical)" />}
+            {finding.exploit_available && !finding.zero_day && <Pill label="Exploit" color="var(--high)" />}
           </div>
           <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', marginBottom: 4 }}>
             {finding.plugin_name}
@@ -108,7 +108,7 @@ function FindingCard({ finding, rank, scanId }) {
         <div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border)' }}>
           {finding.cves && finding.cves.length > 0 && (
             <div style={{ marginTop: 12, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {finding.cves.map(cve => <Pill key={cve} label={cve} color="#f59e0b" />)}
+              {finding.cves.map(cve => <Pill key={cve} label={cve} color="var(--warning)" />)}
             </div>
           )}
 
@@ -125,7 +125,7 @@ function FindingCard({ finding, rank, scanId }) {
               onClick={handleAutomate}
               disabled={creatingCampaign}
               size="sm"
-              style={{ background: '#6366f122', color: '#818cf8', border: '1px solid #6366f144' }}
+              style={{ background: 'rgba(99,102,241,0.13)', color: 'var(--accent)', border: '1px solid rgba(99,102,241,0.27)' }}
             >
               <Zap size={13} /> {creatingCampaign ? 'Creating…' : 'Start a Campaign'}
             </Button>
@@ -163,20 +163,20 @@ export default function RemediationQueue() {
       {/* Summary banner */}
       {findings.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
-          <div style={{ background: '#dc262622', border: '1px solid #dc262644', borderRadius: 10, padding: '14px 16px' }}>
-            <div style={{ fontSize: 11, color: '#fca5a5', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Critical Findings</div>
-            <div style={{ fontSize: 28, fontWeight: 700, color: '#fca5a5' }}>{critical.length}</div>
-            <div style={{ fontSize: 12, color: '#fca5a580' }}>Immediate action</div>
+          <div style={{ background: 'var(--danger-subtle)', border: '1px solid var(--danger)', borderRadius: 10, padding: '14px 16px' }}>
+            <div style={{ fontSize: 11, color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Critical Findings</div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--danger)' }}>{critical.length}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Immediate action</div>
           </div>
-          <div style={{ background: '#16a34a22', border: '1px solid #16a34a44', borderRadius: 10, padding: '14px 16px' }}>
-            <div style={{ fontSize: 11, color: '#86efac', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Quick Wins</div>
-            <div style={{ fontSize: 28, fontWeight: 700, color: '#86efac' }}>{quickWins.length}</div>
-            <div style={{ fontSize: 12, color: '#86efac80' }}>Low effort, immediate value</div>
+          <div style={{ background: 'var(--success-subtle)', border: '1px solid var(--success)', borderRadius: 10, padding: '14px 16px' }}>
+            <div style={{ fontSize: 11, color: 'var(--success)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Quick Wins</div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--success)' }}>{quickWins.length}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Low effort, immediate value</div>
           </div>
-          <div style={{ background: '#6366f122', border: '1px solid #6366f144', borderRadius: 10, padding: '14px 16px' }}>
-            <div style={{ fontSize: 11, color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Automatable</div>
-            <div style={{ fontSize: 28, fontWeight: 700, color: '#a5b4fc' }}>{findings.length}</div>
-            <div style={{ fontSize: 12, color: '#a5b4fc80' }}>Contact us to enable</div>
+          <div style={{ background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 10, padding: '14px 16px' }}>
+            <div style={{ fontSize: 11, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Automatable</div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--accent)' }}>{findings.length}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Contact us to enable</div>
           </div>
         </div>
       )}

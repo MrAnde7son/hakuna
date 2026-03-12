@@ -364,6 +364,91 @@ export function OwnershipEditPopover({ current, onSave, onClose }) {
   )
 }
 
+const ENV_OPTIONS = ['internal', 'external', 'dmz', 'production', 'development', 'test', 'staging', 'uat', 'qa', 'cloud', 'lab']
+const BIZ_OPTIONS = [
+  'Domain Controller', 'Active Directory', 'Identity Provider',
+  'Web Server', 'Application Server', 'Database Server',
+  'Mail Server', 'File Server', 'Backup Server',
+  'Firewall', 'Proxy', 'VPN Gateway', 'Network Device', 'Load Balancer',
+  'Terminal Server', 'Management Server', 'Print Server', 'DevOps Server', 'Workstation',
+]
+
+export function ContextEditPopover({ field, currentValue, onSave, onConfirm, onClose }) {
+  const [value, setValue] = useState(currentValue || '')
+  const [saving, setSaving] = useState(false)
+  const ref = useRef(null)
+  const isEnv = field === 'environment'
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose() }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [onClose])
+
+  const fieldStyle = {
+    background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6,
+    color: 'var(--text-primary)', fontSize: 12, padding: '5px 8px', width: '100%', outline: 'none',
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    try { await onSave(value) } finally { setSaving(false) }
+  }
+
+  const handleConfirm = async () => {
+    setSaving(true)
+    try { await onConfirm() } finally { setSaving(false) }
+  }
+
+  return (
+    <div ref={ref} onClick={e => e.stopPropagation()} style={{
+      position: 'absolute', zIndex: 1000, background: 'var(--bg-card)',
+      border: '1px solid var(--border)', borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+      padding: 14, width: 220, display: 'flex', flexDirection: 'column', gap: 8,
+    }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>
+        {isEnv ? 'Environment' : 'Business Context'}
+      </div>
+      {isEnv ? (
+        <select value={value} onChange={e => setValue(e.target.value)} style={fieldStyle}>
+          <option value="">— none —</option>
+          {ENV_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+      ) : (
+        <>
+          <select value={BIZ_OPTIONS.includes(value) ? value : ''} onChange={e => setValue(e.target.value)} style={fieldStyle}>
+            <option value="">— custom —</option>
+            {BIZ_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+          <input value={value} onChange={e => setValue(e.target.value)} style={fieldStyle} placeholder="Or type custom value…" />
+        </>
+      )}
+      <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+        {onConfirm && value === currentValue && (
+          <button onClick={handleConfirm} disabled={saving} style={{
+            flex: 1, background: '#16a34a22', color: '#22c55e', border: '1px solid #22c55e55',
+            borderRadius: 6, fontSize: 11, fontWeight: 600, padding: '5px 0', cursor: 'pointer',
+          }}>
+            {saving ? '…' : 'Confirm'}
+          </button>
+        )}
+        <button onClick={handleSave} disabled={saving} style={{
+          flex: 1, background: 'var(--accent)', color: '#fff', border: 'none',
+          borderRadius: 6, fontSize: 12, fontWeight: 600, padding: '6px 0', cursor: 'pointer',
+        }}>
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button onClick={onClose} style={{
+          flex: 1, background: 'var(--bg-hover)', color: 'var(--text-secondary)', border: '1px solid var(--border)',
+          borderRadius: 6, fontSize: 12, padding: '6px 0', cursor: 'pointer',
+        }}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function ConfidenceDot({ confidence }) {
   const colors = { high: '#22c55e', medium: '#f59e0b', low: '#6b7280' }
   const c = colors[confidence] || colors.low

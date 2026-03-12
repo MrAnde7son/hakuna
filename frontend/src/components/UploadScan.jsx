@@ -93,6 +93,7 @@ export default function UploadScan() {
   const { scans, refreshScans, setActiveScanId } = useScan()
   const navigate = useNavigate()
   const [uploads, setUploads] = useState([])
+  const [deletingId, setDeletingId] = useState(null)
 
   const handleFile = async (file) => {
     const id = Date.now()
@@ -112,8 +113,13 @@ export default function UploadScan() {
 
   const handleDeleteScan = async (scanId) => {
     if (!confirm('Delete this scan and all its data?')) return
-    await deleteScan(scanId)
-    await refreshScans()
+    setDeletingId(scanId)
+    try {
+      await deleteScan(scanId)
+      await refreshScans()
+    } finally {
+      setDeletingId(null)
+    }
   }
 
   return (
@@ -174,8 +180,9 @@ export default function UploadScan() {
                 variant="danger"
                 size="sm"
                 onClick={() => handleDeleteScan(scan.id)}
+                disabled={deletingId === scan.id}
               >
-                Delete
+                {deletingId === scan.id ? <Spinner size={14} /> : 'Delete'}
               </Button>
             </div>
           ))}

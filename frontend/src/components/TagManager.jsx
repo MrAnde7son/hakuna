@@ -63,7 +63,7 @@ function TagNode({ node, depth = 0, selected, onSelect, onDelete, onEdit }) {
         ><Edit2 size={11} /></button>
         <button
           onClick={e => { e.stopPropagation(); onDelete(node) }}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', padding: 2, opacity: 0.7 }}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)', padding: 2, opacity: 0.7 }}
           title="Delete"
         ><Trash2 size={11} /></button>
       </div>
@@ -180,7 +180,7 @@ function TagForm({ tag, allTags, onSave, onCancel }) {
         </div>
       )}
 
-      {error && <div style={{ fontSize: 12, color: '#dc2626', background: '#450a0a', borderRadius: 6, padding: '6px 10px' }}>{error}</div>}
+      {error && <div style={{ fontSize: 12, color: 'var(--danger)', background: 'var(--danger-subtle)', borderRadius: 6, padding: '6px 10px' }}>{error}</div>}
 
       <div style={{ display: 'flex', gap: 8, paddingTop: 4 }}>
         <Button onClick={submit} disabled={saving} style={{ flex: 1 }}>
@@ -274,13 +274,13 @@ function AutoTagRuleForm({ rule, allTags, onSave, onCancel }) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <button onClick={() => setEnabled(p => !p)} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', color: enabled ? '#22c55e' : 'var(--text-muted)' }}>
+        <button onClick={() => setEnabled(p => !p)} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', color: enabled ? 'var(--success)' : 'var(--text-muted)' }}>
           {enabled ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
         </button>
         <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Rule {enabled ? 'enabled' : 'disabled'}</span>
       </div>
 
-      {error && <div style={{ fontSize: 12, color: '#dc2626', background: '#450a0a', borderRadius: 6, padding: '6px 10px' }}>{error}</div>}
+      {error && <div style={{ fontSize: 12, color: 'var(--danger)', background: 'var(--danger-subtle)', borderRadius: 6, padding: '6px 10px' }}>{error}</div>}
 
       <div style={{ display: 'flex', gap: 8, paddingTop: 4 }}>
         <Button onClick={submit} disabled={saving} style={{ flex: 1 }}>
@@ -298,7 +298,7 @@ function DeleteConfirm({ tag, onConfirm, onCancel }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: '#dc2626' }}>Delete tag?</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--danger)' }}>Delete tag?</span>
         <button onClick={onCancel} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}><X size={14} /></button>
       </div>
       <div style={{ fontSize: 12, color: 'var(--text-secondary)', background: 'var(--bg-hover)', borderRadius: 6, padding: '8px 10px' }}>
@@ -438,7 +438,7 @@ export default function TagManager() {
               <span style={{
                 fontSize: 10, fontWeight: 600,
                 background: tab === t.id ? 'var(--accent)' : 'var(--bg-hover)',
-                color: tab === t.id ? '#fff' : 'var(--text-muted)',
+                color: tab === t.id ? 'var(--nav-active-text)' : 'var(--text-muted)',
                 borderRadius: 10, padding: '1px 6px',
               }}>{t.count}</span>
             )}
@@ -546,7 +546,7 @@ export default function TagManager() {
                 </Button>
               </div>
               {runAllStatus !== null && (
-                <div style={{ fontSize: 12, color: runAllStatus === 'error' ? '#dc2626' : '#22c55e', padding: '6px 10px', background: 'var(--bg-hover)', borderRadius: 6, marginTop: 8 }}>
+                <div style={{ fontSize: 12, color: runAllStatus === 'error' ? 'var(--danger)' : 'var(--success)', padding: '6px 10px', background: 'var(--bg-hover)', borderRadius: 6, marginTop: 8 }}>
                   {runAllStatus === 'running' ? 'Running all rules…' : runAllStatus === 'error' ? 'Run failed' : `✓ ${runAllStatus} asset/finding(s) tagged`}
                 </div>
               )}
@@ -578,7 +578,7 @@ export default function TagManager() {
                       {/* Enable toggle */}
                       <button
                         onClick={() => handleToggleRule(rule)}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', color: rule.is_enabled ? '#22c55e' : 'var(--text-muted)', paddingTop: 1, flexShrink: 0 }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', color: rule.is_enabled ? 'var(--success)' : 'var(--text-muted)', paddingTop: 1, flexShrink: 0 }}
                         title={rule.is_enabled ? 'Disable rule' : 'Enable rule'}
                       >
                         {rule.is_enabled ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
@@ -625,16 +625,16 @@ export default function TagManager() {
                           <Play size={11} /> {status === 'running' ? 'Running…' : 'Run'}
                         </Button>
                         <button onClick={() => setEditingRule(rule)} style={iconBtnStyle} title="Edit"><Edit2 size={13} /></button>
-                        <button onClick={() => handleDeleteRule(rule)} style={{ ...iconBtnStyle, color: '#dc2626' }} title="Delete"><Trash2 size={13} /></button>
+                        <button onClick={() => handleDeleteRule(rule)} style={{ ...iconBtnStyle, color: 'var(--danger)' }} title="Delete"><Trash2 size={13} /></button>
                       </div>
                     </div>
 
                     {(typeof status === 'number' || status === 'error') && (
                       <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
                         {typeof status === 'number' && (
-                          <span style={{ fontSize: 11, color: '#22c55e' }}>✓ {status} new assignment{status !== 1 ? 's' : ''}</span>
+                          <span style={{ fontSize: 11, color: 'var(--success)' }}>✓ {status} new assignment{status !== 1 ? 's' : ''}</span>
                         )}
-                        {status === 'error' && <span style={{ fontSize: 11, color: '#dc2626' }}>Run failed</span>}
+                        {status === 'error' && <span style={{ fontSize: 11, color: 'var(--danger)' }}>Run failed</span>}
                       </div>
                     )}
                   </Card>

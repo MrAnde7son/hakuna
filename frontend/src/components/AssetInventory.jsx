@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle } from 'lucide-react'
 import { useScan } from '../App.jsx'
 import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership } from '../api.js'
-import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover } from './ui.jsx'
+import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover } from './ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
 import { filtersToConditions } from '../utils/filtersToConditions.js'
 import BlastRadiusPanel, { BlastRadiusScore } from './BlastRadiusPanel.jsx'
@@ -20,11 +20,11 @@ function RiskScore({ score }) {
 
 function SevCounts({ asset }) {
   const items = [
-    { label: 'C', count: asset.critical_count, color: 'var(--critical)' },
-    { label: 'H', count: asset.high_count, color: 'var(--high)' },
-    { label: 'M', count: asset.medium_count, color: 'var(--medium)' },
-    { label: 'L', count: asset.low_count, color: 'var(--low)' },
-    { label: 'I', count: asset.info_count, color: 'var(--info)' },
+    { label: 'C', count: asset.critical_count, color: '#dc2626' },
+    { label: 'H', count: asset.high_count, color: '#ea580c' },
+    { label: 'M', count: asset.medium_count, color: '#d97706' },
+    { label: 'L', count: asset.low_count, color: '#65a30d' },
+    { label: 'I', count: asset.info_count, color: '#0ea5e9' },
   ]
   return (
     <div style={{ display: 'flex', gap: 6 }}>
@@ -251,6 +251,7 @@ export default function AssetInventory() {
   const [tagFilter, setTagFilter] = useState([])
   const [tagLogic, setTagLogic] = useState('AND')
   const [ownershipEdit, setOwnershipEdit] = useState(null) // { assetId, current, anchorRef }
+  const [contextEdit, setContextEdit] = useState(null) // { assetId, field, currentValue }
 
   // Advanced rule-engine search
   const [advancedMode, setAdvancedMode] = useState(false)
@@ -435,14 +436,44 @@ export default function AssetInventory() {
     },
     {
       key: 'environment_tag', label: 'Env', sortable: true,
-      render: (v) => {
+      render: (v, row) => {
         const color = ENV_COLORS[v] || 'var(--text-muted)'
+        const confirmed = row.environment_confirmed
+        const isOpen = contextEdit?.assetId === row.id && contextEdit?.field === 'environment'
         return (
-          <span style={{
-            display: 'inline-block', padding: '2px 8px', borderRadius: 999,
-            background: `${color}22`, color, border: `1px solid ${color}44`,
-            fontSize: 11, fontWeight: 600, textTransform: 'capitalize',
-          }}>{v || 'internal'}</span>
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={e => { e.stopPropagation(); setContextEdit(isOpen ? null : { assetId: row.id, field: 'environment', currentValue: v }) }}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left' }}
+              title="Click to edit environment"
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{
+                  display: 'inline-block', padding: '2px 8px', borderRadius: 999,
+                  background: `${color}22`, color, border: `1px solid ${color}44`,
+                  fontSize: 11, fontWeight: 600, textTransform: 'capitalize',
+                }}>{v || 'internal'}</span>
+                {confirmed
+                  ? <span style={{ fontSize: 9, color: '#22c55e', fontWeight: 600 }}>CONFIRMED</span>
+                  : <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 600 }}>INFERRED</span>}
+              </div>
+            </button>
+            {isOpen && (
+              <ContextEditPopover
+                field="environment"
+                currentValue={v}
+                onClose={() => setContextEdit(null)}
+                onConfirm={async () => {
+                  await updateAsset(row.id, { environment_confirmed: true })
+                  setContextEdit(null); load()
+                }}
+                onSave={async (val) => {
+                  await updateAsset(row.id, { environment_tag: val })
+                  setContextEdit(null); load()
+                }}
+              />
+            )}
+          </div>
         )
       }
     },
@@ -536,9 +567,45 @@ export default function AssetInventory() {
     },
     {
       key: 'business_context', label: 'Business Context',
-      render: (v) => v
-        ? <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{v}</span>
-        : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+      render: (v, row) => {
+        const confirmed = row.business_context_confirmed
+        const isOpen = contextEdit?.assetId === row.id && contextEdit?.field === 'business_context'
+        return (
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={e => { e.stopPropagation(); setContextEdit(isOpen ? null : { assetId: row.id, field: 'business_context', currentValue: v }) }}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left' }}
+              title="Click to edit business context"
+            >
+              {v ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{v}</span>
+                  {confirmed
+                    ? <span style={{ fontSize: 9, color: '#22c55e', fontWeight: 600 }}>CONFIRMED</span>
+                    : <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 600 }}>INFERRED</span>}
+                </div>
+              ) : (
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>+ Set context</span>
+              )}
+            </button>
+            {isOpen && (
+              <ContextEditPopover
+                field="business_context"
+                currentValue={v}
+                onClose={() => setContextEdit(null)}
+                onConfirm={v ? async () => {
+                  await updateAsset(row.id, { business_context_confirmed: true })
+                  setContextEdit(null); load()
+                } : null}
+                onSave={async (val) => {
+                  await updateAsset(row.id, { business_context: val })
+                  setContextEdit(null); load()
+                }}
+              />
+            )}
+          </div>
+        )
+      }
     },
     {
       key: '_actions', label: '', width: '40px',
@@ -546,7 +613,7 @@ export default function AssetInventory() {
     },
   ]
 
-  const defaultHidden = new Set(['is_internet_facing', 'scan_start', 'business_context'])
+  const defaultHidden = new Set(['is_internet_facing', 'scan_start'])
   const visibleColumns = allColumns.filter(c =>
     c.key === '_select' || c.key === '_actions' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
   )

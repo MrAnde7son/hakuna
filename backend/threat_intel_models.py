@@ -119,6 +119,27 @@ class ThreatCampaign(Base):
     remediation_campaigns = relationship("IntelRemediationCampaign", back_populates="threat_campaign")
 
 
+class CisaAdvisory(Base):
+    """CISA Cybersecurity Advisory — fetched from the CISA RSS feed."""
+    __tablename__ = "cisa_advisories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    advisory_id = Column(String, unique=True, index=True)   # e.g. "AA25-071A" or "ICSA-26-069-04"
+    title = Column(String, nullable=False)
+    advisory_type = Column(String, default="advisory")      # "advisory" | "alert" | "ics" | "ics_medical" | "malware"
+    pub_date = Column(String)                               # ISO date string
+    summary = Column(Text)
+    url = Column(String)
+    co_sealers = Column(JSON, default=list)                 # ["NSA", "FBI", ...]
+    sectors = Column(JSON, default=list)                    # ["energy", "healthcare", ...]
+    cve_ids = Column(JSON, default=list)                    # CVEs extracted from text
+    threat_group_ids = Column(JSON, default=list)           # matched ThreatGroup IDs
+    threat_group_names = Column(JSON, default=list)         # matched ThreatGroup names
+    is_ics = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class IntelRemediationCampaign(Base):
     __tablename__ = "intel_remediation_campaigns"
 
