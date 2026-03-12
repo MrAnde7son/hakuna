@@ -127,7 +127,14 @@
       "Bash(grep -rn \"role.*database\\\\|role.*web\\\\|role.*sql\\\\|role.*dns\\\\|infer.*role\\\\|detect.*role\\\\|server.*role\" /Users/itamar/Documents/Git/nessus-remediation/backend/*.py -i)",
       "Bash(python -c \"import models; print\\(''models.py OK''\\)\")",
       "Bash(python -c \"import rule_engine; print\\(''rule_engine.py OK''\\)\")",
-      "WebFetch(domain:www.cisa.gov)"
+      "WebFetch(domain:www.cisa.gov)",
+      "Bash(grep -n \"report.templates\\\\|report-templates\" /Users/itamar/Documents/Git/nessus-remediation/backend/*.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''backend/threat_intel_routes.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(grep -v \"^$\")",
+      "Bash(python -c \"from app import app; print\\(''''Backend OK''''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''app.py''\\).read\\(\\)\\); print\\(''app.py OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''models.py''\\).read\\(\\)\\); print\\(''models.py OK''\\)\")",
+      "Bash(chmod +x /Users/itamar/Documents/Git/nessus-remediation/render-build.sh)"
     ],
     "additionalDirectories": [
       "/Users/itamar/Documents/Git/nessus-remediation"

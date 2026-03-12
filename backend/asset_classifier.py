@@ -5,6 +5,7 @@ All results are best-effort defaults — users can override via the UI.
 """
 import re
 import ipaddress
+from typing import Optional
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +123,7 @@ _ROLE_RULES = [
     (r"\b(ws|wks|workstation|laptop|desktop|pc)\b",             "Workstation"),
 ]
 
-def infer_business_context(asset_data: dict) -> str | None:
+def infer_business_context(asset_data: dict) -> Optional[str]:
     """Return best-guess business context string, or None if no confident match."""
     names = _names(asset_data)
 

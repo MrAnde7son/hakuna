@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare } from 'lucide-react'
-import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, createException, createCampaign, runCampaign } from '../api.js'
+import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase } from 'lucide-react'
+import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign } from '../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input } from './ui.jsx'
 import BlastRadiusPanel from './BlastRadiusPanel.jsx'
 
@@ -115,6 +115,7 @@ export default function FindingDetail() {
   const [statusUpdating, setStatusUpdating] = useState(false)
   const [showExceptionForm, setShowExceptionForm] = useState(false)
   const [exceptionReason, setExceptionReason] = useState('')
+  const [ctxSaving, setCtxSaving] = useState(false)
 
   useEffect(() => {
     getFinding(id)
@@ -185,6 +186,16 @@ export default function FindingDetail() {
       setExceptionReason('')
     } catch (e) {
       alert('Failed to create exception: ' + e.message)
+    }
+  }
+
+  const handleContextChange = async (field, value) => {
+    setCtxSaving(true)
+    try {
+      const updated = await updateFindingContext(id, { [field]: value || null })
+      setFinding(prev => ({ ...prev, ...updated }))
+    } finally {
+      setCtxSaving(false)
     }
   }
 
@@ -440,11 +451,242 @@ export default function FindingDetail() {
               <Button size="sm" onClick={() => handleCreateException('compensating_control')} style={{ background: '#10b981' }}>
                 Compensating Control
               </Button>
+              <Button size="sm" onClick={() => handleCreateException('technical_debt')} style={{ background: '#7c3aed' }}>
+                Technical Debt
+              </Button>
               <Button variant="ghost" size="sm" onClick={() => setShowExceptionForm(false)}>Cancel</Button>
             </div>
           </div>
         )}
       </Card>
+
+      {/* Validated Context */}
+      {(() => {
+        const ctx = finding.context || {}
+        const ctxVal = (field) => ctx[field]?.value || ''
+        const ctxSource = (field) => ctx[field]?.source
+        const sourceBadge = (field) => {
+          const s = ctxSource(field)
+          if (!s) return null
+          const isInferred = s === 'inferred'
+          return (
+            <span style={{
+              fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
+              padding: '1px 5px', borderRadius: 3, marginLeft: 6,
+              background: isInferred ? 'rgba(59,130,246,0.12)' : 'rgba(16,185,129,0.12)',
+              color: isInferred ? '#3b82f6' : '#10b981',
+            }}>
+              {isInferred ? 'auto' : 'manual'}
+            </span>
+          )
+        }
+        const selectStyle = {
+          width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13,
+          border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+          cursor: 'pointer',
+        }
+        const fmtOption = (o) => o.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+
+        return (
+          <>
+            <Section title="Validated Context" icon={Eye}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                {[
+                  { field: 'ctx_reachability', label: 'Reachability', options: ['unreachable', 'internal_only', 'internet_facing', 'unknown'] },
+                  { field: 'ctx_exploitability', label: 'Exploitability', options: ['not_exploitable', 'requires_conditions', 'easily_exploitable', 'unknown'] },
+                  { field: 'ctx_accessibility', label: 'Accessibility', options: ['restricted', 'authenticated_only', 'public', 'unknown'] },
+                ].map(({ field, label, options }) => (
+                  <div key={field}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center' }}>
+                      {label}{sourceBadge(field)}
+                    </div>
+                    <select value={ctxVal(field)} onChange={e => handleContextChange(field, e.target.value)} style={selectStyle}>
+                      <option value="">— Not set —</option>
+                      {options.map(o => <option key={o} value={o}>{fmtOption(o)}</option>)}
+                    </select>
+                  </div>
+                ))}
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center' }}>
+                    Compensating Control{sourceBadge('ctx_compensating_control')}
+                  </div>
+                  {(() => {
+                    const raw = ctxVal('ctx_compensating_control') || '';
+                    const controlTypeColors = { EDR: '#8b5cf6', AV: '#3b82f6', FIREWALL: '#f59e0b', IDS: '#ef4444', IPS: '#ef4444', DLP: '#06b6d4', SIEM: '#ec4899', WAF: '#10b981', HIPS: '#f97316', IDENTITY: '#a855f7', BACKUP: '#0ea5e9' };
+                    let parsedControls = [];
+                    if (raw.includes('Active security controls on host:')) {
+                      const afterPrefix = raw.split('Active security controls on host:')[1] || '';
+                      parsedControls = afterPrefix.split(';').map(s => s.trim()).filter(Boolean).map(entry => {
+                        // Match TYPE: Product (Vendor) [outdated] — vendor is last parenthesized group
+                        const typeMatch = entry.match(/^([A-Z_]+):\s*(.+)$/);
+                        if (!typeMatch) return { type: null, product: entry.replace(/\s*\[outdated\]/, ''), vendor: null, outdated: entry.includes('[outdated]') };
+                        const type = typeMatch[1];
+                        let rest = typeMatch[2];
+                        const outdated = rest.includes('[outdated]');
+                        rest = rest.replace(/\s*\[outdated\]/, '').trim();
+                        // Extract last (Vendor) if present
+                        const vendorMatch = rest.match(/^(.+)\s+\(([^)]+)\)$/);
+                        const product = vendorMatch ? vendorMatch[1].trim() : rest;
+                        const vendor = vendorMatch ? vendorMatch[2] : null;
+                        return { type, product, vendor, outdated };
+                      });
+                    }
+
+                    if (parsedControls.length === 0 && !raw) {
+                      return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No compensating controls detected</span>;
+                    }
+
+                    return (
+                      <>
+                        {parsedControls.length > 0 ? (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                            {parsedControls.map((ctrl, i) => (
+                              <div key={i} style={{
+                                display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
+                                borderRadius: 8, fontSize: 12, fontWeight: 500,
+                                background: `${controlTypeColors[ctrl.type] || '#6b7280'}18`,
+                                border: `1px solid ${controlTypeColors[ctrl.type] || '#6b7280'}40`,
+                                color: 'var(--text-primary)',
+                              }}>
+                                <span style={{
+                                  fontSize: 9, fontWeight: 700, letterSpacing: '0.05em',
+                                  padding: '2px 5px', borderRadius: 4,
+                                  background: controlTypeColors[ctrl.type] || '#6b7280',
+                                  color: '#fff',
+                                }}>{ctrl.type || 'CTRL'}</span>
+                                <span>{ctrl.product}</span>
+                                {ctrl.vendor && <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>({ctrl.vendor})</span>}
+                                {ctrl.outdated && <span style={{
+                                  fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 4,
+                                  background: '#ef444425', color: '#ef4444', border: '1px solid #ef444440',
+                                }}>outdated</span>}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{
+                            padding: '8px 10px', borderRadius: 6, fontSize: 13,
+                            background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                            color: 'var(--text-primary)', lineHeight: 1.5,
+                          }}>{raw}</div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+            </Section>
+
+            <Section title="Business Context" icon={Briefcase}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, marginTop: -6 }}>
+                Applies to the asset ({finding.asset_hostname || finding.asset_ip}) — shared across all findings on this host.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center' }}>
+                    Function{sourceBadge('biz_function')}
+                  </div>
+                  <input
+                    type="text"
+                    value={finding._localBizFunc ?? ctxVal('biz_function')}
+                    onChange={e => setFinding(prev => ({ ...prev, _localBizFunc: e.target.value }))}
+                    onBlur={e => { handleContextChange('biz_function', e.target.value); setFinding(prev => { const { _localBizFunc, ...rest } = prev; return rest }) }}
+                    placeholder="e.g. Payment Processing"
+                    style={{
+                      width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13,
+                      border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center' }}>
+                    No. of Users{sourceBadge('biz_num_users')}
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    value={finding._localBizUsers ?? (ctx.biz_num_users?.value ?? '')}
+                    onChange={e => setFinding(prev => ({ ...prev, _localBizUsers: e.target.value === '' ? '' : parseInt(e.target.value) }))}
+                    onBlur={e => { handleContextChange('biz_num_users', e.target.value === '' ? null : parseInt(e.target.value)); setFinding(prev => { const { _localBizUsers, ...rest } = prev; return rest }) }}
+                    placeholder="0"
+                    style={{
+                      width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13,
+                      border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center' }}>
+                    Revenue Impact{sourceBadge('biz_revenue_impact')}
+                  </div>
+                  <select value={ctxVal('biz_revenue_impact')} onChange={e => handleContextChange('biz_revenue_impact', e.target.value)} style={selectStyle}>
+                    <option value="">— Not set —</option>
+                    <option value="none">None</option>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+              </div>
+            </Section>
+          </>
+        )
+      })()}
+
+      {/* Aggregated Solution Banner */}
+      {finding.aggregated_solution && (
+        <Card style={{ marginBottom: 14, border: '1px solid #7c3aed40', background: '#7c3aed08' }}>
+          <div style={{ padding: '14px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700, background: '#7c3aed20', color: '#7c3aed', border: '1px solid #7c3aed40' }}>
+                ROOT CAUSE
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                {finding.aggregated_solution.title}
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+              This finding is part of a group of {finding.aggregated_solution.finding_count} related findings
+              that share the same root cause. Instead of fixing each individually, apply the aggregated solution below.
+            </div>
+            <div style={{ marginTop: 10, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7, whiteSpace: 'pre-wrap', background: 'var(--bg-secondary)', padding: '12px 14px', borderRadius: 8 }}>
+              {finding.aggregated_solution.description}
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Technical Debt Banner */}
+      {finding.technical_debt && (
+        <Card style={{ marginBottom: 14, border: '1px solid #d9770640', background: '#d9770608' }}>
+          <div style={{ padding: '14px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700, background: '#d9770620', color: '#d97706', border: '1px solid #d9770640' }}>
+                TECHNICAL DEBT
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                {finding.technical_debt.title}
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 6 }}>
+              <strong>Why it can't be fixed:</strong> {finding.technical_debt.reason}
+            </div>
+            {finding.technical_debt.mitigation_plan && (
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                <strong>Mitigation:</strong> {finding.technical_debt.mitigation_plan}
+              </div>
+            )}
+            {finding.technical_debt.review_status === 'overdue' && (
+              <div style={{ marginTop: 8, fontSize: 12, fontWeight: 600, color: '#dc2626', display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Clock size={14} /> Review overdue — last review date: {new Date(finding.technical_debt.review_by).toLocaleDateString()}
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
 
       {/* Remediation */}
       <Section title="Remediation Steps" icon={Shield}>

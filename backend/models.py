@@ -172,8 +172,10 @@ class Asset(Base):
     criticality = Column(Integer, default=5)  # 1-10
     environment_tag = Column(String, default="internal")
     environment_confirmed = Column(Boolean, default=False)
-    business_context = Column(String)
+    business_context = Column(String)                   # aka biz_function — "Database Server", "Payment Processing", etc.
     business_context_confirmed = Column(Boolean, default=False)
+    biz_num_users = Column(Integer, nullable=True)         # number of users on this asset
+    biz_revenue_impact = Column(String, nullable=True)     # none / low / medium / high / critical
     # Inferred ownership (auto-populated from inventory data)
     inferred_primary_user = Column(String)         # From InventoryLoggedOn — likely machine user
     inferred_admin_contacts = Column(JSON, default=list)  # Local admins from InventoryUser
@@ -272,6 +274,12 @@ class Finding(Base):
     resolved_at = Column(DateTime, nullable=True)    # When manually marked resolved
     sla_status = Column(String, nullable=True)       # on_track / at_risk / breached / resolved / n/a
 
+    # Validated context (analyst-confirmed assessment)
+    ctx_reachability = Column(String, nullable=True)       # unreachable / internal_only / internet_facing / unknown
+    ctx_exploitability = Column(String, nullable=True)     # not_exploitable / requires_conditions / easily_exploitable / unknown
+    ctx_accessibility = Column(String, nullable=True)      # restricted / authenticated_only / public / unknown
+    ctx_compensating_control = Column(Text, nullable=True) # free-text description of compensating controls
+
     # Workflow status (persists across campaigns)
     workflow_status = Column(String, default="open")  # open / in_progress / resolved / accepted_risk / false_positive
     workflow_assigned_to = Column(String, nullable=True)  # Assigned user/team
@@ -280,6 +288,9 @@ class Finding(Base):
 
     # Exception link (set when a global exception matches this finding)
     exception_id = Column(Integer, ForeignKey("finding_exceptions.id"), nullable=True)
+
+    # Aggregated solution link (set when findings are grouped by root cause)
+    aggregated_solution_id = Column(Integer, ForeignKey("aggregated_solutions.id"), nullable=True)
 
     scan = relationship("Scan", back_populates="findings")
     asset = relationship("Asset", back_populates="findings")
@@ -1013,10 +1024,13 @@ class FindingException(Base):
     # Scope: specific asset IP or null = all assets
     asset_ip = Column(String, nullable=True, index=True)
     # Type
-    exception_type = Column(String, nullable=False, default="accepted_risk")  # accepted_risk / false_positive / severity_override / compensating_control
+    exception_type = Column(String, nullable=False, default="accepted_risk")  # accepted_risk / false_positive / severity_override / compensating_control / technical_debt
     override_severity = Column(Integer, nullable=True)  # target severity for severity_override (0-4)
     # Compensating control detail (free-text description of the control in place)
     compensating_control_detail = Column(Text, nullable=True)  # e.g. "WAF blocks exploitation", "Network segmentation isolates host"
+    # Technical debt fields (used when exception_type = "technical_debt")
+    debt_category = Column(String, nullable=True)  # legacy_system / business_requirement / vendor_dependency / compatibility / cost
+    mitigation_plan = Column(Text, nullable=True)  # What compensating controls are in place
     # Scope: tag-based scoping (JSON array of "category:value" strings)
     scope_tags = Column(JSON, nullable=True)  # ["env:prod", "net:dmz"]
     # Rule-based matching (unified rule engine conditions)
@@ -1134,6 +1148,62 @@ class AgentSchedule(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     agent = relationship("Agent")
+
+
+# ─────────────────────────────────────────────────────────
+# Aggregated Solutions (root-cause grouping)
+# ─────────────────────────────────────────────────────────
+
+class AggregatedSolution(Base):
+    """Groups related findings across assets by root cause into a single remediation action."""
+    __tablename__ = "aggregated_solutions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
+
+    # Component fingerprint
+    affected_component = Column(String, index=True)          # "Node.js", "OpenSSL", "VMware Tools"
+    current_version = Column(String, nullable=True)          # "14.x" (if detectable)
+    target_version = Column(String, nullable=True)           # "18.17.1" (from solution)
+
+    # Classification
+    root_cause_type = Column(String, nullable=False, index=True)  # outdated_version, deprecated_protocol, eol_software, misconfiguration, missing_patch
+    action_type = Column(String, nullable=False, index=True)      # upgrade_component, disable_protocol, migrate_to_supported, remediate_config, apply_patch, bulk_patch
+
+    # Human-readable
+    title = Column(String, nullable=False)
+    description = Column(Text)
+    action_details = Column(JSON, nullable=True)             # {from_version, to_version, cmd, config_change, ...}
+    vs_alternative = Column(Text, nullable=True)             # "Would otherwise require 42 individual actions"
+
+    # Cross-asset scope
+    asset_ids = Column(JSON, default=list)                   # [asset_id, ...]
+    asset_count = Column(Integer, default=0)
+
+    # Findings & CVEs collapsed
+    finding_count = Column(Integer, default=0)
+    finding_ids = Column(JSON, default=list)
+    cve_ids = Column(JSON, default=list)                     # All unique CVEs resolved by this action
+
+    # Scoring
+    severity_max = Column(Integer, default=0)
+    priority_score = Column(Float, default=0.0)
+    risk_reduction = Column(Float, default=0.0)              # % of total scan risk resolved
+    efficiency_score = Column(Float, default=0.0)            # (vulns_resolved / actions) × risk × breadth
+
+    effort_level = Column(String)
+    owner_suggestion = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Keep backward compat FK (nullable now)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True)
+
+    scan = relationship("Scan")
+
+    # Legacy category alias for backward compat
+    @property
+    def category(self):
+        return self.root_cause_type
 
 
 # ─────────────────────────────────────────────────────────

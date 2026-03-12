@@ -39,11 +39,12 @@ def init_db():
         ReportTemplate,
         Agent, AgentRun, AgentSchedule,
         FindingException, ScanComparison,
+        AggregatedSolution,
         AuditLog,
     )
     from threat_intel_models import (  # noqa: F401
         ThreatGroup, TTP, ThreatGroupTTP,
-        ThreatCVE, ThreatCampaign, IntelRemediationCampaign,
+        ThreatCVE, ThreatCampaign, IntelRemediationCampaign, CisaAdvisory,
     )
     Base.metadata.create_all(bind=engine)
     _migrate_add_columns()
@@ -68,6 +69,7 @@ def _migrate_add_columns():
             ("cvss4_score", "FLOAT"),
             ("cvss4_vector", "VARCHAR"),
             ("matched_ttps", "JSON"),
+            ("aggregated_solution_id", "INTEGER"),
         ],
         "threat_cves": [
             ("cvss4_score", "FLOAT"),
@@ -82,6 +84,8 @@ def _migrate_add_columns():
             ("exclude_from_reports", "BOOLEAN DEFAULT 1"),
             ("review_by", "DATETIME"),
             ("org_id", "INTEGER"),
+            ("debt_category", "VARCHAR"),
+            ("mitigation_plan", "TEXT"),
         ],
         # Multi-tenancy: add org_id to all tenant-scoped tables
         "scans": [("org_id", "INTEGER")],
@@ -93,6 +97,20 @@ def _migrate_add_columns():
         "integration_configs": [("org_id", "INTEGER")],
         "report_templates": [("org_id", "INTEGER")],
         "agent_schedules": [("next_run_at", "DATETIME")],
+        "aggregated_solutions": [
+            ("affected_component", "VARCHAR"),
+            ("current_version", "VARCHAR"),
+            ("target_version", "VARCHAR"),
+            ("root_cause_type", "VARCHAR"),
+            ("action_type", "VARCHAR"),
+            ("action_details", "JSON"),
+            ("vs_alternative", "TEXT"),
+            ("asset_ids", "JSON"),
+            ("asset_count", "INTEGER DEFAULT 0"),
+            ("cve_ids", "JSON"),
+            ("risk_reduction", "FLOAT DEFAULT 0"),
+            ("efficiency_score", "FLOAT DEFAULT 0"),
+        ],
     }
     insp = inspect(engine)
     with engine.connect() as conn:

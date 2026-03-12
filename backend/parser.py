@@ -6,6 +6,7 @@ import csv
 import json
 import logging
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from typing import Optional
@@ -580,6 +581,21 @@ def parse_nessus_xml(xml_content: str, filename: str) -> dict:
 
             host_findings.append(finding)
         findings.extend(host_findings)
+
+    # Derive scan_date from the earliest HOST_START across all assets
+    if not scan_info["scan_date"]:
+        host_starts = [a["scan_start"] for a in assets if a.get("scan_start")]
+        if host_starts:
+            parsed_dates = []
+            for ds in host_starts:
+                for fmt in ("%a %b %d %H:%M:%S %Y", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+                    try:
+                        parsed_dates.append(datetime.strptime(ds, fmt))
+                        break
+                    except ValueError:
+                        continue
+            if parsed_dates:
+                scan_info["scan_date"] = min(parsed_dates).strftime("%Y-%m-%dT%H:%M:%S")
 
     return {"scan": scan_info, "assets": assets, "findings": findings}
 

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Upload, CheckCircle, AlertCircle, FileText, X } from 'lucide-react'
 import { useScan } from '../App.jsx'
 import { uploadScan, deleteScan } from '../api.js'
-import { Card, PageHeader, Button, Spinner } from './ui.jsx'
+import { Card, PageHeader, Button } from './ui.jsx'
 
 function DropZone({ onFile, disabled }) {
   const [dragging, setDragging] = useState(false)
@@ -176,14 +176,17 @@ export default function UploadScan() {
                   {scan.nessus_version && ` · Nessus ${scan.nessus_version}`}
                 </div>
               </div>
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => handleDeleteScan(scan.id)}
-                disabled={deletingId === scan.id}
-              >
-                {deletingId === scan.id ? <Spinner size={14} /> : 'Delete'}
-              </Button>
+              {deletingId === scan.id ? (
+                <div style={{ width: 14, height: 14, border: '2px solid var(--border)', borderTop: '2px solid var(--danger)', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+              ) : (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => handleDeleteScan(scan.id)}
+                >
+                  Delete
+                </Button>
+              )}
             </div>
           ))}
         </Card>

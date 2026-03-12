@@ -285,7 +285,7 @@ export default function Dashboard() {
 
   const { severity_breakdown: sev, top_plugin_families, top_risky_assets,
     effort_breakdown, owner_breakdown, exploit_count, high_priority_count,
-    total_assets, total_findings } = summary
+    total_assets, total_findings, quick_wins } = summary
 
   const effortData = [
     { name: 'Quick Win', value: effort_breakdown.quick_win, color: 'var(--success)' },
@@ -370,6 +370,34 @@ export default function Dashboard() {
             </div>
           ))}
         </Card>
+
+        {quick_wins && quick_wins.length > 0 && (
+          <Card>
+            <div style={{ fontWeight: 600, marginBottom: 16, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Zap size={14} color="var(--success)" /> Quick Wins
+            </div>
+            {quick_wins.map(qw => (
+              <div
+                key={qw.id}
+                onClick={() => navigate(`/findings?asset_id=${qw.asset_id}`)}
+                style={{ cursor: 'pointer', padding: '8px 0', borderBottom: '1px solid var(--border)', transition: 'opacity 0.15s' }}
+                onMouseEnter={e => e.currentTarget.style.opacity = '0.75'}
+                onMouseLeave={e => e.currentTarget.style.opacity = '1'}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
+                    <SeverityBadge severity={qw.severity} />
+                    <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {qw.plugin_name}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--success)', marginLeft: 8 }}>{qw.priority_score.toFixed(1)}</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{qw.host}</div>
+              </div>
+            ))}
+          </Card>
+        )}
       </div>
 
       {/* SLA */}

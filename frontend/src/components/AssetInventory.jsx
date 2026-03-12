@@ -570,6 +570,7 @@ export default function AssetInventory() {
       render: (v, row) => {
         const confirmed = row.business_context_confirmed
         const isOpen = contextEdit?.assetId === row.id && contextEdit?.field === 'business_context'
+        const revenueColors = { none: '#6b7280', low: '#22c55e', medium: '#eab308', high: '#f97316', critical: '#dc2626' }
         return (
           <div style={{ position: 'relative' }}>
             <button
@@ -577,9 +578,13 @@ export default function AssetInventory() {
               style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left' }}
               title="Click to edit business context"
             >
-              {v ? (
+              {(v || row.biz_num_users != null || row.biz_revenue_impact) ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{v}</span>
+                  {v && <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{v}</span>}
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {row.biz_num_users != null && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{row.biz_num_users} users</span>}
+                    {row.biz_revenue_impact && <span style={{ fontSize: 10, fontWeight: 600, color: revenueColors[row.biz_revenue_impact] || 'var(--text-muted)', textTransform: 'uppercase' }}>{row.biz_revenue_impact}</span>}
+                  </div>
                   {confirmed
                     ? <span style={{ fontSize: 9, color: '#22c55e', fontWeight: 600 }}>CONFIRMED</span>
                     : <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 600 }}>INFERRED</span>}
@@ -592,13 +597,14 @@ export default function AssetInventory() {
               <ContextEditPopover
                 field="business_context"
                 currentValue={v}
+                assetData={row}
                 onClose={() => setContextEdit(null)}
                 onConfirm={v ? async () => {
                   await updateAsset(row.id, { business_context_confirmed: true })
                   setContextEdit(null); load()
                 } : null}
-                onSave={async (val) => {
-                  await updateAsset(row.id, { business_context: val })
+                onSave={async (val, extra) => {
+                  await updateAsset(row.id, { business_context: val, ...extra })
                   setContextEdit(null); load()
                 }}
               />
@@ -608,12 +614,20 @@ export default function AssetInventory() {
       }
     },
     {
+      key: 'biz_revenue_impact', label: 'Revenue Impact',
+      render: (v) => {
+        if (!v) return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>
+        const colors = { none: '#6b7280', low: '#22c55e', medium: '#eab308', high: '#f97316', critical: '#dc2626' }
+        return <span style={{ fontSize: 11, fontWeight: 600, color: colors[v] || 'var(--text-secondary)', textTransform: 'uppercase' }}>{v}</span>
+      },
+    },
+    {
       key: '_actions', label: '', width: '40px',
       render: (_, row) => <RowActions row={row} onNavigate={navigate} />,
     },
   ]
 
-  const defaultHidden = new Set(['is_internet_facing', 'scan_start'])
+  const defaultHidden = new Set(['is_internet_facing', 'scan_start', 'biz_revenue_impact'])
   const visibleColumns = allColumns.filter(c =>
     c.key === '_select' || c.key === '_actions' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
   )

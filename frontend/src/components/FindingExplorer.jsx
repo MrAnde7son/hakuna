@@ -53,7 +53,19 @@ const GROUP_OPTIONS = [
   { value: 'owner_suggestion', label: 'Owner' },
   { value: 'effort_level', label: 'Effort' },
   { value: 'cve', label: 'CVE' },
+  { value: 'root_cause', label: 'Root Cause' },
 ]
+
+const ROOT_CAUSE_LABELS = {
+  os_eol: 'OS End-of-Life',
+  software_eol: 'Software End-of-Life',
+  missing_patches: 'Missing Patches',
+  ssl_tls_config: 'SSL/TLS Configuration',
+  smb_hardening: 'SMB Hardening',
+  ssh_hardening: 'SSH Hardening',
+  rdp_hardening: 'RDP Hardening',
+  default_credentials: 'Default Credentials',
+}
 
 const SEV_ORDER = { 4: 0, 3: 1, 2: 2, 1: 3, 0: 4 }
 const SEV_LABELS = { 4: 'Critical', 3: 'High', 2: 'Medium', 1: 'Low', 0: 'Info' }
@@ -62,6 +74,7 @@ const SEV_COLORS = { 4: 'var(--critical)', 3: 'var(--high)', 2: 'var(--medium)',
 function getGroupKey(finding, groupBy) {
   if (groupBy === 'severity') return String(finding.severity)
   if (groupBy === 'asset') return finding.asset_hostname || finding.asset_ip || 'Unknown'
+  if (groupBy === 'root_cause') return finding.aggregated_solution_id ? String(finding.aggregated_solution_id) : 'ungrouped'
   return finding[groupBy] || 'Other'
 }
 
@@ -94,7 +107,10 @@ function groupFindings(findings, groupBy) {
 
 function GroupHeader({ groupBy, groupKey, count, open, onToggle }) {
   const isSev = groupBy === 'severity'
-  const label = isSev ? SEV_LABELS[Number(groupKey)] : groupKey
+  let label = isSev ? SEV_LABELS[Number(groupKey)] : groupKey
+  if (groupBy === 'root_cause') {
+    label = groupKey === 'ungrouped' ? 'No Root Cause Group' : `Root Cause #${groupKey}`
+  }
   const color = isSev ? SEV_COLORS[Number(groupKey)] : 'var(--text-secondary)'
 
   return (
@@ -634,7 +650,7 @@ export default function FindingExplorer() {
       key: 'workflow_status', label: 'Status',
       render: (v) => {
         if (!v || v === 'open') return <Pill label="Open" color="#6b7280" />
-        const colorMap = { in_progress: '#0891b2', resolved: '#16a34a', accepted_risk: '#7c3aed', false_positive: '#6b7280', compensating_control: '#0891b2' }
+        const colorMap = { in_progress: '#0891b2', resolved: '#16a34a', accepted_risk: '#7c3aed', false_positive: '#6b7280', compensating_control: '#0891b2', technical_debt: '#d97706' }
         const color = colorMap[v] || '#6b7280'
         const label = v.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
         return <Pill label={label} color={color} />

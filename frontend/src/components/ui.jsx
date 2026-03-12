@@ -2,6 +2,7 @@
  * Shared UI primitives
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { getTags, createCampaign, createAutoTagRule } from '../api.js'
 
 export function SeverityBadge({ severity, label }) {
@@ -373,14 +374,41 @@ const BIZ_OPTIONS = [
   'Terminal Server', 'Management Server', 'Print Server', 'DevOps Server', 'Workstation',
 ]
 
-export function ContextEditPopover({ field, currentValue, onSave, onConfirm, onClose }) {
+const REVENUE_OPTIONS = ['none', 'low', 'medium', 'high', 'critical']
+
+export function ContextEditPopover({ field, currentValue, onSave, onConfirm, onClose, assetData }) {
   const [value, setValue] = useState(currentValue || '')
+  const [numUsers, setNumUsers] = useState(assetData?.biz_num_users ?? '')
+  const [revenueImpact, setRevenueImpact] = useState(assetData?.biz_revenue_impact || '')
   const [saving, setSaving] = useState(false)
   const ref = useRef(null)
+  const anchorRef = useRef(null)
+  const [pos, setPos] = useState(null)
   const isEnv = field === 'environment'
+  const isBiz = field === 'business_context'
 
   useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose() }
+    if (anchorRef.current) {
+      const parent = anchorRef.current.parentElement
+      if (parent) {
+        const rect = parent.getBoundingClientRect()
+        const popW = field === 'business_context' ? 280 : 220
+        const popH = field === 'business_context' ? 300 : 200
+        let top = rect.bottom + 4
+        let left = rect.left
+        // Keep within viewport
+        if (left + popW > window.innerWidth - 8) left = window.innerWidth - popW - 8
+        if (left < 8) left = 8
+        if (top + popH > window.innerHeight - 8) top = rect.top - popH - 4
+        setPos({ top, left })
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target) && anchorRef.current && !anchorRef.current.contains(e.target)) onClose()
+    }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [onClose])
@@ -388,11 +416,18 @@ export function ContextEditPopover({ field, currentValue, onSave, onConfirm, onC
   const fieldStyle = {
     background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6,
     color: 'var(--text-primary)', fontSize: 12, padding: '5px 8px', width: '100%', outline: 'none',
+    boxSizing: 'border-box',
   }
 
   const handleSave = async () => {
     setSaving(true)
-    try { await onSave(value) } finally { setSaving(false) }
+    try {
+      if (isBiz) {
+        await onSave(value, { biz_num_users: numUsers === '' ? null : parseInt(numUsers), biz_revenue_impact: revenueImpact || null })
+      } else {
+        await onSave(value)
+      }
+    } finally { setSaving(false) }
   }
 
   const handleConfirm = async () => {
@@ -400,11 +435,12 @@ export function ContextEditPopover({ field, currentValue, onSave, onConfirm, onC
     try { await onConfirm() } finally { setSaving(false) }
   }
 
-  return (
+  const popoverContent = (
     <div ref={ref} onClick={e => e.stopPropagation()} style={{
-      position: 'absolute', zIndex: 1000, background: 'var(--bg-card)',
-      border: '1px solid var(--border)', borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-      padding: 14, width: 220, display: 'flex', flexDirection: 'column', gap: 8,
+      position: 'fixed', zIndex: 10000, background: 'var(--bg-card)',
+      border: '1px solid var(--border)', borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+      padding: 14, width: isBiz ? 280 : 220, display: 'flex', flexDirection: 'column', gap: 8,
+      ...(pos ? { top: pos.top, left: pos.left } : { top: 0, left: -9999 }),
     }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>
         {isEnv ? 'Environment' : 'Business Context'}
@@ -416,11 +452,27 @@ export function ContextEditPopover({ field, currentValue, onSave, onConfirm, onC
         </select>
       ) : (
         <>
-          <select value={BIZ_OPTIONS.includes(value) ? value : ''} onChange={e => setValue(e.target.value)} style={fieldStyle}>
-            <option value="">— custom —</option>
-            {BIZ_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
-          </select>
-          <input value={value} onChange={e => setValue(e.target.value)} style={fieldStyle} placeholder="Or type custom value…" />
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3, textTransform: 'uppercase', fontWeight: 600 }}>Function</div>
+            <select value={BIZ_OPTIONS.includes(value) ? value : ''} onChange={e => setValue(e.target.value)} style={fieldStyle}>
+              <option value="">— custom —</option>
+              {BIZ_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <input value={value} onChange={e => setValue(e.target.value)} style={{ ...fieldStyle, marginTop: 4 }} placeholder="Or type custom value…" />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3, textTransform: 'uppercase', fontWeight: 600 }}>No. of Users</div>
+              <input type="number" min="0" value={numUsers} onChange={e => setNumUsers(e.target.value)} style={fieldStyle} placeholder="0" />
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3, textTransform: 'uppercase', fontWeight: 600 }}>Revenue Impact</div>
+              <select value={revenueImpact} onChange={e => setRevenueImpact(e.target.value)} style={fieldStyle}>
+                <option value="">— not set —</option>
+                {REVENUE_OPTIONS.map(o => <option key={o} value={o}>{o.charAt(0).toUpperCase() + o.slice(1)}</option>)}
+              </select>
+            </div>
+          </div>
         </>
       )}
       <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
@@ -446,6 +498,13 @@ export function ContextEditPopover({ field, currentValue, onSave, onConfirm, onC
         </button>
       </div>
     </div>
+  )
+
+  return (
+    <>
+      <span ref={anchorRef} style={{ position: 'absolute', top: 0, left: 0, width: 0, height: 0 }} />
+      {createPortal(popoverContent, document.body)}
+    </>
   )
 }
 

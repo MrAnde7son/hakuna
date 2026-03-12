@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { useScan } from '../App.jsx'
 import { Card, Button, Spinner, EmptyState, StatCard, SeverityBadge, ScoreBar } from './ui.jsx'
+import { getCisaAdvisories } from '../api.js'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -205,7 +206,7 @@ function Modal({ title, onClose, children, width = 520 }) {
 
 // ─── Stats Bar ────────────────────────────────────────────────────────────────
 
-function StatsBar({ stats, syncing, onSync, syncResult }) {
+function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
   return (
     <div style={{ marginBottom: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
@@ -231,6 +232,7 @@ function StatsBar({ stats, syncing, onSync, syncResult }) {
           value={stats?.total_cves?.toLocaleString() ?? '—'}
           icon={Database}
           color="#6366f1"
+          onClick={() => onStatClick('all_cves')}
         />
         <StatCard
           label="CISA KEV CVEs"
@@ -238,6 +240,7 @@ function StatsBar({ stats, syncing, onSync, syncResult }) {
           icon={AlertTriangle}
           color="#dc2626"
           sub="Known exploited"
+          onClick={() => onStatClick('kev')}
         />
         <StatCard
           label="High EPSS (>0.5)"
@@ -245,18 +248,22 @@ function StatsBar({ stats, syncing, onSync, syncResult }) {
           icon={TrendingUp}
           color="#ea580c"
           sub={stats?.avg_epss != null ? `Avg EPSS: ${(stats.avg_epss * 100).toFixed(1)}%` : undefined}
+          onClick={() => onStatClick('high_epss')}
         />
         <StatCard
-          label="Active Campaigns"
-          value={stats?.active_campaigns?.toLocaleString() ?? '—'}
-          icon={Radio}
+          label="Threat Groups"
+          value={stats?.exposed_groups?.toLocaleString() ?? '—'}
+          icon={Users}
           color="#d97706"
+          sub="≥50% TTP overlap"
+          onClick={() => onStatClick('exposed_groups')}
         />
         <StatCard
           label="Affected Assets"
           value={stats?.affected_assets?.toLocaleString() ?? '—'}
           icon={Server}
           color="#0ea5e9"
+          onClick={() => onStatClick('affected_assets')}
         />
       </div>
     </div>
@@ -369,6 +376,178 @@ function ThreatGroupSpotlight() {
   )
 }
 
+// ─── Advisory type helpers ────────────────────────────────────────────────────
+
+const ADVISORY_TYPE_META = {
+  advisory:   { label: 'Advisory',   color: '#2563eb' },
+  alert:      { label: 'Alert',      color: '#dc2626' },
+  ics:        { label: 'ICS',        color: '#d97706' },
+  ics_medical:{ label: 'ICS-Med',    color: '#9333ea' },
+  malware:    { label: 'Malware',    color: '#64748b' },
+}
+
+function AdvisoryTypeBadge({ type }) {
+  const meta = ADVISORY_TYPE_META[type] || { label: type, color: '#6b7280' }
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10,
+      background: meta.color + '18', color: meta.color,
+      border: `1px solid ${meta.color}30`, whiteSpace: 'nowrap',
+    }}>{meta.label}</span>
+  )
+}
+
+function AdvisoriesPanel({ onSearchCve }) {
+  const [items, setItems] = useState([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [showIcs, setShowIcs] = useState(false)
+  const [page, setPage] = useState(0)
+  const PAGE = 10
+
+  const fetchAdvisories = useCallback(async () => {
+    setLoading(true)
+    try {
+      const params = { limit: PAGE, offset: page * PAGE }
+      if (search) params.search = search
+      if (!showIcs) params.exclude_ics = true
+      const data = await getCisaAdvisories(params)
+      setItems(data.items || [])
+      setTotal(data.total || 0)
+    } catch {
+      setItems([])
+    } finally {
+      setLoading(false)
+    }
+  }, [search, showIcs, page])
+
+  useEffect(() => { fetchAdvisories() }, [fetchAdvisories])
+  useEffect(() => { setPage(0) }, [search, showIcs])
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <FileText size={14} /> CISA Advisories
+        </h3>
+        {total > 0 && (
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 2 }}>{total} total</span>
+        )}
+        <div style={{ flex: 1 }} />
+        {/* Search */}
+        <div style={{ position: 'relative' }}>
+          <Search size={12} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search advisories…"
+            style={{
+              background: 'var(--bg-card)', border: '1px solid var(--border)',
+              color: 'var(--text-primary)', borderRadius: 7, padding: '5px 10px 5px 28px',
+              fontSize: 12, outline: 'none', width: 180,
+            }}
+          />
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={showIcs} onChange={e => setShowIcs(e.target.checked)} />
+          Include ICS
+        </label>
+      </div>
+
+      {loading ? (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '20px 0' }}><Spinner /></div>
+      ) : items.length === 0 ? (
+        <EmptyState icon={FileText} title="No advisories" sub="Run Sync Intel to load CISA advisories" />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {items.map(adv => {
+            const accentColor = ADVISORY_TYPE_META[adv.advisory_type]?.color || '#2563eb'
+            // Only show advisory_id if it looks like a real structured ID (AA##/ICSA/ICSMA)
+            const structuredId = /^(AA|ICSA|ICSMA)-?\d/i.test(adv.advisory_id) ? adv.advisory_id : null
+            return (
+              <div key={adv.id} style={{
+                background: 'var(--bg-card)', border: '1px solid var(--border)',
+                borderRadius: 10, padding: '11px 14px',
+                borderLeft: `3px solid ${accentColor}`,
+              }}>
+                {/* Row 1: title + link */}
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.4 }}>
+                      {adv.title}
+                    </div>
+                  </div>
+                  {adv.url && (
+                    <a
+                      href={adv.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="View on CISA"
+                      style={{
+                        flexShrink: 0, color: 'var(--text-muted)',
+                        display: 'flex', alignItems: 'center',
+                        padding: '3px 5px', borderRadius: 5,
+                        border: '1px solid var(--border)',
+                        textDecoration: 'none', marginTop: 1,
+                      }}
+                      onClick={e => e.stopPropagation()}
+                    >
+                      <ExternalLink size={11} />
+                    </a>
+                  )}
+                </div>
+
+                {/* Row 2: meta chips */}
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center', marginTop: 7 }}>
+                  <AdvisoryTypeBadge type={adv.advisory_type} />
+                  {structuredId && (
+                    <span style={{ fontSize: 10, fontWeight: 700, color: accentColor, fontFamily: 'monospace', padding: '1px 5px', background: accentColor + '14', borderRadius: 4 }}>
+                      {structuredId}
+                    </span>
+                  )}
+                  {adv.pub_date && (
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{adv.pub_date}</span>
+                  )}
+                  {adv.cve_count > 0 && (
+                    <span
+                      onClick={() => adv.cve_ids[0] && onSearchCve && onSearchCve(adv.cve_ids[0])}
+                      title={adv.cve_ids.slice(0, 5).join(', ')}
+                      style={{ fontSize: 10, color: '#dc2626', padding: '1px 6px', background: '#dc262615', borderRadius: 4, cursor: adv.cve_ids[0] ? 'pointer' : 'default', fontWeight: 600 }}
+                    >
+                      {adv.cve_count} CVE{adv.cve_count !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                  {adv.co_sealers.map(s => (
+                    <span key={s} style={{ fontSize: 10, color: 'var(--text-muted)', padding: '1px 5px', background: 'var(--bg-muted)', borderRadius: 4, fontWeight: 600 }}>{s}</span>
+                  ))}
+                  {adv.sectors.map(s => (
+                    <span key={s} style={{ fontSize: 10, color: '#0ea5e9', padding: '1px 5px', background: '#0ea5e915', borderRadius: 4 }}>{s}</span>
+                  ))}
+                  {adv.threat_group_names.map(g => (
+                    <span key={g} style={{ fontSize: 10, color: '#7c3aed', padding: '1px 5px', background: '#7c3aed15', borderRadius: 4, fontWeight: 600 }}>👤 {g}</span>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {total > PAGE && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{total} entries · page {page + 1} of {Math.ceil(total / PAGE)}</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button size="sm" variant="ghost" disabled={page === 0} onClick={() => setPage(p => p - 1)}>Previous</Button>
+            <Button size="sm" variant="ghost" disabled={(page + 1) * PAGE >= total} onClick={() => setPage(p => p + 1)}>Next</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function NewsroomTab({ cves, onSearchCve }) {
   const [ransomwareOnly, setRansomwareOnly] = useState(false)
   const [search, setSearch] = useState('')
@@ -390,7 +569,7 @@ function NewsroomTab({ cves, onSearchCve }) {
   const overdueCount = cves.filter(c => c.in_kev && c.kev_due_date && new Date(c.kev_due_date) < new Date()).length
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 20 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 300px', gap: 20 }}>
 
       {/* Left: KEV Feed */}
       <div>
@@ -504,6 +683,12 @@ function NewsroomTab({ cves, onSearchCve }) {
             </div>
           </div>
         )}
+
+      </div>
+
+      {/* Middle: CISA Advisories */}
+      <div>
+        <AdvisoriesPanel onSearchCve={onSearchCve} />
       </div>
 
       {/* Right: EPSS + Threat Groups */}
@@ -671,7 +856,7 @@ function CveRow({ cve, expanded, onToggle }) {
   )
 }
 
-function CveIntelTab({ initialSearch = '' }) {
+function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEpss = 0, initialInScanOnly = false }) {
   const { activeScanId } = useScan()
   const [cves, setCves] = useState([])
   const [total, setTotal] = useState(0)
@@ -683,19 +868,23 @@ function CveIntelTab({ initialSearch = '' }) {
 
   // Filters
   const [search, setSearch] = useState(initialSearch)
-  const [kevOnly, setKevOnly] = useState(false)
-  const [minEpss, setMinEpss] = useState(0)
+  const [kevOnly, setKevOnly] = useState(initialKevOnly)
+  const [minEpss, setMinEpss] = useState(initialMinEpss)
   const [minCvss, setMinCvss] = useState(0)
-  const [inScanOnly, setInScanOnly] = useState(false)
+  const [inScanOnly, setInScanOnly] = useState(initialInScanOnly)
 
   // Sorting
   const [sortBy, setSortBy] = useState(null)
   const [sortDir, setSortDir] = useState('desc')
 
-  // Sync external search (e.g. from Newsroom)
+  // Sync external filters (e.g. from KPI card clicks)
   useEffect(() => {
-    if (initialSearch) { setSearch(initialSearch); setPage(0) }
-  }, [initialSearch])
+    if (initialSearch) setSearch(initialSearch)
+    setKevOnly(initialKevOnly)
+    setMinEpss(initialMinEpss)
+    setInScanOnly(initialInScanOnly)
+    setPage(0)
+  }, [initialSearch, initialKevOnly, initialMinEpss, initialInScanOnly])
 
   const fetchCves = useCallback(async () => {
     setLoading(true)
@@ -1177,7 +1366,7 @@ function GroupCard({ group, exposure }) {
   )
 }
 
-function ThreatGroupsTab() {
+function ThreatGroupsTab({ initialInMyEnv = false }) {
   const { activeScanId } = useScan()
   const [groups, setGroups] = useState([])
   const [loading, setLoading] = useState(false)
@@ -1185,7 +1374,9 @@ function ThreatGroupsTab() {
   const [search, setSearch] = useState('')
   const [motivation, setMotivation] = useState('')
   const [ransomwareOnly, setRansomwareOnly] = useState(false)
-  const [inScanOnly, setInScanOnly] = useState(false)
+  const [inScanOnly, setInScanOnly] = useState(initialInMyEnv)
+
+  useEffect(() => { setInScanOnly(initialInMyEnv) }, [initialInMyEnv])
   // scan_id → group_id → exposure data
   const [scanExposure, setScanExposure] = useState({})
   const [loadingExposure, setLoadingExposure] = useState(false)
@@ -1362,8 +1553,12 @@ export default function ThreatIntelCenter() {
   const [syncResult, setSyncResult] = useState(null)
   const [statsError, setStatsError] = useState(null)
 
-  // Pre-fill CVE search from Newsroom "Search" button
+  // Pre-fill CVE search/filters from Newsroom or KPI card clicks
   const [cveInitialSearch, setCveInitialSearch] = useState('')
+  const [cveInitialKevOnly, setCveInitialKevOnly] = useState(false)
+  const [cveInitialMinEpss, setCveInitialMinEpss] = useState(0)
+  const [cveInitialInScanOnly, setCveInitialInScanOnly] = useState(false)
+  const [groupsInitialInMyEnv, setGroupsInitialInMyEnv] = useState(false)
 
   // ── Fetch stats ──
   useEffect(() => {
@@ -1403,6 +1598,12 @@ export default function ThreatIntelCenter() {
     setSyncResult(null)
     try {
       const r = await fetch('/api/threat-intel/sync', { method: 'POST' })
+      if (!r.ok) {
+        const text = await r.text().catch(() => r.statusText)
+        let detail = `Sync failed (${r.status})`
+        try { detail = JSON.parse(text).detail || detail } catch {}
+        throw new Error(detail)
+      }
       const data = await r.json()
       setSyncResult(data)
       // Refresh stats after sync
@@ -1417,7 +1618,33 @@ export default function ThreatIntelCenter() {
 
   const handleSearchCve = (cveId) => {
     setCveInitialSearch(cveId)
+    setCveInitialKevOnly(false)
+    setCveInitialMinEpss(0)
+    setCveInitialInScanOnly(false)
     setTab('cves')
+  }
+
+  const handleStatClick = (key) => {
+    setCveInitialSearch('')
+    setCveInitialKevOnly(false)
+    setCveInitialMinEpss(0)
+    setCveInitialInScanOnly(false)
+    setGroupsInitialInMyEnv(false)
+    if (key === 'all_cves') {
+      setTab('cves')
+    } else if (key === 'kev') {
+      setCveInitialKevOnly(true)
+      setTab('cves')
+    } else if (key === 'high_epss') {
+      setCveInitialMinEpss(0.5)
+      setTab('cves')
+    } else if (key === 'exposed_groups') {
+      setGroupsInitialInMyEnv(true)
+      setTab('groups')
+    } else if (key === 'affected_assets') {
+      setCveInitialInScanOnly(true)
+      setTab('cves')
+    }
   }
 
   return (
@@ -1428,6 +1655,7 @@ export default function ThreatIntelCenter() {
         syncing={syncing}
         onSync={handleSync}
         syncResult={syncResult}
+        onStatClick={handleStatClick}
       />
 
       {statsError && (
@@ -1453,11 +1681,16 @@ export default function ThreatIntelCenter() {
       )}
 
       {tab === 'cves' && (
-        <CveIntelTab initialSearch={cveInitialSearch} />
+        <CveIntelTab
+          initialSearch={cveInitialSearch}
+          initialKevOnly={cveInitialKevOnly}
+          initialMinEpss={cveInitialMinEpss}
+          initialInScanOnly={cveInitialInScanOnly}
+        />
       )}
 
       {tab === 'groups' && (
-        <ThreatGroupsTab />
+        <ThreatGroupsTab initialInMyEnv={groupsInitialInMyEnv} />
       )}
     </div>
   )

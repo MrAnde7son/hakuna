@@ -68,10 +68,20 @@ const SEVERITY_OPTIONS = [
   { value: 0, label: 'Info', color: '#6b7280' },
 ]
 
+const DEBT_CATEGORIES = [
+  { value: 'legacy_system', label: 'Legacy System' },
+  { value: 'business_requirement', label: 'Business Requirement' },
+  { value: 'vendor_dependency', label: 'Vendor Dependency' },
+  { value: 'compatibility', label: 'Compatibility' },
+  { value: 'cost', label: 'Cost Prohibitive' },
+]
+
 const EMPTY_FORM = {
   exception_type: 'accepted_risk',
   override_severity: 3,
   compensating_control_detail: '',
+  debt_category: 'legacy_system',
+  mitigation_plan: '',
   scope: 'global',
   asset_ip: '',
   scope_tags_str: '',
@@ -104,6 +114,8 @@ function ExceptionModal({ initial, onSave, onClose, saving }) {
       exception_type: initial.exception_type || 'accepted_risk',
       override_severity: initial.override_severity ?? 3,
       compensating_control_detail: initial.compensating_control_detail || '',
+      debt_category: initial.debt_category || 'legacy_system',
+      mitigation_plan: initial.mitigation_plan || '',
       scope: scopeTags.length > 0 ? 'tags' : initial.asset_ip ? 'specific' : 'global',
       asset_ip: initial.asset_ip || '',
       scope_tags_str: scopeTags.join(', '),
@@ -147,6 +159,8 @@ function ExceptionModal({ initial, onSave, onClose, saving }) {
       exception_type: form.exception_type,
       override_severity: form.exception_type === 'severity_override' ? Number(form.override_severity) : null,
       compensating_control_detail: form.exception_type === 'compensating_control' ? form.compensating_control_detail.trim() || null : null,
+      debt_category: form.exception_type === 'technical_debt' ? form.debt_category : null,
+      mitigation_plan: form.exception_type === 'technical_debt' ? form.mitigation_plan.trim() || null : null,
       asset_ip: form.scope === 'specific' ? form.asset_ip.trim() || null : null,
       scope_tags: scopeTags && scopeTags.length > 0 ? scopeTags : null,
       conditions: form.conditions,
@@ -208,6 +222,7 @@ function ExceptionModal({ initial, onSave, onClose, saving }) {
               <option value="false_positive">False Positive</option>
               <option value="compensating_control">Compensating Control</option>
               <option value="severity_override">Severity Override</option>
+              <option value="technical_debt">Technical Debt</option>
             </select>
           </div>
           {form.exception_type === 'severity_override' && (
@@ -243,6 +258,30 @@ function ExceptionModal({ initial, onSave, onClose, saving }) {
                 style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }}
               />
             </div>
+          )}
+          {form.exception_type === 'technical_debt' && (
+            <>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>Debt Category</label>
+                <select
+                  value={form.debt_category}
+                  onChange={e => set('debt_category', e.target.value)}
+                  style={{ ...inputStyle, cursor: 'pointer' }}
+                >
+                  {DEBT_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>Mitigation Plan</label>
+                <textarea
+                  value={form.mitigation_plan}
+                  onChange={e => set('mitigation_plan', e.target.value)}
+                  placeholder="What compensating controls or mitigations are in place?"
+                  rows={2}
+                  style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }}
+                />
+              </div>
+            </>
           )}
         </div>
 
@@ -582,6 +621,7 @@ export default function GlobalExceptions() {
         )
       }
       if (v === 'compensating_control') return <Pill label="Compensating Ctrl" color="#10b981" />
+      if (v === 'technical_debt') return <Pill label="Tech Debt" color="#d97706" />
       const isAccepted = v === 'accepted_risk'
       return <Pill label={isAccepted ? 'Accepted Risk' : 'False Positive'} color={isAccepted ? '#d97706' : '#3b82f6'} />
     }},
@@ -734,6 +774,7 @@ export default function GlobalExceptions() {
             { value: 'false_positive', label: 'False Positive' },
             { value: 'compensating_control', label: 'Compensating Control' },
             { value: 'severity_override', label: 'Severity Override' },
+            { value: 'technical_debt', label: 'Technical Debt' },
           ]}
         />
         <Select

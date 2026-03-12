@@ -15,6 +15,7 @@ import {
   User,
   Moon,
   Sun,
+  Layers,
 } from 'lucide-react'
 import AssetInventory from './components/AssetInventory.jsx'
 import FindingExplorer from './components/FindingExplorer.jsx'
@@ -29,6 +30,7 @@ import TagManager from './components/TagManager.jsx'
 import ThreatIntelCenter from './components/ThreatIntelCenter.jsx'
 import WorkflowBuilder from './components/WorkflowBuilder.jsx'
 import AgentBuilder from './components/AgentBuilder.jsx'
+import AggregatedSolutions from './components/AggregatedSolutions.jsx'
 import Login from './components/Login.jsx'
 import Register from './components/Register.jsx'
 import UserManagement from './components/UserManagement.jsx'
@@ -60,6 +62,7 @@ const NAV_GROUPS = [
     label: 'Response',
     items: [
       { path: '/campaigns', label: 'Campaigns', icon: Target },
+      { path: '/aggregated-solutions', label: 'Root Causes', icon: Layers },
       { path: '/agents', label: 'Agents', icon: Bot },
     ],
   },
@@ -511,6 +514,7 @@ function AppShell() {
               <Route path="/findings/:id" element={<FindingDetail />} />
               <Route path="/campaigns" element={<Campaigns />} />
               <Route path="/campaigns/:id" element={<CampaignDetail />} />
+              <Route path="/aggregated-solutions" element={<AggregatedSolutions />} />
               <Route path="/workflows/:id" element={<WorkflowBuilder />} />
               <Route path="/inventory" element={<InventoryExplorer />} />
               <Route path="/agents" element={<AgentBuilder />} />

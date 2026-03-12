@@ -1,4 +1,5 @@
-const BASE = '/api'
+const API_ORIGIN = import.meta.env.VITE_API_URL || ''
+const BASE = API_ORIGIN + '/api'
 
 // ── Auth token helpers ──────────────────────────────────
 
@@ -186,8 +187,22 @@ export const getRemediationQueue = (params = {}) => {
 }
 
 // Reports
-export const getSummary = (scanId) => request(`/reports/summary${scanId ? `?scan_id=${scanId}` : ''}`)
-export const getPluginFamilies = (scanId) => request(`/reports/plugin-families${scanId ? `?scan_id=${scanId}` : ''}`)
+export const getSummary = (scanId, tags, tagLogic) => {
+  const p = new URLSearchParams()
+  if (scanId) p.set('scan_id', scanId)
+  if (tags) p.set('tags', tags)
+  if (tagLogic && tagLogic !== 'AND') p.set('tag_logic', tagLogic)
+  const qs = p.toString()
+  return request(`/reports/summary${qs ? `?${qs}` : ''}`)
+}
+export const getPluginFamilies = (scanId, tags, tagLogic) => {
+  const p = new URLSearchParams()
+  if (scanId) p.set('scan_id', scanId)
+  if (tags) p.set('tags', tags)
+  if (tagLogic && tagLogic !== 'AND') p.set('tag_logic', tagLogic)
+  const qs = p.toString()
+  return request(`/reports/plugin-families${qs ? `?${qs}` : ''}`)
+}
 export const getTrending = () => request('/reports/trending')
 export const getMetricsTimeline = () => request('/reports/metrics-timeline')
 
@@ -416,6 +431,11 @@ export const recalculateSLA = (scan_id = null) => request('/sla/recalculate', {
 export const getSLASummary = (scanId) => request(`/sla/summary${scanId ? `?scan_id=${scanId}` : ''}`)
 export const resolveFinding = (id) => request(`/findings/${id}/resolve`, { method: 'PATCH' })
 export const unresolveFinding = (id) => request(`/findings/${id}/unresolve`, { method: 'PATCH' })
+export const updateFindingContext = (id, data) => request(`/findings/${id}/context`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
 
 // Threat Intelligence Center
 const _ti = (path, params = {}) => {
@@ -427,6 +447,7 @@ export const getThreatFeed = (params = {}) => _ti('feed', params)
 export const getThreatCves = (params = {}) => _ti('cves', params)
 export const getKevRecent = (limit = 10) => _ti('kev-recent', { limit })
 export const getThreatGroups = (params = {}) => _ti('groups', params)
+export const getCisaAdvisories = (params = {}) => _ti('advisories', params)
 export const getThreatTtps = (params = {}) => _ti('ttps', params)
 export const syncThreatIntel = () => request('/threat-intel/sync', { method: 'POST' })
 export const getTtpCoverage = (params = {}) => _ti('ttp-coverage', params)
@@ -548,7 +569,7 @@ export const backfillTemporalAll = () =>
 // Export (CSV / JSON download)
 export const exportDownload = (entity, params = {}, fmt = 'csv') => {
   const p = new URLSearchParams(Object.entries({ ...params, fmt }).filter(([, v]) => v != null && v !== ''))
-  const url = `/api/export/${entity}?${p}`
+  const url = `${API_ORIGIN}/api/export/${entity}?${p}`
   // Trigger browser download
   const a = document.createElement('a')
   a.href = url
@@ -653,6 +674,14 @@ export const updateAgentSchedule = (id, data) => request(`/agents/schedules/${id
   body: JSON.stringify(data),
 })
 export const deleteAgentSchedule = (id) => request(`/agents/schedules/${id}`, { method: 'DELETE' })
+
+// Aggregated Solutions
+export const getAggregatedSolutions = (params = {}) => {
+  const qs = new URLSearchParams(Object.entries(params).filter(([,v]) => v != null)).toString()
+  return request(`/aggregated-solutions${qs ? '?' + qs : ''}`)
+}
+export const getAggregatedSolution = (id) => request(`/aggregated-solutions/${id}`)
+export const rebuildAggregatedSolutions = (scanId) => request(`/aggregated-solutions/rebuild${scanId ? '?scan_id=' + scanId : ''}`, { method: 'POST' })
 
 // Agent Pipelines
 export const getAgentPipelines = () => request('/agents/pipelines')

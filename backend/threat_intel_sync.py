@@ -9,7 +9,10 @@ import logging
 from datetime import datetime
 from typing import Optional, List, Dict
 
-from threat_intel_models import ThreatCVE, ThreatGroup, TTP, ThreatGroupTTP
+import hashlib
+import re
+import xml.etree.ElementTree as ET
+from threat_intel_models import ThreatCVE, ThreatGroup, TTP, ThreatGroupTTP, CisaAdvisory
 from models import Finding
 
 logger = logging.getLogger(__name__)
@@ -836,3 +839,291 @@ def enrich_findings_from_threat_intel(db, scan_id: int = None) -> dict:
 
     logger.info("Finding enrichment: %d enriched, %d skipped", enriched, skipped)
     return {"enriched": enriched, "skipped": skipped}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CISA Advisories sync
+# ─────────────────────────────────────────────────────────────────────────────
+
+# CISA advisory RSS feed candidates (tried in order until one works)
+_CISA_ADVISORY_FEEDS = [
+    "https://www.cisa.gov/cybersecurity-advisories/all.xml",
+    "https://www.cisa.gov/cybersecurity-advisories/alerts.xml",
+    "https://www.cisa.gov/news-events/cybersecurity-advisories/all.xml",
+]
+
+_CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.IGNORECASE)
+
+# Known co-sealer agency keywords → display name
+_COAUTHORS = {
+    "nsa": "NSA", "national security agency": "NSA",
+    "fbi": "FBI", "federal bureau": "FBI",
+    "cisa": "CISA",
+    "ms-isac": "MS-ISAC",
+    "ncsc-uk": "NCSC-UK", "uk ncsc": "NCSC-UK", "united kingdom": "NCSC-UK",
+    "acsc": "ACSC", "australian signals": "ACSC",
+    "cccs": "CCCS", "canadian centre": "CCCS",
+    "nz ncsc": "NZ-NCSC", "new zealand": "NZ-NCSC",
+    "cyber command": "USCYBERCOM",
+    "dod": "DoD",
+    "odni": "ODNI",
+}
+
+_SECTOR_KEYWORDS = {
+    "energy": "Energy",
+    "water": "Water",
+    "healthcare": "Healthcare",
+    "financial": "Financial",
+    "transportation": "Transportation",
+    "critical infrastructure": "Critical Infrastructure",
+    "manufacturing": "Manufacturing",
+    "government": "Government",
+    "education": "Education",
+    "defense": "Defense",
+    "telecommunications": "Telecom",
+    "oil and gas": "Oil & Gas",
+    "chemical": "Chemical",
+}
+
+
+def _detect_advisory_type(title: str, link: str) -> str:
+    t = title.lower()
+    l = (link or "").lower()
+    if "icsa" in t or "icsma" in t or "icsa" in l or "ics-advisory" in l:
+        return "ics"
+    if "icsma" in l or "medical" in t:
+        return "ics_medical"
+    if "malware" in t or "malware-analysis" in l:
+        return "malware"
+    if "alert" in l or t.startswith("alert"):
+        return "alert"
+    return "advisory"
+
+
+def _extract_co_sealers(text: str) -> list:
+    found = set()
+    lower = text.lower()
+    for keyword, label in _COAUTHORS.items():
+        if keyword in lower:
+            found.add(label)
+    return sorted(found)
+
+
+def _extract_sectors(text: str) -> list:
+    found = set()
+    lower = text.lower()
+    for keyword, label in _SECTOR_KEYWORDS.items():
+        if keyword in lower:
+            found.add(label)
+    return sorted(found)
+
+
+def _parse_rss_feed(raw_bytes: bytes) -> list:
+    """
+    Parse an RSS 2.0 or Atom feed and return a list of entry dicts.
+    Each dict has: title, link, pub_date, summary.
+    """
+    entries = []
+    try:
+        root = ET.fromstring(raw_bytes)
+    except ET.ParseError as e:
+        logger.warning("RSS parse error: %s", e)
+        return entries
+
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+
+    # RSS 2.0
+    for item in root.iter("item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        pub = (item.findtext("pubDate") or item.findtext("dc:date") or "").strip()
+        desc = (item.findtext("description") or "").strip()
+        if title:
+            entries.append({"title": title, "link": link, "pub_date": pub, "summary": desc})
+
+    # Atom
+    if not entries:
+        for entry in root.findall("atom:entry", ns) or root.findall("{http://www.w3.org/2005/Atom}entry"):
+            title_el = entry.find("{http://www.w3.org/2005/Atom}title") or entry.find("title")
+            link_el = entry.find("{http://www.w3.org/2005/Atom}link") or entry.find("link")
+            updated_el = entry.find("{http://www.w3.org/2005/Atom}updated") or entry.find("updated")
+            summary_el = entry.find("{http://www.w3.org/2005/Atom}summary") or entry.find("summary")
+            title = (title_el.text or "").strip() if title_el is not None else ""
+            link = ""
+            if link_el is not None:
+                link = link_el.get("href", "") or (link_el.text or "")
+            pub = (updated_el.text or "").strip() if updated_el is not None else ""
+            desc = (summary_el.text or "").strip() if summary_el is not None else ""
+            if title:
+                entries.append({"title": title, "link": link, "pub_date": pub, "summary": desc})
+
+    return entries
+
+
+def _parse_pub_date(raw: str) -> Optional[str]:
+    """Convert various date formats to an ISO date string (YYYY-MM-DD)."""
+    if not raw:
+        return None
+    # Already ISO-ish
+    m = re.match(r"(\d{4}-\d{2}-\d{2})", raw)
+    if m:
+        return m.group(1)
+    # RFC 2822: "Tue, 11 Mar 2026 00:00:00 +0000"
+    for fmt in ("%a, %d %b %Y %H:%M:%S %z", "%a, %d %b %Y %H:%M:%S %Z",
+                "%d %b %Y %H:%M:%S %z", "%d %b %Y"):
+        try:
+            return datetime.strptime(raw.strip(), fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def _extract_advisory_id(title: str, link: str) -> Optional[str]:
+    """Try to extract a structured advisory ID like AA25-071A or ICSA-26-069-04 from title or URL."""
+    for text in (title, link):
+        m = re.search(r"\b(AA\d{2}-\d{3}[A-Z]?|ICSA-\d{2}-\d{3}-\d{2,3}|ICSMA-\d{2}-\d{3}-\d{2,3})\b", text, re.IGNORECASE)
+        if m:
+            return m.group(1).upper()
+    return None
+
+
+def sync_cisa_advisories_to_db(db) -> dict:
+    """
+    Fetch the CISA cybersecurity advisories RSS feed, parse entries, and
+    upsert them into the cisa_advisories table.
+    Cross-references CVE IDs extracted from summaries and matches known
+    threat group names.
+    Returns {"added": int, "updated": int, "total": int}.
+    """
+    raw_bytes: Optional[bytes] = None
+    used_url = None
+
+    for feed_url in _CISA_ADVISORY_FEEDS:
+        try:
+            req = urllib.request.Request(
+                feed_url,
+                headers={"User-Agent": "python-urllib/3.8", "Accept": "application/rss+xml, application/xml, text/xml"},
+            )
+            with urllib.request.urlopen(req, timeout=15, context=_get_ssl_context()) as resp:
+                raw_bytes = resp.read()
+            used_url = feed_url
+            logger.info("Fetched CISA advisory feed from %s (%d bytes)", feed_url, len(raw_bytes))
+            break
+        except Exception as exc:
+            logger.warning("CISA advisory feed %s failed: %s", feed_url, exc)
+
+    if not raw_bytes:
+        logger.warning("All CISA advisory feed URLs failed — skipping advisory sync")
+        return {"added": 0, "updated": 0, "total": 0}
+
+    entries = _parse_rss_feed(raw_bytes)
+    if not entries:
+        logger.warning("CISA advisory feed parsed 0 entries from %s", used_url)
+        return {"added": 0, "updated": 0, "total": 0}
+
+    # Pre-load all ThreatGroup names for cross-linking
+    group_rows = db.query(ThreatGroup.id, ThreatGroup.name, ThreatGroup.aliases).all()
+    # Build name+alias → id map (lowercase)
+    group_name_map: Dict[str, int] = {}
+    group_id_to_name: Dict[int, str] = {}
+    for gid, gname, aliases in group_rows:
+        group_name_map[gname.lower()] = gid
+        group_id_to_name[gid] = gname
+        for alias in (aliases or []):
+            if alias:
+                group_name_map[alias.lower()] = gid
+
+    added = updated = 0
+
+    for entry in entries:
+        title = entry["title"]
+        link = entry["link"]
+        summary = entry["summary"]
+        pub_date = _parse_pub_date(entry["pub_date"])
+
+        # Derive a stable advisory_id
+        advisory_id = _extract_advisory_id(title, link)
+        if not advisory_id:
+            # Fall back to URL slug + short hash to guarantee uniqueness
+            slug = link.rstrip("/").split("/")[-1] if link else ""
+            base = slug or title
+            short_hash = hashlib.md5(f"{title}{link}".encode()).hexdigest()[:8]
+            advisory_id = f"{base[:60]}-{short_hash}" if base else short_hash
+
+        if not advisory_id:
+            continue
+
+        advisory_type = _detect_advisory_type(title, link)
+        combined_text = f"{title} {summary}"
+        cve_ids = sorted(set(c.upper() for c in _CVE_RE.findall(combined_text)))
+        co_sealers = _extract_co_sealers(combined_text)
+        sectors = _extract_sectors(combined_text)
+
+        # Match threat groups mentioned by name in the advisory text
+        matched_group_ids = []
+        matched_group_names = []
+        lower_text = combined_text.lower()
+        for gname_lower, gid in group_name_map.items():
+            if len(gname_lower) >= 4 and gname_lower in lower_text:
+                if gid not in matched_group_ids:
+                    matched_group_ids.append(gid)
+                    matched_group_names.append(group_id_to_name[gid])
+
+        existing = db.query(CisaAdvisory).filter(CisaAdvisory.advisory_id == advisory_id).first()
+        if existing:
+            # Update if anything changed
+            changed = False
+            if existing.title != title:
+                existing.title = title; changed = True
+            if pub_date and existing.pub_date != pub_date:
+                existing.pub_date = pub_date; changed = True
+            if summary and existing.summary != summary:
+                existing.summary = summary; changed = True
+            if cve_ids and existing.cve_ids != cve_ids:
+                existing.cve_ids = cve_ids; changed = True
+            if co_sealers and existing.co_sealers != co_sealers:
+                existing.co_sealers = co_sealers; changed = True
+            if sectors and existing.sectors != sectors:
+                existing.sectors = sectors; changed = True
+            if matched_group_ids and existing.threat_group_ids != matched_group_ids:
+                existing.threat_group_ids = matched_group_ids
+                existing.threat_group_names = matched_group_names
+                changed = True
+            if changed:
+                existing.updated_at = datetime.utcnow()
+                updated += 1
+        else:
+            record = CisaAdvisory(
+                advisory_id=advisory_id,
+                title=title,
+                advisory_type=advisory_type,
+                pub_date=pub_date,
+                summary=summary,
+                url=link,
+                co_sealers=co_sealers,
+                sectors=sectors,
+                cve_ids=cve_ids,
+                threat_group_ids=matched_group_ids,
+                threat_group_names=matched_group_names,
+                is_ics=(advisory_type in ("ics", "ics_medical")),
+            )
+            db.add(record)
+            # Commit individually so one duplicate never rolls back the whole batch
+            try:
+                db.commit()
+                added += 1
+            except Exception as exc:
+                logger.debug("Skipping duplicate advisory %s: %s", advisory_id, exc)
+                db.rollback()
+            continue
+
+        # Commit updates in small groups
+        try:
+            db.commit()
+        except Exception as exc:
+            logger.warning("sync_cisa_advisories update commit failed: %s", exc)
+            db.rollback()
+
+    total = db.query(CisaAdvisory).count()
+    logger.info("CISA advisories sync: +%d added, %d updated, %d total", added, updated, total)
+    return {"added": added, "updated": updated, "total": total}

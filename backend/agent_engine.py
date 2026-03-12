@@ -8,6 +8,7 @@ import sys
 import json
 import logging
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -274,7 +275,7 @@ def _check_guardrails(agent: Agent, tool_name: str, step: int):
         raise ValueError(f"Tool '{tool_name}' is a write operation but agent is read-only")
 
 
-def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: dict | None, step: int, trace: list):
+def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optional[dict], step: int, trace: list):
     tool_input = tool_input or {}
     """Execute a tool call and return the result string.
 

@@ -41,7 +41,8 @@ import workflow_engine
 from nlp_search import parse_nlp_query
 import integrations as integ_module
 import ownership_inference
-from models import Tag, TagAssignment, AutoTagRule, OwnershipRule, ExternalTagSource, ExternalTagMap, SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog
+from models import Tag, TagAssignment, AutoTagRule, OwnershipRule, ExternalTagSource, ExternalTagMap, SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog, AggregatedSolution
+import solution_aggregator
 from audit import log_audit, diff as _diff
 from auth import (
     get_current_user, require_auth, require_role,
@@ -139,7 +140,7 @@ def _resolve_dc_asset_ids(db, scan_id=None, restrict_to_asset_ids=None) -> set:
 
 # ─── Server Role Detection ────────────────────────────────────────────────────
 # Maps role name → service name substrings (matched against service_name + display_name)
-_ROLE_SERVICE_PATTERNS: dict[str, list[str]] = {
+_ROLE_SERVICE_PATTERNS = {
     "web_server":  ["iis", "w3svc", "apache", "httpd", "nginx", "tomcat", "kestrel", "lighttpd"],
     "dns_server":  ["dns", "named", "bind", "dnsmasq", "unbound"],
     "mail_server": ["exchange", "smtp", "imap", "pop3", "postfix", "sendmail", "exim", "dovecot"],
@@ -149,7 +150,7 @@ _ROLE_SERVICE_PATTERNS: dict[str, list[str]] = {
 }
 
 
-def _compute_server_roles(db, asset_ids: list, scan_id: int | None = None) -> dict:
+def _compute_server_roles(db, asset_ids: list, scan_id: Optional[int] = None) -> dict:
     """Returns {asset_id: [role, ...]} for all given asset IDs.
 
     Roles are derived from:
@@ -190,7 +191,7 @@ def _compute_server_roles(db, asset_ids: list, scan_id: int | None = None) -> di
     return result
 
 
-def _resolve_role_asset_ids(db, role: str, scan_id: int | None = None,
+def _resolve_role_asset_ids(db, role: str, scan_id: Optional[int] = None,
                              restrict_to_asset_ids=None) -> set:
     """Returns set of asset_ids that have the given server role."""
     from sqlalchemy import or_, func as sqlfunc
@@ -368,11 +369,12 @@ def _populate_temporal_fields(db: Session, scan):
         return
 
     # Aggregate historical data efficiently
-    from sqlalchemy import and_
+    # Use first_seen/last_seen from prior findings (set from actual scan dates, not upload times)
+    from sqlalchemy import and_, coalesce
     history_rows = db.query(
         Finding.plugin_id, Asset.ip,
-        func.min(Scan.created_at).label("earliest"),
-        func.max(Scan.created_at).label("latest"),
+        func.min(coalesce(Finding.first_seen, Scan.created_at)).label("earliest"),
+        func.max(coalesce(Finding.last_seen, Scan.created_at)).label("latest"),
         func.count(Finding.id).label("cnt"),
     ).join(Asset, Finding.asset_id == Asset.id).join(
         Scan, Finding.scan_id == Scan.id
@@ -789,6 +791,14 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     except Exception as e:
         logger.warning(f"Exception application failed (non-fatal): {e}")
 
+    # ── Aggregate solutions by root cause ──
+    try:
+        agg_result = solution_aggregator.aggregate_solutions(db, scan_id=scan.id)
+        if agg_result["created"]:
+            logger.info(f"Aggregated solutions: {agg_result['created']} groups, {agg_result['findings_linked']} findings linked")
+    except Exception as e:
+        logger.warning(f"Solution aggregation failed (non-fatal): {e}")
+
     # ── Enrich findings with threat intel (KEV, EPSS, ransomware, trending) ──
     try:
         import threat_intel_sync as _ti_sync
@@ -1089,6 +1099,8 @@ def update_asset(
     environment_confirmed: Optional[bool] = None,
     business_context: Optional[str] = None,
     business_context_confirmed: Optional[bool] = None,
+    biz_num_users: Optional[int] = None,
+    biz_revenue_impact: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
@@ -1106,6 +1118,10 @@ def update_asset(
         asset.business_context_confirmed = True  # editing always confirms
     if business_context_confirmed is not None:
         asset.business_context_confirmed = business_context_confirmed
+    if biz_num_users is not None:
+        asset.biz_num_users = biz_num_users
+    if biz_revenue_impact is not None:
+        asset.biz_revenue_impact = biz_revenue_impact
     db.commit()
     return _asset_to_dict(asset)
 
@@ -1129,6 +1145,8 @@ def _asset_to_dict(a: Asset) -> dict:
         "environment_confirmed": bool(a.environment_confirmed),
         "business_context": a.business_context,
         "business_context_confirmed": bool(a.business_context_confirmed),
+        "biz_num_users": a.biz_num_users,
+        "biz_revenue_impact": a.biz_revenue_impact,
         "scanner_ip": a.scanner_ip,
         "is_internet_facing": a.is_internet_facing or False,
         "risk_score": a.risk_score,
@@ -1293,6 +1311,108 @@ def get_finding(finding_id: int, db: Session = Depends(get_db)):
     return _finding_to_dict(finding, db, include_full=True)
 
 
+def _review_status(review_by) -> Optional[str]:
+    if not review_by:
+        return None
+    days_until = (review_by - datetime.utcnow()).days
+    if days_until < 0:
+        return "overdue"
+    elif days_until <= 30:
+        return "upcoming"
+    return "ok"
+
+
+def _infer_finding_context(f: Finding, asset: Optional[Asset], db: Session) -> dict:
+    """Auto-infer validated context + business context from existing data."""
+    inferred = {}
+
+    # ── Reachability ──
+    if asset:
+        inferred["ctx_reachability"] = "internet_facing" if asset.is_internet_facing else "internal_only"
+
+    # ── Exploitability ──
+    if f.exploit_available:
+        mat = (f.exploit_maturity or "").lower()
+        if mat in ("weaponized", "functional", "high"):
+            inferred["ctx_exploitability"] = "easily_exploitable"
+        else:
+            inferred["ctx_exploitability"] = "requires_conditions"
+    elif f.epss_score is not None:
+        inferred["ctx_exploitability"] = "easily_exploitable" if f.epss_score >= 0.5 else (
+            "requires_conditions" if f.epss_score >= 0.1 else "not_exploitable"
+        )
+    else:
+        inferred["ctx_exploitability"] = "unknown"
+
+    # ── Accessibility ──
+    port_str = str(f.port or "")
+    public_ports = {"80", "443", "8080", "8443"}
+    auth_families = {"Windows", "Databases", "RPC", "SMB"}
+    family = f.plugin_family or ""
+    if port_str in public_ports:
+        inferred["ctx_accessibility"] = "public"
+    elif any(af in family for af in auth_families):
+        inferred["ctx_accessibility"] = "authenticated_only"
+    else:
+        inferred["ctx_accessibility"] = "unknown"
+
+    # ── Compensating Control (from exception detail + security controls on asset) ──
+    cc_parts = []
+    if f.exception_id:
+        exc = db.query(FindingException).filter(FindingException.id == f.exception_id).first()
+        if exc and exc.compensating_control_detail:
+            cc_parts.append(exc.compensating_control_detail)
+    if asset:
+        controls = db.query(InventorySecurityControl).filter(
+            InventorySecurityControl.asset_id == asset.id,
+            InventorySecurityControl.scan_id == f.scan_id,
+            InventorySecurityControl.is_enabled == True,
+        ).all()
+        if controls:
+            lines = []
+            for ctrl in controls:
+                desc = ctrl.control_type.upper()
+                if ctrl.product_name:
+                    desc += f": {ctrl.product_name}"
+                if ctrl.vendor:
+                    desc += f" ({ctrl.vendor})"
+                if ctrl.is_up_to_date is False:
+                    desc += " [outdated]"
+                lines.append(desc)
+            cc_parts.append("Active security controls on host: " + "; ".join(lines))
+    if cc_parts:
+        inferred["ctx_compensating_control"] = "\n".join(cc_parts)
+
+    # ── Business context (from asset-level fields) ──
+    if asset:
+        if asset.business_context:
+            inferred["biz_function"] = asset.business_context
+        # No. of Users: use asset.biz_num_users if set, else infer from InventoryLoggedOn
+        if asset.biz_num_users is not None:
+            inferred["biz_num_users"] = asset.biz_num_users
+        else:
+            user_count = db.query(InventoryLoggedOn).filter(
+                InventoryLoggedOn.asset_id == asset.id,
+                InventoryLoggedOn.scan_id == f.scan_id,
+            ).count()
+            if user_count:
+                inferred["biz_num_users"] = user_count
+        # Revenue Impact: use asset.biz_revenue_impact if set, else infer from criticality
+        if asset.biz_revenue_impact:
+            inferred["biz_revenue_impact"] = asset.biz_revenue_impact
+        elif asset.criticality:
+            c = asset.criticality
+            inferred["biz_revenue_impact"] = (
+                "critical" if c >= 9 else
+                "high" if c >= 7 else
+                "medium" if c >= 5 else
+                "low" if c >= 3 else
+                "none"
+            )
+
+    return inferred
+
+
 def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dict:
     asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
     # Resolve effective owner through the full chain
@@ -1345,6 +1465,8 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dic
         "workflow_notes": f.workflow_notes,
         "status_changed_at": f.status_changed_at.isoformat() if f.status_changed_at else None,
         "exception_id": f.exception_id,
+        # Aggregated solution
+        "aggregated_solution_id": f.aggregated_solution_id,
         # Temporal tracking
         "first_seen": f.first_seen.isoformat() if f.first_seen else None,
         "last_seen": f.last_seen.isoformat() if f.last_seen else None,
@@ -1365,6 +1487,61 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dic
             "plugin_mod_date": f.plugin_mod_date,
             "remediation_steps": f.remediation_steps,
         })
+        # Validated + Business context (with auto-inference)
+        inferred = _infer_finding_context(f, asset, db)
+        context = {}
+        # Validated context fields — manual override stored on finding
+        for field in ["ctx_reachability", "ctx_exploitability", "ctx_accessibility", "ctx_compensating_control"]:
+            manual = getattr(f, field)
+            auto = inferred.get(field)
+            context[field] = {
+                "value": manual if manual is not None else auto,
+                "source": "manual" if manual is not None else ("inferred" if auto is not None else None),
+                "inferred": auto,
+            }
+        # Business context fields — manual values stored on asset, inference from scan data
+        biz_manual_map = {
+            "biz_function": asset.business_context if asset else None,
+            "biz_num_users": asset.biz_num_users if asset else None,
+            "biz_revenue_impact": asset.biz_revenue_impact if asset else None,
+        }
+        biz_confirmed = bool(asset.business_context_confirmed) if asset else False
+        for field in ["biz_function", "biz_num_users", "biz_revenue_impact"]:
+            manual = biz_manual_map[field]
+            auto = inferred.get(field)
+            # For biz_function: manual only if confirmed; otherwise treat as inferred
+            if field == "biz_function" and manual and not biz_confirmed:
+                context[field] = {"value": manual, "source": "inferred", "inferred": manual}
+            elif manual is not None:
+                context[field] = {"value": manual, "source": "manual", "inferred": auto}
+            else:
+                context[field] = {"value": auto, "source": "inferred" if auto is not None else None, "inferred": auto}
+        base["context"] = context
+        base["asset_id_for_biz"] = f.asset_id  # frontend needs this to PATCH the asset
+        # Include aggregated solution summary if present
+        if f.aggregated_solution_id:
+            agg = db.query(AggregatedSolution).filter(AggregatedSolution.id == f.aggregated_solution_id).first()
+            if agg:
+                base["aggregated_solution"] = {
+                    "id": agg.id,
+                    "category": agg.category,
+                    "title": agg.title,
+                    "description": agg.description,
+                    "finding_count": agg.finding_count,
+                    "effort_level": agg.effort_level,
+                }
+        # Include technical debt info if this finding's exception is a tech debt
+        if f.exception_id:
+            exc = db.query(FindingException).filter(FindingException.id == f.exception_id).first()
+            if exc and exc.exception_type == "technical_debt":
+                base["technical_debt"] = {
+                    "title": exc.plugin_name or f"Technical Debt #{exc.id}",
+                    "reason": exc.reason,
+                    "debt_category": exc.debt_category,
+                    "mitigation_plan": exc.mitigation_plan,
+                    "review_by": exc.review_by.isoformat() if exc.review_by else None,
+                    "review_status": _review_status(exc.review_by),
+                }
     return base
 
 
@@ -1402,7 +1579,7 @@ def get_remediation_queue(
 # ─────────────────────────────────────────────
 
 @app.get("/api/reports/summary")
-def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+def get_summary(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_logic: str = "AND", db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return summary statistics for the dashboard."""
     asset_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
     finding_q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
@@ -1412,6 +1589,12 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db), or
     if scan_id:
         asset_q = asset_q.filter(Asset.scan_id == scan_id)
         finding_q = finding_q.filter(Finding.scan_id == scan_id)
+
+    if tags:
+        pairs = tag_engine.parse_tag_filter(tags)
+        id_sets = tag_engine.resolve_tag_ids(pairs, False, db)
+        asset_q = tag_engine.apply_asset_tag_filter(asset_q, id_sets, tag_logic, db)
+        finding_q = tag_engine.apply_finding_tag_filter(finding_q, id_sets, tag_logic, db)
 
     total_assets = asset_q.count()
     total_findings = finding_q.count()
@@ -1434,17 +1617,11 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db), or
     for sev in range(5):
         severity_counts[sev] = report_q.filter(Finding.severity == sev).count()
 
-    # Top plugin families
+    # Top plugin families — derived from report_q (already tag/scan/org/exception filtered)
+    filtered_ids_subq = report_q.filter(Finding.severity >= 1).with_entities(Finding.id).subquery()
     family_counts = (
         db.query(Finding.plugin_family, func.count(Finding.id).label("count"))
-        .filter(Finding.severity >= 1)
-    )
-    if scan_id:
-        family_counts = family_counts.filter(Finding.scan_id == scan_id)
-    if excluded_exception_ids:
-        family_counts = family_counts.filter(or_(Finding.exception_id.is_(None), ~Finding.exception_id.in_(excluded_exception_ids)))
-    family_counts = (
-        family_counts
+        .filter(Finding.id.in_(filtered_ids_subq))
         .group_by(Finding.plugin_family)
         .order_by(desc("count"))
         .limit(10)
@@ -1459,17 +1636,10 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db), or
     for effort in ("quick_win", "medium", "complex"):
         effort_counts[effort] = report_q.filter(Finding.effort_level == effort, Finding.severity >= 1).count()
 
-    # Owner breakdown
+    # Owner breakdown — derived from report_q
     owner_counts = (
         db.query(Finding.owner_suggestion, func.count(Finding.id).label("count"))
-        .filter(Finding.severity >= 1)
-    )
-    if scan_id:
-        owner_counts = owner_counts.filter(Finding.scan_id == scan_id)
-    if excluded_exception_ids:
-        owner_counts = owner_counts.filter(or_(Finding.exception_id.is_(None), ~Finding.exception_id.in_(excluded_exception_ids)))
-    owner_counts = (
-        owner_counts
+        .filter(Finding.id.in_(filtered_ids_subq))
         .group_by(Finding.owner_suggestion)
         .order_by(desc("count"))
         .all()
@@ -1480,6 +1650,30 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db), or
     high_priority_count = report_q.filter(Finding.priority_score >= 7.0).count()
 
     excepted_count = total_findings - report_q.count() if excluded_exception_ids else 0
+
+    # Quick wins: top 5 critical/high findings with quick_win effort, ordered by priority
+    quick_wins_q = (
+        report_q.filter(
+            Finding.severity >= 3,
+            Finding.effort_level == "quick_win",
+        )
+        .order_by(desc(Finding.priority_score))
+        .limit(5)
+        .all()
+    )
+    quick_wins = []
+    for f in quick_wins_q:
+        asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
+        quick_wins.append({
+            "id": f.id,
+            "plugin_name": f.plugin_name,
+            "severity": f.severity,
+            "priority_score": f.priority_score,
+            "solution": (f.solution or "")[:200],
+            "host": asset.hostname or asset.ip if asset else "—",
+            "asset_id": f.asset_id,
+            "plugin_family": f.plugin_family,
+        })
 
     return {
         "total_assets": total_assets,
@@ -1502,16 +1696,21 @@ def get_summary(scan_id: Optional[int] = None, db: Session = Depends(get_db), or
         ],
         "exploit_count": exploit_count,
         "high_priority_count": high_priority_count,
+        "quick_wins": quick_wins,
     }
 
 
 @app.get("/api/reports/plugin-families")
-def get_plugin_families(scan_id: Optional[int] = None, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+def get_plugin_families(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_logic: str = "AND", db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return all unique plugin families for filter dropdowns."""
     q = db.query(Finding.plugin_family).join(Scan, Finding.scan_id == Scan.id).distinct()
     q = apply_scan_org_filter(q, org_ids)
     if scan_id:
         q = q.filter(Finding.scan_id == scan_id)
+    if tags:
+        pairs = tag_engine.parse_tag_filter(tags)
+        id_sets = tag_engine.resolve_tag_ids(pairs, False, db)
+        q = tag_engine.apply_finding_tag_filter(q, id_sets, tag_logic, db)
     families = [row[0] for row in q.all() if row[0]]
     return sorted(families)
 
@@ -1578,6 +1777,7 @@ def get_metrics_timeline(db: Session = Depends(get_db), org_ids: Optional[List[i
         ws_in_progress = findings_q.filter(Finding.workflow_status == "in_progress").count()
         ws_resolved = findings_q.filter(Finding.workflow_status == "resolved").count()
         ws_excepted = findings_q.filter(Finding.workflow_status.in_(["accepted_risk", "false_positive", "compensating_control"])).count()
+        ws_tech_debt = findings_q.filter(Finding.workflow_status == "technical_debt").count()
 
         # MTTR for resolved findings in this scan
         resolved_findings = findings_q.filter(Finding.resolved_at != None, Finding.sla_due_date != None).all()
@@ -1627,6 +1827,7 @@ def get_metrics_timeline(db: Session = Depends(get_db), org_ids: Optional[List[i
             "workflow_in_progress": ws_in_progress,
             "workflow_resolved": ws_resolved,
             "workflow_excepted": ws_excepted,
+            "workflow_technical_debt": ws_tech_debt,
             # Risk
             "avg_risk_score": avg_risk,
             "max_risk_score": max_risk,
@@ -2024,7 +2225,7 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
     # Hosts with local admin overlap (users who are local admin on multiple assets)
     # Group local_admin users by (username, domain) → list of asset_ids
     admin_records = _q(InventoryUser).filter(InventoryUser.is_local_admin == True).all()
-    admin_map: dict[str, list[int]] = {}
+    admin_map = {}
     for u in admin_records:
         key = f"{u.domain}\\{u.username}".lower()
         admin_map.setdefault(key, [])
@@ -2286,14 +2487,14 @@ def get_security_coverage(
         })
 
     # Build unique category catalog (preserve insertion order by category first seen)
-    CATALOG_CATEGORIES: dict[str, str] = {}
+    CATALOG_CATEGORIES = {}
     for entry in SECURITY_TOOL_CATALOG:
         cat = entry["category"]
         if cat not in CATALOG_CATEGORIES:
             CATALOG_CATEGORIES[cat] = entry["control_type"]
 
-    cat_to_assets: dict[str, set] = defaultdict(set)
-    cat_to_products: dict[str, set] = defaultdict(set)
+    cat_to_assets = defaultdict(set)
+    cat_to_products = defaultdict(set)
     for c in controls:
         cat = (c.details or {}).get("category") or CT_TO_CAT.get(c.control_type, c.control_type)
         cat_to_assets[cat].add(c.asset_id)
@@ -3489,7 +3690,7 @@ def update_campaign_finding(
 # ─────────────────────────────────────────────
 
 # AD domain-level groups → grants access to Domain Controllers
-_AD_ACCESS_GROUPS: dict[str, tuple[str, str]] = {
+_AD_ACCESS_GROUPS = {
     "remote desktop users":       ("rdp_access",   "RDP Access"),
     "administrators":             ("local_admin",   "Admin (AD Group)"),
     "distributed com users":      ("dcom_access",   "DCOM Access"),
@@ -3501,7 +3702,7 @@ _AD_ACCESS_GROUPS: dict[str, tuple[str, str]] = {
 }
 
 # Local Windows groups → grants access to that specific machine
-_LOCAL_ACCESS_GROUPS: dict[str, tuple[str, str]] = {
+_LOCAL_ACCESS_GROUPS = {
     "administrators":             ("local_admin",   "Local Admin"),
     "remote desktop users":       ("rdp_access",    "RDP Access"),
     "distributed com users":      ("dcom_access",   "DCOM Access"),
@@ -3511,7 +3712,7 @@ _LOCAL_ACCESS_GROUPS: dict[str, tuple[str, str]] = {
 }
 
 # Linux/Unix groups → grants access to that specific machine
-_LINUX_ACCESS_GROUPS: dict[str, tuple[str, str]] = {
+_LINUX_ACCESS_GROUPS = {
     "sudo":       ("sudo_access",    "Sudo Access"),
     "wheel":      ("sudo_access",    "Sudo Access"),
     "docker":     ("docker_access",  "Docker Access"),
@@ -3588,7 +3789,7 @@ def get_blast_radius_bulk(
 
     # Pre-fetch all users indexed by username (lowercase) for member resolution
     all_users_scan = db.query(InventoryUser).filter(InventoryUser.scan_id == scan_id).all()
-    users_by_name: dict[str, list] = {}
+    users_by_name = {}
     for u in all_users_scan:
         if u.username:
             users_by_name.setdefault(u.username.lower(), []).append(u)
@@ -3799,7 +4000,7 @@ def get_blast_radius(
 
     # Pre-index all scan users by username (lowercase) for fast member resolution
     all_scan_users = db.query(InventoryUser).filter(InventoryUser.scan_id == scan_id).all()
-    users_by_name_idx: dict[str, list] = {}
+    users_by_name_idx = {}
     for u in all_scan_users:
         if u.username:
             users_by_name_idx.setdefault(u.username.lower(), []).append(u)
@@ -5524,6 +5725,53 @@ def update_finding_status(finding_id: int, body: FindingStatusUpdate, db: Sessio
     }
 
 
+class FindingContextUpdate(BaseModel):
+    ctx_reachability: Optional[str] = None       # unreachable / internal_only / internet_facing / unknown
+    ctx_exploitability: Optional[str] = None     # not_exploitable / requires_conditions / easily_exploitable / unknown
+    ctx_accessibility: Optional[str] = None      # restricted / authenticated_only / public / unknown
+    ctx_compensating_control: Optional[str] = None
+    biz_function: Optional[str] = None           # saved to asset.business_context
+    biz_num_users: Optional[int] = None          # saved to asset.biz_num_users
+    biz_revenue_impact: Optional[str] = None     # saved to asset.biz_revenue_impact
+
+
+@app.patch("/api/findings/{finding_id}/context")
+def update_finding_context(finding_id: int, body: FindingContextUpdate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+    """Update validated context (on finding) and business context (on asset)."""
+    finding = db.query(Finding).filter(Finding.id == finding_id).first()
+    if not finding:
+        raise HTTPException(404, "Finding not found")
+    changes = {}
+    # Validated context → stored on finding
+    for field in ["ctx_reachability", "ctx_exploitability", "ctx_accessibility", "ctx_compensating_control"]:
+        val = getattr(body, field)
+        if val is not None:
+            old = getattr(finding, field)
+            setattr(finding, field, val)
+            changes[field] = {"old": old, "new": val}
+    # Business context → stored on asset (shared across all findings on the asset)
+    asset = db.query(Asset).filter(Asset.id == finding.asset_id).first()
+    if asset:
+        if body.biz_function is not None:
+            old = asset.business_context
+            asset.business_context = body.biz_function
+            asset.business_context_confirmed = True
+            changes["biz_function"] = {"old": old, "new": body.biz_function}
+        if body.biz_num_users is not None:
+            old = asset.biz_num_users
+            asset.biz_num_users = body.biz_num_users
+            changes["biz_num_users"] = {"old": old, "new": body.biz_num_users}
+        if body.biz_revenue_impact is not None:
+            old = asset.biz_revenue_impact
+            asset.biz_revenue_impact = body.biz_revenue_impact
+            changes["biz_revenue_impact"] = {"old": old, "new": body.biz_revenue_impact}
+    if changes:
+        log_audit(db, "update", "finding_context", finding_id,
+                  entity_name=finding.plugin_name, changes=changes, actor=user)
+    db.commit()
+    return _finding_to_dict(finding, db, include_full=True)
+
+
 @app.post("/api/findings/bulk-status")
 def bulk_update_finding_status(
     body: dict,
@@ -5560,9 +5808,11 @@ class ExceptionCreate(BaseModel):
     plugin_name: Optional[str] = None
     asset_ip: Optional[str] = None
     scope_tags: Optional[list] = None  # ["env:prod", "net:dmz"]
-    exception_type: str = "accepted_risk"  # accepted_risk / false_positive / severity_override / compensating_control
+    exception_type: str = "accepted_risk"  # accepted_risk / false_positive / severity_override / compensating_control / technical_debt
     override_severity: Optional[int] = None  # 0-4, only for severity_override
     compensating_control_detail: Optional[str] = None  # description of control in place
+    debt_category: Optional[str] = None  # legacy_system / business_requirement / vendor_dependency / compatibility / cost (for technical_debt)
+    mitigation_plan: Optional[str] = None  # compensating controls description (for technical_debt)
     conditions: Optional[list] = None  # [{field, op, value}, ...]
     condition_logic: str = "AND"
     reason: Optional[str] = None
@@ -5581,6 +5831,8 @@ class ExceptionUpdate(BaseModel):
     exception_type: Optional[str] = None
     override_severity: Optional[int] = None
     compensating_control_detail: Optional[str] = None
+    debt_category: Optional[str] = None
+    mitigation_plan: Optional[str] = None
     conditions: Optional[list] = None
     condition_logic: Optional[str] = None
     exclude_from_reports: Optional[bool] = None
@@ -5616,6 +5868,8 @@ def list_exceptions(
             "exception_type": e.exception_type,
             "override_severity": e.override_severity,
             "compensating_control_detail": e.compensating_control_detail,
+            "debt_category": e.debt_category,
+            "mitigation_plan": e.mitigation_plan,
             "conditions": e.conditions or [],
             "condition_logic": e.condition_logic or "AND",
             "reason": e.reason, "approved_by": e.approved_by,
@@ -5655,6 +5909,8 @@ def create_exception(body: ExceptionCreate, db: Session = Depends(get_db), user:
         exception_type=body.exception_type,
         override_severity=body.override_severity if body.exception_type == "severity_override" else None,
         compensating_control_detail=body.compensating_control_detail if body.exception_type == "compensating_control" else None,
+        debt_category=body.debt_category if body.exception_type == "technical_debt" else None,
+        mitigation_plan=body.mitigation_plan if body.exception_type == "technical_debt" else None,
         conditions=body.conditions or None,
         condition_logic=body.condition_logic or "AND",
         reason=body.reason,
@@ -5691,6 +5947,8 @@ def get_exception(exception_id: int, db: Session = Depends(get_db)):
         "exception_type": exc.exception_type,
         "override_severity": exc.override_severity,
         "compensating_control_detail": exc.compensating_control_detail,
+        "debt_category": exc.debt_category,
+        "mitigation_plan": exc.mitigation_plan,
         "conditions": exc.conditions or [],
         "condition_logic": exc.condition_logic or "AND",
         "reason": exc.reason, "approved_by": exc.approved_by,
@@ -5727,6 +5985,10 @@ def update_exception(exception_id: int, body: ExceptionUpdate, db: Session = Dep
         exc.override_severity = body.override_severity
     if body.compensating_control_detail is not None:
         exc.compensating_control_detail = body.compensating_control_detail
+    if body.debt_category is not None:
+        exc.debt_category = body.debt_category
+    if body.mitigation_plan is not None:
+        exc.mitigation_plan = body.mitigation_plan
     if body.conditions is not None:
         exc.conditions = body.conditions if body.conditions else None
     if body.condition_logic is not None:
@@ -5884,6 +6146,108 @@ def apply_all_exceptions(
     db.commit()
     return {"ok": True, "exceptions_checked": len(exceptions), "findings_updated": total_applied}
 
+
+
+# ─────────────────────────────────────────────
+# Aggregated Solutions
+# ─────────────────────────────────────────────
+
+@app.get("/api/aggregated-solutions")
+def list_aggregated_solutions(
+    scan_id: Optional[int] = None,
+    asset_id: Optional[int] = None,
+    category: Optional[str] = None,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """List aggregated solutions (root-cause grouped remediation plans)."""
+    q = db.query(AggregatedSolution).join(Scan, AggregatedSolution.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
+    if scan_id:
+        q = q.filter(AggregatedSolution.scan_id == scan_id)
+    if asset_id:
+        q = q.filter(AggregatedSolution.asset_id == asset_id)
+    if category:
+        q = q.filter(AggregatedSolution.root_cause_type == category)
+    q = q.order_by(desc(AggregatedSolution.efficiency_score))
+    results = q.all()
+    return [_agg_solution_to_dict(a, db) for a in results]
+
+
+@app.get("/api/aggregated-solutions/{agg_id}")
+def get_aggregated_solution(agg_id: int, db: Session = Depends(get_db)):
+    """Get a single aggregated solution with its linked findings."""
+    agg = db.query(AggregatedSolution).filter(AggregatedSolution.id == agg_id).first()
+    if not agg:
+        raise HTTPException(404, "Aggregated solution not found")
+    result = _agg_solution_to_dict(agg, db)
+    # Include full findings list
+    findings = db.query(Finding).filter(Finding.aggregated_solution_id == agg.id).all()
+    result["findings"] = [_finding_to_dict(f, db) for f in findings]
+    return result
+
+
+@app.post("/api/aggregated-solutions/rebuild")
+def rebuild_aggregated_solutions(scan_id: int = Query(None), db: Session = Depends(get_db)):
+    """Re-run solution aggregation on existing scans."""
+    if scan_id:
+        scans = db.query(Scan).filter(Scan.id == scan_id).all()
+    else:
+        scans = db.query(Scan).all()
+    total_created = 0
+    total_linked = 0
+    for scan in scans:
+        result = solution_aggregator.aggregate_solutions(db, scan_id=scan.id)
+        total_created += result["created"]
+        total_linked += result["findings_linked"]
+    db.commit()
+    return {"scans_processed": len(scans), "created": total_created, "findings_linked": total_linked}
+
+
+def _agg_solution_to_dict(a: AggregatedSolution, db: Session) -> dict:
+    # Resolve hostnames for cross-asset recommendations
+    asset_hostnames = []
+    if a.asset_ids:
+        for aid in (a.asset_ids or [])[:10]:
+            asset = db.query(Asset).filter(Asset.id == aid).first()
+            if asset:
+                asset_hostnames.append(asset.hostname or asset.ip or str(aid))
+
+    return {
+        "id": a.id,
+        "scan_id": a.scan_id,
+        # Component fingerprint
+        "affected_component": a.affected_component,
+        "current_version": a.current_version,
+        "target_version": a.target_version,
+        # Classification
+        "root_cause_type": a.root_cause_type,
+        "action_type": a.action_type,
+        "category": a.root_cause_type,  # backward compat
+        # Human-readable
+        "title": a.title,
+        "description": a.description,
+        "action_details": a.action_details,
+        "vs_alternative": a.vs_alternative,
+        # Cross-asset scope
+        "asset_ids": a.asset_ids or [],
+        "asset_count": a.asset_count or 0,
+        "asset_hostnames": asset_hostnames,
+        # Findings & CVEs
+        "finding_count": a.finding_count,
+        "finding_ids": a.finding_ids or [],
+        "cve_ids": a.cve_ids or [],
+        "cve_count": len(a.cve_ids) if a.cve_ids else 0,
+        # Scoring
+        "severity_max": a.severity_max,
+        "priority_score": a.priority_score,
+        "risk_reduction": a.risk_reduction or 0,
+        "efficiency_score": a.efficiency_score or 0,
+        # Operational
+        "effort_level": a.effort_level,
+        "owner_suggestion": a.owner_suggestion,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+    }
 
 
 # ─────────────────────────────────────────────

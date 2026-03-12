@@ -15,7 +15,7 @@ from database import get_db
 from models import Finding, Asset, Scan
 from threat_intel_models import (
     ThreatGroup, TTP, ThreatGroupTTP,
-    ThreatCVE, ThreatCampaign, IntelRemediationCampaign,
+    ThreatCVE, ThreatCampaign, IntelRemediationCampaign, CisaAdvisory,
 )
 import threat_intel_sync as sync_engine
 import ttp_matcher
@@ -60,7 +60,6 @@ def get_stats(db: Session = Depends(get_db)):
     total_cves = db.query(func.count(ThreatCVE.id)).scalar() or 0
     kev_count = db.query(func.count(ThreatCVE.id)).filter(ThreatCVE.in_kev == True).scalar() or 0
     high_epss_count = db.query(func.count(ThreatCVE.id)).filter(ThreatCVE.epss_score >= 0.5).scalar() or 0
-    active_campaigns = db.query(func.count(ThreatCampaign.id)).filter(ThreatCampaign.is_active == True).scalar() or 0
     remediation_campaigns = db.query(func.count(IntelRemediationCampaign.id)).scalar() or 0
 
     # Affected assets: count unique assets that have findings matching tracked intel CVEs
@@ -75,11 +74,36 @@ def get_stats(db: Session = Depends(get_db)):
     avg_epss_row = db.query(func.avg(ThreatCVE.epss_score)).filter(ThreatCVE.epss_score.isnot(None)).scalar()
     avg_epss = round(float(avg_epss_row), 4) if avg_epss_row else 0.0
 
+    # Exposed groups: threat groups with ≥50% TTP overlap in any uploaded scan
+    all_matched_ttps: set = set()
+    for (mtps,) in db.query(Finding.matched_ttps).filter(Finding.matched_ttps.isnot(None)).all():
+        if mtps:
+            for t in mtps:
+                tid = t.get("technique_id") if isinstance(t, dict) else None
+                if tid:
+                    all_matched_ttps.add(tid)
+
+    exposed_groups = 0
+    if all_matched_ttps:
+        group_tech_rows = (
+            db.query(ThreatGroupTTP.group_id, TTP.technique_id)
+            .join(TTP, TTP.id == ThreatGroupTTP.ttp_id)
+            .all()
+        )
+        group_tech_map: dict = {}
+        for gid, tid in group_tech_rows:
+            group_tech_map.setdefault(gid, set()).add(tid)
+        for gid, tech_set in group_tech_map.items():
+            matched = len(tech_set & all_matched_ttps)
+            min_match = max(3, round(len(tech_set) * 0.5))
+            if matched >= min_match:
+                exposed_groups += 1
+
     return {
         "total_cves": total_cves,
         "kev_count": kev_count,
         "high_epss_count": high_epss_count,
-        "active_campaigns": active_campaigns,
+        "exposed_groups": exposed_groups,
         "remediation_campaigns": remediation_campaigns,
         "affected_assets": affected_assets,
         "avg_epss": avg_epss,
@@ -851,6 +875,65 @@ def trigger_ttp_matching(
 
 
 # ─────────────────────────────────────────────
+# CISA Advisories
+# ─────────────────────────────────────────────
+
+@router.get("/advisories")
+def get_advisories(
+    search: Optional[str] = None,
+    advisory_type: Optional[str] = None,   # "advisory" | "alert" | "ics" | "ics_medical" | "malware"
+    ics_only: bool = False,
+    exclude_ics: bool = False,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    q = db.query(CisaAdvisory)
+    if search:
+        q = q.filter(
+            or_(
+                CisaAdvisory.title.ilike(f"%{search}%"),
+                CisaAdvisory.summary.ilike(f"%{search}%"),
+                CisaAdvisory.advisory_id.ilike(f"%{search}%"),
+            )
+        )
+    if advisory_type:
+        q = q.filter(CisaAdvisory.advisory_type == advisory_type)
+    if ics_only:
+        q = q.filter(CisaAdvisory.is_ics == True)
+    if exclude_ics:
+        q = q.filter(CisaAdvisory.is_ics == False)
+
+    total = q.count()
+    records = q.order_by(desc(CisaAdvisory.pub_date), desc(CisaAdvisory.created_at)).offset(offset).limit(limit).all()
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [
+            {
+                "id": r.id,
+                "advisory_id": r.advisory_id,
+                "title": r.title,
+                "advisory_type": r.advisory_type,
+                "pub_date": r.pub_date,
+                "summary": r.summary,
+                "url": r.url,
+                "co_sealers": r.co_sealers or [],
+                "sectors": r.sectors or [],
+                "cve_ids": r.cve_ids or [],
+                "cve_count": len(r.cve_ids or []),
+                "threat_group_ids": r.threat_group_ids or [],
+                "threat_group_names": r.threat_group_names or [],
+                "is_ics": r.is_ics,
+            }
+            for r in records
+        ],
+    }
+
+
+# ─────────────────────────────────────────────
 # Sync
 # ─────────────────────────────────────────────
 
@@ -882,6 +965,13 @@ def _run_sync_in_background(db: Session):
         ttp_matcher.match_findings_to_ttps(db)
     except Exception as exc:
         logger.warning("Background TTP matching failed: %s", exc)
+    # Sync CISA advisories
+    advisory_sync_fn = getattr(sync_engine, 'sync_cisa_advisories_to_db', None)
+    if advisory_sync_fn:
+        try:
+            advisory_sync_fn(db)
+        except Exception as exc:
+            logger.warning("Background CISA advisory sync failed: %s", exc)
     logger.info("Background intel sync complete")
 
 
@@ -917,6 +1007,12 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
 
     # MITRE is slow (~30 MB download) — run in background
     background_tasks.add_task(sync_engine.sync_mitre_groups_to_db, db)
+
+    # CISA advisories — fast RSS fetch, run in background so main sync stays quick
+    advisory_sync_fn = getattr(sync_engine, 'sync_cisa_advisories_to_db', None)
+    if advisory_sync_fn:
+        background_tasks.add_task(advisory_sync_fn, db)
+
     return {
         "status": "ok",
         "kev_added": kev_result.get("added", 0),
@@ -928,7 +1024,7 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
             f"KEV: +{kev_result.get('added', 0)} new, {kev_result.get('updated', 0)} updated. "
             f"EPSS: {epss_result.get('updated', 0)} refreshed. "
             f"Findings enriched: {enrich_result.get('enriched', 0)}. "
-            f"NVD CVSS + MITRE ATT&CK: syncing in background."
+            f"NVD CVSS + MITRE ATT&CK + CISA advisories: syncing in background."
         ),
     }
 

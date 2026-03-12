@@ -190,30 +190,42 @@ def apply_asset_tag_filter(query, tag_id_sets: list, tag_logic: str, db: Session
 
 
 def apply_finding_tag_filter(query, tag_id_sets: list, tag_logic: str, db: Session):
-    """Apply tag filter to a Finding SQLAlchemy query."""
+    """Apply tag filter to a Finding SQLAlchemy query.
+    A finding matches if it is directly tagged OR its parent asset is tagged.
+    """
+    from sqlalchemy import or_
     from models import Finding
 
     if not tag_id_sets:
         return query
 
+    def _finding_ids_for_tag_ids(ids):
+        """Return a subquery of finding IDs matched by a set of tag IDs (direct or via asset)."""
+        direct_subq = db.query(TagAssignment.finding_id).filter(
+            TagAssignment.tag_id.in_(ids),
+            TagAssignment.finding_id.isnot(None),
+        )
+        asset_subq = db.query(TagAssignment.asset_id).filter(
+            TagAssignment.tag_id.in_(ids),
+            TagAssignment.asset_id.isnot(None),
+        )
+        return db.query(Finding.id).filter(
+            or_(
+                Finding.id.in_(direct_subq),
+                Finding.asset_id.in_(asset_subq),
+            )
+        ).subquery()
+
     if tag_logic.upper() == "AND":
         for ids in tag_id_sets:
             if not ids:
                 return query.filter(Finding.id == -1)
-            subq = db.query(TagAssignment.finding_id).filter(
-                TagAssignment.tag_id.in_(ids),
-                TagAssignment.finding_id.isnot(None),
-            ).subquery()
-            query = query.filter(Finding.id.in_(subq))
+            query = query.filter(Finding.id.in_(_finding_ids_for_tag_ids(ids)))
     else:
         all_ids = [i for ids in tag_id_sets for i in ids]
         if not all_ids:
             return query.filter(Finding.id == -1)
-        subq = db.query(TagAssignment.finding_id).filter(
-            TagAssignment.tag_id.in_(all_ids),
-            TagAssignment.finding_id.isnot(None),
-        ).subquery()
-        query = query.filter(Finding.id.in_(subq))
+        query = query.filter(Finding.id.in_(_finding_ids_for_tag_ids(all_ids)))
 
     return query
 

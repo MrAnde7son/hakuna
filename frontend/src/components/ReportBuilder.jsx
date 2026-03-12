@@ -26,7 +26,7 @@ import {
   getTemporalSummary, getRemediationVelocity,
   getReportTemplates, createReportTemplate, updateReportTemplate, deleteReportTemplate as apiDeleteTemplate,
   exportConfig,
-  getRiskByTags,
+  getRiskByTags, getTags,
   getInventorySummary, getInventoryUsers, getInventoryGroups, getInventoryServices,
   getInventoryNetconns, getInventoryTasks, getInventoryPatches, getInventoryLoggedOn,
   getInventoryShares, getInventorySoftware, getInventorySecurityControls, getInventoryComputers,
@@ -90,7 +90,7 @@ const SEV_COLORS = ['#0ea5e9', '#65a30d', '#d97706', '#ea580c', '#dc2626']
 const PALETTE = ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#0ea5e9', '#22c55e', '#ef4444', '#14b8a6']
 
 const DATA_SOURCES = {
-  summary:            (scanId, f) => getSummary(scanId),
+  summary:            (scanId, f) => getSummary(scanId, f?.tags, f?.tag_logic),
   sla:                (scanId, f) => getSLASummary(scanId),
   trending:           (scanId, f) => getTrending(),
   metrics_timeline:   (scanId, f) => getMetricsTimeline(),
@@ -102,7 +102,7 @@ const DATA_SOURCES = {
   remediation_queue:  (scanId, f) => getRemediationQueue({ scan_id: scanId, effort: f?.effort, owner: f?.owner, min_severity: f?.min_severity, limit: f?.limit || 20 }),
   automation_wishlist:(scanId, f) => getAutomateClicks(),
   risk_by_tags:       (scanId, f) => getRiskByTags({ scan_id: scanId, category: f?.category }),
-  plugin_families:    (scanId, f) => getPluginFamilies(scanId),
+  plugin_families:    (scanId, f) => getPluginFamilies(scanId, f?.tags, f?.tag_logic),
   inv_summary:        (scanId, f) => getInventorySummary(scanId),
   inv_users:          (scanId, f) => getInventoryUsers({ scan_id: scanId, user_type: f?.user_type, is_admin: f?.is_admin, is_domain_admin: f?.is_domain_admin, is_privileged: f?.is_privileged, search: f?.search }),
   inv_groups:         (scanId, f) => getInventoryGroups({ scan_id: scanId, is_privileged: f?.is_privileged }),
@@ -554,6 +554,16 @@ const DATA_PRESETS = {
       { key: 'sla_compliance', label: 'SLA', render: v => v != null ? `${v}%` : 'N/A' },
     ],
   },
+  quick_wins_table: {
+    label: 'Quick Wins', group: 'Assets & Findings', source: 'summary', type: 'table',
+    extract: d => (d?.quick_wins || []),
+    columns: [
+      { key: 'plugin_name', label: 'Finding' },
+      { key: 'host', label: 'Asset' },
+      { key: 'plugin_family', label: 'Family' },
+      { key: 'priority_score', label: 'Priority', render: v => v?.toFixed?.(1) },
+    ],
+  },
   remediation_queue_data: {
     label: 'Remediation Queue', group: 'Assets & Findings', source: 'remediation_queue', type: 'table',
     extract: d => Array.isArray(d) ? d : [],
@@ -839,6 +849,7 @@ const DEFAULT_DASHBOARD = {
     { id: 'dw9', type: 'pie_chart', title: 'Effort Distribution',   width: 'half',    config: { preset: 'effort_breakdown', donut: true } },
     { id: 'dw10',type: 'pie_chart', title: 'SLA Status',            width: 'half',    config: { preset: 'sla_status', donut: true } },
     { id: 'dw11',type: 'table',     title: 'Top Risky Assets',      width: 'full',    config: { preset: 'top_assets', limit: 10 } },
+    { id: 'dw13',type: 'table',     title: 'Quick Wins',            width: 'full',    config: { preset: 'quick_wins_table', limit: 5 } },
     { id: 'dw12',type: 'table',     title: 'Remediation Queue',     width: 'full',    config: { preset: 'remediation_queue_data', limit: 10 } },
   ],
 }
@@ -865,16 +876,20 @@ const EXECUTIVE_DASHBOARD = {
 
 // ─── Live widget renderers ────────────────────────────────────────────────────
 
-function useWidgetData(sourceId, scanId, filters) {
+function useWidgetData(sourceId, scanId, filters, globalTags, globalTagLogic) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
-  const filtersKey = JSON.stringify(filters || {})
+  // Merge global tag filter into per-widget filters (global takes precedence if widget has no tags set)
+  const mergedFilters = globalTags
+    ? { ...filters, tags: filters?.tags || globalTags, tag_logic: filters?.tag_logic || globalTagLogic || 'AND' }
+    : filters
+  const filtersKey = JSON.stringify(mergedFilters || {})
 
   useEffect(() => {
     if (!sourceId || !DATA_SOURCES[sourceId]) { setLoading(false); return }
     setLoading(true)
     let cancelled = false
-    DATA_SOURCES[sourceId](scanId, filters)
+    DATA_SOURCES[sourceId](scanId, mergedFilters)
       .then(d => { if (!cancelled) { setData(d); setLoading(false) } })
       .catch(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
@@ -942,13 +957,13 @@ const DRILL_DOWN = {
   inv_netconn_states: name => `/inventory?tab=netconns&state=${name}`,
 }
 
-function WidgetRenderer({ widget, scanId, preview }) {
+function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic }) {
   const navigate = useNavigate()
   const cfg = widget.config || {}
   const preset = DATA_PRESETS[cfg.preset]
   const sourceId = preset?.source || null
   const filters = { ...(cfg.filters || {}), category: cfg.category, period: cfg.period }
-  const { data, loading } = useWidgetData(sourceId, scanId, filters)
+  const { data, loading } = useWidgetData(sourceId, scanId, filters, globalTags, globalTagLogic)
 
   const drillDown = DRILL_DOWN[cfg.preset]
   const handleCardClick = drillDown ? () => {
@@ -1402,7 +1417,7 @@ function WidgetLibrary({ onAdd }) {
 
 // ─── Main canvas widget card ──────────────────────────────────────────────────
 
-function CanvasWidget({ widget, index, total, scanId, isSelected, onSelect, onUpdate, onDelete, onMoveUp, onMoveDown, preview }) {
+function CanvasWidget({ widget, index, total, scanId, isSelected, onSelect, onUpdate, onDelete, onMoveUp, onMoveDown, preview, globalTags, globalTagLogic }) {
   const col = WIDTH_COL[widget.width] || 4
 
   return (
@@ -1449,7 +1464,7 @@ function CanvasWidget({ widget, index, total, scanId, isSelected, onSelect, onUp
 
       {/* Widget content */}
       <div style={{ padding: 16 }}>
-        <WidgetRenderer widget={widget} scanId={scanId} preview={preview} />
+        <WidgetRenderer widget={widget} scanId={scanId} preview={preview} globalTags={globalTags} globalTagLogic={globalTagLogic} />
       </div>
     </div>
   )
@@ -1751,6 +1766,82 @@ function ExportDropdown({ canvasRef, reportName, disabled }) {
   )
 }
 
+// ─── Global tag filter bar ────────────────────────────────────────────────────
+
+function GlobalTagFilterBar({ globalTags, setGlobalTags, globalTagLogic, setGlobalTagLogic, tagInputDraft, setTagInputDraft, availableTags }) {
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const lastWord = tagInputDraft.split(',').pop().trim()
+  const suggestions = lastWord.length >= 1
+    ? availableTags.filter(t => t.toLowerCase().includes(lastWord.toLowerCase()) && !tagInputDraft.split(',').map(s => s.trim()).includes(t))
+    : []
+
+  const applySuggestion = (tag) => {
+    const parts = tagInputDraft.split(',').map(s => s.trim()).filter(Boolean)
+    parts[parts.length - 1] = tag
+    setTagInputDraft(parts.join(','))
+    setShowSuggestions(false)
+  }
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8, padding: '6px 16px',
+      background: 'var(--bg-primary)', borderBottom: '1px solid var(--border)', flexShrink: 0,
+    }}>
+      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>Tag Filter</span>
+      <div style={{ position: 'relative', flex: 1, maxWidth: 480 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg-secondary)', border: `1px solid ${globalTags ? '#6366f1' : 'var(--border)'}`, borderRadius: 6, padding: '3px 8px' }}>
+          <input
+            value={tagInputDraft}
+            onChange={e => { setTagInputDraft(e.target.value); setShowSuggestions(true) }}
+            onFocus={() => setShowSuggestions(true)}
+            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+            onKeyDown={e => { if (e.key === 'Enter') { setGlobalTags(tagInputDraft.trim()); setShowSuggestions(false) } }}
+            placeholder="e.g. org:engineering,env:production — press Enter to apply"
+            style={{ flex: 1, background: 'none', border: 'none', color: 'var(--text-primary)', fontSize: 12, outline: 'none', minWidth: 0 }}
+          />
+          {tagInputDraft && tagInputDraft.trim() !== globalTags && (
+            <button onClick={() => { setGlobalTags(tagInputDraft.trim()); setShowSuggestions(false) }} style={{ background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 4, padding: '2px 8px', fontSize: 11, cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap' }}>Apply</button>
+          )}
+          {globalTags && (
+            <button onClick={() => { setGlobalTags(''); setTagInputDraft('') }} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center' }}><X size={13} /></button>
+          )}
+        </div>
+        {showSuggestions && suggestions.length > 0 && (
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 999,
+            background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 6,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.3)', maxHeight: 160, overflowY: 'auto', marginTop: 2,
+          }}>
+            {suggestions.slice(0, 10).map(t => (
+              <div
+                key={t}
+                onMouseDown={() => applySuggestion(t)}
+                style={{ padding: '6px 10px', fontSize: 12, cursor: 'pointer', color: 'var(--text-primary)' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >{t}</div>
+            ))}
+          </div>
+        )}
+      </div>
+      <select
+        value={globalTagLogic}
+        onChange={e => setGlobalTagLogic(e.target.value)}
+        title="Match ALL tags (AND) or ANY tag (OR)"
+        style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '4px 8px', fontSize: 12, cursor: 'pointer' }}
+      >
+        <option value="AND">AND</option>
+        <option value="OR">OR</option>
+      </select>
+      {globalTags && (
+        <span style={{ fontSize: 11, color: '#818cf8', background: '#6366f122', border: '1px solid #6366f144', borderRadius: 20, padding: '2px 10px', whiteSpace: 'nowrap' }}>
+          Filtering: {globalTags}
+        </span>
+      )}
+    </div>
+  )
+}
+
 // ─── Builder view ─────────────────────────────────────────────────────────────
 
 function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
@@ -1762,7 +1853,15 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
   const [preview, setPreview] = useState(true)
   const [saved, setSaved] = useState(false)
   const [editingName, setEditingName] = useState(false)
+  const [globalTags, setGlobalTags] = useState('')
+  const [globalTagLogic, setGlobalTagLogic] = useState('AND')
+  const [tagInputDraft, setTagInputDraft] = useState('')
+  const [availableTags, setAvailableTags] = useState([])
   const canvasRef = useRef()
+
+  useEffect(() => {
+    getTags().then(d => setAvailableTags((d || []).map(t => `${t.category}:${t.value}`))).catch(() => {})
+  }, [])
 
   const selectedWidget = widgets.find(w => w.id === selectedId)
 
@@ -1871,6 +1970,17 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
         <ExportDropdown canvasRef={canvasRef} reportName={name} disabled={widgets.length === 0} />
       </div>
 
+      {/* Global tag filter bar */}
+      <GlobalTagFilterBar
+        globalTags={globalTags}
+        setGlobalTags={setGlobalTags}
+        globalTagLogic={globalTagLogic}
+        setGlobalTagLogic={setGlobalTagLogic}
+        tagInputDraft={tagInputDraft}
+        setTagInputDraft={setTagInputDraft}
+        availableTags={availableTags}
+      />
+
       {/* Body */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* Widget library */}
@@ -1945,6 +2055,8 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
                   scanId={activeScanId}
                   isSelected={selectedId === widget.id}
                   preview={preview}
+                  globalTags={globalTags || undefined}
+                  globalTagLogic={globalTagLogic}
                   onSelect={() => setSelectedId(widget.id === selectedId ? null : widget.id)}
                   onUpdate={updateWidget}
                   onDelete={() => deleteWidget(widget.id)}
