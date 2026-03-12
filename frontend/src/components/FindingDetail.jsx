@@ -20,7 +20,7 @@ function Section({ title, icon: Icon, children }) {
 function KeyVal({ label, value, mono }) {
   if (!value && value !== 0) return null
   return (
-    <div style={{ display: 'flex', gap: 12, padding: '6px 0', borderBottom: '1px solid rgba(45,49,85,0.3)', fontSize: 13 }}>
+    <div style={{ display: 'flex', gap: 12, padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
       <div style={{ minWidth: 160, color: 'var(--text-muted)', flexShrink: 0 }}>{label}</div>
       <div style={{ color: 'var(--text-primary)', fontFamily: mono ? 'monospace' : 'inherit', wordBreak: 'break-all' }}>
         {value}
@@ -33,7 +33,7 @@ function PreText({ text }) {
   if (!text) return <span style={{ color: 'var(--text-muted)' }}>—</span>
   const lines = text.split('\n')
   return (
-    <div style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)', fontFamily: 'monospace' }}>
+    <div style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)', fontFamily: 'monospace' }}>
       {/* Terminal title bar */}
       <div style={{
         background: '#1e1e2e', padding: '8px 14px',
@@ -93,8 +93,8 @@ function RemediationSteps({ text }) {
           <div key={i} style={{
             padding: '10px 14px', borderRadius: 8,
             background: isBold ? 'rgba(220,38,38,0.08)' : 'var(--bg-secondary)',
-            border: isBold ? '1px solid rgba(220,38,38,0.3)' : '1px solid rgba(45,49,85,0.5)',
-            fontSize: 13, lineHeight: 1.6, color: isBold ? '#fca5a5' : 'var(--text-secondary)',
+            border: isBold ? '1px solid rgba(220,38,38,0.3)' : '1px solid var(--border)',
+            fontSize: 13, lineHeight: 1.6, color: isBold ? 'var(--danger)' : 'var(--text-secondary)',
             fontWeight: isBold ? 500 : 400,
           }}>
             {cleaned}
@@ -223,7 +223,7 @@ export default function FindingDetail() {
           </div>
 
           <Button onClick={handleCreateCampaign} disabled={creatingCampaign} style={{ flexShrink: 0, padding: '10px 18px' }}>
-            <Zap size={16} /> {creatingCampaign ? 'Creating…' : 'Automate This'}
+            <Zap size={16} /> {creatingCampaign ? 'Creating…' : 'Start a Campaign'}
           </Button>
         </div>
 
@@ -335,7 +335,7 @@ export default function FindingDetail() {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             {finding.is_regression && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 4, background: 'rgba(220,38,38,0.15)', color: '#fca5a5', fontSize: 12, fontWeight: 600 }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 4, background: 'rgba(220,38,38,0.15)', color: 'var(--danger)', fontSize: 12, fontWeight: 600 }}>
                 <RotateCcw size={11} /> Regression
               </span>
             )}
@@ -427,7 +427,7 @@ export default function FindingDetail() {
               style={{
                 width: '100%', minHeight: 60, padding: '8px 12px', borderRadius: 8,
                 border: '1px solid var(--border)', fontSize: 12, resize: 'vertical',
-                background: '#fff', marginBottom: 10, boxSizing: 'border-box',
+                background: 'var(--bg-card)', color: 'var(--text-primary)', marginBottom: 10, boxSizing: 'border-box',
               }}
             />
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -457,7 +457,7 @@ export default function FindingDetail() {
         )}
         <div style={{ marginTop: 16 }}>
           <Button onClick={handleCreateCampaign} disabled={creatingCampaign} style={{ width: '100%', justifyContent: 'center', padding: '11px 16px' }}>
-            <Zap size={16} /> {creatingCampaign ? 'Creating…' : 'Automate This Remediation'}
+            <Zap size={16} /> {creatingCampaign ? 'Creating…' : 'Start a Campaign'}
           </Button>
         </div>
       </Section>
@@ -496,7 +496,7 @@ export default function FindingDetail() {
 
         {/* CVEs */}
         {finding.cves && finding.cves.length > 0 && (
-          <div style={{ padding: '8px 0', borderBottom: '1px solid rgba(45,49,85,0.3)' }}>
+          <div style={{ padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
             <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>CVE References</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {finding.cves.map(cve => (

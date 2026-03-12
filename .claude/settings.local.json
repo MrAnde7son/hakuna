@@ -122,7 +122,10 @@
       "Bash(git -C /Users/itamar/Documents/Git/nessus-remediation/.claude/worktrees/agent-a27508a7 diff HEAD main --stat)",
       "Bash(git -C /Users/itamar/Documents/Git/nessus-remediation/.claude/worktrees/agent-a27508a7 log --oneline -5)",
       "Bash(git -C /Users/itamar/Documents/Git/nessus-remediation/.claude/worktrees/agent-a27508a7 show --stat HEAD)",
-      "Bash(git -C /Users/itamar/Documents/Git/nessus-remediation/.claude/worktrees/agent-a27508a7 status)"
+      "Bash(git -C /Users/itamar/Documents/Git/nessus-remediation/.claude/worktrees/agent-a27508a7 status)",
+      "Bash(grep -rn \"server.*role\\\\|server.*type\\\\|sql.*server\\\\|database.*server\\\\|dns.*server\\\\|web.*server\\\\|http.*server\" /Users/itamar/Documents/Git/nessus-remediation/backend/*.py -i)",
+      "Bash(grep -rn \"role.*database\\\\|role.*web\\\\|role.*sql\\\\|role.*dns\\\\|infer.*role\\\\|detect.*role\\\\|server.*role\" /Users/itamar/Documents/Git/nessus-remediation/backend/*.py -i)",
+      "Bash(python -c \"import models; print\\(''models.py OK''\\)\")"
     ],
     "additionalDirectories": [
       "/Users/itamar/Documents/Git/nessus-remediation"

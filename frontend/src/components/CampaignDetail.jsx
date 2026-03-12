@@ -427,7 +427,7 @@ export default function CampaignDetail() {
   const [descVal, setDescVal] = useState('')
   const [activeTab, setActiveTab] = useState('results') // 'query' | 'results'
 
-  const load = useCallback(() => {
+  const load = useCallback((autoRun = false) => {
     setLoading(true)
     getCampaign(id)
       .then(data => {
@@ -436,11 +436,22 @@ export default function CampaignDetail() {
         setQueryLogic(data.query_logic || 'AND')
         setNameVal(data.name || '')
         setDescVal(data.description || '')
+        if (autoRun && !(data.owner_groups?.length > 0)) {
+          setRunning(true)
+          runCampaign(id)
+            .then(() => getCampaign(id))
+            .then(fresh => {
+              setCampaign(fresh)
+              setQuery(fresh.query || [])
+              setQueryLogic(fresh.query_logic || 'AND')
+            })
+            .finally(() => setRunning(false))
+        }
       })
       .finally(() => setLoading(false))
   }, [id])
 
-  useEffect(load, [load])
+  useEffect(() => { load(true) }, [load])
 
   const handleQueryChange = (newQ) => {
     setQuery(newQ)
@@ -466,7 +477,7 @@ export default function CampaignDetail() {
     setRunning(true)
     try {
       await runCampaign(id)
-      await load()
+      load()
       setActiveTab('results')
     } finally {
       setRunning(false)

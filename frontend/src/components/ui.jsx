@@ -27,7 +27,7 @@ export function SeverityBadge({ severity, label }) {
 
 export function ScoreBar({ score, max = 10, color }) {
   const pct = Math.min((score / max) * 100, 100)
-  const c = color || (score >= 8 ? '#dc2626' : score >= 6 ? '#ea580c' : score >= 4 ? '#d97706' : '#65a30d')
+  const c = color || (score >= 8 ? 'var(--critical)' : score >= 6 ? 'var(--high)' : score >= 4 ? 'var(--medium)' : 'var(--low)')
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <div style={{ flex: 1, height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
@@ -112,7 +112,7 @@ export function Table({ columns, rows, onRowClick, onSort, sortBy, sortOrder, em
               key={i}
               onClick={() => onRowClick && onRowClick(row)}
               style={{
-                borderBottom: '1px solid rgba(45,49,85,0.5)',
+                borderBottom: '1px solid var(--border)',
                 cursor: onRowClick ? 'pointer' : 'default',
                 transition: 'background 0.1s',
               }}
@@ -184,11 +184,11 @@ export function Button({ children, onClick, variant = 'primary', size = 'md', di
     opacity: disabled ? 0.5 : 1, ...style
   }
   const variants = {
-    primary: { background: 'var(--accent)', color: '#fff' },
-    danger: { background: '#dc2626', color: '#fff' },
+    primary: { background: 'var(--accent)', color: 'var(--primary-foreground)' },
+    danger: { background: 'var(--danger)', color: '#fff' },
     ghost: { background: 'transparent', color: 'var(--text-secondary)', border: '1px solid var(--border)' },
-    success: { background: '#16a34a', color: '#fff' },
-    warning: { background: '#d97706', color: '#fff' },
+    success: { background: 'var(--success)', color: '#fff' },
+    warning: { background: 'var(--warning)', color: '#fff' },
   }
   return (
     <button onClick={disabled ? undefined : onClick} style={{ ...base, ...variants[variant] }}>
@@ -232,9 +232,9 @@ export function EmptyState({ icon: Icon, title, sub, children }) {
 
 export function EffortBadge({ effort }) {
   const MAP = {
-    quick_win: { label: 'Quick Win', color: '#16a34a' },
-    medium: { label: 'Medium', color: '#d97706' },
-    complex: { label: 'Complex', color: '#dc2626' },
+    quick_win: { label: 'Quick Win', color: 'var(--success)' },
+    medium: { label: 'Medium', color: 'var(--warning)' },
+    complex: { label: 'Complex', color: 'var(--danger)' },
   }
   const c = MAP[effort] || { label: effort || '—', color: 'var(--text-muted)' }
   return <Pill label={c.label} color={c.color} />
@@ -806,7 +806,7 @@ export function ExportImportButtons({
       {status && (
         <span style={{
           fontSize: 11, fontWeight: 600,
-          color: status.type === 'ok' ? '#86efac' : '#fca5a5',
+          color: status.type === 'ok' ? 'var(--success)' : 'var(--danger)',
         }}>
           {status.msg}
         </span>
@@ -915,7 +915,7 @@ export function SaveAsRuleModal({ conditions = [], scanId, onClose, onCreated })
         }}>
           {hasConditions
             ? <><span style={{ color: 'var(--accent)', fontWeight: 600 }}>{conditions.length}</span> condition{conditions.length !== 1 ? 's' : ''} from your current filters will define the scope</>
-            : <span style={{ color: '#f87171' }}>No mappable filters active — set severity, family, hostname, etc. first</span>
+            : <span style={{ color: 'var(--danger)' }}>No mappable filters active — set severity, family, hostname, etc. first</span>
           }
         </div>
 
@@ -963,8 +963,8 @@ export function SaveAsRuleModal({ conditions = [], scanId, onClose, onCreated })
         )}
 
         {/* Error / success */}
-        {error && <div style={{ fontSize: 12, color: '#dc2626', background: '#450a0a', borderRadius: 6, padding: '6px 10px' }}>{error}</div>}
-        {success && <div style={{ fontSize: 12, color: '#22c55e', background: '#052e16', borderRadius: 6, padding: '6px 10px' }}>✓ {success}</div>}
+        {error && <div style={{ fontSize: 12, color: 'var(--danger)', background: 'var(--danger-subtle)', borderRadius: 6, padding: '6px 10px' }}>{error}</div>}
+        {success && <div style={{ fontSize: 12, color: 'var(--success)', background: 'var(--success-subtle)', borderRadius: 6, padding: '6px 10px' }}>✓ {success}</div>}
 
         {/* Footer */}
         {!success && (

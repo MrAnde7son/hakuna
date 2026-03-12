@@ -9,7 +9,7 @@ import { useScan } from '../App.jsx'
 import { getSummary, getTrending, getSLASummary, getTemporalSummary, getRemediationVelocity } from '../api.js'
 import { Card, StatCard, ScoreBar, SeverityBadge, Spinner, EmptyState, Button } from './ui.jsx'
 
-const SEV_COLORS = ['#0ea5e9', '#65a30d', '#d97706', '#ea580c', '#dc2626']
+const SEV_COLORS = ['var(--info)', 'var(--low)', 'var(--medium)', 'var(--high)', 'var(--critical)']
 const SEV_LABELS = ['Info', 'Low', 'Medium', 'High', 'Critical']
 
 function SeverityDonut({ data }) {
@@ -75,10 +75,10 @@ function TrendChart({ data }) {
           <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
           <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
           <Legend formatter={(v) => <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{v}</span>} />
-          <Bar dataKey="critical" stackId="a" fill="#dc2626" />
-          <Bar dataKey="high" stackId="a" fill="#ea580c" />
-          <Bar dataKey="medium" stackId="a" fill="#d97706" />
-          <Bar dataKey="low" stackId="a" fill="#65a30d" />
+          <Bar dataKey="critical" stackId="a" fill="var(--critical)" />
+          <Bar dataKey="high" stackId="a" fill="var(--high)" />
+          <Bar dataKey="medium" stackId="a" fill="var(--medium)" />
+          <Bar dataKey="low" stackId="a" fill="var(--low)" />
         </BarChart>
       </ResponsiveContainer>
     </Card>
@@ -91,10 +91,10 @@ function SLAWidget({ sla }) {
   const mttrEntries = Object.entries(avg_mttr_days || {})
 
   const bars = [
-    { label: 'On Track', value: on_track, color: '#16a34a' },
-    { label: 'At Risk',  value: at_risk,  color: '#d97706' },
-    { label: 'Breached', value: breached, color: '#dc2626' },
-    { label: 'Resolved', value: resolved, color: '#6366f1' },
+    { label: 'On Track', value: on_track, color: 'var(--success)' },
+    { label: 'At Risk',  value: at_risk,  color: 'var(--warning)' },
+    { label: 'Breached', value: breached, color: 'var(--danger)' },
+    { label: 'Resolved', value: resolved, color: 'var(--accent)' },
   ]
 
   return (
@@ -106,7 +106,7 @@ function SLAWidget({ sla }) {
           </div>
           <span style={{
             fontSize: 18, fontWeight: 700,
-            color: compliance_pct >= 80 ? '#16a34a' : compliance_pct >= 50 ? '#d97706' : '#dc2626',
+            color: compliance_pct >= 80 ? 'var(--success)' : compliance_pct >= 50 ? 'var(--warning)' : 'var(--danger)',
           }}>
             {compliance_pct}%
           </span>
@@ -135,9 +135,9 @@ function SLAWidget({ sla }) {
           <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No resolved findings yet</div>
         ) : (
           mttrEntries.map(([sev, days]) => {
-            const color = sev === 'critical' ? '#dc2626' : sev === 'high' ? '#ea580c' : sev === 'medium' ? '#d97706' : '#65a30d'
+            const color = sev === 'critical' ? 'var(--critical)' : sev === 'high' ? 'var(--high)' : sev === 'medium' ? 'var(--medium)' : 'var(--low)'
             return (
-              <div key={sev} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(45,49,85,0.4)', fontSize: 13 }}>
+              <div key={sev} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
                 <span style={{ color: 'var(--text-secondary)', textTransform: 'capitalize' }}>{sev}</span>
                 <span style={{ fontWeight: 700, color }}>{days}d</span>
               </div>
@@ -145,7 +145,7 @@ function SLAWidget({ sla }) {
           })
         )}
         {breached > 0 && (
-          <div style={{ marginTop: 12, padding: '8px 10px', background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.25)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#fca5a5' }}>
+          <div style={{ marginTop: 12, padding: '8px 10px', background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.25)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--danger)' }}>
             <AlertTriangle size={12} />
             {breached} finding{breached !== 1 ? 's' : ''} past SLA deadline
           </div>
@@ -160,10 +160,10 @@ function TemporalWidget({ temporal }) {
   const { regression_count, zombie_count, age_distribution } = temporal
 
   const ageBars = [
-    { label: '< 30 days', value: age_distribution.under_30d, color: '#16a34a' },
-    { label: '30–90 days', value: age_distribution['30_90d'], color: '#d97706' },
-    { label: '90–180 days', value: age_distribution['90_180d'], color: '#ea580c' },
-    { label: '> 180 days', value: age_distribution.over_180d, color: '#dc2626' },
+    { label: '< 30 days', value: age_distribution.under_30d, color: 'var(--success)' },
+    { label: '30–90 days', value: age_distribution['30_90d'], color: 'var(--warning)' },
+    { label: '90–180 days', value: age_distribution['90_180d'], color: 'var(--high)' },
+    { label: '> 180 days', value: age_distribution.over_180d, color: 'var(--critical)' },
   ]
   const total = ageBars.reduce((s, b) => s + b.value, 0) || 1
 
@@ -185,12 +185,12 @@ function TemporalWidget({ temporal }) {
       ))}
       <div style={{ display: 'flex', gap: 14, marginTop: 14 }}>
         {regression_count > 0 && (
-          <div style={{ padding: '8px 10px', background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.25)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#fca5a5' }}>
+          <div style={{ padding: '8px 10px', background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.25)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--danger)' }}>
             <RotateCcw size={12} /> {regression_count} regression{regression_count !== 1 ? 's' : ''}
           </div>
         )}
         {zombie_count > 0 && (
-          <div style={{ padding: '8px 10px', background: 'rgba(234,88,12,0.08)', border: '1px solid rgba(234,88,12,0.25)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#fdba74' }}>
+          <div style={{ padding: '8px 10px', background: 'rgba(234,88,12,0.08)', border: '1px solid rgba(234,88,12,0.25)', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--warning)' }}>
             <Skull size={12} /> {zombie_count} zombie vuln{zombie_count !== 1 ? 's' : ''} (open &gt;180d)
           </div>
         )}
@@ -217,7 +217,7 @@ function VelocityWidget({ velocity }) {
           {velocity_trend_pct != null && (
             <span style={{
               fontSize: 12, fontWeight: 600,
-              color: velocity_trend_pct > 0 ? '#16a34a' : velocity_trend_pct < 0 ? '#dc2626' : 'var(--text-muted)',
+              color: velocity_trend_pct > 0 ? 'var(--success)' : velocity_trend_pct < 0 ? 'var(--danger)' : 'var(--text-muted)',
             }}>
               {velocity_trend_pct > 0 ? '+' : ''}{velocity_trend_pct}%
             </span>
@@ -230,10 +230,10 @@ function VelocityWidget({ velocity }) {
           <XAxis dataKey="period_label" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} />
           <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 10 }} width={30} />
           <Tooltip contentStyle={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12 }} />
-          <Bar dataKey="critical" stackId="a" fill="#dc2626" />
-          <Bar dataKey="high" stackId="a" fill="#ea580c" />
-          <Bar dataKey="medium" stackId="a" fill="#d97706" />
-          <Bar dataKey="low" stackId="a" fill="#65a30d" />
+          <Bar dataKey="critical" stackId="a" fill="var(--critical)" />
+          <Bar dataKey="high" stackId="a" fill="var(--high)" />
+          <Bar dataKey="medium" stackId="a" fill="var(--medium)" />
+          <Bar dataKey="low" stackId="a" fill="var(--low)" />
         </BarChart>
       </ResponsiveContainer>
     </Card>
@@ -288,9 +288,9 @@ export default function Dashboard() {
     total_assets, total_findings } = summary
 
   const effortData = [
-    { name: 'Quick Win', value: effort_breakdown.quick_win, color: '#16a34a' },
-    { name: 'Medium', value: effort_breakdown.medium, color: '#d97706' },
-    { name: 'Complex', value: effort_breakdown.complex, color: '#dc2626' },
+    { name: 'Quick Win', value: effort_breakdown.quick_win, color: 'var(--success)' },
+    { name: 'Medium', value: effort_breakdown.medium, color: 'var(--warning)' },
+    { name: 'Complex', value: effort_breakdown.complex, color: 'var(--danger)' },
   ]
 
   return (
@@ -308,11 +308,11 @@ export default function Dashboard() {
           onClick={() => navigate('/assets')} />
         <StatCard label="Total Findings" value={total_findings.toLocaleString()} icon={Bug} color="var(--text-primary)"
           onClick={() => navigate('/findings')} />
-        <StatCard label="Critical" value={sev.critical.toLocaleString()} icon={AlertTriangle} color="#dc2626"
+        <StatCard label="Critical" value={sev.critical.toLocaleString()} icon={AlertTriangle} color="var(--critical)"
           sub={`+ ${sev.high} High`} onClick={() => navigate('/findings?severity=4')} />
-        <StatCard label="High Priority" value={high_priority_count.toLocaleString()} icon={TrendingUp} color="#ea580c"
+        <StatCard label="High Priority" value={high_priority_count.toLocaleString()} icon={TrendingUp} color="var(--high)"
           sub="Score ≥ 7.0" onClick={() => navigate('/findings')} />
-        <StatCard label="w/ Known Exploit" value={exploit_count.toLocaleString()} icon={Zap} color="#f59e0b"
+        <StatCard label="w/ Known Exploit" value={exploit_count.toLocaleString()} icon={Zap} color="var(--warning)"
           sub="Active threat" onClick={() => navigate('/findings?exploit=true')} />
       </div>
 
@@ -345,7 +345,7 @@ export default function Dashboard() {
         <Card>
           <div style={{ fontWeight: 600, marginBottom: 16, fontSize: 14 }}>Findings by Owner</div>
           {owner_breakdown.map(o => (
-            <div key={o.owner} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid rgba(45,49,85,0.4)', fontSize: 13 }}>
+            <div key={o.owner} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
               <span style={{ color: 'var(--text-secondary)' }}>{o.owner}</span>
               <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{o.count}</span>
             </div>
@@ -358,7 +358,7 @@ export default function Dashboard() {
             <div
               key={a.id}
               onClick={() => navigate(`/findings?asset_id=${a.id}`)}
-              style={{ cursor: 'pointer', padding: '8px 0', borderBottom: '1px solid rgba(45,49,85,0.4)', transition: 'opacity 0.15s' }}
+              style={{ cursor: 'pointer', padding: '8px 0', borderBottom: '1px solid var(--border)', transition: 'opacity 0.15s' }}
               onMouseEnter={e => e.currentTarget.style.opacity = '0.75'}
               onMouseLeave={e => e.currentTarget.style.opacity = '1'}
             >

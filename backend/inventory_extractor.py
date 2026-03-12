@@ -826,12 +826,73 @@ def extract_smb_shares(plugin_output: str, asset_id: int, scan_id: int) -> list[
 # ─────────────────────────────────────────────────────────
 
 def extract_share_permissions(plugin_output: str, asset_id: int, scan_id: int) -> list[dict]:
-    """Parse SMB share ACL from plugin 60119."""
+    """Parse SMB share ACL from plugin 60119.
+
+    Handles the common Nessus format:
+        - SHARE_NAME - (readable,writable)
+          + Type: DISK
+          + Path: C:\\path
+          + Access control:
+            - Account [0x1f01ff] : Full Control
+
+    Also handles the older Path:-first format as a fallback.
+    """
     if not plugin_output:
         return []
 
     shares = []
-    # Split on share blocks — each starts with "Path:"
+
+    # Primary format: blocks start with "- SHARENAME - (readable,...)"
+    # e.g.  "- Users - (readable,writable)"  or  "- ADMIN$ - (readable,not writable)"
+    block_pattern = re.compile(
+        r"^-\s+(\S+)\s*-\s*\(([^)]+)\)",
+        re.MULTILINE,
+    )
+    ace_pattern = re.compile(r"-\s+([^\[]+)\[([^\]]+)\]\s*:\s*(.+)")
+
+    block_starts = [(m.start(), m.group(1), m.group(2)) for m in block_pattern.finditer(plugin_output)]
+
+    if block_starts:
+        for idx, (start, share_name, access_flags) in enumerate(block_starts):
+            end = block_starts[idx + 1][0] if idx + 1 < len(block_starts) else len(plugin_output)
+            block = plugin_output[start:end]
+
+            path_m = re.search(r"\+\s*Path\s*:\s*(.+)", block, re.IGNORECASE)
+            path = path_m.group(1).strip() if path_m else None
+
+            # Writability from header "(readable,writable)" or "(readable,not writable)"
+            flags_lower = access_flags.lower()
+            is_writeable = "writable" in flags_lower and "not writable" not in flags_lower
+
+            acl = []
+            for ace in ace_pattern.finditer(block):
+                account = ace.group(1).strip()
+                ace_type = ace.group(2).strip()
+                permissions = ace.group(3).strip()
+                if not is_writeable and (
+                    "write" in permissions.lower()
+                    or "full" in permissions.lower()
+                    or "change" in permissions.lower()
+                ):
+                    is_writeable = True
+                acl.append({"account": account, "type": ace_type, "permissions": permissions})
+
+            shares.append({
+                "scan_id": scan_id,
+                "asset_id": asset_id,
+                "source_plugin": "60119",
+                "share_name": share_name,
+                "share_type": "Disk",
+                "comment": None,
+                "path": path,
+                "max_users": None,
+                "acl": acl,
+                "is_writeable": is_writeable,
+                "is_default_share": share_name.lower() in _DEFAULT_SHARES,
+            })
+        return shares
+
+    # Fallback: older format where each block starts with "Path:"
     blocks = re.split(r"\n(?=Path\s*:)", plugin_output, flags=re.IGNORECASE)
     for block in blocks:
         block = block.strip()
@@ -840,18 +901,13 @@ def extract_share_permissions(plugin_output: str, asset_id: int, scan_id: int) -
 
         path_m = re.search(r"Path\s*:\s*(.+)", block, re.IGNORECASE)
         name_m = re.search(r"Share\s+[Nn]ame\s*:\s*(.+)", block, re.IGNORECASE)
-
-        share_name = (name_m.group(1).strip() if name_m else None)
-        path = (path_m.group(1).strip() if path_m else None)
+        share_name = name_m.group(1).strip() if name_m else None
+        path = path_m.group(1).strip() if path_m else None
         if not share_name and not path:
             continue
 
         acl = []
         is_writeable = False
-        # ACE lines: Account : [type] perms
-        ace_pattern = re.compile(
-            r"-\s+([^\[]+)\s+\[\s*(\w+)\s*\]\s*:\s*(.+)",
-        )
         for ace in ace_pattern.finditer(block):
             account = ace.group(1).strip()
             ace_type = ace.group(2).strip()
@@ -880,6 +936,49 @@ def extract_share_permissions(plugin_output: str, asset_id: int, scan_id: int) -
 # Plugin 20811 / 22869 — Installed Software
 # ─────────────────────────────────────────────────────────
 
+_VENDOR_KEYWORDS = [
+    ("Microsoft",            ["microsoft", "windows", "office", "visual studio", "ms ", ".net", "sysinternals", "xbox", "skype", "teams"]),
+    ("Google",               ["google", "chrome", "picasa"]),
+    ("Mozilla",              ["mozilla", "firefox", "thunderbird"]),
+    ("Adobe",                ["adobe", "acrobat", "reader", "photoshop", "flash"]),
+    ("Oracle",               ["oracle", "java", "jdk", "jre", "virtualbox", "mysql"]),
+    ("Apple",                ["apple", "itunes", "icloud", "bonjour", "safari"]),
+    ("Cisco",                ["cisco", "webex", "anyconnect"]),
+    ("VMware",               ["vmware"]),
+    ("Citrix",               ["citrix"]),
+    ("Slack",                ["slack"]),
+    ("Zoom",                 ["zoom"]),
+    ("Amazon",               ["amazon", "aws", "kindle"]),
+    ("Dropbox",              ["dropbox"]),
+    ("7-Zip",                ["7-zip"]),
+    ("WinRAR",               ["winrar"]),
+    ("PuTTY",                ["putty"]),
+    ("OpenSSH",              ["openssh"]),
+    ("Python Software Foundation", ["python "]),
+    ("Node.js",              ["node.js", "nodejs"]),
+    ("Git",                  ["git "]),
+    ("CrowdStrike",          ["crowdstrike", "falcon"]),
+    ("SentinelOne",          ["sentinelone"]),
+    ("Sophos",               ["sophos"]),
+    ("Kaspersky",            ["kaspersky"]),
+    ("Broadcom / Symantec",  ["symantec", "norton"]),
+    ("Trellix",              ["mcafee", "trellix"]),
+    ("Trend Micro",          ["trend micro"]),
+    ("ESET",                 ["eset"]),
+    ("Bitdefender",          ["bitdefender"]),
+]
+
+
+def _infer_vendor(name: str) -> str | None:
+    if not name:
+        return None
+    n = name.lower()
+    for vendor, keywords in _VENDOR_KEYWORDS:
+        if any(kw in n for kw in keywords):
+            return vendor
+    return None
+
+
 def extract_installed_software(plugin_output: str, asset_id: int, scan_id: int) -> list[dict]:
     """Parse installed software list from plugins 20811 / 22869."""
     if not plugin_output:
@@ -907,7 +1006,7 @@ def extract_installed_software(plugin_output: str, asset_id: int, scan_id: int) 
                 "name": name,
                 "version": version or None,
                 "installed_on": installed_on,
-                "vendor": None,
+                "vendor": _infer_vendor(name),
             })
 
     # Fallback: plain indented list (one entry per line)
@@ -922,7 +1021,7 @@ def extract_installed_software(plugin_output: str, asset_id: int, scan_id: int) 
                     "name": line,
                     "version": None,
                     "installed_on": None,
-                    "vendor": None,
+                    "vendor": _infer_vendor(line),
                 })
 
     return software
@@ -1600,6 +1699,157 @@ def extract_processes_70329(plugin_output: str, asset_id: int, scan_id: int) -> 
     return results
 
 
+# ─────────────────────────────────────────────────────────
+# Database Instance Detection Extractors
+# ─────────────────────────────────────────────────────────
+
+def extract_mssql_instances(output: str, asset_id, scan_id) -> list[dict]:
+    """Extract MSSQL instances from plugin 10144 / 34252 output."""
+    results = []
+    current = {}
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            if current.get("instance_name") or current.get("version"):
+                results.append({
+                    "scan_id": scan_id, "asset_id": asset_id,
+                    "db_type": "mssql",
+                    "instance_name": current.get("instance_name"),
+                    "version": current.get("version"),
+                    "port": current.get("port"),
+                    "named_pipes": current.get("named_pipes", []),
+                    "is_running": current.get("state", "running").lower() == "running",
+                    "source_plugin": "10144",
+                })
+                current = {}
+            continue
+        lower = line.lower()
+        if lower.startswith("instance") and ":" in line:
+            current["instance_name"] = line.split(":", 1)[1].strip()
+        elif lower.startswith("version") and ":" in line:
+            current["version"] = line.split(":", 1)[1].strip()
+        elif lower.startswith("port") and ":" in line:
+            port_str = line.split(":", 1)[1].strip().split("/")[0]
+            try:
+                current["port"] = int(port_str)
+            except ValueError:
+                pass
+        elif lower.startswith("state") and ":" in line:
+            current["state"] = line.split(":", 1)[1].strip()
+        elif lower.startswith("named pipe") and ":" in line:
+            pipe = line.split(":", 1)[1].strip()
+            current.setdefault("named_pipes", []).append(pipe)
+    # Flush last record
+    if current.get("instance_name") or current.get("version"):
+        results.append({
+            "scan_id": scan_id, "asset_id": asset_id,
+            "db_type": "mssql",
+            "instance_name": current.get("instance_name"),
+            "version": current.get("version"),
+            "port": current.get("port"),
+            "named_pipes": current.get("named_pipes", []),
+            "is_running": current.get("state", "running").lower() == "running",
+            "source_plugin": "10144",
+        })
+    if not results:
+        # Fallback: store a minimal record for any MSSQL detection
+        results.append({
+            "scan_id": scan_id, "asset_id": asset_id,
+            "db_type": "mssql",
+            "instance_name": None,
+            "version": None,
+            "port": 1433,
+            "named_pipes": [],
+            "is_running": True,
+            "source_plugin": "10144",
+        })
+    return results
+
+
+def extract_mysql_instances(output: str, asset_id, scan_id) -> list[dict]:
+    """Extract MySQL instances from plugin 10719 / 26024 output."""
+    version = None
+    port = 3306
+    for line in output.splitlines():
+        line = line.strip()
+        lower = line.lower()
+        if lower.startswith("version") and ":" in line:
+            version = line.split(":", 1)[1].strip()
+        elif lower.startswith("port") and ":" in line:
+            port_str = line.split(":", 1)[1].strip().split("/")[0]
+            try:
+                port = int(port_str)
+            except ValueError:
+                pass
+    return [{
+        "scan_id": scan_id, "asset_id": asset_id,
+        "db_type": "mysql",
+        "instance_name": None,
+        "version": version,
+        "port": port,
+        "named_pipes": [],
+        "is_running": True,
+        "source_plugin": "10719",
+    }]
+
+
+def extract_postgresql_instances(output: str, asset_id, scan_id) -> list[dict]:
+    """Extract PostgreSQL instances from plugin 26028 output."""
+    version = None
+    port = 5432
+    for line in output.splitlines():
+        line = line.strip()
+        lower = line.lower()
+        if lower.startswith("version") and ":" in line:
+            version = line.split(":", 1)[1].strip()
+        elif lower.startswith("port") and ":" in line:
+            port_str = line.split(":", 1)[1].strip().split("/")[0]
+            try:
+                port = int(port_str)
+            except ValueError:
+                pass
+    return [{
+        "scan_id": scan_id, "asset_id": asset_id,
+        "db_type": "postgresql",
+        "instance_name": None,
+        "version": version,
+        "port": port,
+        "named_pipes": [],
+        "is_running": True,
+        "source_plugin": "26028",
+    }]
+
+
+def extract_oracle_instances(output: str, asset_id, scan_id) -> list[dict]:
+    """Extract Oracle instances from plugin 22689 / 57474 output."""
+    version = None
+    port = 1521
+    for line in output.splitlines():
+        line = line.strip()
+        lower = line.lower()
+        if lower.startswith("version") and ":" in line:
+            version = line.split(":", 1)[1].strip()
+        elif "oracle" in lower and "release" in lower:
+            # e.g. "Oracle Database 11g Enterprise Edition Release 11.2.0.4.0"
+            version = line.strip()
+        elif lower.startswith("port") and ":" in line:
+            port_str = line.split(":", 1)[1].strip().split("/")[0]
+            try:
+                port = int(port_str)
+            except ValueError:
+                pass
+    return [{
+        "scan_id": scan_id, "asset_id": asset_id,
+        "db_type": "oracle",
+        "instance_name": None,
+        "version": version,
+        "port": port,
+        "named_pipes": [],
+        "is_running": True,
+        "source_plugin": "22689",
+    }]
+
+
 # Maps plugin_id → (extractor_fn, target_table_key)
 # target_table_key matches keys in the result dict returned by extract_all_inventory
 PLUGIN_DISPATCH = {
@@ -1630,6 +1880,14 @@ PLUGIN_DISPATCH = {
     "10863": ("certificates", extract_ssl_certificate),
     "196906": ("ai_tools", extract_ai_tools),
     "70329": ("processes", extract_processes_70329),
+    # Database instance detection
+    "10144": ("database_instances", extract_mssql_instances),
+    "34252": ("database_instances", extract_mssql_instances),
+    "10719": ("database_instances", extract_mysql_instances),
+    "26024": ("database_instances", extract_mysql_instances),
+    "26028": ("database_instances", extract_postgresql_instances),
+    "22689": ("database_instances", extract_oracle_instances),
+    "57474": ("database_instances", extract_oracle_instances),
 }
 
 # User-producing plugins (their records go into InventoryUser)
@@ -1662,6 +1920,7 @@ def extract_inventory_from_findings(findings: list[dict]) -> dict:
         "certificates": [],
         "ai_tools": [],
         "processes": [],
+        "database_instances": [],
     }
 
     for finding in findings:

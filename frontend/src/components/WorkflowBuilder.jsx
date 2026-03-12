@@ -345,11 +345,11 @@ export default function WorkflowBuilder() {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          {dirty && <span style={{ fontSize: 11, color: '#d97706', fontWeight: 600 }}>Unsaved</span>}
+          {dirty && <span style={{ fontSize: 11, color: 'var(--warning)', fontWeight: 600 }}>Unsaved</span>}
           {lastExecResult && (
             <button onClick={() => setShowExecPanel(p => !p)}
               style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-              <Pill color={lastExecResult.status === 'completed' ? '#22c55e' : '#ef4444'}>
+              <Pill color={lastExecResult.status === 'completed' ? 'var(--success)' : 'var(--danger)'}>
                 {lastExecResult.status === 'completed'
                   ? `Done — ${lastExecResult.items_processed} items`
                   : 'Failed'}{' '}
@@ -382,7 +382,7 @@ export default function WorkflowBuilder() {
           {validationWarnings.map((w, i) => (
             <span key={i} style={{
               display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 500,
-              color: w.level === 'error' ? '#dc2626' : w.level === 'warn' ? '#d97706' : '#6b7280',
+              color: w.level === 'error' ? 'var(--danger)' : w.level === 'warn' ? 'var(--warning)' : 'var(--muted)',
               padding: '2px 8px', borderRadius: 6,
               background: w.level === 'error' ? 'var(--danger-subtle)' : w.level === 'warn' ? 'var(--warning-subtle)' : 'var(--secondary)',
             }}>
@@ -402,27 +402,27 @@ export default function WorkflowBuilder() {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px' }}>
             {lastExecResult.status === 'completed'
-              ? <CheckCircle size={16} color="#16a34a" />
-              : <AlertTriangle size={16} color="#dc2626" />}
+              ? <CheckCircle size={16} color="var(--success)" />
+              : <AlertTriangle size={16} color="var(--danger)" />}
             <span style={{
               fontWeight: 700, fontSize: 13,
-              color: lastExecResult.status === 'completed' ? '#16a34a' : '#dc2626',
+              color: lastExecResult.status === 'completed' ? 'var(--success)' : 'var(--danger)',
             }}>
               {lastExecResult.status === 'completed' ? 'Workflow completed' : 'Workflow failed'}
             </span>
-            <span style={{ fontSize: 12, color: '#64748b' }}>
+            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               {lastExecResult.items_processed ?? 0} items processed
               {lastExecResult.summary && ` · ${lastExecResult.summary.nodes_executed} nodes · ${lastExecResult.summary.actions_taken} actions`}
             </span>
             <button onClick={() => setShowExecPanel(false)}
-              style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: 4 }}>
+              style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
               <X size={14} />
             </button>
           </div>
 
           {/* Top-level error */}
           {lastExecResult.error && !execDetail && (
-            <div style={{ margin: '0 16px 8px', padding: '8px 12px', background: '#fee2e2', borderRadius: 8, fontSize: 12, color: '#991b1b' }}>
+            <div style={{ margin: '0 16px 8px', padding: '8px 12px', background: 'var(--danger-subtle)', borderRadius: 8, fontSize: 12, color: 'var(--danger)' }}>
               {lastExecResult.error}
             </div>
           )}
@@ -442,23 +442,23 @@ export default function WorkflowBuilder() {
                   }}>
                     <span style={{
                       display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 600, minWidth: 60,
-                      color: isFail ? '#dc2626' : isEmpty ? '#ca8a04' : '#16a34a',
+                      color: isFail ? 'var(--danger)' : isEmpty ? 'var(--warning)' : 'var(--success)',
                     }}>
                       {isFail ? <X size={11} /> : isEmpty ? <AlertTriangle size={11} /> : <CheckCircle size={11} />}
                       {isFail ? 'FAIL' : isEmpty ? 'EMPTY' : 'OK'}
                     </span>
-                    <span style={{ fontWeight: 600, color: '#334155', minWidth: 100 }}>{log.node_subtype}</span>
-                    <span style={{ color: '#64748b' }}>{log.items_in} in → {log.items_out} out</span>
+                    <span style={{ fontWeight: 600, color: 'var(--text-primary)', minWidth: 100 }}>{log.node_subtype}</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>{log.items_in} in → {log.items_out} out</span>
                     {log.output_data?.affected != null && (
-                      <span style={{ color: '#6366f1' }}>{log.output_data.affected} affected</span>
+                      <span style={{ color: 'var(--accent)' }}>{log.output_data.affected} affected</span>
                     )}
                     {isFail && (log.output_data?.error || log.error) && (
-                      <span style={{ color: '#991b1b', flex: 1 }}>
+                      <span style={{ color: 'var(--danger)', flex: 1 }}>
                         {log.output_data?.error || log.error}
                       </span>
                     )}
                     {isEmpty && (
-                      <span style={{ color: '#92400e', fontStyle: 'italic' }}>
+                      <span style={{ color: 'var(--warning)', fontStyle: 'italic' }}>
                         No items reached this node
                       </span>
                     )}
@@ -471,12 +471,12 @@ export default function WorkflowBuilder() {
           {/* Errors summary from result */}
           {lastExecResult.summary?.errors?.length > 0 && !execDetail && (
             <div style={{ padding: '0 16px 10px' }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: '#991b1b', marginBottom: 4 }}>Errors:</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--danger)', marginBottom: 4 }}>Errors:</div>
               {lastExecResult.summary.errors.map((err, i) => (
                 <div key={i} style={{
-                  padding: '6px 10px', background: '#fee2e2', borderRadius: 6,
-                  fontSize: 12, color: '#991b1b', marginBottom: 3,
-                  border: '1px solid #fecaca',
+                  padding: '6px 10px', background: 'var(--danger-subtle)', borderRadius: 6,
+                  fontSize: 12, color: 'var(--danger)', marginBottom: 3,
+                  border: '1px solid var(--danger)',
                 }}>
                   <span style={{ fontWeight: 600 }}>{err.node_id}:</span> {err.error}
                 </div>

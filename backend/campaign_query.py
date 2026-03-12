@@ -58,14 +58,22 @@ def run_query(db: Session, conditions: list, logic: str, scan_id) -> list:
                 # Use the original type/field as label key
                 matched_conds.append(orig.get("type") or orig.get("field") or "")
 
-        # Gather relevant findings (severity >= 1, exclude pure info)
-        f_q = db.query(Finding).filter(
-            Finding.asset_id == asset.id,
-            Finding.severity >= 1,
-        )
+        # Gather findings that match the campaign conditions.
+        # If there are finding-level conditions, return only findings matching those.
+        # Otherwise fall back to severity >= 1 (exclude pure info).
+        f_q = db.query(Finding).filter(Finding.asset_id == asset.id)
         if scan_id:
             f_q = f_q.filter(Finding.scan_id == scan_id)
-        findings = f_q.order_by(Finding.priority_score.desc()).all()
+        all_findings = f_q.order_by(Finding.priority_score.desc()).all()
+
+        finding_conds = [c for c in migrated if c.get("field", "").startswith("finding.")]
+        if finding_conds:
+            findings = [
+                f for f in all_findings
+                if any(engine._eval_finding_row(c, f) for c in finding_conds)
+            ]
+        else:
+            findings = [f for f in all_findings if (f.severity or 0) >= 1]
 
         results.append({
             "asset": asset,

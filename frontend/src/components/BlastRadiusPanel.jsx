@@ -42,7 +42,7 @@ const EDGE_CFG = {
   ssh_access:          { color: '#10b981', label: 'SSH Access' },
   sudo_access:         { color: '#dc2626', label: 'Sudo Access' },
   docker_access:       { color: '#1d4ed8', label: 'Docker' },
-  admin_read:          { color: '#64748b', label: 'Admin Read' },
+  admin_read:          { color: 'var(--text-secondary)', label: 'Admin Read' },
 }
 
 const SEV_COLOR = { critical: '#ef4444', high: '#f59e0b', medium: '#3b82f6', low: '#64748b' }
@@ -79,12 +79,12 @@ function layoutNodes(rawNodes, rawEdges) {
 function AssetNode({ data }) {
   const isStart = data._start
   const riskPct = Math.min((data.risk_score || 0) * 10, 100)
-  const riskColor = riskPct > 70 ? '#ef4444' : riskPct > 50 ? '#f59e0b' : '#22c55e'
+  const riskColor = riskPct > 70 ? 'var(--critical)' : riskPct > 50 ? 'var(--warning)' : 'var(--success)'
 
-  const bg = isStart ? '#f0fdf4' : data.is_dc ? '#fff7ed' : '#ffffff'
-  const borderColor = isStart ? '#16a34a' : data.is_dc ? '#ea580c' : '#cbd5e1'
-  const iconColor = isStart ? '#16a34a' : data.is_dc ? '#ea580c' : '#64748b'
-  const shadow = isStart ? '0 0 0 3px #16a34a22, 0 2px 8px rgba(0,0,0,0.08)'
+  const bg = isStart ? 'var(--success-subtle)' : data.is_dc ? 'var(--warning-subtle)' : 'var(--card)'
+  const borderColor = isStart ? 'var(--success)' : data.is_dc ? 'var(--high)' : 'var(--border)'
+  const iconColor = isStart ? 'var(--success)' : data.is_dc ? 'var(--high)' : 'var(--text-secondary)'
+  const shadow = isStart ? '0 0 0 3px rgba(34,197,94,0.15), 0 2px 8px rgba(0,0,0,0.08)'
     : '0 1px 4px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.04)'
   const AssetIcon = data.is_dc ? Database : Server
 
@@ -103,20 +103,20 @@ function AssetNode({ data }) {
         }}>
           <AssetIcon size={13} color={iconColor} />
         </div>
-        {isStart && <NBadge bg="#dcfce7" fg="#15803d" border="#86efac">START</NBadge>}
-        {data.is_dc && <NBadge bg="#ffedd5" fg="#c2410c" border="#fed7aa">DC</NBadge>}
-        <span style={{ fontSize: 11, fontWeight: 700, color: '#0f172a', flex: 1,
+        {isStart && <NBadge bg="var(--success-subtle)" fg="var(--success)" border="var(--success)">START</NBadge>}
+        {data.is_dc && <NBadge bg="var(--warning-subtle)" fg="var(--high)" border="var(--high)">DC</NBadge>}
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', flex: 1,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {data.label}
         </span>
       </div>
       <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 4 }}>
-        {data.critical_count > 0 && <NBadge bg="#fee2e2" fg="#b91c1c" border="#fca5a5">{data.critical_count}C</NBadge>}
-        {data.high_count > 0 && <NBadge bg="#fef3c7" fg="#b45309" border="#fde68a">{data.high_count}H</NBadge>}
-        {!data.has_av && <NBadge bg="#fee2e2" fg="#dc2626" border="#fca5a5">NoAV</NBadge>}
-        {data.has_writeable_share && <NBadge bg="#dbeafe" fg="#1d4ed8" border="#bfdbfe">Share</NBadge>}
+        {data.critical_count > 0 && <NBadge bg="var(--danger-subtle)" fg="var(--danger)" border="var(--danger)">{data.critical_count}C</NBadge>}
+        {data.high_count > 0 && <NBadge bg="var(--warning-subtle)" fg="var(--warning)" border="var(--warning)">{data.high_count}H</NBadge>}
+        {!data.has_av && <NBadge bg="var(--danger-subtle)" fg="var(--danger)" border="var(--danger)">NoAV</NBadge>}
+        {data.has_writeable_share && <NBadge bg="rgba(37,99,235,0.1)" fg="var(--primary)" border="var(--primary)">Share</NBadge>}
       </div>
-      <div style={{ height: 3, background: '#e2e8f0', borderRadius: 99 }}>
+      <div style={{ height: 3, background: 'var(--border)', borderRadius: 99 }}>
         <div style={{ width: `${riskPct}%`, height: '100%', background: riskColor, borderRadius: 99 }} />
       </div>
     </div>
@@ -133,14 +133,14 @@ const USER_TYPE_CFG = {
 }
 
 function UserNode({ data }) {
-  const bc = data.is_domain_admin ? '#ef4444'
+  const bc = data.is_domain_admin ? 'var(--danger)'
     : data.kerberoastable ? '#a855f7'
-    : data.is_local_admin ? '#f59e0b'
-    : '#3b82f6'
-  const bg = data.is_domain_admin ? '#fef2f2'
-    : data.kerberoastable ? '#faf5ff'
-    : data.is_local_admin ? '#fffbeb'
-    : '#eff6ff'
+    : data.is_local_admin ? 'var(--warning)'
+    : 'var(--primary)'
+  const bg = data.is_domain_admin ? 'var(--danger-subtle)'
+    : data.kerberoastable ? 'rgba(168,85,247,0.08)'
+    : data.is_local_admin ? 'var(--warning-subtle)'
+    : 'var(--card)'
 
   const typeCfg = USER_TYPE_CFG[data.user_type] || USER_TYPE_CFG.domain_user
   const { Icon, iconColor, iconBg } = typeCfg
@@ -161,17 +161,17 @@ function UserNode({ data }) {
         }}>
           <Icon size={13} color={iconColor} />
         </div>
-        <span style={{ fontSize: 11, fontWeight: 700, color: '#0f172a', flex: 1,
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', flex: 1,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {data.label}
         </span>
       </div>
       <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-        {data.is_domain_admin && <NBadge bg="#fee2e2" fg="#b91c1c" border="#fca5a5">DA</NBadge>}
-        {data.is_local_admin && !data.is_domain_admin && <NBadge bg="#fef3c7" fg="#92400e" border="#fde68a">LA</NBadge>}
-        {data.kerberoastable && <NBadge bg="#f3e8ff" fg="#6d28d9" border="#ddd6fe">Kerb</NBadge>}
-        {data.password_never_expires && <NBadge bg="#f1f5f9" fg="#475569" border="#cbd5e1">PNE</NBadge>}
-        {data.user_type === 'service_account' && <NBadge bg="#dbeafe" fg="#1d4ed8" border="#bfdbfe">SVC</NBadge>}
+        {data.is_domain_admin && <NBadge bg="var(--danger-subtle)" fg="var(--danger)" border="var(--danger)">DA</NBadge>}
+        {data.is_local_admin && !data.is_domain_admin && <NBadge bg="var(--warning-subtle)" fg="var(--warning)" border="var(--warning)">LA</NBadge>}
+        {data.kerberoastable && <NBadge bg="rgba(168,85,247,0.1)" fg="#a855f7" border="#a855f7">Kerb</NBadge>}
+        {data.password_never_expires && <NBadge bg="var(--secondary)" fg="var(--text-secondary)" border="var(--border)">PNE</NBadge>}
+        {data.user_type === 'service_account' && <NBadge bg="rgba(37,99,235,0.1)" fg="var(--primary)" border="var(--primary)">SVC</NBadge>}
       </div>
     </div>
   )
@@ -191,10 +191,10 @@ const nodeTypes = { asset: AssetNode, user: UserNode }
 
 // Maps legend node entries to a predicate over node data
 const NODE_LEGEND = [
-  { Icon: Server,    color: '#64748b', bg: '#f8fafc', label: 'Server',            match: n => n.type === 'asset' && !n.data.is_dc },
+  { Icon: Server,    color: 'var(--text-secondary)', bg: '#f8fafc', label: 'Server',            match: n => n.type === 'asset' && !n.data.is_dc },
   { Icon: Database,  color: '#ea580c', bg: '#fff7ed', label: 'Domain Controller', match: n => n.type === 'asset' && n.data.is_dc },
   { Icon: User,      color: '#3b82f6', bg: '#eff6ff', label: 'Domain User',       match: n => n.type === 'user' && n.data.user_type === 'domain_user' },
-  { Icon: UserCheck, color: '#64748b', bg: '#f8fafc', label: 'Local User',        match: n => n.type === 'user' && n.data.user_type === 'local_user' },
+  { Icon: UserCheck, color: 'var(--text-secondary)', bg: '#f8fafc', label: 'Local User',        match: n => n.type === 'user' && n.data.user_type === 'local_user' },
   { Icon: UserCog,   color: '#8b5cf6', bg: '#f5f3ff', label: 'Service Account',   match: n => n.type === 'user' && n.data.user_type === 'service_account' },
   { Icon: Monitor,   color: '#0ea5e9', bg: '#f0f9ff', label: 'Computer Account',  match: n => n.type === 'user' && n.data.user_type === 'computer_account' },
 ]
@@ -361,11 +361,11 @@ function BlastRadiusFlow({ data }) {
     >
       <Background color="#e5e7eb" gap={20} size={1} />
       <Controls showInteractive={false} style={{
-        background: 'rgba(255,255,255,0.9)', border: '1px solid var(--border)', borderRadius: 6, padding: 2,
+        background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 6, padding: 2,
       }} />
       <Panel position="bottom-right">
         <div style={{ fontSize: 10, color: hintColor || 'var(--text-muted)',
-          background: 'rgba(255,255,255,0.9)', border: '1px solid var(--border)',
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
           borderRadius: 5, padding: '4px 8px' }}>
           {(legendFilter || blastNode) && <Crosshair size={9} style={{ display: 'inline', marginRight: 4 }} />}
           {hint}
@@ -373,7 +373,7 @@ function BlastRadiusFlow({ data }) {
       </Panel>
       <Panel position="top-left">
         <div style={{
-          background: 'rgba(255,255,255,0.95)', border: '1px solid var(--border)',
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
           borderRadius: 6, padding: '6px 10px', fontSize: 10,
           display: 'flex', flexDirection: 'column', gap: 3,
           maxHeight: 'calc(100vh - 120px)', overflowY: 'auto',
@@ -402,7 +402,7 @@ function BlastRadiusFlow({ data }) {
           })}
 
           {/* Edge types */}
-          <div style={{ borderTop: '1px solid #e2e8f0', marginTop: 2, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ borderTop: '1px solid var(--border)', marginTop: 2, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
             {EDGE_LEGEND.map(({ key, color, label }) => {
               // Only show edge types that actually appear in the data
               const exists = data.edges.some(e => e.type === key)
@@ -432,7 +432,7 @@ function BlastRadiusFlow({ data }) {
 export function BlastRadiusScore({ score, reachable, daExposed, dcReachable, onClick }) {
   if (score === null || score === undefined) {
     return (
-      <span style={{ fontSize: 11, color: '#475569' }}>—</span>
+      <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>—</span>
     )
   }
   const c = scoreColor(score)
@@ -450,7 +450,7 @@ export function BlastRadiusScore({ score, reachable, daExposed, dcReachable, onC
       <Crosshair size={11} />
       {score.toFixed(1)}
       {reachable > 0 && (
-        <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 400 }}>
+        <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 400 }}>
           · {reachable} hosts
         </span>
       )}
@@ -495,12 +495,12 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
           cursor: 'pointer', textAlign: 'left',
         }}
       >
-        <Crosshair size={15} color={data ? sc : '#64748b'} />
+        <Crosshair size={15} color={data ? sc : 'var(--text-secondary)'} />
         <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
           Blast Radius
         </span>
 
-        {loading && <span style={{ fontSize: 11, color: '#64748b' }}>Loading…</span>}
+        {loading && <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Loading…</span>}
 
         {data && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -516,26 +516,26 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
 
             {/* Quick-fire indicators */}
             {data.dc_reachable && (
-              <span style={{ fontSize: 10, background: '#fff7ed', color: '#ea580c',
-                border: '1px solid #fed7aa', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
+              <span style={{ fontSize: 10, background: 'var(--warning-subtle)', color: 'var(--high)',
+                border: '1px solid var(--high)', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
                 DC
               </span>
             )}
             {data.da_exposed && (
-              <span style={{ fontSize: 10, background: '#fef2f2', color: '#ef4444',
-                border: '1px solid #fecaca', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
+              <span style={{ fontSize: 10, background: 'var(--danger-subtle)', color: 'var(--danger)',
+                border: '1px solid var(--danger)', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
                 DA
               </span>
             )}
             {data.kerberoastable_exposed && (
-              <span style={{ fontSize: 10, background: '#faf5ff', color: '#a855f7',
-                border: '1px solid #ddd6fe', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
+              <span style={{ fontSize: 10, background: 'rgba(168,85,247,0.1)', color: '#a855f7',
+                border: '1px solid #a855f7', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
                 Kerb
               </span>
             )}
             {data.group_access_exposed && (
-              <span style={{ fontSize: 10, background: '#f0f9ff', color: '#0ea5e9',
-                border: '1px solid #bae6fd', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
+              <span style={{ fontSize: 10, background: 'rgba(14,165,233,0.1)', color: 'var(--info)',
+                border: '1px solid var(--info)', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
                 RDP/DCOM
               </span>
             )}
@@ -543,10 +543,10 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
         )}
 
         {!loading && !data && (
-          <span style={{ fontSize: 11, color: '#64748b' }}>No inventory data</span>
+          <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>No inventory data</span>
         )}
 
-        {expanded ? <ChevronDown size={14} color="#64748b" /> : <ChevronRight size={14} color="#64748b" />}
+        {expanded ? <ChevronDown size={14} color="var(--text-secondary)" /> : <ChevronRight size={14} color="var(--text-secondary)" />}
       </button>
 
       {/* Expanded content */}
@@ -558,16 +558,16 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
             display: 'flex', gap: 0, borderBottom: '1px solid var(--border)',
           }}>
             {[
-              { label: 'Reachable', value: data.reachable_assets, color: '#3b82f6' },
+              { label: 'Reachable', value: data.reachable_assets, color: 'var(--primary)' },
               { label: 'Priv Users', value: data.privileged_users, color: '#a855f7' },
-              { label: 'Attack Vectors', value: data.vectors?.length || 0, color: '#f59e0b' },
+              { label: 'Attack Vectors', value: data.vectors?.length || 0, color: 'var(--warning)' },
             ].map(({ label, value, color }, i) => (
               <div key={i} style={{
                 flex: 1, padding: '10px 14px', textAlign: 'center',
                 borderRight: i < 2 ? '1px solid var(--border)' : 'none',
               }}>
                 <div style={{ fontSize: 20, fontWeight: 800, color }}>{value}</div>
-                <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+                <div style={{ fontSize: 10, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
               </div>
             ))}
           </div>
@@ -575,7 +575,7 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
           {/* Attack vectors */}
           {data.vectors?.length > 0 && (
             <div style={{ padding: '12px 16px', borderBottom: hasData ? '1px solid var(--border)' : 'none' }}>
-              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8,
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 8,
                 textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
                 Attack Vectors
               </div>
@@ -647,7 +647,7 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
                   title="Fullscreen"
                   style={{
                     position: 'absolute', top: 8, right: 8, zIndex: 10,
-                    background: 'rgba(255,255,255,0.9)', border: '1px solid var(--border)',
+                    background: 'var(--bg-card)', border: '1px solid var(--border)',
                     borderRadius: 6, padding: '5px 8px', cursor: 'pointer',
                     display: 'flex', alignItems: 'center', gap: 5,
                     fontSize: 11, color: 'var(--text-secondary)',
@@ -660,7 +660,7 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
           )}
 
           {!hasData && (
-            <div style={{ padding: '20px 16px', textAlign: 'center', color: '#475569', fontSize: 13 }}>
+            <div style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: 13 }}>
               No lateral movement paths detected for this asset.
             </div>
           )}

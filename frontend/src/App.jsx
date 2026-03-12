@@ -192,10 +192,10 @@ function UserMenu({ collapsed }) {
       {open && (
         <div style={{
           position: 'absolute',
-          bottom: '100%',
-          left: collapsed ? '50%' : 12,
-          transform: collapsed ? 'translateX(-50%)' : 'none',
-          marginBottom: 4,
+          bottom: collapsed ? 0 : '100%',
+          left: collapsed ? 'calc(100% + 8px)' : 12,
+          transform: 'none',
+          marginBottom: collapsed ? 0 : 4,
           background: 'var(--popover)',
           border: '1px solid var(--border)',
           borderRadius: 8,

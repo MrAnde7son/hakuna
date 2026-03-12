@@ -127,7 +127,7 @@ function FindingCard({ finding, rank, scanId }) {
               size="sm"
               style={{ background: '#6366f122', color: '#818cf8', border: '1px solid #6366f144' }}
             >
-              <Zap size={13} /> {creatingCampaign ? 'Creating…' : 'Automate This'}
+              <Zap size={13} /> {creatingCampaign ? 'Creating…' : 'Start a Campaign'}
             </Button>
           </div>
         </div>

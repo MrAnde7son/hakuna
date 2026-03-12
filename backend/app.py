@@ -24,7 +24,7 @@ from models import (
     InventoryNetConn, InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
     InventoryShare, InventorySoftware, InventorySecurityControl,
     InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
-    InventoryAITool, InventoryProcess,
+    InventoryAITool, InventoryProcess, InventoryDatabaseInstance,
     Campaign, CampaignFinding, FindingOwnership, AssetOwnership,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
 )
@@ -136,6 +136,94 @@ def _resolve_dc_asset_ids(db, scan_id=None, restrict_to_asset_ids=None) -> set:
     return result
 
 
+# ─── Server Role Detection ────────────────────────────────────────────────────
+# Maps role name → service name substrings (matched against service_name + display_name)
+_ROLE_SERVICE_PATTERNS: dict[str, list[str]] = {
+    "web_server":  ["iis", "w3svc", "apache", "httpd", "nginx", "tomcat", "kestrel", "lighttpd"],
+    "dns_server":  ["dns", "named", "bind", "dnsmasq", "unbound"],
+    "mail_server": ["exchange", "smtp", "imap", "pop3", "postfix", "sendmail", "exim", "dovecot"],
+    "database":    ["mssql", "sqlserver", "mysql", "mysqld", "postgres", "postgresql", "oracle",
+                    "mongodb", "mariadb", "redis", "db2"],
+    "ftp_server":  ["ftp", "vsftpd", "proftpd", "filezilla"],
+}
+
+
+def _compute_server_roles(db, asset_ids: list, scan_id: int | None = None) -> dict:
+    """Returns {asset_id: [role, ...]} for all given asset IDs.
+
+    Roles are derived from:
+    - Running services (InventoryService) matched against _ROLE_SERVICE_PATTERNS
+    - InventoryDatabaseInstance records (database role)
+    """
+    if not asset_ids:
+        return {}
+    result: dict = {aid: [] for aid in asset_ids}
+
+    # Service-based role detection
+    from sqlalchemy import or_, func as sqlfunc
+    svc_q = db.query(InventoryService.asset_id,
+                     InventoryService.service_name,
+                     InventoryService.display_name).filter(
+        InventoryService.asset_id.in_(asset_ids),
+        InventoryService.is_running == True,
+    )
+    if scan_id:
+        svc_q = svc_q.filter(InventoryService.scan_id == scan_id)
+    for aid, svc_name, disp_name in svc_q.all():
+        combined = f"{(svc_name or '').lower()} {(disp_name or '').lower()}"
+        for role, patterns in _ROLE_SERVICE_PATTERNS.items():
+            if any(p in combined for p in patterns):
+                if role not in result[aid]:
+                    result[aid].append(role)
+
+    # InventoryDatabaseInstance → database role
+    db_q = db.query(InventoryDatabaseInstance.asset_id).filter(
+        InventoryDatabaseInstance.asset_id.in_(asset_ids)
+    )
+    if scan_id:
+        db_q = db_q.filter(InventoryDatabaseInstance.scan_id == scan_id)
+    for (aid,) in db_q.distinct().all():
+        if aid in result and "database" not in result[aid]:
+            result[aid].append("database")
+
+    return result
+
+
+def _resolve_role_asset_ids(db, role: str, scan_id: int | None = None,
+                             restrict_to_asset_ids=None) -> set:
+    """Returns set of asset_ids that have the given server role."""
+    from sqlalchemy import or_, func as sqlfunc
+    matched: set = set()
+    patterns = _ROLE_SERVICE_PATTERNS.get(role, [])
+
+    if patterns:
+        svc_q = db.query(InventoryService.asset_id).filter(
+            InventoryService.is_running == True
+        )
+        if scan_id:
+            svc_q = svc_q.filter(InventoryService.scan_id == scan_id)
+        if restrict_to_asset_ids is not None:
+            svc_q = svc_q.filter(InventoryService.asset_id.in_(restrict_to_asset_ids))
+        conditions = []
+        for p in patterns:
+            conditions.append(sqlfunc.lower(InventoryService.service_name).contains(p))
+            conditions.append(sqlfunc.lower(InventoryService.display_name).contains(p))
+        svc_q = svc_q.filter(or_(*conditions))
+        for (aid,) in svc_q.all():
+            matched.add(aid)
+
+    if role == "database":
+        db_q = db.query(InventoryDatabaseInstance.asset_id)
+        if scan_id:
+            db_q = db_q.filter(InventoryDatabaseInstance.scan_id == scan_id)
+        if restrict_to_asset_ids is not None:
+            db_q = db_q.filter(InventoryDatabaseInstance.asset_id.in_(restrict_to_asset_ids))
+        for (aid,) in db_q.distinct().all():
+            matched.add(aid)
+
+    return matched
+
+
 app = FastAPI(title="Nessus Remediation Platform", version="1.0.0")
 
 _cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
@@ -189,6 +277,7 @@ def startup():
         "env_vars":          (InventoryEnvVar,           [],                   ["is_sensitive"]),
         "certificates":      (InventoryCertificate,      ["subject_alt_names"], ["is_expired", "is_ca", "is_self_signed"]),
         "processes":         (InventoryProcess,          [],                    []),
+        "database_instances": (InventoryDatabaseInstance, [],                  ["is_running"]),
     })
     # Start workflow scheduler for cron-based triggers
     from database import SessionLocal
@@ -624,6 +713,11 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             "process_name", "pid", "ppid", "session_id",
             "parent_name", "depth",
         ]),
+        "database_instances": (InventoryDatabaseInstance, [
+            "scan_id", "asset_id", "source_plugin",
+            "db_type", "instance_name", "version", "port",
+            "databases", "named_pipes", "is_running",
+        ]),
     }
 
     inv_counts = {}
@@ -787,7 +881,7 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[L
         InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
         InventoryShare, InventorySoftware, InventorySecurityControl,
         InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
-        InventoryAITool, InventoryProcess,
+        InventoryAITool, InventoryProcess, InventoryDatabaseInstance,
     ]:
         db.query(InvModel).filter(InvModel.scan_id == scan_id).delete(synchronize_session=False)
     # Remove scan comparisons referencing this scan
@@ -906,6 +1000,7 @@ def list_assets(
     min_critical: Optional[int] = None,
     min_high: Optional[int] = None,
     has_findings: Optional[bool] = None,
+    server_role: Optional[str] = None,
     tags: Optional[str] = None,
     tag_logic: str = "AND",
     expand_children: bool = False,
@@ -947,16 +1042,29 @@ def list_assets(
         q = tag_engine.apply_asset_tag_filter(q, id_sets, tag_logic, db)
     q = _apply_sort(q, Asset, sort_by, order, Asset.risk_score)
 
+    # Apply server_role filter (subquery into service/db tables)
+    if server_role:
+        role_ids = _resolve_role_asset_ids(db, server_role, scan_id=scan_id)
+        if not role_ids:
+            return []
+        q = q.filter(Asset.id.in_(role_ids))
+
     assets = q.all()
     asset_ids = [a.id for a in assets]
     tag_map = tag_engine.get_asset_tags(asset_ids, db)
     # Batch-fetch DC status: match by hostname/fqdn (not by source asset_id)
     dc_asset_ids = _resolve_dc_asset_ids(db, restrict_to_asset_ids=asset_ids) if asset_ids else set()
+    # Batch-compute server roles from services + DB instances
+    server_roles_map = _compute_server_roles(db, asset_ids, scan_id=scan_id)
     result = []
     for a in assets:
         d = _asset_to_dict(a)
         d["tags"] = tag_map.get(a.id, [])
         d["is_domain_controller"] = a.id in dc_asset_ids
+        roles = server_roles_map.get(a.id, [])
+        if a.id in dc_asset_ids and "domain_controller" not in roles:
+            roles = ["domain_controller"] + roles
+        d["server_roles"] = roles
         result.append(d)
     return result
 
@@ -1937,6 +2045,8 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
     sensitive_env_vars = _q(InventoryEnvVar).filter(InventoryEnvVar.is_sensitive == True).count()
     # Domain controllers
     domain_controllers = _q(InventoryComputer).filter(InventoryComputer.is_domain_controller == True).all()
+    # Database servers
+    db_instance_count = _q(InventoryDatabaseInstance).count()
 
     return {
         "counts": {
@@ -1956,6 +2066,7 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
             "env_vars": total_env_vars,
             "password_policies": total_password_policies,
             "ai_tools": total_ai_tools,
+            "database_instances": db_instance_count,
         },
         "attack_surface": {
             "domain_admins": [_inv_user_to_dict(u) for u in domain_admins],
@@ -2400,6 +2511,45 @@ def list_inventory_certificates(
         "port": r.port, "protocol": r.protocol,
         "source_plugin": r.source_plugin,
     } for r in rows]
+
+
+@app.get("/api/inventory/databases")
+def list_inventory_databases(
+    scan_id: Optional[int] = None,
+    asset_id: Optional[int] = None,
+    db_type: Optional[str] = None,
+    search: Optional[str] = None,
+    sort_by: str = "db_type",
+    order: str = "asc",
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    q = db.query(InventoryDatabaseInstance).join(Scan, InventoryDatabaseInstance.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
+    if scan_id:
+        q = q.filter(InventoryDatabaseInstance.scan_id == scan_id)
+    if asset_id:
+        q = q.filter(InventoryDatabaseInstance.asset_id == asset_id)
+    if db_type:
+        q = q.filter(InventoryDatabaseInstance.db_type == db_type)
+    if search:
+        q = q.filter(
+            InventoryDatabaseInstance.instance_name.ilike(f"%{search}%") |
+            InventoryDatabaseInstance.version.ilike(f"%{search}%")
+        )
+    q = _apply_sort(q, InventoryDatabaseInstance, sort_by, order, InventoryDatabaseInstance.db_type)
+    instances = q.all()
+    assets = _asset_lookup(db, {i.asset_id for i in instances})
+    return [{
+        "id": i.id, "scan_id": i.scan_id, "asset_id": i.asset_id,
+        "asset_label": _asset_label(assets.get(i.asset_id)),
+        "asset_ip": (assets.get(i.asset_id) or {}).get("ip"),
+        "asset_env": (assets.get(i.asset_id) or {}).get("environment_tag"),
+        "db_type": i.db_type, "instance_name": i.instance_name,
+        "version": i.version, "port": i.port,
+        "databases": i.databases or [], "named_pipes": i.named_pipes or [],
+        "is_running": i.is_running, "source_plugin": i.source_plugin,
+    } for i in instances]
 
 
 @app.get("/api/inventory/ai-tools")
@@ -6510,6 +6660,11 @@ def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
             "scan_id", "asset_id", "source_plugin",
             "process_name", "pid", "ppid", "session_id",
             "parent_name", "depth",
+        ]),
+        "database_instances": (InventoryDatabaseInstance, [
+            "scan_id", "asset_id", "source_plugin",
+            "db_type", "instance_name", "version", "port",
+            "databases", "named_pipes", "is_running",
         ]),
     }
 

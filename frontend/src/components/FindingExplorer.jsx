@@ -57,7 +57,7 @@ const GROUP_OPTIONS = [
 
 const SEV_ORDER = { 4: 0, 3: 1, 2: 2, 1: 3, 0: 4 }
 const SEV_LABELS = { 4: 'Critical', 3: 'High', 2: 'Medium', 1: 'Low', 0: 'Info' }
-const SEV_COLORS = { 4: '#dc2626', 3: '#ea580c', 2: '#d97706', 1: '#65a30d', 0: '#6b7280' }
+const SEV_COLORS = { 4: 'var(--critical)', 3: 'var(--high)', 2: 'var(--medium)', 1: 'var(--low)', 0: 'var(--muted)' }
 
 function getGroupKey(finding, groupBy) {
   if (groupBy === 'severity') return String(finding.severity)
@@ -136,11 +136,11 @@ function SLABadge({ status, dueDate }) {
   const daysLeft = due ? Math.ceil((due - now) / 86400000) : null
 
   const cfg = {
-    resolved: { color: '#6366f1', bg: 'rgba(99,102,241,0.12)', label: 'Resolved' },
-    on_track: { color: '#16a34a', bg: 'rgba(22,163,74,0.1)',   label: daysLeft !== null ? `${daysLeft}d left` : 'On Track' },
-    at_risk:  { color: '#d97706', bg: 'rgba(217,119,6,0.12)',  label: daysLeft !== null ? `${daysLeft}d left` : 'At Risk' },
-    breached: { color: '#dc2626', bg: 'rgba(220,38,38,0.12)',  label: daysLeft !== null ? `${Math.abs(daysLeft)}d over` : 'Breached' },
-  }[status] || { color: '#6b7280', bg: 'transparent', label: status }
+    resolved: { color: 'var(--accent)',   bg: 'rgba(99,102,241,0.12)', label: 'Resolved' },
+    on_track: { color: 'var(--success)',  bg: 'rgba(22,163,74,0.1)',   label: daysLeft !== null ? `${daysLeft}d left` : 'On Track' },
+    at_risk:  { color: 'var(--warning)',  bg: 'rgba(217,119,6,0.12)',  label: daysLeft !== null ? `${daysLeft}d left` : 'At Risk' },
+    breached: { color: 'var(--danger)',   bg: 'rgba(220,38,38,0.12)',  label: daysLeft !== null ? `${Math.abs(daysLeft)}d over` : 'Breached' },
+  }[status] || { color: 'var(--muted)', bg: 'transparent', label: status }
 
   return (
     <span style={{
@@ -504,7 +504,7 @@ export default function FindingExplorer() {
       render: (v, row) => {
         const score = v || row.cvss2_score
         if (!score) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
-        const color = score >= 9 ? '#dc2626' : score >= 7 ? '#ea580c' : score >= 4 ? '#d97706' : '#65a30d'
+        const color = score >= 9 ? 'var(--critical)' : score >= 7 ? 'var(--high)' : score >= 4 ? 'var(--medium)' : 'var(--low)'
         return <span style={{ fontWeight: 600, color, fontSize: 13 }}>{score.toFixed(1)}</span>
       }
     },
@@ -576,7 +576,7 @@ export default function FindingExplorer() {
       key: 'epss_score', label: 'EPSS', width: '80px', sortable: true,
       render: (v, row) => {
         if (v == null) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
-        const color = v >= 0.5 ? '#dc2626' : v >= 0.2 ? '#ea580c' : v >= 0.1 ? '#d97706' : '#65a30d'
+        const color = v >= 0.5 ? 'var(--critical)' : v >= 0.2 ? 'var(--high)' : v >= 0.1 ? 'var(--medium)' : 'var(--low)'
         return (
           <div>
             <span style={{ fontWeight: 600, color, fontSize: 13 }}>{(v * 100).toFixed(1)}%</span>
@@ -603,7 +603,7 @@ export default function FindingExplorer() {
       key: 'vulnerability_state', label: 'State',
       render: (v) => {
         if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
-        const color = v === 'Active' ? '#dc2626' : v === 'New' ? '#16a34a' : v === 'Resurfaced' ? '#d97706' : '#6b7280'
+        const color = v === 'Active' ? 'var(--danger)' : v === 'New' ? 'var(--success)' : v === 'Resurfaced' ? 'var(--warning)' : 'var(--muted)'
         return <Pill label={v} color={color} />
       }
     },
@@ -611,7 +611,7 @@ export default function FindingExplorer() {
       key: 'vpr_score', label: 'VPR', width: '70px', sortable: true,
       render: (v) => {
         if (v == null) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
-        const color = v >= 7 ? '#dc2626' : v >= 5 ? '#ea580c' : '#65a30d'
+        const color = v >= 7 ? 'var(--critical)' : v >= 5 ? 'var(--high)' : 'var(--low)'
         return <span style={{ fontWeight: 600, color, fontSize: 13 }}>{v.toFixed(1)}</span>
       }
     },
@@ -619,7 +619,7 @@ export default function FindingExplorer() {
       key: 'risk_factor', label: 'Risk Factor',
       render: (v) => {
         if (!v || v === 'None') return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
-        const color = v === 'Critical' ? '#dc2626' : v === 'High' ? '#ea580c' : v === 'Medium' ? '#d97706' : v === 'Low' ? '#65a30d' : '#6b7280'
+        const color = v === 'Critical' ? 'var(--critical)' : v === 'High' ? 'var(--high)' : v === 'Medium' ? 'var(--medium)' : v === 'Low' ? 'var(--low)' : 'var(--muted)'
         return <span style={{ fontSize: 12, fontWeight: 600, color }}>{v}</span>
       }
     },
@@ -675,7 +675,7 @@ export default function FindingExplorer() {
         if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
         const date = new Date(v)
         const ageDays = Math.floor((Date.now() - date) / 86400000)
-        const color = ageDays > 90 ? '#dc2626' : ageDays > 30 ? '#ea580c' : 'var(--text-secondary)'
+        const color = ageDays > 90 ? 'var(--critical)' : ageDays > 30 ? 'var(--high)' : 'var(--text-secondary)'
         return (
           <div>
             <div style={{ fontSize: 12, color }}>{date.toLocaleDateString()}</div>

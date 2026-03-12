@@ -10,7 +10,7 @@ import BlastRadiusPanel, { BlastRadiusScore } from './BlastRadiusPanel.jsx'
 import NLPSearchBar from './NLPSearchBar.jsx'
 
 function RiskScore({ score }) {
-  const color = score >= 8 ? '#dc2626' : score >= 6 ? '#ea580c' : score >= 4 ? '#d97706' : '#65a30d'
+  const color = score >= 8 ? 'var(--critical)' : score >= 6 ? 'var(--high)' : score >= 4 ? 'var(--medium)' : 'var(--low)'
   return (
     <div style={{ minWidth: 120 }}>
       <ScoreBar score={score} color={color} />
@@ -20,11 +20,11 @@ function RiskScore({ score }) {
 
 function SevCounts({ asset }) {
   const items = [
-    { label: 'C', count: asset.critical_count, color: '#dc2626' },
-    { label: 'H', count: asset.high_count, color: '#ea580c' },
-    { label: 'M', count: asset.medium_count, color: '#d97706' },
-    { label: 'L', count: asset.low_count, color: '#65a30d' },
-    { label: 'I', count: asset.info_count, color: '#0ea5e9' },
+    { label: 'C', count: asset.critical_count, color: 'var(--critical)' },
+    { label: 'H', count: asset.high_count, color: 'var(--high)' },
+    { label: 'M', count: asset.medium_count, color: 'var(--medium)' },
+    { label: 'L', count: asset.low_count, color: 'var(--low)' },
+    { label: 'I', count: asset.info_count, color: 'var(--info)' },
   ]
   return (
     <div style={{ display: 'flex', gap: 6 }}>
@@ -79,7 +79,7 @@ function CriticalityEditor({ asset, onUpdate }) {
   )
 }
 
-const ENV_COLORS = { internet: '#dc2626', dmz: '#ea580c', internal: '#65a30d', ot: '#d97706' }
+const ENV_COLORS = { internet: 'var(--critical)', dmz: 'var(--high)', internal: 'var(--low)', ot: 'var(--medium)' }
 
 function RowActions({ row, onNavigate }) {
   const [open, setOpen] = useState(false)
@@ -262,7 +262,7 @@ export default function AssetInventory() {
   })
   const updateColVis = (next) => { setColVis(next); localStorage.setItem('assetColumns', JSON.stringify(next)) }
   const [filters, setFilters] = useState({
-    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '',
+    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '',
   })
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -284,7 +284,7 @@ export default function AssetInventory() {
   }
 
   const clearFilters = () => setFilters({
-    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '',
+    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '',
   })
 
   const activeFilterCount = Object.values(filters).filter(Boolean).length
@@ -300,6 +300,7 @@ export default function AssetInventory() {
       max_risk: filters.maxRisk || undefined,
       min_critical: filters.minCritical || undefined,
       min_high: filters.minHigh || undefined,
+      server_role: filters.serverRole || undefined,
       sort_by: sortBy,
       order: sortOrder,
     }
@@ -394,6 +395,27 @@ export default function AssetInventory() {
                 fontSize: 10, fontWeight: 700, lineHeight: '16px',
               }}>DC</span>
             )}
+            {(row.server_roles || []).map(role => {
+              const ROLE_COLORS = {
+                web_server: { bg: '#0ea5e922', color: '#0ea5e9', border: '#0ea5e944' },
+                dns_server: { bg: '#8b5cf622', color: '#8b5cf6', border: '#8b5cf644' },
+                database: { bg: '#f59e0b22', color: '#f59e0b', border: '#f59e0b44' },
+                mail_server: { bg: '#10b98122', color: '#10b981', border: '#10b98144' },
+                ftp_server: { bg: '#6b728022', color: '#6b7280', border: '#6b728044' },
+                domain_controller: null,
+              }
+              const ROLE_LABELS = { web_server: 'WEB', dns_server: 'DNS', database: 'DB', mail_server: 'MAIL', ftp_server: 'FTP', domain_controller: null }
+              const c = ROLE_COLORS[role]
+              const label = ROLE_LABELS[role]
+              if (!c || !label) return null
+              return (
+                <span key={role} style={{
+                  display: 'inline-block', padding: '1px 5px', borderRadius: 4,
+                  background: c.bg, color: c.color, border: `1px solid ${c.border}`,
+                  fontSize: 10, fontWeight: 700, lineHeight: '16px',
+                }}>{label}</span>
+              )
+            })}
           </div>
           {row.fqdn && row.fqdn !== row.hostname && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.fqdn}</div>}
           {row.ip && row.ip !== row.hostname && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.ip}</div>}
@@ -633,6 +655,19 @@ export default function AssetInventory() {
             { value: 'ot', label: 'OT/ICS' },
           ]}
         />
+
+        <select
+          value={filters.serverRole}
+          onChange={e => setFilters(f => ({ ...f, serverRole: e.target.value }))}
+          style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: filters.serverRole ? 'var(--text-primary)' : 'var(--text-muted)', borderRadius: 6, padding: '5px 8px', fontSize: 12 }}
+        >
+          <option value="">All Roles</option>
+          <option value="web_server">Web Server</option>
+          <option value="dns_server">DNS Server</option>
+          <option value="database">Database</option>
+          <option value="mail_server">Mail Server</option>
+          <option value="ftp_server">FTP Server</option>
+        </select>
 
         <Select
           value={filters.criticality}

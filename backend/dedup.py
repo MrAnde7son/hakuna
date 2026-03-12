@@ -39,6 +39,7 @@ KEY_FIELD_OPTIONS: dict[str, list[str]] = {
     "env_vars": ["name", "asset_id"],
     "processes": ["process_name", "pid", "asset_id"],
     "certificates": ["subject_cn", "serial_number", "asset_id"],
+    "database_instances": ["db_type", "instance_name", "port", "asset_id"],
 }
 
 # ─────────────────────────────────────────────
@@ -134,6 +135,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "certificates": {
             "enabled": True,
             "key_fields": ["subject_cn", "serial_number", "asset_id"],
+            "strategy": "keep_last",
+        },
+        "database_instances": {
+            "enabled": True,
+            "key_fields": ["db_type", "instance_name", "port", "asset_id"],
             "strategy": "keep_last",
         },
     },
@@ -275,6 +281,7 @@ def dedup_inventory(inventory: dict, cfg: dict) -> dict:
         "env_vars": "env_vars",
         "processes": "processes",
         "certificates": "certificates",
+        "database_instances": "database_instances",
     }
 
     for inv_key, dedup_key in KEY_MAP.items():

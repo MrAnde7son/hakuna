@@ -246,6 +246,10 @@ CONDITION_CATALOG = [
         "conditions": [
             {"field": "inventory.is_internet_facing",        "label": "Is Internet-Facing",          "ops": ["is_true", "is_false"], "value_type": "none"},
             {"field": "inventory.is_domain_controller",      "label": "Is Domain Controller",         "ops": ["is_true", "is_false"], "value_type": "none"},
+            {"field": "inventory.is_database_server",  "label": "Is Database Server",   "ops": ["is_true", "is_false"], "value_type": "none"},
+            {"field": "inventory.is_web_server",        "label": "Is Web Server",         "ops": ["is_true", "is_false"], "value_type": "none"},
+            {"field": "inventory.is_dns_server",        "label": "Is DNS Server",         "ops": ["is_true", "is_false"], "value_type": "none"},
+            {"field": "inventory.is_mail_server",       "label": "Is Mail Server",        "ops": ["is_true", "is_false"], "value_type": "none"},
             {"field": "inventory.domain_admin_present",      "label": "Domain Admin Present",         "ops": ["is_true", "is_false"], "value_type": "none"},
             {"field": "inventory.admin_logged_in",           "label": "Admin User Logged In",         "ops": ["is_true", "is_false"], "value_type": "none"},
             {"field": "inventory.privileged_user_logged_in", "label": "Privileged User Logged In",    "ops": ["is_true", "is_false"], "value_type": "none"},
@@ -649,6 +653,36 @@ def _eval_inventory(cond: dict, db: Session, asset_id: int, scan_id,
             q = q.filter(InventoryComputer.scan_id == scan_id)
         return _result(q.first() is not None)
 
+    if sub in ("is_database_server", "is_web_server", "is_dns_server", "is_mail_server"):
+        from models import InventoryDatabaseInstance, InventoryService
+        from sqlalchemy import or_, func as sqlfunc
+        role_map = {
+            "is_database_server": ["mssql", "sqlserver", "mysql", "mysqld", "postgres",
+                                   "postgresql", "oracle", "mongodb", "mariadb", "redis", "db2"],
+            "is_web_server":  ["iis", "w3svc", "apache", "httpd", "nginx", "tomcat", "kestrel"],
+            "is_dns_server":  ["dns", "named", "bind", "dnsmasq", "unbound"],
+            "is_mail_server": ["exchange", "smtp", "imap", "pop3", "postfix", "sendmail", "exim"],
+        }
+        patterns = role_map[sub]
+        svc_q = db.query(InventoryService).filter(
+            InventoryService.asset_id == asset_id,
+            InventoryService.is_running == True,
+            or_(*[sqlfunc.lower(InventoryService.service_name).contains(p) for p in patterns] +
+                 [sqlfunc.lower(InventoryService.display_name).contains(p) for p in patterns])
+        )
+        if scan_id:
+            svc_q = svc_q.filter(InventoryService.scan_id == scan_id)
+        svc_match = svc_q.first() is not None
+        db_match = False
+        if sub == "is_database_server":
+            db_q = db.query(InventoryDatabaseInstance).filter(
+                InventoryDatabaseInstance.asset_id == asset_id
+            )
+            if scan_id:
+                db_q = db_q.filter(InventoryDatabaseInstance.scan_id == scan_id)
+            db_match = db_q.first() is not None
+        return _result(svc_match or db_match)
+
     if sub == "domain_admin_present":
         q = db.query(InventoryUser).filter(
             InventoryUser.asset_id == asset_id,
@@ -868,11 +902,17 @@ def get_matching_assets(
     Return Asset ORM objects that match the given conditions.
     Used by campaign queries and auto-tag asset-level rules.
     """
-    from models import Asset
+    from models import Asset, Finding
+    from sqlalchemy import select
 
     q = db.query(Asset)
     if scan_id:
-        q = q.filter(Asset.scan_id == scan_id)
+        # Assets are deduplicated across scans — their scan_id reflects the latest scan.
+        # Match assets that have *any finding* in this scan, not just Asset.scan_id == scan_id.
+        asset_ids_in_scan = select(Finding.asset_id).where(
+            Finding.scan_id == scan_id
+        ).distinct()
+        q = q.filter(Asset.id.in_(asset_ids_in_scan))
     assets = q.all()
 
     return [

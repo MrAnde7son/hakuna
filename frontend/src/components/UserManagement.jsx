@@ -10,10 +10,10 @@ import { Users, Building2, Plus, Shield, Pencil, UserPlus, User, KeyRound, Trash
 import RoleManager from './RoleManager.jsx'
 
 const ROLE_COLORS = {
-  superadmin: { bg: '#fef3c7', color: '#92400e', label: 'Super Admin' },
-  org_admin: { bg: '#dbeafe', color: '#1e40af', label: 'Admin' },
-  analyst: { bg: '#f0fdf4', color: '#166534', label: 'Analyst' },
-  viewer: { bg: '#f5f5f5', color: '#525252', label: 'Viewer' },
+  superadmin: { bg: 'var(--warning-subtle)', color: 'var(--warning)', label: 'Super Admin' },
+  org_admin:  { bg: 'rgba(37,99,235,0.1)',   color: 'var(--primary)', label: 'Admin' },
+  analyst:    { bg: 'var(--success-subtle)',  color: 'var(--success)', label: 'Analyst' },
+  viewer:     { bg: 'var(--secondary)',       color: 'var(--muted)',   label: 'Viewer' },
 }
 
 function RoleBadge({ role }) {
@@ -59,19 +59,19 @@ function ProfileTab({ currentUser, org }) {
   return (
     <div>
       <div style={{
-        background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: 24,
+        background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, padding: 24,
         display: 'flex', alignItems: 'center', gap: 20, marginBottom: 16,
       }}>
         <div style={{
-          width: 56, height: 56, borderRadius: '50%', background: '#18181b', color: '#fff',
+          width: 56, height: 56, borderRadius: '50%', background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: 20, fontWeight: 700, flexShrink: 0,
         }}>
           {initials}
         </div>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: '#18181b' }}>{currentUser.display_name}</div>
-          <div style={{ fontSize: 13, color: '#71717a', marginTop: 2 }}>{currentUser.email}</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)' }}>{currentUser.display_name}</div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 2 }}>{currentUser.email}</div>
           <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'center' }}>
             <RoleBadge role={currentUser.role} />
             <span style={{ fontSize: 12, color: '#a1a1aa' }}>{org?.name}</span>
@@ -80,7 +80,7 @@ function ProfileTab({ currentUser, org }) {
       </div>
 
       <div style={{
-        background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: 20,
+        background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, padding: 20,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 600 }}>
@@ -91,7 +91,7 @@ function ProfileTab({ currentUser, org }) {
               onClick={() => setChangingPw(true)}
               style={{
                 padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border)',
-                background: '#fff', fontSize: 12, cursor: 'pointer',
+                background: 'var(--bg-card)', fontSize: 12, cursor: 'pointer',
               }}
             >
               Change Password
@@ -100,7 +100,7 @@ function ProfileTab({ currentUser, org }) {
         </div>
 
         {pwSuccess && (
-          <div style={{ background: '#f0fdf4', color: '#166534', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 12, border: '1px solid #bbf7d0' }}>
+          <div style={{ background: 'var(--success-subtle)', color: 'var(--success)', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 12, border: '1px solid #bbf7d0' }}>
             {pwSuccess}
           </div>
         )}
@@ -108,7 +108,7 @@ function ProfileTab({ currentUser, org }) {
         {changingPw && (
           <form onSubmit={handleChangePw} style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 360 }}>
             {pwError && (
-              <div style={{ background: '#fef2f2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 13, border: '1px solid #fecaca' }}>
+              <div style={{ background: 'var(--danger-subtle)', color: 'var(--danger)', padding: '8px 12px', borderRadius: 6, fontSize: 13, border: '1px solid var(--danger)' }}>
                 {pwError}
               </div>
             )}
@@ -129,11 +129,11 @@ function ProfileTab({ currentUser, org }) {
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button type="button" onClick={() => { setChangingPw(false); setPwError('') }}
-                style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border)', background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+                style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', fontSize: 13, cursor: 'pointer' }}>
                 Cancel
               </button>
               <button type="submit" disabled={pwLoading}
-                style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: '#18181b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
                 {pwLoading ? 'Saving...' : 'Update Password'}
               </button>
             </div>
@@ -141,7 +141,7 @@ function ProfileTab({ currentUser, org }) {
         )}
 
         {!changingPw && !pwSuccess && (
-          <div style={{ fontSize: 13, color: '#71717a' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
             Last login: {currentUser.last_login_at ? new Date(currentUser.last_login_at).toLocaleString() : 'N/A'}
           </div>
         )}
@@ -322,9 +322,9 @@ export default function UserManagement() {
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
               padding: '8px 16px', border: 'none', cursor: 'pointer',
-              borderBottom: tab === t.id ? '2px solid #18181b' : '2px solid transparent',
+              borderBottom: tab === t.id ? '2px solid var(--text-primary)' : '2px solid transparent',
               background: 'none', fontSize: 13, fontWeight: tab === t.id ? 600 : 400,
-              color: tab === t.id ? '#18181b' : '#71717a',
+              color: tab === t.id ? 'var(--text-primary)' : 'var(--text-secondary)',
             }}
           >
             <t.icon size={14} />
@@ -334,7 +334,7 @@ export default function UserManagement() {
       </div>
 
       {error && (
-        <div style={{ background: '#fef2f2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 12, border: '1px solid #fecaca' }}>
+        <div style={{ background: 'var(--danger-subtle)', color: 'var(--danger)', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 12, border: '1px solid var(--danger)' }}>
           {error}
           <button onClick={() => setError('')} style={{ float: 'right', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13 }}>x</button>
         </div>
@@ -347,13 +347,13 @@ export default function UserManagement() {
       {tab === 'users' && isAdmin && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <div style={{ fontSize: 13, color: '#71717a' }}>{users.length} user{users.length !== 1 ? 's' : ''}</div>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{users.length} user{users.length !== 1 ? 's' : ''}</div>
             <button
               onClick={() => setShowInvite(!showInvite)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 padding: '6px 14px', borderRadius: 8, border: 'none',
-                background: '#18181b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
               }}
             >
               <UserPlus size={14} /> Invite User
@@ -362,7 +362,7 @@ export default function UserManagement() {
 
           {showInvite && (
             <form onSubmit={handleInvite} style={{
-              background: '#fafafa', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16,
+              background: 'var(--bg-muted)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16,
               display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10,
             }}>
               <div>
@@ -386,18 +386,18 @@ export default function UserManagement() {
                 <input type="password" value={inviteForm.password} onChange={e => setInviteForm(p => ({ ...p, password: e.target.value }))} required minLength={8} style={inputStyle} />
               </div>
               <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                <button type="button" onClick={() => setShowInvite(false)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border)', background: '#fff', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
-                <button type="submit" disabled={loading} style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: '#18181b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                <button type="button" onClick={() => setShowInvite(false)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
+                <button type="submit" disabled={loading} style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
                   {loading ? 'Inviting...' : 'Send Invite'}
                 </button>
               </div>
             </form>
           )}
 
-          <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
-                <tr style={{ borderBottom: '1px solid var(--border)', background: '#fafafa' }}>
+                <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-muted)' }}>
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>User</th>
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Email</th>
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Role</th>
@@ -411,7 +411,7 @@ export default function UserManagement() {
                 {users.map(u => (
                   <tr key={u.id} style={{ borderBottom: '1px solid var(--border)' }}>
                     <td style={{ padding: '8px 12px' }}>{u.display_name}</td>
-                    <td style={{ padding: '8px 12px', color: '#71717a' }}>{u.email}</td>
+                    <td style={{ padding: '8px 12px', color: 'var(--text-secondary)' }}>{u.email}</td>
                     <td style={{ padding: '8px 12px' }}>
                       {u.id === currentUser?.id ? (
                         <RoleBadge role={u.role} />
@@ -434,7 +434,7 @@ export default function UserManagement() {
                           <span key={r.id} style={{
                             display: 'inline-flex', alignItems: 'center', gap: 3,
                             fontSize: 11, padding: '2px 7px', borderRadius: 999,
-                            background: '#ede9fe', color: '#6d28d9', fontWeight: 600,
+                            background: 'rgba(109,40,217,0.1)', color: '#6d28d9', fontWeight: 600,
                           }}>
                             {r.name}
                             {u.id !== currentUser?.id && (
@@ -449,14 +449,14 @@ export default function UserManagement() {
                           <div style={{ position: 'relative' }}>
                             <button
                               onClick={() => setExpandedUserRoles(expandedUserRoles === u.id ? null : u.id)}
-                              style={{ fontSize: 11, padding: '2px 7px', borderRadius: 999, border: '1px dashed #d4d4d8', background: '#fff', cursor: 'pointer', color: '#71717a' }}
+                              style={{ fontSize: 11, padding: '2px 7px', borderRadius: 999, border: '1px dashed #d4d4d8', background: 'var(--bg-card)', cursor: 'pointer', color: 'var(--text-secondary)' }}
                             >
                               + Add
                             </button>
                             {expandedUserRoles === u.id && (
                               <div style={{
                                 position: 'absolute', top: '100%', left: 0, zIndex: 10,
-                                background: '#fff', border: '1px solid var(--border)', borderRadius: 8,
+                                background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8,
                                 boxShadow: '0 4px 12px rgba(0,0,0,0.1)', minWidth: 160, padding: 4,
                               }}>
                                 {customRoles
@@ -469,7 +469,7 @@ export default function UserManagement() {
                                         padding: '6px 10px', border: 'none', background: 'none',
                                         fontSize: 12, cursor: 'pointer', borderRadius: 6,
                                       }}
-                                      onMouseEnter={e => e.currentTarget.style.background = '#f4f4f5'}
+                                      onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
                                       onMouseLeave={e => e.currentTarget.style.background = 'none'}
                                     >
                                       {r.name}
@@ -481,11 +481,11 @@ export default function UserManagement() {
                         )}
                       </div>
                     </td>
-                    {isSuperadmin && <td style={{ padding: '8px 12px', fontSize: 12, color: '#71717a' }}>{u.org?.name}</td>}
+                    {isSuperadmin && <td style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text-secondary)' }}>{u.org?.name}</td>}
                     <td style={{ padding: '8px 12px' }}>
                       <span style={{
                         fontSize: 11, fontWeight: 600,
-                        color: u.is_active ? '#166534' : '#991b1b',
+                        color: u.is_active ? 'var(--success)' : 'var(--danger)',
                       }}>
                         {u.is_active ? 'Active' : 'Disabled'}
                       </span>
@@ -497,7 +497,7 @@ export default function UserManagement() {
                             onClick={() => handleToggleActive(u)}
                             style={{
                               fontSize: 12, padding: '3px 10px', borderRadius: 6,
-                              border: '1px solid var(--border)', background: '#fff', cursor: 'pointer',
+                              border: '1px solid var(--border)', background: 'var(--bg-card)', cursor: 'pointer',
                             }}
                           >
                             {u.is_active ? 'Disable' : 'Enable'}
@@ -507,8 +507,8 @@ export default function UserManagement() {
                             title="Delete user"
                             style={{
                               fontSize: 12, padding: '3px 8px', borderRadius: 6,
-                              border: '1px solid #fecaca', background: '#fff', cursor: 'pointer',
-                              color: '#dc2626', display: 'flex', alignItems: 'center',
+                              border: '1px solid var(--danger)', background: 'var(--bg-card)', cursor: 'pointer',
+                              color: 'var(--danger)', display: 'flex', alignItems: 'center',
                             }}
                           >
                             <Trash2 size={12} />
@@ -528,13 +528,13 @@ export default function UserManagement() {
       {tab === 'orgs' && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <div style={{ fontSize: 13, color: '#71717a' }}>{orgs.length} organization{orgs.length !== 1 ? 's' : ''}</div>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{orgs.length} organization{orgs.length !== 1 ? 's' : ''}</div>
             <button
               onClick={() => setShowCreateOrg(!showCreateOrg)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 padding: '6px 14px', borderRadius: 8, border: 'none',
-                background: '#18181b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
               }}
             >
               <Plus size={14} /> New Organization
@@ -543,7 +543,7 @@ export default function UserManagement() {
 
           {showCreateOrg && (
             <form onSubmit={handleCreateOrg} style={{
-              background: '#fafafa', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16,
+              background: 'var(--bg-muted)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16,
               display: 'flex', gap: 10, alignItems: 'flex-end',
             }}>
               <div style={{ flex: 1 }}>
@@ -557,16 +557,16 @@ export default function UserManagement() {
                   <option value="mssp">MSSP</option>
                 </select>
               </div>
-              <button type="submit" disabled={loading} style={{ padding: '7px 14px', borderRadius: 8, border: 'none', background: '#18181b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              <button type="submit" disabled={loading} style={{ padding: '7px 14px', borderRadius: 8, border: 'none', background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
                 Create
               </button>
             </form>
           )}
 
-          <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
-                <tr style={{ borderBottom: '1px solid var(--border)', background: '#fafafa' }}>
+                <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-muted)' }}>
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Name</th>
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Slug</th>
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Type</th>
@@ -579,20 +579,20 @@ export default function UserManagement() {
                 {orgs.map(o => (
                   <tr key={o.id} style={{ borderBottom: '1px solid var(--border)' }}>
                     <td style={{ padding: '8px 12px', fontWeight: 500 }}>{o.name}</td>
-                    <td style={{ padding: '8px 12px', color: '#71717a', fontFamily: 'monospace', fontSize: 12 }}>{o.slug}</td>
+                    <td style={{ padding: '8px 12px', color: 'var(--text-secondary)', fontFamily: 'monospace', fontSize: 12 }}>{o.slug}</td>
                     <td style={{ padding: '8px 12px' }}>
                       <span style={{
                         fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 999,
-                        background: o.org_type === 'mssp' ? '#ede9fe' : '#f0fdf4',
-                        color: o.org_type === 'mssp' ? '#6d28d9' : '#166534',
+                        background: o.org_type === 'mssp' ? 'rgba(109,40,217,0.1)' : 'var(--success-subtle)',
+                        color: o.org_type === 'mssp' ? '#6d28d9' : 'var(--success)',
                       }}>
                         {o.org_type === 'mssp' ? 'MSSP' : 'Standard'}
                       </span>
                     </td>
-                    <td style={{ padding: '8px 12px', fontSize: 11, color: o.is_active ? '#166534' : '#991b1b' }}>
+                    <td style={{ padding: '8px 12px', fontSize: 11, color: o.is_active ? 'var(--success)' : 'var(--danger)' }}>
                       {o.is_active ? 'Active' : 'Disabled'}
                     </td>
-                    <td style={{ padding: '8px 12px', fontSize: 12, color: '#71717a' }}>
+                    <td style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text-secondary)' }}>
                       {o.created_at ? new Date(o.created_at).toLocaleDateString() : '—'}
                     </td>
                     {isSuperadmin && (
@@ -603,8 +603,8 @@ export default function UserManagement() {
                             title="Rename"
                             style={{
                               fontSize: 12, padding: '3px 8px', borderRadius: 6,
-                              border: '1px solid var(--border)', background: '#fff', cursor: 'pointer',
-                              display: 'flex', alignItems: 'center', gap: 4, color: '#71717a',
+                              border: '1px solid var(--border)', background: 'var(--bg-card)', cursor: 'pointer',
+                              display: 'flex', alignItems: 'center', gap: 4, color: 'var(--text-secondary)',
                             }}
                           >
                             <Pencil size={12} />
@@ -613,7 +613,7 @@ export default function UserManagement() {
                             onClick={() => handleToggleOrgActive(o)}
                             style={{
                               fontSize: 12, padding: '3px 10px', borderRadius: 6,
-                              border: '1px solid var(--border)', background: '#fff', cursor: 'pointer',
+                              border: '1px solid var(--border)', background: 'var(--bg-card)', cursor: 'pointer',
                             }}
                           >
                             {o.is_active ? 'Disable' : 'Enable'}
@@ -624,8 +624,8 @@ export default function UserManagement() {
                               title="Delete organization"
                               style={{
                                 fontSize: 12, padding: '3px 8px', borderRadius: 6,
-                                border: '1px solid #fecaca', background: '#fff', cursor: 'pointer',
-                                color: '#dc2626', display: 'flex', alignItems: 'center',
+                                border: '1px solid var(--danger)', background: 'var(--bg-card)', cursor: 'pointer',
+                                color: 'var(--danger)', display: 'flex', alignItems: 'center',
                               }}
                             >
                               <Trash2 size={12} />
@@ -648,14 +648,14 @@ export default function UserManagement() {
       {/* MSSP Clients Tab */}
       {tab === 'clients' && (
         <div>
-          <div style={{ fontSize: 13, color: '#71717a', marginBottom: 12 }}>{msspClients.length} client org{msspClients.length !== 1 ? 's' : ''}</div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>{msspClients.length} client org{msspClients.length !== 1 ? 's' : ''}</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
             {msspClients.map(c => (
               <div key={c.id} style={{
-                background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: 16,
+                background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16,
               }}>
                 <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>{c.name}</div>
-                <div style={{ fontSize: 12, color: '#71717a', marginBottom: 8 }}>/{c.slug}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>/{c.slug}</div>
                 <div style={{ display: 'flex', gap: 16, fontSize: 12 }}>
                   <div><span style={{ fontWeight: 600 }}>{c.scan_count || 0}</span> scans</div>
                   <div><span style={{ fontWeight: 600 }}>{c.user_count || 0}</span> users</div>

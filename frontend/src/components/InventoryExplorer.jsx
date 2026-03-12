@@ -251,7 +251,7 @@ function PrivFlag({ yes, label }) {
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 3,
-      background: '#450a0a', color: '#fca5a5', border: '1px solid #991b1b',
+      background: 'var(--danger-subtle)', color: 'var(--danger)', border: '1px solid var(--danger)',
       borderRadius: 4, padding: '2px 7px', fontSize: 11, fontWeight: 600,
     }}>{label}</span>
   )
@@ -344,11 +344,11 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14, marginTop: 8 }}>
 
           {/* Domain Admins */}
-          <Card onClick={() => onTabChange('users')} style={{ borderLeft: '3px solid #dc2626' }}>
+          <Card onClick={() => onTabChange('users')} style={{ borderLeft: '3px solid var(--danger)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <UserCheck size={15} color="#dc2626" />
+              <UserCheck size={15} color="var(--danger)" />
               <span style={{ fontWeight: 700, fontSize: 13 }}>Domain Admins</span>
-              <span style={{ marginLeft: 'auto', background: as.domain_admins.length > 0 ? '#fef2f2' : 'var(--bg-muted)', color: as.domain_admins.length > 0 ? '#dc2626' : 'var(--text-muted)', fontWeight: 700, fontSize: 12, padding: '1px 8px', borderRadius: 10 }}>{as.domain_admins.length}</span>
+              <span style={{ marginLeft: 'auto', background: as.domain_admins.length > 0 ? 'var(--danger-subtle)' : 'var(--bg-muted)', color: as.domain_admins.length > 0 ? 'var(--danger)' : 'var(--text-muted)', fontWeight: 700, fontSize: 12, padding: '1px 8px', borderRadius: 10 }}>{as.domain_admins.length}</span>
             </div>
             {as.domain_admins.length === 0
               ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>None detected</div>
@@ -363,11 +363,11 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
           </Card>
 
           {/* Kerberoastable Accounts */}
-          <Card onClick={() => onTabChange('users')} style={{ borderLeft: '3px solid #f59e0b' }}>
+          <Card onClick={() => onTabChange('users')} style={{ borderLeft: '3px solid var(--warning)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <Key size={15} color="#f59e0b" />
+              <Key size={15} color="var(--warning)" />
               <span style={{ fontWeight: 700, fontSize: 13 }}>Kerberoastable Accounts</span>
-              <span style={{ marginLeft: 'auto', background: as.kerberoastable_accounts.length > 0 ? '#fffbeb' : 'var(--bg-muted)', color: as.kerberoastable_accounts.length > 0 ? '#d97706' : 'var(--text-muted)', fontWeight: 700, fontSize: 12, padding: '1px 8px', borderRadius: 10 }}>{as.kerberoastable_accounts.length}</span>
+              <span style={{ marginLeft: 'auto', background: as.kerberoastable_accounts.length > 0 ? 'var(--warning-subtle)' : 'var(--bg-muted)', color: as.kerberoastable_accounts.length > 0 ? 'var(--warning)' : 'var(--text-muted)', fontWeight: 700, fontSize: 12, padding: '1px 8px', borderRadius: 10 }}>{as.kerberoastable_accounts.length}</span>
             </div>
             {as.kerberoastable_accounts.length === 0
               ? <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>None detected</div>
@@ -386,11 +386,11 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
           </Card>
 
           {/* Lateral Movement Paths */}
-          <Card onClick={() => onTabChange('users')} style={{ borderLeft: '3px solid #dc2626' }}>
+          <Card onClick={() => onTabChange('users')} style={{ borderLeft: '3px solid var(--danger)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <Activity size={15} color="#dc2626" />
+              <Activity size={15} color="var(--danger)" />
               <span style={{ fontWeight: 700, fontSize: 13 }}>Lateral Movement Paths</span>
-              <span style={{ marginLeft: 'auto', background: as.lateral_movement_paths.length > 0 ? '#fef2f2' : 'var(--bg-muted)', color: as.lateral_movement_paths.length > 0 ? '#dc2626' : 'var(--text-muted)', fontWeight: 700, fontSize: 12, padding: '1px 8px', borderRadius: 10 }}>{as.lateral_movement_paths.length}</span>
+              <span style={{ marginLeft: 'auto', background: as.lateral_movement_paths.length > 0 ? 'var(--danger-subtle)' : 'var(--bg-muted)', color: as.lateral_movement_paths.length > 0 ? 'var(--danger)' : 'var(--text-muted)', fontWeight: 700, fontSize: 12, padding: '1px 8px', borderRadius: 10 }}>{as.lateral_movement_paths.length}</span>
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
               Accounts that are local admin on multiple hosts
@@ -400,7 +400,7 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
               : as.lateral_movement_paths.slice(0, 6).map((p, i) => (
                 <div key={i} style={{ padding: '5px 0', borderBottom: i < Math.min(as.lateral_movement_paths.length, 6) - 1 ? '1px solid var(--border)' : 'none', fontSize: 13 }}>
                   <div style={{ fontWeight: 600 }}>{p.account}</div>
-                  <div style={{ fontSize: 11, color: '#0ea5e9', marginTop: 2 }}>
+                  <div style={{ fontSize: 11, color: 'var(--info)', marginTop: 2 }}>
                     Admin on {p.asset_ids.length} hosts
                   </div>
                 </div>
@@ -1542,7 +1542,7 @@ function EnvVarsTab({ scanId, assetId }) {
     },
     { key: 'is_sensitive', label: 'Sensitive', width: '10%', sortable: true,
       render: v => v
-        ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, background: '#450a0a', color: '#fca5a5', border: '1px solid #991b1b', borderRadius: 4, padding: '2px 7px', fontSize: 11, fontWeight: 600 }}>⚠ Secret</span>
+        ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, background: '#450a0a', color: 'var(--danger)', border: '1px solid #991b1b', borderRadius: 4, padding: '2px 7px', fontSize: 11, fontWeight: 600 }}>⚠ Secret</span>
         : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
     },
     { key: 'asset_label', label: 'Asset', width: '19%',
@@ -1564,7 +1564,7 @@ function EnvVarsTab({ scanId, assetId }) {
         <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
       </FilterBar>
       {sensitiveCount > 0 && (
-        <div style={{ marginBottom: 12, padding: '8px 12px', background: '#450a0a', border: '1px solid #991b1b', borderRadius: 6, fontSize: 13, color: '#fca5a5' }}>
+        <div style={{ marginBottom: 12, padding: '8px 12px', background: '#450a0a', border: '1px solid #991b1b', borderRadius: 6, fontSize: 13, color: 'var(--danger)' }}>
           ⚠ {sensitiveCount} sensitive variable{sensitiveCount !== 1 ? 's' : ''} detected — credentials or secrets exposed in environment
         </div>
       )}
@@ -1861,7 +1861,7 @@ function ProcessesTab({ scanId, assetId }) {
       render: v => v || '—'
     },
     { key: 'session_id', label: 'Session', width: '9%', sortable: true,
-      render: v => <Pill color={v === 0 ? '#6366f1' : '#f59e0b'}>{v}</Pill>
+      render: v => <Pill label={v} color={v === 0 ? '#6366f1' : '#f59e0b'} />
     },
     { key: 'asset_label', label: 'Asset', width: '25%',
       render: (v, r) => <>{v}<EnvPill env={r.asset_env} /></>

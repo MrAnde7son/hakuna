@@ -9,10 +9,10 @@ import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows
 import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons } from './ui.jsx'
 
 const STATUS_META = {
-  draft:     { label: 'Draft',     color: '#71717a', bg: '#27272a22', border: '#27272a44', icon: Clock },
-  active:    { label: 'Active',    color: '#60a5fa', bg: '#1e3a5f22', border: '#1e3a5f44', icon: Play },
-  completed: { label: 'Completed', color: '#4ade80', bg: '#14532d22', border: '#14532d44', icon: CheckCircle },
-  paused:    { label: 'Paused',    color: '#fbbf24', bg: '#78350f22', border: '#78350f44', icon: PauseCircle },
+  draft:     { label: 'Draft',     color: 'var(--muted)',   bg: 'rgba(100,116,139,0.1)', border: 'rgba(100,116,139,0.25)', icon: Clock },
+  active:    { label: 'Active',    color: 'var(--primary)', bg: 'rgba(37,99,235,0.1)',   border: 'rgba(37,99,235,0.25)',   icon: Play },
+  completed: { label: 'Completed', color: 'var(--success)', bg: 'rgba(34,197,94,0.1)',   border: 'rgba(34,197,94,0.25)',   icon: CheckCircle },
+  paused:    { label: 'Paused',    color: 'var(--warning)', bg: 'rgba(245,158,11,0.1)',  border: 'rgba(245,158,11,0.25)',  icon: PauseCircle },
 }
 
 function StatusBadge({ status }) {
@@ -132,15 +132,15 @@ function CampaignCard({ campaign, onDelete, onRun }) {
         padding: '16px 20px', cursor: 'pointer', display: 'flex', gap: 16, alignItems: 'center',
         transition: 'border-color 0.15s',
       }}
-      onMouseEnter={e => e.currentTarget.style.borderColor = '#60a5fa66'}
+      onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent)'}
       onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border)'}
     >
       {/* Icon */}
       <div style={{
-        width: 40, height: 40, borderRadius: 10, background: '#1e3a5f33',
+        width: 40, height: 40, borderRadius: 10, background: 'rgba(37,99,235,0.12)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
       }}>
-        <Target size={18} color='#60a5fa' />
+        <Target size={18} color='var(--accent)' />
       </div>
 
       {/* Info */}

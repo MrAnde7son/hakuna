@@ -34,9 +34,9 @@ export default function Login() {
     }}>
       <div style={{
         width: 400,
-        background: '#fff',
+        background: 'var(--bg-card)',
         borderRadius: 12,
-        border: '1px solid var(--border, #e4e4e7)',
+        border: '1px solid var(--border)',
         padding: 32,
         boxShadow: '0 4px 24px rgba(0,0,0,0.06)',
       }}>
@@ -51,13 +51,13 @@ export default function Login() {
         <form onSubmit={handleSubmit}>
           {error && (
             <div style={{
-              background: '#fef2f2',
-              color: '#991b1b',
+              background: 'var(--danger-subtle)',
+              color: 'var(--danger)',
               padding: '8px 12px',
               borderRadius: 6,
               fontSize: 13,
               marginBottom: 16,
-              border: '1px solid #fecaca',
+              border: '1px solid var(--danger)',
             }}>
               {error}
             </div>
@@ -75,7 +75,7 @@ export default function Login() {
                 width: '100%',
                 padding: '8px 12px',
                 borderRadius: 8,
-                border: '1px solid var(--border, #e4e4e7)',
+                border: '1px solid var(--border)',
                 fontSize: 14,
                 boxSizing: 'border-box',
               }}
@@ -93,7 +93,7 @@ export default function Login() {
                 width: '100%',
                 padding: '8px 12px',
                 borderRadius: 8,
-                border: '1px solid var(--border, #e4e4e7)',
+                border: '1px solid var(--border)',
                 fontSize: 14,
                 boxSizing: 'border-box',
               }}
@@ -108,8 +108,8 @@ export default function Login() {
               padding: '10px 0',
               borderRadius: 8,
               border: 'none',
-              background: '#18181b',
-              color: '#fff',
+              background: 'var(--nav-active-bg)',
+              color: 'var(--nav-active-text)',
               fontSize: 14,
               fontWeight: 600,
               cursor: loading ? 'not-allowed' : 'pointer',
@@ -122,7 +122,7 @@ export default function Login() {
 
         <div style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: 'var(--muted, #71717a)' }}>
           Don't have an account?{' '}
-          <Link to="/register" style={{ color: '#18181b', fontWeight: 600, textDecoration: 'none' }}>
+          <Link to="/register" style={{ color: 'var(--text-primary)', fontWeight: 600, textDecoration: 'none' }}>
             Register
           </Link>
         </div>

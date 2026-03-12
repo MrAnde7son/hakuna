@@ -518,6 +518,24 @@ class InventoryComputer(Base):
     source_plugin = Column(String)
 
 
+class InventoryDatabaseInstance(Base):
+    """Database server instances detected per host (MSSQL, MySQL, PostgreSQL, Oracle, etc.)."""
+    __tablename__ = "inventory_database_instances"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+
+    db_type = Column(String, index=True)        # mssql / mysql / postgresql / oracle / mongodb / redis
+    instance_name = Column(String)              # e.g. MSSQLSERVER, SQLEXPRESS
+    version = Column(String)                    # detected version string
+    port = Column(Integer)                      # listening port
+    databases = Column(JSON, default=list)      # list of database names (if extractable)
+    named_pipes = Column(JSON, default=list)    # MSSQL named pipes
+    is_running = Column(Boolean, default=True)
+    source_plugin = Column(String)
+
+
 class InventoryEnvVar(Base):
     """Environment variables collected per host (plugin 92364)."""
     __tablename__ = "inventory_env_vars"
