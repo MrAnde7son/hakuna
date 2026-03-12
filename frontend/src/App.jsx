@@ -62,7 +62,7 @@ const NAV_GROUPS = [
     label: 'Response',
     items: [
       { path: '/campaigns', label: 'Campaigns', icon: Target },
-      { path: '/aggregated-solutions', label: 'Root Causes', icon: Layers },
+      { path: '/aggregated-solutions', label: 'Remediation', icon: Layers },
       { path: '/agents', label: 'Agents', icon: Bot },
     ],
   },

@@ -317,7 +317,7 @@ export default function AggregatedSolutions() {
     <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
         <PageHeader
-          title="Remediation Actions"
+          title="Remediation"
           subtitle={`${solutions.length} actions collapse ${totalFindings} findings (${totalCVEs} CVEs) into single fixes`}
         />
         <button
