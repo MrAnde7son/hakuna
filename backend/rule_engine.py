@@ -13,7 +13,8 @@ Field namespaces:
     Findings:   finding.severity, finding.cvss3, finding.vpr,
                 finding.exploit, finding.zero_day, finding.has_cve,
                 finding.missing_patches, finding.plugin_family,
-                finding.plugin_name, finding.cve, finding.effort, finding.owner
+                finding.plugin_name, finding.cve, finding.effort, finding.owner,
+                finding.sla_status, finding.sla_days_remaining, finding.sla_due_date
     Inventory:  inventory.is_internet_facing, inventory.is_domain_controller,
                 inventory.domain_admin_present, inventory.admin_logged_in,
                 inventory.privileged_user_logged_in, inventory.kerberoastable_user,
@@ -153,6 +154,18 @@ CONDITION_CATALOG = [
             {"field": "finding.description",     "label": "Description",        "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "buffer overflow"},
             {"field": "finding.solution",        "label": "Solution",           "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "Upgrade to"},
             {"field": "finding.cve",             "label": "Affected by CVE",    "ops": ["contains", "eq"],                "value_type": "string", "placeholder": "CVE-2021-44228"},
+            {
+                "field": "finding.sla_status", "label": "SLA Status",
+                "ops": ["eq", "neq"],
+                "value_type": "enum",
+                "options": [
+                    {"label": "On Track",  "value": "on_track"},
+                    {"label": "At Risk",   "value": "at_risk"},
+                    {"label": "Breached",  "value": "breached"},
+                ],
+            },
+            {"field": "finding.sla_days_remaining", "label": "SLA Days Remaining", "ops": ["lt", "lte", "gt", "gte", "eq"], "value_type": "integer", "placeholder": "3"},
+            {"field": "finding.sla_due_date",        "label": "SLA Due Date",        "ops": ["lt", "lte", "gt", "gte"],       "value_type": "date",    "placeholder": "2025-12-31"},
             {
                 "field": "finding.effort", "label": "Effort Level",
                 "ops": ["eq", "neq"],
@@ -402,6 +415,23 @@ def _eval_finding_row(cond: dict, finding) -> bool:
         return _str_op(finding.effort_level or "", op, value)
     if sub == "owner":
         return _str_op(finding.owner_suggestion or "", op, value)
+    if sub == "sla_status":
+        return _str_op(finding.sla_status or "", op, str(value or ""))
+    if sub == "sla_days_remaining":
+        from datetime import date
+        if not finding.sla_due_date:
+            return False
+        days = (finding.sla_due_date - date.today()).days
+        return _num_op(float(days), op, value)
+    if sub == "sla_due_date":
+        from datetime import date
+        if not finding.sla_due_date:
+            return False
+        try:
+            threshold = date.fromisoformat(str(value))
+        except (ValueError, TypeError):
+            return False
+        return _num_op(finding.sla_due_date.toordinal(), op, threshold.toordinal())
     return False
 
 

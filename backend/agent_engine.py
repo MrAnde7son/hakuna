@@ -4,11 +4,20 @@ Mini Agent Execution Engine — runs user-defined agents using multiple LLM prov
 Supported providers: Anthropic (Claude), OpenAI (GPT), Google (Gemini), Groq (Llama/Mixtral).
 """
 import os
+import sys
 import json
 import logging
 from datetime import datetime
 
 from sqlalchemy.orm import Session
+
+# Add repo root to path so hakuna package is importable from backend/
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from hakuna.utils.token_tracker import get_tracker
+from hakuna.utils.context_manager import rolling_context
 
 from models import Agent, AgentRun, IntegrationConfig
 from agent_tools import TOOL_REGISTRY, get_claude_tool_schemas, get_openai_tool_schemas
@@ -140,10 +149,30 @@ def get_default_model(db: Session) -> str:
         if has_key:
             return fallback_model
 
-    return "claude-sonnet-4-6"  # ultimate fallback
+    from hakuna.routing.model_router import SONNET
+    return SONNET  # ultimate fallback
 
 
 # ── Shared helpers ────────────────────────────────────────────────────
+
+# Max user input chars per provider (leave room for system prompt + tools schema)
+_MAX_INPUT_CHARS = {
+    "groq": 8_000,       # Groq on-demand tier is strict (~128k ctx but small request limits)
+    "openai": 80_000,
+    "anthropic": 150_000,
+    "google_gemini": 150_000,
+}
+_TRUNCATION_NOTICE = "\n\n[Note: Input was truncated to fit model context limits.]"
+
+
+def _truncate_user_input(user_input: str, provider: str) -> str:
+    """Truncate user_input to stay within provider context limits."""
+    limit = _MAX_INPUT_CHARS.get(provider, 80_000)
+    if len(user_input) > limit:
+        cutoff = limit - len(_TRUNCATION_NOTICE)
+        return user_input[:cutoff] + _TRUNCATION_NOTICE
+    return user_input
+
 
 def _sanitize_messages(messages: list) -> list:
     """Deep-clean messages to strip SDK-injected properties like 'annotations' or 'citations'.
@@ -167,6 +196,16 @@ def _sanitize_messages(messages: list) -> list:
     return clean
 
 
+_INTER_AGENT_PROTOCOL = (
+    "\n\n## Inter-Agent Communication Protocol\n"
+    "When producing output that will be consumed by another agent or system, "
+    "use structured JSON. When producing output for a human user, use clear "
+    "markdown with headers, tables, and bullet points.\n"
+    "If you are unsure which tool to use or need more information, call the "
+    "'request_clarification' tool instead of guessing."
+)
+
+
 def _build_system_prompt(agent: Agent) -> str:
     """Combine agent instructions with memory + scratchpad context."""
     parts = [agent.system_prompt]
@@ -176,17 +215,39 @@ def _build_system_prompt(agent: Agent) -> str:
     if ctx:
         parts.append(ctx)
 
-    # Add structured output instruction
-    parts.append(
-        "\n\n## Inter-Agent Communication Protocol\n"
-        "When producing output that will be consumed by another agent or system, "
-        "use structured JSON. When producing output for a human user, use clear "
-        "markdown with headers, tables, and bullet points.\n"
-        "If you are unsure which tool to use or need more information, call the "
-        "'request_clarification' tool instead of guessing."
-    )
+    parts.append(_INTER_AGENT_PROTOCOL)
 
     return "\n".join(parts)
+
+
+def _build_system_prompt_cached(agent: Agent) -> list:
+    """Return system prompt as a list of content blocks with cache_control.
+
+    Structure:
+      Block 0 (cacheable): static role definition + inter-agent protocol
+      Block 1 (dynamic, optional): scratchpad state + persistent memory
+
+    The static block is marked cache_control=ephemeral so Anthropic caches it
+    across subsequent steps in the same multi-step run, eliminating re-billing
+    of the large (1300-1900 token) system prompt on every tool-use step.
+    """
+    # Static block: role definition + inter-agent protocol (never changes per-agent)
+    static_text = agent.system_prompt + _INTER_AGENT_PROTOCOL
+
+    blocks: list = [
+        {
+            "type": "text",
+            "text": static_text,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+    # Dynamic block: memory + scratchpad (changes between runs)
+    ctx = build_context_section(agent.id, agent.memory)
+    if ctx:
+        blocks.append({"type": "text", "text": ctx})
+
+    return blocks
 
 
 def _check_guardrails(agent: Agent, tool_name: str, step: int):
@@ -291,24 +352,39 @@ def _check_confirmation(tool_name: str, tool_input: dict):
 def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, model: str):
     """Run agent using Anthropic Claude API."""
     trace = []
+    user_input = _truncate_user_input(user_input, "anthropic")
     messages = [{"role": "user", "content": user_input}]
-    system = _build_system_prompt(agent)
+    # Use cached system prompt blocks: static role definition cached, dynamic context appended
+    system = _build_system_prompt_cached(agent)
     tools = get_claude_tool_schemas(agent.tools or [])
     max_steps = (agent.guardrails or {}).get("max_steps", 15)
 
     cl = _get_anthropic_client(db)
 
     for step in range(max_steps):
+        # Apply rolling context compression after 5 turns to cap history size
+        compressed_messages = rolling_context(messages, max_turns=5)
+
         create_kwargs = {
             "model": model,
             "max_tokens": 4096,
             "system": system,
-            "messages": _sanitize_messages(messages),
+            "messages": _sanitize_messages(compressed_messages),
         }
         if tools:
             create_kwargs["tools"] = tools
 
         response = cl.messages.create(**create_kwargs)
+
+        # ── Token tracking ────────────────────────────────────────────
+        get_tracker().track_call(
+            agent_name=agent.name or "unknown",
+            model=model,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0),
+            call_metadata={"function": "_run_anthropic", "step": step, "run_id": run.id},
+        )
 
         # Log assistant response to trace
         assistant_content = []
@@ -360,6 +436,7 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
 def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun, model: str, provider: str):
     """Run agent using OpenAI-compatible API (OpenAI, Groq)."""
     trace = []
+    user_input = _truncate_user_input(user_input, provider)
     system = _build_system_prompt(agent)
     tools = get_openai_tool_schemas(agent.tools or [])
     max_steps = (agent.guardrails or {}).get("max_steps", 15)
@@ -438,6 +515,7 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
     from google.genai import types as genai_types
 
     trace = []
+    user_input = _truncate_user_input(user_input, "google_gemini")
     system = _build_system_prompt(agent)
     max_steps = (agent.guardrails or {}).get("max_steps", 15)
 
@@ -607,7 +685,8 @@ def _stream_anthropic(agent, user_input, db, run, model):
     """Streaming variant of _run_anthropic."""
     trace = []
     messages = [{"role": "user", "content": user_input}]
-    system = _build_system_prompt(agent)
+    # Use cached system prompt blocks: static role definition cached, dynamic context appended
+    system = _build_system_prompt_cached(agent)
     tools = get_claude_tool_schemas(agent.tools or [])
     max_steps = (agent.guardrails or {}).get("max_steps", 15)
     cl = _get_anthropic_client(db)
@@ -615,10 +694,23 @@ def _stream_anthropic(agent, user_input, db, run, model):
     for step in range(max_steps):
         yield {"type": "thinking", "step": step}
 
-        create_kwargs = {"model": model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(messages)}
+        # Apply rolling context compression after 5 turns to cap history size
+        compressed_messages = rolling_context(messages, max_turns=5)
+
+        create_kwargs = {"model": model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
         if tools:
             create_kwargs["tools"] = tools
         response = cl.messages.create(**create_kwargs)
+
+        # ── Token tracking ────────────────────────────────────────────
+        get_tracker().track_call(
+            agent_name=agent.name or "unknown",
+            model=model,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0),
+            call_metadata={"function": "_stream_anthropic", "step": step, "run_id": run.id},
+        )
 
         assistant_content = []
         for block in response.content:

@@ -9,7 +9,7 @@ import {
   Bot, Plus, Trash2, Play, ChevronDown, ChevronRight, Clock, CheckCircle,
   XCircle, Loader2, Settings2, MessageSquare, Wrench, Shield, Brain,
   Zap, Calendar, Copy, Clipboard, Briefcase, Target, Ticket, Radio, AlarmClock,
-  Download, Upload, Tag,
+  Download, Upload, Tag, AlertCircle,
 } from 'lucide-react'
 import {
   getAgents, createAgent, updateAgent, deleteAgent,
@@ -347,7 +347,7 @@ export default function AgentBuilder() {
       {showTemplates ? (
         <TemplateGallery templates={templates} onCreate={handleFromTemplate} onClose={() => setShowTemplates(false)} />
       ) : selected && editing ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0, overflow: 'hidden' }}>
           {/* Header */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <input
@@ -428,7 +428,7 @@ export default function AgentBuilder() {
           </div>
 
           {/* Tab content */}
-          <div style={{ flex: 1, overflowY: 'auto' }}>
+          <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', minWidth: 0 }}>
             {tab === 'config' ? (
               <ConfigPanel
                 editing={editing}
@@ -735,7 +735,7 @@ function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, runn
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 8 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingTop: 8, minWidth: 0, overflow: 'hidden' }}>
       {/* Active run output */}
       {activeRun && (
         <Card style={{ padding: 16 }}>
@@ -766,10 +766,19 @@ function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, runn
 
           {activeRun.error && (
             <div style={{
-              padding: 10, borderRadius: 6, background: '#450a0a', border: '1px solid #991b1b',
-              color: '#fca5a5', fontSize: 12, marginBottom: 12,
+              display: 'flex', alignItems: 'flex-start', gap: 10,
+              padding: '12px 14px', borderRadius: 8, marginBottom: 12,
+              background: '#dc262610', border: '1px solid #dc262635',
             }}>
-              {activeRun.error}
+              <AlertCircle size={15} color="#ef4444" style={{ marginTop: 1, flexShrink: 0 }} />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#ef4444', marginBottom: 2 }}>
+                  Agent run failed
+                </div>
+                <div style={{ fontSize: 12, color: '#fca5a5', lineHeight: 1.5, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                  {activeRun.error}
+                </div>
+              </div>
             </div>
           )}
           {activeRun.output && (
@@ -816,13 +825,13 @@ function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, runn
           key={r.id}
           onClick={() => loadRun(r)}
           style={{
-            padding: '8px 12px', cursor: 'pointer',
+            padding: '8px 12px', cursor: 'pointer', overflow: 'hidden',
             borderColor: activeRun?.id === r.id ? 'var(--accent)' : 'var(--border)',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, overflow: 'hidden' }}>
             <StatusBadge status={r.status} />
-            <div style={{ flex: 1, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <div style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {r.input}
             </div>
             <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>

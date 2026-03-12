@@ -13,7 +13,7 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import User, Organization, MSSPOrgAccess
+from models import User, Organization, MSSPOrgAccess, CustomRole, TagPermission, UserCustomRole, Tag
 
 # ── Config ────────────────────────────────────────────────
 
@@ -150,6 +150,60 @@ def apply_org_filter(query, model, org_ids: Optional[List[int]]):
     if hasattr(model, "org_id"):
         return query.filter(model.org_id.in_(org_ids))
     return query
+
+
+def has_tag_permission(user: User, tag_id: int, permission: str, db: Session) -> bool:
+    """Check if a user has the given permission ('read' or 'write') on a tag via custom roles.
+
+    - superadmin and org_admin always return True.
+    - analyst/viewer: checks UserCustomRole → TagPermission for tag-level or category-level grants.
+    - Permissions stack across multiple roles (most-permissive wins).
+    - 'write' requires an explicit write grant; 'read' is satisfied by read or write.
+    """
+    if user.role in ("superadmin", "org_admin"):
+        return True
+
+    tag = db.query(Tag).filter(Tag.id == tag_id).first()
+    if not tag:
+        return False
+
+    allowed = ["write"] if permission == "write" else ["read", "write"]
+
+    role_ids_subq = (
+        db.query(UserCustomRole.role_id)
+        .filter(UserCustomRole.user_id == user.id)
+        .subquery()
+    )
+
+    # Tag-level grant
+    if db.query(TagPermission).filter(
+        TagPermission.role_id.in_(role_ids_subq),
+        TagPermission.target_type == "tag",
+        TagPermission.target_id == tag_id,
+        TagPermission.permission.in_(allowed),
+    ).first():
+        return True
+
+    # Category-level grant
+    if db.query(TagPermission).filter(
+        TagPermission.role_id.in_(role_ids_subq),
+        TagPermission.target_type == "category",
+        TagPermission.target_category == tag.category,
+        TagPermission.permission.in_(allowed),
+    ).first():
+        return True
+
+    return False
+
+
+def get_user_custom_roles(user_id: int, db: Session) -> list:
+    """Return all active custom roles assigned to a user."""
+    assignments = (
+        db.query(UserCustomRole)
+        .filter(UserCustomRole.user_id == user_id)
+        .all()
+    )
+    return [a.role for a in assignments if a.role and a.role.is_active]
 
 
 def apply_scan_org_filter(query, org_ids: Optional[List[int]]):

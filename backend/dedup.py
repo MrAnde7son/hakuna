@@ -347,6 +347,94 @@ def _reassign_asset_children(db, old_asset_id: int, new_asset_id: int, ENTITY_MO
             )
 
 
+def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) -> dict:
+    """
+    Cross-scan asset dedup: within each org, find duplicate assets (same key_fields
+    across different scans) and merge them into the most-recent scan's asset.
+
+    - org_id: restrict to one org; None = all orgs (superadmin / on-demand run)
+    - Survivor: asset from the highest scan_id (most recent upload)
+    - Older duplicates: findings + inventory reassigned to survivor, then deleted
+    """
+    from models import Asset, Scan
+
+    asset_cfg = cfg.get("assets", {})
+    if not asset_cfg.get("enabled", True):
+        return {"skipped": True, "reason": "asset dedup disabled in config"}
+
+    key_fields: list[str] = asset_cfg.get("key_fields", ["ip"])
+    strategy: str = asset_cfg.get("strategy", "merge")
+
+    if not key_fields:
+        return {"skipped": True, "reason": "no key_fields configured"}
+
+    _, list_fields_list, bool_fields_list = ENTITY_MODEL_MAP.get("assets", (None, [], []))
+    list_fields = set(list_fields_list)
+    bool_fields = set(bool_fields_list)
+
+    # Load all assets joined with their scan, oldest scan first so the latest
+    # scan's asset ends up as the final value in `seen` (the survivor).
+    q = (
+        db.query(Asset, Scan.org_id.label("scan_org_id"))
+        .join(Scan, Asset.scan_id == Scan.id)
+        .order_by(Scan.id.asc(), Asset.id.asc())
+    )
+    if org_id is not None:
+        q = q.filter(Scan.org_id == org_id)
+
+    rows = q.all()  # list of (Asset, scan_org_id)
+
+    # group_key → current survivor Asset (the most-recent-scan asset seen so far)
+    seen: dict[tuple, Asset] = {}
+    to_delete: list[tuple] = []  # (old_asset, survivor_asset)
+
+    for asset, scan_org_id in rows:
+        # Namespace by org so different orgs with the same IP never collide
+        key_parts = [str(scan_org_id if scan_org_id is not None else 0)]
+        skip = False
+        for field in key_fields:
+            val = getattr(asset, field, None)
+            if val is None or val == "":
+                skip = True
+                break
+            key_parts.append(str(val))
+        if skip:
+            continue
+
+        group_key = tuple(key_parts)
+
+        if group_key not in seen:
+            seen[group_key] = asset
+        else:
+            old_survivor = seen[group_key]
+            # Current asset is from a later scan (ASC order) → it becomes the new survivor
+            if strategy == "keep_first":
+                # Keep the oldest asset; mark the newer one for deletion
+                to_delete.append((asset, old_survivor))
+                # seen[group_key] stays as old_survivor
+            elif strategy == "keep_last":
+                # New asset wins; old asset is discarded
+                to_delete.append((old_survivor, asset))
+                seen[group_key] = asset
+            else:  # merge
+                # Fill gaps in new asset from old asset (list union, bool OR, null fallback)
+                _merge_model_row(asset, old_survivor, "merge", list_fields, bool_fields)
+                to_delete.append((old_survivor, asset))
+                seen[group_key] = asset
+
+    removed = len(to_delete)
+    for old_asset, survivor in to_delete:
+        _reassign_asset_children(db, old_asset.id, survivor.id, ENTITY_MODEL_MAP)
+        db.expire(old_asset)
+        db.delete(old_asset)
+
+    if removed:
+        db.commit()
+        logger.info(f"Cross-scan asset dedup: removed {removed} duplicates (org_id={org_id!r})")
+
+    return {"removed": removed, "entity_type": "assets", "scope": "cross_scan"}
+
+
 def run_db_dedup(db, entity_type: str, scan_id: int | None, cfg: dict, ENTITY_MODEL_MAP: dict) -> dict:
     """
     Run dedup against existing DB rows for a given entity_type.
@@ -357,6 +445,12 @@ def run_db_dedup(db, entity_type: str, scan_id: int | None, cfg: dict, ENTITY_MO
     """
     if entity_type not in ENTITY_MODEL_MAP:
         return {"error": f"Unknown entity type: {entity_type}"}
+
+    # Cross-scan asset dedup requires org-aware grouping — delegate to dedicated function
+    if entity_type == "assets" and not scan_id:
+        asset_cfg = cfg.get("assets", {})
+        if asset_cfg.get("scope", "cross_scan") == "cross_scan":
+            return run_cross_scan_asset_dedup(db, org_id=None, cfg=cfg, ENTITY_MODEL_MAP=ENTITY_MODEL_MAP)
 
     # assets and findings live at the root config level; inventory types live under "inventory"
     if entity_type in ("assets", "findings"):

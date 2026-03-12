@@ -420,6 +420,7 @@ function AppShell() {
         <div
           style={{
             flex: 1,
+            minWidth: 0,
             marginLeft: navCollapsed ? 56 : 220,
             minHeight: '100vh',
             display: 'flex',
@@ -431,7 +432,8 @@ function AppShell() {
               flex: 1,
               padding: 18,
               background: 'var(--bg-muted)',
-              overflowY: 'auto'
+              overflowY: 'auto',
+              overflowX: 'hidden',
             }}
           >
             <Routes>

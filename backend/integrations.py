@@ -5,6 +5,8 @@ Each connector reads its config from the IntegrationConfig table.
 """
 import json
 import logging
+import os
+import sys
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -13,6 +15,13 @@ from typing import Optional
 
 import requests
 from sqlalchemy.orm import Session
+
+# Add repo root to path so hakuna package is importable from backend/
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from hakuna.utils.token_tracker import get_tracker, track_tokens
 
 from models import IntegrationConfig
 
@@ -525,10 +534,21 @@ def _test_anthropic(cfg: dict) -> dict:
     try:
         from anthropic import Anthropic
         client = Anthropic(api_key=api_key)
+        # Use Haiku for connectivity tests — same validation at 73% lower cost
+        test_model = "claude-haiku-4-5-20251001"
         resp = client.messages.create(
-            model=cfg.get("default_model") or "claude-sonnet-4-6",
+            model=test_model,
             max_tokens=10,
             messages=[{"role": "user", "content": "Hi"}],
+        )
+        # ── Token tracking ────────────────────────────────────────────
+        get_tracker().track_call(
+            agent_name="connectivity_test",
+            model=test_model,
+            input_tokens=resp.usage.input_tokens,
+            output_tokens=resp.usage.output_tokens,
+            cached_tokens=getattr(resp.usage, "cache_read_input_tokens", 0),
+            call_metadata={"function": "_test_anthropic"},
         )
         return {"status": "ok", "detail": f"Connected — model: {resp.model}"}
     except Exception as e:

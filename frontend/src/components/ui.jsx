@@ -604,8 +604,9 @@ export function TagFilterBar({ tags = [], onChange, logic = 'AND', onLogicChange
           placeholder={tags.length === 0 ? 'Filter by tag…' : '+tag'}
           style={{
             background: 'var(--bg-card)', border: '1px solid var(--border)',
-            borderRadius: 6, padding: '5px 10px', fontSize: 12,
-            color: 'var(--text-primary)', outline: 'none', width: tags.length === 0 ? 140 : 80,
+            borderRadius: 6, padding: '7px 12px', fontSize: 13,
+            color: tags.length === 0 && !query ? 'var(--text-muted)' : 'var(--text-primary)',
+            outline: 'none', width: tags.length === 0 ? 140 : 80, cursor: 'pointer',
           }}
         />
         {open && filtered.length > 0 && (

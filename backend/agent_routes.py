@@ -3,6 +3,8 @@ Mini Agent API routes — CRUD for agents, run endpoint, templates, streaming, s
 """
 import json
 import asyncio
+import os
+import sys
 from typing import Optional, List, Dict
 from datetime import datetime
 
@@ -19,6 +21,13 @@ from agent_engine import run_agent, run_agent_streaming, update_agent_memory
 from agent_pipeline import get_available_pipelines, PIPELINE_REGISTRY
 from agent_prompts import ENHANCED_PROMPTS
 
+# Add repo root to path so hakuna package is importable from backend/
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from hakuna.routing.model_router import SONNET as _DEFAULT_MODEL
+
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 
@@ -30,7 +39,7 @@ class AgentCreate(BaseModel):
     system_prompt: str
     tools: List[str] = []
     guardrails: Dict = {}
-    model: str = "claude-sonnet-4-6"
+    model: str = _DEFAULT_MODEL
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -134,7 +143,7 @@ def create_from_template(body: dict, db: Session = Depends(get_db), user: Option
         system_prompt=template["system_prompt"],
         tools=template["tools"],
         guardrails=body.get("guardrails", template["guardrails"]),
-        model=body.get("model", "claude-sonnet-4-6"),
+        model=body.get("model", _DEFAULT_MODEL),
     )
     db.add(agent)
     db.commit()
@@ -179,7 +188,7 @@ def import_agent(body: dict, db: Session = Depends(get_db), user: Optional[User]
         system_prompt=body.get("system_prompt"),
         tools=body.get("tools", []),
         guardrails=body.get("guardrails", {}),
-        model=body.get("model", "claude-sonnet-4-6"),
+        model=body.get("model", _DEFAULT_MODEL),
         memory=body.get("memory", {}),
     )
     db.add(agent)

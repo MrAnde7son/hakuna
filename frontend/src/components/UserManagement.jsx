@@ -4,8 +4,10 @@ import {
   authListUsers, authInviteUser, authUpdateUser, authDeleteUser,
   authListOrgs, authCreateOrg, authUpdateOrg, authDeleteOrg,
   authMSSPClients, authChangePassword,
+  authListRoles, authGetUserCustomRoles, authAssignCustomRole, authUnassignCustomRole,
 } from '../api.js'
-import { Users, Building2, Plus, Shield, Pencil, UserPlus, User, KeyRound, Trash2 } from 'lucide-react'
+import { Users, Building2, Plus, Shield, Pencil, UserPlus, User, KeyRound, Trash2, ShieldCheck, X } from 'lucide-react'
+import RoleManager from './RoleManager.jsx'
 
 const ROLE_COLORS = {
   superadmin: { bg: '#fef3c7', color: '#92400e', label: 'Super Admin' },
@@ -160,12 +162,47 @@ export default function UserManagement() {
   const [orgForm, setOrgForm] = useState({ name: '', org_type: 'standard' })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [customRoles, setCustomRoles] = useState([])           // org custom roles
+  const [userCustomRoles, setUserCustomRoles] = useState({})   // userId -> [roleId]
+  const [expandedUserRoles, setExpandedUserRoles] = useState(null) // userId with open roles dropdown
 
   useEffect(() => {
-    if (isAdmin) authListUsers().then(setUsers).catch(() => {})
+    if (isAdmin) {
+      authListUsers().then(setUsers).catch(() => {})
+      authListRoles().then(setCustomRoles).catch(() => {})
+    }
     if (isSuperadmin) authListOrgs().then(setOrgs).catch(() => {})
     if (isMSSP) authMSSPClients().then(setMsspClients).catch(() => {})
   }, [isAdmin, isSuperadmin, isMSSP])
+
+  useEffect(() => {
+    if (!isAdmin || users.length === 0) return
+    const map = {}
+    Promise.all(
+      users.map(u =>
+        authGetUserCustomRoles(u.id)
+          .then(roles => { map[u.id] = roles })
+          .catch(() => { map[u.id] = [] })
+      )
+    ).then(() => setUserCustomRoles({ ...map }))
+  }, [users, isAdmin])
+
+  const handleToggleCustomRole = async (userId, roleId) => {
+    const current = userCustomRoles[userId] || []
+    const has = current.some(r => r.id === roleId)
+    try {
+      if (has) {
+        await authUnassignCustomRole(userId, roleId)
+        setUserCustomRoles(prev => ({ ...prev, [userId]: prev[userId].filter(r => r.id !== roleId) }))
+      } else {
+        await authAssignCustomRole(userId, roleId)
+        const role = customRoles.find(r => r.id === roleId)
+        setUserCustomRoles(prev => ({ ...prev, [userId]: [...(prev[userId] || []), role] }))
+      }
+    } catch (err) {
+      setError(err.message)
+    }
+  }
 
   const handleInvite = async (e) => {
     e.preventDefault()
@@ -266,6 +303,7 @@ export default function UserManagement() {
     { id: 'profile', label: 'Profile', icon: User },
   ]
   if (isAdmin) tabs.push({ id: 'users', label: 'Users', icon: Users })
+  if (isAdmin) tabs.push({ id: 'roles', label: 'Roles', icon: ShieldCheck })
   if (isSuperadmin || isMSSP) tabs.push({ id: 'orgs', label: 'Organizations', icon: Building2 })
   if (isMSSP) tabs.push({ id: 'clients', label: 'MSSP Clients', icon: Shield })
 
@@ -363,6 +401,7 @@ export default function UserManagement() {
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>User</th>
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Email</th>
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Role</th>
+                  <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Custom Roles</th>
                   {isSuperadmin && <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Org</th>}
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Status</th>
                   <th style={{ textAlign: 'right', padding: '8px 12px', fontWeight: 600 }}>Actions</th>
@@ -388,6 +427,59 @@ export default function UserManagement() {
                           {isSuperadmin && <option value="superadmin">Super Admin</option>}
                         </select>
                       )}
+                    </td>
+                    <td style={{ padding: '8px 12px' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+                        {(userCustomRoles[u.id] || []).map(r => (
+                          <span key={r.id} style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 3,
+                            fontSize: 11, padding: '2px 7px', borderRadius: 999,
+                            background: '#ede9fe', color: '#6d28d9', fontWeight: 600,
+                          }}>
+                            {r.name}
+                            {u.id !== currentUser?.id && (
+                              <button onClick={() => handleToggleCustomRole(u.id, r.id)}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: '#6d28d9', lineHeight: 1 }}>
+                                <X size={10} />
+                              </button>
+                            )}
+                          </span>
+                        ))}
+                        {u.id !== currentUser?.id && customRoles.filter(r => !(userCustomRoles[u.id] || []).some(x => x.id === r.id)).length > 0 && (
+                          <div style={{ position: 'relative' }}>
+                            <button
+                              onClick={() => setExpandedUserRoles(expandedUserRoles === u.id ? null : u.id)}
+                              style={{ fontSize: 11, padding: '2px 7px', borderRadius: 999, border: '1px dashed #d4d4d8', background: '#fff', cursor: 'pointer', color: '#71717a' }}
+                            >
+                              + Add
+                            </button>
+                            {expandedUserRoles === u.id && (
+                              <div style={{
+                                position: 'absolute', top: '100%', left: 0, zIndex: 10,
+                                background: '#fff', border: '1px solid var(--border)', borderRadius: 8,
+                                boxShadow: '0 4px 12px rgba(0,0,0,0.1)', minWidth: 160, padding: 4,
+                              }}>
+                                {customRoles
+                                  .filter(r => !(userCustomRoles[u.id] || []).some(x => x.id === r.id))
+                                  .map(r => (
+                                    <button key={r.id}
+                                      onClick={() => { handleToggleCustomRole(u.id, r.id); setExpandedUserRoles(null) }}
+                                      style={{
+                                        display: 'block', width: '100%', textAlign: 'left',
+                                        padding: '6px 10px', border: 'none', background: 'none',
+                                        fontSize: 12, cursor: 'pointer', borderRadius: 6,
+                                      }}
+                                      onMouseEnter={e => e.currentTarget.style.background = '#f4f4f5'}
+                                      onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                                    >
+                                      {r.name}
+                                    </button>
+                                  ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </td>
                     {isSuperadmin && <td style={{ padding: '8px 12px', fontSize: 12, color: '#71717a' }}>{u.org?.name}</td>}
                     <td style={{ padding: '8px 12px' }}>
@@ -549,6 +641,9 @@ export default function UserManagement() {
           </div>
         </div>
       )}
+
+      {/* Roles Tab */}
+      {tab === 'roles' && isAdmin && <RoleManager />}
 
       {/* MSSP Clients Tab */}
       {tab === 'clients' && (

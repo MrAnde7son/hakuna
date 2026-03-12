@@ -65,6 +65,74 @@ class MSSPOrgAccess(Base):
 
 
 # ─────────────────────────────────────────────────────────
+# Custom RBAC — Roles, Tag Permissions, User Assignments
+# ─────────────────────────────────────────────────────────
+
+class CustomRole(Base):
+    """Org-defined role with configurable base permissions and tag-level access rules."""
+    __tablename__ = "custom_roles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(String)
+    # Feature flags: {"read_scans": true, "write_findings": true, "manage_tags": false, ...}
+    base_permissions = Column(JSON, default=dict)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    org = relationship("Organization")
+    tag_permissions = relationship("TagPermission", back_populates="role", cascade="all, delete-orphan")
+    user_assignments = relationship("UserCustomRole", back_populates="role", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "name", name="uq_custom_role_org_name"),
+        Index("ix_custom_role_org", "org_id"),
+    )
+
+
+class TagPermission(Base):
+    """Maps a custom role to read or write access on a specific tag or tag category."""
+    __tablename__ = "tag_permissions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    role_id = Column(Integer, ForeignKey("custom_roles.id"), nullable=False)
+    target_type = Column(String, nullable=False)       # "tag" | "category"
+    target_id = Column(Integer, ForeignKey("tags.id"), nullable=True)      # when target_type="tag"
+    target_category = Column(String, nullable=True)    # when target_type="category"
+    permission = Column(String, nullable=False)        # "read" | "write"
+
+    role = relationship("CustomRole", back_populates="tag_permissions")
+    tag = relationship("Tag", foreign_keys=[target_id])
+
+    __table_args__ = (
+        UniqueConstraint("role_id", "target_type", "target_id", "target_category", "permission",
+                         name="uq_tag_permission"),
+        Index("ix_tag_perm_role", "role_id"),
+    )
+
+
+class UserCustomRole(Base):
+    """Assigns a custom role to a user (many-to-many, stacking permissions)."""
+    __tablename__ = "user_custom_roles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    role_id = Column(Integer, ForeignKey("custom_roles.id"), nullable=False)
+    assigned_at = Column(DateTime, default=datetime.utcnow)
+    assigned_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    user = relationship("User", foreign_keys=[user_id])
+    role = relationship("CustomRole", back_populates="user_assignments")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "role_id", name="uq_user_custom_role"),
+        Index("ix_ucr_user", "user_id"),
+    )
+
+
+# ─────────────────────────────────────────────────────────
 # Core Data Models
 # ─────────────────────────────────────────────────────────
 
@@ -181,6 +249,9 @@ class Finding(Base):
     epss_percentile = Column(Float, nullable=True)
     ransomware_linked = Column(Boolean, default=False)
     trending_in_news = Column(Boolean, default=False)
+
+    # ATT&CK TTP matching (populated by ttp_matcher)
+    matched_ttps = Column(JSON, default=list)  # [{technique_id, name, tactic, mitre_url, match_reason, confidence}]
 
     # Prioritization
     priority_score = Column(Float, default=0.0)
@@ -977,3 +1048,30 @@ class AgentSchedule(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     agent = relationship("Agent")
+
+
+# ─────────────────────────────────────────────────────────
+# Audit / Change Log
+# ─────────────────────────────────────────────────────────
+
+class AuditLog(Base):
+    """Immutable record of every create/update/delete action on platform entities."""
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    # Actor
+    actor_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    actor_email = Column(String, nullable=True)          # snapshot at time of action
+    actor_display_name = Column(String, nullable=True)
+    # Action
+    action = Column(String, nullable=False, index=True)  # create / update / delete / enable / disable / assign
+    # Subject
+    entity_type = Column(String, nullable=False, index=True)  # exception / sla_config / campaign / workflow / asset_ownership / finding_ownership / finding_status / tag / auto_tag_rule
+    entity_id = Column(Integer, nullable=True, index=True)
+    entity_name = Column(String, nullable=True)          # human-readable label at time of action
+    # Diff
+    changes = Column(JSON, nullable=True)                # {"field": {"old": X, "new": Y}}
+    # Context
+    ip_address = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)

@@ -17,6 +17,7 @@ import {
   getInventoryShares, getInventorySoftware, getInventorySecurityControls,
   getInventoryComputers, getInventoryPasswordPolicies, getInventoryEnvVars,
   getInventoryCertificates, getInventoryAITools, getInventoryProcesses,
+  getSecurityCoverage,
   exportDownload,
 } from '../api.js'
 import { useScan } from '../App.jsx'
@@ -896,7 +897,164 @@ function SoftwareTab({ scanId, assetId }) {
 }
 
 // ─── Security Controls tab ─────────────────────────────────
+const CTRL_COLORS = {
+  av: '#10b981', firewall: '#0ea5e9', edr: '#8b5cf6', backup: '#f59e0b',
+  identity: '#f97316', vulnerability_management: '#e11d48', siem: '#0891b2',
+  dlp: '#7c3aed', vpn: '#16a34a', sase: '#0284c7', nac: '#b45309',
+  patch_management: '#6d28d9', ndr: '#0f766e', encryption: '#ca8a04',
+  integrity_monitoring: '#9333ea', container_security: '#0369a1',
+  email_security: '#be185d', remote_management: '#64748b',
+}
+
+// Critical categories every asset should have
+const CRITICAL_CATS = ['EDR', 'AV', 'Firewall', 'Patch Management']
+
+function CoverageMatrix({ scanId }) {
+  const [data, setData]       = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [expanded, setExpanded] = useState(null)
+
+  useEffect(() => {
+    setLoading(true)
+    getSecurityCoverage({ scan_id: scanId || null })
+      .then(setData).catch(() => setData(null)).finally(() => setLoading(false))
+  }, [scanId])
+
+  if (loading) return <Spinner />
+  if (!data) return <EmptyState message="No coverage data available." />
+
+  const { categories, assets, summary } = data
+
+  const coverageColor = (pct) => {
+    if (pct >= 80) return '#16a34a'
+    if (pct >= 40) return '#f59e0b'
+    return '#dc2626'
+  }
+
+  // Assets missing at least one critical control
+  const assetsWithGaps = assets.map(a => {
+    const coveredCats = new Set(a.controls.map(c => c.category))
+    const missing = CRITICAL_CATS.filter(c => !coveredCats.has(c))
+    return { ...a, coveredCats, missing }
+  }).filter(a => a.missing.length > 0)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Summary bar */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+        <StatCard label="Total Assets"       value={summary.total_assets}            color="#0ea5e9" icon={Server} />
+        <StatCard label="Avg Coverage"       value={`${summary.avg_coverage_pct}%`}  color={coverageColor(summary.avg_coverage_pct)} icon={Shield} />
+        <StatCard label="Categories Covered" value={`${summary.categories_with_coverage} / ${summary.total_categories}`} color="#8b5cf6" icon={Lock} />
+        <StatCard label="Coverage Gaps"      value={summary.missing_categories.length} color={summary.missing_categories.length > 0 ? '#dc2626' : '#16a34a'} icon={AlertTriangle} />
+      </div>
+
+      {/* Coverage by Category — gaps highlighted inline, no separate card */}
+      <Card>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 12 }}>Coverage by Category</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {categories.map(cat => {
+            const isGap = cat.covered_assets === 0
+            const isCritical = CRITICAL_CATS.includes(cat.name)
+            return (
+              <div key={cat.name} style={{
+                borderRadius: 6,
+                background: isGap && isCritical ? 'rgba(220,38,38,0.06)' : 'transparent',
+                padding: '3px 6px',
+              }}>
+                <div
+                  style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: cat.products.length ? 'pointer' : 'default' }}
+                  onClick={() => cat.products.length && setExpanded(expanded === cat.name ? null : cat.name)}
+                >
+                  {/* Gap / critical badge */}
+                  <div style={{ width: 14, textAlign: 'center' }}>
+                    {isGap && isCritical && <AlertTriangle size={11} color="#dc2626" />}
+                  </div>
+                  <div style={{ width: 130, fontSize: 12, fontWeight: isCritical ? 700 : 500, color: isGap && isCritical ? '#dc2626' : 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {cat.name}
+                  </div>
+                  <div style={{ flex: 1, height: 10, background: 'var(--bg-secondary)', borderRadius: 6, overflow: 'hidden' }}>
+                    {cat.coverage_pct > 0 && (
+                      <div style={{
+                        height: '100%',
+                        width: `${cat.coverage_pct}%`,
+                        background: coverageColor(cat.coverage_pct),
+                        borderRadius: 6,
+                        transition: 'width 0.3s ease',
+                      }} />
+                    )}
+                  </div>
+                  <div style={{ width: 100, textAlign: 'right', fontSize: 11, color: coverageColor(cat.coverage_pct), fontWeight: 700 }}>
+                    {cat.covered_assets}/{cat.total_assets}
+                    <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 3 }}>({cat.coverage_pct}%)</span>
+                  </div>
+                </div>
+                {expanded === cat.name && cat.products.length > 0 && (
+                  <div style={{ marginLeft: 154, marginBottom: 4, marginTop: 2, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {cat.products.map(p => (
+                      <Pill key={p} label={p} color={CTRL_COLORS[cat.control_type] || '#64748b'} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </Card>
+
+      {/* Asset health — only assets missing critical controls */}
+      {assetsWithGaps.length > 0 && (
+        <Card>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <AlertTriangle size={14} color="#f59e0b" />
+            <span style={{ fontWeight: 700, fontSize: 13 }}>
+              Assets Missing Critical Controls
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>
+              ({assetsWithGaps.length} of {assets.length} assets — EDR, AV, Firewall, Patch Mgmt)
+            </span>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                <th style={{ textAlign: 'left', padding: '5px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Asset</th>
+                <th style={{ textAlign: 'left', padding: '5px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Missing Critical</th>
+                <th style={{ textAlign: 'left', padding: '5px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Has</th>
+              </tr>
+            </thead>
+            <tbody>
+              {assetsWithGaps.map(asset => (
+                <tr key={asset.asset_id} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '5px 8px', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                    {asset.asset_ip || asset.asset_label}
+                    {asset.asset_env && <EnvPill env={asset.asset_env} />}
+                  </td>
+                  <td style={{ padding: '5px 8px' }}>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      {asset.missing.map(m => <Pill key={m} label={m} color="#dc2626" />)}
+                    </div>
+                  </td>
+                  <td style={{ padding: '5px 8px' }}>
+                    {asset.controls.length === 0
+                      ? <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>nothing</span>
+                      : <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                          {[...new Set(asset.controls.map(c => c.category))].map(cat => (
+                            <Pill key={cat} label={cat} color={CTRL_COLORS[asset.controls.find(c => c.category === cat)?.control_type] || '#64748b'} />
+                          ))}
+                        </div>
+                    }
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+    </div>
+  )
+}
+
 function SecurityControlsTab({ scanId, assetId }) {
+  const [view, setView]               = useState('coverage')   // 'coverage' | 'list'
   const [rows, setRows]               = useState([])
   const [loading, setLoading]         = useState(true)
   const [ctrlType, setCtrlType]       = useState(null)
@@ -910,12 +1068,11 @@ function SecurityControlsTab({ scanId, assetId }) {
   }
 
   useEffect(() => {
+    if (view !== 'list') return
     setLoading(true)
     getInventorySecurityControls({ scan_id: scanId, asset_id: assetId || null, control_type: ctrlType, sort_by: sortBy, order: sortOrder })
       .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, ctrlType, sortBy, sortOrder])
-
-  const CTRL_COLORS = { av: '#10b981', firewall: '#0ea5e9', edr: '#8b5cf6', backup: '#f59e0b' }
+  }, [scanId, assetId, ctrlType, sortBy, sortOrder, view])
 
   const columns = [
     { key: 'control_type', label: 'Type', width: '9%', sortable: true,
@@ -924,39 +1081,83 @@ function SecurityControlsTab({ scanId, assetId }) {
     { key: 'product_name', label: 'Product', width: '22%', sortable: true,
       render: v => <span style={{ fontWeight: 600 }}>{v || '—'}</span>
     },
-    { key: 'version', label: 'Version', width: '14%', sortable: true,
+    { key: 'vendor', label: 'Vendor', width: '14%', sortable: true,
+      render: v => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '—'}</span>
+    },
+    { key: 'version', label: 'Version', width: '10%', sortable: true,
       render: v => <code style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '—'}</code>
     },
     { key: 'is_enabled', label: 'Enabled', width: '9%', sortable: true,
       render: v => v ? <Pill label="Enabled" color="#16a34a" /> : <Pill label="Disabled" color="#dc2626" />
     },
     { key: 'is_up_to_date', label: 'Up to Date', width: '10%', sortable: true,
-      render: v => v === null ? <Count n="—" /> : v ? <Pill label="Current" color="#16a34a" /> : <Pill label="Outdated" color="#dc2626" />
+      render: v => v === null ? <span style={{ color: 'var(--text-muted)' }}>—</span> : v ? <Pill label="Current" color="#16a34a" /> : <Pill label="Outdated" color="#dc2626" />
     },
-    { key: 'signature_date', label: 'Signature Date', width: '14%', sortable: true,
+    { key: 'signature_date', label: 'Signature Date', width: '12%', sortable: true,
       render: v => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '—'}</span>
     },
-    { key: 'asset_label', label: 'Asset', width: '22%',
+    { key: 'asset_label', label: 'Asset', width: '14%',
       render: (v, r) => <>{v}<EnvPill env={r.asset_env} /></>
     },
   ]
 
   return (
-    <Card>
-      <FilterBar>
-        <Select value={ctrlType} onChange={setCtrlType} placeholder="All types" options={[
-          { value: 'av',       label: 'Antivirus' },
-          { value: 'firewall', label: 'Firewall' },
-          { value: 'edr',      label: 'EDR' },
-        ]} />
-        <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
-      </FilterBar>
-      {loading ? <Spinner /> : groupByAsset
-        ? <GroupedTable columns={columns} rows={rows} emptyMessage="No security controls found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
-        : <Table columns={columns} rows={rows} emptyMessage="No security controls found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+    <div>
+      {/* Sub-view toggle */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+        {[
+          { key: 'coverage', label: 'Coverage Matrix' },
+          { key: 'list',     label: 'All Controls' },
+        ].map(t => (
+          <button
+            key={t.key}
+            onClick={() => setView(t.key)}
+            style={{
+              padding: '5px 14px', borderRadius: 6, border: '1px solid var(--border)',
+              background: view === t.key ? 'var(--accent)' : 'var(--bg-secondary)',
+              color: view === t.key ? '#fff' : 'var(--text-primary)',
+              fontWeight: 600, fontSize: 12, cursor: 'pointer',
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {view === 'coverage'
+        ? <CoverageMatrix scanId={scanId} />
+        : (
+          <Card>
+            <FilterBar>
+              <Select value={ctrlType} onChange={setCtrlType} placeholder="All types" options={[
+                { value: 'av',                     label: 'Antivirus' },
+                { value: 'edr',                    label: 'EDR / XDR' },
+                { value: 'firewall',               label: 'Firewall' },
+                { value: 'vpn',                    label: 'VPN' },
+                { value: 'sase',                   label: 'SASE / ZTNA' },
+                { value: 'dlp',                    label: 'DLP' },
+                { value: 'identity',               label: 'Identity / PAM' },
+                { value: 'vulnerability_management', label: 'Vuln Management' },
+                { value: 'siem',                   label: 'SIEM' },
+                { value: 'backup',                 label: 'Backup' },
+                { value: 'encryption',             label: 'Encryption' },
+                { value: 'patch_management',       label: 'Patch Management' },
+                { value: 'nac',                    label: 'NAC' },
+                { value: 'ndr',                    label: 'NDR' },
+                { value: 'integrity_monitoring',   label: 'Integrity Monitoring' },
+                { value: 'remote_management',      label: 'RMM' },
+              ]} />
+              <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
+            </FilterBar>
+            {loading ? <Spinner /> : groupByAsset
+              ? <GroupedTable columns={columns} rows={rows} emptyMessage="No security controls found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+              : <Table columns={columns} rows={rows} emptyMessage="No security controls found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+            }
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} controls</div>
+          </Card>
+        )
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} controls</div>
-    </Card>
+    </div>
   )
 }
 

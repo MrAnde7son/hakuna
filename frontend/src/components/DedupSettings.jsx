@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, ShieldOff } from 'lucide-react'
+import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, ShieldOff, ClipboardList } from 'lucide-react'
 import { getDedupConfig, saveDedupConfig, runDedup, exportConfig } from '../api.js'
 import { Card, ExportImportButtons } from './ui.jsx'
 import RiskSettings from './RiskSettings.jsx'
@@ -9,6 +9,7 @@ import TagManager from './TagManager.jsx'
 import SLASettings from './SLASettings.jsx'
 import IntegrationSettings from './IntegrationSettings.jsx'
 import GlobalExceptions from './GlobalExceptions.jsx'
+import AuditLog from './AuditLog.jsx'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -256,7 +257,7 @@ function EntityCard({ entityKey, cfg, onChange }) {
 
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla', 'exceptions', 'integrations']
+  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla', 'exceptions', 'integrations', 'audit-log']
   const tabParam = searchParams.get('tab')
   const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'upload'
   const setActiveTab = (id) => setSearchParams(prev => { prev.set('tab', id); return prev })
@@ -310,6 +311,7 @@ export default function Settings() {
     { id: 'risk', label: 'Risk Score', icon: <ShieldAlert size={14} /> },
     { id: 'dedup', label: 'Deduplication', icon: <SettingsIcon size={14} /> },
     { id: 'integrations', label: 'Integrations', icon: <Plug size={14} /> },
+    { id: 'audit-log', label: 'Audit Log', icon: <ClipboardList size={14} /> },
   ]
 
   return (
@@ -357,6 +359,9 @@ export default function Settings() {
 
       {/* Integrations tab */}
       {activeTab === 'integrations' && <IntegrationSettings />}
+
+      {/* Audit Log tab */}
+      {activeTab === 'audit-log' && <AuditLog />}
 
       {/* Dedup tab */}
       {activeTab === 'dedup' && <>

@@ -10,6 +10,8 @@ Provides:
 """
 import json
 import logging
+import os
+import sys
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
@@ -18,6 +20,15 @@ from sqlalchemy.orm import Session
 
 from models import Agent, AgentRun
 from agent_context import AgentHandoff, validate_handoff
+
+# Add repo root to path so hakuna package is importable from backend/
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from hakuna.routing.model_router import ModelRouter as _ModelRouter
+
+_model_router = _ModelRouter()
 
 logger = logging.getLogger(__name__)
 
@@ -31,19 +42,27 @@ class ModelTier(str, Enum):
     BALANCED = "balanced"        # General-purpose, good for most stages
 
 
-# Default model mapping per tier — configurable via DB settings
+# Default model mapping per tier — now backed by ModelRouter for consistency
 DEFAULT_MODEL_ROUTING = {
-    ModelTier.REASONING: "claude-sonnet-4-6",       # Best reasoning for complex decisions
-    ModelTier.DETERMINISTIC: "claude-haiku-4-5-20251001",  # Fast + cheap for structured extraction
-    ModelTier.BALANCED: "claude-sonnet-4-6",         # Default
+    ModelTier.REASONING: "claude-sonnet-4-6",
+    ModelTier.DETERMINISTIC: "claude-haiku-4-5-20251001",
+    ModelTier.BALANCED: "claude-sonnet-4-6",
+}
+
+# Tier → ModelRouter task_type mapping
+_TIER_TO_TASK_TYPE = {
+    ModelTier.REASONING: "remediation_planning",
+    ModelTier.DETERMINISTIC: "normalization",
+    ModelTier.BALANCED: "default",
 }
 
 
 def get_model_for_tier(tier: ModelTier, override: Optional[str] = None) -> str:
-    """Get the model ID for a given tier, with optional override."""
+    """Get the model ID for a given tier via ModelRouter, with optional override."""
     if override:
         return override
-    return DEFAULT_MODEL_ROUTING.get(tier, DEFAULT_MODEL_ROUTING[ModelTier.BALANCED])
+    task_type = _TIER_TO_TASK_TYPE.get(tier, "default")
+    return _model_router.select_model(task_type)
 
 
 # ── Structured Error Objects ─────────────────────────────────────────

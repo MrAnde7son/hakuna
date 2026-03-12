@@ -378,6 +378,44 @@ WORKFLOW_TEMPLATES = [
             {"edge_id": "e2", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
         ],
     },
+    {
+        "id": "sla_breach_email",
+        "name": "SLA Breach & At-Risk Email Alert",
+        "description": "Runs daily, finds all breached or at-risk findings, and emails a summary to the security team",
+        "category": "sla",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "cron",
+             "label": "Daily at 8 AM", "config": {"cron_expr": "0 8 * * *"}, "position_x": 60, "position_y": 260},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "condition_filter",
+             "label": "Breached SLA", "config": {
+                 "conditions": [{"field": "finding.sla_status", "op": "eq", "value": "breached"}],
+                 "logic": "AND"
+             }, "position_x": 360, "position_y": 120},
+            {"node_id": "f2", "node_type": "filter", "node_subtype": "condition_filter",
+             "label": "At-Risk SLA", "config": {
+                 "conditions": [{"field": "finding.sla_status", "op": "eq", "value": "at_risk"}],
+                 "logic": "AND"
+             }, "position_x": 360, "position_y": 400},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "send_email",
+             "label": "Email: Breached", "config": {
+                 "subject": "⚠️ SLA Breached: {{count}} overdue findings",
+                 "body_template": "{{count}} findings have breached their SLA deadline across {{assets}} assets. Immediate action required.\n\nPlease review and remediate these findings as soon as possible.",
+                 "include_findings_table": True
+             }, "position_x": 660, "position_y": 120},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "send_email",
+             "label": "Email: At-Risk", "config": {
+                 "subject": "🕐 SLA At Risk: {{count}} findings due soon",
+                 "body_template": "{{count}} findings are at risk of breaching their SLA deadline across {{assets}} assets. Please prioritize remediation.",
+                 "include_findings_table": True
+             }, "position_x": 660, "position_y": 400},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "f1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "t1", "target_node_id": "f2", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e4", "source_node_id": "f2", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
 ]
 
 TEMPLATE_CATEGORIES = [
@@ -385,6 +423,7 @@ TEMPLATE_CATEGORIES = [
     {"id": "patching", "label": "Patching", "icon": "Shield"},
     {"id": "incident", "label": "Incident Response", "icon": "Zap"},
     {"id": "integration", "label": "Integration", "icon": "Globe"},
+    {"id": "sla", "label": "SLA Management", "icon": "Clock"},
 ]
 
 

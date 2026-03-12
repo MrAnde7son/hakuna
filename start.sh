@@ -4,7 +4,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 echo "═══════════════════════════════════════════════"
-echo "  Nessus Remediation Platform — MVP"
+echo "  Exposure Command Center"
 echo "  Supports: HTML · .nessus XML · CSV"
 echo "═══════════════════════════════════════════════"
 

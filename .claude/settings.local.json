@@ -98,7 +98,25 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\(''app.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
       "Bash(curl -s -X POST http://localhost:8000/api/auth/login -H \"Content-Type: application/json\" -d '{\"\"\"\"email\"\"\"\":\"\"\"\"moshe@example.com\"\"\"\",\"\"\"\"password\"\"\"\":\"\"\"\"password\"\"\"\"}')",
       "Bash(curl -s -X POST http://localhost:8000/api/auth/login -H \"Content-Type: application/json\" -d '{\"\"email\"\":\"\"moshe@example.com\"\",\"\"password\"\":\"\"password\"\"}')",
-      "Bash(python -c \"import agent_routes; print\\(''OK''\\)\")"
+      "Bash(python -c \"import agent_routes; print\\(''OK''\\)\")",
+      "Bash(ls /Users/itamar/Documents/Git/nessus-remediation/backend/threat_intel*.py)",
+      "Bash(python -c \"from models import AuditLog; print\\(''AuditLog model OK''\\)\")",
+      "Bash(python -c \"import app; print\\(''app.py OK''\\)\")",
+      "Bash(python -c \"import dedup; print\\(''OK''\\)\")",
+      "Bash(find /Users/itamar/Documents/Git/nessus-remediation -type d -name hakuna*)",
+      "Bash(python -c \"import audit; import auth_routes; import app; print\\(''OK''\\)\")",
+      "Bash(python -c \"import security_tool_catalog; print\\(''catalog ok:'', len\\(security_tool_catalog.SECURITY_TOOL_CATALOG\\), ''tools,'', len\\(security_tool_catalog.SERVICE_INDEX\\), ''service keys''\\)\")",
+      "Bash(python -c \"import audit; import auth_routes; print\\(''audit:'', dir\\(audit\\)\\); print\\(''OK''\\)\")",
+      "Bash(python -c \"import ttp_matcher; print\\(''ttp_matcher OK''\\)\")",
+      "Bash(python -c \"import security_tool_catalog; print\\(''catalog ok:'', len\\(security_tool_catalog.SECURITY_TOOL_CATALOG\\), ''tools,'', len\\(security_tool_catalog.SERVICE_INDEX\\), ''service keys,'', len\\(security_tool_catalog.SOFTWARE_INDEX\\), ''software patterns''\\)\")",
+      "Bash(python -c \"import inventory_extractor; print\\(''inventory_extractor ok''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''app.py''\\).read\\(\\)\\); print\\(''app.py syntax OK''\\)\")",
+      "Bash(python -c \"import inventory_extractor; print\\(''ok''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''app.py''\\).read\\(\\)\\); print\\(''ok''\\)\")",
+      "WebFetch(domain:localhost)"
+    ],
+    "additionalDirectories": [
+      "/Users/itamar/Documents/Git/nessus-remediation"
     ]
   }
 }

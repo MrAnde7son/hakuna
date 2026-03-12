@@ -954,6 +954,14 @@ def extract_av_info(plugin_output: str, asset_id: int, scan_id: int, plugin_id: 
                 product_name = line
                 break
 
+    # Last resort: use known product names per plugin
+    if not product_name:
+        _PLUGIN_DEFAULT_PRODUCT = {
+            "131023": "Windows Defender Antivirus",
+            "16193":  "Antivirus (Generic)",
+        }
+        product_name = _PLUGIN_DEFAULT_PRODUCT.get(plugin_id)
+
     is_enabled = True
     if enabled_m:
         is_enabled = enabled_m.group(1).strip().lower() in ("enabled", "active", "running", "true", "yes", "on")
@@ -962,13 +970,38 @@ def extract_av_info(plugin_output: str, asset_id: int, scan_id: int, plugin_id: 
     if up_to_date_m:
         is_up_to_date = up_to_date_m.group(1).strip().lower() in ("yes", "true", "current", "ok")
 
+    # Infer vendor from product name
+    vendor = None
+    if product_name:
+        pn_lower = product_name.lower()
+        if "defender" in pn_lower or "windows" in pn_lower:
+            vendor = "Microsoft"
+        elif "crowdstrike" in pn_lower or "falcon" in pn_lower:
+            vendor = "CrowdStrike"
+        elif "sentinelone" in pn_lower or "sentinel" in pn_lower:
+            vendor = "SentinelOne"
+        elif "sophos" in pn_lower:
+            vendor = "Sophos"
+        elif "kaspersky" in pn_lower:
+            vendor = "Kaspersky"
+        elif "symantec" in pn_lower or "sep" == pn_lower:
+            vendor = "Broadcom / Symantec"
+        elif "mcafee" in pn_lower or "trellix" in pn_lower:
+            vendor = "Trellix"
+        elif "trend micro" in pn_lower:
+            vendor = "Trend Micro"
+        elif "eset" in pn_lower:
+            vendor = "ESET"
+        elif "bitdefender" in pn_lower:
+            vendor = "Bitdefender"
+
     controls.append({
         "scan_id": scan_id,
         "asset_id": asset_id,
         "source_plugin": plugin_id,
         "control_type": "av",
         "product_name": product_name,
-        "vendor": None,
+        "vendor": vendor,
         "version": version_m.group(1).strip() if version_m else None,
         "is_enabled": is_enabled,
         "is_up_to_date": is_up_to_date,
@@ -1676,3 +1709,115 @@ def extract_inventory_from_findings(findings: list[dict]) -> dict:
             result[table_key].extend(records)
 
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Security control detection from services + software
+# ─────────────────────────────────────────────────────────────────────────────
+
+def detect_security_controls_from_inventory(db, scan_id: int) -> int:
+    """
+    Query existing InventoryService and InventorySoftware rows for this scan,
+    match them against the SECURITY_TOOL_CATALOG, and upsert
+    InventorySecurityControl records.
+
+    Returns the number of new controls persisted.
+    """
+    from models import InventoryService, InventorySoftware, InventorySecurityControl
+    from security_tool_catalog import match_service, match_software
+
+    # Key: (asset_id, product) → already inserted this session, skip duplicates
+    seen: set[tuple[int, str]] = set()
+
+    # Load existing catalog-detected controls so we never double-insert
+    existing = (
+        db.query(
+            InventorySecurityControl.asset_id,
+            InventorySecurityControl.product_name,
+        )
+        .filter(
+            InventorySecurityControl.scan_id == scan_id,
+            InventorySecurityControl.source_plugin == "catalog",
+        )
+        .all()
+    )
+    for row in existing:
+        seen.add((row.asset_id, row.product_name))
+
+    new_controls = []
+
+    # ── Match services ────────────────────────────────────────────────────────
+    services = (
+        db.query(InventoryService)
+        .filter(InventoryService.scan_id == scan_id)
+        .all()
+    )
+    for svc in services:
+        entry = match_service(svc.service_name or "", svc.display_name or "")
+        if not entry:
+            continue
+        key = (svc.asset_id, entry["product"])
+        if key in seen:
+            continue
+        seen.add(key)
+        new_controls.append(
+            InventorySecurityControl(
+                scan_id=scan_id,
+                asset_id=svc.asset_id,
+                control_type=entry["control_type"],
+                product_name=entry["product"],
+                vendor=entry["vendor"],
+                is_enabled=svc.is_running,
+                details={
+                    "category": entry["category"],
+                    "description": entry["description"],
+                    "matched_service": svc.service_name,
+                    "display_name": svc.display_name,
+                    "detection_method": "service",
+                },
+                source_plugin="catalog",
+            )
+        )
+
+    # ── Match installed software ──────────────────────────────────────────────
+    software = (
+        db.query(InventorySoftware)
+        .filter(InventorySoftware.scan_id == scan_id)
+        .all()
+    )
+    for sw in software:
+        entry = match_software(sw.name or "")
+        if not entry:
+            continue
+        key = (sw.asset_id, entry["product"])
+        if key in seen:
+            continue
+        seen.add(key)
+        new_controls.append(
+            InventorySecurityControl(
+                scan_id=scan_id,
+                asset_id=sw.asset_id,
+                control_type=entry["control_type"],
+                product_name=entry["product"],
+                vendor=entry["vendor"],
+                is_enabled=True,
+                details={
+                    "category": entry["category"],
+                    "description": entry["description"],
+                    "matched_software": sw.name,
+                    "version": sw.version,
+                    "detection_method": "software",
+                },
+                source_plugin="catalog",
+            )
+        )
+
+    if new_controls:
+        db.bulk_save_objects(new_controls)
+        db.commit()
+
+    logger.info(
+        f"Security catalog detection: scan {scan_id} → {len(new_controls)} "
+        f"new controls from {len(services)} services + {len(software)} software entries"
+    )
+    return len(new_controls)

@@ -38,6 +38,8 @@ def init_db():
         IntegrationConfig,
         ReportTemplate,
         Agent, AgentRun, AgentSchedule,
+        FindingException, ScanComparison,
+        AuditLog,
     )
     from threat_intel_models import (  # noqa: F401
         ThreatGroup, TTP, ThreatGroupTTP,
@@ -63,6 +65,7 @@ def _migrate_add_columns():
             ("is_regression", "BOOLEAN DEFAULT 0"),
             ("cvss4_score", "FLOAT"),
             ("cvss4_vector", "VARCHAR"),
+            ("matched_ttps", "JSON"),
         ],
         "threat_cves": [
             ("cvss4_score", "FLOAT"),

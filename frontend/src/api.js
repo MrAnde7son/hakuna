@@ -108,6 +108,35 @@ export const authDeleteOrg = (orgId) => request(`/auth/orgs/${orgId}`, { method:
 
 export const authMSSPClients = () => request('/auth/mssp/clients')
 
+// Custom Roles
+export const authListRoles = () => request('/auth/roles')
+export const authGetRole = (roleId) => request(`/auth/roles/${roleId}`)
+export const authCreateRole = (data) => request('/auth/roles', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const authUpdateRole = (roleId, data) => request(`/auth/roles/${roleId}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const authDeleteRole = (roleId) => request(`/auth/roles/${roleId}`, { method: 'DELETE' })
+
+export const authAddTagPermission = (roleId, data) => request(`/auth/roles/${roleId}/permissions`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const authRemoveTagPermission = (roleId, permId) =>
+  request(`/auth/roles/${roleId}/permissions/${permId}`, { method: 'DELETE' })
+
+export const authGetUserCustomRoles = (userId) => request(`/auth/users/${userId}/custom-roles`)
+export const authAssignCustomRole = (userId, roleId) =>
+  request(`/auth/users/${userId}/custom-roles/${roleId}`, { method: 'POST' })
+export const authUnassignCustomRole = (userId, roleId) =>
+  request(`/auth/users/${userId}/custom-roles/${roleId}`, { method: 'DELETE' })
+
 // Scans
 export const getScans = () => request('/scans')
 export const deleteScan = (id) => request(`/scans/${id}`, { method: 'DELETE' })
@@ -183,6 +212,7 @@ export const getInventoryLoggedOn = (params) => _inv('logged-on', params)
 export const getInventoryShares = (params) => _inv('shares', params)
 export const getInventorySoftware = (params) => _inv('software', params)
 export const getInventorySecurityControls = (params) => _inv('security-controls', params)
+export const getSecurityCoverage = (params) => _inv('security-coverage', params)
 export const getInventoryComputers = (params) => _inv('computers', params)
 export const getInventoryPasswordPolicies = (params) => _inv('password-policies', params)
 export const getInventoryEnvVars = (params) => _inv('env-vars', params)
@@ -345,6 +375,9 @@ export const getKevRecent = (limit = 10) => _ti('kev-recent', { limit })
 export const getThreatGroups = (params = {}) => _ti('groups', params)
 export const getThreatTtps = (params = {}) => _ti('ttps', params)
 export const syncThreatIntel = () => request('/threat-intel/sync', { method: 'POST' })
+export const getTtpCoverage = (params = {}) => _ti('ttp-coverage', params)
+export const triggerTtpMatching = (scanId = null) =>
+  request(`/threat-intel/match-ttps${scanId ? `?scan_id=${scanId}` : ''}`, { method: 'POST' })
 export const threatImpactSearch = (data) =>
   request('/threat-intel/impact-search', {
     method: 'POST',

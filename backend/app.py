@@ -40,7 +40,8 @@ import workflow_engine
 from nlp_search import parse_nlp_query
 import integrations as integ_module
 import ownership_inference
-from models import Tag, TagAssignment, AutoTagRule, SLAConfig, IntegrationConfig, FindingException, ScanComparison
+from models import Tag, TagAssignment, AutoTagRule, SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog
+from audit import log_audit, diff as _diff
 from auth import (
     get_current_user, require_auth, require_role,
     get_accessible_org_ids, apply_org_filter, apply_scan_org_filter,
@@ -154,6 +155,12 @@ app.include_router(config_portability_router)
 app.include_router(agent_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
+
+
+# ─────────────────────────────────────────────────────────
+# Audit Log Helper — imported from audit.py
+# ─────────────────────────────────────────────────────────
+
 
 # Maps dedup entity_type → (Model, list_fields, bool_fields) for DB-level dedup
 ENTITY_MODEL_MAP: dict = {}  # populated after models are imported (below)
@@ -642,6 +649,15 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     # ── Recompute asset risk scores using full formula (findings + inventory) ──
     _recompute_risk_for_scan(db, scan.id, risk_cfg)
 
+    # ── Detect security controls from services + software (catalog matching) ──
+    try:
+        from inventory_extractor import detect_security_controls_from_inventory
+        sc_count = detect_security_controls_from_inventory(db, scan.id)
+        if sc_count:
+            logger.info(f"Security catalog: {sc_count} controls detected for scan {scan.id}")
+    except Exception as e:
+        logger.warning(f"Security catalog detection failed (non-fatal): {e}")
+
     # ── Apply auto-tag rules to newly imported scan ──
     tag_results = tag_engine.run_all_auto_tag_rules(db, scan_id=scan.id)
     if tag_results:
@@ -677,6 +693,14 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     except Exception as e:
         logger.warning(f"Threat intel enrichment failed (non-fatal): {e}")
 
+    # ── Match findings to MITRE ATT&CK TTPs (keyword + plugin ID + family) ──
+    try:
+        import ttp_matcher as _ttp_matcher
+        ttp_result = _ttp_matcher.match_findings_to_ttps(db, scan_id=scan.id)
+        logger.info(f"TTP matching: {ttp_result['matched']} findings matched to ATT&CK techniques")
+    except Exception as e:
+        logger.warning(f"TTP matching failed (non-fatal): {e}")
+
     # ── Compute SLA due dates for all findings in this scan ──
     try:
         _ensure_sla_defaults(db)
@@ -687,9 +711,27 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     except Exception as e:
         logger.warning(f"SLA computation failed (non-fatal): {e}")
 
+    # ── Cross-scan asset dedup: merge duplicate hosts from prior scans in same org ──
+    if dedup_cfg.get("enabled") and dedup_cfg.get("apply_on_upload"):
+        asset_dcfg = dedup_cfg.get("assets", {})
+        if asset_dcfg.get("enabled") and asset_dcfg.get("scope", "cross_scan") == "cross_scan":
+            try:
+                cs_result = dedup_engine.run_cross_scan_asset_dedup(
+                    db, effective_org_id, dedup_cfg, ENTITY_MODEL_MAP
+                )
+                if cs_result.get("removed"):
+                    logger.info(f"Cross-scan asset dedup: merged {cs_result['removed']} duplicate asset(s)")
+            except Exception as e:
+                logger.warning(f"Cross-scan asset dedup failed (non-fatal): {e}")
+
     total_findings = len(parsed["findings"])
     total_assets = len(asset_map)
     logger.info(f"Ingested scan '{file.filename}': {total_assets} assets, {total_findings} findings")
+    log_audit(db, "create", "scan", scan.id,
+              entity_name=scan.scan_name or file.filename,
+              changes={"filename": file.filename, "assets": total_assets, "findings": total_findings},
+              actor=user)
+    db.commit()
 
     return {
         "scan_id": scan.id,
@@ -751,7 +793,10 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[L
     db.query(AssetOwnership).filter(AssetOwnership.asset_id.in_(asset_subq)).delete(synchronize_session=False)
     db.query(FindingOwnership).filter(FindingOwnership.finding_id.in_(finding_subq)).delete(synchronize_session=False)
     db.query(CampaignFinding).filter(CampaignFinding.finding_id.in_(finding_subq)).delete(synchronize_session=False)
+    _scan_name = scan.scan_name or scan.filename
+    _scan_org = scan.org_id
     db.delete(scan)  # cascades to Asset → Finding → AutomateClick via ORM
+    log_audit(db, "delete", "scan", scan_id, entity_name=_scan_name, org_id=_scan_org)
     db.commit()
     return {"message": "Scan deleted"}
 
@@ -1124,6 +1169,7 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dic
         "epss_percentile": f.epss_percentile,
         "ransomware_linked": f.ransomware_linked or False,
         "trending_in_news": f.trending_in_news or False,
+        "matched_ttps": f.matched_ttps or [],
         "priority_score": f.priority_score,
         "effort_level": f.effort_level,
         "owner_suggestion": f.owner_suggestion,
@@ -2021,6 +2067,135 @@ def list_inventory_security_controls(
     } for c in controls]
 
 
+@app.get("/api/inventory/security-coverage")
+def get_security_coverage(
+    scan_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """
+    Security control coverage matrix.
+    Returns per-category coverage across assets and a per-asset control list.
+    """
+    from security_tool_catalog import SECURITY_TOOL_CATALOG
+    from collections import defaultdict
+
+    # Reverse map: control_type → canonical category name (from catalog)
+    CT_TO_CAT = {}
+    for _entry in SECURITY_TOOL_CATALOG:
+        ct = _entry["control_type"]
+        if ct not in CT_TO_CAT:
+            CT_TO_CAT[ct] = _entry["category"]
+
+    q = db.query(InventorySecurityControl).join(Scan, InventorySecurityControl.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
+    if scan_id:
+        q = q.filter(InventorySecurityControl.scan_id == scan_id)
+    controls = q.all()
+
+    aq = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
+    aq = apply_scan_org_filter(aq, org_ids)
+    if scan_id:
+        aq = aq.filter(Asset.scan_id == scan_id)
+    all_assets = aq.all()
+    total_assets = len(all_assets)
+
+    asset_map = {
+        a.id: {
+            "asset_id": a.id,
+            "asset_label": f"{a.ip or ''}" + (f" | {a.hostname}" if a.hostname else ""),
+            "asset_ip": a.ip,
+            "asset_env": a.environment_tag,
+            "controls": [],
+        }
+        for a in all_assets
+    }
+
+    for c in controls:
+        if c.asset_id not in asset_map:
+            continue
+        asset_map[c.asset_id]["controls"].append({
+            "product_name": c.product_name,
+            "vendor": c.vendor,
+            "control_type": c.control_type,
+            "category": (c.details or {}).get("category") or CT_TO_CAT.get(c.control_type, c.control_type),
+            "is_enabled": c.is_enabled,
+            "detection_method": (c.details or {}).get("detection_method", "plugin"),
+            "source_plugin": c.source_plugin,
+        })
+
+    # Build unique category catalog (preserve insertion order by category first seen)
+    CATALOG_CATEGORIES: dict[str, str] = {}
+    for entry in SECURITY_TOOL_CATALOG:
+        cat = entry["category"]
+        if cat not in CATALOG_CATEGORIES:
+            CATALOG_CATEGORIES[cat] = entry["control_type"]
+
+    cat_to_assets: dict[str, set] = defaultdict(set)
+    cat_to_products: dict[str, set] = defaultdict(set)
+    for c in controls:
+        cat = (c.details or {}).get("category") or CT_TO_CAT.get(c.control_type, c.control_type)
+        cat_to_assets[cat].add(c.asset_id)
+        if c.product_name:
+            cat_to_products[cat].add(c.product_name)
+
+    categories = []
+    for cat, ct in CATALOG_CATEGORIES.items():
+        covered = len(cat_to_assets.get(cat, set()))
+        categories.append({
+            "name": cat,
+            "control_type": ct,
+            "total_assets": total_assets,
+            "covered_assets": covered,
+            "coverage_pct": round(covered / total_assets * 100, 1) if total_assets else 0,
+            "products": sorted(cat_to_products.get(cat, set())),
+        })
+    categories.sort(key=lambda x: x["coverage_pct"])
+
+    if total_assets:
+        per_asset_pct = [
+            len({ctrl["category"] for ctrl in a["controls"]}) / len(CATALOG_CATEGORIES) * 100
+            for a in asset_map.values()
+        ]
+        avg_coverage = round(sum(per_asset_pct) / len(per_asset_pct), 1)
+    else:
+        avg_coverage = 0.0
+
+    missing_categories = [c["name"] for c in categories if c["covered_assets"] == 0]
+
+    return {
+        "categories": categories,
+        "assets": sorted(asset_map.values(), key=lambda a: (a["asset_ip"] or "")),
+        "summary": {
+            "total_assets": total_assets,
+            "avg_coverage_pct": avg_coverage,
+            "total_categories": len(CATALOG_CATEGORIES),
+            "categories_with_coverage": len([c for c in categories if c["covered_assets"] > 0]),
+            "missing_categories": missing_categories,
+        },
+    }
+
+
+@app.post("/api/scans/{scan_id}/detect-security-controls")
+def rerun_security_control_detection(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_role("analyst")),
+):
+    """Re-run catalog-based security control detection for a scan."""
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+    db.query(InventorySecurityControl).filter(
+        InventorySecurityControl.scan_id == scan_id,
+        InventorySecurityControl.source_plugin == "catalog",
+    ).delete(synchronize_session=False)
+    db.commit()
+    from inventory_extractor import detect_security_controls_from_inventory
+    count = detect_security_controls_from_inventory(db, scan_id)
+    return {"scan_id": scan_id, "detected": count}
+
+
 @app.get("/api/inventory/computers")
 def list_inventory_computers(
     scan_id: Optional[int] = None,
@@ -2587,12 +2762,13 @@ class OwnershipBody(BaseModel):
 
 
 @app.patch("/api/assets/{asset_id}/ownership")
-def set_asset_ownership(asset_id: int, body: OwnershipBody, db: Session = Depends(get_db)):
+def set_asset_ownership(asset_id: int, body: OwnershipBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     """Set or update ownership for an asset."""
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
     if not asset:
         raise HTTPException(404, "Asset not found")
     own = db.query(AssetOwnership).filter(AssetOwnership.asset_id == asset_id).first()
+    _old_own = {"owner_name": own.owner_name if own else None, "owner_email": own.owner_email if own else None, "owner_role": own.owner_role if own else None, "team": own.team if own else None}
     if not own:
         own = AssetOwnership(asset_id=asset_id)
         db.add(own)
@@ -2601,17 +2777,22 @@ def set_asset_ownership(asset_id: int, body: OwnershipBody, db: Session = Depend
     own.owner_role = body.owner_role
     own.team = body.team
     own.notes = body.notes
+    _new_own = {"owner_name": own.owner_name, "owner_email": own.owner_email, "owner_role": own.owner_role, "team": own.team}
+    log_audit(db, "update", "asset_ownership", asset_id,
+              entity_name=asset.ip or asset.hostname,
+              changes=_diff(_old_own, _new_own), actor=user)
     db.commit()
     return {"ok": True, "asset_id": asset_id, "owner_name": own.owner_name}
 
 
 @app.patch("/api/findings/{finding_id}/ownership")
-def set_finding_ownership(finding_id: int, body: OwnershipBody, db: Session = Depends(get_db)):
+def set_finding_ownership(finding_id: int, body: OwnershipBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     """Set or update ownership for a finding."""
     finding = db.query(Finding).filter(Finding.id == finding_id).first()
     if not finding:
         raise HTTPException(404, "Finding not found")
     own = db.query(FindingOwnership).filter(FindingOwnership.finding_id == finding_id).first()
+    _old_fown = {"owner_name": own.owner_name if own else None, "owner_role": own.owner_role if own else None, "team": own.team if own else None}
     if not own:
         own = FindingOwnership(finding_id=finding_id)
         db.add(own)
@@ -2620,6 +2801,10 @@ def set_finding_ownership(finding_id: int, body: OwnershipBody, db: Session = De
     own.owner_role = body.owner_role
     own.team = body.team
     own.notes = body.notes
+    _new_fown = {"owner_name": own.owner_name, "owner_role": own.owner_role, "team": own.team}
+    log_audit(db, "update", "finding_ownership", finding_id,
+              entity_name=finding.plugin_name,
+              changes=_diff(_old_fown, _new_fown), actor=user)
     db.commit()
     return {"ok": True, "finding_id": finding_id, "owner_name": own.owner_name}
 
@@ -2756,6 +2941,7 @@ def _serialize_finding(f: Finding, asset: Asset = None) -> dict:
         "epss_percentile": f.epss_percentile,
         "ransomware_linked": f.ransomware_linked or False,
         "trending_in_news": f.trending_in_news or False,
+        "matched_ttps": f.matched_ttps or [],
         "port": f.port,
         "protocol": f.protocol,
         "asset_id": f.asset_id,
@@ -2938,6 +3124,11 @@ def create_campaign(body: CampaignCreateBody, db: Session = Depends(get_db), use
         status="draft",
     )
     db.add(campaign)
+    db.flush()
+    log_audit(db, "create", "campaign", campaign.id,
+              entity_name=campaign.name,
+              changes={"name": campaign.name, "description": campaign.description, "status": campaign.status},
+              actor=user)
     db.commit()
     db.refresh(campaign)
     return {"id": campaign.id, "name": campaign.name, "status": campaign.status}
@@ -2997,11 +3188,12 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
 
 
 @app.patch("/api/campaigns/{campaign_id}")
-def update_campaign(campaign_id: int, body: CampaignUpdateBody, db: Session = Depends(get_db)):
+def update_campaign(campaign_id: int, body: CampaignUpdateBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     """Update campaign metadata or query."""
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(404, "Campaign not found")
+    _old_c = {"name": campaign.name, "status": campaign.status, "description": campaign.description}
     if body.name is not None:
         campaign.name = body.name
     if body.description is not None:
@@ -3012,17 +3204,22 @@ def update_campaign(campaign_id: int, body: CampaignUpdateBody, db: Session = De
         campaign.query = body.query
     if body.query_logic is not None:
         campaign.query_logic = body.query_logic
+    _new_c = {"name": campaign.name, "status": campaign.status, "description": campaign.description}
+    log_audit(db, "update", "campaign", campaign.id,
+              entity_name=campaign.name, changes=_diff(_old_c, _new_c), actor=user)
     db.commit()
     return {"ok": True, "id": campaign.id}
 
 
 @app.delete("/api/campaigns/{campaign_id}")
-def delete_campaign(campaign_id: int, db: Session = Depends(get_db)):
+def delete_campaign(campaign_id: int, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     """Delete a campaign and its finding associations."""
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(404, "Campaign not found")
+    _c_name, _c_org = campaign.name, campaign.org_id
     db.delete(campaign)
+    log_audit(db, "delete", "campaign", campaign_id, entity_name=_c_name, actor=user, org_id=_c_org)
     db.commit()
     return {"ok": True}
 
@@ -3527,6 +3724,11 @@ def create_tag(body: TagCreate, db: Session = Depends(get_db), user: Optional[Us
         description=body.description,
     )
     db.add(tag)
+    db.flush()
+    log_audit(db, "create", "tag", tag.id,
+              entity_name=f"{tag.category}:{tag.value}",
+              changes={"category": tag.category, "value": tag.value, "color": tag.color},
+              actor=user)
     db.commit()
     db.refresh(tag)
     return tag_engine._tag_to_dict(tag, db=db, include_counts=True)
@@ -3562,10 +3764,11 @@ def get_tag(tag_id: int, db: Session = Depends(get_db)):
 
 
 @app.patch("/api/tags/{tag_id}")
-def update_tag(tag_id: int, body: TagUpdate, db: Session = Depends(get_db)):
+def update_tag(tag_id: int, body: TagUpdate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     tag = db.query(Tag).filter(Tag.id == tag_id).first()
     if not tag:
         raise HTTPException(404, "Tag not found")
+    _old_tag = {"category": tag.category, "value": tag.value, "color": tag.color}
     if body.category is not None or body.value is not None:
         new_cat = body.category or tag.category
         new_val = body.value or tag.value
@@ -3584,6 +3787,10 @@ def update_tag(tag_id: int, body: TagUpdate, db: Session = Depends(get_db)):
         tag.color = body.color
     if body.description is not None:
         tag.description = body.description
+    _new_tag = {"category": tag.category, "value": tag.value, "color": tag.color}
+    log_audit(db, "update", "tag", tag_id,
+              entity_name=f"{tag.category}:{tag.value}",
+              changes=_diff(_old_tag, _new_tag), actor=user)
     db.commit()
     return tag_engine._tag_to_dict(tag, db=db, include_counts=True)
 
@@ -3593,10 +3800,13 @@ def delete_tag(
     tag_id: int,
     strategy: str = "reparent",  # "reparent" | "cascade"
     db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
 ):
     tag = db.query(Tag).filter(Tag.id == tag_id).first()
     if not tag:
         raise HTTPException(404, "Tag not found")
+    _tag_name = f"{tag.category}:{tag.value}"
+    _tag_org = tag.org_id
 
     children = db.query(Tag).filter(Tag.parent_id == tag_id).all()
     if strategy == "cascade":
@@ -3613,17 +3823,21 @@ def delete_tag(
 
     db.query(TagAssignment).filter(TagAssignment.tag_id == tag_id).delete(synchronize_session=False)
     db.delete(tag)
+    log_audit(db, "delete", "tag", tag_id, entity_name=_tag_name, actor=user, org_id=_tag_org)
     db.commit()
     return {"message": "Tag deleted", "strategy": strategy}
 
 
 @app.post("/api/tags/assign")
-def assign_tags(body: TagAssignBody, db: Session = Depends(get_db)):
+def assign_tags(body: TagAssignBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+    from auth import has_tag_permission
     assigned = 0
     for tag_id in (body.tag_ids or []):
         tag = db.query(Tag).filter(Tag.id == tag_id).first()
         if not tag:
             continue
+        if user and not has_tag_permission(user, tag_id, "write", db):
+            raise HTTPException(status_code=403, detail=f"No write permission on tag '{tag.category}:{tag.value}'")
         for aid in (body.asset_ids or []):
             exists = db.query(TagAssignment).filter(
                 TagAssignment.tag_id == tag_id,
@@ -3645,9 +3859,14 @@ def assign_tags(body: TagAssignBody, db: Session = Depends(get_db)):
 
 
 @app.post("/api/tags/unassign")
-def unassign_tags(body: TagAssignBody, db: Session = Depends(get_db)):
+def unassign_tags(body: TagAssignBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+    from auth import has_tag_permission
     removed = 0
     for tag_id in (body.tag_ids or []):
+        if user and not has_tag_permission(user, tag_id, "write", db):
+            tag = db.query(Tag).filter(Tag.id == tag_id).first()
+            label = f"{tag.category}:{tag.value}" if tag else str(tag_id)
+            raise HTTPException(status_code=403, detail=f"No write permission on tag '{label}'")
         for aid in (body.asset_ids or []):
             n = db.query(TagAssignment).filter(
                 TagAssignment.tag_id == tag_id,
@@ -3901,20 +4120,28 @@ class SLAConfigUpdateBody(BaseModel):
 
 
 @app.put("/api/sla/config")
-def save_sla_config(body: SLAConfigUpdateBody, db: Session = Depends(get_db)):
+def save_sla_config(body: SLAConfigUpdateBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     """Save SLA configuration and trigger recalculation for all scans."""
     _ensure_sla_defaults(db)
+    _sev_labels = {0: "Info", 1: "Low", 2: "Medium", 3: "High", 4: "Critical"}
     for item in body.configs:
         sev = item.get("severity")
         row = db.query(SLAConfig).filter(SLAConfig.severity == sev).first()
         if not row:
             continue
+        _old = {"days_to_remediate": row.days_to_remediate, "warn_days_before": row.warn_days_before, "is_enabled": row.is_enabled}
         if "days_to_remediate" in item:
             row.days_to_remediate = int(item["days_to_remediate"])
         if "warn_days_before" in item:
             row.warn_days_before = int(item["warn_days_before"])
         if "is_enabled" in item:
             row.is_enabled = bool(item["is_enabled"])
+        _new = {"days_to_remediate": row.days_to_remediate, "warn_days_before": row.warn_days_before, "is_enabled": row.is_enabled}
+        diff = _diff(_old, _new)
+        if diff:
+            log_audit(db, "update", "sla_config", row.id,
+                      entity_name=_sev_labels.get(sev, str(sev)),
+                      changes=diff, actor=user)
     db.commit()
 
     # Recalculate SLA for all scans
@@ -4110,6 +4337,11 @@ def create_workflow(body: WorkflowCreate, db: Session = Depends(get_db), user: O
         campaign_id=body.campaign_id,
     )
     db.add(wf)
+    db.flush()
+    log_audit(db, "create", "workflow", wf.id,
+              entity_name=wf.name,
+              changes={"name": wf.name, "description": wf.description},
+              actor=user)
     db.commit()
     db.refresh(wf)
     return _workflow_to_dict(wf)
@@ -4139,10 +4371,11 @@ def get_workflow(wf_id: int, db: Session = Depends(get_db)):
 
 
 @app.patch("/api/workflows/{wf_id}")
-def update_workflow(wf_id: int, body: WorkflowUpdate, db: Session = Depends(get_db)):
+def update_workflow(wf_id: int, body: WorkflowUpdate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    _old_wf = {"name": wf.name, "status": wf.status, "is_enabled": wf.is_enabled, "description": wf.description}
 
     if body.name is not None:
         wf.name = body.name
@@ -4184,6 +4417,9 @@ def update_workflow(wf_id: int, body: WorkflowUpdate, db: Session = Depends(get_
                 label=ed.get("label"),
             ))
 
+    _new_wf = {"name": wf.name, "status": wf.status, "is_enabled": wf.is_enabled, "description": wf.description}
+    log_audit(db, "update", "workflow", wf_id,
+              entity_name=wf.name, changes=_diff(_old_wf, _new_wf), actor=user)
     db.commit()
     db.refresh(wf)
     d = _workflow_to_dict(wf)
@@ -4193,11 +4429,13 @@ def update_workflow(wf_id: int, body: WorkflowUpdate, db: Session = Depends(get_
 
 
 @app.delete("/api/workflows/{wf_id}")
-def delete_workflow(wf_id: int, db: Session = Depends(get_db)):
+def delete_workflow(wf_id: int, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
+    _wf_name, _wf_org = wf.name, wf.org_id
     db.delete(wf)
+    log_audit(db, "delete", "workflow", wf_id, entity_name=_wf_name, actor=user, org_id=_wf_org)
     db.commit()
     return {"message": "Workflow deleted"}
 
@@ -4511,13 +4749,14 @@ VALID_WORKFLOW_STATUSES = {"open", "in_progress", "resolved", "accepted_risk", "
 
 
 @app.patch("/api/findings/{finding_id}/status")
-def update_finding_status(finding_id: int, body: FindingStatusUpdate, db: Session = Depends(get_db)):
+def update_finding_status(finding_id: int, body: FindingStatusUpdate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     """Update finding workflow status."""
     finding = db.query(Finding).filter(Finding.id == finding_id).first()
     if not finding:
         raise HTTPException(404, "Finding not found")
     if body.status not in VALID_WORKFLOW_STATUSES:
         raise HTTPException(400, f"Invalid status. Must be one of: {', '.join(VALID_WORKFLOW_STATUSES)}")
+    _old_status = {"status": finding.workflow_status, "assigned_to": finding.workflow_assigned_to}
     finding.workflow_status = body.status
     finding.status_changed_at = datetime.utcnow()
     if body.assigned_to is not None:
@@ -4535,6 +4774,10 @@ def update_finding_status(finding_id: int, body: FindingStatusUpdate, db: Sessio
         cfg = cfg_map.get(finding.severity)
         warn = cfg.warn_days_before if cfg else 7
         finding.sla_status = _compute_sla_status(finding.sla_due_date, None, warn)
+    _new_status = {"status": finding.workflow_status, "assigned_to": finding.workflow_assigned_to}
+    log_audit(db, "update", "finding_status", finding_id,
+              entity_name=finding.plugin_name,
+              changes=_diff(_old_status, _new_status), actor=user)
     db.commit()
     return {
         "ok": True, "finding_id": finding_id,
@@ -4686,6 +4929,10 @@ def create_exception(body: ExceptionCreate, db: Session = Depends(get_db), user:
     db.flush()
     # Apply to existing findings
     applied = _apply_exception_to_findings(db, exc)
+    log_audit(db, "create", "exception", exc.id,
+              entity_name=exc.plugin_name or exc.plugin_id,
+              changes={"exception_type": exc.exception_type, "reason": exc.reason, "plugin_id": exc.plugin_id, "asset_ip": exc.asset_ip},
+              actor=user)
     db.commit()
     return {"ok": True, "id": exc.id, "applied_to": applied}
 
@@ -4719,10 +4966,11 @@ def get_exception(exception_id: int, db: Session = Depends(get_db)):
 
 
 @app.patch("/api/exceptions/{exception_id}")
-def update_exception(exception_id: int, body: ExceptionUpdate, db: Session = Depends(get_db)):
+def update_exception(exception_id: int, body: ExceptionUpdate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     exc = db.query(FindingException).filter(FindingException.id == exception_id).first()
     if not exc:
         raise HTTPException(404, "Exception not found")
+    _old_exc = {"exception_type": exc.exception_type, "reason": exc.reason, "is_active": exc.is_active, "plugin_id": exc.plugin_id, "asset_ip": exc.asset_ip, "approved_by": exc.approved_by}
     if body.plugin_id is not None:
         exc.plugin_id = body.plugin_id or None
     if body.plugin_name is not None:
@@ -4760,20 +5008,28 @@ def update_exception(exception_id: int, body: ExceptionUpdate, db: Session = Dep
             )
         else:
             _apply_exception_to_findings(db, exc)
+    _new_exc = {"exception_type": exc.exception_type, "reason": exc.reason, "is_active": exc.is_active, "plugin_id": exc.plugin_id, "asset_ip": exc.asset_ip, "approved_by": exc.approved_by}
+    log_audit(db, "update", "exception", exc.id,
+              entity_name=exc.plugin_name or exc.plugin_id,
+              changes=_diff(_old_exc, _new_exc), actor=user)
     db.commit()
     return {"ok": True, "id": exc.id}
 
 
 @app.delete("/api/exceptions/{exception_id}")
-def delete_exception(exception_id: int, db: Session = Depends(get_db)):
+def delete_exception(exception_id: int, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     exc = db.query(FindingException).filter(FindingException.id == exception_id).first()
     if not exc:
         raise HTTPException(404, "Exception not found")
+    _exc_name = exc.plugin_name or exc.plugin_id
+    _exc_org = exc.org_id
     # Unlink findings
     db.query(Finding).filter(Finding.exception_id == exc.id).update(
         {"exception_id": None, "workflow_status": "open"}, synchronize_session=False
     )
     db.delete(exc)
+    log_audit(db, "delete", "exception", exception_id,
+              entity_name=_exc_name, actor=user, org_id=_exc_org)
     db.commit()
     return {"ok": True}
 
@@ -5527,6 +5783,72 @@ def nlp_report_query(
         },
         "findings": [_finding(f) for f in findings],
         "assets": [_asset(a) for a in assets],
+    }
+
+
+# ─────────────────────────────────────────────────────────
+# Audit Log API
+# ─────────────────────────────────────────────────────────
+
+@app.get("/api/audit-log")
+def get_audit_log(
+    entity_type: Optional[str] = None,
+    action: Optional[str] = None,
+    actor_email: Optional[str] = None,
+    entity_id: Optional[int] = None,
+    date_from: Optional[str] = None,   # ISO date string
+    date_to: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return paginated audit log entries with optional filters."""
+    q = db.query(AuditLog)
+    if org_ids:
+        q = q.filter((AuditLog.org_id.in_(org_ids)) | (AuditLog.org_id == None))
+    if entity_type:
+        q = q.filter(AuditLog.entity_type == entity_type)
+    if action:
+        q = q.filter(AuditLog.action == action)
+    if actor_email:
+        q = q.filter(AuditLog.actor_email.ilike(f"%{actor_email}%"))
+    if entity_id:
+        q = q.filter(AuditLog.entity_id == entity_id)
+    if date_from:
+        try:
+            q = q.filter(AuditLog.created_at >= datetime.fromisoformat(date_from))
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            q = q.filter(AuditLog.created_at <= datetime.fromisoformat(date_to))
+        except ValueError:
+            pass
+
+    total = q.count()
+    entries = q.order_by(desc(AuditLog.created_at)).offset((page - 1) * page_size).limit(page_size).all()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "entries": [
+            {
+                "id": e.id,
+                "action": e.action,
+                "entity_type": e.entity_type,
+                "entity_id": e.entity_id,
+                "entity_name": e.entity_name,
+                "actor_email": e.actor_email,
+                "actor_display_name": e.actor_display_name,
+                "changes": e.changes,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in entries
+        ],
+        "entity_types": [r[0] for r in db.query(AuditLog.entity_type).distinct().all()],
+        "actions": [r[0] for r in db.query(AuditLog.action).distinct().all()],
     }
 
 

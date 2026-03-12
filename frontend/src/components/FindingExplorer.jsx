@@ -11,6 +11,41 @@ import RuleBuilder from './RuleBuilder.jsx'
 import { filtersToConditions } from '../utils/filtersToConditions.js'
 import NLPSearchBar from './NLPSearchBar.jsx'
 
+const TACTIC_COLORS = {
+  'credential-access':    '#dc2626',
+  'lateral-movement':     '#ea580c',
+  'privilege-escalation': '#d97706',
+  'initial-access':       '#7c3aed',
+  'persistence':          '#0891b2',
+  'defense-evasion':      '#64748b',
+  'discovery':            '#059669',
+  'execution':            '#b45309',
+  'collection':           '#0ea5e9',
+  'exfiltration':         '#6366f1',
+}
+
+function TtpPill({ ttp }) {
+  const color = TACTIC_COLORS[ttp.tactic] || '#6b7280'
+  return (
+    <a
+      href={ttp.mitre_url}
+      target="_blank"
+      rel="noreferrer"
+      title={`${ttp.technique_id}: ${ttp.name}\nTactic: ${ttp.tactic}\nMatch: ${ttp.match_reason} (${ttp.confidence})`}
+      onClick={e => e.stopPropagation()}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 3,
+        padding: '1px 6px', borderRadius: 4,
+        background: color + '18', border: `1px solid ${color}50`,
+        color, fontSize: 10, fontWeight: 600, textDecoration: 'none',
+        whiteSpace: 'nowrap', lineHeight: '16px',
+      }}
+    >
+      {ttp.technique_id}
+    </a>
+  )
+}
+
 const GROUP_OPTIONS = [
   { value: 'severity', label: 'Severity' },
   { value: 'plugin_family', label: 'Plugin Family' },
@@ -426,6 +461,18 @@ export default function FindingExplorer() {
                 <Pill key={cve} label={cve} color="#f59e0b" />
               ))}
               {row.cves.length > 3 && <Pill label={`+${row.cves.length - 3}`} />}
+            </div>
+          )}
+          {row.matched_ttps?.length > 0 && (
+            <div style={{ marginTop: 3, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {row.matched_ttps.slice(0, 2).map(t => (
+                <TtpPill key={t.technique_id} ttp={t} />
+              ))}
+              {row.matched_ttps.length > 2 && (
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', alignSelf: 'center' }}>
+                  +{row.matched_ttps.length - 2} TTPs
+                </span>
+              )}
             </div>
           )}
           {row.tags?.length > 0 && (

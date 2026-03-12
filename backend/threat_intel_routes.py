@@ -18,6 +18,7 @@ from threat_intel_models import (
     ThreatCVE, ThreatCampaign, IntelRemediationCampaign,
 )
 import threat_intel_sync as sync_engine
+import ttp_matcher
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threat-intel", tags=["threat-intel"])
@@ -142,7 +143,7 @@ def get_cves(
     min_epss: Optional[float] = None,
     min_cvss: Optional[float] = None,
     in_scan: Optional[str] = None,   # scan_id or "all" — only CVEs found in findings
-    sort_by: Optional[str] = Query(None, regex="^(cve_id|cvss3_score|epss_score|in_kev|published_date|kev_date_added)$"),
+    sort_by: Optional[str] = Query(None, regex="^(cve_id|cvss3_score|epss_score|in_kev|published_date|kev_date_added|in_scan_count)$"),
     sort_dir: Optional[str] = Query("desc", regex="^(asc|desc)$"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -185,6 +186,18 @@ def get_cves(
 
     total = q.count()
 
+    # Build full in_scan_counts lookup (needed for sort or display)
+    def _build_scan_counts(cve_id_set=None) -> dict:
+        counts: dict = {}
+        all_findings_with_cves = db.query(Finding.cves).filter(Finding.cves.isnot(None)).all()
+        for (cves,) in all_findings_with_cves:
+            if not cves:
+                continue
+            for cve in cves:
+                if cve_id_set is None or cve in cve_id_set:
+                    counts[cve] = counts.get(cve, 0) + 1
+        return counts
+
     # Sorting
     SORT_COLS = {
         'cve_id': ThreatCVE.cve_id,
@@ -194,24 +207,25 @@ def get_cves(
         'published_date': ThreatCVE.published_date,
         'kev_date_added': ThreatCVE.kev_date_added,
     }
-    if sort_by and sort_by in SORT_COLS:
+
+    if sort_by == 'in_scan_count':
+        # Compute counts for ALL matching CVEs, sort in Python, then paginate
+        all_records = q.all()
+        all_ids = {r.cve_id for r in all_records}
+        in_scan_counts = _build_scan_counts(all_ids)
+        reverse = sort_dir == 'desc'
+        all_records.sort(key=lambda r: in_scan_counts.get(r.cve_id, 0), reverse=reverse)
+        records = all_records[offset: offset + limit]
+    elif sort_by and sort_by in SORT_COLS:
         col = SORT_COLS[sort_by]
         order = asc(col) if sort_dir == 'asc' else desc(col)
         records = q.order_by(order).offset(offset).limit(limit).all()
+        cve_ids_page = {r.cve_id for r in records}
+        in_scan_counts = _build_scan_counts(cve_ids_page)
     else:
         records = q.order_by(desc(ThreatCVE.kev_date_added), desc(ThreatCVE.epss_score), desc(ThreatCVE.cvss3_score)).offset(offset).limit(limit).all()
-
-    # Build a lookup: how many findings across all scans reference each CVE
-    cve_ids_page = [r.cve_id for r in records]
-    in_scan_counts: dict = {}
-    if cve_ids_page:
-        all_findings_with_cves = db.query(Finding.cves).filter(Finding.cves.isnot(None)).all()
-        for (cves,) in all_findings_with_cves:
-            if not cves:
-                continue
-            for cve in cves:
-                if cve in cve_ids_page:
-                    in_scan_counts[cve] = in_scan_counts.get(cve, 0) + 1
+        cve_ids_page = {r.cve_id for r in records}
+        in_scan_counts = _build_scan_counts(cve_ids_page)
 
     result = []
     for r in records:
@@ -547,6 +561,296 @@ def impact_search(req: ImpactSearchRequest, db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────
+# Scan Exposure (group/TTP correlation with findings)
+# ─────────────────────────────────────────────
+
+@router.get("/scan-exposure")
+def scan_exposure(scan_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
+    """
+    For each threat group, count matched findings via two signals:
+      1. TTP overlap: group's known techniques vs finding.matched_ttps (primary — always populated)
+      2. CVE overlap: campaign CVE IDs vs finding CVEs (fallback — sparse in MITRE data)
+    Returns only groups with at least one matched finding, sorted by impact.
+    """
+    # ── Signal 1: TTP-based matching (group → technique_ids → matched_ttps on findings) ──
+    # Build group_id → set of technique_ids
+    group_ttp_rows = (
+        db.query(ThreatGroupTTP.group_id, TTP.technique_id)
+        .join(TTP, TTP.id == ThreatGroupTTP.ttp_id)
+        .all()
+    )
+    group_techniques: dict = {}
+    for group_id, tech_id in group_ttp_rows:
+        group_techniques.setdefault(group_id, set()).add(tech_id)
+
+    # Load findings with matched_ttps (and optionally CVEs) scoped to scan
+    fq = db.query(
+        Finding.id, Finding.asset_id, Finding.severity,
+        Finding.plugin_name, Finding.cvss3_score,
+        Finding.matched_ttps, Finding.cves,
+    )
+    if scan_id is not None:
+        fq = fq.filter(Finding.scan_id == scan_id)
+    all_findings = fq.all()
+
+    if not all_findings and not group_techniques:
+        return []
+
+    # Pre-index findings: technique_id → [(fid, asset_id, severity)]
+    tech_to_findings: dict = {}
+    finding_cves: dict = {}  # fid → set of CVE strings (for signal 2)
+    for fid, asset_id, severity, plugin_name, cvss3, matched_ttps, cves in all_findings:
+        if matched_ttps:
+            for ttp in matched_ttps:
+                tid = ttp.get("technique_id")
+                if tid:
+                    tech_to_findings.setdefault(tid, []).append((fid, asset_id, severity))
+        if cves:
+            finding_cves[fid] = {c.upper().strip() for c in cves if c}
+
+    # For each group, aggregate TTP-matched findings
+    results: dict = {}
+    for group_id, tech_set in group_techniques.items():
+        matched_finding_ids = set()
+        matched_assets = set()
+        matched_techs = set()
+        for tech_id in tech_set:
+            for fid, asset_id, severity in tech_to_findings.get(tech_id, []):
+                matched_finding_ids.add(fid)
+                matched_assets.add(asset_id)
+                matched_techs.add(tech_id)
+
+        if matched_techs:
+            coverage_pct = round(len(matched_techs) / len(tech_set) * 100, 1) if tech_set else 0.0
+            # ≥50% overlap (floor of 3) = "In My Environment" quality signal
+            min_match = max(3, round(len(tech_set) * 0.50))
+            meets_threshold = len(matched_techs) >= min_match
+            results[group_id] = {
+                "group_id": group_id,
+                "matched_findings": len(matched_finding_ids),
+                "matched_assets": len(matched_assets),
+                "matched_ttps": sorted(matched_techs),
+                "total_group_ttps": len(tech_set),
+                "coverage_pct": coverage_pct,
+                "meets_threshold": meets_threshold,
+                "matched_cves": [],
+                "match_method": "ttp",
+            }
+
+    # ── Signal 2: CVE-based matching (from campaigns) — adds CVE context if available ──
+    campaigns = (
+        db.query(ThreatCampaign.threat_group_id, ThreatCampaign.cve_ids)
+        .filter(
+            ThreatCampaign.threat_group_id.isnot(None),
+            ThreatCampaign.cve_ids.isnot(None),
+        )
+        .all()
+    )
+    group_cves: dict = {}
+    for group_id, cve_ids in campaigns:
+        if cve_ids and group_id:
+            group_cves.setdefault(group_id, set()).update(c.upper().strip() for c in cve_ids if c)
+
+    for group_id, cve_set in group_cves.items():
+        matched_finding_ids = set()
+        matched_assets = set()
+        matched_cves_found = set()
+        for fid, cve_set_f in finding_cves.items():
+            common = cve_set_f & cve_set
+            if common:
+                matched_finding_ids.add(fid)
+                matched_cves_found.update(common)
+        if matched_finding_ids:
+            if group_id in results:
+                # Merge CVE data into existing TTP-based result
+                results[group_id]["matched_cves"] = sorted(matched_cves_found)[:20]
+            else:
+                results[group_id] = {
+                    "group_id": group_id,
+                    "matched_findings": len(matched_finding_ids),
+                    "matched_assets": len(matched_assets),
+                    "matched_ttps": [],
+                    "total_group_ttps": len(group_techniques.get(group_id, set())),
+                    "coverage_pct": 0.0,
+                    "meets_threshold": False,  # CVE-only matches don't qualify without TTP overlap
+                    "matched_cves": sorted(matched_cves_found)[:20],
+                    "match_method": "cve",
+                }
+
+    if not results:
+        return []
+
+    # Enrich with group metadata
+    group_ids = list(results.keys())
+    groups = {g.id: g for g in db.query(ThreatGroup).filter(ThreatGroup.id.in_(group_ids)).all()}
+    enriched = []
+    for r in results.values():
+        g = groups.get(r["group_id"])
+        if g:
+            enriched.append({
+                **r,
+                "group_name": g.name,
+                "group_mitre_id": g.mitre_id,
+                "motivation": g.motivation,
+                "is_ransomware": g.is_ransomware,
+                "is_nation_state": g.is_nation_state,
+                "country": g.country,
+            })
+
+    enriched.sort(key=lambda x: (-x["matched_findings"], -x["matched_assets"]))
+    return enriched
+
+
+@router.get("/groups/{group_id}/exposure")
+def get_group_exposure(
+    group_id: int,
+    scan_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Detailed exposure for a single threat group against a scan (or all scans).
+    Returns matched findings + assets.
+    """
+    group = db.query(ThreatGroup).filter(ThreatGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(404, "Threat group not found")
+
+    # Collect CVE IDs from all campaigns linked to this group
+    campaigns = db.query(ThreatCampaign).filter(
+        ThreatCampaign.threat_group_id == group_id,
+        ThreatCampaign.cve_ids.isnot(None),
+    ).all()
+
+    cve_ids: set = set()
+    for c in campaigns:
+        if c.cve_ids:
+            cve_ids.update(cv.upper().strip() for cv in c.cve_ids if cv)
+
+    if not cve_ids:
+        return {
+            "group_id": group_id,
+            "group_name": group.name,
+            "cve_ids_from_campaigns": [],
+            "matched_findings": 0,
+            "matched_assets": 0,
+            "top_findings": [],
+            "affected_assets": [],
+        }
+
+    # Reuse impact_search logic
+    result = impact_search(
+        ImpactSearchRequest(cve_ids=list(cve_ids), scan_id=scan_id),
+        db=db,
+    )
+
+    return {
+        "group_id": group_id,
+        "group_name": group.name,
+        "cve_ids_from_campaigns": sorted(cve_ids),
+        "matched_findings": result["total_findings"],
+        "matched_assets": result["total_assets"],
+        "top_findings": result["matched_findings"][:15],
+        "affected_assets": result["matched_assets"][:20],
+    }
+
+
+# ─────────────────────────────────────────────
+# TTP Coverage (non-CVE ATT&CK matching)
+# ─────────────────────────────────────────────
+
+@router.get("/ttp-coverage")
+def get_ttp_coverage(
+    scan_id: Optional[int] = Query(None),
+    tactic: Optional[str] = Query(None),
+    min_findings: int = Query(1, ge=1),
+    db: Session = Depends(get_db),
+):
+    """
+    Aggregate findings by matched ATT&CK technique.
+    Returns each technique with finding count, asset count, severity breakdown.
+    """
+    fq = db.query(Finding.id, Finding.matched_ttps, Finding.asset_id, Finding.severity, Finding.plugin_name, Finding.plugin_id)
+    fq = fq.filter(Finding.matched_ttps.isnot(None))
+    if scan_id is not None:
+        fq = fq.filter(Finding.scan_id == scan_id)
+    rows = fq.all()
+
+    # Aggregate by technique_id
+    technique_map: dict = {}
+    for fid, ttps, asset_id, severity, plugin_name, plugin_id in rows:
+        if not ttps:
+            continue
+        for ttp in ttps:
+            tid = ttp.get("technique_id")
+            if not tid:
+                continue
+            if tactic and ttp.get("tactic") != tactic:
+                continue
+            if tid not in technique_map:
+                technique_map[tid] = {
+                    "technique_id": tid,
+                    "name": ttp.get("name", ""),
+                    "tactic": ttp.get("tactic", ""),
+                    "mitre_url": ttp.get("mitre_url", f"https://attack.mitre.org/techniques/{tid.replace('.', '/')}/"),
+                    "finding_ids": [],
+                    "asset_ids": set(),
+                    "severity_counts": {0: 0, 1: 0, 2: 0, 3: 0, 4: 0},
+                    "example_plugins": [],
+                    "confidence_counts": {"high": 0, "medium": 0, "low": 0},
+                }
+            entry = technique_map[tid]
+            entry["finding_ids"].append(fid)
+            entry["asset_ids"].add(asset_id)
+            sev = severity if severity is not None else 0
+            entry["severity_counts"][sev] = entry["severity_counts"].get(sev, 0) + 1
+            if plugin_name and plugin_name not in entry["example_plugins"]:
+                entry["example_plugins"].append(plugin_name)
+            conf = ttp.get("confidence", "medium")
+            entry["confidence_counts"][conf] = entry["confidence_counts"].get(conf, 0) + 1
+
+    # Serialize + filter
+    result = []
+    for entry in technique_map.values():
+        fc = len(entry["finding_ids"])
+        if fc < min_findings:
+            continue
+        result.append({
+            "technique_id": entry["technique_id"],
+            "name": entry["name"],
+            "tactic": entry["tactic"],
+            "mitre_url": entry["mitre_url"],
+            "finding_count": fc,
+            "asset_count": len(entry["asset_ids"]),
+            "severity_counts": entry["severity_counts"],
+            "example_plugins": entry["example_plugins"][:5],
+            "confidence_counts": entry["confidence_counts"],
+            "top_severity": max(entry["severity_counts"], key=lambda k: entry["severity_counts"][k]),
+        })
+
+    # Sort by finding_count desc
+    result.sort(key=lambda x: (-x["finding_count"], -x["asset_count"]))
+    return result
+
+
+@router.post("/match-ttps")
+def trigger_ttp_matching(
+    background_tasks: BackgroundTasks,
+    scan_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Trigger ATT&CK TTP matching on findings (keyword + plugin ID + plugin family).
+    Runs synchronously for a specific scan, in background for all scans.
+    """
+    if scan_id is not None:
+        result = ttp_matcher.match_findings_to_ttps(db, scan_id=scan_id)
+        return {"status": "ok", **result}
+    else:
+        background_tasks.add_task(ttp_matcher.match_findings_to_ttps, db, None)
+        return {"status": "ok", "message": "TTP matching running in background"}
+
+
+# ─────────────────────────────────────────────
 # Sync
 # ─────────────────────────────────────────────
 
@@ -573,6 +877,11 @@ def _run_sync_in_background(db: Session):
         sync_engine.enrich_findings_from_threat_intel(db)
     except Exception as exc:
         logger.warning("Background finding enrichment failed: %s", exc)
+    # Match findings to ATT&CK TTPs
+    try:
+        ttp_matcher.match_findings_to_ttps(db)
+    except Exception as exc:
+        logger.warning("Background TTP matching failed: %s", exc)
     logger.info("Background intel sync complete")
 
 

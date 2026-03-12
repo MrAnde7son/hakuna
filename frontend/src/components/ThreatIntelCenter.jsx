@@ -13,6 +13,39 @@ import {
 import { useScan } from '../App.jsx'
 import { Card, Button, Spinner, EmptyState, StatCard, SeverityBadge, ScoreBar } from './ui.jsx'
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Renders markdown-style [text](url) links and (Citation: ...) notes in plain text */
+function renderDescription(text) {
+  if (!text) return 'No description available.'
+  const parts = []
+  const linkRe = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g
+  let last = 0, match
+  while ((match = linkRe.exec(text)) !== null) {
+    if (match.index > last) {
+      parts.push(renderCitations(text.slice(last, match.index)))
+    }
+    parts.push(
+      <a key={match.index} href={match[2]} target="_blank" rel="noreferrer"
+        style={{ color: '#7c3aed', textDecoration: 'underline', fontWeight: 600 }}>
+        {match[1]}
+      </a>
+    )
+    last = match.index + match[0].length
+  }
+  if (last < text.length) parts.push(renderCitations(text.slice(last)))
+  return parts
+}
+
+function renderCitations(text) {
+  // Style (Citation: ...) as muted italic footnotes
+  return text.split(/(\(Citation:[^)]+\))/g).map((part, i) =>
+    /^\(Citation:/.test(part)
+      ? <span key={i} style={{ color: 'var(--text-muted)', fontSize: 11, fontStyle: 'italic' }}>{part}</span>
+      : part
+  )
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const SEV_COLORS = {
@@ -766,7 +799,7 @@ function CveIntelTab({ initialSearch = '' }) {
                     { label: 'KEV', key: 'in_kev' },
                     { label: 'Exploit', key: null },
                     { label: 'Sources', key: null },
-                    { label: 'In Scans', key: null },
+                    { label: 'In Scans', key: 'in_scan_count' },
                     { label: 'Published', key: 'published_date' },
                   ].map(h => {
                     const active = sortBy === h.key
@@ -838,24 +871,45 @@ function CveIntelTab({ initialSearch = '' }) {
 
 // ─── Threat Groups Tab ────────────────────────────────────────────────────────
 
-function GroupCard({ group }) {
+const SEVERITY_LABELS = ['Info', 'Low', 'Medium', 'High', 'Critical']
+const SEVERITY_COLORS = ['#6b7280', '#16a34a', '#d97706', '#ea580c', '#dc2626']
+
+function GroupCard({ group, exposure }) {
   const [expanded, setExpanded] = useState(false)
   const [ttps, setTtps] = useState([])
   const [loadingTtps, setLoadingTtps] = useState(false)
+  const [detailExposure, setDetailExposure] = useState(null)
+  const [loadingExposure, setLoadingExposure] = useState(false)
   const flag = COUNTRY_FLAGS[group.country] || '🌐'
   const motivColor = MOTIVATION_COLORS[group.motivation?.toLowerCase()] || '#6b7280'
   const sectors = group.target_sectors || []
   const visibleSectors = sectors.slice(0, 3)
   const extraCount = sectors.length - 3
+  const hasExposure = exposure && exposure.matched_findings > 0
+  const meetsThreshold = exposure?.meets_threshold === true
 
   const handleExpand = async () => {
-    if (!expanded && ttps.length === 0 && group.id) {
-      setLoadingTtps(true)
-      try {
-        const r = await fetch(`/api/threat-intel/ttps?group_id=${group.id}`)
-        if (r.ok) setTtps(await r.json())
-      } catch { /* silent */ } finally {
-        setLoadingTtps(false)
+    if (!expanded) {
+      if (ttps.length === 0 && group.id) {
+        setLoadingTtps(true)
+        try {
+          const r = await fetch(`/api/threat-intel/ttps?group_id=${group.id}`)
+          if (r.ok) setTtps(await r.json())
+        } catch { /* silent */ } finally {
+          setLoadingTtps(false)
+        }
+      }
+      // Fetch detailed exposure only if we know there are matches
+      if (hasExposure && !detailExposure && group.id) {
+        setLoadingExposure(true)
+        try {
+          const params = new URLSearchParams()
+          if (exposure.scan_id) params.set('scan_id', exposure.scan_id)
+          const r = await fetch(`/api/threat-intel/groups/${group.id}/exposure?${params}`)
+          if (r.ok) setDetailExposure(await r.json())
+        } catch { /* silent */ } finally {
+          setLoadingExposure(false)
+        }
       }
     }
     setExpanded(e => !e)
@@ -863,14 +917,46 @@ function GroupCard({ group }) {
 
   return (
     <div style={{
-      background: 'var(--bg-card)', border: '1px solid var(--border)',
+      background: 'var(--bg-card)',
+      border: `1px solid ${meetsThreshold ? '#dc262660' : hasExposure ? '#d9770640' : 'var(--border)'}`,
       borderRadius: 12, padding: 16, cursor: 'pointer',
       transition: 'border-color 0.15s',
     }}
-      onMouseEnter={e => !expanded && (e.currentTarget.style.borderColor = 'var(--accent)')}
-      onMouseLeave={e => !expanded && (e.currentTarget.style.borderColor = 'var(--border)')}
+      onMouseEnter={e => !expanded && (e.currentTarget.style.borderColor = meetsThreshold ? '#dc2626' : hasExposure ? '#d97706' : 'var(--accent)')}
+      onMouseLeave={e => !expanded && (e.currentTarget.style.borderColor = meetsThreshold ? '#dc262660' : hasExposure ? '#d9770640' : 'var(--border)')}
       onClick={handleExpand}
     >
+      {/* Exposure banner — red for threshold-met, amber for partial */}
+      {meetsThreshold && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: '#dc262615', border: '1px solid #dc262640',
+          borderRadius: 7, padding: '6px 10px', marginBottom: 10,
+        }}>
+          <AlertTriangle size={13} color="#dc2626" />
+          <span style={{ fontSize: 12, fontWeight: 700, color: '#dc2626', flex: 1 }}>
+            {exposure.matched_findings} finding{exposure.matched_findings !== 1 ? 's' : ''} affected
+            · {exposure.matched_assets} asset{exposure.matched_assets !== 1 ? 's' : ''}
+          </span>
+          <span style={{ fontSize: 10, color: '#dc2626', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+            {exposure.matched_ttps?.length || 0}/{exposure.total_group_ttps || '?'} TTPs
+            {exposure.coverage_pct != null ? ` (${exposure.coverage_pct}%)` : ''}
+          </span>
+        </div>
+      )}
+      {hasExposure && !meetsThreshold && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: '#d9770610', border: '1px solid #d9770630',
+          borderRadius: 7, padding: '5px 10px', marginBottom: 10,
+        }}>
+          <span style={{ fontSize: 11, color: '#d97706', flex: 1 }}>
+            Partial overlap — {exposure.matched_ttps?.length || 0}/{exposure.total_group_ttps || '?'} TTPs
+            {exposure.coverage_pct != null ? ` (${exposure.coverage_pct}%)` : ''}
+          </span>
+        </div>
+      )}
+
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
         <div>
@@ -913,8 +999,117 @@ function GroupCard({ group }) {
       {expanded && (
         <div onClick={e => e.stopPropagation()}>
           <Divider />
+
+          {/* Exposure details section */}
+          {hasExposure && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#dc2626', textTransform: 'uppercase', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 5 }}>
+                <AlertTriangle size={11} /> Your Environment Exposure
+              </div>
+              {loadingExposure ? (
+                <InlineSpinner />
+              ) : detailExposure ? (
+                <div>
+                  {/* Matched CVEs */}
+                  {detailExposure.matched_cves?.length > 0 && (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+                        Matching CVEs ({detailExposure.matched_cves.length})
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {detailExposure.matched_cves.slice(0, 10).map(cve => (
+                          <span key={cve} style={{
+                            fontSize: 10, fontFamily: 'monospace', fontWeight: 600,
+                            background: '#dc262615', color: '#dc2626',
+                            border: '1px solid #dc262640', borderRadius: 4, padding: '1px 5px',
+                          }}>{cve}</span>
+                        ))}
+                        {detailExposure.matched_cves.length > 10 && (
+                          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>+{detailExposure.matched_cves.length - 10} more</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {/* Affected assets */}
+                  {detailExposure.affected_assets?.length > 0 && (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+                        Affected Assets ({detailExposure.matched_assets})
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                        {detailExposure.affected_assets.slice(0, 5).map(a => (
+                          <div key={a.id} style={{
+                            display: 'flex', alignItems: 'center', gap: 8,
+                            padding: '4px 8px', background: 'var(--bg-muted)', borderRadius: 6,
+                          }}>
+                            <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-primary)', fontWeight: 600 }}>
+                              {a.ip}
+                            </span>
+                            {a.hostname && (
+                              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{a.hostname}</span>
+                            )}
+                            <span style={{ marginLeft: 'auto', fontSize: 10, color: '#dc2626', fontWeight: 700 }}>
+                              {a.finding_count} finding{a.finding_count !== 1 ? 's' : ''}
+                            </span>
+                          </div>
+                        ))}
+                        {detailExposure.matched_assets > 5 && (
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', paddingLeft: 8 }}>
+                            +{detailExposure.matched_assets - 5} more assets
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {/* Top findings */}
+                  {detailExposure.top_findings?.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+                        Matched Findings (top {Math.min(detailExposure.top_findings.length, 5)})
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                        {detailExposure.top_findings.slice(0, 5).map(f => (
+                          <div key={f.id} style={{
+                            display: 'flex', alignItems: 'center', gap: 8,
+                            padding: '4px 8px', background: 'var(--bg-muted)', borderRadius: 6,
+                          }}>
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: 4,
+                              background: (SEVERITY_COLORS[f.severity] || '#6b7280') + '20',
+                              color: SEVERITY_COLORS[f.severity] || '#6b7280',
+                            }}>
+                              {SEVERITY_LABELS[f.severity] || '?'}
+                            </span>
+                            <span style={{ fontSize: 11, color: 'var(--text-primary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {f.plugin_name}
+                            </span>
+                            <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace', flexShrink: 0 }}>
+                              {f.asset_ip}
+                            </span>
+                          </div>
+                        ))}
+                        {detailExposure.matched_findings > 5 && (
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', paddingLeft: 8 }}>
+                            +{detailExposure.matched_findings - 5} more findings
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                // Fallback: show summary from exposure prop
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {exposure.matched_findings} findings across {exposure.matched_assets} assets.
+                  Matched CVEs: {exposure.matched_cves?.join(', ') || '—'}
+                </div>
+              )}
+              <Divider />
+            </div>
+          )}
+
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 12 }}>
-            {group.description || 'No description available.'}
+            {renderDescription(group.description)}
           </div>
           {group.aliases?.length > 0 && (
             <div style={{ marginBottom: 12 }}>
@@ -927,6 +1122,11 @@ function GroupCard({ group }) {
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8 }}>
               TTPs ({ttps.length})
+              {hasExposure && exposure.matched_ttps?.length > 0 && (
+                <span style={{ marginLeft: 8, color: '#16a34a', fontWeight: 700 }}>
+                  · {exposure.matched_ttps.length} matched in your env
+                </span>
+              )}
             </div>
             {loadingTtps ? (
               <InlineSpinner />
@@ -934,21 +1134,38 @@ function GroupCard({ group }) {
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No TTPs available</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {ttps.slice(0, 10).map(t => (
-                  <div key={t.id} style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    padding: '6px 0', borderBottom: '1px solid var(--border)',
-                  }}>
-                    <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#7c3aed', fontWeight: 600 }}>
-                      {t.technique_id}
-                    </span>
-                    <span style={{ fontSize: 12, color: 'var(--text-primary)', flex: 1 }}>{t.name}</span>
-                    <Pill label={t.tactic || '?'} color="#6b7280" small />
-                  </div>
-                ))}
-                {ttps.length > 10 && (
+                {/* Sort matched TTPs to the top */}
+                {[...ttps].sort((a, b) => {
+                  const aMatch = exposure?.matched_ttps?.includes(a.technique_id) ? 0 : 1
+                  const bMatch = exposure?.matched_ttps?.includes(b.technique_id) ? 0 : 1
+                  return aMatch - bMatch
+                }).slice(0, 15).map(t => {
+                  const isMatched = exposure?.matched_ttps?.includes(t.technique_id)
+                  return (
+                    <div key={t.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      padding: '6px 8px', borderRadius: 6,
+                      borderBottom: '1px solid var(--border)',
+                      background: isMatched ? '#16a34a0d' : 'transparent',
+                    }}>
+                      {isMatched && (
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, color: '#16a34a',
+                          background: '#16a34a20', border: '1px solid #16a34a40',
+                          borderRadius: 3, padding: '1px 4px', whiteSpace: 'nowrap',
+                        }}>MATCHED</span>
+                      )}
+                      <span style={{ fontFamily: 'monospace', fontSize: 11, color: isMatched ? '#16a34a' : '#7c3aed', fontWeight: 600 }}>
+                        {t.technique_id}
+                      </span>
+                      <span style={{ fontSize: 12, color: 'var(--text-primary)', flex: 1 }}>{t.name}</span>
+                      <Pill label={t.tactic || '?'} color="#6b7280" small />
+                    </div>
+                  )
+                })}
+                {ttps.length > 15 && (
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', paddingTop: 4 }}>
-                    +{ttps.length - 10} more techniques
+                    +{ttps.length - 15} more techniques
                   </div>
                 )}
               </div>
@@ -969,6 +1186,9 @@ function ThreatGroupsTab() {
   const [motivation, setMotivation] = useState('')
   const [ransomwareOnly, setRansomwareOnly] = useState(false)
   const [inScanOnly, setInScanOnly] = useState(false)
+  // scan_id → group_id → exposure data
+  const [scanExposure, setScanExposure] = useState({})
+  const [loadingExposure, setLoadingExposure] = useState(false)
 
   const fetchGroups = useCallback(async () => {
     setLoading(true)
@@ -978,7 +1198,7 @@ function ThreatGroupsTab() {
       if (search) params.set('search', search)
       if (motivation) params.set('motivation', motivation)
       if (ransomwareOnly) params.set('is_ransomware', 'true')
-      if (inScanOnly && activeScanId) params.set('in_scan', activeScanId)
+      // Don't use backend in_scan — we filter client-side using scanExposure
       const r = await fetch(`/api/threat-intel/groups?${params}`)
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       setGroups(await r.json())
@@ -987,12 +1207,72 @@ function ThreatGroupsTab() {
     } finally {
       setLoading(false)
     }
-  }, [search, motivation, ransomwareOnly, inScanOnly, activeScanId])
+  }, [search, motivation, ransomwareOnly])
+
+  // Fetch scan exposure whenever activeScanId changes (no scan = all scans)
+  useEffect(() => {
+    setLoadingExposure(true)
+    const url = activeScanId
+      ? `/api/threat-intel/scan-exposure?scan_id=${activeScanId}`
+      : `/api/threat-intel/scan-exposure`
+    fetch(url)
+      .then(r => r.ok ? r.json() : [])
+      .then(data => {
+        const byGroup = {}
+        for (const item of (Array.isArray(data) ? data : [])) {
+          byGroup[item.group_id] = { ...item, scan_id: activeScanId || null }
+        }
+        setScanExposure(byGroup)
+      })
+      .catch(() => setScanExposure({}))
+      .finally(() => setLoadingExposure(false))
+  }, [activeScanId])
 
   useEffect(() => { fetchGroups() }, [fetchGroups])
 
+  // Only threshold-meeting groups count for the top banner and "In My Environment" filter
+  const exposedGroups = Object.values(scanExposure).filter(e => e.meets_threshold).sort((a, b) => b.matched_findings - a.matched_findings)
+  const totalExposedFindings = exposedGroups.reduce((s, e) => s + e.matched_findings, 0)
+
+  // "In My Environment" = meets 50% threshold; partial matches still show TTP highlights
+  const visibleGroups = inScanOnly
+    ? groups.filter(g => scanExposure[g.id]?.meets_threshold)
+    : groups
+
   return (
     <div>
+      {/* Scan exposure summary banner */}
+      <div style={{
+        marginBottom: 16, padding: '12px 16px',
+        background: exposedGroups.length > 0 ? '#dc262610' : 'var(--bg-card)',
+        border: `1px solid ${exposedGroups.length > 0 ? '#dc262640' : 'var(--border)'}`,
+        borderRadius: 10, display: 'flex', alignItems: 'center', gap: 12,
+      }}>
+        {loadingExposure ? (
+          <><InlineSpinner size={14} /><span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Checking your environment…</span></>
+        ) : exposedGroups.length > 0 ? (
+          <>
+            <AlertTriangle size={16} color="#dc2626" />
+            <div>
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#dc2626' }}>
+                {exposedGroups.length} threat group{exposedGroups.length !== 1 ? 's' : ''} with ≥50% TTP overlap in your environment
+              </span>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 10 }}>
+                {totalExposedFindings} findings affected{activeScanId ? ' in this scan' : ' across all scans'}
+                {Object.values(scanExposure).length > exposedGroups.length && ` · ${Object.values(scanExposure).length - exposedGroups.length} more with partial overlap`}
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <CheckCircle size={16} color="#16a34a" />
+            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              No threat groups with sufficient TTP overlap found{activeScanId ? ' in this scan' : ' across any uploaded scan'}.
+            </span>
+          </>
+        )}
+      </div>
+
       {/* Filter bar */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
@@ -1026,9 +1306,17 @@ function ThreatGroupsTab() {
           <input type="checkbox" checked={ransomwareOnly} onChange={e => setRansomwareOnly(e.target.checked)} />
           Ransomware only
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }} title={!activeScanId ? 'Select a scan in the sidebar first' : 'Show groups relevant to CVEs in your active scan'}>
-          <input type="checkbox" checked={inScanOnly} onChange={e => setInScanOnly(e.target.checked)} disabled={!activeScanId} />
+        <label
+          style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          title={activeScanId ? 'Show only groups with CVE matches in your active scan' : 'Show only groups with CVE matches across all uploaded scans'}
+        >
+          <input type="checkbox" checked={inScanOnly} onChange={e => setInScanOnly(e.target.checked)} />
           In My Environment
+          {!loadingExposure && inScanOnly && (
+            <span style={{ fontSize: 10, color: '#dc2626', fontWeight: 700, marginLeft: 2 }}>
+              ({visibleGroups.length})
+            </span>
+          )}
         </label>
       </div>
 
@@ -1046,7 +1334,13 @@ function ThreatGroupsTab() {
         />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14 }}>
-          {groups.map(g => <GroupCard key={g.id} group={g} />)}
+          {visibleGroups.map(g => (
+            <GroupCard
+              key={g.id}
+              group={g}
+              exposure={scanExposure[g.id] || null}
+            />
+          ))}
         </div>
       )}
     </div>
