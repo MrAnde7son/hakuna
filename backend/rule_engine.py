@@ -210,6 +210,36 @@ CONDITION_CATALOG = [
         ],
     },
     {
+        "group": "ATT&CK / Threat Intel",
+        "conditions": [
+            {"field": "finding.is_kev",            "label": "In CISA KEV",            "ops": ["is_true", "is_false"], "value_type": "none"},
+            {"field": "finding.ransomware_linked",  "label": "Ransomware Linked",       "ops": ["is_true", "is_false"], "value_type": "none"},
+            {"field": "finding.trending_in_news",   "label": "Trending in News",        "ops": ["is_true", "is_false"], "value_type": "none"},
+            {"field": "finding.has_ttps",           "label": "Has ATT&CK TTP Match",   "ops": ["is_true", "is_false"], "value_type": "none"},
+            {
+                "field": "finding.tactic", "label": "ATT&CK Tactic",
+                "ops": ["eq", "neq"],
+                "value_type": "enum",
+                "options": [
+                    {"label": "Initial Access",        "value": "initial-access"},
+                    {"label": "Execution",             "value": "execution"},
+                    {"label": "Persistence",           "value": "persistence"},
+                    {"label": "Privilege Escalation",  "value": "privilege-escalation"},
+                    {"label": "Defense Evasion",       "value": "defense-evasion"},
+                    {"label": "Credential Access",     "value": "credential-access"},
+                    {"label": "Discovery",             "value": "discovery"},
+                    {"label": "Lateral Movement",      "value": "lateral-movement"},
+                    {"label": "Collection",            "value": "collection"},
+                    {"label": "Command and Control",   "value": "command-and-control"},
+                    {"label": "Exfiltration",          "value": "exfiltration"},
+                    {"label": "Impact",                "value": "impact"},
+                ],
+            },
+            {"field": "finding.technique_id",  "label": "ATT&CK Technique ID", "ops": ["eq", "contains"], "value_type": "string", "placeholder": "T1059"},
+            {"field": "finding.threat_group",  "label": "Threat Group",         "ops": ["eq", "contains"], "value_type": "string", "placeholder": "APT29"},
+        ],
+    },
+    {
         "group": "Tags",
         "conditions": [
             {"field": "tag", "label": "Tag", "ops": ["has_tag", "not_has_tag"], "value_type": "string", "placeholder": "network:dmz"},
@@ -432,6 +462,37 @@ def _eval_finding_row(cond: dict, finding) -> bool:
         except (ValueError, TypeError):
             return False
         return _num_op(finding.sla_due_date.toordinal(), op, threshold.toordinal())
+    if sub == "is_kev":
+        result = bool(finding.is_kev)
+        return result if op == "is_true" else not result
+    if sub == "ransomware_linked":
+        result = bool(finding.ransomware_linked)
+        return result if op == "is_true" else not result
+    if sub == "trending_in_news":
+        result = bool(finding.trending_in_news)
+        return result if op == "is_true" else not result
+    if sub == "has_ttps":
+        result = bool(finding.matched_ttps)
+        return result if op == "is_true" else not result
+    if sub == "tactic":
+        ttps = finding.matched_ttps or []
+        val = str(value or "").lower()
+        matched = any(
+            (op == "eq" and t.get("tactic", "").lower() == val) or
+            (op == "neq" and t.get("tactic", "").lower() != val) or
+            (op == "contains" and val in t.get("tactic", "").lower())
+            for t in ttps
+        )
+        return matched
+    if sub == "technique_id":
+        ttps = finding.matched_ttps or []
+        val = str(value or "").upper()
+        if op == "eq":      return any(t.get("technique_id", "").upper() == val for t in ttps)
+        if op == "contains": return any(val in t.get("technique_id", "").upper() for t in ttps)
+        return False
+    if sub == "threat_group":
+        # Handled in _eval_finding_asset which has DB access
+        return False
     return False
 
 
@@ -449,6 +510,34 @@ def _eval_finding_asset(cond: dict, db: Session, asset_id: int, scan_id) -> bool
             q = q.filter(InventoryPatch.scan_id == scan_id)
         result = q.first() is not None
         return result if op == "is_true" else not result
+
+    # Special: threat_group requires DB lookup to resolve technique IDs for the group
+    if sub == "threat_group":
+        from threat_intel_models import ThreatGroup, ThreatGroupTTP, TTP
+        val = str(cond.get("value") or "").lower()
+        group_q = db.query(ThreatGroup).filter(
+            ThreatGroup.name.ilike(f"%{val}%") if op == "contains" else ThreatGroup.name.ilike(val)
+        )
+        groups = group_q.all()
+        if not groups:
+            return False
+        group_ids = [g.id for g in groups]
+        technique_ids = [
+            row.technique_id
+            for row in db.query(TTP.technique_id)
+            .join(ThreatGroupTTP, TTP.id == ThreatGroupTTP.ttp_id)
+            .filter(ThreatGroupTTP.group_id.in_(group_ids))
+            .all()
+        ]
+        if not technique_ids:
+            return False
+        findings_q = db.query(Finding).filter(Finding.asset_id == asset_id)
+        if scan_id:
+            findings_q = findings_q.filter(Finding.scan_id == scan_id)
+        return any(
+            any(t.get("technique_id") in technique_ids for t in (f.matched_ttps or []))
+            for f in findings_q.all()
+        )
 
     q = db.query(Finding).filter(Finding.asset_id == asset_id)
     if scan_id:

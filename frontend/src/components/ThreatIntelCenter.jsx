@@ -399,7 +399,7 @@ function NewsroomTab({ cves, onSearchCve }) {
           {[
             { label: `${cves.filter(c => c.in_kev).length} total KEV`, color: '#dc2626' },
             { label: `${ransomwareCount} ransomware-linked`, color: '#ea580c' },
-            { label: `${overdueCount} past due date`, color: '#7c3aed' },
+            { label: `${overdueCount} missed KEV deadlines`, color: '#7c3aed' },
           ].map(({ label, color }) => (
             <span key={label} style={{
               fontSize: 12, fontWeight: 600, padding: '4px 10px',

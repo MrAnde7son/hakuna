@@ -239,15 +239,17 @@ def startup():
 # ─────────────────────────────────────────────
 
 def _parse_scan_date(scan) -> datetime:
-    """Best-effort parse of scan date for temporal tracking."""
-    if scan.created_at:
-        return scan.created_at
+    """Best-effort parse of scan date for temporal tracking.
+    Prefers the scan_date embedded in the file so SLA starts from when
+    the scan was actually run, not when it was uploaded."""
     if scan.scan_date:
         for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d", "%b %d, %Y", "%m/%d/%Y"):
             try:
                 return datetime.strptime(scan.scan_date, fmt)
             except (ValueError, TypeError):
                 continue
+    if scan.created_at:
+        return scan.created_at
     return datetime.utcnow()
 
 
@@ -1051,6 +1053,11 @@ def list_findings(
     tags: Optional[str] = None,
     tag_logic: str = "AND",
     expand_children: bool = False,
+    # ATT&CK / threat-intel filters
+    has_ttps: Optional[bool] = None,
+    tactic: Optional[str] = None,
+    technique_id: Optional[str] = None,
+    threat_group_id: Optional[int] = None,
     sort_by: str = "priority_score",
     order: str = "desc",
     page: int = 1,
@@ -1105,6 +1112,30 @@ def list_findings(
         pairs = tag_engine.parse_tag_filter(tags)
         id_sets = tag_engine.resolve_tag_ids(pairs, expand_children, db)
         q = tag_engine.apply_finding_tag_filter(q, id_sets, tag_logic, db)
+    # ATT&CK / threat-intel filters (JSON text search on matched_ttps column)
+    if has_ttps is True:
+        q = q.filter(Finding.matched_ttps.isnot(None), Finding.matched_ttps != "[]", Finding.matched_ttps != "null")
+    elif has_ttps is False:
+        q = q.filter(or_(Finding.matched_ttps == None, Finding.matched_ttps == "[]", Finding.matched_ttps == "null"))
+    if tactic:
+        q = q.filter(Finding.matched_ttps.ilike(f'%"tactic": "{tactic}"%'))
+    if technique_id:
+        q = q.filter(Finding.matched_ttps.ilike(f'%"{technique_id}"%'))
+    if threat_group_id:
+        # Resolve TTPs linked to this group, then filter findings with any of those technique_ids
+        from threat_intel_models import ThreatGroupTTP as _TGTTP, TTP as _TTP
+        group_ttps = (
+            db.query(_TTP.technique_id)
+            .join(_TGTTP, _TTP.id == _TGTTP.ttp_id)
+            .filter(_TGTTP.group_id == threat_group_id)
+            .all()
+        )
+        group_technique_ids = [row.technique_id for row in group_ttps]
+        if group_technique_ids:
+            q = q.filter(or_(*[Finding.matched_ttps.ilike(f'%"{tid}"%') for tid in group_technique_ids]))
+        else:
+            # Group has no TTPs — return empty
+            q = q.filter(False)
 
     # Sort
     sort_col = getattr(Finding, sort_by, Finding.priority_score)

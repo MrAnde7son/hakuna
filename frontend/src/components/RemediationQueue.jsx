@@ -10,7 +10,7 @@ import {
 
 const EFFORT_OPTIONS = [
   { value: 'quick_win', label: 'Quick Win' },
-  { value: 'medium', label: 'Medium Effort' },
+  { value: 'medium', label: 'Medium' },
   { value: 'complex', label: 'Complex' },
 ]
 

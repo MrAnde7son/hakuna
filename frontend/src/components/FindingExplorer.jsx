@@ -246,6 +246,10 @@ export default function FindingExplorer() {
   const isKev = searchParams.has('is_kev') ? searchParams.get('is_kev') === 'true' : null
   const ransomwareLinked = searchParams.has('ransomware') ? searchParams.get('ransomware') === 'true' : null
   const trendingInNews = searchParams.has('trending') ? searchParams.get('trending') === 'true' : null
+  const hasTtps = searchParams.has('has_ttps') ? searchParams.get('has_ttps') === 'true' : null
+  const tacticFilter = searchParams.get('tactic') || null
+  const techniqueFilter = searchParams.get('technique_id') || null
+  const threatGroupId = searchParams.get('threat_group_id') ? Number(searchParams.get('threat_group_id')) : null
 
   const setFilter = useCallback((key, value) => {
     setSearchParams(prev => {
@@ -331,6 +335,10 @@ export default function FindingExplorer() {
       is_kev: isKev,
       ransomware_linked: ransomwareLinked,
       trending_in_news: trendingInNews,
+      has_ttps: hasTtps,
+      tactic: tacticFilter,
+      technique_id: techniqueFilter,
+      threat_group_id: threatGroupId,
       search: search || null,
       sort_by: sortBy,
       order: sortOrder,
@@ -347,7 +355,7 @@ export default function FindingExplorer() {
         setTotal(data.total)
       })
       .finally(() => setLoading(false))
-  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, slaStatus, effortLevel, cveFilter, search, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic])
+  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic])
 
   useEffect(() => { if (!advancedMode) load() }, [load, advancedMode])
 
@@ -390,6 +398,7 @@ export default function FindingExplorer() {
     getAssets({ scan_id: activeScanId }).then(setAssets).catch(() => {})
   }, [activeScanId])
 
+
   // Open all groups by default when groupBy changes
   useEffect(() => {
     if (!groupBy) { setOpenGroups({}); return }
@@ -402,17 +411,8 @@ export default function FindingExplorer() {
 
   const totalPages = Math.ceil(total / pageSize)
 
-  const [cveInput, setCveInput] = useState(cveFilter || '')
-  const cveDebounceRef = useRef(null)
-  const handleCveChange = (val) => {
-    setCveInput(val)
-    clearTimeout(cveDebounceRef.current)
-    cveDebounceRef.current = setTimeout(() => setFilter('cve', val), 400)
-  }
-  // Sync local state when URL param changes externally (e.g. clear all)
-  useEffect(() => { setCveInput(cveFilter || '') }, [cveFilter])
 
-  const hasActiveFilters = severity !== null || family || hasExploit !== null || isKev !== null || ransomwareLinked !== null || trendingInNews !== null || slaStatus || effortLevel || cveFilter || search || groupBy || assetId || tagFilter.length > 0
+  const hasActiveFilters = severity !== null || family || hasExploit !== null || isKev !== null || ransomwareLinked !== null || trendingInNews !== null || hasTtps !== null || tacticFilter || techniqueFilter || threatGroupId || slaStatus || effortLevel || cveFilter || search || groupBy || assetId || tagFilter.length > 0
 
   const saveAsConditions = useMemo(
     () => advancedMode
@@ -567,10 +567,40 @@ export default function FindingExplorer() {
       key: 'sla_status', label: 'SLA', width: '90px', sortable: true,
       render: (v, row) => <SLABadge status={v} dueDate={row.sla_due_date} />
     },
+    {
+      key: 'first_seen', label: 'First Seen', width: '100px', sortable: true,
+      render: (v, row) => {
+        if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const date = new Date(v)
+        return (
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{date.toLocaleDateString()}</div>
+            {row.times_seen > 1 && (
+              <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>×{row.times_seen} scans</div>
+            )}
+          </div>
+        )
+      }
+    },
+    {
+      key: 'last_seen', label: 'Last Seen', width: '100px', sortable: true,
+      render: (v, row) => {
+        if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const date = new Date(v)
+        const ageDays = Math.floor((Date.now() - date) / 86400000)
+        const color = ageDays > 90 ? '#dc2626' : ageDays > 30 ? '#ea580c' : 'var(--text-secondary)'
+        return (
+          <div>
+            <div style={{ fontSize: 12, color }}>{date.toLocaleDateString()}</div>
+            {row.is_regression && <Pill label="Regression" color="#7c3aed" />}
+          </div>
+        )
+      }
+    },
   ]
 
   // Filter columns by visibility (all visible by default, KEV/EPSS/Ransomware/Trending hidden by default)
-  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news'])
+  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen'])
   const visibleColumns = allColumns.filter(c =>
     c.key === '_select' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
   )
@@ -636,140 +666,84 @@ export default function FindingExplorer() {
       )}
 
       {/* Filters */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: advancedMode ? 0 : 16, display: advancedMode ? 'none' : 'flex', alignItems: 'flex-start' }}>
-        <div style={{ flex: '1 1 280px', minWidth: 280, maxWidth: 480 }}>
-          <NLPSearchBar
-            scanId={activeScanId}
-            onResult={applyNlpFilters}
-            onClear={clearNlpFilters}
+      {!advancedMode && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'flex-start' }}>
+          <div style={{ flex: '1 1 280px', minWidth: 280, maxWidth: 480 }}>
+            <NLPSearchBar
+              scanId={activeScanId}
+              onResult={applyNlpFilters}
+              onClear={clearNlpFilters}
+            />
+          </div>
+
+          <Select
+            value={severity !== null ? String(severity) : null}
+            onChange={v => setFilter('severity', v)}
+            placeholder="All Severities"
+            options={SEV_OPTIONS}
           />
-        </div>
 
-        <Select
-          value={severity !== null ? String(severity) : null}
-          onChange={v => setFilter('severity', v)}
-          placeholder="All Severities"
-          options={SEV_OPTIONS}
-        />
-
-        <Select
-          value={family}
-          onChange={v => setFilter('family', v)}
-          placeholder="All Families"
-          options={families.map(f => ({ value: f, label: f }))}
-        />
-
-        <Select
-          value={hasExploit !== null ? String(hasExploit) : null}
-          onChange={v => setFilter('exploit', v)}
-          placeholder="All Exploit Status"
-          options={[{ value: 'true', label: 'Has Exploit' }, { value: 'false', label: 'No Exploit' }]}
-        />
-
-        <Select
-          value={searchParams.get('sla_status') || null}
-          onChange={v => setFilter('sla_status', v)}
-          placeholder="All SLA Status"
-          options={[
-            { value: 'breached', label: 'SLA Breached' },
-            { value: 'at_risk',  label: 'At Risk' },
-            { value: 'on_track', label: 'On Track' },
-            { value: 'resolved', label: 'Resolved' },
-          ]}
-        />
-
-        <Select
-          value={searchParams.get('effort_level') || null}
-          onChange={v => setFilter('effort_level', v)}
-          placeholder="All Effort Levels"
-          options={[
-            { value: 'quick_win', label: 'Quick Win' },
-            { value: 'medium',    label: 'Medium' },
-            { value: 'complex',   label: 'Complex' },
-          ]}
-        />
-
-        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-          <input
-            value={cveInput}
-            onChange={e => handleCveChange(e.target.value.toUpperCase())}
-            placeholder="Filter by CVE…"
-            style={{
-              background: 'var(--bg-card)', border: '1px solid var(--border)',
-              color: 'var(--text-primary)', borderRadius: 6, padding: '7px 12px',
-              fontSize: 13, outline: 'none', width: 160,
-            }}
+          <Select
+            value={family}
+            onChange={v => setFilter('family', v)}
+            placeholder="All Families"
+            options={families.map(f => ({ value: f, label: f }))}
           />
+
+          <Select
+            value={hasExploit !== null ? String(hasExploit) : null}
+            onChange={v => setFilter('exploit', v)}
+            placeholder="Exploit"
+            options={[{ value: 'true', label: 'Has Exploit' }, { value: 'false', label: 'No Exploit' }]}
+          />
+
+          <Select
+            value={assetId}
+            onChange={v => setFilter('asset_id', v)}
+            placeholder="All Assets"
+            options={assets.map(a => ({ value: String(a.id), label: a.hostname || a.ip }))}
+          />
+
+          <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
+
+          <Select
+            value={groupBy}
+            onChange={v => setFilter('group', v)}
+            placeholder="No Grouping"
+            options={GROUP_OPTIONS}
+          />
+
+          <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
+
+          <TagFilterBar
+            tags={tagFilter}
+            onChange={setTagFilter}
+            logic={tagLogic}
+            onLogicChange={setTagLogic}
+          />
+
+          <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
+
+          <ColumnSelector
+            columns={allColumns}
+            visible={colVis}
+            onChange={updateColVis}
+          />
+
+          <Button variant="ghost" size="sm" onClick={enterAdvancedMode} title="Switch to rule-engine query builder">
+            <SlidersHorizontal size={13} /> Advanced
+          </Button>
+
+          {hasActiveFilters && (
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setShowSaveAs(true)}>
+                <Bookmark size={13} /> Save as…
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => { clearFilters(); setTagFilter([]) }}>Clear all</Button>
+            </>
+          )}
         </div>
-
-        <Select
-          value={assetId}
-          onChange={v => setFilter('asset_id', v)}
-          placeholder="All Assets"
-          options={assets.map(a => ({ value: String(a.id), label: a.hostname || a.ip }))}
-        />
-
-        <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
-
-        <Select
-          value={groupBy}
-          onChange={v => setFilter('group', v)}
-          placeholder="No Grouping"
-          options={GROUP_OPTIONS}
-        />
-
-        <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
-
-        <TagFilterBar
-          tags={tagFilter}
-          onChange={setTagFilter}
-          logic={tagLogic}
-          onLogicChange={setTagLogic}
-        />
-
-        <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
-
-        {/* Threat intel quick-filters */}
-        <Select
-          value={isKev !== null ? String(isKev) : null}
-          onChange={v => setFilter('is_kev', v)}
-          placeholder="KEV Status"
-          options={[{ value: 'true', label: 'In CISA KEV' }, { value: 'false', label: 'Not in KEV' }]}
-        />
-
-        <Select
-          value={ransomwareLinked !== null ? String(ransomwareLinked) : null}
-          onChange={v => setFilter('ransomware', v)}
-          placeholder="Ransomware"
-          options={[{ value: 'true', label: 'Ransomware Linked' }]}
-        />
-
-        <Select
-          value={trendingInNews !== null ? String(trendingInNews) : null}
-          onChange={v => setFilter('trending', v)}
-          placeholder="Trending"
-          options={[{ value: 'true', label: 'Trending in News' }]}
-        />
-
-        <ColumnSelector
-          columns={allColumns}
-          visible={colVis}
-          onChange={updateColVis}
-        />
-
-        <Button variant="ghost" size="sm" onClick={enterAdvancedMode} title="Switch to rule-engine query builder">
-          <SlidersHorizontal size={13} /> Advanced
-        </Button>
-
-        {hasActiveFilters && (
-          <>
-            <Button variant="ghost" size="sm" onClick={() => setShowSaveAs(true)}>
-              <Bookmark size={13} /> Save as…
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => { clearFilters(); setTagFilter([]) }}>Clear all</Button>
-          </>
-        )}
-      </div>
+      )}
 
       {(loading || advancedLoading) ? <Spinner /> : (
         findings.length === 0 ? (

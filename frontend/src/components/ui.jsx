@@ -233,7 +233,7 @@ export function EmptyState({ icon: Icon, title, sub, children }) {
 export function EffortBadge({ effort }) {
   const MAP = {
     quick_win: { label: 'Quick Win', color: '#16a34a' },
-    medium: { label: 'Medium Effort', color: '#d97706' },
+    medium: { label: 'Medium', color: '#d97706' },
     complex: { label: 'Complex', color: '#dc2626' },
   }
   const c = MAP[effort] || { label: effort || '—', color: 'var(--text-muted)' }
