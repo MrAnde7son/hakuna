@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, ShieldOff, ClipboardList } from 'lucide-react'
+import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, ShieldOff, ClipboardList, UserCheck } from 'lucide-react'
 import { getDedupConfig, saveDedupConfig, runDedup, exportConfig } from '../api.js'
 import { Card, ExportImportButtons } from './ui.jsx'
 import RiskSettings from './RiskSettings.jsx'
@@ -10,6 +10,7 @@ import SLASettings from './SLASettings.jsx'
 import IntegrationSettings from './IntegrationSettings.jsx'
 import GlobalExceptions from './GlobalExceptions.jsx'
 import AuditLog from './AuditLog.jsx'
+import OwnershipRules from './OwnershipRules.jsx'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -257,7 +258,7 @@ function EntityCard({ entityKey, cfg, onChange }) {
 
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla', 'exceptions', 'integrations', 'audit-log']
+  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla', 'exceptions', 'integrations', 'audit-log', 'ownership']
   const tabParam = searchParams.get('tab')
   const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'upload'
   const setActiveTab = (id) => setSearchParams(prev => { prev.set('tab', id); return prev })
@@ -303,44 +304,80 @@ export default function Settings() {
     )
   }
 
-  const TABS = [
-    { id: 'upload', label: 'Scans',    icon: <Upload size={14} /> },
-    { id: 'tags',   label: 'Tags',          icon: <Tag size={14} /> },
-    { id: 'sla',    label: 'SLA',           icon: <Clock size={14} /> },
-    { id: 'exceptions', label: 'Exceptions', icon: <ShieldOff size={14} /> },
-    { id: 'risk', label: 'Risk Score', icon: <ShieldAlert size={14} /> },
-    { id: 'dedup', label: 'Deduplication', icon: <SettingsIcon size={14} /> },
-    { id: 'integrations', label: 'Integrations', icon: <Plug size={14} /> },
-    { id: 'audit-log', label: 'Audit Log', icon: <ClipboardList size={14} /> },
+  const NAV_GROUPS = [
+    {
+      label: 'Data Management',
+      items: [
+        { id: 'upload',  label: 'Scans',          icon: <Upload size={14} /> },
+        { id: 'dedup',   label: 'Deduplication',  icon: <SettingsIcon size={14} /> },
+      ],
+    },
+    {
+      label: 'Risk & Compliance',
+      items: [
+        { id: 'risk',       label: 'Risk Score',  icon: <ShieldAlert size={14} /> },
+        { id: 'sla',        label: 'SLA',         icon: <Clock size={14} /> },
+        { id: 'exceptions', label: 'Exceptions',  icon: <ShieldOff size={14} /> },
+      ],
+    },
+    {
+      label: 'Organization',
+      items: [
+        { id: 'tags',      label: 'Tags',       icon: <Tag size={14} /> },
+        { id: 'ownership', label: 'Ownership',  icon: <UserCheck size={14} /> },
+      ],
+    },
+    {
+      label: 'System',
+      items: [
+        { id: 'integrations', label: 'Integrations', icon: <Plug size={14} /> },
+        { id: 'audit-log',    label: 'Audit Log',    icon: <ClipboardList size={14} /> },
+      ],
+    },
   ]
 
   return (
-    <div style={{ padding: 24, maxWidth: 860 }}>
-      {/* Page header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
-        <SettingsIcon size={20} color="var(--accent)" />
-        <h1 style={{ fontSize: 20, fontWeight: 600, color: 'var(--text)', margin: 0 }}>Settings</h1>
-      </div>
-
-      {/* Tab bar */}
-      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border)', marginBottom: 24 }}>
-        {TABS.map(tab => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '8px 16px', fontSize: 13, fontWeight: 500,
-              border: 'none', background: 'transparent', cursor: 'pointer',
-              color: activeTab === tab.id ? 'var(--accent)' : 'var(--text-muted)',
-              borderBottom: `2px solid ${activeTab === tab.id ? 'var(--accent)' : 'transparent'}`,
-              marginBottom: -1,
-            }}
-          >
-            {tab.icon} {tab.label}
-          </button>
+    <div style={{ display: 'flex', gap: 0, minHeight: '100%' }}>
+      {/* Sidebar */}
+      <div style={{
+        width: 200, flexShrink: 0, borderRight: '1px solid var(--border)',
+        padding: '24px 0', display: 'flex', flexDirection: 'column', gap: 24,
+      }}>
+        <div style={{ padding: '0 16px', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <SettingsIcon size={16} color="var(--accent)" />
+          <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>Settings</span>
+        </div>
+        {NAV_GROUPS.map(group => (
+          <div key={group.label}>
+            <div style={{
+              padding: '0 16px', fontSize: 10, fontWeight: 700, letterSpacing: '0.08em',
+              textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 4,
+            }}>
+              {group.label}
+            </div>
+            {group.items.map(item => (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  width: '100%', padding: '7px 16px', fontSize: 13,
+                  border: 'none', background: activeTab === item.id ? 'rgba(99,102,241,0.12)' : 'transparent',
+                  cursor: 'pointer', textAlign: 'left',
+                  color: activeTab === item.id ? 'var(--accent)' : 'var(--text-muted)',
+                  borderRight: activeTab === item.id ? '2px solid var(--accent)' : '2px solid transparent',
+                  fontWeight: activeTab === item.id ? 500 : 400,
+                }}
+              >
+                {item.icon} {item.label}
+              </button>
+            ))}
+          </div>
         ))}
       </div>
+
+      {/* Content */}
+      <div style={{ flex: 1, padding: 24, maxWidth: 760 }}>
 
       {/* Upload tab */}
       {activeTab === 'upload' && <UploadScan />}
@@ -362,6 +399,9 @@ export default function Settings() {
 
       {/* Audit Log tab */}
       {activeTab === 'audit-log' && <AuditLog />}
+
+      {/* Ownership tab */}
+      {activeTab === 'ownership' && <OwnershipRules />}
 
       {/* Dedup tab */}
       {activeTab === 'dedup' && <>
@@ -470,6 +510,7 @@ export default function Settings() {
       ))}
 
       </>}
+      </div>
     </div>
   )
 }

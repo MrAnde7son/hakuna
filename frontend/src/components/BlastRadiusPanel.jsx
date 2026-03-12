@@ -35,6 +35,14 @@ const EDGE_CFG = {
   domain_admin:        { color: '#ef4444', label: 'Domain Admin' },
   network_connection:  { color: '#3b82f6', label: 'Network' },
   credential_exposure: { color: '#a855f7', label: 'Cred Exposure' },
+  rdp_access:          { color: '#0ea5e9', label: 'RDP Access' },
+  dcom_access:         { color: '#06b6d4', label: 'DCOM Access' },
+  power_user:          { color: '#d97706', label: 'Power User' },
+  winrm_access:        { color: '#7c3aed', label: 'WinRM' },
+  ssh_access:          { color: '#10b981', label: 'SSH Access' },
+  sudo_access:         { color: '#dc2626', label: 'Sudo Access' },
+  docker_access:       { color: '#1d4ed8', label: 'Docker' },
+  admin_read:          { color: '#64748b', label: 'Admin Read' },
 }
 
 const SEV_COLOR = { critical: '#ef4444', high: '#f59e0b', medium: '#3b82f6', low: '#64748b' }
@@ -181,11 +189,36 @@ function NBadge({ bg, fg, border, children }) {
 
 const nodeTypes = { asset: AssetNode, user: UserNode }
 
+// Maps legend node entries to a predicate over node data
+const NODE_LEGEND = [
+  { Icon: Server,    color: '#64748b', bg: '#f8fafc', label: 'Server',            match: n => n.type === 'asset' && !n.data.is_dc },
+  { Icon: Database,  color: '#ea580c', bg: '#fff7ed', label: 'Domain Controller', match: n => n.type === 'asset' && n.data.is_dc },
+  { Icon: User,      color: '#3b82f6', bg: '#eff6ff', label: 'Domain User',       match: n => n.type === 'user' && n.data.user_type === 'domain_user' },
+  { Icon: UserCheck, color: '#64748b', bg: '#f8fafc', label: 'Local User',        match: n => n.type === 'user' && n.data.user_type === 'local_user' },
+  { Icon: UserCog,   color: '#8b5cf6', bg: '#f5f3ff', label: 'Service Account',   match: n => n.type === 'user' && n.data.user_type === 'service_account' },
+  { Icon: Monitor,   color: '#0ea5e9', bg: '#f0f9ff', label: 'Computer Account',  match: n => n.type === 'user' && n.data.user_type === 'computer_account' },
+]
+
+const EDGE_LEGEND = [
+  { key: 'domain_admin',        color: '#ef4444', label: 'Domain Admin' },
+  { key: 'local_admin',         color: '#f59e0b', label: 'Local Admin' },
+  { key: 'rdp_access',          color: '#0ea5e9', label: 'RDP Access' },
+  { key: 'dcom_access',         color: '#06b6d4', label: 'DCOM Access' },
+  { key: 'winrm_access',        color: '#7c3aed', label: 'WinRM' },
+  { key: 'ssh_access',          color: '#10b981', label: 'SSH Access' },
+  { key: 'sudo_access',         color: '#dc2626', label: 'Sudo Access' },
+  { key: 'docker_access',       color: '#1d4ed8', label: 'Docker' },
+  { key: 'network_connection',  color: '#3b82f6', label: 'Network' },
+  { key: 'credential_exposure', color: '#a855f7', label: 'Cred Exposure' },
+]
+
 // ── Mini ReactFlow graph ──────────────────────────────────────────────────
 function BlastRadiusFlow({ data }) {
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  // blastNode: node-click mode; legendFilter: { kind: 'edge'|'node', value }
   const [blastNode, setBlastNode] = useState(null)
+  const [legendFilter, setLegendFilter] = useState(null)
 
   const styledEdges = useMemo(() =>
     data.edges.map(e => ({
@@ -201,10 +234,66 @@ function BlastRadiusFlow({ data }) {
     })),
   [data.edges])
 
+  const positioned = useMemo(() => layoutNodes(data.nodes, data.edges), [data.nodes, data.edges])
+
   useEffect(() => {
     if (!data.nodes.length) return
 
-    // Compute blast radius from selected node (or start)
+    // ── legend filter mode ───────────────────────────────────────────────
+    if (legendFilter) {
+      let litNodeIds = new Set()
+
+      if (legendFilter.kind === 'edge') {
+        // Highlight edges of this type + their connected nodes
+        data.edges.forEach(e => {
+          if (e.type === legendFilter.value) {
+            litNodeIds.add(e.source)
+            litNodeIds.add(e.target)
+          }
+        })
+        setNodes(positioned.map(n => ({
+          ...n,
+          style: { opacity: litNodeIds.has(n.id) ? 1 : 0.12 },
+        })))
+        setEdges(styledEdges.map(e => ({
+          ...e,
+          style: {
+            ...e.style,
+            opacity: e.type === legendFilter.value ? 1 : 0.06,
+            strokeWidth: e.type === legendFilter.value ? 2.5 : 1.5,
+          },
+        })))
+      } else {
+        // node-type filter: find matching nodes via predicate
+        const entry = NODE_LEGEND.find(l => l.label === legendFilter.value)
+        if (entry) {
+          data.nodes.forEach(n => { if (entry.match(n)) litNodeIds.add(n.id) })
+          // Also include edges that touch at least one lit node
+          const litEdgeIds = new Set(
+            data.edges.filter(e => litNodeIds.has(e.source) || litNodeIds.has(e.target)).map(e => e.id)
+          )
+          // Expand lit nodes to include the other end of those edges
+          data.edges.forEach(e => {
+            if (litNodeIds.has(e.source)) litNodeIds.add(e.target)
+            if (litNodeIds.has(e.target)) litNodeIds.add(e.source)
+          })
+          setNodes(positioned.map(n => ({
+            ...n,
+            style: { opacity: litNodeIds.has(n.id) ? 1 : 0.12 },
+          })))
+          setEdges(styledEdges.map(e => ({
+            ...e,
+            style: {
+              ...e.style,
+              opacity: litEdgeIds.has(e.id) ? 1 : 0.06,
+            },
+          })))
+        }
+      }
+      return
+    }
+
+    // ── node-click blast radius mode ────────────────────────────────────
     const focusId = blastNode || `asset-${data.asset_id}`
     const reachable = new Set([focusId])
     const q = [focusId]
@@ -218,27 +307,41 @@ function BlastRadiusFlow({ data }) {
     }
     const hasBlast = blastNode !== null
 
-    const positioned = layoutNodes(data.nodes, data.edges)
     setNodes(positioned.map(n => ({
       ...n,
-      data: {
-        ...n.data,
-        _dimmed: hasBlast && !reachable.has(n.id),
-      },
-      style: { opacity: hasBlast && !reachable.has(n.id) ? 0.2 : 1 },
+      style: { opacity: hasBlast && !reachable.has(n.id) ? 0.12 : 1 },
     })))
     setEdges(styledEdges.map(e => ({
       ...e,
       style: {
         ...e.style,
-        opacity: hasBlast && !(reachable.has(e.source) && reachable.has(e.target)) ? 0.08 : 1,
+        opacity: hasBlast && !(reachable.has(e.source) && reachable.has(e.target)) ? 0.06 : 1,
       },
     })))
-  }, [data, blastNode, styledEdges])
+  }, [data, blastNode, legendFilter, styledEdges, positioned])
 
   const onNodeClick = useCallback((_, node) => {
+    setLegendFilter(null)
     setBlastNode(prev => prev === node.id ? null : node.id)
   }, [])
+
+  const onLegendEdgeClick = useCallback((key) => {
+    setBlastNode(null)
+    setLegendFilter(prev => prev?.kind === 'edge' && prev.value === key ? null : { kind: 'edge', value: key })
+  }, [])
+
+  const onLegendNodeClick = useCallback((label) => {
+    setBlastNode(null)
+    setLegendFilter(prev => prev?.kind === 'node' && prev.value === label ? null : { kind: 'node', value: label })
+  }, [])
+
+  const hint = legendFilter
+    ? `Filtering: ${legendFilter.value.replace(/_/g, ' ')} — click again to clear`
+    : blastNode
+      ? 'Click same node to clear'
+      : 'Click node or legend to highlight'
+
+  const hintColor = legendFilter ? '#0ea5e9' : blastNode ? '#f59e0b' : undefined
 
   return (
     <ReactFlow
@@ -261,41 +364,64 @@ function BlastRadiusFlow({ data }) {
         background: 'rgba(255,255,255,0.9)', border: '1px solid var(--border)', borderRadius: 6, padding: 2,
       }} />
       <Panel position="bottom-right">
-        <div style={{ fontSize: 10, color: 'var(--text-muted)', background: 'rgba(255,255,255,0.9)',
-          border: '1px solid var(--border)', borderRadius: 5, padding: '4px 8px' }}>
-          {blastNode ? (
-            <span style={{ color: '#f59e0b' }}>
-              <Crosshair size={9} style={{ display: 'inline', marginRight: 4 }} />
-              Click same node to clear
-            </span>
-          ) : 'Click node for blast radius'}
+        <div style={{ fontSize: 10, color: hintColor || 'var(--text-muted)',
+          background: 'rgba(255,255,255,0.9)', border: '1px solid var(--border)',
+          borderRadius: 5, padding: '4px 8px' }}>
+          {(legendFilter || blastNode) && <Crosshair size={9} style={{ display: 'inline', marginRight: 4 }} />}
+          {hint}
         </div>
       </Panel>
       <Panel position="top-left">
         <div style={{
           background: 'rgba(255,255,255,0.95)', border: '1px solid var(--border)',
           borderRadius: 6, padding: '6px 10px', fontSize: 10,
-          display: 'flex', flexDirection: 'column', gap: 4,
+          display: 'flex', flexDirection: 'column', gap: 3,
+          maxHeight: 'calc(100vh - 120px)', overflowY: 'auto',
         }}>
-          {[
-            { Icon: Server,   color: '#64748b', bg: '#f8fafc', label: 'Server' },
-            { Icon: Database, color: '#ea580c', bg: '#fff7ed', label: 'Domain Controller' },
-            { Icon: User,     color: '#3b82f6', bg: '#eff6ff', label: 'Domain User' },
-            { Icon: UserCheck,color: '#64748b', bg: '#f8fafc', label: 'Local User' },
-            { Icon: UserCog,  color: '#8b5cf6', bg: '#f5f3ff', label: 'Service Account' },
-            { Icon: Monitor,  color: '#0ea5e9', bg: '#f0f9ff', label: 'Computer Account' },
-          ].map(({ Icon, color, bg, label }) => (
-            <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <div style={{
-                width: 18, height: 18, borderRadius: 4, background: bg,
-                border: `1px solid ${color}33`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          {/* Node types */}
+          {NODE_LEGEND.map(({ Icon, color, bg, label }) => {
+            const active = legendFilter?.kind === 'node' && legendFilter.value === label
+            return (
+              <button key={label} onClick={() => onLegendNodeClick(label)} style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                background: active ? color + '18' : 'transparent',
+                border: active ? `1px solid ${color}55` : '1px solid transparent',
+                borderRadius: 4, padding: '2px 4px', cursor: 'pointer', textAlign: 'left',
               }}>
-                <Icon size={11} color={color} />
-              </div>
-              <span style={{ color: '#475569' }}>{label}</span>
-            </div>
-          ))}
+                <div style={{
+                  width: 18, height: 18, borderRadius: 4,
+                  background: active ? bg : bg,
+                  border: `1px solid ${color}33`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                }}>
+                  <Icon size={11} color={color} />
+                </div>
+                <span style={{ color: active ? color : '#475569', fontWeight: active ? 700 : 400 }}>{label}</span>
+              </button>
+            )
+          })}
+
+          {/* Edge types */}
+          <div style={{ borderTop: '1px solid #e2e8f0', marginTop: 2, paddingTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {EDGE_LEGEND.map(({ key, color, label }) => {
+              // Only show edge types that actually appear in the data
+              const exists = data.edges.some(e => e.type === key)
+              if (!exists) return null
+              const active = legendFilter?.kind === 'edge' && legendFilter.value === key
+              return (
+                <button key={key} onClick={() => onLegendEdgeClick(key)} style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  background: active ? color + '18' : 'transparent',
+                  border: active ? `1px solid ${color}55` : '1px solid transparent',
+                  borderRadius: 4, padding: '2px 4px', cursor: 'pointer', textAlign: 'left',
+                }}>
+                  <div style={{ width: 18, height: 2, background: color, borderRadius: 1, flexShrink: 0,
+                    boxShadow: active ? `0 0 4px ${color}` : 'none' }} />
+                  <span style={{ color: active ? color : '#475569', fontWeight: active ? 700 : 400 }}>{label}</span>
+                </button>
+              )
+            })}
+          </div>
         </div>
       </Panel>
     </ReactFlow>
@@ -405,6 +531,12 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
               <span style={{ fontSize: 10, background: '#faf5ff', color: '#a855f7',
                 border: '1px solid #ddd6fe', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
                 Kerb
+              </span>
+            )}
+            {data.group_access_exposed && (
+              <span style={{ fontSize: 10, background: '#f0f9ff', color: '#0ea5e9',
+                border: '1px solid #bae6fd', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
+                RDP/DCOM
               </span>
             )}
           </div>

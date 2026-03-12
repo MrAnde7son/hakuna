@@ -30,7 +30,7 @@ from models import (
 )
 from parser import detect_and_parse, load_intel_json
 from prioritizer import compute_priority_score
-from inventory_extractor import extract_inventory_from_findings
+from inventory_extractor import extract_inventory_from_findings, _cn_from_dn
 import dedup as dedup_engine
 import risk_config as risk_engine
 import campaign_query as cq
@@ -40,7 +40,7 @@ import workflow_engine
 from nlp_search import parse_nlp_query
 import integrations as integ_module
 import ownership_inference
-from models import Tag, TagAssignment, AutoTagRule, SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog
+from models import Tag, TagAssignment, AutoTagRule, OwnershipRule, ExternalTagSource, ExternalTagMap, SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog
 from audit import log_audit, diff as _diff
 from auth import (
     get_current_user, require_auth, require_role,
@@ -662,6 +662,11 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     tag_results = tag_engine.run_all_auto_tag_rules(db, scan_id=scan.id)
     if tag_results:
         logger.info(f"Auto-tag results: { {k: v for k, v in tag_results.items() if v} }")
+
+    # ── Apply ownership rules to newly imported scan ──
+    ownership_results = tag_engine.run_all_ownership_rules(db, scan_id=scan.id)
+    if ownership_results:
+        logger.info(f"Ownership rule results: { {k: v for k, v in ownership_results.items() if v} }")
 
     # ── Infer asset ownership from inventory data ──
     own_stats = ownership_inference.infer_asset_ownership(db, scan.id)
@@ -3288,6 +3293,41 @@ def update_campaign_finding(
 # Blast Radius / Attack Path
 # ─────────────────────────────────────────────
 
+# AD domain-level groups → grants access to Domain Controllers
+_AD_ACCESS_GROUPS: dict[str, tuple[str, str]] = {
+    "remote desktop users":       ("rdp_access",   "RDP Access"),
+    "administrators":             ("local_admin",   "Admin (AD Group)"),
+    "distributed com users":      ("dcom_access",   "DCOM Access"),
+    "dcom users":                 ("dcom_access",   "DCOM Access"),
+    "power users":                ("power_user",    "Power User"),
+    "remote management users":    ("winrm_access",  "WinRM Access"),
+    "domain admins":              ("domain_admin",  "Domain Admin"),
+    "enterprise admins":          ("domain_admin",  "Enterprise Admin"),
+}
+
+# Local Windows groups → grants access to that specific machine
+_LOCAL_ACCESS_GROUPS: dict[str, tuple[str, str]] = {
+    "administrators":             ("local_admin",   "Local Admin"),
+    "remote desktop users":       ("rdp_access",    "RDP Access"),
+    "distributed com users":      ("dcom_access",   "DCOM Access"),
+    "dcom users":                 ("dcom_access",   "DCOM Access"),
+    "power users":                ("power_user",    "Power User"),
+    "remote management users":    ("winrm_access",  "WinRM Access"),
+}
+
+# Linux/Unix groups → grants access to that specific machine
+_LINUX_ACCESS_GROUPS: dict[str, tuple[str, str]] = {
+    "sudo":       ("sudo_access",    "Sudo Access"),
+    "wheel":      ("sudo_access",    "Sudo Access"),
+    "docker":     ("docker_access",  "Docker Access"),
+    "sshusers":   ("ssh_access",     "SSH Access"),
+    "ssh":        ("ssh_access",     "SSH Access"),
+    "adm":        ("admin_read",     "Admin Read"),
+}
+
+_LINUX_OS_HINTS = ("linux", "unix", "ubuntu", "debian", "centos", "rhel", "fedora", "suse", "bsd")
+
+
 @app.get("/api/blast-radius/bulk")
 def get_blast_radius_bulk(
     scan_id: int = Query(...),
@@ -3345,6 +3385,22 @@ def get_blast_radius_bulk(
 
     dc_asset_ids = _resolve_dc_asset_ids(db, scan_id=scan_id)
 
+    # Pre-fetch group data for group-membership access paths
+    all_groups = db.query(InventoryGroup).filter(InventoryGroup.scan_id == scan_id).all()
+    groups_by_asset: dict[int, list] = {}
+    for g in all_groups:
+        groups_by_asset.setdefault(g.asset_id, []).append(g)
+
+    # Pre-fetch all users indexed by username (lowercase) for member resolution
+    all_users_scan = db.query(InventoryUser).filter(InventoryUser.scan_id == scan_id).all()
+    users_by_name: dict[str, list] = {}
+    for u in all_users_scan:
+        if u.username:
+            users_by_name.setdefault(u.username.lower(), []).append(u)
+    users_by_asset: dict[int, list] = {}
+    for u in all_users_scan:
+        users_by_asset.setdefault(u.asset_id, []).append(u)
+
     results = {}
 
     for asset in all_assets:
@@ -3353,6 +3409,7 @@ def get_blast_radius_bulk(
         da_exposed = False
         la_exposed = False
         kerb_exposed = False
+        group_access_exposed = False
         seen_users = set()
 
         # 1. Network connections to other known assets
@@ -3393,13 +3450,62 @@ def get_blast_radius_bulk(
             if u.spns:
                 kerb_exposed = True
 
+        # 4. AD group memberships → DC access
+        # Users on this asset whose member_of includes sensitive AD groups
+        cur_os_lower = (asset.os or "").lower()
+        is_linux = any(h in cur_os_lower for h in _LINUX_OS_HINTS)
+        for u in users_by_asset.get(asset_id, []):
+            for group_entry in (u.member_of or []):
+                cn = _cn_from_dn(group_entry) if "=" in group_entry else group_entry.strip()
+                if "\\" in cn:
+                    cn = cn.split("\\", 1)[1]
+                cn_lower = cn.lower().strip()
+                if cn_lower in _AD_ACCESS_GROUPS:
+                    etype, _ = _AD_ACCESS_GROUPS[cn_lower]
+                    if etype == "domain_admin":
+                        da_exposed = True
+                    else:
+                        group_access_exposed = True
+                    # Access to all DC assets
+                    for dc_id in dc_asset_ids:
+                        if dc_id != asset_id:
+                            reachable.add(dc_id)
+
+        # 5. Local / Linux group membership → access to this asset (affects reachable for
+        #    accounts on other assets that are members of groups on this one)
+        local_groups_map = _LINUX_ACCESS_GROUPS if is_linux else _LOCAL_ACCESS_GROUPS
+        for group in groups_by_asset.get(asset_id, []):
+            group_lower = (group.group_name or "").lower().strip()
+            if group_lower not in local_groups_map:
+                continue
+            etype, _ = local_groups_map[group_lower]
+            for member_raw in (group.members or []):
+                cn = _cn_from_dn(member_raw) if "=" in member_raw else member_raw.strip()
+                if "\\" in cn:
+                    cn = cn.split("\\", 1)[1]
+                if not cn or cn.endswith("$"):
+                    continue
+                matched = users_by_name.get(cn.lower(), [])
+                for mu in matched:
+                    if mu.asset_id != asset_id:
+                        # This user (from another asset) can reach this asset
+                        # We mark this asset as reachable from mu's asset
+                        pass  # handled on the other asset's pass
+                    if mu.id not in seen_users:
+                        seen_users.add(mu.id)
+                        if etype == "local_admin":
+                            la_exposed = True
+                        else:
+                            group_access_exposed = True
+
         dc_reachable = bool(reachable & dc_asset_ids)
 
         score = min(len(reachable) * 1.5, 5.0)
-        if dc_reachable:   score += 3.0
-        if da_exposed:     score += 2.0
-        elif la_exposed:   score += 1.0
-        if kerb_exposed:   score += 1.0
+        if dc_reachable:              score += 3.0
+        if da_exposed:                score += 2.0
+        elif la_exposed:              score += 1.0
+        if kerb_exposed:              score += 1.0
+        if group_access_exposed:      score += 0.5
         score = min(round(score, 1), 10.0)
 
         results[str(asset_id)] = {
@@ -3408,6 +3514,7 @@ def get_blast_radius_bulk(
             "reachable_assets": len(reachable),
             "da_exposed": da_exposed,
             "dc_reachable": dc_reachable,
+            "group_access_exposed": group_access_exposed,
         }
 
     return results
@@ -3491,6 +3598,16 @@ def get_blast_radius(
             "password_never_expires": u.password_never_expires,
             "member_of": u.member_of or [],
         }
+
+    # Pre-compute DC asset IDs for group membership paths
+    dc_asset_ids = [a.id for a in all_assets if _asset_dc(a.id)]
+
+    # Pre-index all scan users by username (lowercase) for fast member resolution
+    all_scan_users = db.query(InventoryUser).filter(InventoryUser.scan_id == scan_id).all()
+    users_by_name_idx: dict[str, list] = {}
+    for u in all_scan_users:
+        if u.username:
+            users_by_name_idx.setdefault(u.username.lower(), []).append(u)
 
     start_nid = f"asset-{asset_id}"
     add_node(start_nid, "asset", {**_asset_node_data(asset), "_start": True})
@@ -3588,6 +3705,68 @@ def get_blast_radius(
                             visited_assets.add(other.asset_id)
                             next_queue.append(other.asset_id)
 
+            # 4. AD group memberships → DC access
+            # If a user on this asset is member of RDP/DCOM/Admins/etc AD group,
+            # they can reach Domain Controllers.
+            cur_os_lower = (cur.os or "").lower()
+            is_linux = any(h in cur_os_lower for h in _LINUX_OS_HINTS)
+            for user in db.query(InventoryUser).filter(
+                InventoryUser.asset_id == cur_id,
+                InventoryUser.scan_id == scan_id,
+            ).all():
+                for group_entry in (user.member_of or []):
+                    cn = _cn_from_dn(group_entry) if "=" in group_entry else group_entry.strip()
+                    if "\\" in cn:
+                        cn = cn.split("\\", 1)[1]
+                    cn_lower = cn.lower().strip()
+                    if cn_lower not in _AD_ACCESS_GROUPS:
+                        continue
+                    etype, elabel = _AD_ACCESS_GROUPS[cn_lower]
+                    unid = f"user-{user.id}"
+                    add_node(unid, "user", _user_node_data(user))
+                    add_edge(f"e-account-{user.id}-{cur_id}",
+                             f"asset-{cur_id}", unid,
+                             "credential_exposure", "Has Account")
+                    # Create edges to all DC assets
+                    for dc_id in dc_asset_ids:
+                        dc_asset = asset_map.get(dc_id)
+                        if not dc_asset or dc_id == cur_id:
+                            continue
+                        add_node(f"asset-{dc_id}", "asset", _asset_node_data(dc_asset))
+                        add_edge(
+                            f"e-grp-dc-{user.id}-{dc_id}-{cn_lower.replace(' ', '_')}",
+                            unid, f"asset-{dc_id}",
+                            etype, f"{elabel} → DC",
+                        )
+                        if dc_id not in visited_assets:
+                            visited_assets.add(dc_id)
+                            next_queue.append(dc_id)
+
+            # 5. Local / Linux group membership → access to this asset
+            local_groups_map = _LINUX_ACCESS_GROUPS if is_linux else _LOCAL_ACCESS_GROUPS
+            for group in db.query(InventoryGroup).filter(
+                InventoryGroup.asset_id == cur_id,
+                InventoryGroup.scan_id == scan_id,
+            ).all():
+                group_lower = (group.group_name or "").lower().strip()
+                if group_lower not in local_groups_map:
+                    continue
+                etype, elabel = local_groups_map[group_lower]
+                for member_raw in (group.members or []):
+                    cn = _cn_from_dn(member_raw) if "=" in member_raw else member_raw.strip()
+                    if "\\" in cn:
+                        cn = cn.split("\\", 1)[1]
+                    if not cn or cn.endswith("$"):
+                        continue  # skip computer accounts
+                    for mu in users_by_name_idx.get(cn.lower(), []):
+                        munid = f"user-{mu.id}"
+                        add_node(munid, "user", _user_node_data(mu))
+                        add_edge(
+                            f"e-grp-{mu.id}-{cur_id}-{etype}",
+                            munid, f"asset-{cur_id}",
+                            etype, elabel,
+                        )
+
         queue = next_queue
 
     # Compute blast radius score 0–10
@@ -3606,12 +3785,31 @@ def get_blast_radius(
     )
     kerb_exposed = any(u["data"].get("kerberoastable") for u in user_nodes)
 
+    group_access_edges = [
+        e for e in edges
+        if e["type"] in ("rdp_access", "dcom_access", "power_user",
+                         "winrm_access", "ssh_access", "sudo_access", "docker_access")
+    ]
+    group_access_exposed = len(group_access_edges) > 0
+
     score = min(len(reachable_asset_ids) * 1.5, 5.0)
-    if dc_reachable:   score += 3.0
-    if da_exposed:     score += 2.0
-    elif la_exposed:   score += 1.0
-    if kerb_exposed:   score += 1.0
+    if dc_reachable:              score += 3.0
+    if da_exposed:                score += 2.0
+    elif la_exposed:              score += 1.0
+    if kerb_exposed:              score += 1.0
+    if group_access_exposed:      score += 0.5
     score = min(round(score, 1), 10.0)
+
+    _GROUP_ACCESS_LABELS = {
+        "rdp_access":    ("RDP Access",         "high"),
+        "dcom_access":   ("DCOM Access",         "medium"),
+        "power_user":    ("Power User Access",   "medium"),
+        "winrm_access":  ("WinRM Access",        "high"),
+        "ssh_access":    ("SSH Access",          "high"),
+        "sudo_access":   ("Sudo Access",         "high"),
+        "docker_access": ("Docker Escape Risk",  "high"),
+        "admin_read":    ("Admin Read Access",   "medium"),
+    }
 
     vectors = []
     for u in user_nodes:
@@ -3645,6 +3843,16 @@ def get_blast_radius(
                 "label": f"Established → {ta.ip or ta.hostname if ta else e['target']} {e['data']['label']}",
                 "severity": "low",
             })
+        elif e["type"] in _GROUP_ACCESS_LABELS:
+            un = nodes.get(e["source"])
+            ta = nodes.get(e["target"])
+            if un and ta:
+                alabel, aseverity = _GROUP_ACCESS_LABELS[e["type"]]
+                vectors.append({
+                    "type": e["type"],
+                    "label": f"{alabel}: {un['data'].get('username', '?')} → {ta['data'].get('label', '?')}",
+                    "severity": aseverity,
+                })
 
     return {
         "asset_id": asset_id,
@@ -3654,7 +3862,8 @@ def get_blast_radius(
         "da_exposed": da_exposed,
         "dc_reachable": dc_reachable,
         "kerberoastable_exposed": kerb_exposed,
-        "vectors": vectors[:10],
+        "group_access_exposed": group_access_exposed,
+        "vectors": vectors[:15],
         "nodes": list(nodes.values()),
         "edges": edges,
     }
@@ -3689,7 +3898,7 @@ class TagAssignBody(BaseModel):
 class AutoTagRuleCreate(BaseModel):
     name: str
     description: Optional[str] = None
-    tag_id: int
+    tag_id: Optional[int] = None
     target_type: str = "asset"
     conditions: list = []
     condition_logic: str = "AND"
@@ -3901,9 +4110,13 @@ def list_auto_tag_rules(db: Session = Depends(get_db), org_ids: Optional[List[in
 
 @app.post("/api/auto-tag-rules")
 def create_auto_tag_rule(body: AutoTagRuleCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
-    tag = db.query(Tag).filter(Tag.id == body.tag_id).first()
-    if not tag:
-        raise HTTPException(404, "Tag not found")
+    is_passthrough = any(c.get("op") == "passthrough" for c in (body.conditions or []))
+    if body.tag_id is not None:
+        tag = db.query(Tag).filter(Tag.id == body.tag_id).first()
+        if not tag:
+            raise HTTPException(404, "Tag not found")
+    elif not is_passthrough:
+        raise HTTPException(400, "tag_id is required for non-passthrough rules")
     rule = AutoTagRule(
         org_id=user.org_id if user else None,
         name=body.name,
@@ -3985,6 +4198,326 @@ def _rule_to_dict(rule: AutoTagRule) -> dict:
         "last_run_at": rule.last_run_at.isoformat() if rule.last_run_at else None,
         "last_run_count": rule.last_run_count,
     }
+
+
+# ─────────────────────────────────────────────
+# Ownership Rules
+# ─────────────────────────────────────────────
+
+class OwnershipRuleCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    target_type: str = "asset"
+    conditions: list = []
+    condition_logic: str = "AND"
+    priority: int = 100
+    owner_name: Optional[str] = None
+    owner_email: Optional[str] = None
+    owner_role: Optional[str] = None
+    team: Optional[str] = None
+    notes: Optional[str] = None
+    overwrite_existing: bool = False
+    is_enabled: bool = True
+
+
+class OwnershipRuleUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    target_type: Optional[str] = None
+    conditions: Optional[list] = None
+    condition_logic: Optional[str] = None
+    priority: Optional[int] = None
+    owner_name: Optional[str] = None
+    owner_email: Optional[str] = None
+    owner_role: Optional[str] = None
+    team: Optional[str] = None
+    notes: Optional[str] = None
+    overwrite_existing: Optional[bool] = None
+    is_enabled: Optional[bool] = None
+
+
+def _ownership_rule_to_dict(rule: OwnershipRule) -> dict:
+    return {
+        "id": rule.id,
+        "name": rule.name,
+        "description": rule.description,
+        "target_type": rule.target_type,
+        "conditions": rule_engine.migrate_conditions(rule.conditions or [], mode="autotag"),
+        "condition_logic": rule.condition_logic,
+        "priority": rule.priority,
+        "owner_name": rule.owner_name,
+        "owner_email": rule.owner_email,
+        "owner_role": rule.owner_role,
+        "team": rule.team,
+        "notes": rule.notes,
+        "overwrite_existing": rule.overwrite_existing,
+        "is_enabled": rule.is_enabled,
+        "created_at": rule.created_at.isoformat() if rule.created_at else None,
+        "last_run_at": rule.last_run_at.isoformat() if rule.last_run_at else None,
+        "last_run_count": rule.last_run_count,
+    }
+
+
+@app.get("/api/ownership-rules")
+def list_ownership_rules(db: Session = Depends(get_db)):
+    rules = db.query(OwnershipRule).order_by(OwnershipRule.priority, OwnershipRule.id).all()
+    return [_ownership_rule_to_dict(r) for r in rules]
+
+
+@app.post("/api/ownership-rules")
+def create_ownership_rule(body: OwnershipRuleCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+    rule = OwnershipRule(
+        org_id=user.org_id if user else None,
+        name=body.name,
+        description=body.description,
+        target_type=body.target_type,
+        conditions=body.conditions,
+        condition_logic=body.condition_logic,
+        priority=body.priority,
+        owner_name=body.owner_name,
+        owner_email=body.owner_email,
+        owner_role=body.owner_role,
+        team=body.team,
+        notes=body.notes,
+        overwrite_existing=body.overwrite_existing,
+        is_enabled=body.is_enabled,
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return _ownership_rule_to_dict(rule)
+
+
+@app.patch("/api/ownership-rules/{rule_id}")
+def update_ownership_rule(rule_id: int, body: OwnershipRuleUpdate, db: Session = Depends(get_db)):
+    rule = db.query(OwnershipRule).filter(OwnershipRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, "Rule not found")
+    for field in ("name", "description", "target_type", "conditions", "condition_logic",
+                  "priority", "owner_name", "owner_email", "owner_role", "team",
+                  "notes", "overwrite_existing", "is_enabled"):
+        val = getattr(body, field)
+        if val is not None:
+            setattr(rule, field, val)
+    db.commit()
+    return _ownership_rule_to_dict(rule)
+
+
+@app.delete("/api/ownership-rules/{rule_id}")
+def delete_ownership_rule(rule_id: int, db: Session = Depends(get_db)):
+    rule = db.query(OwnershipRule).filter(OwnershipRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, "Rule not found")
+    db.delete(rule)
+    db.commit()
+    return {"message": "Rule deleted"}
+
+
+@app.post("/api/ownership-rules/{rule_id}/run")
+def run_ownership_rule_endpoint(
+    rule_id: int,
+    scan_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    rule = db.query(OwnershipRule).filter(OwnershipRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, "Rule not found")
+    count = tag_engine.run_ownership_rule(rule, db, scan_id=scan_id)
+    return {"updated": count, "rule_id": rule_id}
+
+
+@app.post("/api/ownership-rules/run-all")
+def run_all_ownership_rules_endpoint(
+    scan_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    results = tag_engine.run_all_ownership_rules(db, scan_id=scan_id)
+    return {"results": results, "total_updated": sum(results.values())}
+
+
+# ─────────────────────────────────────────────
+# External Tag Sources
+# ─────────────────────────────────────────────
+
+class ExternalTagSourceCreate(BaseModel):
+    name: str
+    source_type: str = "csv"          # csv | servicenow | api
+    match_field: str = "any"          # ip | hostname | fqdn | any
+    api_url: Optional[str] = None
+    api_config: dict = {}
+    auto_create_tags: bool = True
+
+
+class ExternalTagSourceUpdate(BaseModel):
+    name: Optional[str] = None
+    source_type: Optional[str] = None
+    match_field: Optional[str] = None
+    api_url: Optional[str] = None
+    api_config: Optional[dict] = None
+    auto_create_tags: Optional[bool] = None
+
+
+class ExternalTagMapCreate(BaseModel):
+    external_tag: str
+    internal_tag_id: Optional[int] = None   # null = auto-create from external_tag string
+
+
+class ExternalTagMapUpdate(BaseModel):
+    external_tag: Optional[str] = None
+    internal_tag_id: Optional[int] = None
+
+
+def _ext_source_to_dict(src: ExternalTagSource) -> dict:
+    return {
+        "id": src.id,
+        "name": src.name,
+        "source_type": src.source_type,
+        "match_field": src.match_field,
+        "api_url": src.api_url,
+        "api_config": {k: v for k, v in (src.api_config or {}).items() if k not in ("password", "token")},
+        "auto_create_tags": src.auto_create_tags,
+        "created_at": src.created_at.isoformat() if src.created_at else None,
+        "last_synced_at": src.last_synced_at.isoformat() if src.last_synced_at else None,
+        "last_sync_count": src.last_sync_count,
+        "last_sync_error": src.last_sync_error,
+        "maps": [
+            {
+                "id": m.id,
+                "external_tag": m.external_tag,
+                "internal_tag_id": m.internal_tag_id,
+                "internal_tag_label": f"{m.internal_tag.category}:{m.internal_tag.value}" if m.internal_tag else None,
+                "internal_tag_color": m.internal_tag.color if m.internal_tag else None,
+            }
+            for m in (src.maps or [])
+        ],
+    }
+
+
+@app.get("/api/external-tag-sources")
+def list_external_tag_sources(db: Session = Depends(get_db)):
+    sources = db.query(ExternalTagSource).order_by(ExternalTagSource.id).all()
+    return [_ext_source_to_dict(s) for s in sources]
+
+
+@app.post("/api/external-tag-sources")
+def create_external_tag_source(body: ExternalTagSourceCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+    src = ExternalTagSource(
+        org_id=user.org_id if user else None,
+        name=body.name,
+        source_type=body.source_type,
+        match_field=body.match_field,
+        api_url=body.api_url,
+        api_config=body.api_config,
+        auto_create_tags=body.auto_create_tags,
+    )
+    db.add(src)
+    db.commit()
+    db.refresh(src)
+    return _ext_source_to_dict(src)
+
+
+@app.patch("/api/external-tag-sources/{source_id}")
+def update_external_tag_source(source_id: int, body: ExternalTagSourceUpdate, db: Session = Depends(get_db)):
+    src = db.query(ExternalTagSource).filter(ExternalTagSource.id == source_id).first()
+    if not src:
+        raise HTTPException(404, "Source not found")
+    for field in ("name", "source_type", "match_field", "api_url", "api_config", "auto_create_tags"):
+        val = getattr(body, field)
+        if val is not None:
+            setattr(src, field, val)
+    db.commit()
+    return _ext_source_to_dict(src)
+
+
+@app.delete("/api/external-tag-sources/{source_id}")
+def delete_external_tag_source(source_id: int, db: Session = Depends(get_db)):
+    src = db.query(ExternalTagSource).filter(ExternalTagSource.id == source_id).first()
+    if not src:
+        raise HTTPException(404, "Source not found")
+    db.delete(src)
+    db.commit()
+    return {"message": "Deleted"}
+
+
+# ── Tag maps per source ───────────────────────────────────
+
+@app.post("/api/external-tag-sources/{source_id}/maps")
+def upsert_external_tag_map(source_id: int, body: ExternalTagMapCreate, db: Session = Depends(get_db)):
+    src = db.query(ExternalTagSource).filter(ExternalTagSource.id == source_id).first()
+    if not src:
+        raise HTTPException(404, "Source not found")
+    if body.internal_tag_id:
+        if not db.query(Tag).filter(Tag.id == body.internal_tag_id).first():
+            raise HTTPException(404, "Internal tag not found")
+    existing = db.query(ExternalTagMap).filter(
+        ExternalTagMap.source_id == source_id,
+        ExternalTagMap.external_tag == body.external_tag,
+    ).first()
+    if existing:
+        existing.internal_tag_id = body.internal_tag_id
+    else:
+        existing = ExternalTagMap(source_id=source_id, external_tag=body.external_tag, internal_tag_id=body.internal_tag_id)
+        db.add(existing)
+    db.commit()
+    db.refresh(existing)
+    tag = db.query(Tag).filter(Tag.id == existing.internal_tag_id).first() if existing.internal_tag_id else None
+    return {
+        "id": existing.id,
+        "external_tag": existing.external_tag,
+        "internal_tag_id": existing.internal_tag_id,
+        "internal_tag_label": f"{tag.category}:{tag.value}" if tag else None,
+        "internal_tag_color": tag.color if tag else None,
+    }
+
+
+@app.delete("/api/external-tag-sources/{source_id}/maps/{map_id}")
+def delete_external_tag_map(source_id: int, map_id: int, db: Session = Depends(get_db)):
+    m = db.query(ExternalTagMap).filter(ExternalTagMap.id == map_id, ExternalTagMap.source_id == source_id).first()
+    if not m:
+        raise HTTPException(404, "Map not found")
+    db.delete(m)
+    db.commit()
+    return {"message": "Deleted"}
+
+
+# ── Import / Sync ─────────────────────────────────────────
+
+@app.post("/api/external-tag-sources/{source_id}/import")
+async def import_external_tags(
+    source_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Upload a CSV file to apply external tags. Expected columns: identifier, tags."""
+    src = db.query(ExternalTagSource).filter(ExternalTagSource.id == source_id).first()
+    if not src:
+        raise HTTPException(404, "Source not found")
+    try:
+        content = (await file.read()).decode("utf-8-sig")  # strip BOM
+        rows = tag_engine.parse_csv_rows(content)
+        stats = tag_engine.apply_external_tags(src, rows, db)
+        return stats
+    except Exception as e:
+        src.last_sync_error = str(e)
+        db.commit()
+        raise HTTPException(400, f"Import failed: {e}")
+
+
+@app.post("/api/external-tag-sources/{source_id}/sync")
+def sync_external_tag_source(source_id: int, db: Session = Depends(get_db)):
+    """Pull tags from a remote API source (ServiceNow, etc.) and apply them."""
+    src = db.query(ExternalTagSource).filter(ExternalTagSource.id == source_id).first()
+    if not src:
+        raise HTTPException(404, "Source not found")
+    if src.source_type == "servicenow":
+        try:
+            stats = tag_engine.sync_servicenow_source(src, db)
+            return stats
+        except Exception as e:
+            src.last_sync_error = str(e)
+            db.commit()
+            raise HTTPException(400, f"Sync failed: {e}")
+    raise HTTPException(400, f"API sync not supported for source type '{src.source_type}'. Use /import for CSV.")
 
 
 # ─────────────────────────────────────────────

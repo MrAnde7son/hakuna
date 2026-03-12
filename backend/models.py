@@ -716,7 +716,7 @@ class AutoTagRule(Base):
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
-    tag_id = Column(Integer, ForeignKey("tags.id"), nullable=False)
+    tag_id = Column(Integer, ForeignKey("tags.id"), nullable=True)
     target_type = Column(String, nullable=False, default="asset")  # "asset" | "finding" | "both"
     # List of condition dicts: [{"field": "ip_range", "operator": "in_range", "value": "10.0.0.0/8"}]
     conditions = Column(JSON, nullable=False, default=list)
@@ -727,6 +727,31 @@ class AutoTagRule(Base):
     last_run_count = Column(Integer, nullable=True)
 
     tag = relationship("Tag")
+
+
+class OwnershipRule(Base):
+    """Rule that automatically assigns ownership to assets/findings based on conditions."""
+    __tablename__ = "ownership_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    target_type = Column(String, nullable=False, default="asset")  # "asset" | "finding" | "both"
+    conditions = Column(JSON, nullable=False, default=list)
+    condition_logic = Column(String, default="AND")  # "AND" | "OR"
+    priority = Column(Integer, default=100)          # lower number = evaluated first / wins
+    # Action: ownership fields to set (None = leave untouched)
+    owner_name = Column(String, nullable=True)
+    owner_email = Column(String, nullable=True)
+    owner_role = Column(String, nullable=True)       # IT / DevOps / SecOps / AppSec / Custom
+    team = Column(String, nullable=True)
+    notes = Column(String, nullable=True)
+    overwrite_existing = Column(Boolean, default=False)  # overwrite manually-set ownership
+    is_enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_run_at = Column(DateTime, nullable=True)
+    last_run_count = Column(Integer, nullable=True)
 
 
 class Campaign(Base):
@@ -909,6 +934,47 @@ class IntegrationConfig(Base):
     last_test_status = Column(String, nullable=True)  # ok / error
     last_test_detail = Column(String, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────
+# External Tag Sources (ServiceNow CMDB, CSV exports, etc.)
+# ─────────────────────────────────────────────────────────
+
+class ExternalTagSource(Base):
+    """A named external system that provides asset tags (CMDB, CSV, REST API)."""
+    __tablename__ = "external_tag_sources"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)           # "ServiceNow CMDB", "Infoblox", etc.
+    source_type = Column(String, nullable=False)    # "csv" | "servicenow" | "api"
+    # How to match the external record to an internal asset
+    match_field = Column(String, default="any")     # "ip" | "hostname" | "fqdn" | "any"
+    # API source config (ServiceNow / generic REST)
+    api_url = Column(String, nullable=True)
+    api_config = Column(JSON, default=dict)         # {"auth_type": "basic|token", "username": ..., "password": ..., "token": ..., "tag_field": ..., "id_field": ...}
+    # Whether to auto-create unmapped tags in the internal tag tree
+    auto_create_tags = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_synced_at = Column(DateTime, nullable=True)
+    last_sync_count = Column(Integer, nullable=True)  # assets tagged in last sync
+    last_sync_error = Column(String, nullable=True)
+
+    maps = relationship("ExternalTagMap", back_populates="source", cascade="all, delete-orphan")
+
+
+class ExternalTagMap(Base):
+    """Translation rule: external tag value → internal Tag."""
+    __tablename__ = "external_tag_maps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_id = Column(Integer, ForeignKey("external_tag_sources.id", ondelete="CASCADE"), nullable=False, index=True)
+    external_tag = Column(String, nullable=False)       # e.g. "network:dmz", "Production", "DMZ Servers"
+    internal_tag_id = Column(Integer, ForeignKey("tags.id", ondelete="SET NULL"), nullable=True)
+    # null internal_tag_id + auto_create_tags=True on source → create tag from external_tag string
+
+    source = relationship("ExternalTagSource", back_populates="maps")
+    internal_tag = relationship("Tag")
 
 
 # ─────────────────────────────────────────────────────────

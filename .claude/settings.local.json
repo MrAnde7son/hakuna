@@ -113,7 +113,12 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\(''app.py''\\).read\\(\\)\\); print\\(''app.py syntax OK''\\)\")",
       "Bash(python -c \"import inventory_extractor; print\\(''ok''\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''app.py''\\).read\\(\\)\\); print\\(''ok''\\)\")",
-      "WebFetch(domain:localhost)"
+      "WebFetch(domain:localhost)",
+      "Bash(python -c \"import app\")",
+      "Bash(python -m py_compile app.py)",
+      "Bash(python -c \"import requests; print\\(''requests ok''\\)\")",
+      "Bash(python -c \"import tags; print\\(''tags.py ok''\\)\")",
+      "Bash(npx vite:*)"
     ],
     "additionalDirectories": [
       "/Users/itamar/Documents/Git/nessus-remediation"

@@ -118,7 +118,7 @@ npm run dev
 │           ├── ReportBuilder.jsx       # Report generation
 │           ├── RemediationQueue.jsx    # Prioritized queue
 │           ├── RiskSettings.jsx        # Risk tuning
-│           ├── DedupSettings.jsx       # Dedup config
+│           ├── Settings.jsx       # Settings config
 │           └── ui.jsx                  # Shared UI primitives
 ├── intel.json                  # CVE enrichment data
 ├── docker-compose.yml          # Docker orchestration

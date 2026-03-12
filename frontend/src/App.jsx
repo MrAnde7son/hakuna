@@ -23,7 +23,7 @@ import Campaigns from './components/Campaigns.jsx'
 import CampaignDetail from './components/CampaignDetail.jsx'
 import Reports from './components/Reports.jsx'
 import InventoryExplorer from './components/InventoryExplorer.jsx'
-import Settings from './components/DedupSettings.jsx'
+import Settings from './components/Settings.jsx'
 import UploadScan from './components/UploadScan.jsx'
 import TagManager from './components/TagManager.jsx'
 import ThreatIntelCenter from './components/ThreatIntelCenter.jsx'
@@ -40,16 +40,32 @@ import { getScans, setOrgContext } from './api.js'
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {} })
 export const useScan = () => useContext(ScanContext)
 
-const NAV_ITEMS = [
-  { path: '/', label: 'Dashboard', icon: BarChart3, exact: true },
-  { path: '/assets', label: 'Assets', icon: Server },
-  { path: '/findings', label: 'Findings', icon: Bug },
-  { path: '/inventory', label: 'Inventory', icon: Database },
-  { path: '/campaigns', label: 'Campaigns', icon: Target },
-  { path: '/agents', label: 'Agents', icon: Bot },
-  { path: '/threat-intel', label: 'Threat Intel', icon: ShieldAlert },
-  { path: '/settings', label: 'Settings', icon: SettingsIcon },
+const NAV_GROUPS = [
+  {
+    label: 'Intelligence',
+    items: [
+      { path: '/', label: 'Reports', icon: BarChart3, exact: true },
+      { path: '/threat-intel', label: 'Threat Intel', icon: ShieldAlert },
+    ],
+  },
+  {
+    label: 'Exposure',
+    items: [
+      { path: '/assets', label: 'Assets', icon: Server },
+      { path: '/findings', label: 'Findings', icon: Bug },
+      { path: '/inventory', label: 'Inventory', icon: Database },
+    ],
+  },
+  {
+    label: 'Response',
+    items: [
+      { path: '/campaigns', label: 'Campaigns', icon: Target },
+      { path: '/agents', label: 'Agents', icon: Bot },
+    ],
+  },
 ]
+
+const NAV_SETTINGS = { path: '/settings', label: 'Settings', icon: SettingsIcon }
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -304,24 +320,76 @@ function Sidebar({ collapsed, onToggle }) {
         style={{
           display: 'flex',
           flexDirection: 'column',
-          gap: 8,
+          gap: 2,
           alignItems: 'stretch',
           padding: collapsed ? '0 10px' : '0 12px',
-          flex: 1
+          flex: 1,
+          overflowY: 'auto',
         }}
       >
-        {NAV_ITEMS.map(({ path, label, icon: Icon, exact }) => (
+        {NAV_GROUPS.map((group, gi) => (
+          <div key={group.label} style={{ marginBottom: collapsed ? 8 : 4 }}>
+            {!collapsed && (
+              <div style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: 'var(--muted)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.07em',
+                padding: '10px 10px 4px',
+                opacity: 0.7,
+              }}>
+                {group.label}
+              </div>
+            )}
+            {collapsed && gi > 0 && (
+              <div style={{ height: 1, background: 'var(--border)', margin: '6px 0' }} />
+            )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              {group.items.map(({ path, label, icon: Icon, exact }) => (
+                <NavLink
+                  key={path}
+                  to={path}
+                  end={exact}
+                  title={label}
+                  aria-label={label}
+                  style={({ isActive }) => ({
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    padding: '7px 10px',
+                    borderRadius: 6,
+                    color: isActive ? 'var(--nav-active-text)' : 'var(--muted)',
+                    background: isActive ? 'var(--nav-active-bg)' : 'transparent',
+                    textDecoration: 'none',
+                    cursor: 'pointer',
+                    boxShadow: isActive ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
+                    transition: 'background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease',
+                    justifyContent: collapsed ? 'center' : 'flex-start',
+                  })}
+                >
+                  <Icon size={18} />
+                  {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{label}</span>}
+                </NavLink>
+              ))}
+            </div>
+          </div>
+        ))}
+
+        {/* Settings — ungrouped at bottom */}
+        <div style={{ marginTop: 'auto', paddingTop: 8, paddingBottom: 8 }}>
+          {!collapsed && (
+            <div style={{ height: 1, background: 'var(--border)', marginBottom: 8 }} />
+          )}
           <NavLink
-            key={path}
-            to={path}
-            end={exact}
-            title={label}
-            aria-label={label}
+            to={NAV_SETTINGS.path}
+            title={NAV_SETTINGS.label}
+            aria-label={NAV_SETTINGS.label}
             style={({ isActive }) => ({
               display: 'flex',
               alignItems: 'center',
               gap: 10,
-              padding: '8px 10px',
+              padding: '7px 10px',
               borderRadius: 6,
               color: isActive ? 'var(--nav-active-text)' : 'var(--muted)',
               background: isActive ? 'var(--nav-active-bg)' : 'transparent',
@@ -329,13 +397,13 @@ function Sidebar({ collapsed, onToggle }) {
               cursor: 'pointer',
               boxShadow: isActive ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
               transition: 'background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease',
-              justifyContent: collapsed ? 'center' : 'flex-start'
+              justifyContent: collapsed ? 'center' : 'flex-start',
             })}
           >
-            <Icon size={18} />
-            {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{label}</span>}
+            <NAV_SETTINGS.icon size={18} />
+            {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{NAV_SETTINGS.label}</span>}
           </NavLink>
-        ))}
+        </div>
       </nav>
 
       {/* Org switcher (MSSP / superadmin) */}

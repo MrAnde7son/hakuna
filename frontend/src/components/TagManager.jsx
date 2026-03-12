@@ -3,11 +3,11 @@ import { Tag, Plus, ChevronRight, ChevronDown, Trash2, Edit2, Play, ToggleLeft, 
 import {
   getTags, createTag, updateTag, deleteTag,
   getAutoTagRules, createAutoTagRule, updateAutoTagRule, deleteAutoTagRule,
-  runAutoTagRule,
+  runAutoTagRule, exportConfig,
 } from '../api.js'
-import { exportConfig } from '../api.js'
 import { Card, PageHeader, Button, Input, Select, Spinner, EmptyState, ExportImportButtons } from './ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
+import TagMappings from './TagMappings.jsx'
 
 const PALETTE = [
   '#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f97316',
@@ -406,8 +406,9 @@ export default function TagManager() {
       {/* Tab bar */}
       <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border)', marginBottom: 20 }}>
         {[
-          { id: 'tags', label: 'Tags', count: tags.length },
-          { id: 'rules', label: 'Auto-tag Rules', count: rules.length },
+          { id: 'tags',     label: 'Tags',           count: tags.length },
+          { id: 'rules',    label: 'Auto-tag Rules', count: rules.length },
+          { id: 'mappings', label: 'Tag Mappings',   count: null },
         ].map(t => (
           <button
             key={t.id}
@@ -421,12 +422,14 @@ export default function TagManager() {
             }}
           >
             {t.label}
-            <span style={{
-              fontSize: 10, fontWeight: 600,
-              background: tab === t.id ? 'var(--accent)' : 'var(--bg-hover)',
-              color: tab === t.id ? '#fff' : 'var(--text-muted)',
-              borderRadius: 10, padding: '1px 6px',
-            }}>{t.count}</span>
+            {t.count !== null && (
+              <span style={{
+                fontSize: 10, fontWeight: 600,
+                background: tab === t.id ? 'var(--accent)' : 'var(--bg-hover)',
+                color: tab === t.id ? '#fff' : 'var(--text-muted)',
+                borderRadius: 10, padding: '1px 6px',
+              }}>{t.count}</span>
+            )}
           </button>
         ))}
       </div>
@@ -631,6 +634,9 @@ export default function TagManager() {
           )}
         </div>
       )}
+
+      {/* ── Tag Mappings tab ── */}
+      {tab === 'mappings' && <TagMappings />}
     </div>
   )
 }

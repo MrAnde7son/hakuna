@@ -347,6 +347,52 @@ export const runAutoTagRule = (id, scan_id = null) =>
   request(`/auto-tag-rules/${id}/run${scan_id ? `?scan_id=${scan_id}` : ''}`, { method: 'POST' })
 export const getTagConditionCatalog = () => request('/auto-tag-rules/condition-catalog')
 
+// Ownership Rules
+export const getOwnershipRules = () => request('/ownership-rules')
+export const createOwnershipRule = (data) => request('/ownership-rules', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const updateOwnershipRule = (id, data) => request(`/ownership-rules/${id}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const deleteOwnershipRule = (id) => request(`/ownership-rules/${id}`, { method: 'DELETE' })
+export const runOwnershipRule = (id, scan_id = null) =>
+  request(`/ownership-rules/${id}/run${scan_id ? `?scan_id=${scan_id}` : ''}`, { method: 'POST' })
+export const runAllOwnershipRules = (scan_id = null) =>
+  request(`/ownership-rules/run-all${scan_id ? `?scan_id=${scan_id}` : ''}`, { method: 'POST' })
+
+// External Tag Sources
+export const getExternalTagSources = () => request('/external-tag-sources')
+export const createExternalTagSource = (data) => request('/external-tag-sources', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const updateExternalTagSource = (id, data) => request(`/external-tag-sources/${id}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const deleteExternalTagSource = (id) => request(`/external-tag-sources/${id}`, { method: 'DELETE' })
+export const upsertExternalTagMap = (sourceId, data) => request(`/external-tag-sources/${sourceId}/maps`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const deleteExternalTagMap = (sourceId, mapId) =>
+  request(`/external-tag-sources/${sourceId}/maps/${mapId}`, { method: 'DELETE' })
+export const importExternalTagsCsv = (sourceId, file) => {
+  const form = new FormData()
+  form.append('file', file)
+  return request(`/external-tag-sources/${sourceId}/import`, { method: 'POST', body: form })
+}
+export const syncExternalTagSource = (sourceId) =>
+  request(`/external-tag-sources/${sourceId}/sync`, { method: 'POST' })
+
 // SLA
 export const getSLAConfig = () => request('/sla/config')
 export const saveSLAConfig = (configs) => request('/sla/config', {
