@@ -858,6 +858,15 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
 
 
 # ─────────────────────────────────────────────
+# Health check (no auth — used by Render)
+# ─────────────────────────────────────────────
+
+@app.get("/api/health")
+def health_check():
+    return {"status": "ok"}
+
+
+# ─────────────────────────────────────────────
 # Scans
 # ─────────────────────────────────────────────
 
