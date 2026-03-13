@@ -79,8 +79,9 @@ def extract_ad_users(plugin_output: str, asset_id: int, scan_id: int) -> list[di
         return []
 
     users = []
-    # Split into user blocks — each starts with "User "
-    blocks = re.split(r"\n(?=User\s+:)", plugin_output)
+    # Split into user blocks — each starts with "User" followed by spaces then ":"
+    # Negative lookahead excludes "User Account Control" lines
+    blocks = re.split(r"\n(?=User\s+(?!Account):)", plugin_output)
 
     for block in blocks:
         block = block.strip()
@@ -123,7 +124,7 @@ def extract_ad_users(plugin_output: str, asset_id: int, scan_id: int) -> list[di
                 in_spn = False
                 continue
 
-            if line.startswith("User") and ":" in line:
+            if line.startswith("User") and ":" in line and "Account" not in line:
                 dn = line.split(":", 1)[1].strip()
                 user["dn"] = dn
                 user["username"] = _cn_from_dn(dn)
@@ -769,16 +770,16 @@ def extract_logged_on(plugin_output: str, asset_id: int, scan_id: int) -> list[d
         sid = sid_blocks[i].strip()
         block = sid_blocks[i + 1] if i + 1 < len(sid_blocks) else ""
 
-        domain_m = re.search(r"Domain\s*:\s*(.+)", block)
-        user_m = re.search(r"Username\s*:\s*(.+)", block)
+        domain_m = re.search(r"Domain\s*:[ \t]*(.+)", block)
+        user_m = re.search(r"Username\s*:[ \t]*(.+)", block)
 
         logged.append({
             "scan_id": scan_id,
             "asset_id": asset_id,
             "source_plugin": "161502",
             "sid": sid,
-            "domain": domain_m.group(1).strip() if domain_m else None,
-            "username": user_m.group(1).strip() if user_m else None,
+            "domain": (domain_m.group(1).strip() or None) if domain_m else None,
+            "username": (user_m.group(1).strip() or None) if user_m else None,
         })
         i += 2
 
@@ -969,6 +970,64 @@ _VENDOR_KEYWORDS = [
 ]
 
 
+_SOFTWARE_CATEGORIES = [
+    ("Security",       ["crowdstrike", "falcon", "sentinelone", "sophos", "kaspersky", "symantec",
+                        "norton", "mcafee", "trellix", "trend micro", "eset", "bitdefender",
+                        "malwarebytes", "defender", "webroot", "cylance", "carbon black",
+                        "palo alto", "fortinet", "forticlient", "checkpoint", "cybereason",
+                        "deep instinct", "avast", "avg ", "comodo", "f-secure"]),
+    ("Dev Tools",      ["visual studio", "vscode", "intellij", "pycharm", "eclipse", "xcode",
+                        "android studio", "sublime", "notepad++", "atom ", "git ", "github",
+                        "python ", "node.js", "nodejs", "ruby", "perl ", "php ", "golang",
+                        "rust ", "cmake", "gradle", "maven", "docker", "kubernetes",
+                        "vagrant", "terraform", "ansible", "jenkins", "jdk", "jre",
+                        "sdk", "compiler", "debugger", "postman", "insomnia", "fiddler",
+                        "wireshark", "wsl", "mingw", "cygwin", "powershell", "windbg",
+                        ".net framework", ".net runtime", ".net sdk", "nuget"]),
+    ("Collaboration",  ["teams", "slack", "zoom", "webex", "skype", "discord", "telegram",
+                        "signal", "mattermost", "google chat", "google meet", "gotomeeting",
+                        "ringcentral", "bluejeans", "jitsi"]),
+    ("Productivity",   ["office", "microsoft 365", "libreoffice", "openoffice", "word",
+                        "excel", "powerpoint", "outlook", "onenote", "acrobat", "reader",
+                        "foxit", "notepad", "evernote", "notion", "obsidian", "confluence"]),
+    ("Browser",        ["chrome", "firefox", "edge", "safari", "opera", "brave", "vivaldi",
+                        "internet explorer", "chromium", "tor browser"]),
+    ("Remote Access",  ["putty", "openssh", "winscp", "filezilla", "mremoteng", "realvnc",
+                        "tightvnc", "teamviewer", "anydesk", "citrix receiver", "citrix workspace",
+                        "vmware horizon", "rdp", "rdesktop", "mstsc", "royal ts",
+                        "anyconnect", "globalprotect", "openvpn", "wireguard"]),
+    ("Virtualization", ["vmware", "virtualbox", "hyper-v", "parallels", "qemu", "kvm",
+                        "proxmox", "vagrant", "docker desktop"]),
+    ("Cloud & Storage",["onedrive", "dropbox", "google drive", "box sync", "icloud",
+                        "aws cli", "azure cli", "gcloud", "s3 browser", "nextcloud",
+                        "owncloud", "sharefile", "carbonite"]),
+    ("Database",       ["mysql", "postgresql", "sql server", "sqlite", "mongodb", "oracle db",
+                        "mariadb", "redis", "elasticsearch", "ssms", "pgadmin",
+                        "dbeaver", "datagrip", "toad "]),
+    ("Media",          ["vlc", "itunes", "spotify", "audacity", "obs studio", "handbrake",
+                        "photoshop", "gimp", "illustrator", "inkscape", "blender",
+                        "premiere", "after effects", "davinci", "picasa", "irfanview",
+                        "media player", "quicktime", "foobar"]),
+    ("Utilities",      ["7-zip", "winrar", "winzip", "ccleaner", "everything search",
+                        "sysinternals", "autoruns", "procmon", "process explorer",
+                        "treesizefree", "rufus", "etcher", "crystaldiskinfo",
+                        "hwinfo", "cpu-z", "gpu-z", "speccy"]),
+    ("Networking",     ["nmap", "wireshark", "npcap", "winpcap", "tcpdump", "netcat",
+                        "traceroute", "angry ip", "advanced ip scanner", "lansweeper",
+                        "solarwinds", "snmp", "dns ", "dhcp"]),
+]
+
+
+def _classify_software(name: str) -> str | None:
+    if not name:
+        return None
+    n = name.lower()
+    for category, keywords in _SOFTWARE_CATEGORIES:
+        if any(kw in n for kw in keywords):
+            return category
+    return None
+
+
 def _infer_vendor(name: str) -> str | None:
     if not name:
         return None
@@ -1007,6 +1066,7 @@ def extract_installed_software(plugin_output: str, asset_id: int, scan_id: int) 
                 "version": version or None,
                 "installed_on": installed_on,
                 "vendor": _infer_vendor(name),
+                "category": _classify_software(name),
             })
 
     # Fallback: plain indented list (one entry per line)
@@ -1022,6 +1082,7 @@ def extract_installed_software(plugin_output: str, asset_id: int, scan_id: int) 
                     "version": None,
                     "installed_on": None,
                     "vendor": _infer_vendor(line),
+                    "category": _classify_software(line),
                 })
 
     return software

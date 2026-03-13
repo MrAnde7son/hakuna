@@ -97,28 +97,28 @@ const DATA_SOURCES = {
   delta_timeline:     (scanId, f) => getScanDeltaTimeline(),
   velocity:           (scanId, f) => getRemediationVelocity(f?.period || 'month'),
   temporal:           (scanId, f) => getTemporalSummary(scanId),
-  assets:             (scanId, f) => getAssets({ scan_id: scanId, search: f?.search, min_risk: f?.min_risk, max_risk: f?.max_risk, environment: f?.environment, min_critical: f?.min_critical, min_high: f?.min_high, has_findings: f?.has_findings, sort_by: f?.sort_by || 'risk_score', order: f?.order || 'desc', tags: f?.tags, tag_logic: f?.tag_logic }),
+  assets:             (scanId, f) => getAssets({ scan_id: scanId, search: f?.search, min_risk: f?.min_risk, max_risk: f?.max_risk, environment: f?.environment, min_critical: f?.min_critical, min_high: f?.min_high, has_findings: f?.has_findings, sort_by: f?.sort_by || 'risk_score', order: f?.order || 'desc', tags: f?.tags, tag_logic: f?.tag_logic, page_size: 0 }),
   findings:           (scanId, f) => getFindings({ scan_id: scanId, severity: f?.severity, plugin_family: f?.plugin_family, has_exploit: f?.has_exploit, effort_level: f?.effort_level, sla_status: f?.sla_status, search: f?.search, sort_by: f?.sort_by || 'priority_score', order: f?.order || 'desc', page_size: f?.page_size || 50, tags: f?.tags, tag_logic: f?.tag_logic }),
   remediation_queue:  (scanId, f) => getRemediationQueue({ scan_id: scanId, effort: f?.effort, owner: f?.owner, min_severity: f?.min_severity, limit: f?.limit || 20 }),
   automation_wishlist:(scanId, f) => getAutomateClicks(),
   risk_by_tags:       (scanId, f) => getRiskByTags({ scan_id: scanId, category: f?.category }),
   plugin_families:    (scanId, f) => getPluginFamilies(scanId, f?.tags, f?.tag_logic),
   inv_summary:        (scanId, f) => getInventorySummary(scanId),
-  inv_users:          (scanId, f) => getInventoryUsers({ scan_id: scanId, user_type: f?.user_type, is_admin: f?.is_admin, is_domain_admin: f?.is_domain_admin, is_privileged: f?.is_privileged, search: f?.search }),
-  inv_groups:         (scanId, f) => getInventoryGroups({ scan_id: scanId, is_privileged: f?.is_privileged }),
-  inv_services:       (scanId, f) => getInventoryServices({ scan_id: scanId, search: f?.search }),
-  inv_netconns:       (scanId, f) => getInventoryNetconns({ scan_id: scanId, state: f?.state }),
-  inv_tasks:          (scanId, f) => getInventoryTasks({ scan_id: scanId }),
-  inv_patches:        (scanId, f) => getInventoryPatches({ scan_id: scanId }),
-  inv_logged_on:      (scanId, f) => getInventoryLoggedOn({ scan_id: scanId }),
-  inv_shares:         (scanId, f) => getInventoryShares({ scan_id: scanId, is_writeable: f?.is_writeable }),
-  inv_software:       (scanId, f) => getInventorySoftware({ scan_id: scanId, search: f?.search }),
-  inv_security_ctrls: (scanId, f) => getInventorySecurityControls({ scan_id: scanId, control_type: f?.control_type }),
-  inv_computers:      (scanId, f) => getInventoryComputers({ scan_id: scanId, is_dc: f?.is_dc, search: f?.search }),
-  inv_pw_policies:    (scanId, f) => getInventoryPasswordPolicies({ scan_id: scanId }),
-  inv_certificates:   (scanId, f) => getInventoryCertificates({ scan_id: scanId, expired_only: f?.expired_only, expiring_days: f?.expiring_days, self_signed_only: f?.self_signed_only }),
-  inv_ai_tools:       (scanId, f) => getInventoryAITools({ scan_id: scanId, category: f?.category }),
-  inv_processes:      (scanId, f) => getInventoryProcesses({ scan_id: scanId, search: f?.search }),
+  inv_users:          (scanId, f) => getInventoryUsers({ scan_id: scanId, user_type: f?.user_type, is_admin: f?.is_admin, is_domain_admin: f?.is_domain_admin, is_privileged: f?.is_privileged, search: f?.search, page_size: 0 }),
+  inv_groups:         (scanId, f) => getInventoryGroups({ scan_id: scanId, is_privileged: f?.is_privileged, page_size: 0 }),
+  inv_services:       (scanId, f) => getInventoryServices({ scan_id: scanId, search: f?.search, page_size: 0 }),
+  inv_netconns:       (scanId, f) => getInventoryNetconns({ scan_id: scanId, state: f?.state, page_size: 0 }),
+  inv_tasks:          (scanId, f) => getInventoryTasks({ scan_id: scanId, page_size: 0 }),
+  inv_patches:        (scanId, f) => getInventoryPatches({ scan_id: scanId, page_size: 0 }),
+  inv_logged_on:      (scanId, f) => getInventoryLoggedOn({ scan_id: scanId, page_size: 0 }),
+  inv_shares:         (scanId, f) => getInventoryShares({ scan_id: scanId, is_writeable: f?.is_writeable, page_size: 0 }),
+  inv_software:       (scanId, f) => getInventorySoftware({ scan_id: scanId, search: f?.search, page_size: 0 }),
+  inv_security_ctrls: (scanId, f) => getInventorySecurityControls({ scan_id: scanId, control_type: f?.control_type, page_size: 0 }),
+  inv_computers:      (scanId, f) => getInventoryComputers({ scan_id: scanId, is_dc: f?.is_dc, search: f?.search, page_size: 0 }),
+  inv_pw_policies:    (scanId, f) => getInventoryPasswordPolicies({ scan_id: scanId, page_size: 0 }),
+  inv_certificates:   (scanId, f) => getInventoryCertificates({ scan_id: scanId, expired_only: f?.expired_only, expiring_days: f?.expiring_days, self_signed_only: f?.self_signed_only, page_size: 0 }),
+  inv_ai_tools:       (scanId, f) => getInventoryAITools({ scan_id: scanId, category: f?.category, page_size: 0 }),
+  inv_processes:      (scanId, f) => getInventoryProcesses({ scan_id: scanId, search: f?.search, page_size: 0 }),
 }
 
 // Filter definitions per source — drives ConfigPanel filter UI
@@ -216,7 +216,7 @@ const DATA_PRESETS = {
   zombie_count:     { label: 'Zombie Vulns',       group: 'Temporal',  source: 'temporal', type: 'metric', extract: d => d?.zombie_count ?? 0, color: '#7c3aed' },
   regression_count: { label: 'Regressions',        group: 'Temporal',  source: 'temporal', type: 'metric', extract: d => d?.regression_count ?? 0, color: '#ef4444' },
   finding_count_filtered: { label: 'Finding Count', group: 'Filtered', source: 'findings', type: 'metric', extract: d => d?.total ?? d?.findings?.length ?? 0, color: '#6366f1' },
-  asset_count_filtered:   { label: 'Asset Count',   group: 'Filtered', source: 'assets',   type: 'metric', extract: d => Array.isArray(d) ? d.length : 0, color: '#6366f1' },
+  asset_count_filtered:   { label: 'Asset Count',   group: 'Filtered', source: 'assets',   type: 'metric', extract: d => d?.total ?? (d?.assets?.length ?? 0), color: '#6366f1' },
   // ── Inventory metrics ──
   inv_domain_admins:      { label: 'Domain Admins',        group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.domain_admins ?? 0, color: '#dc2626' },
   inv_local_admins:       { label: 'Local Admins',         group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.local_admins_count ?? 0, color: '#ea580c' },
@@ -353,9 +353,9 @@ const DATA_PRESETS = {
   os_breakdown: {
     label: 'OS Distribution', group: 'Assets & Findings', source: 'assets', type: 'categories',
     extract: d => {
-      if (!Array.isArray(d)) return []
+      const arr = d?.assets ?? (Array.isArray(d) ? d : [])
       const counts = {}
-      d.forEach(a => { const os = a.os || 'Unknown'; counts[os] = (counts[os] || 0) + 1 })
+      arr.forEach(a => { const os = a.os || 'Unknown'; counts[os] = (counts[os] || 0) + 1 })
       return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
     },
   },
@@ -363,9 +363,9 @@ const DATA_PRESETS = {
   inv_user_type_breakdown: {
     label: 'User Types', group: 'Inventory', source: 'inv_users', type: 'categories',
     extract: d => {
-      if (!Array.isArray(d)) return []
+      const arr = d?.users ?? (Array.isArray(d) ? d : [])
       const counts = {}
-      d.forEach(u => { const t = u.user_type || 'unknown'; counts[t] = (counts[t] || 0) + 1 })
+      arr.forEach(u => { const t = u.user_type || 'unknown'; counts[t] = (counts[t] || 0) + 1 })
       return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name: name.replace(/_/g, ' '), value, color: PALETTE[i % PALETTE.length] }))
     },
   },
@@ -395,36 +395,36 @@ const DATA_PRESETS = {
   inv_netconn_states: {
     label: 'Connection States', group: 'Inventory', source: 'inv_netconns', type: 'categories',
     extract: d => {
-      if (!Array.isArray(d)) return []
+      const arr = d?.netconns ?? (Array.isArray(d) ? d : [])
       const counts = {}
-      d.forEach(c => { const s = c.state || 'UNKNOWN'; counts[s] = (counts[s] || 0) + 1 })
+      arr.forEach(c => { const s = c.state || 'UNKNOWN'; counts[s] = (counts[s] || 0) + 1 })
       return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
     },
   },
   inv_software_vendors: {
     label: 'Top Software Vendors', group: 'Inventory', source: 'inv_software', type: 'categories',
     extract: d => {
-      if (!Array.isArray(d)) return []
+      const arr = d?.software ?? (Array.isArray(d) ? d : [])
       const counts = {}
-      d.forEach(s => { const v = s.vendor || 'Unknown'; counts[v] = (counts[v] || 0) + 1 })
+      arr.forEach(s => { const v = s.vendor || 'Unknown'; counts[v] = (counts[v] || 0) + 1 })
       return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
     },
   },
   inv_security_ctrl_types: {
     label: 'Security Control Types', group: 'Inventory', source: 'inv_security_ctrls', type: 'categories',
     extract: d => {
-      if (!Array.isArray(d)) return []
+      const arr = d?.controls ?? (Array.isArray(d) ? d : [])
       const counts = {}
-      d.forEach(c => { const t = c.control_type || 'unknown'; counts[t] = (counts[t] || 0) + 1 })
+      arr.forEach(c => { const t = c.control_type || 'unknown'; counts[t] = (counts[t] || 0) + 1 })
       return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
     },
   },
   inv_cert_status: {
     label: 'Certificate Status', group: 'Inventory', source: 'inv_certificates', type: 'categories',
     extract: d => {
-      if (!Array.isArray(d)) return []
+      const arr = d?.certificates ?? (Array.isArray(d) ? d : [])
       let expired = 0, expiring = 0, valid = 0, selfSigned = 0
-      d.forEach(c => {
+      arr.forEach(c => {
         if (c.is_expired) expired++
         else if (c.days_until_expiry != null && c.days_until_expiry <= 30) expiring++
         else valid++
@@ -441,9 +441,9 @@ const DATA_PRESETS = {
   inv_ai_tool_categories: {
     label: 'AI Tool Categories', group: 'Inventory', source: 'inv_ai_tools', type: 'categories',
     extract: d => {
-      if (!Array.isArray(d)) return []
+      const arr = d?.ai_tools ?? (Array.isArray(d) ? d : [])
       const counts = {}
-      d.forEach(t => { const c = t.category || 'unknown'; counts[c] = (counts[c] || 0) + 1 })
+      arr.forEach(t => { const c = t.category || 'unknown'; counts[c] = (counts[c] || 0) + 1 })
       return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
     },
   },
@@ -622,7 +622,7 @@ const DATA_PRESETS = {
   },
   asset_list: {
     label: 'Asset List', group: 'Assets & Findings', source: 'assets', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.assets ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'hostname', label: 'Hostname', fallback: 'ip' },
       { key: 'os', label: 'OS' },
@@ -635,7 +635,7 @@ const DATA_PRESETS = {
   // ── Inventory tables ──
   inv_users_table: {
     label: 'Users', group: 'Inventory', source: 'inv_users', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.users ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'username', label: 'Username' },
       { key: 'domain', label: 'Domain' },
@@ -648,7 +648,7 @@ const DATA_PRESETS = {
   },
   inv_groups_table: {
     label: 'Groups', group: 'Inventory', source: 'inv_groups', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.groups ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'group_name', label: 'Group' },
       { key: 'domain', label: 'Domain' },
@@ -659,7 +659,7 @@ const DATA_PRESETS = {
   },
   inv_services_table: {
     label: 'Services', group: 'Inventory', source: 'inv_services', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.services ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'display_name', label: 'Service', fallback: 'service_name' },
       { key: 'is_running', label: 'Running', render: v => v ? 'Yes' : 'No' },
@@ -668,7 +668,7 @@ const DATA_PRESETS = {
   },
   inv_software_table: {
     label: 'Software', group: 'Inventory', source: 'inv_software', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.software ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'name', label: 'Name' },
       { key: 'version', label: 'Version' },
@@ -678,7 +678,7 @@ const DATA_PRESETS = {
   },
   inv_logged_on_table: {
     label: 'Logged On Users', group: 'Inventory', source: 'inv_logged_on', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.logged_on ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'username', label: 'Username' },
       { key: 'domain', label: 'Domain' },
@@ -687,7 +687,7 @@ const DATA_PRESETS = {
   },
   inv_netconns_table: {
     label: 'Network Connections', group: 'Inventory', source: 'inv_netconns', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.netconns ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'local_addr', label: 'Local' },
       { key: 'local_port', label: 'Port' },
@@ -700,7 +700,7 @@ const DATA_PRESETS = {
   },
   inv_patches_table: {
     label: 'Missing Patches', group: 'Inventory', source: 'inv_patches', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.patches ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'kb_id', label: 'KB' },
       { key: 'vuln_count', label: 'Vulns' },
@@ -710,7 +710,7 @@ const DATA_PRESETS = {
   },
   inv_shares_table: {
     label: 'Network Shares', group: 'Inventory', source: 'inv_shares', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.shares ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'share_name', label: 'Share' },
       { key: 'path', label: 'Path' },
@@ -720,7 +720,7 @@ const DATA_PRESETS = {
   },
   inv_tasks_table: {
     label: 'Scheduled Tasks', group: 'Inventory', source: 'inv_tasks', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.tasks ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'task_uri', label: 'Task' },
       { key: 'command', label: 'Command' },
@@ -730,7 +730,7 @@ const DATA_PRESETS = {
   },
   inv_computers_table: {
     label: 'Computers', group: 'Inventory', source: 'inv_computers', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.computers ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'computer_name', label: 'Name' },
       { key: 'os', label: 'OS' },
@@ -741,7 +741,7 @@ const DATA_PRESETS = {
   },
   inv_certificates_table: {
     label: 'Certificates', group: 'Inventory', source: 'inv_certificates', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.certificates ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'subject_cn', label: 'Subject' },
       { key: 'issuer_cn', label: 'Issuer' },
@@ -753,7 +753,7 @@ const DATA_PRESETS = {
   },
   inv_pw_policies_table: {
     label: 'Password Policies', group: 'Inventory', source: 'inv_pw_policies', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.policies ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'domain', label: 'Domain' },
       { key: 'min_length', label: 'Min Len' },
@@ -765,7 +765,7 @@ const DATA_PRESETS = {
   },
   inv_security_ctrls_table: {
     label: 'Security Controls', group: 'Inventory', source: 'inv_security_ctrls', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.controls ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'product_name', label: 'Product' },
       { key: 'control_type', label: 'Type' },
@@ -776,7 +776,7 @@ const DATA_PRESETS = {
   },
   inv_ai_tools_table: {
     label: 'AI Tools', group: 'Inventory', source: 'inv_ai_tools', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.ai_tools ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'tool_name', label: 'Tool' },
       { key: 'category', label: 'Category' },
@@ -785,7 +785,7 @@ const DATA_PRESETS = {
   },
   inv_processes_table: {
     label: 'Processes', group: 'Inventory', source: 'inv_processes', type: 'table',
-    extract: d => Array.isArray(d) ? d : [],
+    extract: d => d?.processes ?? (Array.isArray(d) ? d : []),
     columns: [
       { key: 'process_name', label: 'Process' },
       { key: 'pid', label: 'PID' },

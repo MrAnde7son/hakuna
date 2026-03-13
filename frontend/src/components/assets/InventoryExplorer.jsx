@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Users, Shield, Server, Network, Clock,
   LogIn, AlertTriangle, Key, UserCheck,
   Activity, Layers, Share2, Package, Lock, Monitor, FileText, Terminal, Eye, EyeOff, BrainCircuit,
-  ChevronDown, Download, Database, X
+  ChevronDown, ChevronLeft, ChevronRight, Download, Database, X
 } from 'lucide-react'
 import {
   Card, StatCard, Table, FilterBar, Select, Input,
@@ -22,6 +22,34 @@ import {
   exportDownload,
 } from '../../api.js'
 import { useScan } from '../../App.jsx'
+
+const INV_PAGE_SIZE = 100
+
+// ─── Pagination bar ───────────────────────────────────────
+function Pagination({ page, total, pageSize, onPageChange, noun = 'items' }) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  if (totalPages <= 1) return (
+    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{total} {noun}</div>
+  )
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+        {total.toLocaleString()} {noun}
+      </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
+          <ChevronLeft size={14} /> Prev
+        </Button>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          {page} / {totalPages}
+        </span>
+        <Button variant="ghost" size="sm" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>
+          Next <ChevronRight size={14} />
+        </Button>
+      </div>
+    </div>
+  )
+}
 
 // ─── Tab config ───────────────────────────────────────────
 const TAB_GROUPS = [
@@ -164,7 +192,7 @@ function EnvPill({ env }) {
 }
 
 // ─── Group by asset helper ─────────────────────────────────
-function GroupedTable({ rows, columns, emptyMessage, groupByKey = 'asset_id', groupLabelKey = 'asset_label', groupEnvKey = 'asset_env', groupIpKey = 'asset_ip', onSort, sortBy, sortOrder }) {
+function GroupedTable({ rows, columns, emptyMessage, groupByKey = 'asset_id', groupLabelKey = 'asset_label', groupEnvKey = 'asset_env', groupIpKey = 'asset_ip', onSort, sortBy, sortOrder, renderRowExtra }) {
   const [collapsed, setCollapsed] = useState({})
 
   const groups = []
@@ -213,7 +241,7 @@ function GroupedTable({ rows, columns, emptyMessage, groupByKey = 'asset_id', gr
             </div>
             {/* Rows */}
             {open && (
-              <Table columns={columns} rows={g.rows} emptyMessage={emptyMessage} onSort={onSort} sortBy={sortBy} sortOrder={sortOrder} />
+              <Table columns={columns} rows={g.rows} emptyMessage={emptyMessage} onSort={onSort} sortBy={sortBy} sortOrder={sortOrder} renderRowExtra={renderRowExtra} />
             )}
           </div>
         )
@@ -510,6 +538,8 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
 // ─── Users tab ─────────────────────────────────────────────
 function UsersTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
   const [userType, setUserType]       = useState(null)
@@ -524,6 +554,9 @@ function UsersTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  // Reset page when filters change
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, userType, isAdmin, isDA])
+
   const load = useCallback(() => {
     setLoading(true)
     getInventoryUsers({
@@ -535,8 +568,10 @@ function UsersTab({ scanId, assetId }) {
       is_domain_admin: isDA,
       sort_by: sortBy,
       order: sortOrder,
-    }).then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, search, userType, isAdmin, isDA, sortBy, sortOrder])
+      page,
+      page_size: INV_PAGE_SIZE,
+    }).then(data => { setRows(data.users); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, search, userType, isAdmin, isDA, sortBy, sortOrder, page])
 
   useEffect(() => { load() }, [load])
 
@@ -592,7 +627,7 @@ function UsersTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage={em} onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage={em} onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} users</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="users" />
     </Card>
   )
 }
@@ -600,22 +635,27 @@ function UsersTab({ scanId, assetId }) {
 // ─── Groups tab ────────────────────────────────────────────
 function GroupsTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [privOnly, setPrivOnly]       = useState(false)
   const [groupByAsset, setGroupByAsset] = useState(false)
   const [sortBy, setSortBy]           = useState('group_name')
   const [sortOrder, setSortOrder]     = useState('asc')
+  const [expandedGroupId, setExpandedGroupId] = useState(null)
 
   const handleSort = (key) => {
     if (sortBy === key) { setSortOrder(o => o === 'asc' ? 'desc' : 'asc') }
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, privOnly])
+
   useEffect(() => {
     setLoading(true)
-    getInventoryGroups({ scan_id: scanId, asset_id: assetId || null, is_privileged: privOnly || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, privOnly, sortBy, sortOrder])
+    getInventoryGroups({ scan_id: scanId, asset_id: assetId || null, is_privileged: privOnly || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.groups); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, privOnly, sortBy, sortOrder, page])
 
   const columns = [
     { key: 'group_name', label: 'Group Name', width: '23%', sortable: true, render: (v, r) => (
@@ -626,7 +666,16 @@ function GroupsTab({ scanId, assetId }) {
       render: v => v ? <Pill label="High-Value" color="#dc2626" /> : <Count n="—" />
     },
     { key: 'members', label: 'Members', width: '10%',
-      render: v => <Count n={v?.length || 0} />
+      render: (v, r) => {
+        const count = v?.length || 0
+        if (count === 0) return <Count n={0} />
+        return (
+          <span
+            style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline', fontWeight: 500 }}
+            onClick={e => { e.stopPropagation(); setExpandedGroupId(prev => prev === r.id ? null : r.id) }}
+          >{count}</span>
+        )
+      }
     },
     { key: 'description', label: 'Description', width: '25%',
       render: v => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '—'}</span>
@@ -635,6 +684,26 @@ function GroupsTab({ scanId, assetId }) {
       render: (v, r) => <>{v}<EnvPill env={r.asset_env} /></>
     },
   ]
+
+  const renderMembersExtra = (row) => {
+    if (expandedGroupId !== row.id || !row.members?.length) return null
+    return (
+      <div style={{ padding: '8px 12px 12px 12px', background: 'var(--bg-secondary)' }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+          Members ({row.members.length})
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          {row.members.map((m, i) => (
+            <span key={i} style={{
+              display: 'inline-block', padding: '2px 8px', fontSize: 12,
+              background: 'var(--bg-primary)', border: '1px solid var(--border)',
+              borderRadius: 4, color: 'var(--text-primary)',
+            }}>{m}</span>
+          ))}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <Card>
@@ -645,10 +714,10 @@ function GroupsTab({ scanId, assetId }) {
         <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
       </FilterBar>
       {loading ? <Spinner /> : groupByAsset
-        ? <GroupedTable columns={columns} rows={rows} emptyMessage="No groups found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
-        : <Table columns={columns} rows={rows} emptyMessage="No groups found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+        ? <GroupedTable columns={columns} rows={rows} emptyMessage="No groups found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} renderRowExtra={renderMembersExtra} />
+        : <Table columns={columns} rows={rows} emptyMessage="No groups found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} renderRowExtra={renderMembersExtra} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} groups</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="groups" />
     </Card>
   )
 }
@@ -656,6 +725,8 @@ function GroupsTab({ scanId, assetId }) {
 // ─── Computers tab ──────────────────────────────────────
 function ComputersTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
   const [dcOnly, setDcOnly]           = useState(false)
@@ -668,11 +739,13 @@ function ComputersTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, dcOnly])
+
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryComputers({ scan_id: scanId, asset_id: assetId || null, search: search || null, is_dc: dcOnly || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, search, dcOnly, sortBy, sortOrder])
+    getInventoryComputers({ scan_id: scanId, asset_id: assetId || null, search: search || null, is_dc: dcOnly || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.computers); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, search, dcOnly, sortBy, sortOrder, page])
 
   useEffect(() => { load() }, [load])
 
@@ -720,7 +793,7 @@ function ComputersTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No AD computer objects found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No AD computer objects found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} computers</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="computers" />
     </Card>
   )
 }
@@ -747,6 +820,8 @@ function DbTypePill({ type }) {
 
 function DatabasesTab({ scanId, assetId }) {
   const [rows, setRows]     = useState([])
+  const [total, setTotal]   = useState(0)
+  const [page, setPage]     = useState(1)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [dbType, setDbType] = useState('')
@@ -758,11 +833,13 @@ function DatabasesTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, dbType])
+
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryDatabases({ scan_id: scanId, asset_id: assetId || null, search: search || null, db_type: dbType || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, search, dbType, sortBy, sortOrder])
+    getInventoryDatabases({ scan_id: scanId, asset_id: assetId || null, search: search || null, db_type: dbType || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.databases); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, search, dbType, sortBy, sortOrder, page])
 
   useEffect(() => { load() }, [load])
 
@@ -808,7 +885,7 @@ function DatabasesTab({ scanId, assetId }) {
       {loading ? <Spinner /> : (
         <Table columns={columns} rows={rows} emptyMessage="No database instances detected. Upload a scan that includes MSSQL (plugin 10144), MySQL (10719), PostgreSQL (26028), or Oracle (22689) detection results." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       )}
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} instance{rows.length !== 1 ? 's' : ''}</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="instances" />
     </Card>
   )
 }
@@ -816,6 +893,8 @@ function DatabasesTab({ scanId, assetId }) {
 // ─── Services tab ──────────────────────────────────────────
 function ServicesTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
   const [groupByAsset, setGroupByAsset] = useState(false)
@@ -827,11 +906,13 @@ function ServicesTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, search])
+
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryServices({ scan_id: scanId, asset_id: assetId || null, search: search || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, search, sortBy, sortOrder])
+    getInventoryServices({ scan_id: scanId, asset_id: assetId || null, search: search || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.services); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, search, sortBy, sortOrder, page])
 
   useEffect(() => { load() }, [load])
 
@@ -860,7 +941,7 @@ function ServicesTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No services found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No services found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} services</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="services" />
     </Card>
   )
 }
@@ -868,6 +949,8 @@ function ServicesTab({ scanId, assetId }) {
 // ─── Shares tab ────────────────────────────────────────────
 function SharesTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
   const [writeableOnly, setWriteable] = useState(false)
@@ -880,11 +963,13 @@ function SharesTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, writeableOnly])
+
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryShares({ scan_id: scanId, asset_id: assetId || null, search: search || null, is_writeable: writeableOnly || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, search, writeableOnly, sortBy, sortOrder])
+    getInventoryShares({ scan_id: scanId, asset_id: assetId || null, search: search || null, is_writeable: writeableOnly || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.shares); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, search, writeableOnly, sortBy, sortOrder, page])
 
   useEffect(() => { load() }, [load])
 
@@ -927,16 +1012,45 @@ function SharesTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No shares found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No shares found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} shares</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="shares" />
     </Card>
   )
 }
 
 // ─── Software tab ───────────────────────────────────────────
+const SW_CATEGORY_COLORS = {
+  'Security':        '#ef4444',
+  'Dev Tools':       '#8b5cf6',
+  'Collaboration':   '#3b82f6',
+  'Productivity':    '#f59e0b',
+  'Browser':         '#06b6d4',
+  'Remote Access':   '#f97316',
+  'Virtualization':  '#10b981',
+  'Cloud & Storage': '#0ea5e9',
+  'Database':        '#ec4899',
+  'Media':           '#a855f7',
+  'Utilities':       '#64748b',
+  'Networking':      '#14b8a6',
+}
+
+function SwCategoryPill({ category }) {
+  if (!category) return <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</span>
+  const color = SW_CATEGORY_COLORS[category] || '#64748b'
+  return (
+    <span style={{
+      display: 'inline-block', fontSize: 11, fontWeight: 600, padding: '2px 8px',
+      borderRadius: 9999, background: color + '18', color, whiteSpace: 'nowrap',
+    }}>{category}</span>
+  )
+}
+
 function SoftwareTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
+  const [category, setCategory]       = useState('')
   const [groupByAsset, setGroupByAsset] = useState(false)
   const [sortBy, setSortBy]           = useState('name')
   const [sortOrder, setSortOrder]     = useState('asc')
@@ -946,22 +1060,43 @@ function SoftwareTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, category])
+
   const load = useCallback(() => {
     setLoading(true)
-    getInventorySoftware({ scan_id: scanId, asset_id: assetId || null, search: search || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, search, sortBy, sortOrder])
+    getInventorySoftware({ scan_id: scanId, asset_id: assetId || null, search: search || null, category: category || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.software); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, search, category, sortBy, sortOrder, page])
 
   useEffect(() => { load() }, [load])
 
+  // Fetch all rows (without category filter) to build the category summary bar — use page_size=0 to get all
+  const [allRows, setAllRows] = useState([])
+  useEffect(() => {
+    getInventorySoftware({ scan_id: scanId, asset_id: assetId || null, search: search || null, page_size: 0 })
+      .then(data => setAllRows(data.software)).catch(() => setAllRows([]))
+  }, [scanId, assetId, search])
+
+  const categoryCounts = useMemo(() => {
+    const counts = {}
+    for (const r of allRows) {
+      const cat = r.category || 'Uncategorized'
+      counts[cat] = (counts[cat] || 0) + 1
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])
+  }, [allRows])
+
   const columns = [
-    { key: 'name', label: 'Software Name', width: '35%', sortable: true,
+    { key: 'name', label: 'Software Name', width: '28%', sortable: true,
       render: v => <span style={{ fontWeight: 600 }}>{v}</span>
     },
-    { key: 'version', label: 'Version', width: '18%', sortable: true,
+    { key: 'category', label: 'Category', width: '12%', sortable: true,
+      render: v => <SwCategoryPill category={v} />
+    },
+    { key: 'version', label: 'Version', width: '15%', sortable: true,
       render: v => <code style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '—'}</code>
     },
-    { key: 'vendor', label: 'Vendor', width: '15%', sortable: true,
+    { key: 'vendor', label: 'Vendor', width: '13%', sortable: true,
       render: v => <span style={{ fontSize: 13 }}>{v || '—'}</span>
     },
     { key: 'installed_on', label: 'Installed On', width: '12%', sortable: true,
@@ -974,6 +1109,32 @@ function SoftwareTab({ scanId, assetId }) {
 
   return (
     <Card>
+      {categoryCounts.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+          <button onClick={() => setCategory('')}
+            style={{
+              fontSize: 12, fontWeight: category === '' ? 700 : 500, padding: '3px 10px',
+              borderRadius: 9999, border: '1px solid var(--border)',
+              background: category === '' ? 'var(--accent)' : 'transparent',
+              color: category === '' ? '#fff' : 'var(--text)',
+              cursor: 'pointer',
+            }}>All ({allRows.length})</button>
+          {categoryCounts.map(([cat, count]) => {
+            const color = SW_CATEGORY_COLORS[cat] || '#64748b'
+            const active = category === cat
+            return (
+              <button key={cat} onClick={() => setCategory(active ? '' : cat)}
+                style={{
+                  fontSize: 12, fontWeight: active ? 700 : 500, padding: '3px 10px',
+                  borderRadius: 9999, border: `1px solid ${active ? color : 'var(--border)'}`,
+                  background: active ? color + '20' : 'transparent',
+                  color: active ? color : 'var(--text-muted)',
+                  cursor: 'pointer',
+                }}>{cat} ({count})</button>
+            )
+          })}
+        </div>
+      )}
       <FilterBar>
         <Input value={search} onChange={setSearch} placeholder="Search software name…" style={{ width: 260 }} />
         <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
@@ -982,7 +1143,7 @@ function SoftwareTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No installed software found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No installed software found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} packages</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="packages" />
     </Card>
   )
 }
@@ -1147,6 +1308,8 @@ function CoverageMatrix({ scanId }) {
 function SecurityControlsTab({ scanId, assetId }) {
   const [view, setView]               = useState('coverage')   // 'coverage' | 'list'
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [ctrlType, setCtrlType]       = useState(null)
   const [groupByAsset, setGroupByAsset] = useState(false)
@@ -1158,12 +1321,14 @@ function SecurityControlsTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, ctrlType])
+
   useEffect(() => {
     if (view !== 'list') return
     setLoading(true)
-    getInventorySecurityControls({ scan_id: scanId, asset_id: assetId || null, control_type: ctrlType, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, ctrlType, sortBy, sortOrder, view])
+    getInventorySecurityControls({ scan_id: scanId, asset_id: assetId || null, control_type: ctrlType, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.controls); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, ctrlType, sortBy, sortOrder, view, page])
 
   const columns = [
     { key: 'control_type', label: 'Type', width: '9%', sortable: true,
@@ -1244,7 +1409,7 @@ function SecurityControlsTab({ scanId, assetId }) {
               ? <GroupedTable columns={columns} rows={rows} emptyMessage="No security controls found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
               : <Table columns={columns} rows={rows} emptyMessage="No security controls found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
             }
-            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} controls</div>
+            <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="controls" />
           </Card>
         )
       }
@@ -1255,6 +1420,8 @@ function SecurityControlsTab({ scanId, assetId }) {
 // ─── Network tab ───────────────────────────────────────────
 function NetconnsTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
   const [state, setState]             = useState(null)
@@ -1267,11 +1434,13 @@ function NetconnsTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, state])
+
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryNetconns({ scan_id: scanId, asset_id: assetId || null, search: search || null, state: state || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, search, state, sortBy, sortOrder])
+    getInventoryNetconns({ scan_id: scanId, asset_id: assetId || null, search: search || null, state: state || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.netconns); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, search, state, sortBy, sortOrder, page])
 
   useEffect(() => { load() }, [load])
 
@@ -1309,7 +1478,7 @@ function NetconnsTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No connections found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No connections found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} connections</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="connections" />
     </Card>
   )
 }
@@ -1317,6 +1486,8 @@ function NetconnsTab({ scanId, assetId }) {
 // ─── Scheduled Tasks tab ───────────────────────────────────
 function TasksTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
   const [triggerType, setTriggerType] = useState(null)
@@ -1329,11 +1500,13 @@ function TasksTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, triggerType])
+
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryTasks({ scan_id: scanId, asset_id: assetId || null, search: search || null, trigger_type: triggerType || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, search, triggerType, sortBy, sortOrder])
+    getInventoryTasks({ scan_id: scanId, asset_id: assetId || null, search: search || null, trigger_type: triggerType || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.tasks); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, search, triggerType, sortBy, sortOrder, page])
 
   useEffect(() => { load() }, [load])
 
@@ -1380,7 +1553,7 @@ function TasksTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No scheduled tasks found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No scheduled tasks found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} tasks</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="tasks" />
     </Card>
   )
 }
@@ -1388,6 +1561,8 @@ function TasksTab({ scanId, assetId }) {
 // ─── Patches tab ───────────────────────────────────────────
 function PatchesTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [groupByAsset, setGroupByAsset] = useState(false)
   const [sortBy, setSortBy]           = useState('vuln_count')
@@ -1398,11 +1573,13 @@ function PatchesTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('desc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId])
+
   useEffect(() => {
     setLoading(true)
-    getInventoryPatches({ scan_id: scanId, asset_id: assetId || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, sortBy, sortOrder])
+    getInventoryPatches({ scan_id: scanId, asset_id: assetId || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.patches); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, sortBy, sortOrder, page])
 
   const columns = [
     { key: 'kb_id', label: 'Patch / Advisory', width: '25%', sortable: true,
@@ -1438,7 +1615,7 @@ function PatchesTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No missing patches found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No missing patches found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} patches</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="patches" />
     </Card>
   )
 }
@@ -1446,6 +1623,8 @@ function PatchesTab({ scanId, assetId }) {
 // ─── Password Policy tab ───────────────────────────────────
 function PasswordPolicyTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [groupByAsset, setGroupByAsset] = useState(false)
   const [sortBy, setSortBy]           = useState('domain')
@@ -1456,11 +1635,13 @@ function PasswordPolicyTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId])
+
   useEffect(() => {
     setLoading(true)
-    getInventoryPasswordPolicies({ scan_id: scanId, asset_id: assetId || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, sortBy, sortOrder])
+    getInventoryPasswordPolicies({ scan_id: scanId, asset_id: assetId || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.policies); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, sortBy, sortOrder, page])
 
   function policyBool(val, goodIfTrue = true) {
     if (val === null || val === undefined) return <Count n="—" />
@@ -1511,7 +1692,7 @@ function PasswordPolicyTab({ scanId, assetId }) {
   ]
 
   if (loading) return <Spinner />
-  if (rows.length === 0) return <EmptyState icon={FileText} title="No password policy data" sub="Requires plugin 17651 in the scan." />
+  if (total === 0) return <EmptyState icon={FileText} title="No password policy data" sub="Requires plugin 17651 in the scan." />
 
   return (
     <Card>
@@ -1522,7 +1703,7 @@ function PasswordPolicyTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No password policies found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No password policies found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} policies</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="policies" />
     </Card>
   )
 }
@@ -1530,6 +1711,8 @@ function PasswordPolicyTab({ scanId, assetId }) {
 // ─── Logged On tab ─────────────────────────────────────────
 function LoggedOnTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [groupByAsset, setGroupByAsset] = useState(false)
   const [sortBy, setSortBy]           = useState('username')
@@ -1540,11 +1723,13 @@ function LoggedOnTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId])
+
   useEffect(() => {
     setLoading(true)
-    getInventoryLoggedOn({ scan_id: scanId, asset_id: assetId || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, sortBy, sortOrder])
+    getInventoryLoggedOn({ scan_id: scanId, asset_id: assetId || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.logged_on); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, sortBy, sortOrder, page])
 
   const columns = [
     { key: 'domain',   label: 'Domain',   width: '22%', sortable: true },
@@ -1568,7 +1753,7 @@ function LoggedOnTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No active sessions found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No active sessions found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} sessions</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="sessions" />
     </Card>
   )
 }
@@ -1576,6 +1761,8 @@ function LoggedOnTab({ scanId, assetId }) {
 // ─── Env Variables tab ─────────────────────────────────────
 function EnvVarsTab({ scanId, assetId }) {
   const [rows, setRows]                 = useState([])
+  const [total, setTotal]               = useState(0)
+  const [page, setPage]                 = useState(1)
   const [loading, setLoading]           = useState(true)
   const [search, setSearch]             = useState('')
   const [scope, setScope]               = useState(null)
@@ -1590,11 +1777,13 @@ function EnvVarsTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, scope, sensitiveOnly, search])
+
   useEffect(() => {
     setLoading(true)
-    getInventoryEnvVars({ scan_id: scanId, asset_id: assetId || null, scope: scope || null, sensitive_only: sensitiveOnly || null, search: search || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, scope, sensitiveOnly, search, sortBy, sortOrder])
+    getInventoryEnvVars({ scan_id: scanId, asset_id: assetId || null, scope: scope || null, sensitive_only: sensitiveOnly || null, search: search || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.env_vars); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, scope, sensitiveOnly, search, sortBy, sortOrder, page])
 
   const sensitiveCount = rows.filter(r => r.is_sensitive).length
 
@@ -1663,7 +1852,7 @@ function EnvVarsTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No environment variables found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No environment variables found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} variables</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="variables" />
     </Card>
   )
 }
@@ -1672,6 +1861,8 @@ function EnvVarsTab({ scanId, assetId }) {
 // ─── Certificates tab ──────────────────────────────────────
 function CertificatesTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
   const [expiredOnly, setExpiredOnly] = useState(false)
@@ -1685,6 +1876,8 @@ function CertificatesTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, expiredOnly, selfSignedOnly])
+
   useEffect(() => {
     setLoading(true)
     getInventoryCertificates({
@@ -1695,8 +1888,10 @@ function CertificatesTab({ scanId, assetId }) {
       self_signed_only: selfSignedOnly || null,
       sort_by: sortBy,
       order: sortOrder,
-    }).then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, search, expiredOnly, selfSignedOnly, sortBy, sortOrder])
+      page,
+      page_size: INV_PAGE_SIZE,
+    }).then(data => { setRows(data.certificates); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, search, expiredOnly, selfSignedOnly, sortBy, sortOrder, page])
 
   const expiredCount    = rows.filter(r => r.is_expired).length
   const expiringSoon    = rows.filter(r => !r.is_expired && r.days_until_expiry != null && r.days_until_expiry <= 30).length
@@ -1782,7 +1977,7 @@ function CertificatesTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No certificates found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No certificates found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop:8, fontSize:12, color:'var(--text-muted)' }}>{rows.length} certificate{rows.length !== 1 ? 's' : ''}</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="certificates" />
     </Card>
   )
 }
@@ -1821,6 +2016,8 @@ function CategoryPill({ category }) {
 
 function AIToolsTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
   const [category, setCategory]       = useState('')
@@ -1833,6 +2030,8 @@ function AIToolsTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, category])
+
   const load = useCallback(() => {
     setLoading(true)
     getInventoryAITools({
@@ -1842,8 +2041,10 @@ function AIToolsTab({ scanId, assetId }) {
       category: category || null,
       sort_by: sortBy,
       order: sortOrder,
-    }).then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, search, category, sortBy, sortOrder])
+      page,
+      page_size: INV_PAGE_SIZE,
+    }).then(data => { setRows(data.ai_tools); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, search, category, sortBy, sortOrder, page])
 
   useEffect(() => { load() }, [load])
 
@@ -1903,9 +2104,7 @@ function AIToolsTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No AI/LLM tools detected." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No AI/LLM tools detected." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
-        {rows.length} tool{rows.length !== 1 ? 's' : ''} across {categories.length} categor{categories.length !== 1 ? 'ies' : 'y'}
-      </div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="tools" />
     </Card>
   )
 }
@@ -1914,6 +2113,8 @@ function AIToolsTab({ scanId, assetId }) {
 // ─── Processes Tab ──────────────────────────────────────────
 function ProcessesTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
+  const [total, setTotal]             = useState(0)
+  const [page, setPage]               = useState(1)
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
   const [groupByAsset, setGroupByAsset] = useState(false)
@@ -1925,11 +2126,13 @@ function ProcessesTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
+  useEffect(() => { setPage(1) }, [scanId, assetId, search])
+
   const load = useCallback(() => {
     setLoading(true)
-    getInventoryProcesses({ scan_id: scanId, asset_id: assetId || null, search: search || null, sort_by: sortBy, order: sortOrder })
-      .then(setRows).catch(() => setRows([])).finally(() => setLoading(false))
-  }, [scanId, assetId, search, sortBy, sortOrder])
+    getInventoryProcesses({ scan_id: scanId, asset_id: assetId || null, search: search || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+      .then(data => { setRows(data.processes); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, search, sortBy, sortOrder, page])
 
   useEffect(() => { load() }, [load])
 
@@ -1972,7 +2175,7 @@ function ProcessesTab({ scanId, assetId }) {
         ? <GroupedTable columns={columns} rows={rows} emptyMessage="No processes found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
         : <Table columns={columns} rows={rows} emptyMessage="No processes found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{rows.length} processes ({uniqueNames} unique)</div>
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="processes" />
     </Card>
   )
 }

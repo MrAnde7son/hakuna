@@ -55,6 +55,16 @@ NODE_CATALOG = {
             "icon": "Target",
             "config_schema": {},
         },
+        {
+            "subtype": "cron",
+            "label": "Cron Schedule",
+            "description": "Run on a cron expression (e.g. '0 8 * * *' for daily at 8 AM)",
+            "icon": "Clock",
+            "config_schema": {
+                "cron_expr": {"type": "string", "label": "Cron Expression",
+                              "placeholder": "0 8 * * *"},
+            },
+        },
     ],
     "filters": [
         {
@@ -120,6 +130,22 @@ NODE_CATALOG = {
                 "operator": {"type": "enum", "label": "Operator",
                              "options": ["eq", "neq", "contains", "gte", "lte"]},
                 "value": {"type": "string", "label": "Value"},
+            },
+        },
+        {
+            "subtype": "condition_filter",
+            "label": "Condition Filter",
+            "description": "Filter by arbitrary field conditions (e.g. SLA status, workflow status)",
+            "icon": "GitBranch",
+            "config_schema": {
+                "conditions": {"type": "array", "label": "Conditions",
+                               "item_schema": {
+                                   "field": {"type": "string", "label": "Field (e.g. finding.sla_status, asset.os)"},
+                                   "op": {"type": "enum", "label": "Operator",
+                                          "options": ["eq", "neq", "contains", "gte", "lte", "gt", "lt"]},
+                                   "value": {"type": "string", "label": "Value"},
+                               }},
+                "logic": {"type": "enum", "label": "Logic", "options": ["AND", "OR"]},
             },
         },
     ],
@@ -243,8 +269,8 @@ NODE_CATALOG = {
         },
         {
             "subtype": "run_script",
-            "label": "Run Script",
-            "description": "Execute a remediation script or command",
+            "label": "Run Script (Coming Soon)",
+            "description": "Execute a remediation script or command — not yet active, logs only",
             "icon": "Terminal",
             "config_schema": {
                 "script_type": {"type": "enum", "label": "Type",
@@ -416,6 +442,28 @@ WORKFLOW_TEMPLATES = [
             {"edge_id": "e4", "source_node_id": "f2", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
         ],
     },
+    {
+        "id": "email_notification",
+        "name": "Email Notification",
+        "description": "Filter high+ findings and email a summary with findings table to the security team",
+        "category": "notification",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_campaign_run",
+             "label": "Campaign Runs", "config": {}, "position_x": 60, "position_y": 200},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "severity_filter",
+             "label": "High & Critical", "config": {"operator": "gte", "value": "3"}, "position_x": 360, "position_y": 200},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "send_email",
+             "label": "Email Security Team", "config": {
+                 "subject": "Remediation Required: {{count}} High/Critical Findings",
+                 "body_template": "Hello,\n\nA campaign run has identified {{count}} high or critical findings across {{assets}} asset(s) that require remediation.\n\nPlease review the findings table below and coordinate remediation with the appropriate teams.\n\nRegards,\nNessus Remediation Platform",
+                 "include_findings_table": True
+             }, "position_x": 660, "position_y": 200},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "f1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
 ]
 
 TEMPLATE_CATEGORIES = [
@@ -424,6 +472,7 @@ TEMPLATE_CATEGORIES = [
     {"id": "incident", "label": "Incident Response", "icon": "Zap"},
     {"id": "integration", "label": "Integration", "icon": "Globe"},
     {"id": "sla", "label": "SLA Management", "icon": "Clock"},
+    {"id": "notification", "label": "Notification", "icon": "Mail"},
 ]
 
 
@@ -510,19 +559,40 @@ def execute_workflow(db: Session, workflow_id: int, trigger_data: dict = None) -
     # Gather initial data items (findings from campaign or trigger data)
     items = _gather_trigger_data(db, workflow, trigger_nodes[0], trigger_data)
 
-    # Walk the graph: BFS with data flowing through
+    # Walk the graph: BFS with fan-in support.
+    # Nodes accumulate inputs from all incoming edges before executing.
+    # Build in-degree map to know when all parents have delivered.
+    in_edges: dict[str, list[str]] = {}  # target -> [source, ...]
+    for e in edges:
+        in_edges.setdefault(e.target_node_id, []).append(e.source_node_id)
+
+    # Pending items: node_id -> list of items waiting
+    pending_items: dict[str, list] = {}
+    # Track how many parent deliveries each node has received
+    deliveries: dict[str, int] = {}
+    executed = set()
+
     queue = [(trigger_nodes[0].node_id, items)]
-    visited = set()
 
     while queue:
         current_node_id, current_items = queue.pop(0)
-        if current_node_id in visited:
-            continue
-        visited.add(current_node_id)
 
         node = nodes.get(current_node_id)
         if not node:
             continue
+
+        # For non-trigger nodes with multiple parents, accumulate inputs
+        parent_count = len(in_edges.get(current_node_id, []))
+        if parent_count > 1 and current_node_id not in executed:
+            pending_items.setdefault(current_node_id, []).extend(current_items)
+            deliveries[current_node_id] = deliveries.get(current_node_id, 0) + 1
+            if deliveries[current_node_id] < parent_count:
+                continue  # still waiting for more parents
+            current_items = pending_items.pop(current_node_id, current_items)
+
+        if current_node_id in executed:
+            continue
+        executed.add(current_node_id)
 
         result = _execute_node(db, node, current_items, execution)
         summary["nodes_executed"] += 1
@@ -555,7 +625,6 @@ def execute_workflow(db: Session, workflow_id: int, trigger_data: dict = None) -
         next_edges = adj.get(current_node_id, [])
         for target_id, handle in next_edges:
             if node.node_type == "filter":
-                # Filters pass matched items on "output", remainder on "remainder"
                 if handle == "output":
                     queue.append((target_id, result.get("items", [])))
                 elif handle == "remainder":
@@ -605,25 +674,27 @@ def _gather_trigger_data(db: Session, workflow: Workflow, trigger_node: Workflow
 
 def _load_campaign_findings(db: Session, campaign_id: int) -> list:
     """Load findings from a campaign's results."""
-    items = []
-    cfs = db.query(CampaignFinding).filter(CampaignFinding.campaign_id == campaign_id).all()
-    for cf in cfs:
-        finding = db.query(Finding).filter(Finding.id == cf.finding_id).first()
-        if not finding:
-            continue
-        asset = db.query(Asset).filter(Asset.id == finding.asset_id).first()
-        items.append(_finding_to_item(finding, asset, campaign_finding_id=cf.id))
-    return items
+    rows = (
+        db.query(CampaignFinding, Finding, Asset)
+        .join(Finding, Finding.id == CampaignFinding.finding_id)
+        .outerjoin(Asset, Asset.id == Finding.asset_id)
+        .filter(CampaignFinding.campaign_id == campaign_id)
+        .all()
+    )
+    return [_finding_to_item(finding, asset, campaign_finding_id=cf.id)
+            for cf, finding, asset in rows]
 
 
 def _load_scan_findings(db: Session, scan_id: int) -> list:
     """Load findings from a scan."""
-    items = []
-    findings = db.query(Finding).filter(Finding.scan_id == scan_id, Finding.severity >= 1).limit(5000).all()
-    for f in findings:
-        asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
-        items.append(_finding_to_item(f, asset))
-    return items
+    rows = (
+        db.query(Finding, Asset)
+        .outerjoin(Asset, Asset.id == Finding.asset_id)
+        .filter(Finding.scan_id == scan_id, Finding.severity >= 1)
+        .limit(5000)
+        .all()
+    )
+    return [_finding_to_item(f, asset) for f, asset in rows]
 
 
 def _finding_to_item(finding: Finding, asset: Asset, campaign_finding_id: int = None) -> dict:
@@ -721,6 +792,11 @@ def _execute_filter(db: Session, node: WorkflowNode, items: list) -> dict:
                     (TagAssignment.finding_id == fid) | (TagAssignment.asset_id == aid),
                 ).first() is not None
             passes = has_tag if mode == "include" else not has_tag
+
+        elif subtype == "condition_filter":
+            conditions = config.get("conditions", [])
+            logic = config.get("logic", "AND")
+            passes = _eval_conditions(item, conditions, logic, db)
 
         elif subtype == "asset_filter":
             field = config.get("field", "os")
@@ -911,6 +987,39 @@ def _group_for_tickets(items: list, group_by: str, title_tpl: str) -> list:
                 for item in items]
 
 
+def _eval_conditions(item: dict, conditions: list, logic: str, db: Session) -> bool:
+    """Evaluate a list of conditions against a workflow data item."""
+    results = []
+    for cond in conditions:
+        field = cond.get("field", "")
+        op = cond.get("op", "eq")
+        value = cond.get("value", "")
+
+        # Resolve field value: support "finding.X" and "asset.X" prefixes
+        if field.startswith("finding."):
+            key = field.split(".", 1)[1]
+            # Map common finding fields to item keys
+            actual = item.get(key, item.get(f"finding_{key}"))
+        elif field.startswith("asset."):
+            key = field.split(".", 1)[1]
+            actual = item.get(f"asset_{key}", item.get(key))
+        else:
+            actual = item.get(field)
+
+        if actual is None:
+            actual = ""
+
+        # Try numeric comparison first, fall back to string
+        try:
+            results.append(_compare(float(actual), op, float(value)))
+        except (ValueError, TypeError):
+            results.append(_compare_str(str(actual), op, str(value)))
+
+    if not results:
+        return True
+    return all(results) if logic == "AND" else any(results)
+
+
 def _compare(a, op, b):
     """Numeric comparison."""
     ops = {"eq": lambda: a == b, "neq": lambda: a != b, "gt": lambda: a > b,
@@ -941,6 +1050,86 @@ _scheduler_thread = None
 _scheduler_stop = threading.Event()
 
 
+def _cron_matches(cron_expr: str, dt: datetime) -> bool:
+    """Check if a datetime matches a cron expression (minute hour dom month dow).
+    Supports: numbers, *, */N, and comma-separated values."""
+    parts = cron_expr.strip().split()
+    if len(parts) != 5:
+        return False
+
+    fields = [dt.minute, dt.hour, dt.day, dt.month, dt.weekday()]
+    # cron weekday: 0=Sun..6=Sat; Python weekday: 0=Mon..6=Sun → convert
+    fields[4] = (fields[4] + 1) % 7
+    ranges = [
+        (0, 59),   # minute
+        (0, 23),   # hour
+        (1, 31),   # day of month
+        (1, 12),   # month
+        (0, 6),    # day of week
+    ]
+
+    for part, actual, (lo, hi) in zip(parts, fields, ranges):
+        if not _cron_field_matches(part, actual, lo, hi):
+            return False
+    return True
+
+
+def _cron_field_matches(field: str, value: int, lo: int, hi: int) -> bool:
+    """Check if a single cron field matches a value."""
+    for token in field.split(","):
+        token = token.strip()
+        if token == "*":
+            return True
+        if token.startswith("*/"):
+            try:
+                step = int(token[2:])
+                if step > 0 and value % step == 0:
+                    return True
+            except ValueError:
+                pass
+        elif "-" in token:
+            try:
+                a, b = token.split("-", 1)
+                if int(a) <= value <= int(b):
+                    return True
+            except ValueError:
+                pass
+        else:
+            try:
+                if int(token) == value:
+                    return True
+            except ValueError:
+                pass
+    return False
+
+
+def _schedule_is_due(trigger: WorkflowNode, wf: Workflow, now: datetime) -> bool:
+    """Check if a 'schedule' trigger (interval + optional time) is due."""
+    config = trigger.config or {}
+    interval_key = config.get("interval", "daily")
+    interval_secs = INTERVAL_SECONDS.get(interval_key, 86400)
+
+    # Check if enough time has passed since last run
+    if wf.last_run_at:
+        next_run = wf.last_run_at + timedelta(seconds=interval_secs)
+        if now < next_run:
+            return False
+
+    # Respect time-of-day if configured (for daily/weekly/monthly)
+    target_time = config.get("time")
+    if target_time and interval_key in ("daily", "weekly", "monthly"):
+        try:
+            hh, mm = target_time.split(":")
+            target_hour, target_min = int(hh), int(mm)
+            # Allow a 2-minute window around the target time
+            if abs(now.hour * 60 + now.minute - (target_hour * 60 + target_min)) > 2:
+                return False
+        except (ValueError, AttributeError):
+            pass
+
+    return True
+
+
 def start_scheduler(session_factory):
     """Start the background scheduler thread that runs scheduled workflows."""
     global _scheduler_thread
@@ -967,10 +1156,9 @@ def stop_scheduler():
 
 
 def _check_scheduled_workflows(session_factory):
-    """Check for workflows with schedule triggers that are due to run."""
+    """Check for workflows with schedule/cron triggers that are due to run."""
     db = session_factory()
     try:
-        # Find all enabled workflows with schedule trigger nodes
         workflows = db.query(Workflow).filter(
             Workflow.is_enabled == True,
             Workflow.status == "active",
@@ -979,24 +1167,31 @@ def _check_scheduled_workflows(session_factory):
         now = datetime.utcnow()
 
         for wf in workflows:
+            # Find schedule or cron trigger
             trigger = next(
-                (n for n in wf.nodes if n.node_type == "trigger" and n.node_subtype == "schedule"),
+                (n for n in wf.nodes
+                 if n.node_type == "trigger" and n.node_subtype in ("schedule", "cron")),
                 None,
             )
             if not trigger:
                 continue
 
-            interval_key = (trigger.config or {}).get("interval", "daily")
-            interval_secs = INTERVAL_SECONDS.get(interval_key, 86400)
+            should_run = False
 
-            # Check if enough time has passed since last run
-            if wf.last_run_at:
-                next_run = wf.last_run_at + timedelta(seconds=interval_secs)
-                if now < next_run:
-                    continue
+            if trigger.node_subtype == "cron":
+                cron_expr = (trigger.config or {}).get("cron_expr", "")
+                if _cron_matches(cron_expr, now):
+                    # Prevent double-run: skip if already ran this minute
+                    if wf.last_run_at and (now - wf.last_run_at).total_seconds() < 60:
+                        continue
+                    should_run = True
+            else:  # schedule
+                should_run = _schedule_is_due(trigger, wf, now)
 
-            # Time to run
-            logger.info(f"Scheduler: executing workflow '{wf.name}' (id={wf.id}, interval={interval_key})")
+            if not should_run:
+                continue
+
+            logger.info(f"Scheduler: executing workflow '{wf.name}' (id={wf.id}, trigger={trigger.node_subtype})")
             try:
                 execute_workflow(db, wf.id, trigger_data={"triggered_by": "scheduler"})
             except Exception as e:

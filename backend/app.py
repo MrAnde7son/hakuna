@@ -721,7 +721,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
                                      "share_name", "share_type", "comment", "path",
                                      "max_users", "acl", "is_writeable", "is_default_share"]),
         "software": (InventorySoftware, ["scan_id", "asset_id", "source_plugin",
-                                          "name", "version", "installed_on", "vendor"]),
+                                          "name", "version", "installed_on", "vendor", "category"]),
         "security_controls": (InventorySecurityControl, ["scan_id", "asset_id", "source_plugin",
                                                           "control_type", "product_name", "vendor",
                                                           "version", "is_enabled", "is_up_to_date",
@@ -1051,10 +1051,15 @@ def nlp_search(
             (Finding.cvss3_base_score >= ff["min_cvss"]) |
             (Finding.cvss2_base_score >= ff["min_cvss"])
         )
+    if ff.get("min_priority") is not None:
+        fq = fq.filter(Finding.priority_score >= ff["min_priority"])
+    if ff.get("port"):
+        fq = fq.filter(Finding.port == ff["port"])
     if ff.get("search"):
         fq = fq.filter(
             Finding.plugin_name.ilike(f"%{ff['search']}%") |
-            Finding.synopsis.ilike(f"%{ff['search']}%")
+            Finding.synopsis.ilike(f"%{ff['search']}%") |
+            Finding.plugin_id.ilike(f"%{ff['search']}%")
         )
     finding_count = fq.count()
 
@@ -1086,6 +1091,8 @@ def list_assets(
     expand_children: bool = False,
     sort_by: str = "risk_score",
     order: str = "desc",
+    page: int = 1,
+    page_size: int = 50,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -1126,10 +1133,14 @@ def list_assets(
     if server_role:
         role_ids = _resolve_role_asset_ids(db, server_role, scan_id=scan_id)
         if not role_ids:
-            return []
+            return {"total": 0, "page": page, "page_size": page_size, "assets": []}
         q = q.filter(Asset.id.in_(role_ids))
 
-    assets = q.all()
+    total = q.count()
+    if page_size == 0:
+        assets = q.all()
+    else:
+        assets = q.offset((page - 1) * page_size).limit(page_size).all()
     asset_ids = [a.id for a in assets]
     tag_map = tag_engine.get_asset_tags(asset_ids, db)
     # Batch-fetch DC status: match by hostname/fqdn (not by source asset_id)
@@ -1146,7 +1157,7 @@ def list_assets(
             roles = ["domain_controller"] + roles
         d["server_roles"] = roles
         result.append(d)
-    return result
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "assets": result}
 
 
 @app.get("/api/assets/{asset_id}")
@@ -1313,6 +1324,8 @@ def list_findings(
         q = q.filter(Finding.cves.ilike(f"%{cve}%"))
     if request.query_params.get("port"):
         q = q.filter(Finding.port == request.query_params["port"])
+    if request.query_params.get("min_priority"):
+        q = q.filter(Finding.priority_score >= float(request.query_params["min_priority"]))
     if search:
         q = q.filter(
             Finding.plugin_name.ilike(f"%{search}%") |
@@ -1998,6 +2011,8 @@ def list_inventory_users(
     search: Optional[str] = None,
     sort_by: str = "username",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2021,9 +2036,13 @@ def list_inventory_users(
             InventoryUser.domain.ilike(f"%{search}%")
         )
     q = _apply_sort(q, InventoryUser, sort_by, order, InventoryUser.username)
-    users = q.all()
+    total = q.count()
+    if page_size == 0:
+        users = q.all()
+    else:
+        users = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {u.asset_id for u in users})
-    return [_inv_user_to_dict(u, assets) for u in users]
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "users": [_inv_user_to_dict(u, assets) for u in users]}
 
 
 @app.get("/api/inventory/groups")
@@ -2033,6 +2052,8 @@ def list_inventory_groups(
     is_privileged: Optional[bool] = None,
     sort_by: str = "group_name",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2045,9 +2066,13 @@ def list_inventory_groups(
     if is_privileged is not None:
         q = q.filter(InventoryGroup.is_privileged == is_privileged)
     q = _apply_sort(q, InventoryGroup, sort_by, order, InventoryGroup.group_name)
-    groups = q.all()
+    total = q.count()
+    if page_size == 0:
+        groups = q.all()
+    else:
+        groups = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {g.asset_id for g in groups})
-    return [_inv_group_to_dict(g, assets) for g in groups]
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "groups": [_inv_group_to_dict(g, assets) for g in groups]}
 
 
 @app.get("/api/inventory/services")
@@ -2057,6 +2082,8 @@ def list_inventory_services(
     search: Optional[str] = None,
     sort_by: str = "display_name",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2072,9 +2099,13 @@ def list_inventory_services(
             InventoryService.display_name.ilike(f"%{search}%")
         )
     q = _apply_sort(q, InventoryService, sort_by, order, InventoryService.display_name)
-    services = q.all()
+    total = q.count()
+    if page_size == 0:
+        services = q.all()
+    else:
+        services = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {s.asset_id for s in services})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "services": [{
         "id": s.id,
         "scan_id": s.scan_id,
         "asset_id": s.asset_id,
@@ -2085,7 +2116,7 @@ def list_inventory_services(
         "display_name": s.display_name,
         "is_running": s.is_running,
         "source_plugin": s.source_plugin,
-    } for s in services]
+    } for s in services]}
 
 
 @app.get("/api/inventory/netconns")
@@ -2096,6 +2127,8 @@ def list_inventory_netconns(
     search: Optional[str] = None,
     sort_by: str = "local_port",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2115,9 +2148,13 @@ def list_inventory_netconns(
             InventoryNetConn.proto.ilike(s),
         ))
     q = _apply_sort(q, InventoryNetConn, sort_by, order, InventoryNetConn.local_port)
-    conns = q.all()
+    total = q.count()
+    if page_size == 0:
+        conns = q.all()
+    else:
+        conns = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {c.asset_id for c in conns})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "netconns": [{
         "id": c.id,
         "scan_id": c.scan_id,
         "asset_id": c.asset_id,
@@ -2132,7 +2169,7 @@ def list_inventory_netconns(
         "remote_port": c.remote_port,
         "pid": c.pid,
         "source_plugin": c.source_plugin,
-    } for c in conns]
+    } for c in conns]}
 
 
 @app.get("/api/inventory/scheduled-tasks")
@@ -2143,6 +2180,8 @@ def list_inventory_tasks(
     trigger_type: Optional[str] = None,
     sort_by: str = "task_uri",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2163,9 +2202,13 @@ def list_inventory_tasks(
     if trigger_type:
         q = q.filter(InventoryScheduledTask.trigger_type.ilike(trigger_type))
     q = _apply_sort(q, InventoryScheduledTask, sort_by, order, InventoryScheduledTask.task_uri)
-    tasks = q.all()
+    total = q.count()
+    if page_size == 0:
+        tasks = q.all()
+    else:
+        tasks = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {t.asset_id for t in tasks})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "tasks": [{
         "id": t.id,
         "scan_id": t.scan_id,
         "asset_id": t.asset_id,
@@ -2182,7 +2225,7 @@ def list_inventory_tasks(
         "logon_type": t.logon_type,
         "is_enabled": t.is_enabled,
         "source_plugin": t.source_plugin,
-    } for t in tasks]
+    } for t in tasks]}
 
 
 @app.get("/api/inventory/patches")
@@ -2191,6 +2234,8 @@ def list_inventory_patches(
     asset_id: Optional[int] = None,
     sort_by: str = "vuln_count",
     order: str = "desc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2201,9 +2246,13 @@ def list_inventory_patches(
     if asset_id:
         q = q.filter(InventoryPatch.asset_id == asset_id)
     q = _apply_sort(q, InventoryPatch, sort_by, order, InventoryPatch.vuln_count)
-    patches = q.all()
+    total = q.count()
+    if page_size == 0:
+        patches = q.all()
+    else:
+        patches = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {p.asset_id for p in patches})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "patches": [{
         "id": p.id,
         "scan_id": p.scan_id,
         "asset_id": p.asset_id,
@@ -2215,7 +2264,7 @@ def list_inventory_patches(
         "description": p.description,
         "cves": p.cves or [],
         "source_plugin": p.source_plugin,
-    } for p in patches]
+    } for p in patches]}
 
 
 @app.get("/api/inventory/logged-on")
@@ -2224,6 +2273,8 @@ def list_inventory_logged_on(
     asset_id: Optional[int] = None,
     sort_by: str = "username",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2234,9 +2285,13 @@ def list_inventory_logged_on(
     if asset_id:
         q = q.filter(InventoryLoggedOn.asset_id == asset_id)
     q = _apply_sort(q, InventoryLoggedOn, sort_by, order, InventoryLoggedOn.username)
-    entries = q.all()
+    total = q.count()
+    if page_size == 0:
+        entries = q.all()
+    else:
+        entries = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {e.asset_id for e in entries})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "logged_on": [{
         "id": e.id,
         "scan_id": e.scan_id,
         "asset_id": e.asset_id,
@@ -2247,7 +2302,7 @@ def list_inventory_logged_on(
         "domain": e.domain,
         "username": e.username,
         "source_plugin": e.source_plugin,
-    } for e in entries]
+    } for e in entries]}
 
 
 @app.get("/api/inventory/summary")
@@ -2418,6 +2473,8 @@ def list_inventory_shares(
     search: Optional[str] = None,
     sort_by: str = "share_name",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2437,9 +2494,13 @@ def list_inventory_shares(
             InventoryShare.path.ilike(s),
         ))
     q = _apply_sort(q, InventoryShare, sort_by, order, InventoryShare.share_name)
-    shares = q.all()
+    total = q.count()
+    if page_size == 0:
+        shares = q.all()
+    else:
+        shares = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {s.asset_id for s in shares})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "shares": [{
         "id": s.id, "scan_id": s.scan_id, "asset_id": s.asset_id,
         "asset_label": _asset_label(assets.get(s.asset_id)),
         "asset_ip": (assets.get(s.asset_id) or {}).get("ip"),
@@ -2448,7 +2509,7 @@ def list_inventory_shares(
         "comment": s.comment, "path": s.path, "max_users": s.max_users,
         "acl": s.acl or [], "is_writeable": s.is_writeable,
         "is_default_share": s.is_default_share, "source_plugin": s.source_plugin,
-    } for s in shares]
+    } for s in shares]}
 
 
 @app.get("/api/inventory/software")
@@ -2456,8 +2517,11 @@ def list_inventory_software(
     scan_id: Optional[int] = None,
     asset_id: Optional[int] = None,
     search: Optional[str] = None,
+    category: Optional[str] = None,
     sort_by: str = "name",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2469,17 +2533,26 @@ def list_inventory_software(
         q = q.filter(InventorySoftware.asset_id == asset_id)
     if search:
         q = q.filter(InventorySoftware.name.ilike(f"%{search}%"))
+    if category:
+        if category == "Uncategorized":
+            q = q.filter(InventorySoftware.category.is_(None))
+        else:
+            q = q.filter(InventorySoftware.category == category)
     q = _apply_sort(q, InventorySoftware, sort_by, order, InventorySoftware.name)
-    software = q.all()
+    total = q.count()
+    if page_size == 0:
+        software = q.all()
+    else:
+        software = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {s.asset_id for s in software})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "software": [{
         "id": s.id, "scan_id": s.scan_id, "asset_id": s.asset_id,
         "asset_label": _asset_label(assets.get(s.asset_id)),
         "asset_ip": (assets.get(s.asset_id) or {}).get("ip"),
         "asset_env": (assets.get(s.asset_id) or {}).get("environment_tag"),
         "name": s.name, "version": s.version, "installed_on": s.installed_on,
-        "vendor": s.vendor, "source_plugin": s.source_plugin,
-    } for s in software]
+        "vendor": s.vendor, "category": s.category, "source_plugin": s.source_plugin,
+    } for s in software]}
 
 
 @app.get("/api/inventory/security-controls")
@@ -2489,6 +2562,8 @@ def list_inventory_security_controls(
     control_type: Optional[str] = None,
     sort_by: str = "product_name",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2501,9 +2576,13 @@ def list_inventory_security_controls(
     if control_type:
         q = q.filter(InventorySecurityControl.control_type == control_type)
     q = _apply_sort(q, InventorySecurityControl, sort_by, order, InventorySecurityControl.product_name)
-    controls = q.all()
+    total = q.count()
+    if page_size == 0:
+        controls = q.all()
+    else:
+        controls = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {c.asset_id for c in controls})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "controls": [{
         "id": c.id, "scan_id": c.scan_id, "asset_id": c.asset_id,
         "asset_label": _asset_label(assets.get(c.asset_id)),
         "asset_ip": (assets.get(c.asset_id) or {}).get("ip"),
@@ -2512,7 +2591,7 @@ def list_inventory_security_controls(
         "vendor": c.vendor, "version": c.version, "is_enabled": c.is_enabled,
         "is_up_to_date": c.is_up_to_date, "signature_date": c.signature_date,
         "details": c.details or {}, "source_plugin": c.source_plugin,
-    } for c in controls]
+    } for c in controls]}
 
 
 @app.get("/api/inventory/security-coverage")
@@ -2652,6 +2731,8 @@ def list_inventory_computers(
     search: Optional[str] = None,
     sort_by: str = "computer_name",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2669,9 +2750,13 @@ def list_inventory_computers(
             InventoryComputer.dns_hostname.ilike(f"%{search}%")
         )
     q = _apply_sort(q, InventoryComputer, sort_by, order, InventoryComputer.computer_name)
-    computers = q.all()
+    total = q.count()
+    if page_size == 0:
+        computers = q.all()
+    else:
+        computers = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {c.asset_id for c in computers})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "computers": [{
         "id": c.id, "scan_id": c.scan_id, "asset_id": c.asset_id,
         "asset_label": _asset_label(assets.get(c.asset_id)),
         "asset_ip": (assets.get(c.asset_id) or {}).get("ip"),
@@ -2680,7 +2765,7 @@ def list_inventory_computers(
         "os": c.os, "os_version": c.os_version, "sid": c.sid, "dn": c.dn,
         "is_domain_controller": c.is_domain_controller, "is_disabled": c.is_disabled,
         "uac": c.uac, "date_joined": c.date_joined, "source_plugin": c.source_plugin,
-    } for c in computers]
+    } for c in computers]}
 
 
 @app.get("/api/inventory/password-policies")
@@ -2688,6 +2773,8 @@ def list_inventory_password_policies(
     scan_id: Optional[int] = None,
     sort_by: str = "domain",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2696,9 +2783,13 @@ def list_inventory_password_policies(
     if scan_id:
         q = q.filter(InventoryPasswordPolicy.scan_id == scan_id)
     q = _apply_sort(q, InventoryPasswordPolicy, sort_by, order, InventoryPasswordPolicy.domain)
-    policies = q.all()
+    total = q.count()
+    if page_size == 0:
+        policies = q.all()
+    else:
+        policies = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {p.asset_id for p in policies})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "policies": [{
         "id": p.id, "scan_id": p.scan_id, "asset_id": p.asset_id,
         "asset_label": _asset_label(assets.get(p.asset_id)),
         "asset_ip": (assets.get(p.asset_id) or {}).get("ip"),
@@ -2711,7 +2802,7 @@ def list_inventory_password_policies(
         "lockout_duration_mins": p.lockout_duration_mins,
         "lockout_window_mins": p.lockout_window_mins,
         "is_weak": p.is_weak, "source_plugin": p.source_plugin,
-    } for p in policies]
+    } for p in policies]}
 
 
 @app.get("/api/inventory/env-vars")
@@ -2723,6 +2814,8 @@ def list_inventory_env_vars(
     search: Optional[str] = None,
     sort_by: str = "name",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2742,16 +2835,20 @@ def list_inventory_env_vars(
             InventoryEnvVar.value.ilike(f"%{search}%")
         )
     q = _apply_sort(q, InventoryEnvVar, sort_by, order, InventoryEnvVar.name)
-    rows = q.all()
+    total = q.count()
+    if page_size == 0:
+        rows = q.all()
+    else:
+        rows = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {r.asset_id for r in rows})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "env_vars": [{
         "id": r.id, "scan_id": r.scan_id, "asset_id": r.asset_id,
         "asset_label": _asset_label(assets.get(r.asset_id)),
         "asset_ip": (assets.get(r.asset_id) or {}).get("ip"),
         "asset_env": (assets.get(r.asset_id) or {}).get("environment_tag"),
         "name": r.name, "value": r.value, "scope": r.scope,
         "is_sensitive": r.is_sensitive, "source_plugin": r.source_plugin,
-    } for r in rows]
+    } for r in rows]}
 
 
 @app.get("/api/inventory/certificates")
@@ -2764,6 +2861,8 @@ def list_inventory_certificates(
     search: Optional[str] = None,
     sort_by: str = "not_after",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2790,9 +2889,13 @@ def list_inventory_certificates(
             InventoryCertificate.subject_o.ilike(f"%{search}%")
         )
     q = _apply_sort(q, InventoryCertificate, sort_by, order, InventoryCertificate.not_after)
-    rows = q.all()
+    total = q.count()
+    if page_size == 0:
+        rows = q.all()
+    else:
+        rows = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {r.asset_id for r in rows})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "certificates": [{
         "id": r.id, "scan_id": r.scan_id, "asset_id": r.asset_id,
         "asset_label": _asset_label(assets.get(r.asset_id)),
         "asset_ip": (assets.get(r.asset_id) or {}).get("ip"),
@@ -2811,7 +2914,7 @@ def list_inventory_certificates(
         "is_ca": r.is_ca, "is_self_signed": r.is_self_signed,
         "port": r.port, "protocol": r.protocol,
         "source_plugin": r.source_plugin,
-    } for r in rows]
+    } for r in rows]}
 
 
 @app.get("/api/inventory/databases")
@@ -2822,6 +2925,8 @@ def list_inventory_databases(
     search: Optional[str] = None,
     sort_by: str = "db_type",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2839,9 +2944,13 @@ def list_inventory_databases(
             InventoryDatabaseInstance.version.ilike(f"%{search}%")
         )
     q = _apply_sort(q, InventoryDatabaseInstance, sort_by, order, InventoryDatabaseInstance.db_type)
-    instances = q.all()
+    total = q.count()
+    if page_size == 0:
+        instances = q.all()
+    else:
+        instances = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {i.asset_id for i in instances})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "databases": [{
         "id": i.id, "scan_id": i.scan_id, "asset_id": i.asset_id,
         "asset_label": _asset_label(assets.get(i.asset_id)),
         "asset_ip": (assets.get(i.asset_id) or {}).get("ip"),
@@ -2850,7 +2959,7 @@ def list_inventory_databases(
         "version": i.version, "port": i.port,
         "databases": i.databases or [], "named_pipes": i.named_pipes or [],
         "is_running": i.is_running, "source_plugin": i.source_plugin,
-    } for i in instances]
+    } for i in instances]}
 
 
 @app.get("/api/inventory/ai-tools")
@@ -2861,6 +2970,8 @@ def list_inventory_ai_tools(
     search: Optional[str] = None,
     sort_by: str = "tool_name",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2875,16 +2986,20 @@ def list_inventory_ai_tools(
     if search:
         q = q.filter(InventoryAITool.tool_name.ilike(f"%{search}%"))
     q = _apply_sort(q, InventoryAITool, sort_by, order, InventoryAITool.tool_name)
-    rows = q.all()
+    total = q.count()
+    if page_size == 0:
+        rows = q.all()
+    else:
+        rows = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {r.asset_id for r in rows})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "ai_tools": [{
         "id": r.id, "scan_id": r.scan_id, "asset_id": r.asset_id,
         "asset_label": _asset_label(assets.get(r.asset_id)),
         "asset_ip": (assets.get(r.asset_id) or {}).get("ip"),
         "asset_env": (assets.get(r.asset_id) or {}).get("environment_tag"),
         "tool_name": r.tool_name, "category": r.category,
         "source_plugin": r.source_plugin,
-    } for r in rows]
+    } for r in rows]}
 
 
 @app.get("/api/inventory/processes")
@@ -2895,6 +3010,8 @@ def list_inventory_processes(
     session_id: Optional[int] = None,
     sort_by: str = "process_name",
     order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -2909,9 +3026,13 @@ def list_inventory_processes(
     if search:
         q = q.filter(InventoryProcess.process_name.ilike(f"%{search}%"))
     q = _apply_sort(q, InventoryProcess, sort_by, order, InventoryProcess.process_name)
-    rows = q.all()
+    total = q.count()
+    if page_size == 0:
+        rows = q.all()
+    else:
+        rows = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {r.asset_id for r in rows})
-    return [{
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "processes": [{
         "id": r.id, "scan_id": r.scan_id, "asset_id": r.asset_id,
         "asset_label": _asset_label(assets.get(r.asset_id)),
         "asset_ip": (assets.get(r.asset_id) or {}).get("ip"),
@@ -2919,7 +3040,7 @@ def list_inventory_processes(
         "process_name": r.process_name, "pid": r.pid, "ppid": r.ppid,
         "session_id": r.session_id, "parent_name": r.parent_name,
         "depth": r.depth, "source_plugin": r.source_plugin,
-    } for r in rows]
+    } for r in rows]}
 
 
 def _inv_user_to_dict(u: InventoryUser, assets: dict = None) -> dict:
@@ -5421,7 +5542,21 @@ def update_workflow(wf_id: int, body: WorkflowUpdate, db: Session = Depends(get_
     if body.is_enabled is not None:
         wf.is_enabled = body.is_enabled
 
-    # Sync nodes
+    # Sync nodes — snapshot current version before overwriting
+    if body.nodes is not None or body.edges is not None:
+        old_nodes = [_node_to_dict(n) for n in wf.nodes]
+        old_edges = [_edge_to_dict(e) for e in wf.edges]
+        history = list(wf.version_history or [])
+        history.append({
+            "version": wf.version or 1,
+            "nodes": old_nodes,
+            "edges": old_edges,
+            "saved_at": datetime.utcnow().isoformat(),
+        })
+        # Keep last 20 versions
+        wf.version_history = history[-20:]
+        wf.version = (wf.version or 1) + 1
+
     if body.nodes is not None:
         db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wf_id).delete(synchronize_session=False)
         for nd in body.nodes:
@@ -5471,6 +5606,68 @@ def delete_workflow(wf_id: int, db: Session = Depends(get_db), user: Optional[Us
     log_audit(db, "delete", "workflow", wf_id, entity_name=_wf_name, actor=user, org_id=_wf_org)
     db.commit()
     return {"message": "Workflow deleted"}
+
+
+@app.get("/api/workflows/{wf_id}/versions")
+def get_workflow_versions(wf_id: int, db: Session = Depends(get_db)):
+    """Return version history for a workflow."""
+    wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    return {
+        "current_version": getattr(wf, "version", 1) or 1,
+        "history": list(getattr(wf, "version_history", None) or []),
+    }
+
+
+@app.post("/api/workflows/{wf_id}/restore/{version}")
+def restore_workflow_version(wf_id: int, version: int, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+    """Restore a workflow to a previous version."""
+    wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
+    if not wf:
+        raise HTTPException(404, "Workflow not found")
+    history = list(getattr(wf, "version_history", None) or [])
+    snapshot = next((h for h in history if h.get("version") == version), None)
+    if not snapshot:
+        raise HTTPException(404, f"Version {version} not found")
+
+    # Snapshot current state before restoring
+    old_nodes = [_node_to_dict(n) for n in wf.nodes]
+    old_edges = [_edge_to_dict(e) for e in wf.edges]
+    history.append({
+        "version": wf.version or 1,
+        "nodes": old_nodes,
+        "edges": old_edges,
+        "saved_at": datetime.utcnow().isoformat(),
+    })
+    wf.version_history = history[-20:]
+    wf.version = (wf.version or 1) + 1
+
+    # Replace nodes and edges
+    db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wf_id).delete(synchronize_session=False)
+    for nd in snapshot.get("nodes", []):
+        db.add(WorkflowNode(
+            workflow_id=wf_id, node_id=nd["node_id"], node_type=nd["node_type"],
+            node_subtype=nd["node_subtype"], label=nd.get("label", ""),
+            config=nd.get("config", {}),
+            position_x=nd.get("position_x", 0), position_y=nd.get("position_y", 0),
+        ))
+    db.query(WorkflowEdge).filter(WorkflowEdge.workflow_id == wf_id).delete(synchronize_session=False)
+    for ed in snapshot.get("edges", []):
+        db.add(WorkflowEdge(
+            workflow_id=wf_id, edge_id=ed["edge_id"],
+            source_node_id=ed["source_node_id"], target_node_id=ed["target_node_id"],
+            source_handle=ed.get("source_handle", "output"),
+            target_handle=ed.get("target_handle", "input"), label=ed.get("label"),
+        ))
+    log_audit(db, "update", "workflow", wf_id,
+              entity_name=wf.name, changes={"action": "restore", "restored_version": version}, actor=user)
+    db.commit()
+    db.refresh(wf)
+    d = _workflow_to_dict(wf)
+    d["nodes"] = [_node_to_dict(n) for n in wf.nodes]
+    d["edges"] = [_edge_to_dict(e) for e in wf.edges]
+    return d
 
 
 @app.post("/api/workflows/{wf_id}/execute")
@@ -5530,6 +5727,7 @@ def _workflow_to_dict(wf: Workflow) -> dict:
         "updated_at": wf.updated_at.isoformat() if wf.updated_at else None,
         "last_run_at": wf.last_run_at.isoformat() if wf.last_run_at else None,
         "run_count": wf.run_count,
+        "version": getattr(wf, "version", 1) or 1,
         "node_count": len(wf.nodes),
         "edge_count": len(wf.edges),
     }
@@ -7101,7 +7299,7 @@ def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
                                      "share_name", "share_type", "comment", "path",
                                      "max_users", "acl", "is_writeable", "is_default_share"]),
         "software": (InventorySoftware, ["scan_id", "asset_id", "source_plugin",
-                                          "name", "version", "installed_on", "vendor"]),
+                                          "name", "version", "installed_on", "vendor", "category"]),
         "security_controls": (InventorySecurityControl, ["scan_id", "asset_id", "source_plugin",
                                                           "control_type", "product_name", "vendor",
                                                           "version", "is_enabled", "is_up_to_date",

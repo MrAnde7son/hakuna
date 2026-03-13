@@ -175,16 +175,40 @@ export default function WorkflowBuilder() {
   // ─── Add node ────────────────────────────
   const addNode = useCallback((type, def_) => {
     const nodeId = `node-${Date.now()}`
-    const existingXs = nodes.map(n => n.position_x)
-    const x = existingXs.length ? Math.max(...existingXs) + 300 : 100
-    const y = 200
+
+    // Find the best source node to auto-connect from:
+    // 1. Currently selected node, or 2. Rightmost node with a free output handle
+    const nodesWithFreeOutput = nodes.filter(n => {
+      if (n.node_type === 'trigger' && type === 'trigger') return false
+      return !edges.some(e => e.source_node_id === n.node_id && e.source_handle === 'output')
+    })
+    let sourceNode = null
+    if (selectedNode && type !== 'trigger') {
+      sourceNode = nodesWithFreeOutput.find(n => n.node_id === selectedNode)
+    }
+    if (!sourceNode && type !== 'trigger') {
+      sourceNode = nodesWithFreeOutput.sort((a, b) => b.position_x - a.position_x)[0] || null
+    }
+
+    const x = sourceNode ? sourceNode.position_x + 300 : (nodes.length ? Math.max(...nodes.map(n => n.position_x)) + 300 : 100)
+    const y = sourceNode ? sourceNode.position_y : 200
     setNodes(prev => [...prev, {
       node_id: nodeId, node_type: type, node_subtype: def_.subtype,
       label: def_.label, config: {}, position_x: x - pan.x, position_y: y - pan.y,
     }])
+    if (sourceNode) {
+      setEdges(prev => [...prev, {
+        edge_id: `edge-${Date.now()}`,
+        source_node_id: sourceNode.node_id,
+        target_node_id: nodeId,
+        source_handle: 'output',
+        target_handle: 'input',
+      }])
+    }
     setShowNodePalette(false)
+    setSelectedNode(nodeId)
     setDirty(true)
-  }, [nodes, pan])
+  }, [nodes, edges, pan, selectedNode])
 
   const deleteNode = useCallback((nodeId) => {
     setNodes(prev => prev.filter(n => n.node_id !== nodeId))
@@ -744,10 +768,8 @@ export default function WorkflowBuilder() {
                 />
               </div>
               <div style={{ marginBottom: 14, display: 'flex', gap: 6 }}>
-                <Pill color={TYPE_COLORS[selectedNodeData.node_type]?.accent || '#94a3b8'}>
-                  {selectedNodeData.node_type}
-                </Pill>
-                <Pill color="#64748b">{selectedNodeData.node_subtype}</Pill>
+                <Pill label={selectedNodeData.node_type} color={TYPE_COLORS[selectedNodeData.node_type]?.accent || '#94a3b8'} />
+                <Pill label={selectedNodeData.node_subtype} color="#64748b" />
               </div>
 
               {/* Config fields from schema */}

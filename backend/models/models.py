@@ -500,6 +500,7 @@ class InventorySoftware(Base):
     version = Column(String)
     installed_on = Column(String)       # Date string
     vendor = Column(String)
+    category = Column(String, index=True)  # dev_tools, collaboration, security, etc.
     source_plugin = Column(String)
 
 
@@ -878,6 +879,8 @@ class Workflow(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_run_at = Column(DateTime, nullable=True)
     run_count = Column(Integer, default=0)
+    version = Column(Integer, default=1)
+    version_history = Column(JSON, default=list)  # list of {version, nodes, edges, saved_at}
 
     nodes = relationship("WorkflowNode", back_populates="workflow", cascade="all, delete-orphan")
     edges = relationship("WorkflowEdge", back_populates="workflow", cascade="all, delete-orphan")

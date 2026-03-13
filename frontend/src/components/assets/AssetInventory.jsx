@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle } from 'lucide-react'
+import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership } from '../../api.js'
 import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover } from '../shared/ui.jsx'
@@ -240,8 +240,11 @@ function BulkTagModal({ assetIds, onClose, onDone }) {
 const CRITICALITY_LABELS = { 1: 'Minimal', 2: 'Very Low', 3: 'Low', 4: 'Low-Med', 5: 'Medium', 6: 'Med-High', 7: 'High', 8: 'Very High', 9: 'Critical', 10: 'Maximum' }
 
 export default function AssetInventory() {
+  const ASSET_PAGE_SIZE = 50
   const { activeScanId } = useScan()
   const [assets, setAssets] = useState([])
+  const [totalAssets, setTotalAssets] = useState(0)
+  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [blastMap, setBlastMap] = useState({})
   const [expandedAsset, setExpandedAsset] = useState(null)
@@ -304,6 +307,8 @@ export default function AssetInventory() {
       server_role: filters.serverRole || undefined,
       sort_by: sortBy,
       order: sortOrder,
+      page,
+      page_size: ASSET_PAGE_SIZE,
     }
     if (tagFilter.length) {
       params.tags = tagFilter.map(t => t.label || `${t.category}:${t.value}`).join(',')
@@ -311,10 +316,12 @@ export default function AssetInventory() {
     }
     getAssets(params)
       .then(data => {
-        setAssets(data)
+        setAssets(data.assets)
+        setTotalAssets(data.total)
+        const assetList = data.assets
         const scanIds = activeScanId
           ? [activeScanId]
-          : [...new Set(data.map(a => a.scan_id).filter(Boolean))]
+          : [...new Set(assetList.map(a => a.scan_id).filter(Boolean))]
         if (scanIds.length) {
           Promise.all(scanIds.map(sid => getBlastRadiusBulk(sid)))
             .then(results => setBlastMap(Object.assign({}, ...results)))
@@ -324,13 +331,23 @@ export default function AssetInventory() {
       .finally(() => setLoading(false))
   }
 
+  // Reset page when filters change
+  const prevFiltersRef = useRef(filters)
+  useEffect(() => {
+    if (prevFiltersRef.current !== filters || prevFiltersRef._tagFilter !== tagFilter) {
+      setPage(1)
+    }
+    prevFiltersRef.current = filters
+    prevFiltersRef._tagFilter = tagFilter
+  }, [filters, tagFilter, tagLogic, activeScanId])
+
   const debounceRef = useRef(null)
   useEffect(() => {
     if (advancedMode) return
     clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(load, filters.search ? 300 : 0)
     return () => clearTimeout(debounceRef.current)
-  }, [activeScanId, sortBy, sortOrder, tagFilter, tagLogic, filters, advancedMode])
+  }, [activeScanId, sortBy, sortOrder, tagFilter, tagLogic, filters, advancedMode, page])
 
   const runAdvancedSearch = () => {
     if (!advancedConditions.length) return
@@ -636,7 +653,7 @@ export default function AssetInventory() {
     <div>
       <PageHeader
         title="Assets"
-        subtitle={advancedMode ? `${assets.length} assets matched` : `${assets.length} assets discovered`}
+        subtitle={advancedMode ? `${assets.length} assets matched` : `${totalAssets} assets discovered`}
         action={
           <div style={{ display: 'flex', gap: 8 }}>
             {selectedIds.size > 0 && (
@@ -856,6 +873,24 @@ export default function AssetInventory() {
               sortOrder={sortOrder}
               emptyMessage="No assets match the current filters"
             />
+            {!advancedMode && Math.ceil(totalAssets / ASSET_PAGE_SIZE) > 1 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 16px', borderTop: '1px solid var(--border)' }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  {totalAssets.toLocaleString()} assets
+                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
+                    <ChevronLeft size={14} /> Prev
+                  </Button>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    {page} / {Math.ceil(totalAssets / ASSET_PAGE_SIZE)}
+                  </span>
+                  <Button variant="ghost" size="sm" disabled={page >= Math.ceil(totalAssets / ASSET_PAGE_SIZE)} onClick={() => setPage(p => p + 1)}>
+                    Next <ChevronRight size={14} />
+                  </Button>
+                </div>
+              </div>
+            )}
           </Card>
         )
       )}

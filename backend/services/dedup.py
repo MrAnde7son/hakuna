@@ -281,6 +281,7 @@ def dedup_inventory(inventory: dict, cfg: dict) -> dict:
         "env_vars": "env_vars",
         "processes": "processes",
         "certificates": "certificates",
+        "ai_tools": "ai_tools",
         "database_instances": "database_instances",
     }
 

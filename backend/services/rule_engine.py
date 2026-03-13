@@ -153,7 +153,7 @@ CONDITION_CATALOG = [
             {"field": "finding.synopsis",        "label": "Synopsis",           "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "remote code execution"},
             {"field": "finding.description",     "label": "Description",        "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "buffer overflow"},
             {"field": "finding.solution",        "label": "Solution",           "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "Upgrade to"},
-            {"field": "finding.cve",             "label": "Affected by CVE",    "ops": ["contains", "eq"],                "value_type": "string", "placeholder": "CVE-2021-44228"},
+            {"field": "finding.cve",             "label": "CVE",    "ops": ["contains", "eq"],                "value_type": "string", "placeholder": "CVE-2021-44228"},
             {
                 "field": "finding.sla_status", "label": "SLA Status",
                 "ops": ["eq", "neq"],

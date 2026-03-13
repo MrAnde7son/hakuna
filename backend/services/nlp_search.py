@@ -199,9 +199,17 @@ def parse_nlp_query(query: str) -> dict:
             asset_filters["min_high"] = n
             chip("Min High", str(n), "#f97316")
 
+    # ── Priority score ───────────────────────────────────────────────────────
+    prio_match = re.search(r"priority\s*(?:score\s*)?(?:above|over|greater\s*than|>|>=|at\s*least)\s*(\d+(?:\.\d+)?)", ql) or \
+                 re.search(r"(?:above|over|greater\s*than|>|>=|at\s*least)\s*(\d+(?:\.\d+)?)\s*priority", ql)
+    if prio_match:
+        prio_val = float(prio_match.group(1))
+        finding_filters["min_priority"] = prio_val
+        chip("Min Priority", str(prio_val), "#f97316")
+
     # ── Risk score ────────────────────────────────────────────────────────────
-    risk_match = re.search(r"risk\s*(?:score\s*)?(?:above|over|>|>=|at\s*least)?\s*(\d+(?:\.\d+)?)", ql) or \
-                 re.search(r"(?:above|over|>|>=|at\s*least)\s*(\d+(?:\.\d+)?)\s*risk", ql)
+    risk_match = re.search(r"risk\s*(?:score\s*)?(?:above|over|greater\s*than|>|>=|at\s*least)?\s*(\d+(?:\.\d+)?)", ql) or \
+                 re.search(r"(?:above|over|greater\s*than|>|>=|at\s*least)\s*(\d+(?:\.\d+)?)\s*risk", ql)
     if risk_match:
         risk_val = float(risk_match.group(1))
         asset_filters["min_risk"] = risk_val
@@ -283,15 +291,16 @@ def parse_nlp_query(query: str) -> dict:
         r"windows|linux|ubuntu|debian|centos|red\s*hat|rhel|macos?|osx|solaris|aix|freebsd|cisco|"
         r"sla|breached|overdue|resolved|fixed|closed|on\s*track|at\s*risk|past\s*due|"
         r"assets?|servers?|hosts?|findings?|vulnerabilit(?:y|ies)|vulns?|"
-        r"plugin\s*(?:id)?|nid|port|"
+        r"plugin\s*(?:id)?|nid|port|priority|greater|"
+        r"most|newest|latest|recent|oldest|earliest|worst|quickest|highest|"
         r"epss|cvss|cve-\d{4}-\d{4,7})\b",
         " ", residual, flags=re.IGNORECASE
     )
-    # Remove numbers that are arguments to already-parsed patterns (standalone digits)
-    # but preserve numbers that are part of meaningful text (e.g. "MS17-010")
-    residual = re.sub(r"(?<!\w)#?\d+(?:\.\d+)?%?(?!\w)", " ", residual)
-    # Strip leading dashes/punctuation
-    residual = re.sub(r"[^\w\s]", " ", residual)
+    # Remove standalone numbers (args to parsed patterns) but keep numbers
+    # attached to words via hyphens (e.g. "MS17-010")
+    residual = re.sub(r"(?<![\w-])#?\d+(?:\.\d+)?%?(?![\w-])", " ", residual)
+    # Strip punctuation only between spaces (preserve intra-word hyphens like MS17-010)
+    residual = re.sub(r"(?<!\w)[^\w\s]+(?!\w)", " ", residual)
     residual = re.sub(r"\s{2,}", " ", residual).strip()
     # Only use residual as text search if it's meaningful (> 2 chars) and no OS search set
     if len(residual) > 2 and "search" not in asset_filters:

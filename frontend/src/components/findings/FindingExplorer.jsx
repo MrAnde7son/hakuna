@@ -416,7 +416,7 @@ export default function FindingExplorer() {
   }, [activeScanId])
 
   useEffect(() => {
-    getAssets({ scan_id: activeScanId }).then(setAssets).catch(() => {})
+    getAssets({ scan_id: activeScanId, page_size: 0 }).then(data => setAssets(data.assets ?? data)).catch(() => {})
   }, [activeScanId])
 
 

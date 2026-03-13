@@ -1,7 +1,7 @@
 /**
  * Shared UI primitives
  */
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { getTags, createCampaign, createAutoTagRule } from '../../api.js'
 
@@ -69,7 +69,7 @@ export function StatCard({ label, value, sub, color, icon: Icon, onClick }) {
   )
 }
 
-export function Table({ columns, rows, onRowClick, onSort, sortBy, sortOrder, emptyMessage = 'No data' }) {
+export function Table({ columns, rows, onRowClick, onSort, sortBy, sortOrder, emptyMessage = 'No data', renderRowExtra }) {
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -108,25 +108,36 @@ export function Table({ columns, rows, onRowClick, onSort, sortBy, sortOrder, em
         <tbody>
           {rows.length === 0 ? (
             <tr><td colSpan={columns.length} style={{ padding: '32px 12px', textAlign: 'center', color: 'var(--text-muted)' }}>{emptyMessage}</td></tr>
-          ) : rows.map((row, i) => (
-            <tr
-              key={i}
-              onClick={() => onRowClick && onRowClick(row)}
-              style={{
-                borderBottom: '1px solid var(--border)',
-                cursor: onRowClick ? 'pointer' : 'default',
-                transition: 'background 0.1s',
-              }}
-              onMouseEnter={e => onRowClick && (e.currentTarget.style.background = 'var(--bg-hover)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-            >
-              {columns.map(col => (
-                <td key={col.key} style={{ padding: '10px 12px', color: 'var(--text-primary)', verticalAlign: 'middle' }}>
-                  {col.render ? col.render(row[col.key], row) : row[col.key]}
-                </td>
-              ))}
-            </tr>
-          ))}
+          ) : rows.map((row, i) => {
+            const extra = renderRowExtra && renderRowExtra(row, i)
+            return (
+              <Fragment key={i}>
+                <tr
+                  onClick={() => onRowClick && onRowClick(row)}
+                  style={{
+                    borderBottom: extra ? 'none' : '1px solid var(--border)',
+                    cursor: onRowClick ? 'pointer' : 'default',
+                    transition: 'background 0.1s',
+                  }}
+                  onMouseEnter={e => onRowClick && (e.currentTarget.style.background = 'var(--bg-hover)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                >
+                  {columns.map(col => (
+                    <td key={col.key} style={{ padding: '10px 12px', color: 'var(--text-primary)', verticalAlign: 'middle' }}>
+                      {col.render ? col.render(row[col.key], row) : row[col.key]}
+                    </td>
+                  ))}
+                </tr>
+                {extra && (
+                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td colSpan={columns.length} style={{ padding: 0 }}>
+                      {extra}
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -198,13 +209,13 @@ export function Button({ children, onClick, variant = 'primary', size = 'md', di
   )
 }
 
-export function Pill({ label, color = 'var(--text-muted)' }) {
+export function Pill({ label, color = 'var(--text-muted)', children }) {
   return (
     <span style={{
       display: 'inline-block', padding: '2px 8px', borderRadius: 999,
       background: `${color}22`, color, border: `1px solid ${color}44`,
       fontSize: 11, fontWeight: 600,
-    }}>{label}</span>
+    }}>{label || children}</span>
   )
 }
 
