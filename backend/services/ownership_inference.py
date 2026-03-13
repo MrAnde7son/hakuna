@@ -180,8 +180,10 @@ def resolve_finding_owner(finding, asset, db: Session) -> dict:
         if own.owner_name or own.owner_role:
             return {
                 "owner_name": own.owner_name,
+                "owner_email": own.owner_email,
                 "owner_role": own.owner_role,
                 "owner_team": own.team,
+                "notes": own.notes,
                 "source": "manual_finding",
             }
 
@@ -191,8 +193,10 @@ def resolve_finding_owner(finding, asset, db: Session) -> dict:
         if own.owner_name or own.owner_role:
             return {
                 "owner_name": own.owner_name,
+                "owner_email": own.owner_email,
                 "owner_role": own.owner_role,
                 "owner_team": own.team,
+                "notes": own.notes,
                 "source": "manual_asset",
             }
 

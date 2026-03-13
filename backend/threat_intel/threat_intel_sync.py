@@ -968,9 +968,11 @@ def _parse_pub_date(raw: str) -> Optional[str]:
     m = re.match(r"(\d{4}-\d{2}-\d{2})", raw)
     if m:
         return m.group(1)
-    # RFC 2822: "Tue, 11 Mar 2026 00:00:00 +0000"
+    # RFC 2822: "Tue, 11 Mar 2026 00:00:00 +0000" or 2-digit year "Fri, 13 Mar 26 12:00:00 +0000"
     for fmt in ("%a, %d %b %Y %H:%M:%S %z", "%a, %d %b %Y %H:%M:%S %Z",
-                "%d %b %Y %H:%M:%S %z", "%d %b %Y"):
+                "%a, %d %b %y %H:%M:%S %z", "%a, %d %b %y %H:%M:%S %Z",
+                "%d %b %Y %H:%M:%S %z", "%d %b %Y",
+                "%d %b %y %H:%M:%S %z", "%d %b %y"):
         try:
             return datetime.strptime(raw.strip(), fmt).strftime("%Y-%m-%d")
         except ValueError:

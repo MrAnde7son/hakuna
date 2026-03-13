@@ -1,18 +1,23 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight } from 'lucide-react'
 import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input } from '../shared/ui.jsx'
 import BlastRadiusPanel from '../campaigns/BlastRadiusPanel.jsx'
 
-function Section({ title, icon: Icon, children }) {
+function Section({ title, icon: Icon, children, defaultOpen = true }) {
+  const [open, setOpen] = useState(defaultOpen)
   return (
     <Card style={{ marginBottom: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
+      <div
+        onClick={() => setOpen(!open)}
+        style={{ display: 'flex', alignItems: 'center', gap: 8, paddingBottom: open ? 12 : 0, marginBottom: open ? 14 : 0, borderBottom: open ? '1px solid var(--border)' : 'none', cursor: 'pointer', userSelect: 'none' }}
+      >
+        {open ? <ChevronDown size={14} color="var(--text-muted)" /> : <ChevronRight size={14} color="var(--text-muted)" />}
         {Icon && <Icon size={16} color="var(--accent)" />}
         <span style={{ fontWeight: 600, fontSize: 14 }}>{title}</span>
       </div>
-      {children}
+      {open && children}
     </Card>
   )
 }
@@ -83,21 +88,27 @@ function PreText({ text }) {
 
 function RemediationSteps({ text }) {
   if (!text) return <span style={{ color: 'var(--text-muted)' }}>No remediation steps available.</span>
-  const parts = text.split('\n\n')
+  const parts = text.split('\n\n').filter(Boolean)
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
       {parts.map((part, i) => {
         const isBold = part.startsWith('**')
         const cleaned = part.replace(/\*\*/g, '')
         return (
           <div key={i} style={{
-            padding: '10px 14px', borderRadius: 8,
-            background: isBold ? 'rgba(220,38,38,0.08)' : 'var(--bg-secondary)',
-            border: isBold ? '1px solid rgba(220,38,38,0.3)' : '1px solid var(--border)',
-            fontSize: 13, lineHeight: 1.6, color: isBold ? 'var(--danger)' : 'var(--text-secondary)',
+            display: 'flex', gap: 12, padding: '10px 14px',
+            borderLeft: isBold ? '3px solid var(--danger)' : '3px solid var(--border)',
+            background: isBold ? 'rgba(220,38,38,0.06)' : 'transparent',
+            fontSize: 13, lineHeight: 1.6,
+            color: isBold ? 'var(--danger)' : 'var(--text-secondary)',
             fontWeight: isBold ? 500 : 400,
           }}>
-            {cleaned}
+            {!isBold && (
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', minWidth: 18, paddingTop: 2 }}>
+                {i}
+              </span>
+            )}
+            <span>{cleaned}</span>
           </div>
         )
       })}
@@ -114,6 +125,8 @@ export default function FindingDetail() {
   const [resolving, setResolving] = useState(false)
   const [statusUpdating, setStatusUpdating] = useState(false)
   const [showExceptionForm, setShowExceptionForm] = useState(false)
+  const [showAllCves, setShowAllCves] = useState(false)
+  const [showAllControls, setShowAllControls] = useState(false)
   const [exceptionReason, setExceptionReason] = useState('')
   const [ctxSaving, setCtxSaving] = useState(false)
 
@@ -233,9 +246,11 @@ export default function FindingDetail() {
             </div>
           </div>
 
-          <Button onClick={handleCreateCampaign} disabled={creatingCampaign} style={{ flexShrink: 0, padding: '10px 18px' }}>
-            <Zap size={16} /> {creatingCampaign ? 'Creating…' : 'Start a Campaign'}
-          </Button>
+          {finding.asset_hostname && (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', background: 'var(--bg-secondary)', padding: '5px 12px', borderRadius: 6, flexShrink: 0 }}>
+              ASSET &nbsp;<span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{finding.asset_hostname}</span>
+            </div>
+          )}
         </div>
 
         {/* Score strip */}
@@ -375,44 +390,66 @@ export default function FindingDetail() {
           <UserCheck size={16} color="var(--accent)" />
           <span style={{ fontWeight: 600, fontSize: 14 }}>Workflow Status</span>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-          {[
+        {(() => {
+          const steps = [
             { value: 'open', label: 'Open', color: '#6b7280' },
             { value: 'in_progress', label: 'In Progress', color: '#3b82f6' },
             { value: 'resolved', label: 'Resolved', color: '#22c55e' },
-          ].map(s => (
-            <button
-              key={s.value}
-              disabled={statusUpdating}
-              onClick={() => handleStatusChange(s.value)}
-              style={{
-                padding: '6px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
-                border: '2px solid ' + s.color,
-                background: (finding.workflow_status || 'open') === s.value ? s.color : 'transparent',
-                color: (finding.workflow_status || 'open') === s.value ? '#fff' : s.color,
-                cursor: statusUpdating ? 'wait' : 'pointer',
-                transition: 'all 0.15s ease',
-              }}
-            >
-              {s.label}
-            </button>
-          ))}
-          <div style={{ borderLeft: '1px solid var(--border)', margin: '0 4px' }} />
-          <button
-            disabled={statusUpdating}
-            onClick={() => setShowExceptionForm(!showExceptionForm)}
-            style={{
-              padding: '6px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
-              border: '2px solid #d97706',
-              background: ['accepted_risk', 'false_positive', 'compensating_control'].includes(finding.workflow_status) ? '#d97706' : 'transparent',
-              color: ['accepted_risk', 'false_positive', 'compensating_control'].includes(finding.workflow_status) ? '#fff' : '#d97706',
-              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
-            }}
-          >
-            <ShieldOff size={13} />
-            {finding.exception_id ? 'Has Exception' : 'Create Exception'}
-          </button>
-        </div>
+          ]
+          const currentStatus = finding.workflow_status || 'open'
+          const currentIdx = steps.findIndex(s => s.value === currentStatus)
+          return (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 12 }}>
+              {steps.map((s, i) => {
+                const isActive = s.value === currentStatus
+                const isPast = i < currentIdx
+                const stepColor = isActive || isPast ? s.color : 'var(--border)'
+                return (
+                  <React.Fragment key={s.value}>
+                    {i > 0 && (
+                      <div style={{
+                        flex: 1, height: 2, maxWidth: 40,
+                        background: isPast || isActive ? steps[Math.min(i, currentIdx)].color : 'var(--border)',
+                        transition: 'background 0.2s',
+                      }} />
+                    )}
+                    <button
+                      disabled={statusUpdating}
+                      onClick={() => handleStatusChange(s.value)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 6,
+                        padding: '6px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600,
+                        border: `2px solid ${stepColor}`,
+                        background: isActive ? stepColor : isPast ? `${stepColor}18` : 'transparent',
+                        color: isActive ? '#fff' : isPast ? stepColor : 'var(--text-muted)',
+                        cursor: statusUpdating ? 'wait' : 'pointer',
+                        transition: 'all 0.15s ease',
+                      }}
+                    >
+                      {isPast && <CheckCircle size={12} />}
+                      {s.label}
+                    </button>
+                  </React.Fragment>
+                )
+              })}
+              <div style={{ flex: 1 }} />
+              <button
+                disabled={statusUpdating}
+                onClick={() => setShowExceptionForm(!showExceptionForm)}
+                style={{
+                  padding: '6px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600,
+                  border: '2px solid #d97706',
+                  background: ['accepted_risk', 'false_positive', 'compensating_control'].includes(currentStatus) ? '#d97706' : 'transparent',
+                  color: ['accepted_risk', 'false_positive', 'compensating_control'].includes(currentStatus) ? '#fff' : '#d97706',
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+                }}
+              >
+                <ShieldOff size={13} />
+                {finding.exception_id ? 'Has Exception' : 'Create Exception'}
+              </button>
+            </div>
+          )
+        })()}
 
         {finding.workflow_assigned_to && (
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
@@ -488,8 +525,7 @@ export default function FindingDetail() {
         const fmtOption = (o) => o.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
         return (
-          <>
-            <Section title="Validated Context" icon={Eye}>
+            <Section title="Context & Risk Factors" icon={Eye}>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 {[
                   { field: 'ctx_reachability', label: 'Reachability', options: ['unreachable', 'internal_only', 'internet_facing', 'unknown'] },
@@ -536,11 +572,16 @@ export default function FindingDetail() {
                       return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No compensating controls detected</span>;
                     }
 
+                    const MAX_CONTROLS = 4;
+                    const visibleControls = showAllControls ? parsedControls : parsedControls.slice(0, MAX_CONTROLS);
+                    const hiddenControlCount = parsedControls.length - MAX_CONTROLS;
+
                     return (
                       <>
                         {parsedControls.length > 0 ? (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                            {parsedControls.map((ctrl, i) => (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                            <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 600 }}>{parsedControls.length} controls</span>
+                            {visibleControls.map((ctrl, i) => (
                               <div key={i} style={{
                                 display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
                                 borderRadius: 8, fontSize: 12, fontWeight: 500,
@@ -562,6 +603,20 @@ export default function FindingDetail() {
                                 }}>outdated</span>}
                               </div>
                             ))}
+                            {hiddenControlCount > 0 && !showAllControls && (
+                              <button onClick={() => setShowAllControls(true)} style={{
+                                padding: '4px 10px', borderRadius: 12, fontSize: 12, fontWeight: 600,
+                                border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+                                color: 'var(--text-muted)', cursor: 'pointer',
+                              }}>+{hiddenControlCount} more</button>
+                            )}
+                            {showAllControls && hiddenControlCount > 0 && (
+                              <button onClick={() => setShowAllControls(false)} style={{
+                                padding: '4px 10px', borderRadius: 12, fontSize: 12, fontWeight: 600,
+                                border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+                                color: 'var(--text-muted)', cursor: 'pointer',
+                              }}>Show less</button>
+                            )}
                           </div>
                         ) : (
                           <div style={{
@@ -575,64 +630,65 @@ export default function FindingDetail() {
                   })()}
                 </div>
               </div>
-            </Section>
-
-            <Section title="Business Context" icon={Briefcase}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, marginTop: -6 }}>
-                Applies to the asset ({finding.asset_hostname || finding.asset_ip}) — shared across all findings on this host.
+              {/* Business Context sub-section */}
+              <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  <Briefcase size={14} color="var(--text-muted)" />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Business Context</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— {finding.asset_hostname || finding.asset_ip}</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center' }}>
+                      Function{sourceBadge('biz_function')}
+                    </div>
+                    <input
+                      type="text"
+                      value={finding._localBizFunc ?? ctxVal('biz_function')}
+                      onChange={e => setFinding(prev => ({ ...prev, _localBizFunc: e.target.value }))}
+                      onBlur={e => { handleContextChange('biz_function', e.target.value); setFinding(prev => { const { _localBizFunc, ...rest } = prev; return rest }) }}
+                      placeholder="e.g. Payment Processing"
+                      style={{
+                        width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13,
+                        border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center' }}>
+                      No. of Users{sourceBadge('biz_num_users')}
+                    </div>
+                    <input
+                      type="number"
+                      min="0"
+                      value={finding._localBizUsers ?? (ctx.biz_num_users?.value ?? '')}
+                      onChange={e => setFinding(prev => ({ ...prev, _localBizUsers: e.target.value === '' ? '' : parseInt(e.target.value) }))}
+                      onBlur={e => { handleContextChange('biz_num_users', e.target.value === '' ? null : parseInt(e.target.value)); setFinding(prev => { const { _localBizUsers, ...rest } = prev; return rest }) }}
+                      placeholder="0"
+                      style={{
+                        width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13,
+                        border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center' }}>
+                      Revenue Impact{sourceBadge('biz_revenue_impact')}
+                    </div>
+                    <select value={ctxVal('biz_revenue_impact')} onChange={e => handleContextChange('biz_revenue_impact', e.target.value)} style={selectStyle}>
+                      <option value="">— Not set —</option>
+                      <option value="none">None</option>
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                  </div>
+                </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center' }}>
-                    Function{sourceBadge('biz_function')}
-                  </div>
-                  <input
-                    type="text"
-                    value={finding._localBizFunc ?? ctxVal('biz_function')}
-                    onChange={e => setFinding(prev => ({ ...prev, _localBizFunc: e.target.value }))}
-                    onBlur={e => { handleContextChange('biz_function', e.target.value); setFinding(prev => { const { _localBizFunc, ...rest } = prev; return rest }) }}
-                    placeholder="e.g. Payment Processing"
-                    style={{
-                      width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13,
-                      border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)',
-                      boxSizing: 'border-box',
-                    }}
-                  />
-                </div>
-                <div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center' }}>
-                    No. of Users{sourceBadge('biz_num_users')}
-                  </div>
-                  <input
-                    type="number"
-                    min="0"
-                    value={finding._localBizUsers ?? (ctx.biz_num_users?.value ?? '')}
-                    onChange={e => setFinding(prev => ({ ...prev, _localBizUsers: e.target.value === '' ? '' : parseInt(e.target.value) }))}
-                    onBlur={e => { handleContextChange('biz_num_users', e.target.value === '' ? null : parseInt(e.target.value)); setFinding(prev => { const { _localBizUsers, ...rest } = prev; return rest }) }}
-                    placeholder="0"
-                    style={{
-                      width: '100%', padding: '7px 10px', borderRadius: 6, fontSize: 13,
-                      border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)',
-                      boxSizing: 'border-box',
-                    }}
-                  />
-                </div>
-                <div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center' }}>
-                    Revenue Impact{sourceBadge('biz_revenue_impact')}
-                  </div>
-                  <select value={ctxVal('biz_revenue_impact')} onChange={e => handleContextChange('biz_revenue_impact', e.target.value)} style={selectStyle}>
-                    <option value="">— Not set —</option>
-                    <option value="none">None</option>
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                    <option value="critical">Critical</option>
-                  </select>
-                </div>
-              </div>
             </Section>
-          </>
         )
       })()}
 
@@ -706,7 +762,7 @@ export default function FindingDetail() {
 
       {/* Description */}
       {finding.description && (
-        <Section title="Description" icon={Info}>
+        <Section title="Description" icon={Info} defaultOpen={false}>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
             {finding.description}
           </div>
@@ -715,13 +771,13 @@ export default function FindingDetail() {
 
       {/* Plugin Output */}
       {finding.plugin_output && (
-        <Section title="Plugin Output" icon={Terminal}>
+        <Section title="Plugin Output" icon={Terminal} defaultOpen={false}>
           <PreText text={finding.plugin_output} />
         </Section>
       )}
 
       {/* Technical Details */}
-      <Section title="Technical Details" icon={Info}>
+      <Section title="Technical Details" icon={Info} defaultOpen={false}>
         <KeyVal label="Plugin ID" value={finding.plugin_id} />
         <KeyVal label="Plugin Family" value={finding.plugin_family} />
         <KeyVal label="Risk Factor" value={finding.risk_factor} />
@@ -737,24 +793,53 @@ export default function FindingDetail() {
         <KeyVal label="Plugin Modified" value={finding.plugin_mod_date} />
 
         {/* CVEs */}
-        {finding.cves && finding.cves.length > 0 && (
-          <div style={{ padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>CVE References</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {finding.cves.map(cve => (
-                <a
-                  key={cve}
-                  href={`https://nvd.nist.gov/vuln/detail/${cve}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ display: 'flex', alignItems: 'center', gap: 4 }}
-                >
-                  <Pill label={cve} color="#f59e0b" />
-                </a>
-              ))}
+        {finding.cves && finding.cves.length > 0 && (() => {
+          const MAX_VISIBLE = 6
+          const visibleCves = showAllCves ? finding.cves : finding.cves.slice(0, MAX_VISIBLE)
+          const hiddenCount = finding.cves.length - MAX_VISIBLE
+          return (
+            <div style={{ padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>CVE References ({finding.cves.length})</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                {visibleCves.map(cve => (
+                  <a
+                    key={cve}
+                    href={`https://nvd.nist.gov/vuln/detail/${cve}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                  >
+                    <Pill label={cve} color="#f59e0b" />
+                  </a>
+                ))}
+                {hiddenCount > 0 && !showAllCves && (
+                  <button
+                    onClick={() => setShowAllCves(true)}
+                    style={{
+                      padding: '4px 10px', borderRadius: 12, fontSize: 12, fontWeight: 600,
+                      border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+                      color: 'var(--text-muted)', cursor: 'pointer',
+                    }}
+                  >
+                    +{hiddenCount} more
+                  </button>
+                )}
+                {showAllCves && hiddenCount > 0 && (
+                  <button
+                    onClick={() => setShowAllCves(false)}
+                    style={{
+                      padding: '4px 10px', borderRadius: 12, fontSize: 12, fontWeight: 600,
+                      border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+                      color: 'var(--text-muted)', cursor: 'pointer',
+                    }}
+                  >
+                    Show less
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          )
+        })()}
 
         {/* See Also */}
         {finding.see_also && finding.see_also.length > 0 && (

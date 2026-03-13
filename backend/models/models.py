@@ -212,6 +212,11 @@ class Finding(Base):
     scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
     asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False)
 
+    # Multi-source provenance
+    source_type = Column(String, default="nessus")      # which scanner produced this finding
+    source_vuln_id = Column(String)                       # native scanner vuln ID (Nessus=plugin_id, Qualys=QID, etc.)
+    normalized_id = Column(String, index=True)            # cross-source identity (CVE-based when available)
+
     # Plugin metadata
     plugin_id = Column(String, index=True)
     plugin_name = Column(String)

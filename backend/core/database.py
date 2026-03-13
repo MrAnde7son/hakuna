@@ -70,6 +70,9 @@ def _migrate_add_columns():
             ("cvss4_vector", "VARCHAR"),
             ("matched_ttps", "JSON"),
             ("aggregated_solution_id", "INTEGER"),
+            ("source_type", 'VARCHAR DEFAULT "nessus"'),
+            ("source_vuln_id", "VARCHAR"),
+            ("normalized_id", "VARCHAR"),
         ],
         "threat_cves": [
             ("cvss4_score", "FLOAT"),
@@ -88,7 +91,12 @@ def _migrate_add_columns():
             ("mitigation_plan", "TEXT"),
         ],
         # Multi-tenancy: add org_id to all tenant-scoped tables
-        "scans": [("org_id", "INTEGER")],
+        "scans": [
+            ("org_id", "INTEGER"),
+            ("source_type", 'VARCHAR DEFAULT "nessus"'),
+            ("source_version", "VARCHAR"),
+            ("raw_metadata", "JSON"),
+        ],
         "tags": [("org_id", "INTEGER")],
         "auto_tag_rules": [("org_id", "INTEGER")],
         "campaigns": [("org_id", "INTEGER")],

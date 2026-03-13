@@ -1,0 +1,13 @@
+Seed the database with test scan data for local development.
+
+User description: $ARGUMENTS
+
+Steps:
+1. Check for sample scan files in the repo (look for .nessus, .html, .csv files in test/, samples/, or root)
+2. Ensure the backend is running: `curl -s http://localhost:8000/api/health`
+   - If not running, start it: `cd /Users/itamar/Documents/Git/nessus-remediation/backend && source .venv/bin/activate && uvicorn app:app --port 8000 --reload &`
+3. If sample files exist, upload them via the API:
+   - `curl -X POST http://localhost:8000/api/upload -F "file=@<path_to_file>"`
+4. If no sample files exist, inform the user they need to provide a scan file
+5. Verify the upload: `curl -s http://localhost:8000/api/scans | python3 -m json.tool`
+6. Report: number of scans, assets, and findings loaded

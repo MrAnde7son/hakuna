@@ -1896,13 +1896,22 @@ USER_PLUGINS = {"ad_users", "local_users", "admins_group", "last_logon"}
 GROUP_PLUGINS = {"ad_groups", "ldap_groups"}
 
 
-def extract_inventory_from_findings(findings: list[dict]) -> dict:
+def extract_inventory_from_findings(findings: list[dict], dispatch: dict = None) -> dict:
     """
     Given a list of finding dicts (each with plugin_id, plugin_output,
     asset_id, scan_id, asset_hostname), extract all inventory records.
 
+    Args:
+        findings: list of finding dicts from a scan
+        dispatch: optional plugin_id -> (table_key, extract_fn) mapping.
+                  Defaults to the built-in PLUGIN_DISPATCH for Nessus.
+                  Pass a custom dispatch for non-Nessus sources.
+
     Returns a dict keyed by entity type, each holding a list of record dicts.
     """
+    if dispatch is None:
+        dispatch = PLUGIN_DISPATCH
+
     result = {
         "users": [],
         "groups": [],
@@ -1925,7 +1934,7 @@ def extract_inventory_from_findings(findings: list[dict]) -> dict:
 
     for finding in findings:
         plugin_id = str(finding.get("plugin_id", ""))
-        if plugin_id not in PLUGIN_DISPATCH:
+        if plugin_id not in dispatch:
             continue
 
         output = finding.get("plugin_output") or ""
@@ -1936,7 +1945,7 @@ def extract_inventory_from_findings(findings: list[dict]) -> dict:
         scan_id = finding.get("scan_id")
         asset_hostname = finding.get("asset_hostname", "") or finding.get("host_name", "") or ""
 
-        table_key, fn = PLUGIN_DISPATCH[plugin_id]
+        table_key, fn = dispatch[plugin_id]
 
         try:
             import inspect

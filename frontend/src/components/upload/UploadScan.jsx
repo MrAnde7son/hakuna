@@ -32,7 +32,7 @@ function DropZone({ onFile, disabled }) {
     >
       <Upload size={40} color={dragging ? '#6366f1' : 'var(--text-muted)'} style={{ marginBottom: 16 }} />
       <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 8 }}>
-        {dragging ? 'Drop it!' : 'Drop your Nessus HTML report here'}
+        {dragging ? 'Drop it!' : 'Drop your scan report here'}
       </div>
       <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
         or click to browse · Supports HTML, .nessus XML, and CSV exports
@@ -126,7 +126,7 @@ export default function UploadScan() {
     <div style={{ maxWidth: 700 }}>
       <PageHeader
         title="Upload"
-        subtitle="Import a Nessus scan to analyze findings"
+        subtitle="Import a vulnerability scan to analyze findings"
       />
 
       <Card style={{ marginBottom: 20 }}>
@@ -173,7 +173,7 @@ export default function UploadScan() {
                   {scan.scan_date || scan.created_at?.split('T')[0]} ·
                   {scan.asset_count} assets ·
                   {scan.finding_count?.toLocaleString()} findings
-                  {scan.nessus_version && ` · Nessus ${scan.nessus_version}`}
+                  {scan.source_type && ` · ${scan.source_type}${scan.source_version ? ' ' + scan.source_version : ''}`}
                 </div>
               </div>
               {deletingId === scan.id ? (

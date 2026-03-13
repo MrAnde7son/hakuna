@@ -360,7 +360,14 @@ function ThreatGroupSpotlight() {
           <span style={{ fontSize: 15 }}>{COUNTRY_FLAGS[g.country] || '🌐'}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>{g.name}</div>
-            {g.mitre_id && <div style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{g.mitre_id}</div>}
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              {g.mitre_id && <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{g.mitre_id}</span>}
+              {(g.first_seen || g.last_seen) && (
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                  {g.first_seen && g.last_seen ? `${g.first_seen} – ${g.last_seen}` : g.first_seen || g.last_seen}
+                </span>
+              )}
+            </div>
           </div>
           {g.motivation && (
             <span style={{
@@ -576,7 +583,6 @@ function NewsroomTab({ cves, onSearchCve }) {
         {/* Summary pills */}
         <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
           {[
-            { label: `${cves.filter(c => c.in_kev).length} total KEV`, color: '#dc2626' },
             { label: `${ransomwareCount} ransomware-linked`, color: '#ea580c' },
             { label: `${overdueCount} missed KEV deadlines`, color: '#7c3aed' },
           ].map(({ label, color }) => (
@@ -1156,9 +1162,17 @@ function GroupCard({ group, exposure }) {
               <Pill label="Nation-State" color="#2563eb" small />
             )}
           </div>
-          {group.mitre_id && (
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{group.mitre_id}</span>
-          )}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {group.mitre_id && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{group.mitre_id}</span>
+            )}
+            {(group.first_seen || group.last_seen) && (
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 3 }}>
+                <Clock size={10} />
+                {group.first_seen && group.last_seen ? `${group.first_seen} – ${group.last_seen}` : group.first_seen || group.last_seen}
+              </span>
+            )}
+          </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
           <Pill label={group.motivation || 'Unknown'} color={motivColor} />

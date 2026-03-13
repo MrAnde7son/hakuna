@@ -31,6 +31,8 @@ from models.models import (
     SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog, AggregatedSolution,
 )
 from parsers.parser import detect_and_parse, load_intel_json
+from parsers.registry import detect_parser, list_parsers, init_parsers
+from services.normalizer import compute_normalized_id
 from services.prioritizer import compute_priority_score
 from parsers.inventory_extractor import extract_inventory_from_findings, _cn_from_dn
 from services.asset_classifier import classify_asset
@@ -310,7 +312,8 @@ def _deferred_startup():
 @app.on_event("startup")
 def startup():
     init_db()
-    logger.info("Database initialized")
+    init_parsers()
+    logger.info("Database initialized, parsers registered")
     # Build ENTITY_MODEL_MAP after models are loaded
     ENTITY_MODEL_MAP.update({
         "assets":            (Asset,                    [],                    []),
@@ -384,11 +387,11 @@ def _populate_temporal_fields(db: Session, scan):
 
     # Aggregate historical data efficiently
     # Use first_seen/last_seen from prior findings (set from actual scan dates, not upload times)
-    from sqlalchemy import and_, coalesce
+    from sqlalchemy import and_
     history_rows = db.query(
         Finding.plugin_id, Asset.ip,
-        func.min(coalesce(Finding.first_seen, Scan.created_at)).label("earliest"),
-        func.max(coalesce(Finding.last_seen, Scan.created_at)).label("latest"),
+        func.min(func.coalesce(Finding.first_seen, Scan.created_at)).label("earliest"),
+        func.max(func.coalesce(Finding.last_seen, Scan.created_at)).label("latest"),
         func.count(Finding.id).label("cnt"),
     ).join(Asset, Finding.asset_id == Asset.id).join(
         Scan, Finding.scan_id == Scan.id
@@ -441,25 +444,26 @@ def _populate_temporal_fields(db: Session, scan):
 
 @app.post("/api/upload")
 async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
-    """Upload and parse a Nessus scan (HTML, .nessus XML, or CSV)."""
-    fname = (file.filename or "").lower()
-    allowed = (".html", ".htm", ".nessus", ".csv")
-    if not any(fname.endswith(ext) for ext in allowed):
-        raise HTTPException(400, f"Unsupported file type. Accepted: {', '.join(allowed)}")
-
+    """Upload and parse a vulnerability scan file (Nessus, Qualys, etc.)."""
     content = await file.read()
+
+    # Detect the appropriate parser via the registry
+    source_parser = detect_parser(content, file.filename or "")
+    if not source_parser:
+        supported = [ext for p in list_parsers() for ext in p["extensions"]]
+        raise HTTPException(400, f"Unsupported file type. Accepted: {', '.join(supported)}")
 
     # Load CVE intel
     intel = load_intel_json(str(INTEL_PATH)) if INTEL_PATH.exists() else {}
 
-    # Detect format and parse
+    # Parse using the detected parser
     try:
-        parsed = detect_and_parse(content, file.filename)
+        parsed = source_parser.parse(content, file.filename)
     except Exception as e:
         logger.exception("Parse error")
         raise HTTPException(500, f"Parse error: {e}")
 
-    # Create Scan record
+    # Create Scan record with source provenance
     scan_data = parsed["scan"]
     # Use X-Org-Context if set (e.g. superadmin uploading into a specific org)
     effective_org_id = int(x_org_context) if x_org_context else (user.org_id if user else None)
@@ -472,6 +476,10 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         scanner_ip=scan_data.get("scanner_ip"),
         nessus_version=scan_data.get("nessus_version"),
         policy_used=scan_data.get("policy_used"),
+        # Multi-source provenance
+        source_type=source_parser.source_type,
+        source_version=scan_data.get("scanner_version") or scan_data.get("nessus_version"),
+        raw_metadata=scan_data,
     )
     db.add(scan)
     db.flush()
@@ -567,6 +575,11 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         finding = Finding(
             scan_id=scan.id,
             asset_id=asset.id,
+            # Multi-source provenance
+            source_type=source_parser.source_type,
+            source_vuln_id=finding_data.get("plugin_id"),
+            normalized_id=compute_normalized_id(finding_data),
+            # Plugin metadata
             plugin_id=finding_data.get("plugin_id"),
             plugin_name=finding_data.get("plugin_name"),
             plugin_family=finding_data.get("plugin_family"),
@@ -629,11 +642,12 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     # ── Populate temporal tracking (first_seen / last_seen / regression) ──
     _populate_temporal_fields(db, scan)
 
-    # ── Detect internet-facing assets & credentialed scan status via plugin 19506 ──
+    # ── Detect internet-facing assets & credentialed scan status via scanner detection plugin ──
     import ipaddress as _ipaddress
+    detection_plugin_id = source_parser.get_scanner_detection_plugin()
     plugin_19506_findings = db.query(Finding).filter(
-        Finding.scan_id == scan.id, Finding.plugin_id == "19506"
-    ).all()
+        Finding.scan_id == scan.id, Finding.plugin_id == detection_plugin_id
+    ).all() if detection_plugin_id else []
     for f19506 in plugin_19506_findings:
         output = f19506.plugin_output or ""
         asset = db.query(Asset).filter(Asset.id == f19506.asset_id).first()
@@ -672,7 +686,10 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             "protocol": f.protocol,
         })
 
-    inventory = extract_inventory_from_findings(findings_for_inventory)
+    inventory = extract_inventory_from_findings(
+        findings_for_inventory,
+        dispatch=source_parser.get_inventory_dispatch(),
+    )
 
     # Apply configurable dedup to inventory records before inserting
     inventory = dedup_engine.dedup_inventory(inventory, dedup_cfg)
@@ -779,6 +796,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         if sc_count:
             logger.info(f"Security catalog: {sc_count} controls detected for scan {scan.id}")
     except Exception as e:
+        db.rollback()
         logger.warning(f"Security catalog detection failed (non-fatal): {e}")
 
     # ── Apply auto-tag rules to newly imported scan ──
@@ -810,6 +828,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             logger.info(f"Applied {exc_applied} global exceptions to new scan")
             db.flush()
     except Exception as e:
+        db.rollback()
         logger.warning(f"Exception application failed (non-fatal): {e}")
 
     # ── Aggregate solutions by root cause ──
@@ -818,6 +837,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         if agg_result["created"]:
             logger.info(f"Aggregated solutions: {agg_result['created']} groups, {agg_result['findings_linked']} findings linked")
     except Exception as e:
+        db.rollback()
         logger.warning(f"Solution aggregation failed (non-fatal): {e}")
 
     # ── Enrich findings with threat intel (KEV, EPSS, ransomware, trending) ──
@@ -827,6 +847,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         if enrich_result["enriched"]:
             logger.info(f"Threat intel enrichment: {enrich_result['enriched']} findings enriched")
     except Exception as e:
+        db.rollback()
         logger.warning(f"Threat intel enrichment failed (non-fatal): {e}")
 
     # ── Match findings to MITRE ATT&CK TTPs (keyword + plugin ID + family) ──
@@ -835,6 +856,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         ttp_result = _ttp_matcher.match_findings_to_ttps(db, scan_id=scan.id)
         logger.info(f"TTP matching: {ttp_result['matched']} findings matched to ATT&CK techniques")
     except Exception as e:
+        db.rollback()
         logger.warning(f"TTP matching failed (non-fatal): {e}")
 
     # ── Compute SLA due dates for all findings in this scan ──
@@ -845,6 +867,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         if sla_updated:
             logger.info(f"SLA computed for {sla_updated} findings")
     except Exception as e:
+        db.rollback()
         logger.warning(f"SLA computation failed (non-fatal): {e}")
 
     # ── Cross-scan asset dedup: merge duplicate hosts from prior scans in same org ──
@@ -858,6 +881,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
                 if cs_result.get("removed"):
                     logger.info(f"Cross-scan asset dedup: merged {cs_result['removed']} duplicate asset(s)")
             except Exception as e:
+                db.rollback()
                 logger.warning(f"Cross-scan asset dedup failed (non-fatal): {e}")
 
     total_findings = len(parsed["findings"])
@@ -888,6 +912,16 @@ def health_check():
 
 
 # ─────────────────────────────────────────────
+# Sources (parser registry)
+# ─────────────────────────────────────────────
+
+@app.get("/api/sources")
+def get_sources():
+    """Return all registered scanner source types and their supported file extensions."""
+    return list_parsers()
+
+
+# ─────────────────────────────────────────────
 # Scans
 # ─────────────────────────────────────────────
 
@@ -906,6 +940,8 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
             "scan_date": s.scan_date,
             "scan_type": s.scan_type,
             "nessus_version": s.nessus_version,
+            "source_type": s.source_type or "nessus",
+            "source_version": s.source_version,
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "asset_count": asset_count,
             "finding_count": finding_count,
@@ -1198,6 +1234,7 @@ def _asset_to_dict(a: Asset) -> dict:
             "owner_email": own.owner_email,
             "owner_role": own.owner_role,
             "team": own.team,
+            "notes": own.notes,
         } if own else None,
     }
 
@@ -1459,6 +1496,10 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dic
         "plugin_id": f.plugin_id,
         "plugin_name": f.plugin_name,
         "plugin_family": f.plugin_family,
+        # Multi-source provenance
+        "source_type": f.source_type or "nessus",
+        "source_vuln_id": f.source_vuln_id,
+        "normalized_id": f.normalized_id,
         "severity": f.severity,
         "severity_label": f.severity_label,
         "risk_factor": f.risk_factor,
@@ -1489,7 +1530,7 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dic
         "sla_due_date": f.sla_due_date.isoformat() if f.sla_due_date else None,
         "resolved_at": f.resolved_at.isoformat() if f.resolved_at else None,
         "sla_status": f.sla_status or "n/a",
-        # When the vulnerability was observed (from Nessus, not upload time)
+        # When the vulnerability was observed (from scanner, not upload time)
         "sla_observed_date": asset.scan_start if asset else None,
         # Workflow status
         "workflow_status": f.workflow_status or "open",
@@ -3410,6 +3451,8 @@ def _group_findings_by_owner(campaign_findings: list) -> list:
     groups = {}
     for cf in campaign_findings:
         f = cf.finding
+        if f is None:
+            continue  # skip orphaned campaign findings whose finding was deleted
         asset = f.asset if f else None
 
         # Campaign-level override always wins
@@ -3678,8 +3721,14 @@ def run_campaign(campaign_id: int, db: Session = Depends(get_db)):
     # Clear previous results
     db.query(CampaignFinding).filter(CampaignFinding.campaign_id == campaign_id).delete()
 
+    # If the referenced scan was deleted, clear the stale scan_id so the query searches all scans
+    scan_id = campaign.scan_id
+    if scan_id and not db.query(Scan).filter(Scan.id == scan_id).first():
+        campaign.scan_id = None
+        scan_id = None
+
     # Run query
-    results = cq.run_query(db, campaign.query or [], campaign.query_logic or "AND", campaign.scan_id)
+    results = cq.run_query(db, campaign.query or [], campaign.query_logic or "AND", scan_id)
 
     # Populate findings
     added = 0
@@ -7017,7 +7066,11 @@ def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
             "protocol": f.protocol,
         })
 
-    inventory = extract_inventory_from_findings(findings_for_inventory)
+    # Use the scan's source_type to get the right inventory dispatch
+    from parsers.registry import get_parser_by_source
+    scan_parser = get_parser_by_source(scan.source_type or "nessus")
+    dispatch = scan_parser.get_inventory_dispatch() if scan_parser else None
+    inventory = extract_inventory_from_findings(findings_for_inventory, dispatch=dispatch)
 
     MODEL_MAP = {
         "users": (InventoryUser, ["scan_id", "asset_id", "source_plugin", "user_type",

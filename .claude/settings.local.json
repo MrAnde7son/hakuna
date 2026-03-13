@@ -137,7 +137,11 @@
       "Bash(chmod +x /Users/itamar/Documents/Git/nessus-remediation/render-build.sh)",
       "Bash(python -c \"from app import app; print\\(''Backend imports OK''\\)\")",
       "Read(//Users/itamar/.claude/**)",
-      "Bash(ls /Users/itamar/Documents/Git/nessus-remediation/backend/alembic* /Users/itamar/Documents/Git/nessus-remediation/backend/migrations*)"
+      "Bash(ls /Users/itamar/Documents/Git/nessus-remediation/backend/alembic* /Users/itamar/Documents/Git/nessus-remediation/backend/migrations*)",
+      "Bash(python -c \"from app import app; print\\(''OK, routes:'', len\\(app.routes\\)\\)\")",
+      "Bash(curl -s http://localhost:8000/api/sources)",
+      "Bash(curl -s http://localhost:8000/api/campaigns)",
+      "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/api/upload -F \"file=@/Users/itamar/Downloads/APA_Scan \\(6\\).nessus\")"
     ],
     "additionalDirectories": [
       "/Users/itamar/Documents/Git/nessus-remediation"

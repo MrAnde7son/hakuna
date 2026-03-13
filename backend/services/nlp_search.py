@@ -240,6 +240,28 @@ def parse_nlp_query(query: str) -> dict:
         finding_filters["sla_status"] = sla
         chip("SLA", sla.replace("_", " ").title(), "#f59e0b")
 
+    # ── Plugin ID ──────────────────────────────────────────────────────────────
+    plugin_match = re.search(r"\bplugin\s*(?:id)?\s*#?\s*(\d+)\b", ql) or \
+                   re.search(r"\bnid\s*#?\s*(\d+)\b", ql)
+    if plugin_match:
+        pid = plugin_match.group(1)
+        finding_filters["search"] = pid
+        chip("Plugin ID", pid, "#8b5cf6")
+
+    # ── Port number ──────────────────────────────────────────────────────────
+    port_match = re.search(r"\bport\s*#?\s*(\d+)\b", ql)
+    if port_match:
+        port_val = port_match.group(1)
+        finding_filters["port"] = port_val
+        chip("Port", port_val, "#06b6d4")
+
+    # ── IP address ───────────────────────────────────────────────────────────
+    ip_match = re.search(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b", ql)
+    if ip_match:
+        ip_val = ip_match.group(1)
+        asset_filters["search"] = ip_val
+        chip("IP", ip_val, "#06b6d4")
+
     # ── Sort preference ───────────────────────────────────────────────────────
     sort_pref = _first_match(ql, SORT_PATTERNS)
     sort_result = None
@@ -252,7 +274,7 @@ def parse_nlp_query(query: str) -> dict:
         r"\b(show|find|list|get|give\s*me|with|that\s*have|having|where|are|is|all|my|the|a|an|on|in|for|of|and|or|more|than|at|least|over|above|linked)\b",
         " ", ql, flags=re.IGNORECASE
     )
-    # Remove already-parsed tokens
+    # Remove already-parsed tokens (including their numeric args)
     residual = re.sub(
         r"\b(critical|high|medium|low|info|informational|severity|risk|score|"
         r"exploit(?:able|ed|s)?|weaponized|poc|proof.of.concept|kev|cisa|ransomware|"
@@ -261,9 +283,13 @@ def parse_nlp_query(query: str) -> dict:
         r"windows|linux|ubuntu|debian|centos|red\s*hat|rhel|macos?|osx|solaris|aix|freebsd|cisco|"
         r"sla|breached|overdue|resolved|fixed|closed|on\s*track|at\s*risk|past\s*due|"
         r"assets?|servers?|hosts?|findings?|vulnerabilit(?:y|ies)|vulns?|"
-        r"epss|cvss|cve-\d{4}-\d{4,7}|\d+(?:\.\d+)?%?)\b",
+        r"plugin\s*(?:id)?|nid|port|"
+        r"epss|cvss|cve-\d{4}-\d{4,7})\b",
         " ", residual, flags=re.IGNORECASE
     )
+    # Remove numbers that are arguments to already-parsed patterns (standalone digits)
+    # but preserve numbers that are part of meaningful text (e.g. "MS17-010")
+    residual = re.sub(r"(?<!\w)#?\d+(?:\.\d+)?%?(?!\w)", " ", residual)
     # Strip leading dashes/punctuation
     residual = re.sub(r"[^\w\s]", " ", residual)
     residual = re.sub(r"\s{2,}", " ", residual).strip()

@@ -295,15 +295,27 @@ export function ResolvedOwnerBadge({ resolved }) {
 const ROLE_OPTIONS = ['', 'IT', 'DevOps', 'SecOps', 'AppSec', 'DBA', 'Networking', 'CloudOps']
 
 export function OwnershipEditPopover({ current, onSave, onClose }) {
-  const [form, setForm] = useState({
+  const [form, setForm] = useState(() => ({
     owner_name:  current?.owner_name  || '',
     owner_email: current?.owner_email || '',
     owner_role:  current?.owner_role  || '',
-    team:        current?.team        || '',
+    team:        current?.team  || current?.owner_team || '',
     notes:       current?.notes       || '',
-  })
+  }))
   const [saving, setSaving] = useState(false)
   const ref = useRef(null)
+
+  useEffect(() => {
+    if (current) {
+      setForm({
+        owner_name:  current.owner_name  || '',
+        owner_email: current.owner_email || '',
+        owner_role:  current.owner_role  || '',
+        team:        current.team  || current.owner_team || '',
+        notes:       current.notes       || '',
+      })
+    }
+  }, [current])
 
   useEffect(() => {
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose() }
@@ -733,7 +745,7 @@ export function ColumnSelector({ columns, visible, onChange }) {
       </button>
       {open && (
         <div style={{
-          position: 'absolute', top: '100%', right: 0, zIndex: 200, minWidth: 200,
+          position: 'absolute', top: '100%', left: 0, zIndex: 200, minWidth: 200,
           background: 'var(--bg-card)', border: '1px solid var(--border)',
           borderRadius: 8, marginTop: 4, maxHeight: 360, overflowY: 'auto',
           boxShadow: '0 4px 16px rgba(0,0,0,0.18)', padding: '6px 0',
