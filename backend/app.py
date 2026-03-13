@@ -16,8 +16,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, or_
 
-from database import get_db, init_db
-from models import (
+from core.database import get_db, init_db
+from models.models import (
     Organization, User,
     Scan, Asset, Finding, AutomateClick,
     InventoryUser, InventoryGroup, InventoryService,
@@ -27,32 +27,33 @@ from models import (
     InventoryAITool, InventoryProcess, InventoryDatabaseInstance,
     Campaign, CampaignFinding, FindingOwnership, AssetOwnership,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
+    Tag, TagAssignment, AutoTagRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
+    SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog, AggregatedSolution,
 )
-from parser import detect_and_parse, load_intel_json
-from prioritizer import compute_priority_score
-from inventory_extractor import extract_inventory_from_findings, _cn_from_dn
-from asset_classifier import classify_asset
-import dedup as dedup_engine
-import risk_config as risk_engine
-import campaign_query as cq
-import tags as tag_engine
-import rule_engine
-import workflow_engine
-from nlp_search import parse_nlp_query
-import integrations as integ_module
-import ownership_inference
-from models import Tag, TagAssignment, AutoTagRule, OwnershipRule, ExternalTagSource, ExternalTagMap, SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog, AggregatedSolution
-import solution_aggregator
-from audit import log_audit, diff as _diff
-from auth import (
+from parsers.parser import detect_and_parse, load_intel_json
+from services.prioritizer import compute_priority_score
+from parsers.inventory_extractor import extract_inventory_from_findings, _cn_from_dn
+from services.asset_classifier import classify_asset
+import services.dedup as dedup_engine
+import core.risk_config as risk_engine
+import services.campaign_query as cq
+import services.tags as tag_engine
+import services.rule_engine as rule_engine
+import services.workflow_engine as workflow_engine
+from services.nlp_search import parse_nlp_query
+import services.integrations as integ_module
+import services.ownership_inference as ownership_inference
+import services.solution_aggregator as solution_aggregator
+from core.audit import log_audit, diff as _diff
+from core.auth import (
     get_current_user, require_auth, require_role,
     get_accessible_org_ids, apply_org_filter, apply_scan_org_filter,
 )
-from auth_routes import router as auth_router
-from threat_intel_routes import router as threat_intel_router
-from export import router as export_router
-from config_portability import router as config_portability_router
-from agent_routes import router as agent_router
+from routes.auth_routes import router as auth_router
+from routes.threat_intel_routes import router as threat_intel_router
+from routes.export import router as export_router
+from routes.config_portability import router as config_portability_router
+from routes.agent_routes import router as agent_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -282,15 +283,15 @@ def startup():
         "database_instances": (InventoryDatabaseInstance, [],                  ["is_running"]),
     })
     # Start workflow scheduler for cron-based triggers
-    from database import SessionLocal
+    from core.database import SessionLocal
     workflow_engine.start_scheduler(SessionLocal)
     logger.info("Workflow scheduler started")
     # Start agent scheduler for cron-based agent runs
-    from agent_scheduler import start_scheduler as start_agent_scheduler
+    from agents.agent_scheduler import start_scheduler as start_agent_scheduler
     start_agent_scheduler()
     logger.info("Agent scheduler started")
     # Schedule threat intel auto-update every 24 hours
-    from intel_updater import update_intel
+    from threat_intel.intel_updater import update_intel
     from apscheduler.schedulers.background import BackgroundScheduler as _BGScheduler
     from apscheduler.triggers.interval import IntervalTrigger as _IntervalTrigger
     _intel_scheduler = _BGScheduler()
@@ -299,7 +300,7 @@ def startup():
     logger.info("Intel auto-update scheduled (every 24h)")
     # Seed SLA defaults and backfill any scans that have no SLA due dates yet
     try:
-        from database import SessionLocal as _SL
+        from core.database import SessionLocal as _SL
         _db = _SL()
         try:
             _ensure_sla_defaults(_db)
@@ -753,7 +754,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
 
     # ── Detect security controls from services + software (catalog matching) ──
     try:
-        from inventory_extractor import detect_security_controls_from_inventory
+        from parsers.inventory_extractor import detect_security_controls_from_inventory
         sc_count = detect_security_controls_from_inventory(db, scan.id)
         if sc_count:
             logger.info(f"Security catalog: {sc_count} controls detected for scan {scan.id}")
@@ -801,7 +802,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
 
     # ── Enrich findings with threat intel (KEV, EPSS, ransomware, trending) ──
     try:
-        import threat_intel_sync as _ti_sync
+        import threat_intel.threat_intel_sync as _ti_sync
         enrich_result = _ti_sync.enrich_findings_from_threat_intel(db, scan_id=scan.id)
         if enrich_result["enriched"]:
             logger.info(f"Threat intel enrichment: {enrich_result['enriched']} findings enriched")
@@ -810,7 +811,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
 
     # ── Match findings to MITRE ATT&CK TTPs (keyword + plugin ID + family) ──
     try:
-        import ttp_matcher as _ttp_matcher
+        import threat_intel.ttp_matcher as _ttp_matcher
         ttp_result = _ttp_matcher.match_findings_to_ttps(db, scan_id=scan.id)
         logger.info(f"TTP matching: {ttp_result['matched']} findings matched to ATT&CK techniques")
     except Exception as e:
@@ -1272,7 +1273,7 @@ def list_findings(
         q = q.filter(Finding.matched_ttps.ilike(f'%"{technique_id}"%'))
     if threat_group_id:
         # Resolve TTPs linked to this group, then filter findings with any of those technique_ids
-        from threat_intel_models import ThreatGroupTTP as _TGTTP, TTP as _TTP
+        from models.threat_intel_models import ThreatGroupTTP as _TGTTP, TTP as _TTP
         group_ttps = (
             db.query(_TTP.technique_id)
             .join(_TGTTP, _TTP.id == _TGTTP.ttp_id)
@@ -2448,7 +2449,7 @@ def get_security_coverage(
     Security control coverage matrix.
     Returns per-category coverage across assets and a per-asset control list.
     """
-    from security_tool_catalog import SECURITY_TOOL_CATALOG
+    from threat_intel.security_tool_catalog import SECURITY_TOOL_CATALOG
     from collections import defaultdict
 
     # Reverse map: control_type → canonical category name (from catalog)
@@ -2562,7 +2563,7 @@ def rerun_security_control_detection(
         InventorySecurityControl.source_plugin == "catalog",
     ).delete(synchronize_session=False)
     db.commit()
-    from inventory_extractor import detect_security_controls_from_inventory
+    from parsers.inventory_extractor import detect_security_controls_from_inventory
     count = detect_security_controls_from_inventory(db, scan_id)
     return {"scan_id": scan_id, "detected": count}
 
@@ -4444,7 +4445,7 @@ def delete_tag(
 
 @app.post("/api/tags/assign")
 def assign_tags(body: TagAssignBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
-    from auth import has_tag_permission
+    from core.auth import has_tag_permission
     assigned = 0
     for tag_id in (body.tag_ids or []):
         tag = db.query(Tag).filter(Tag.id == tag_id).first()
@@ -4474,7 +4475,7 @@ def assign_tags(body: TagAssignBody, db: Session = Depends(get_db), user: Option
 
 @app.post("/api/tags/unassign")
 def unassign_tags(body: TagAssignBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
-    from auth import has_tag_permission
+    from core.auth import has_tag_permission
     removed = 0
     for tag_id in (body.tag_ids or []):
         if user and not has_tag_permission(user, tag_id, "write", db):
@@ -6048,7 +6049,7 @@ _SEVERITY_LABELS = {0: "Info", 1: "Low", 2: "Medium", 3: "High", 4: "Critical"}
 
 def _check_scope_tags(db: Session, asset_id: int, scope_tags: list) -> bool:
     """Check if an asset matches any of the scope tags."""
-    from models import Tag, TagAssignment
+    from models.models import Tag, TagAssignment
     rows = (
         db.query(Tag.category, Tag.value)
         .join(TagAssignment, TagAssignment.tag_id == Tag.id)
@@ -6061,7 +6062,7 @@ def _check_scope_tags(db: Session, asset_id: int, scope_tags: list) -> bool:
 
 def _apply_exception_to_findings(db: Session, exc: FindingException, scan_id: int = None) -> int:
     """Apply a single exception to all matching findings. Returns count of affected findings."""
-    import rule_engine as engine
+    import services.rule_engine as engine
 
     q = db.query(Finding)
     if exc.plugin_id:

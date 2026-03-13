@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
-from parser import parse_nessus_xml, parse_nessus_csv, detect_and_parse
+from parsers.parser import parse_nessus_xml, parse_nessus_csv, detect_and_parse
 
 
 # ── XML fixtures ──────────────────────────────────────────────────────────────

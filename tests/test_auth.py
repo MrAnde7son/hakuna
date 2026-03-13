@@ -12,9 +12,9 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from database import Base
-from models import User, Organization, MSSPOrgAccess
-import auth
+from core.database import Base
+from models.models import User, Organization, MSSPOrgAccess
+import core.auth as auth
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
