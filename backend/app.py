@@ -1311,6 +1311,8 @@ def list_findings(
     if cve:
         # Partial match within JSON-serialized cves array (case-insensitive)
         q = q.filter(Finding.cves.ilike(f"%{cve}%"))
+    if request.query_params.get("port"):
+        q = q.filter(Finding.port == request.query_params["port"])
     if search:
         q = q.filter(
             Finding.plugin_name.ilike(f"%{search}%") |
