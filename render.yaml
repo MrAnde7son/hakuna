@@ -29,7 +29,7 @@ services:
       - key: CORS_ORIGINS
         sync: false  # set to your frontend URL after first deploy
     autoDeploy: true
-    healthCheckPath: /api/scans
+    healthCheckPath: /api/health
 
   # ── Frontend (Static Site) ─────────────────────
   - type: web
