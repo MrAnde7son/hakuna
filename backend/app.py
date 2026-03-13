@@ -256,31 +256,11 @@ INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 ENTITY_MODEL_MAP: dict = {}  # populated after models are imported (below)
 
 
-@app.on_event("startup")
-def startup():
-    init_db()
-    logger.info("Database initialized")
-    # Build ENTITY_MODEL_MAP after models are loaded
-    ENTITY_MODEL_MAP.update({
-        "assets":            (Asset,                    [],                    []),
-        "findings":          (Finding,                  ["cves"],              []),
-        "users":             (InventoryUser,            ["spns", "member_of"], ["is_local_admin", "is_domain_admin", "is_privileged", "is_disabled", "password_never_expires", "never_logged_in", "never_changed_password"]),
-        "groups":            (InventoryGroup,           ["members"],           ["is_privileged"]),
-        "computers":         (InventoryComputer,        [],                    ["is_domain_controller", "is_disabled"]),
-        "services":          (InventoryService,         [],                    ["is_running"]),
-        "software":          (InventorySoftware,        [],                    []),
-        "shares":            (InventoryShare,           ["acl"],               ["is_writeable", "is_default_share"]),
-        "netconns":          (InventoryNetConn,         [],                    []),
-        "patches":           (InventoryPatch,           ["cves"],              []),
-        "security_controls": (InventorySecurityControl, [],                   ["is_enabled", "is_up_to_date"]),
-        "password_policies": (InventoryPasswordPolicy,  [],                   ["complexity_enabled", "reversible_encryption", "is_weak"]),
-        "logged_on":         (InventoryLoggedOn,        [],                    []),
-        "scheduled_tasks":   (InventoryScheduledTask,   [],                   ["is_enabled"]),
-        "env_vars":          (InventoryEnvVar,           [],                   ["is_sensitive"]),
-        "certificates":      (InventoryCertificate,      ["subject_alt_names"], ["is_expired", "is_ca", "is_self_signed"]),
-        "processes":         (InventoryProcess,          [],                    []),
-        "database_instances": (InventoryDatabaseInstance, [],                  ["is_running"]),
-    })
+def _deferred_startup():
+    """Heavy startup tasks that run in a background thread so the server
+    can bind the port and pass Render's port-scan check immediately."""
+    import threading
+    logger.info("Deferred startup running in background thread: %s", threading.current_thread().name)
     # Start workflow scheduler for cron-based triggers
     from database import SessionLocal
     workflow_engine.start_scheduler(SessionLocal)
@@ -323,6 +303,39 @@ def startup():
             _db.close()
     except Exception as _e:
         logger.warning(f"SLA startup seeding failed (non-fatal): {_e}")
+    logger.info("Deferred startup complete")
+
+
+@app.on_event("startup")
+def startup():
+    init_db()
+    logger.info("Database initialized")
+    # Build ENTITY_MODEL_MAP after models are loaded
+    ENTITY_MODEL_MAP.update({
+        "assets":            (Asset,                    [],                    []),
+        "findings":          (Finding,                  ["cves"],              []),
+        "users":             (InventoryUser,            ["spns", "member_of"], ["is_local_admin", "is_domain_admin", "is_privileged", "is_disabled", "password_never_expires", "never_logged_in", "never_changed_password"]),
+        "groups":            (InventoryGroup,           ["members"],           ["is_privileged"]),
+        "computers":         (InventoryComputer,        [],                    ["is_domain_controller", "is_disabled"]),
+        "services":          (InventoryService,         [],                    ["is_running"]),
+        "software":          (InventorySoftware,        [],                    []),
+        "shares":            (InventoryShare,           ["acl"],               ["is_writeable", "is_default_share"]),
+        "netconns":          (InventoryNetConn,         [],                    []),
+        "patches":           (InventoryPatch,           ["cves"],              []),
+        "security_controls": (InventorySecurityControl, [],                   ["is_enabled", "is_up_to_date"]),
+        "password_policies": (InventoryPasswordPolicy,  [],                   ["complexity_enabled", "reversible_encryption", "is_weak"]),
+        "logged_on":         (InventoryLoggedOn,        [],                    []),
+        "scheduled_tasks":   (InventoryScheduledTask,   [],                   ["is_enabled"]),
+        "env_vars":          (InventoryEnvVar,           [],                   ["is_sensitive"]),
+        "certificates":      (InventoryCertificate,      ["subject_alt_names"], ["is_expired", "is_ca", "is_self_signed"]),
+        "processes":         (InventoryProcess,          [],                    []),
+        "database_instances": (InventoryDatabaseInstance, [],                  ["is_running"]),
+    })
+    # Run heavy tasks (schedulers, SLA backfill) in background so the port
+    # is available immediately for Render's port-scan health check.
+    import threading
+    threading.Thread(target=_deferred_startup, name="deferred-startup", daemon=True).start()
+    logger.info("Startup complete — deferred tasks running in background")
 
 
 # ─────────────────────────────────────────────
