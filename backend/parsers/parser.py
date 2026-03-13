@@ -457,6 +457,7 @@ def parse_nessus_xml(xml_content: str, filename: str) -> dict:
         asset = {
             "hostname": host_name, "ip": None, "fqdn": None, "os": None,
             "netbios_name": None, "mac_address": None, "scan_start": None, "scan_end": None,
+            "is_credentialed": False, "last_auth_run": None,
             "critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0, "info_count": 0,
         }
         props = report_host.find("HostProperties")
@@ -478,6 +479,10 @@ def parse_nessus_xml(xml_content: str, filename: str) -> dict:
                     asset["scan_start"] = v
                 elif n == "HOST_END":
                     asset["scan_end"] = v
+                elif n == "Credentialed_Scan":
+                    asset["is_credentialed"] = v.lower() == "true"
+                elif n == "LastAuthenticatedResults":
+                    asset["last_auth_run"] = v
 
         if not asset["ip"] and re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host_name):
             asset["ip"] = host_name

@@ -513,6 +513,8 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             mac_address=asset_data.get("mac_address"),
             scan_start=asset_data.get("scan_start"),
             scan_end=asset_data.get("scan_end"),
+            is_credentialed=asset_data.get("is_credentialed", False),
+            last_auth_run=asset_data.get("last_auth_run"),
             criticality=auto_crit if auto_crit is not None else 5,
             critical_count=asset_data.get("critical_count", 0),
             high_count=asset_data.get("high_count", 0),
@@ -627,26 +629,31 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     # ── Populate temporal tracking (first_seen / last_seen / regression) ──
     _populate_temporal_fields(db, scan)
 
-    # ── Detect internet-facing assets via plugin 19506 scanner IP ──
+    # ── Detect internet-facing assets & credentialed scan status via plugin 19506 ──
     import ipaddress as _ipaddress
     plugin_19506_findings = db.query(Finding).filter(
         Finding.scan_id == scan.id, Finding.plugin_id == "19506"
     ).all()
     for f19506 in plugin_19506_findings:
         output = f19506.plugin_output or ""
-        m = re.search(r"Scanner IP\s*:\s*([\d.]+)", output)
-        if not m:
-            continue
-        scanner_ip = m.group(1)
         asset = db.query(Asset).filter(Asset.id == f19506.asset_id).first()
         if not asset:
             continue
-        asset.scanner_ip = scanner_ip
-        try:
-            addr = _ipaddress.ip_address(scanner_ip)
-            asset.is_internet_facing = not addr.is_private
-        except ValueError:
-            asset.is_internet_facing = False
+        # Scanner IP & internet-facing detection
+        m = re.search(r"Scanner IP\s*:\s*([\d.]+)", output)
+        if m:
+            scanner_ip = m.group(1)
+            asset.scanner_ip = scanner_ip
+            try:
+                addr = _ipaddress.ip_address(scanner_ip)
+                asset.is_internet_facing = not addr.is_private
+            except ValueError:
+                asset.is_internet_facing = False
+        # Credentialed scan detection (from plugin output, supplements XML host property)
+        if not asset.is_credentialed:
+            cred_m = re.search(r"Credentialed checks\s*:\s*(yes|no)", output, re.IGNORECASE)
+            if cred_m and cred_m.group(1).lower() == "yes":
+                asset.is_credentialed = True
 
     db.commit()
 
@@ -1172,6 +1179,8 @@ def _asset_to_dict(a: Asset) -> dict:
         "biz_revenue_impact": a.biz_revenue_impact,
         "scanner_ip": a.scanner_ip,
         "is_internet_facing": a.is_internet_facing or False,
+        "is_credentialed": a.is_credentialed or False,
+        "last_auth_run": a.last_auth_run,
         "risk_score": a.risk_score,
         "critical_count": a.critical_count,
         "high_count": a.high_count,
@@ -1698,10 +1707,21 @@ def get_summary(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_l
             "plugin_family": f.plugin_family,
         })
 
+    # Coverage / Assessment maturity
+    credentialed_count = asset_q.filter(Asset.is_credentialed == True).count()
+    with_auth_run = asset_q.filter(Asset.last_auth_run.isnot(None)).count()
+    coverage_pct = round((credentialed_count / total_assets) * 100) if total_assets > 0 else 0
+
     return {
         "total_assets": total_assets,
         "total_findings": total_findings,
         "excepted_findings": excepted_count,
+        "coverage": {
+            "credentialed_count": credentialed_count,
+            "uncredentialed_count": total_assets - credentialed_count,
+            "with_auth_run": with_auth_run,
+            "coverage_pct": coverage_pct,
+        },
         "severity_breakdown": {
             "critical": severity_counts.get(4, 0),
             "high": severity_counts.get(3, 0),

@@ -134,7 +134,10 @@
       "Bash(python -c \"from app import app; print\\(''''Backend OK''''\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''app.py''\\).read\\(\\)\\); print\\(''app.py OK''\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''models.py''\\).read\\(\\)\\); print\\(''models.py OK''\\)\")",
-      "Bash(chmod +x /Users/itamar/Documents/Git/nessus-remediation/render-build.sh)"
+      "Bash(chmod +x /Users/itamar/Documents/Git/nessus-remediation/render-build.sh)",
+      "Bash(python -c \"from app import app; print\\(''Backend imports OK''\\)\")",
+      "Read(//Users/itamar/.claude/**)",
+      "Bash(ls /Users/itamar/Documents/Git/nessus-remediation/backend/alembic* /Users/itamar/Documents/Git/nessus-remediation/backend/migrations*)"
     ],
     "additionalDirectories": [
       "/Users/itamar/Documents/Git/nessus-remediation"

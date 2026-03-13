@@ -209,6 +209,9 @@ const DATA_PRESETS = {
   sla_on_track:     { label: 'SLA On Track',       group: 'SLA & Ops', source: 'sla',     type: 'metric', extract: d => d?.on_track ?? 0, color: '#16a34a' },
   sla_at_risk:      { label: 'SLA At Risk',        group: 'SLA & Ops', source: 'sla',     type: 'metric', extract: d => d?.at_risk ?? 0, color: '#d97706' },
   quick_wins:       { label: 'Quick Wins',         group: 'SLA & Ops', source: 'summary', type: 'metric', extract: d => d?.effort_breakdown?.quick_win ?? 0, color: '#16a34a' },
+  coverage_pct:     { label: 'Assessment Coverage', group: 'Coverage', source: 'summary', type: 'metric', extract: d => d?.coverage?.coverage_pct ?? 0, format: 'pct', color: '#16a34a' },
+  credentialed_count: { label: 'Credentialed Assets', group: 'Coverage', source: 'summary', type: 'metric', extract: d => d?.coverage?.credentialed_count ?? 0, color: '#16a34a' },
+  uncredentialed_count: { label: 'Uncredentialed Assets', group: 'Coverage', source: 'summary', type: 'metric', extract: d => d?.coverage?.uncredentialed_count ?? 0, color: '#dc2626' },
   complex_findings: { label: 'Complex Findings',   group: 'SLA & Ops', source: 'summary', type: 'metric', extract: d => d?.effort_breakdown?.complex ?? 0, color: '#dc2626' },
   zombie_count:     { label: 'Zombie Vulns',       group: 'Temporal',  source: 'temporal', type: 'metric', extract: d => d?.zombie_count ?? 0, color: '#7c3aed' },
   regression_count: { label: 'Regressions',        group: 'Temporal',  source: 'temporal', type: 'metric', extract: d => d?.regression_count ?? 0, color: '#ef4444' },
@@ -270,6 +273,16 @@ const DATA_PRESETS = {
         { name: 'At Risk', value: d.at_risk || 0, color: '#d97706' },
         { name: 'Breached', value: d.breached || 0, color: '#dc2626' },
         { name: 'Resolved', value: d.resolved || 0, color: '#6366f1' },
+      ].filter(r => r.value > 0)
+    },
+  },
+  coverage_breakdown: {
+    label: 'Assessment Coverage', group: 'Coverage', source: 'summary', type: 'categories',
+    extract: d => {
+      const c = d?.coverage || {}
+      return [
+        { name: 'Credentialed', value: c.credentialed_count || 0, color: '#16a34a' },
+        { name: 'Uncredentialed', value: c.uncredentialed_count || 0, color: '#dc2626' },
       ].filter(r => r.value > 0)
     },
   },
@@ -865,6 +878,9 @@ const EXECUTIVE_DASHBOARD = {
     { id: 'ex4', type: 'card',      title: 'Quick Wins',            width: 'quarter', config: { preset: 'quick_wins' } },
     { id: 'ex5', type: 'pie_chart', title: 'Severity Distribution', width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
     { id: 'ex6', type: 'pie_chart', title: 'SLA Status',            width: 'half',    config: { preset: 'sla_status', donut: true } },
+    { id: 'ex13',type: 'card',      title: 'Assessment Coverage',   width: 'quarter', config: { preset: 'coverage_pct' } },
+    { id: 'ex14',type: 'card',      title: 'Credentialed Assets',   width: 'quarter', config: { preset: 'credentialed_count' } },
+    { id: 'ex15',type: 'pie_chart', title: 'Scan Coverage',         width: 'half',    config: { preset: 'coverage_breakdown', donut: true } },
     { id: 'ex7', type: 'bar_chart', title: 'Risk by Business Unit', width: 'full',    config: { preset: 'risk_by_tags', horizontal: true } },
     { id: 'ex8', type: 'table',     title: 'Business Unit Benchmark', width: 'full',  config: { preset: 'tag_benchmark' } },
     { id: 'ex9', type: 'line_chart',title: 'Risk Score Trend',      width: 'half',    config: { preset: 'risk_trend' } },

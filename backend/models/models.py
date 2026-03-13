@@ -150,6 +150,11 @@ class Scan(Base):
     policy_used = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # Multi-source provenance
+    source_type = Column(String, default="nessus")      # nessus | qualys | rapid7 | openvas | ...
+    source_version = Column(String)                       # scanner version (generalizes nessus_version)
+    raw_metadata = Column(JSON, default=dict)             # full original scan-level metadata from parser
+
     organization = relationship("Organization")
     assets = relationship("Asset", back_populates="scan", cascade="all, delete-orphan")
     findings = relationship("Finding", back_populates="scan", cascade="all, delete-orphan")
@@ -182,9 +187,11 @@ class Asset(Base):
     inferred_team = Column(String)                 # Derived from services running on host
     owner_confidence = Column(String, default="low")  # high / medium / low
 
-    # Scanner context (per-asset, from plugin 19506)
+    # Scanner context (per-asset, from plugin 19506 / host properties)
     scanner_ip = Column(String)
     is_internet_facing = Column(Boolean, default=False)
+    is_credentialed = Column(Boolean, default=False)  # Was the scan authenticated?
+    last_auth_run = Column(String)                     # LastAuthenticatedResults timestamp
 
     # Computed
     risk_score = Column(Float, default=0.0)
