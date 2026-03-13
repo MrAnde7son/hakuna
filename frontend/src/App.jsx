@@ -1,4 +1,4 @@
-import React, { useState, useEffect, createContext, useContext } from 'react'
+import React, { useState, useEffect, createContext, useContext, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, Navigate, useNavigate } from 'react-router-dom'
 import {
   Server,
@@ -17,26 +17,29 @@ import {
   Sun,
   Layers,
 } from 'lucide-react'
-import AssetInventory from './components/assets/AssetInventory.jsx'
-import FindingExplorer from './components/findings/FindingExplorer.jsx'
-import FindingDetail from './components/findings/FindingDetail.jsx'
-import Campaigns from './components/campaigns/Campaigns.jsx'
-import CampaignDetail from './components/campaigns/CampaignDetail.jsx'
-import Reports from './components/reports/Reports.jsx'
-import InventoryExplorer from './components/assets/InventoryExplorer.jsx'
-import Settings from './components/settings/Settings.jsx'
-import UploadScan from './components/upload/UploadScan.jsx'
-import TagManager from './components/settings/TagManager.jsx'
-import ThreatIntelCenter from './components/threats/ThreatIntelCenter.jsx'
-import WorkflowBuilder from './components/workflows/WorkflowBuilder.jsx'
-import AgentBuilder from './components/agents/AgentBuilder.jsx'
-import AggregatedSolutions from './components/remediation/AggregatedSolutions.jsx'
+// Auth pages loaded eagerly (small, needed immediately)
 import Login from './components/auth/Login.jsx'
 import Register from './components/auth/Register.jsx'
-import UserManagement from './components/settings/UserManagement.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
 import { getScans, setOrgContext } from './api.js'
+
+// Lazy-loaded route components (code-split per page)
+const AssetInventory = React.lazy(() => import('./components/assets/AssetInventory.jsx'))
+const FindingExplorer = React.lazy(() => import('./components/findings/FindingExplorer.jsx'))
+const FindingDetail = React.lazy(() => import('./components/findings/FindingDetail.jsx'))
+const Campaigns = React.lazy(() => import('./components/campaigns/Campaigns.jsx'))
+const CampaignDetail = React.lazy(() => import('./components/campaigns/CampaignDetail.jsx'))
+const Reports = React.lazy(() => import('./components/reports/Reports.jsx'))
+const InventoryExplorer = React.lazy(() => import('./components/assets/InventoryExplorer.jsx'))
+const Settings = React.lazy(() => import('./components/settings/Settings.jsx'))
+const UploadScan = React.lazy(() => import('./components/upload/UploadScan.jsx'))
+const TagManager = React.lazy(() => import('./components/settings/TagManager.jsx'))
+const ThreatIntelCenter = React.lazy(() => import('./components/threats/ThreatIntelCenter.jsx'))
+const WorkflowBuilder = React.lazy(() => import('./components/workflows/WorkflowBuilder.jsx'))
+const AgentBuilder = React.lazy(() => import('./components/agents/AgentBuilder.jsx'))
+const AggregatedSolutions = React.lazy(() => import('./components/remediation/AggregatedSolutions.jsx'))
+const UserManagement = React.lazy(() => import('./components/settings/UserManagement.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {} })
@@ -507,23 +510,25 @@ function AppShell() {
               overflowX: 'hidden',
             }}
           >
-            <Routes>
-              <Route path="/" element={<Reports />} />
-              <Route path="/assets" element={<AssetInventory />} />
-              <Route path="/findings" element={<FindingExplorer />} />
-              <Route path="/findings/:id" element={<FindingDetail />} />
-              <Route path="/campaigns" element={<Campaigns />} />
-              <Route path="/campaigns/:id" element={<CampaignDetail />} />
-              <Route path="/aggregated-solutions" element={<AggregatedSolutions />} />
-              <Route path="/workflows/:id" element={<WorkflowBuilder />} />
-              <Route path="/inventory" element={<InventoryExplorer />} />
-              <Route path="/agents" element={<AgentBuilder />} />
-              <Route path="/tags" element={<TagManager />} />
-              <Route path="/threat-intel/:tab?" element={<ThreatIntelCenter />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/upload" element={<UploadScan />} />
-              <Route path="/profile" element={<UserManagement />} />
-            </Routes>
+            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#71717a' }}>Loading...</div>}>
+              <Routes>
+                <Route path="/" element={<Reports />} />
+                <Route path="/assets" element={<AssetInventory />} />
+                <Route path="/findings" element={<FindingExplorer />} />
+                <Route path="/findings/:id" element={<FindingDetail />} />
+                <Route path="/campaigns" element={<Campaigns />} />
+                <Route path="/campaigns/:id" element={<CampaignDetail />} />
+                <Route path="/aggregated-solutions" element={<AggregatedSolutions />} />
+                <Route path="/workflows/:id" element={<WorkflowBuilder />} />
+                <Route path="/inventory" element={<InventoryExplorer />} />
+                <Route path="/agents" element={<AgentBuilder />} />
+                <Route path="/tags" element={<TagManager />} />
+                <Route path="/threat-intel/:tab?" element={<ThreatIntelCenter />} />
+                <Route path="/settings" element={<Settings />} />
+                <Route path="/upload" element={<UploadScan />} />
+                <Route path="/profile" element={<UserManagement />} />
+              </Routes>
+            </Suspense>
           </main>
         </div>
       </div>
