@@ -62,6 +62,14 @@ export function AuthProvider({ children }) {
     setOrg(data.user.org)
     setAccessibleOrgs([data.user.org])
     setIsAuthenticated(true)
+    // Fetch full user info (includes effective_permissions for nav visibility)
+    try {
+      const me = await authMe()
+      setUser(me)
+      setOrg(me.org)
+      setAccessibleOrgs(me.accessible_orgs || [me.org])
+      setEffectivePermissions(me.effective_permissions || {})
+    } catch {}
     return data
   }, [])
 
