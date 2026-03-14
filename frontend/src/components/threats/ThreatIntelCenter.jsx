@@ -12,7 +12,10 @@ import {
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { Card, Button, Spinner, EmptyState, StatCard, SeverityBadge, ScoreBar } from '../shared/ui.jsx'
-import { getCisaAdvisories } from '../../api.js'
+import {
+  getThreatIntelStats, getThreatCves, getThreatGroups, getThreatTtps,
+  syncThreatIntel, getGroupExposure, getCisaAdvisories,
+} from '../../api.js'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -906,9 +909,7 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
       if (minCvss > 0) params.set('min_cvss', minCvss)
       if (inScanOnly) params.set('in_scan', activeScanId || 'all')
       if (sortBy) { params.set('sort_by', sortBy); params.set('sort_dir', sortDir) }
-      const r = await fetch(`/api/threat-intel/cves?${params}`)
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      const data = await r.json()
+      const data = await getThreatCves(Object.fromEntries(params))
       const items = Array.isArray(data) ? data : (data.items || [])
       setCves(items)
       setTotal(data.total || items.length)
@@ -1088,8 +1089,8 @@ function GroupCard({ group, exposure }) {
       if (ttps.length === 0 && group.id) {
         setLoadingTtps(true)
         try {
-          const r = await fetch(`/api/threat-intel/ttps?group_id=${group.id}`)
-          if (r.ok) setTtps(await r.json())
+          const data = await getThreatTtps({ group_id: group.id })
+          setTtps(Array.isArray(data) ? data : (data.items || []))
         } catch { /* silent */ } finally {
           setLoadingTtps(false)
         }
@@ -1098,10 +1099,8 @@ function GroupCard({ group, exposure }) {
       if (hasExposure && !detailExposure && group.id) {
         setLoadingExposure(true)
         try {
-          const params = new URLSearchParams()
-          if (exposure.scan_id) params.set('scan_id', exposure.scan_id)
-          const r = await fetch(`/api/threat-intel/groups/${group.id}/exposure?${params}`)
-          if (r.ok) setDetailExposure(await r.json())
+          const expParams = exposure.scan_id ? { scan_id: exposure.scan_id } : {}
+          setDetailExposure(await getGroupExposure(group.id, expParams))
         } catch { /* silent */ } finally {
           setLoadingExposure(false)
         }
@@ -1404,9 +1403,7 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
       if (motivation) params.set('motivation', motivation)
       if (ransomwareOnly) params.set('is_ransomware', 'true')
       // Don't use backend in_scan — we filter client-side using scanExposure
-      const r = await fetch(`/api/threat-intel/groups?${params}`)
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      setGroups(await r.json())
+      setGroups(await getThreatGroups(Object.fromEntries(params)))
     } catch (e) {
       setError(e.message)
     } finally {
@@ -1580,9 +1577,7 @@ export default function ThreatIntelCenter() {
       setLoadingStats(true)
       setStatsError(null)
       try {
-        const r = await fetch('/api/threat-intel/stats')
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        setStats(await r.json())
+        setStats(await getThreatIntelStats())
       } catch (e) {
         setStatsError(e.message)
         setStats({})
@@ -1597,9 +1592,7 @@ export default function ThreatIntelCenter() {
   useEffect(() => {
     const fetchCves = async () => {
       try {
-        const r = await fetch('/api/threat-intel/cves?limit=100')
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        const data = await r.json()
+        const data = await getThreatCves({ limit: 100 })
         setCves(Array.isArray(data) ? data : (data.items || []))
       } catch { setCves([]) }
     }
@@ -1611,18 +1604,10 @@ export default function ThreatIntelCenter() {
     setSyncing(true)
     setSyncResult(null)
     try {
-      const r = await fetch('/api/threat-intel/sync', { method: 'POST' })
-      if (!r.ok) {
-        const text = await r.text().catch(() => r.statusText)
-        let detail = `Sync failed (${r.status})`
-        try { detail = JSON.parse(text).detail || detail } catch {}
-        throw new Error(detail)
-      }
-      const data = await r.json()
+      const data = await syncThreatIntel()
       setSyncResult(data)
       // Refresh stats after sync
-      const sr = await fetch('/api/threat-intel/stats')
-      if (sr.ok) setStats(await sr.json())
+      try { setStats(await getThreatIntelStats()) } catch { /* ignore */ }
     } catch (e) {
       setSyncResult({ status: 'error', message: e.message })
     } finally {
