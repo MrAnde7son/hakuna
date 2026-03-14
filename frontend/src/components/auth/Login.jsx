@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 
 export default function Login() {
@@ -9,6 +10,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false)
   const { login } = useAuth()
   const navigate = useNavigate()
+  const { t } = useTranslation()
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -18,7 +20,7 @@ export default function Login() {
       await login(email, password)
       navigate('/')
     } catch (err) {
-      setError(err.message || 'Login failed')
+      setError(err.message || t('auth.loginFailed'))
     } finally {
       setLoading(false)
     }
@@ -42,9 +44,9 @@ export default function Login() {
       }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <img src="/logo-symbol.svg" alt="Logo" style={{ width: 40, height: 40, marginBottom: 12 }} />
-          <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Sign in to Hakuna</h1>
+          <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>{t('auth.signInTo')}</h1>
           <p style={{ fontSize: 13, color: 'var(--muted, #71717a)', marginTop: 4 }}>
-            Exposure Center
+            {t('app.tagline')}
           </p>
         </div>
 
@@ -64,7 +66,7 @@ export default function Login() {
           )}
 
           <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Email</label>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('auth.email')}</label>
             <input
               type="email"
               value={email}
@@ -83,7 +85,7 @@ export default function Login() {
           </div>
 
           <div style={{ marginBottom: 20 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Password</label>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('auth.password')}</label>
             <input
               type="password"
               value={password}
@@ -116,14 +118,14 @@ export default function Login() {
               opacity: loading ? 0.6 : 1,
             }}
           >
-            {loading ? 'Signing in...' : 'Sign in'}
+            {loading ? t('auth.signingIn') : t('auth.signIn')}
           </button>
         </form>
 
         <div style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: 'var(--muted, #71717a)' }}>
-          Don't have an account?{' '}
+          {t('auth.noAccount')}{' '}
           <Link to="/register" style={{ color: 'var(--text-primary)', fontWeight: 600, textDecoration: 'none' }}>
-            Register
+            {t('auth.register')}
           </Link>
         </div>
       </div>

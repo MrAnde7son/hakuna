@@ -1,5 +1,6 @@
 import React, { useState, useEffect, createContext, useContext, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, NavLink, Navigate, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import {
   Server,
   Bug,
@@ -16,13 +17,15 @@ import {
   Moon,
   Sun,
   Layers,
+  Globe,
 } from 'lucide-react'
+import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
 import Login from './components/auth/Login.jsx'
 import Register from './components/auth/Register.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
-import { getScans, setOrgContext } from './api.js'
+import { getScans, setOrgContext, authUpdateLocale } from './api.js'
 
 // Lazy-loaded route components (code-split per page)
 const AssetInventory = React.lazy(() => import('./components/assets/AssetInventory.jsx'))
@@ -47,38 +50,39 @@ export const useScan = () => useContext(ScanContext)
 
 const NAV_GROUPS = [
   {
-    label: 'Intelligence',
+    labelKey: 'nav.intelligence',
     items: [
-      { path: '/', label: 'Reports', icon: BarChart3, exact: true, alsoPaths: ['/reports'], permission: 'page_reports' },
-      { path: '/threat-intel', label: 'Threat Intel', icon: ShieldAlert, permission: 'page_threat_intel' },
+      { path: '/', labelKey: 'nav.reports', icon: BarChart3, exact: true, alsoPaths: ['/reports'], permission: 'page_reports' },
+      { path: '/threat-intel', labelKey: 'nav.threatIntel', icon: ShieldAlert, permission: 'page_threat_intel' },
     ],
   },
   {
-    label: 'Exposure',
+    labelKey: 'nav.exposure',
     items: [
-      { path: '/assets', label: 'Assets', icon: Server, permission: 'page_assets' },
-      { path: '/findings', label: 'Findings', icon: Bug, permission: 'page_findings' },
-      { path: '/inventory', label: 'Inventory', icon: Database, permission: 'page_inventory' },
+      { path: '/assets', labelKey: 'nav.assets', icon: Server, permission: 'page_assets' },
+      { path: '/findings', labelKey: 'nav.findings', icon: Bug, permission: 'page_findings' },
+      { path: '/inventory', labelKey: 'nav.inventory', icon: Database, permission: 'page_inventory' },
     ],
   },
   {
-    label: 'Response',
+    labelKey: 'nav.response',
     items: [
-      { path: '/campaigns', label: 'Campaigns', icon: Target, permission: 'page_campaigns' },
-      { path: '/aggregated-solutions', label: 'Remediation', icon: Layers, permission: 'page_remediation' },
-      { path: '/agents', label: 'Agents', icon: Bot, permission: 'page_agents' },
+      { path: '/campaigns', labelKey: 'nav.campaigns', icon: Target, permission: 'page_campaigns' },
+      { path: '/aggregated-solutions', labelKey: 'nav.remediation', icon: Layers, permission: 'page_remediation' },
+      { path: '/agents', labelKey: 'nav.agents', icon: Bot, permission: 'page_agents' },
     ],
   },
 ]
 
-const NAV_SETTINGS = { path: '/settings', label: 'Settings', icon: SettingsIcon, permission: 'page_settings' }
+const NAV_SETTINGS = { path: '/settings', labelKey: 'nav.settings', icon: SettingsIcon, permission: 'page_settings' }
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated, isLoading } = useAuth()
+  const { t } = useTranslation()
   if (isLoading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: '#71717a' }}>
-        Loading...
+        {t('app.loading')}
       </div>
     )
   }
@@ -88,6 +92,7 @@ function ProtectedRoute({ children }) {
 
 function OrgSwitcher({ collapsed }) {
   const { accessibleOrgs, currentOrgContext, switchOrg, isMSSP, isSuperadmin, org } = useAuth()
+  const { t } = useTranslation()
 
   if (!isMSSP && !isSuperadmin) return null
   if (accessibleOrgs.length <= 1) return null
@@ -108,7 +113,7 @@ function OrgSwitcher({ collapsed }) {
         gap: 4,
       }}>
         <Building2 size={10} />
-        {!collapsed && 'Org Context'}
+        {!collapsed && t('user.orgContext')}
       </div>
       <select
         value={currentOrgContext || ''}
@@ -124,7 +129,7 @@ function OrgSwitcher({ collapsed }) {
           cursor: 'pointer',
         }}
       >
-        <option value="">All Organizations</option>
+        <option value="">{t('user.allOrgs')}</option>
         {accessibleOrgs.map(o => (
           <option key={o.id} value={o.id}>{o.name}</option>
         ))}
@@ -136,8 +141,10 @@ function OrgSwitcher({ collapsed }) {
 function UserMenu({ collapsed }) {
   const { user, org, logout } = useAuth()
   const { theme, toggleTheme } = useTheme()
+  const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
+  const [langOpen, setLangOpen] = useState(false)
   const menuRef = React.useRef(null)
 
   useEffect(() => {
@@ -221,8 +228,42 @@ function UserMenu({ collapsed }) {
             onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
           >
             {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
-            {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+            {theme === 'dark' ? t('user.lightMode') : t('user.darkMode')}
           </button>
+          <div style={{ height: 1, background: 'var(--border)' }} />
+          <button
+            onClick={() => setLangOpen(prev => !prev)}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+              padding: '9px 14px', border: 'none', background: 'transparent',
+              cursor: 'pointer', fontSize: 13, color: 'var(--text)', textAlign: 'left',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <Globe size={14} /> {t('settings.language')}
+          </button>
+          {langOpen && (
+            <div style={{ padding: '4px 8px', background: 'var(--bg-secondary)' }}>
+              {SUPPORTED_LANGUAGES.map(lang => (
+                <button
+                  key={lang.code}
+                  onClick={() => { i18n.changeLanguage(lang.code); authUpdateLocale(lang.code).catch(() => {}); setLangOpen(false); setOpen(false) }}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '6px 10px', border: 'none', borderRadius: 4,
+                    background: i18n.language === lang.code ? 'var(--nav-active-bg)' : 'transparent',
+                    color: i18n.language === lang.code ? 'var(--nav-active-text)' : 'var(--text)',
+                    cursor: 'pointer', fontSize: 12, textAlign: 'left',
+                  }}
+                  onMouseEnter={e => { if (i18n.language !== lang.code) e.currentTarget.style.background = 'var(--bg-hover)' }}
+                  onMouseLeave={e => { if (i18n.language !== lang.code) e.currentTarget.style.background = 'transparent' }}
+                >
+                  {lang.label}
+                </button>
+              ))}
+            </div>
+          )}
           <div style={{ height: 1, background: 'var(--border)' }} />
           <button
             onClick={() => { setOpen(false); navigate('/profile') }}
@@ -234,7 +275,7 @@ function UserMenu({ collapsed }) {
             onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
             onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
           >
-            <User size={14} /> View Profile
+            <User size={14} /> {t('user.viewProfile')}
           </button>
           <div style={{ height: 1, background: 'var(--border)' }} />
           <button
@@ -247,7 +288,7 @@ function UserMenu({ collapsed }) {
             onMouseEnter={e => e.currentTarget.style.background = 'var(--danger-subtle)'}
             onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
           >
-            <LogOut size={14} /> Log out
+            <LogOut size={14} /> {t('user.logOut')}
           </button>
         </div>
       )}
@@ -259,6 +300,7 @@ function Sidebar({ collapsed, onToggle }) {
   const width = collapsed ? 56 : 220
   const { scans, activeScanId, setActiveScanId } = useScan()
   const { hasPermission } = useAuth()
+  const { t } = useTranslation()
 
   return (
     <aside
@@ -292,7 +334,7 @@ function Sidebar({ collapsed, onToggle }) {
         <button
           type="button"
           onClick={onToggle}
-          aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+          aria-label={collapsed ? t('nav.expandNav') : t('nav.collapseNav')}
           style={{
             width: 32,
             height: 32,
@@ -315,8 +357,8 @@ function Sidebar({ collapsed, onToggle }) {
         {!collapsed && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 800 }}>Hakuna</div>
-              <div style={{ fontSize: 11, color: 'var(--muted)' }}>Exposure Center</div>
+              <div style={{ fontSize: 13, fontWeight: 800 }}>{t('app.name')}</div>
+              <div style={{ fontSize: 11, color: 'var(--muted)' }}>{t('app.tagline')}</div>
             </div>
           </div>
         )}
@@ -338,7 +380,7 @@ function Sidebar({ collapsed, onToggle }) {
           const visibleItems = group.items.filter(item => !item.permission || hasPermission(item.permission))
           if (visibleItems.length === 0) return null
           return (
-          <div key={group.label} style={{ marginBottom: collapsed ? 8 : 4 }}>
+          <div key={group.labelKey} style={{ marginBottom: collapsed ? 8 : 4 }}>
             {!collapsed && (
               <div style={{
                 fontSize: 10,
@@ -349,20 +391,20 @@ function Sidebar({ collapsed, onToggle }) {
                 padding: '10px 10px 4px',
                 opacity: 0.7,
               }}>
-                {group.label}
+                {t(group.labelKey)}
               </div>
             )}
             {collapsed && gi > 0 && (
               <div style={{ height: 1, background: 'var(--border)', margin: '6px 0' }} />
             )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-              {visibleItems.map(({ path, label, icon: Icon, exact, alsoPaths }) => (
+              {visibleItems.map(({ path, labelKey, icon: Icon, exact, alsoPaths }) => (
                 <NavLink
                   key={path}
                   to={path}
                   end={exact}
-                  title={label}
-                  aria-label={label}
+                  title={t(labelKey)}
+                  aria-label={t(labelKey)}
                   style={({ isActive }) => {
                     const active = isActive || (alsoPaths && alsoPaths.some(p => window.location.pathname.startsWith(p)))
                     return {
@@ -381,7 +423,7 @@ function Sidebar({ collapsed, onToggle }) {
                   }}}
                 >
                   <Icon size={18} />
-                  {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{label}</span>}
+                  {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t(labelKey)}</span>}
                 </NavLink>
               ))}
             </div>
@@ -397,8 +439,8 @@ function Sidebar({ collapsed, onToggle }) {
           )}
           <NavLink
             to={NAV_SETTINGS.path}
-            title={NAV_SETTINGS.label}
-            aria-label={NAV_SETTINGS.label}
+            title={t(NAV_SETTINGS.labelKey)}
+            aria-label={t(NAV_SETTINGS.labelKey)}
             style={({ isActive }) => ({
               display: 'flex',
               alignItems: 'center',
@@ -415,7 +457,7 @@ function Sidebar({ collapsed, onToggle }) {
             })}
           >
             <NAV_SETTINGS.icon size={18} />
-            {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{NAV_SETTINGS.label}</span>}
+            {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t(NAV_SETTINGS.labelKey)}</span>}
           </NavLink>
         </div>
         )}
