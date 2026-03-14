@@ -15,6 +15,59 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from models.models import User, Organization, MSSPOrgAccess, CustomRole, TagPermission, UserCustomRole, Tag
 
+# ── Permission keys ──────────────────────────────────────
+# All recognized permission keys for base_permissions / deny_permissions on CustomRole.
+
+ALL_PERMISSION_KEYS = [
+    # Data access
+    "read_scans", "write_scans",
+    "read_assets", "write_assets",
+    "read_findings", "write_findings",
+    # Actions
+    "upload_scan", "delete_scan", "export_report",
+    "manage_tags", "manage_campaigns", "manage_exceptions",
+    "manage_workflows", "manage_users", "manage_integrations",
+    "view_reports",
+    # Pages
+    "page_dashboard", "page_assets", "page_findings", "page_reports",
+    "page_inventory", "page_campaigns", "page_remediation", "page_agents",
+    "page_tags", "page_upload", "page_settings", "page_threat_intel",
+    "page_workflows",
+]
+
+# Built-in role defaults — what each role gets out of the box.
+_ALL_TRUE = {k: True for k in ALL_PERMISSION_KEYS}
+
+BUILTIN_ROLE_DEFAULTS = {
+    "superadmin": {**_ALL_TRUE, "manage_users": True},
+    "org_admin":  {**_ALL_TRUE},
+    "analyst": {
+        # Data
+        "read_scans": True, "write_scans": True,
+        "read_assets": True, "write_assets": True,
+        "read_findings": True, "write_findings": True,
+        # Actions
+        "upload_scan": True, "export_report": True,
+        "manage_tags": True, "manage_campaigns": True,
+        "manage_exceptions": True, "manage_workflows": True,
+        "view_reports": True,
+        # Pages
+        "page_dashboard": True, "page_assets": True, "page_findings": True,
+        "page_reports": True, "page_inventory": True, "page_campaigns": True,
+        "page_remediation": True, "page_agents": True, "page_tags": True,
+        "page_upload": True, "page_threat_intel": True, "page_workflows": True,
+        "page_settings": True,
+    },
+    "viewer": {
+        "read_scans": True, "read_assets": True, "read_findings": True,
+        "view_reports": True, "export_report": True,
+        "page_dashboard": True, "page_assets": True, "page_findings": True,
+        "page_reports": True, "page_inventory": True, "page_threat_intel": True,
+        "page_settings": True,
+    },
+    "custom": {},  # everything comes from custom roles
+}
+
 # ── Config ────────────────────────────────────────────────
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "change-me-in-production-use-a-real-secret")
@@ -152,17 +205,59 @@ def apply_org_filter(query, model, org_ids: Optional[List[int]]):
     return query
 
 
+def resolve_effective_permissions(user: User, db: Session) -> dict:
+    """Compute the user's effective permissions by merging built-in role defaults
+    with all assigned custom roles. Deny always wins over allow.
+
+    Returns a dict of {permission_key: bool}.
+    """
+    # 1. Start with built-in role defaults
+    base = dict(BUILTIN_ROLE_DEFAULTS.get(user.role, {}))
+
+    # 2. Merge all custom role base_permissions (union — any True wins)
+    assignments = (
+        db.query(UserCustomRole)
+        .filter(UserCustomRole.user_id == user.id)
+        .all()
+    )
+    deny_set = set()
+    for ucr in assignments:
+        role = ucr.role
+        if not role or not role.is_active:
+            continue
+        for k, v in (role.base_permissions or {}).items():
+            if v and k in ALL_PERMISSION_KEYS:
+                base[k] = True
+        for k, v in (role.deny_permissions or {}).items():
+            if v and k in ALL_PERMISSION_KEYS:
+                deny_set.add(k)
+
+    # 3. Apply deny — deny always wins
+    for k in deny_set:
+        base[k] = False
+
+    return base
+
+
+def require_permission(*permissions: str):
+    """Dependency factory: require the user to have ALL of the given effective permissions."""
+    async def _check(user: User = Depends(require_auth), db: Session = Depends(get_db)):
+        effective = resolve_effective_permissions(user, db)
+        missing = [p for p in permissions if not effective.get(p)]
+        if missing:
+            raise HTTPException(status_code=403, detail=f"Missing permission: {', '.join(missing)}")
+        return user
+    return _check
+
+
 def has_tag_permission(user: User, tag_id: int, permission: str, db: Session) -> bool:
     """Check if a user has the given permission ('read' or 'write') on a tag via custom roles.
 
-    - superadmin and org_admin always return True.
-    - analyst/viewer: checks UserCustomRole → TagPermission for tag-level or category-level grants.
-    - Permissions stack across multiple roles (most-permissive wins).
+    - superadmin and org_admin: auto-grant unless an explicit deny exists via custom roles.
+    - analyst/viewer/custom: checks UserCustomRole → TagPermission for grants and denies.
+    - Deny always wins over allow.
     - 'write' requires an explicit write grant; 'read' is satisfied by read or write.
     """
-    if user.role in ("superadmin", "org_admin"):
-        return True
-
     tag = db.query(Tag).filter(Tag.id == tag_id).first()
     if not tag:
         return False
@@ -175,21 +270,48 @@ def has_tag_permission(user: User, tag_id: int, permission: str, db: Session) ->
         .subquery()
     )
 
-    # Tag-level grant
+    # Check for deny first — deny always wins
+    # Tag-level deny
     if db.query(TagPermission).filter(
         TagPermission.role_id.in_(role_ids_subq),
         TagPermission.target_type == "tag",
         TagPermission.target_id == tag_id,
         TagPermission.permission.in_(allowed),
+        TagPermission.effect == "deny",
     ).first():
-        return True
+        return False
 
-    # Category-level grant
+    # Category-level deny
     if db.query(TagPermission).filter(
         TagPermission.role_id.in_(role_ids_subq),
         TagPermission.target_type == "category",
         TagPermission.target_category == tag.category,
         TagPermission.permission.in_(allowed),
+        TagPermission.effect == "deny",
+    ).first():
+        return False
+
+    # superadmin / org_admin: auto-grant (after deny check)
+    if user.role in ("superadmin", "org_admin"):
+        return True
+
+    # Tag-level allow grant
+    if db.query(TagPermission).filter(
+        TagPermission.role_id.in_(role_ids_subq),
+        TagPermission.target_type == "tag",
+        TagPermission.target_id == tag_id,
+        TagPermission.permission.in_(allowed),
+        TagPermission.effect == "allow",
+    ).first():
+        return True
+
+    # Category-level allow grant
+    if db.query(TagPermission).filter(
+        TagPermission.role_id.in_(role_ids_subq),
+        TagPermission.target_type == "category",
+        TagPermission.target_category == tag.category,
+        TagPermission.permission.in_(allowed),
+        TagPermission.effect == "allow",
     ).first():
         return True
 

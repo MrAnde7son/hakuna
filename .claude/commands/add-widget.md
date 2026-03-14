@@ -126,17 +126,30 @@ my_table: {
 },
 ```
 
-### Step 4 — Add drill-down (optional)
+### Step 4 — Add drill-down (REQUIRED when data is filterable)
 
-Add entries to the `DRILL_DOWN` object for card click-through or chart slice navigation:
+Every widget that represents a filterable dataset MUST have a drill-down entry in the `DRILL_DOWN` object. Widgets are drillable when clicking them can navigate the user to a filtered view of the underlying data (findings, assets, inventory, etc.). Only skip drill-down for purely layout widgets (`header`, `divider`, `image`) or aggregations with no meaningful filtered destination.
+
+Add entries to the `DRILL_DOWN` object:
 
 ```js
-// Card drill-down (string URL):
+// Card drill-down (string URL — navigates on card click):
 my_metric: '/findings?some_filter=value',
 
-// Chart drill-down (function receiving category name):
+// Categories drill-down (function receiving the clicked slice/bar name):
 my_breakdown: (name) => `/findings?category=${encodeURIComponent(name)}`,
+
+// Table drill-down (function receiving the clicked row object):
+my_table: (row) => `/findings?plugin_id=${row.plugin_id}`,
 ```
+
+**Guidelines:**
+- `card` → always drillable. Link to the filtered list that the metric counts.
+- `pie_chart` / `bar_chart` → always drillable. Map each slice/bar name to the corresponding filter.
+- `table` → drillable when rows represent entities that have a detail/filtered view.
+- `line_chart` → drillable when individual data points map to a filterable view (e.g., a specific scan).
+- `heatmap` → drillable when cells map to a severity+family filter combination.
+- Use existing URL patterns: `/findings?severity=4`, `/assets?tag=...`, `/inventory?tab=users&...` etc.
 
 ### Step 5 — Add widget to dashboard template(s)
 

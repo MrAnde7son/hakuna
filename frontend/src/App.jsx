@@ -49,29 +49,29 @@ const NAV_GROUPS = [
   {
     label: 'Intelligence',
     items: [
-      { path: '/', label: 'Reports', icon: BarChart3, exact: true, alsoPaths: ['/reports'] },
-      { path: '/threat-intel', label: 'Threat Intel', icon: ShieldAlert },
+      { path: '/', label: 'Reports', icon: BarChart3, exact: true, alsoPaths: ['/reports'], permission: 'page_reports' },
+      { path: '/threat-intel', label: 'Threat Intel', icon: ShieldAlert, permission: 'page_threat_intel' },
     ],
   },
   {
     label: 'Exposure',
     items: [
-      { path: '/assets', label: 'Assets', icon: Server },
-      { path: '/findings', label: 'Findings', icon: Bug },
-      { path: '/inventory', label: 'Inventory', icon: Database },
+      { path: '/assets', label: 'Assets', icon: Server, permission: 'page_assets' },
+      { path: '/findings', label: 'Findings', icon: Bug, permission: 'page_findings' },
+      { path: '/inventory', label: 'Inventory', icon: Database, permission: 'page_inventory' },
     ],
   },
   {
     label: 'Response',
     items: [
-      { path: '/campaigns', label: 'Campaigns', icon: Target },
-      { path: '/aggregated-solutions', label: 'Remediation', icon: Layers },
-      { path: '/agents', label: 'Agents', icon: Bot },
+      { path: '/campaigns', label: 'Campaigns', icon: Target, permission: 'page_campaigns' },
+      { path: '/aggregated-solutions', label: 'Remediation', icon: Layers, permission: 'page_remediation' },
+      { path: '/agents', label: 'Agents', icon: Bot, permission: 'page_agents' },
     ],
   },
 ]
 
-const NAV_SETTINGS = { path: '/settings', label: 'Settings', icon: SettingsIcon }
+const NAV_SETTINGS = { path: '/settings', label: 'Settings', icon: SettingsIcon, permission: 'page_settings' }
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -258,6 +258,7 @@ function UserMenu({ collapsed }) {
 function Sidebar({ collapsed, onToggle }) {
   const width = collapsed ? 56 : 220
   const { scans, activeScanId, setActiveScanId } = useScan()
+  const { hasPermission } = useAuth()
 
   return (
     <aside
@@ -333,7 +334,10 @@ function Sidebar({ collapsed, onToggle }) {
           overflowY: 'auto',
         }}
       >
-        {NAV_GROUPS.map((group, gi) => (
+        {NAV_GROUPS.map((group, gi) => {
+          const visibleItems = group.items.filter(item => !item.permission || hasPermission(item.permission))
+          if (visibleItems.length === 0) return null
+          return (
           <div key={group.label} style={{ marginBottom: collapsed ? 8 : 4 }}>
             {!collapsed && (
               <div style={{
@@ -352,7 +356,7 @@ function Sidebar({ collapsed, onToggle }) {
               <div style={{ height: 1, background: 'var(--border)', margin: '6px 0' }} />
             )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-              {group.items.map(({ path, label, icon: Icon, exact, alsoPaths }) => (
+              {visibleItems.map(({ path, label, icon: Icon, exact, alsoPaths }) => (
                 <NavLink
                   key={path}
                   to={path}
@@ -382,9 +386,11 @@ function Sidebar({ collapsed, onToggle }) {
               ))}
             </div>
           </div>
-        ))}
+        )})}
+
 
         {/* Settings — ungrouped at bottom */}
+        {(!NAV_SETTINGS.permission || hasPermission(NAV_SETTINGS.permission)) && (
         <div style={{ marginTop: 'auto', paddingTop: 8, paddingBottom: 8 }}>
           {!collapsed && (
             <div style={{ height: 1, background: 'var(--border)', marginBottom: 8 }} />
@@ -412,6 +418,7 @@ function Sidebar({ collapsed, onToggle }) {
             {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{NAV_SETTINGS.label}</span>}
           </NavLink>
         </div>
+        )}
       </nav>
 
       {/* Org switcher (MSSP / superadmin) */}

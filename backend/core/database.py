@@ -121,6 +121,12 @@ def _migrate_add_columns():
             ("manager_dn", "VARCHAR"),
             ("manager_username", "VARCHAR"),
         ],
+        "custom_roles": [
+            ("deny_permissions", "JSON"),
+        ],
+        "tag_permissions": [
+            ("effect", 'VARCHAR DEFAULT "allow"'),
+        ],
         "agent_schedules": [("next_run_at", "DATETIME")],
         "aggregated_solutions": [
             ("affected_component", "VARCHAR"),

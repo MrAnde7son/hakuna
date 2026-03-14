@@ -48,7 +48,7 @@ import services.ownership_inference as ownership_inference
 import services.solution_aggregator as solution_aggregator
 from core.audit import log_audit, diff as _diff
 from core.auth import (
-    get_current_user, require_auth, require_role,
+    get_current_user, require_auth, require_role, require_permission,
     get_accessible_org_ids, apply_org_filter, apply_scan_org_filter,
 )
 from routes.auth_routes import router as auth_router

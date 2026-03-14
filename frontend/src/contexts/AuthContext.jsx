@@ -13,6 +13,7 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [org, setOrg] = useState(null)
   const [accessibleOrgs, setAccessibleOrgs] = useState([])
+  const [effectivePermissions, setEffectivePermissions] = useState({})
   const [isLoading, setIsLoading] = useState(true)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
 
@@ -28,6 +29,7 @@ export function AuthProvider({ children }) {
         setUser(data)
         setOrg(data.org)
         setAccessibleOrgs(data.accessible_orgs || [data.org])
+        setEffectivePermissions(data.effective_permissions || {})
         setIsAuthenticated(true)
       })
       .catch(() => {
@@ -48,6 +50,7 @@ export function AuthProvider({ children }) {
       setUser(me)
       setOrg(me.org)
       setAccessibleOrgs(me.accessible_orgs || [me.org])
+      setEffectivePermissions(me.effective_permissions || {})
     } catch {}
     return data
   }, [])
@@ -67,6 +70,7 @@ export function AuthProvider({ children }) {
     setUser(null)
     setOrg(null)
     setAccessibleOrgs([])
+    setEffectivePermissions({})
     setIsAuthenticated(false)
   }, [])
 
@@ -78,11 +82,16 @@ export function AuthProvider({ children }) {
 
   const currentOrgContext = getOrgContext()
 
+  const hasPermission = useCallback((key) => !!effectivePermissions[key], [effectivePermissions])
+  const hasAnyPermission = useCallback((...keys) => keys.some(k => !!effectivePermissions[k]), [effectivePermissions])
+  const canAccessPage = useCallback((pageKey) => !!effectivePermissions[pageKey], [effectivePermissions])
+
   return (
     <AuthContext.Provider value={{
       user,
       org,
       accessibleOrgs,
+      effectivePermissions,
       isLoading,
       isAuthenticated,
       login,
@@ -90,10 +99,14 @@ export function AuthProvider({ children }) {
       logout,
       switchOrg,
       currentOrgContext,
+      hasPermission,
+      hasAnyPermission,
+      canAccessPage,
       isMSSP: org?.org_type === 'mssp',
       isSuperadmin: user?.role === 'superadmin',
       isAdmin: user?.role === 'org_admin' || user?.role === 'superadmin',
       isViewer: user?.role === 'viewer',
+      isCustomRole: user?.role === 'custom',
     }}>
       {children}
     </AuthContext.Provider>

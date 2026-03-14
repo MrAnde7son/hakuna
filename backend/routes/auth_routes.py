@@ -17,7 +17,7 @@ from models.models import Organization, User, MSSPOrgAccess, Scan, CustomRole, T
 from core.auth import (
     hash_password, verify_password, create_access_token,
     require_auth, require_role, get_current_user, get_accessible_org_ids,
-    get_user_custom_roles,
+    get_user_custom_roles, resolve_effective_permissions, ALL_PERMISSION_KEYS,
 )
 from core.audit import log_audit, diff as _diff
 
@@ -193,6 +193,9 @@ async def get_me(user: User = Depends(require_auth), db: Session = Depends(get_d
     org = db.query(Organization).filter(Organization.id == user.org_id).first()
     result = _user_response(user, org)
 
+    # Include effective permissions
+    result["effective_permissions"] = resolve_effective_permissions(user, db)
+
     # If MSSP, include accessible client orgs
     if org.org_type == "mssp":
         links = db.query(MSSPOrgAccess).filter(
@@ -236,8 +239,8 @@ async def invite_user(
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(400, "Email already registered")
 
-    if body.role not in ("org_admin", "analyst", "viewer"):
-        raise HTTPException(400, "Invalid role. Use: org_admin, analyst, viewer")
+    if body.role not in ("org_admin", "analyst", "viewer", "custom"):
+        raise HTTPException(400, "Invalid role. Use: org_admin, analyst, viewer, custom")
 
     if len(body.password) < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
@@ -304,7 +307,7 @@ async def update_user(
     if body.display_name is not None:
         target.display_name = body.display_name
     if body.role is not None:
-        if body.role not in ("superadmin", "org_admin", "analyst", "viewer"):
+        if body.role not in ("superadmin", "org_admin", "analyst", "viewer", "custom"):
             raise HTTPException(400, "Invalid role")
         if body.role == "superadmin" and user.role != "superadmin":
             raise HTTPException(403, "Only superadmin can grant superadmin role")
@@ -539,25 +542,21 @@ async def list_mssp_clients(
 
 # ── Custom Role Management ────────────────────────────────
 
-BASE_PERMISSION_KEYS = [
-    "read_scans", "write_scans",
-    "read_assets", "write_assets",
-    "read_findings", "write_findings",
-    "manage_tags", "manage_campaigns",
-    "manage_exceptions", "view_reports",
-]
+BASE_PERMISSION_KEYS = ALL_PERMISSION_KEYS
 
 
 class CreateRoleRequest(BaseModel):
     name: str
     description: Optional[str] = None
     base_permissions: Optional[dict] = None
+    deny_permissions: Optional[dict] = None
 
 
 class UpdateRoleRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     base_permissions: Optional[dict] = None
+    deny_permissions: Optional[dict] = None
     is_active: Optional[bool] = None
 
 
@@ -566,6 +565,7 @@ class TagPermissionRequest(BaseModel):
     target_id: Optional[int] = None        # tag ID when target_type="tag"
     target_category: Optional[str] = None  # category name when target_type="category"
     permission: str           # "read" | "write"
+    effect: str = "allow"     # "allow" | "deny"
 
 
 def _role_response(role: CustomRole, db: Session) -> dict:
@@ -575,6 +575,7 @@ def _role_response(role: CustomRole, db: Session) -> dict:
             "id": tp.id,
             "target_type": tp.target_type,
             "permission": tp.permission,
+            "effect": tp.effect or "allow",
         }
         if tp.target_type == "tag":
             entry["target_id"] = tp.target_id
@@ -594,6 +595,7 @@ def _role_response(role: CustomRole, db: Session) -> dict:
         "name": role.name,
         "description": role.description,
         "base_permissions": role.base_permissions or {},
+        "deny_permissions": role.deny_permissions or {},
         "is_active": role.is_active,
         "created_at": role.created_at.isoformat() if role.created_at else None,
         "tag_permissions": perms,
@@ -615,11 +617,13 @@ async def create_role(
         raise HTTPException(400, "A role with this name already exists in your organization")
 
     perms = {k: bool(v) for k, v in (body.base_permissions or {}).items() if k in BASE_PERMISSION_KEYS}
+    deny = {k: bool(v) for k, v in (body.deny_permissions or {}).items() if k in BASE_PERMISSION_KEYS}
     role = CustomRole(
         org_id=user.org_id,
         name=body.name,
         description=body.description,
         base_permissions=perms,
+        deny_permissions=deny,
         created_by_id=user.id,
     )
     db.add(role)
@@ -672,7 +676,7 @@ async def update_role(
     if not role:
         raise HTTPException(404, "Role not found")
 
-    _old_r = {"name": role.name, "description": role.description, "base_permissions": role.base_permissions, "is_active": role.is_active}
+    _old_r = {"name": role.name, "description": role.description, "base_permissions": role.base_permissions, "deny_permissions": role.deny_permissions, "is_active": role.is_active}
     if body.name is not None:
         # Check uniqueness
         conflict = db.query(CustomRole).filter(
@@ -687,10 +691,12 @@ async def update_role(
         role.description = body.description
     if body.base_permissions is not None:
         role.base_permissions = {k: bool(v) for k, v in body.base_permissions.items() if k in BASE_PERMISSION_KEYS}
+    if body.deny_permissions is not None:
+        role.deny_permissions = {k: bool(v) for k, v in body.deny_permissions.items() if k in BASE_PERMISSION_KEYS}
     if body.is_active is not None:
         role.is_active = body.is_active
 
-    _new_r = {"name": role.name, "description": role.description, "base_permissions": role.base_permissions, "is_active": role.is_active}
+    _new_r = {"name": role.name, "description": role.description, "base_permissions": role.base_permissions, "deny_permissions": role.deny_permissions, "is_active": role.is_active}
     log_audit(db, "update", "role", role_id, entity_name=role.name,
               changes=_diff(_old_r, _new_r), actor=user)
     db.commit()
@@ -735,6 +741,8 @@ async def add_tag_permission(
         raise HTTPException(400, "target_type must be 'tag' or 'category'")
     if body.permission not in ("read", "write"):
         raise HTTPException(400, "permission must be 'read' or 'write'")
+    if body.effect not in ("allow", "deny"):
+        raise HTTPException(400, "effect must be 'allow' or 'deny'")
 
     if body.target_type == "tag":
         if not body.target_id:
@@ -748,6 +756,7 @@ async def add_tag_permission(
             TagPermission.target_type == "tag",
             TagPermission.target_id == body.target_id,
             TagPermission.permission == body.permission,
+            TagPermission.effect == body.effect,
         ).first()
     else:
         if not body.target_category:
@@ -757,6 +766,7 @@ async def add_tag_permission(
             TagPermission.target_type == "category",
             TagPermission.target_category == body.target_category,
             TagPermission.permission == body.permission,
+            TagPermission.effect == body.effect,
         ).first()
 
     if existing:
@@ -768,6 +778,7 @@ async def add_tag_permission(
         target_id=body.target_id if body.target_type == "tag" else None,
         target_category=body.target_category if body.target_type == "category" else None,
         permission=body.permission,
+        effect=body.effect,
     )
     db.add(tp)
     log_audit(db, "update", "role", role_id, entity_name=role.name,

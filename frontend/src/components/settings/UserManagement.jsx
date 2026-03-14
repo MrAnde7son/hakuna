@@ -14,6 +14,7 @@ const ROLE_COLORS = {
   org_admin:  { bg: 'rgba(37,99,235,0.1)',   color: 'var(--primary)', label: 'Admin' },
   analyst:    { bg: 'var(--success-subtle)',  color: 'var(--success)', label: 'Analyst' },
   viewer:     { bg: 'var(--secondary)',       color: 'var(--muted)',   label: 'Viewer' },
+  custom:     { bg: 'rgba(109,40,217,0.1)',  color: '#6d28d9',        label: 'Custom' },
 }
 
 function RoleBadge({ role }) {
@@ -379,6 +380,7 @@ export default function UserManagement() {
                   <option value="analyst">Analyst</option>
                   <option value="viewer">Viewer</option>
                   <option value="org_admin">Admin</option>
+                  <option value="custom">Custom (roles only)</option>
                 </select>
               </div>
               <div>
@@ -424,6 +426,7 @@ export default function UserManagement() {
                           <option value="viewer">Viewer</option>
                           <option value="analyst">Analyst</option>
                           <option value="org_admin">Admin</option>
+                          <option value="custom">Custom</option>
                           {isSuperadmin && <option value="superadmin">Super Admin</option>}
                         </select>
                       )}

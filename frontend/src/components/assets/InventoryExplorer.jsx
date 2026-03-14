@@ -375,7 +375,7 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
       {/* ── Security & Compliance ── */}
       <div>
         <SectionLabel>Security & Compliance</SectionLabel>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 10, marginTop: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(9, 1fr)', gap: 10, marginTop: 8 }}>
           <StatCard label="Missing Patches"value={counts.missing_patches} icon={Layers}   color="#dc2626" onClick={() => onTabChange('patches')} />
           <StatCard label="Security Ctrl"  value={counts.security_controls} icon={Lock}   color="#10b981" onClick={() => onTabChange('security')} />
           <StatCard label="Certificates"   value={counts.certificates}   icon={FileText}  color="#8b5cf6" onClick={() => onTabChange('certs')} />

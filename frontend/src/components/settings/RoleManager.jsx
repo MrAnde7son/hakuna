@@ -10,36 +10,87 @@ import {
   Shield, Plus, Trash2, Pencil, Check, X, ChevronRight, Users, Tag, Lock, Unlock,
 } from 'lucide-react'
 
-const BASE_PERMISSIONS = [
-  { key: 'read_scans',        label: 'Read Scans' },
-  { key: 'write_scans',       label: 'Upload / Delete Scans' },
-  { key: 'read_assets',       label: 'Read Assets' },
-  { key: 'write_assets',      label: 'Edit Assets' },
-  { key: 'read_findings',     label: 'Read Findings' },
-  { key: 'write_findings',    label: 'Edit Findings' },
-  { key: 'manage_tags',       label: 'Manage Tags' },
-  { key: 'manage_campaigns',  label: 'Manage Campaigns' },
-  { key: 'manage_exceptions', label: 'Manage Exceptions' },
-  { key: 'view_reports',      label: 'View Reports' },
+const PERMISSION_SECTIONS = [
+  {
+    label: 'Pages',
+    items: [
+      { key: 'page_dashboard',    label: 'Dashboard' },
+      { key: 'page_reports',      label: 'Reports' },
+      { key: 'page_assets',       label: 'Assets' },
+      { key: 'page_findings',     label: 'Findings' },
+      { key: 'page_inventory',    label: 'Inventory' },
+      { key: 'page_campaigns',    label: 'Campaigns' },
+      { key: 'page_remediation',  label: 'Remediation' },
+      { key: 'page_agents',       label: 'Agents' },
+      { key: 'page_tags',         label: 'Tags' },
+      { key: 'page_upload',       label: 'Upload' },
+      { key: 'page_settings',     label: 'Settings' },
+      { key: 'page_threat_intel', label: 'Threat Intel' },
+      { key: 'page_workflows',    label: 'Workflows' },
+    ],
+  },
+  {
+    label: 'Data Access',
+    items: [
+      { key: 'read_scans',     label: 'Read Scans' },
+      { key: 'write_scans',    label: 'Write Scans' },
+      { key: 'read_assets',    label: 'Read Assets' },
+      { key: 'write_assets',   label: 'Write Assets' },
+      { key: 'read_findings',  label: 'Read Findings' },
+      { key: 'write_findings', label: 'Write Findings' },
+    ],
+  },
+  {
+    label: 'Actions',
+    items: [
+      { key: 'upload_scan',         label: 'Upload Scans' },
+      { key: 'delete_scan',         label: 'Delete Scans' },
+      { key: 'export_report',       label: 'Export Reports' },
+      { key: 'view_reports',        label: 'View Reports' },
+      { key: 'manage_tags',         label: 'Manage Tags' },
+      { key: 'manage_campaigns',    label: 'Manage Campaigns' },
+      { key: 'manage_exceptions',   label: 'Manage Exceptions' },
+      { key: 'manage_workflows',    label: 'Manage Workflows' },
+      { key: 'manage_users',        label: 'Manage Users' },
+      { key: 'manage_integrations', label: 'Manage Integrations' },
+    ],
+  },
 ]
 
-function PermToggle({ enabled, onChange }) {
+// Flat list for backward compat
+const BASE_PERMISSIONS = PERMISSION_SECTIONS.flatMap(s => s.items)
+
+function TriStateToggle({ state, onChange }) {
+  // state: "off" | "allow" | "deny"
+  const colors = { off: '#e4e4e7', allow: '#18181b', deny: '#dc2626' }
+  const labels = { off: '', allow: '', deny: '' }
+  const cycle = () => {
+    const next = state === 'off' ? 'allow' : state === 'allow' ? 'deny' : 'off'
+    onChange(next)
+  }
   return (
-    <button
-      onClick={onChange}
-      style={{
-        width: 36, height: 20, borderRadius: 999,
-        background: enabled ? '#18181b' : '#e4e4e7',
-        border: 'none', cursor: 'pointer', position: 'relative',
-        transition: 'background 0.15s',
-      }}
-    >
-      <span style={{
-        position: 'absolute', top: 2, left: enabled ? 18 : 2,
-        width: 16, height: 16, borderRadius: '50%', background: '#fff',
-        transition: 'left 0.15s',
-      }} />
-    </button>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      {state === 'deny' && (
+        <span style={{ fontSize: 10, fontWeight: 700, color: '#dc2626', textTransform: 'uppercase' }}>Deny</span>
+      )}
+      <button
+        onClick={cycle}
+        title={state === 'off' ? 'Click to allow' : state === 'allow' ? 'Click to deny' : 'Click to unset'}
+        style={{
+          width: 36, height: 20, borderRadius: 999,
+          background: colors[state],
+          border: 'none', cursor: 'pointer', position: 'relative',
+          transition: 'background 0.15s',
+        }}
+      >
+        <span style={{
+          position: 'absolute', top: 2,
+          left: state === 'off' ? 2 : state === 'allow' ? 18 : 18,
+          width: 16, height: 16, borderRadius: '50%', background: '#fff',
+          transition: 'left 0.15s',
+        }} />
+      </button>
+    </div>
   )
 }
 
@@ -80,11 +131,21 @@ function RoleCard({ role, selected, onClick }) {
 
 function TagPermissionRow({ perm, onRemove, canEdit }) {
   const isWrite = perm.permission === 'write'
+  const isDeny = perm.effect === 'deny'
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
-      borderRadius: 6, background: '#fafafa', border: '1px solid var(--border)', marginBottom: 4,
+      borderRadius: 6, background: isDeny ? '#fef2f2' : '#fafafa',
+      border: `1px solid ${isDeny ? '#fecaca' : 'var(--border)'}`, marginBottom: 4,
     }}>
+      {isDeny && (
+        <span style={{
+          fontSize: 11, fontWeight: 600, padding: '2px 7px', borderRadius: 999,
+          background: '#fee2e2', color: '#991b1b',
+        }}>
+          DENY
+        </span>
+      )}
       <span style={{
         fontSize: 11, fontWeight: 600, padding: '2px 7px', borderRadius: 999,
         background: isWrite ? '#fef3c7' : '#f0fdf4',
@@ -126,7 +187,7 @@ export default function RoleManager() {
 
   // Add tag permission form
   const [showAddPerm, setShowAddPerm] = useState(false)
-  const [permForm, setPermForm] = useState({ target_type: 'category', target_id: '', target_category: '', permission: 'read' })
+  const [permForm, setPermForm] = useState({ target_type: 'category', target_id: '', target_category: '', permission: 'read', effect: 'allow' })
 
   // Member management
   const [showAddMember, setShowAddMember] = useState(false)
@@ -224,13 +285,34 @@ export default function RoleManager() {
     }
   }
 
-  const handleToggleBasePerm = async (key) => {
-    const current = selectedRole.base_permissions || {}
+  const handleSetPermState = async (key, newState) => {
+    // newState: "off" | "allow" | "deny"
+    const basePerms = { ...(selectedRole.base_permissions || {}) }
+    const denyPerms = { ...(selectedRole.deny_permissions || {}) }
+
+    if (newState === 'allow') {
+      basePerms[key] = true
+      delete denyPerms[key]
+    } else if (newState === 'deny') {
+      delete basePerms[key]
+      denyPerms[key] = true
+    } else {
+      delete basePerms[key]
+      delete denyPerms[key]
+    }
+
     const updated = await authUpdateRole(selectedRole.id, {
-      base_permissions: { ...current, [key]: !current[key] },
+      base_permissions: basePerms,
+      deny_permissions: denyPerms,
     })
     setRoles(prev => prev.map(r => r.id === updated.id ? updated : r))
     setSelectedRole(updated)
+  }
+
+  const getPermState = (key) => {
+    if ((selectedRole.deny_permissions || {})[key]) return 'deny'
+    if ((selectedRole.base_permissions || {})[key]) return 'allow'
+    return 'off'
   }
 
   const handleAddTagPerm = async (e) => {
@@ -239,6 +321,7 @@ export default function RoleManager() {
       const payload = {
         target_type: permForm.target_type,
         permission: permForm.permission,
+        effect: permForm.effect,
       }
       if (permForm.target_type === 'tag') {
         payload.target_id = parseInt(permForm.target_id)
@@ -249,7 +332,7 @@ export default function RoleManager() {
       setRoles(prev => prev.map(r => r.id === updated.id ? updated : r))
       setSelectedRole(updated)
       setShowAddPerm(false)
-      setPermForm({ target_type: 'category', target_id: '', target_category: '', permission: 'read' })
+      setPermForm({ target_type: 'category', target_id: '', target_category: '', permission: 'read', effect: 'allow' })
     } catch (err) {
       setError(err.message)
     }
@@ -441,23 +524,30 @@ export default function RoleManager() {
               )}
             </div>
 
-            {/* Base permissions */}
-            <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+            {/* Permissions */}
+            {PERMISSION_SECTIONS.map(section => (
+            <div key={section.label} style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Shield size={14} /> Base Permissions
+                <Shield size={14} /> {section.label}
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                {BASE_PERMISSIONS.map(({ key, label }) => (
-                  <div key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', borderRadius: 6, background: '#fafafa', border: '1px solid var(--border)' }}>
+                {section.items.map(({ key, label }) => (
+                  <div key={key} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '6px 10px', borderRadius: 6,
+                    background: getPermState(key) === 'deny' ? '#fef2f2' : getPermState(key) === 'allow' ? '#f0fdf4' : '#fafafa',
+                    border: `1px solid ${getPermState(key) === 'deny' ? '#fecaca' : 'var(--border)'}`,
+                  }}>
                     <span style={{ fontSize: 12 }}>{label}</span>
-                    <PermToggle
-                      enabled={!!(selectedRole.base_permissions || {})[key]}
-                      onChange={canEdit ? () => handleToggleBasePerm(key) : undefined}
+                    <TriStateToggle
+                      state={getPermState(key)}
+                      onChange={canEdit ? (s) => handleSetPermState(key, s) : () => {}}
                     />
                   </div>
                 ))}
               </div>
             </div>
+            ))}
 
             {/* Tag permissions */}
             <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
@@ -476,7 +566,7 @@ export default function RoleManager() {
               {showAddPerm && canEdit && (
                 <form onSubmit={handleAddTagPerm} style={{
                   background: '#fafafa', border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 12,
-                  display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 8, alignItems: 'end',
+                  display: 'grid', gridTemplateColumns: 'auto 1fr auto auto', gap: 8, alignItems: 'end',
                 }}>
                   <div>
                     <label style={{ fontSize: 12, fontWeight: 500 }}>Scope</label>
@@ -508,14 +598,29 @@ export default function RoleManager() {
                       <option value="write">Write</option>
                     </select>
                   </div>
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 500 }}>Effect</label>
+                    <select value={permForm.effect} onChange={e => setPermForm(p => ({ ...p, effect: e.target.value }))} style={{
+                      ...inputStyle, width: 'auto',
+                      color: permForm.effect === 'deny' ? '#dc2626' : 'inherit',
+                      fontWeight: permForm.effect === 'deny' ? 600 : 400,
+                    }}>
+                      <option value="allow">Allow</option>
+                      <option value="deny">Deny</option>
+                    </select>
+                  </div>
                   <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                     <button type="button" onClick={() => setShowAddPerm(false)}
                       style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border)', background: '#fff', fontSize: 12, cursor: 'pointer' }}>
                       Cancel
                     </button>
                     <button type="submit"
-                      style={{ padding: '5px 12px', borderRadius: 6, border: 'none', background: '#18181b', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                      Add Permission
+                      style={{
+                        padding: '5px 12px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                        background: permForm.effect === 'deny' ? '#dc2626' : '#18181b',
+                        color: '#fff',
+                      }}>
+                      {permForm.effect === 'deny' ? 'Add Deny Rule' : 'Add Permission'}
                     </button>
                   </div>
                 </form>

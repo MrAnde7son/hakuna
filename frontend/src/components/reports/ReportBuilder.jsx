@@ -11,13 +11,17 @@ import {
   Save, Eye, EyeOff, ArrowLeft, Copy, Settings2, GripVertical,
   CheckCircle, LayoutGrid, Maximize2, Minimize2, X, PenLine,
   TrendingUp, Zap, Clock, Home, Upload, GitCompare, Activity,
-  Download, FileImage, FileText, FileBarChart2, Sparkles, Filter
+  Download, FileImage, FileText, FileBarChart2, Sparkles, Filter,
+  Crosshair, TreePine, Gauge
 } from 'lucide-react'
 import NLPReportBuilder from './NLPReportBuilder.jsx'
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, Legend, CartesianGrid, LineChart, Line,
-  AreaChart, Area
+  AreaChart, Area,
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
+  Treemap as RechartsTreemap,
+  RadialBarChart, RadialBar,
 } from 'recharts'
 import { useScan } from '../../App.jsx'
 import {
@@ -264,6 +268,16 @@ const DATA_PRESETS = {
     extract: d => {
       const s = d?.severity_breakdown || {}
       return ['Info', 'Low', 'Medium', 'High', 'Critical'].map((n, i) => ({ name: n, value: s[n.toLowerCase()] || 0, color: SEV_COLORS[i] })).filter(r => r.value > 0)
+    },
+  },
+  severity_breakdown_filtered: {
+    label: 'Severity Breakdown (Filtered)', group: 'Severity', source: 'findings', type: 'categories',
+    extract: d => {
+      const findings = d?.findings || []
+      const sevMap = { 0: 'Info', 1: 'Low', 2: 'Medium', 3: 'High', 4: 'Critical' }
+      const counts = { Info: 0, Low: 0, Medium: 0, High: 0, Critical: 0 }
+      findings.forEach(f => { const name = sevMap[f.severity] || 'Info'; counts[name]++ })
+      return ['Info', 'Low', 'Medium', 'High', 'Critical'].map((n, i) => ({ name: n, value: counts[n], color: SEV_COLORS[i] })).filter(r => r.value > 0)
     },
   },
   effort_breakdown: {
@@ -878,6 +892,118 @@ const DATA_PRESETS = {
       { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
     ],
   },
+
+  // ── Radar (multi-axis comparison) ──
+  radar_risk_dimensions: {
+    label: 'Risk Dimensions', group: 'Risk', source: 'summary', type: 'radar',
+    extract: d => {
+      const s = d?.severity_breakdown || {}
+      const total = (s.critical || 0) + (s.high || 0) + (s.medium || 0) + (s.low || 0) + (s.info || 0) || 1
+      return [
+        { axis: 'Critical', value: Math.min(100, ((s.critical || 0) / total) * 100 * 5) },
+        { axis: 'Exploitable', value: Math.min(100, ((d?.exploit_count || 0) / (total || 1)) * 100 * 3) },
+        { axis: 'High', value: Math.min(100, ((s.high || 0) / total) * 100 * 3) },
+        { axis: 'Exposure', value: Math.min(100, (d?.total_assets || 0) > 0 ? ((d?.high_priority_count || 0) / (d?.total_assets || 1)) * 100 : 0) },
+        { axis: 'Patch Gap', value: Math.min(100, ((s.medium || 0) + (s.low || 0)) / total * 100) },
+        { axis: 'Complexity', value: Math.min(100, ((d?.effort_breakdown?.complex || 0) / total) * 100 * 5) },
+      ]
+    },
+  },
+  radar_sla_posture: {
+    label: 'SLA Posture', group: 'SLA & Ops', source: 'sla', type: 'radar',
+    extract: d => {
+      if (!d) return []
+      const total = (d.on_track || 0) + (d.at_risk || 0) + (d.breached || 0) + (d.resolved || 0) || 1
+      return [
+        { axis: 'Compliance', value: d.compliance_pct || 0 },
+        { axis: 'On Track', value: ((d.on_track || 0) / total) * 100 },
+        { axis: 'Resolution', value: ((d.resolved || 0) / total) * 100 },
+        { axis: 'At Risk', value: 100 - ((d.at_risk || 0) / total) * 100 },
+        { axis: 'Breach Free', value: 100 - ((d.breached || 0) / total) * 100 },
+      ]
+    },
+  },
+  radar_attack_surface: {
+    label: 'Attack Surface', group: 'Inventory', source: 'inv_summary', type: 'radar',
+    extract: d => {
+      const a = d?.attack_surface || {}
+      const len = v => Array.isArray(v) ? v.length : (v || 0)
+      const maxVal = Math.max(len(a.domain_admins), a.local_admins_count || 0, len(a.kerberoastable_accounts), a.password_never_expires_count || 0, len(a.lateral_movement_paths), a.writeable_shares || 0, 1)
+      return [
+        { axis: 'Domain Admins', value: (len(a.domain_admins) / maxVal) * 100 },
+        { axis: 'Local Admins', value: ((a.local_admins_count || 0) / maxVal) * 100 },
+        { axis: 'Kerberoastable', value: (len(a.kerberoastable_accounts) / maxVal) * 100 },
+        { axis: 'Pwd Never Expires', value: ((a.password_never_expires_count || 0) / maxVal) * 100 },
+        { axis: 'Lateral Paths', value: (len(a.lateral_movement_paths) / maxVal) * 100 },
+        { axis: 'Writeable Shares', value: ((a.writeable_shares || 0) / maxVal) * 100 },
+      ]
+    },
+  },
+
+  // ── Gauge (single metric as radial dial) ──
+  gauge_risk_score: {
+    label: 'Risk Score', group: 'Risk', source: 'summary', type: 'gauge',
+    extract: d => {
+      const assets = d?.top_risky_assets || []
+      const scores = assets.map(a => a.risk_score || 0)
+      const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0
+      return { value: Math.round(avg * 10) / 10, max: 10, label: 'Avg Risk' }
+    },
+  },
+  gauge_sla_compliance: {
+    label: 'SLA Compliance', group: 'SLA & Ops', source: 'sla', type: 'gauge',
+    extract: d => ({ value: Math.round(d?.compliance_pct || 0), max: 100, label: 'SLA %', suffix: '%' }),
+  },
+  gauge_exploit_ratio: {
+    label: 'Exploit Ratio', group: 'Risk', source: 'summary', type: 'gauge',
+    extract: d => {
+      const total = d?.total_findings || 0
+      const exploits = d?.exploit_count || 0
+      return { value: total > 0 ? Math.round((exploits / total) * 100) : 0, max: 100, label: 'Exploitable', suffix: '%' }
+    },
+  },
+  gauge_critical_ratio: {
+    label: 'Critical Ratio', group: 'Severity', source: 'summary', type: 'gauge',
+    extract: d => {
+      const total = d?.total_findings || 0
+      const crit = d?.severity_breakdown?.critical || 0
+      return { value: total > 0 ? Math.round((crit / total) * 100) : 0, max: 100, label: 'Critical', suffix: '%' }
+    },
+  },
+
+  // ── Treemap (hierarchical area) ──
+  treemap_family_severity: {
+    label: 'Families by Severity', group: 'Assets & Findings', source: 'summary', type: 'treemap',
+    extract: d => {
+      const families = d?.top_plugin_families || []
+      return families.slice(0, 15).map(f => ({
+        name: f.family || 'Unknown',
+        size: f.count || 0,
+        critical: f.critical || 0,
+        high: f.high || 0,
+      }))
+    },
+  },
+  treemap_severity: {
+    label: 'Severity Treemap', group: 'Severity', source: 'summary', type: 'treemap',
+    extract: d => {
+      const s = d?.severity_breakdown || {}
+      return [
+        { name: 'Critical', size: s.critical || 0, color: '#dc2626' },
+        { name: 'High', size: s.high || 0, color: '#ea580c' },
+        { name: 'Medium', size: s.medium || 0, color: '#d97706' },
+        { name: 'Low', size: s.low || 0, color: '#65a30d' },
+        { name: 'Info', size: s.info || 0, color: '#0ea5e9' },
+      ].filter(r => r.size > 0)
+    },
+  },
+  treemap_owner: {
+    label: 'Findings by Owner', group: 'Assets & Findings', source: 'summary', type: 'treemap',
+    extract: d => (d?.owner_breakdown || []).map(o => ({
+      name: o.owner || 'Unknown',
+      size: o.count || 0,
+    })).filter(r => r.size > 0),
+  },
 }
 
 const PRESET_GROUPS = ['Severity', 'Risk', 'Temporal', 'SLA & Ops', 'Tags', 'Assets & Findings', 'Inventory', 'Filtered']
@@ -972,6 +1098,9 @@ const WIDGET_CATALOGUE = [
       { type: 'funnel',     label: 'Funnel',      icon: Filter,       desc: 'Progressive filter funnel', defaultWidth: 'half',  defaultConfig: { base_entity: 'findings', steps: [
         { label: 'Step 1', filters: {} },
       ] } },
+      { type: 'radar',     label: 'Radar',       icon: Crosshair,    desc: 'Multi-axis comparison',     defaultWidth: 'half',  defaultConfig: { preset: 'radar_risk_dimensions' } },
+      { type: 'gauge',     label: 'Gauge',       icon: Gauge,        desc: 'Single metric dial',        defaultWidth: 'quarter', defaultConfig: { preset: 'gauge_sla_compliance' } },
+      { type: 'treemap',   label: 'Treemap',     icon: TreePine,     desc: 'Hierarchical area chart',   defaultWidth: 'half',  defaultConfig: { preset: 'treemap_family_severity' } },
     ],
   },
   {
@@ -1135,7 +1264,7 @@ const AI_ML_ATTACK_SURFACE_DASHBOARD = {
     { id: 'ai5', type: 'card', title: 'Total AI Findings', width: 'quarter', config: { preset: 'finding_count_filtered', filters: { plugin_family: 'Artificial Intelligence' } } },
     // AI tool breakdown
     { id: 'ai6', type: 'pie_chart', title: 'AI Tool Categories', width: 'half', config: { preset: 'inv_ai_tool_categories', donut: true } },
-    { id: 'ai7', type: 'bar_chart', title: 'AI Findings by Severity', width: 'half', config: { preset: 'severity_breakdown', filters: { plugin_family: 'Artificial Intelligence' } } },
+    { id: 'ai7', type: 'bar_chart', title: 'AI Findings by Severity', width: 'half', config: { preset: 'severity_breakdown_filtered', filters: { plugin_family: 'Artificial Intelligence', page_size: 0 } } },
     // Findings table
     { id: 'ai8', type: 'table', title: 'AI/ML Vulnerability Findings', width: 'full', config: { preset: 'findings_list', limit: 20, filters: { plugin_family: 'Artificial Intelligence', sort_by: 'priority_score', order: 'desc' } } },
     // Inventory detail
@@ -1219,6 +1348,8 @@ const DRILL_DOWN = {
   inv_expiring_certs:  '/inventory?tab=certificates',
   inv_self_signed_certs: '/inventory?tab=certificates',
   inv_sensitive_env_vars: '/inventory?tab=env-vars',
+  // AI / ML
+  inv_total_ai_tools:  '/inventory?tab=ai-tools',
 
   // Categories (pie/bar) → function(name) => url
   severity_breakdown: name => {
@@ -1242,6 +1373,12 @@ const DRILL_DOWN = {
   family_breakdown: name => `/findings?family=${encodeURIComponent(name)}`,
   inv_user_type_breakdown: name => `/inventory?tab=users&user_type=${name.replace(/\s+/g, '_')}`,
   inv_netconn_states: name => `/inventory?tab=netconns&state=${name}`,
+  inv_ai_tool_categories: name => `/inventory?tab=ai-tools&category=${encodeURIComponent(name)}`,
+  severity_breakdown_filtered: name => {
+    const map = { Critical: 4, High: 3, Medium: 2, Low: 1, Info: 0 }
+    const sev = map[name]
+    return sev != null ? `/findings?severity=${sev}&family=Artificial+Intelligence` : '/findings?family=Artificial+Intelligence'
+  },
 }
 
 function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic }) {
@@ -1253,13 +1390,17 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
   const { data, loading } = useWidgetData(sourceId, scanId, filters, globalTags, globalTagLogic)
 
   const drillDown = DRILL_DOWN[cfg.preset]
-  const handleCardClick = drillDown ? () => {
-    const url = typeof drillDown === 'function' ? drillDown() : drillDown
+  // Auto-build drill-down for filtered findings presets (e.g. finding_count_filtered with plugin_family)
+  const autoDrillUrl = !drillDown && preset?.source === 'findings' && cfg.filters
+    ? '/findings?' + new URLSearchParams(Object.entries(cfg.filters).filter(([k, v]) => v && !['sort_by', 'order', 'page_size'].includes(k)).map(([k, v]) => [k === 'plugin_family' ? 'family' : k, v])).toString()
+    : null
+  const handleCardClick = (drillDown || autoDrillUrl) ? () => {
+    const url = drillDown ? (typeof drillDown === 'function' ? drillDown() : drillDown) : autoDrillUrl
     navigate(url)
   } : null
   const handleSliceClick = (entry) => {
-    if (!drillDown || typeof drillDown !== 'function') return
-    navigate(drillDown(entry?.name))
+    if (drillDown && typeof drillDown === 'function') { navigate(drillDown(entry?.name)); return }
+    if (autoDrillUrl) { navigate(autoDrillUrl); return }
   }
 
   // Layout widgets — no data needed
@@ -1544,6 +1685,107 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
             </tbody>
           </table>
         </div>
+      )
+    }
+
+    case 'radar': {
+      const items = Array.isArray(extracted) ? extracted : []
+      if (items.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data</div>
+      return (
+        <ResponsiveContainer width="100%" height={250}>
+          <RadarChart data={items} cx="50%" cy="50%" outerRadius="70%">
+            <PolarGrid stroke="var(--border)" />
+            <PolarAngleAxis dataKey="axis" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} />
+            <PolarRadiusAxis angle={90} domain={[0, 100]} tick={false} axisLine={false} />
+            <Radar dataKey="value" stroke="#6366f1" fill="#6366f1" fillOpacity={0.25} strokeWidth={2} />
+            <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => `${Math.round(v)}`} />
+          </RadarChart>
+        </ResponsiveContainer>
+      )
+    }
+
+    case 'gauge': {
+      const gaugeData = extracted || {}
+      const val = gaugeData.value ?? 0
+      const max = gaugeData.max || 100
+      const pct = Math.min(val / max, 1)
+      const color = pct > 0.75 ? '#16a34a' : pct > 0.5 ? '#d97706' : pct > 0.25 ? '#ea580c' : '#dc2626'
+      // For metrics where high = bad (risk, exploits), invert the color logic
+      const isInverted = (cfg.preset || '').includes('risk') || (cfg.preset || '').includes('exploit') || (cfg.preset || '').includes('critical')
+      const displayColor = isInverted ? (pct > 0.75 ? '#dc2626' : pct > 0.5 ? '#ea580c' : pct > 0.25 ? '#d97706' : '#16a34a') : color
+      const chartData = [{ name: gaugeData.label || 'Value', value: val, fill: displayColor }]
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '8px 0' }}>
+          <ResponsiveContainer width="100%" height={140}>
+            <RadialBarChart
+              cx="50%" cy="100%"
+              innerRadius="60%"
+              outerRadius="90%"
+              startAngle={180}
+              endAngle={0}
+              barSize={14}
+              data={chartData}
+            >
+              <RadialBar
+                background={{ fill: 'var(--bg-hover)' }}
+                dataKey="value"
+                cornerRadius={7}
+                max={max}
+              />
+            </RadialBarChart>
+          </ResponsiveContainer>
+          <div style={{ marginTop: -30, textAlign: 'center' }}>
+            <div style={{ fontSize: 28, fontWeight: 800, color: displayColor, lineHeight: 1 }}>
+              {val}{gaugeData.suffix || ''}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              {gaugeData.label || 'Value'} / {max}{gaugeData.suffix || ''}
+            </div>
+          </div>
+        </div>
+      )
+    }
+
+    case 'treemap': {
+      const items = Array.isArray(extracted) ? extracted.filter(d => d.size > 0) : []
+      if (items.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data</div>
+      const colored = items.map((d, i) => ({
+        ...d,
+        fill: d.color || (() => {
+          if (d.critical > 0) return '#dc2626'
+          if (d.high > 0) return '#ea580c'
+          return PALETTE[i % PALETTE.length]
+        })(),
+      }))
+      const TreemapContent = ({ x, y, width, height, name, size, fill }) => {
+        if (width < 30 || height < 20) return null
+        return (
+          <g>
+            <rect x={x} y={y} width={width} height={height} rx={4} fill={fill} fillOpacity={0.85} stroke="var(--bg-card)" strokeWidth={2} />
+            {width > 50 && height > 30 && (
+              <>
+                <text x={x + 6} y={y + 16} fill="#fff" fontSize={11} fontWeight={600}>
+                  {name?.length > Math.floor(width / 7) ? name.slice(0, Math.floor(width / 7)) + '...' : name}
+                </text>
+                <text x={x + 6} y={y + 30} fill="#ffffffcc" fontSize={10}>
+                  {size?.toLocaleString?.() ?? size}
+                </text>
+              </>
+            )}
+          </g>
+        )
+      }
+      return (
+        <ResponsiveContainer width="100%" height={220}>
+          <RechartsTreemap
+            data={colored}
+            dataKey="size"
+            aspectRatio={4 / 3}
+            content={<TreemapContent />}
+          >
+            <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => v?.toLocaleString?.()} />
+          </RechartsTreemap>
+        </ResponsiveContainer>
       )
     }
 
@@ -1844,6 +2086,9 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
     : widget.type === 'line_chart' ? 'series'
     : widget.type === 'table' ? 'table'
     : widget.type === 'risk_grade' ? 'grade'
+    : widget.type === 'radar' ? 'radar'
+    : widget.type === 'gauge' ? 'gauge'
+    : widget.type === 'treemap' ? 'treemap'
     : null
 
   const compatiblePresets = presetType
@@ -1869,7 +2114,7 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
     return result
   })()
 
-  const isDataWidget = ['card', 'pie_chart', 'bar_chart', 'line_chart', 'table', 'risk_grade'].includes(widget.type)
+  const isDataWidget = ['card', 'pie_chart', 'bar_chart', 'line_chart', 'table', 'risk_grade', 'radar', 'gauge', 'treemap'].includes(widget.type)
 
   // For line/bar charts: determine if user wants custom time-series or a fixed preset
   const showSeriesBuilder = (widget.type === 'line_chart' || widget.type === 'bar_chart') && isCustomSeries

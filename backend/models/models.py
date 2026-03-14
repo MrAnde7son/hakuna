@@ -34,7 +34,7 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     display_name = Column(String)
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
-    role = Column(String, default="analyst")  # superadmin | org_admin | analyst | viewer
+    role = Column(String, default="analyst")  # superadmin | org_admin | analyst | viewer | custom
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login_at = Column(DateTime, nullable=True)
@@ -78,6 +78,8 @@ class CustomRole(Base):
     description = Column(String)
     # Feature flags: {"read_scans": true, "write_findings": true, "manage_tags": false, ...}
     base_permissions = Column(JSON, default=dict)
+    # Deny flags: same keys as base_permissions — deny always wins over allow
+    deny_permissions = Column(JSON, default=dict)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -102,13 +104,14 @@ class TagPermission(Base):
     target_id = Column(Integer, ForeignKey("tags.id"), nullable=True)      # when target_type="tag"
     target_category = Column(String, nullable=True)    # when target_type="category"
     permission = Column(String, nullable=False)        # "read" | "write"
+    effect = Column(String, nullable=False, default="allow")  # "allow" | "deny"
 
     role = relationship("CustomRole", back_populates="tag_permissions")
     tag = relationship("Tag", foreign_keys=[target_id])
 
     __table_args__ = (
-        UniqueConstraint("role_id", "target_type", "target_id", "target_category", "permission",
-                         name="uq_tag_permission"),
+        UniqueConstraint("role_id", "target_type", "target_id", "target_category", "permission", "effect",
+                         name="uq_tag_permission_v2"),
         Index("ix_tag_perm_role", "role_id"),
     )
 
