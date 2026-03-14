@@ -466,6 +466,7 @@ export const getCisaAdvisories = (params = {}) => _ti('advisories', params)
 export const getThreatTtps = (params = {}) => _ti('ttps', params)
 export const syncThreatIntel = () => request('/threat-intel/sync', { method: 'POST' })
 export const getTtpCoverage = (params = {}) => _ti('ttp-coverage', params)
+export const getGroupExposure = (groupId, params = {}) => _ti(`groups/${groupId}/exposure`, params)
 export const triggerTtpMatching = (scanId = null) =>
   request(`/threat-intel/match-ttps${scanId ? `?scan_id=${scanId}` : ''}`, { method: 'POST' })
 export const threatImpactSearch = (data) =>
