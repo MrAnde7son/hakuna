@@ -31,6 +31,7 @@ import {
   getInventoryNetconns, getInventoryTasks, getInventoryPatches, getInventoryLoggedOn,
   getInventoryShares, getInventorySoftware, getInventorySecurityControls, getInventoryComputers,
   getInventoryPasswordPolicies, getInventoryCertificates, getInventoryAITools, getInventoryProcesses,
+  getInventoryCredentials,
   getFunnel,
   getRiskGrade,
 } from '../../api.js'
@@ -121,6 +122,7 @@ const DATA_SOURCES = {
   inv_certificates:   (scanId, f) => getInventoryCertificates({ scan_id: scanId, expired_only: f?.expired_only, expiring_days: f?.expiring_days, self_signed_only: f?.self_signed_only, page_size: 0 }),
   inv_ai_tools:       (scanId, f) => getInventoryAITools({ scan_id: scanId, category: f?.category, page_size: 0 }),
   inv_processes:      (scanId, f) => getInventoryProcesses({ scan_id: scanId, search: f?.search, page_size: 0 }),
+  inv_credentials:    (scanId, f) => getInventoryCredentials({ scan_id: scanId, credential_type: f?.credential_type, protocol: f?.protocol, severity: f?.severity, search: f?.search, page_size: 0 }),
   risk_grade:         (scanId, f) => getRiskGrade(scanId, f?.tags, f?.tag_logic),
 }
 
@@ -193,6 +195,12 @@ const SOURCE_FILTERS = {
   inv_processes: [
     { key: 'search', label: 'Search', type: 'text', placeholder: 'Process name...' },
   ],
+  inv_credentials: [
+    { key: 'credential_type', label: 'Type', type: 'select', options: [{ value: '', label: 'All' }, { value: 'default_account', label: 'Default Account' }, { value: 'cleartext', label: 'Cleartext' }, { value: 'brute_forceable', label: 'Brute Forceable' }, { value: 'weak_config', label: 'Weak Config' }] },
+    { key: 'protocol', label: 'Protocol', type: 'text', placeholder: 'e.g. ssh, ftp' },
+    { key: 'severity', label: 'Severity', type: 'select', options: [{ value: '', label: 'All' }, { value: 'critical', label: 'Critical' }, { value: 'high', label: 'High' }, { value: 'medium', label: 'Medium' }, { value: 'low', label: 'Low' }] },
+    { key: 'search', label: 'Search', type: 'text', placeholder: 'Plugin name, username...' },
+  ],
 }
 
 const DATA_PRESETS = {
@@ -244,6 +252,11 @@ const DATA_PRESETS = {
   inv_total_processes:    { label: 'Total Processes',       group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.counts?.processes ?? 0, color: '#8b5cf6' },
   inv_total_computers:    { label: 'Total Computers',       group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.counts?.computers ?? 0, color: '#6366f1' },
   inv_total_certificates: { label: 'Total Certificates',    group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.counts?.certificates ?? 0, color: '#f59e0b' },
+  inv_total_ai_tools:         { label: 'AI Tools Count',          group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.counts?.ai_tools ?? 0, color: '#8b5cf6' },
+  inv_credential_exposures:   { label: 'Credential Exposures',    group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.credential_exposures ?? 0, color: '#ef4444' },
+  inv_default_accounts:       { label: 'Default Accounts',        group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.default_accounts ?? 0, color: '#dc2626' },
+  inv_cleartext_credentials:  { label: 'Cleartext Credentials',   group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.cleartext_credentials ?? 0, color: '#ea580c' },
+  inv_brute_forceable:        { label: 'Brute Forceable',         group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.brute_forceable ?? 0, color: '#f59e0b' },
 
   // ── Categories (pie/donut/bar) ──
   severity_breakdown: {
@@ -459,6 +472,30 @@ const DATA_PRESETS = {
       const counts = {}
       arr.forEach(t => { const c = t.category || 'unknown'; counts[c] = (counts[c] || 0) + 1 })
       return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  inv_credential_type_breakdown: {
+    label: 'Credential Types', group: 'Inventory', source: 'inv_credentials', type: 'categories',
+    extract: d => {
+      const arr = d?.credentials ?? (Array.isArray(d) ? d : [])
+      const labels = { default_account: 'Default Account', cleartext: 'Cleartext', brute_forceable: 'Brute Forceable', weak_config: 'Weak Config', shared_credential: 'Shared' }
+      const colors = { default_account: '#dc2626', cleartext: '#ea580c', brute_forceable: '#f59e0b', weak_config: '#d97706', shared_credential: '#8b5cf6' }
+      const counts = {}
+      arr.forEach(c => { const t = c.credential_type || 'other'; counts[t] = (counts[t] || 0) + 1 })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({
+        name: labels[name] || name, value, color: colors[name] || '#94a3b8',
+      }))
+    },
+  },
+  inv_credential_protocol_breakdown: {
+    label: 'Credentials by Protocol', group: 'Inventory', source: 'inv_credentials', type: 'categories',
+    extract: d => {
+      const arr = d?.credentials ?? (Array.isArray(d) ? d : [])
+      const counts = {}
+      arr.forEach(c => { const p = (c.protocol || 'unknown').toUpperCase(); counts[p] = (counts[p] || 0) + 1 })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, value], i) => ({
+        name, value, color: ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#0ea5e9', '#22c55e', '#ef4444', '#14b8a6'][i % 8],
+      }))
     },
   },
 
@@ -828,6 +865,19 @@ const DATA_PRESETS = {
       { key: 'affected_hosts', label: 'Hosts' },
     ],
   },
+  inv_credentials_table: {
+    label: 'Credentials', group: 'Inventory', source: 'inv_credentials', type: 'table',
+    extract: d => d?.credentials ?? (Array.isArray(d) ? d : []),
+    columns: [
+      { key: 'credential_type', label: 'Type' },
+      { key: 'protocol', label: 'Protocol' },
+      { key: 'severity', label: 'Severity' },
+      { key: 'username', label: 'Username' },
+      { key: 'port', label: 'Port' },
+      { key: 'plugin_name', label: 'Finding' },
+      { key: 'asset_label', label: 'Asset', fallback: 'asset_ip' },
+    ],
+  },
 }
 
 const PRESET_GROUPS = ['Severity', 'Risk', 'Temporal', 'SLA & Ops', 'Tags', 'Assets & Findings', 'Inventory', 'Filtered']
@@ -1068,6 +1118,28 @@ const REMEDIATION_DASHBOARD = {
     { id: 'rp11',type: 'bar_chart', title: 'Finding Age',             width: 'full',    config: { preset: 'age_distribution' } },
     { id: 'rp12',type: 'table',     title: 'Remediation Queue',       width: 'full',    config: { preset: 'remediation_queue_data', limit: 15 } },
     { id: 'rp13',type: 'table',     title: 'Quick Wins',              width: 'full',    config: { preset: 'quick_wins_table', limit: 10 } },
+  ],
+}
+
+const AI_ML_ATTACK_SURFACE_DASHBOARD = {
+  id: 'default-ai-ml-attack-surface',
+  name: 'AI/ML Attack Surface',
+  createdAt: new Date(0).toISOString(),
+  widgets: [
+    // Header
+    { id: 'ai1', type: 'header', title: 'AI/ML Attack Surface Report', width: 'full', config: { title: 'AI/ML Attack Surface Report', subtitle: 'Shadow AI, LLM endpoints, and emerging ML risks across your environment' } },
+    // Key metrics row
+    { id: 'ai2', type: 'card', title: 'AI Tools Detected', width: 'quarter', config: { preset: 'inv_total_ai_tools' } },
+    { id: 'ai3', type: 'card', title: 'Critical Findings', width: 'quarter', config: { preset: 'finding_count_filtered', filters: { plugin_family: 'Artificial Intelligence', severity: '4' } } },
+    { id: 'ai4', type: 'card', title: 'High Findings', width: 'quarter', config: { preset: 'finding_count_filtered', filters: { plugin_family: 'Artificial Intelligence', severity: '3' } } },
+    { id: 'ai5', type: 'card', title: 'Total AI Findings', width: 'quarter', config: { preset: 'finding_count_filtered', filters: { plugin_family: 'Artificial Intelligence' } } },
+    // AI tool breakdown
+    { id: 'ai6', type: 'pie_chart', title: 'AI Tool Categories', width: 'half', config: { preset: 'inv_ai_tool_categories', donut: true } },
+    { id: 'ai7', type: 'bar_chart', title: 'AI Findings by Severity', width: 'half', config: { preset: 'severity_breakdown', filters: { plugin_family: 'Artificial Intelligence' } } },
+    // Findings table
+    { id: 'ai8', type: 'table', title: 'AI/ML Vulnerability Findings', width: 'full', config: { preset: 'findings_list', limit: 20, filters: { plugin_family: 'Artificial Intelligence', sort_by: 'priority_score', order: 'desc' } } },
+    // Inventory detail
+    { id: 'ai9', type: 'table', title: 'Detected AI Tools & Extensions', width: 'full', config: { preset: 'inv_ai_tools_table', limit: 50 } },
   ],
 }
 
@@ -2867,7 +2939,7 @@ export default function ReportBuilder() {
       let needsReload = false
 
       // Ensure default dashboards exist and stay up-to-date
-      const ootb = [EXECUTIVE_DASHBOARD, DEFAULT_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD]
+      const ootb = [EXECUTIVE_DASHBOARD, DEFAULT_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD]
       for (const dash of ootb) {
         const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}`).join('|')
         const existing = templates.find(t => t.name === dash.name)

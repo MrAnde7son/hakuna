@@ -18,7 +18,7 @@ import {
   getInventoryShares, getInventorySoftware, getInventorySecurityControls,
   getInventoryComputers, getInventoryPasswordPolicies, getInventoryEnvVars,
   getInventoryCertificates, getInventoryAITools, getInventoryProcesses,
-  getInventoryDatabases,
+  getInventoryDatabases, getInventoryCredentials,
   getSecurityCoverage,
   exportDownload,
 } from '../../api.js'
@@ -76,6 +76,7 @@ const TAB_GROUPS = [
     { key: 'patches',   label: 'Patches',         icon: Layers },
     { key: 'policy',    label: 'Password Policy',  icon: FileText },
     { key: 'certs',     label: 'Certificates',     icon: Lock },
+    { key: 'credentials', label: 'Credentials',  icon: Key },
   ]},
   { label: 'Configuration', icon: Terminal, children: [
     { key: 'tasks',    label: 'Sched. Tasks',   icon: Clock },
@@ -383,6 +384,7 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
           <StatCard label="Processes"      value={counts.processes}       icon={Activity}  color="#64748b" onClick={() => onTabChange('processes')} />
           <StatCard label="Env Variables"  value={counts.env_vars}        icon={Terminal}  color="#f59e0b" onClick={() => onTabChange('envvars')} />
           <StatCard label="AI Tools"       value={counts.ai_tools}        icon={BrainCircuit} color="#8b5cf6" onClick={() => onTabChange('aitools')} />
+          <StatCard label="Credentials"    value={counts.credentials}     icon={Key}          color="#ef4444" onClick={() => onTabChange('credentials')} />
         </div>
       </div>
 
@@ -2349,6 +2351,180 @@ function CertificatesTab({ scanId, assetId }) {
 }
 
 
+// ─── Credentials tab ──────────────────────────────────────
+const CRED_TYPE_LABELS = {
+  default_account: 'Default Account',
+  cleartext: 'Cleartext',
+  brute_forceable: 'Brute Forceable',
+  weak_config: 'Weak Config',
+  shared_credential: 'Shared Credential',
+}
+
+const CRED_TYPE_COLORS = {
+  default_account: '#dc2626',
+  cleartext: '#ea580c',
+  brute_forceable: '#f59e0b',
+  weak_config: '#d97706',
+  shared_credential: '#8b5cf6',
+}
+
+const SEV_ORDER = { critical: 0, high: 1, medium: 2, low: 3, info: 4 }
+
+function CredentialTypePill({ type }) {
+  const label = CRED_TYPE_LABELS[type] || type
+  const color = CRED_TYPE_COLORS[type] || '#94a3b8'
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+      background: color + '18', color, border: `1px solid ${color}44`,
+    }}>{label}</span>
+  )
+}
+
+function CredSeverityBadge({ severity }) {
+  const colors = { critical: '#dc2626', high: '#ea580c', medium: '#d97706', low: '#65a30d', info: '#0ea5e9' }
+  const color = colors[severity] || '#94a3b8'
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+      background: color + '18', color, border: `1px solid ${color}44`, textTransform: 'capitalize',
+    }}>{severity}</span>
+  )
+}
+
+function CredentialsTab({ scanId, assetId }) {
+  const [rows, setRows]                = useState([])
+  const [total, setTotal]              = useState(0)
+  const [page, setPage]                = useState(1)
+  const [loading, setLoading]          = useState(true)
+  const [search, setSearch]            = useState('')
+  const [credType, setCredType]        = useState('')
+  const [protocol, setProtocol]        = useState('')
+  const [severity, setSeverity]        = useState('')
+  const [groupByAsset, setGroupByAsset] = useState(false)
+  const [sortBy, setSortBy]            = useState('severity')
+  const [sortOrder, setSortOrder]      = useState('desc')
+
+  const handleSort = (key) => {
+    if (sortBy === key) { setSortOrder(o => o === 'asc' ? 'desc' : 'asc') }
+    else { setSortBy(key); setSortOrder('asc') }
+  }
+
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, credType, protocol, severity])
+
+  const load = useCallback(() => {
+    setLoading(true)
+    getInventoryCredentials({
+      scan_id: scanId,
+      asset_id: assetId || null,
+      search: search || null,
+      credential_type: credType || null,
+      protocol: protocol || null,
+      severity: severity || null,
+      sort_by: sortBy,
+      order: sortOrder,
+      page,
+      page_size: INV_PAGE_SIZE,
+    }).then(data => { setRows(data.credentials); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
+  }, [scanId, assetId, search, credType, protocol, severity, sortBy, sortOrder, page])
+
+  useEffect(() => { load() }, [load])
+
+  const columns = [
+    { key: 'credential_type', label: 'Type', width: '15%', sortable: true,
+      render: v => <CredentialTypePill type={v} />
+    },
+    { key: 'protocol', label: 'Protocol', width: '10%', sortable: true,
+      render: v => <code style={{ fontSize: 12, color: 'var(--accent)', background: 'var(--accent)11', padding: '2px 6px', borderRadius: 3 }}>{(v || '—').toUpperCase()}</code>
+    },
+    { key: 'severity', label: 'Severity', width: '10%', sortable: true,
+      render: v => <CredSeverityBadge severity={v} />
+    },
+    { key: 'username', label: 'Username', width: '12%', sortable: true,
+      render: v => v ? <code style={{ fontSize: 12 }}>{v}</code> : <span style={{ color: 'var(--text-muted)' }}>—</span>
+    },
+    { key: 'port', label: 'Port', width: '7%', sortable: true,
+      render: v => v ? <code style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v}</code> : '—'
+    },
+    { key: 'plugin_name', label: 'Finding', width: '26%',
+      render: v => <span style={{ fontSize: 12 }}>{v}</span>
+    },
+    { key: 'asset_label', label: 'Asset', width: '15%',
+      render: (v, r) => <>{v}<EnvPill env={r.asset_env} /></>
+    },
+    { key: 'asset_ip', label: 'IP', width: '5%',
+      render: v => <code style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '—'}</code>
+    },
+  ]
+
+  // Summary pills
+  const byType = rows.reduce((acc, r) => {
+    const t = r.credential_type || 'other'
+    acc[t] = (acc[t] || 0) + 1
+    return acc
+  }, {})
+
+  const protocols = [...new Set(rows.map(r => r.protocol).filter(Boolean))]
+
+  return (
+    <Card>
+      <FilterBar>
+        <Input value={search} onChange={setSearch} placeholder="Search credentials…" style={{ width: 240 }} />
+        <Select
+          value={credType}
+          onChange={setCredType}
+          options={[
+            { value: '', label: 'All types' },
+            ...Object.entries(CRED_TYPE_LABELS).map(([k, v]) => ({ value: k, label: v })),
+          ]}
+        />
+        <Select
+          value={protocol}
+          onChange={setProtocol}
+          options={[
+            { value: '', label: 'All protocols' },
+            ...protocols.map(p => ({ value: p, label: p.toUpperCase() })),
+          ]}
+        />
+        <Select
+          value={severity}
+          onChange={setSeverity}
+          options={[
+            { value: '', label: 'All severities' },
+            { value: 'critical', label: 'Critical' },
+            { value: 'high', label: 'High' },
+            { value: 'medium', label: 'Medium' },
+            { value: 'low', label: 'Low' },
+          ]}
+        />
+        <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
+      </FilterBar>
+      {rows.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+          {Object.entries(byType).map(([type, count]) => (
+            <div key={type} style={{
+              padding: '5px 12px',
+              background: (CRED_TYPE_COLORS[type] || '#475569') + '18',
+              border: `1px solid ${(CRED_TYPE_COLORS[type] || '#475569')}44`,
+              borderRadius: 6, fontSize: 12,
+              color: CRED_TYPE_COLORS[type] || '#94a3b8',
+              fontWeight: 600,
+            }}>
+              {CRED_TYPE_LABELS[type] || type}: {count}
+            </div>
+          ))}
+        </div>
+      )}
+      {groupByAsset
+        ? <GroupedTable rows={rows} columns={columns} loading={loading} onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+        : <Table columns={columns} rows={rows} loading={loading} onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+      }
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="credentials" />
+    </Card>
+  )
+}
+
+
 // ─── AI / LLM Tools tab ────────────────────────────────────
 const CATEGORY_LABELS = {
   browser_extension: 'Browser Extension',
@@ -2566,6 +2742,7 @@ export default function InventoryExplorer() {
     policy: 'inventory/password-policies', loggedon: 'inventory/logged-on',
     envvars: 'inventory/env-vars', certs: 'inventory/certificates',
     aitools: 'inventory/ai-tools', processes: 'inventory/processes',
+    credentials: 'inventory/credentials',
   }
 
   const TAB_COMPONENTS = {
@@ -2587,6 +2764,7 @@ export default function InventoryExplorer() {
     certs:     <CertificatesTab      scanId={activeScanId} assetId={assetId} />,
     aitools:   <AIToolsTab           scanId={activeScanId} assetId={assetId} />,
     processes: <ProcessesTab         scanId={activeScanId} assetId={assetId} />,
+    credentials: <CredentialsTab    scanId={activeScanId} assetId={assetId} />,
   }
 
   return (

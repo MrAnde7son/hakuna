@@ -2252,6 +2252,147 @@ USER_PLUGINS = {"ad_users", "ldap_users", "local_users", "admins_group", "last_l
 GROUP_PLUGINS = {"ad_groups", "ldap_groups"}
 
 
+# ─── Credential Exposure Extraction ─────────────────────────────
+CREDENTIAL_FAMILIES = {
+    "Default Unix Accounts": "default_account",
+    "Brute force attacks": "brute_forceable",
+}
+
+CREDENTIAL_PLUGIN_PATTERNS = {
+    # cleartext / anonymous access
+    "10079": ("cleartext", "ftp"),         # Anonymous FTP
+    "42263": ("cleartext", "ftp"),         # FTP Cleartext Authentication
+    "42880": ("cleartext", "ssl"),         # SSL/TLS - various
+    "26928": ("cleartext", "http"),        # SSL Weak Cipher
+    "10263": ("cleartext", "smtp"),        # SMTP Open Relay
+    "10205": ("cleartext", "snmp"),        # SNMP Default Community
+    "41028": ("cleartext", "snmp"),        # SNMP Agent Default Community Name (public)
+    "10264": ("cleartext", "telnet"),      # Telnet Server Detection (cleartext protocol)
+    # Weak/default credentials
+    "10407": ("default_account", "x11"),   # X Server Unauthenticated Access
+    "17208": ("default_account", "vnc"),   # VNC Server Unauthenticated Access
+    "10245": ("default_account", "http"),  # Web Server Default Page
+    "87895": ("weak_config", "ssh"),       # SSH Weak Algorithms
+    "70658": ("weak_config", "ssh"),       # SSH Server CBC Mode Ciphers
+    "153953": ("weak_config", "rdp"),      # RDP not using NLA
+}
+
+
+def extract_credentials_from_findings(findings: list[dict], scan_id: int) -> list[dict]:
+    """
+    Extract credential exposure records from findings based on plugin family and specific plugin IDs.
+    Unlike other extractors, this works on families not individual plugin outputs.
+    """
+    records = []
+    seen = set()  # (asset_id, source_plugin, username) dedup
+
+    for f in findings:
+        plugin_id = str(f.get("plugin_id", ""))
+        plugin_family = f.get("plugin_family", "") or ""
+        plugin_name = f.get("plugin_name", "") or ""
+        plugin_output = f.get("plugin_output", "") or ""
+        asset_id = f.get("asset_id")
+        severity_int = f.get("severity", 0)
+        port = f.get("port")
+        protocol = f.get("protocol", "")
+        solution = f.get("solution", "") or ""
+
+        severity_map = {0: "info", 1: "low", 2: "medium", 3: "high", 4: "critical"}
+        severity = severity_map.get(severity_int, "info")
+
+        cred_type = None
+        proto = protocol or ""
+        username = None
+
+        # Check by plugin family
+        if plugin_family in CREDENTIAL_FAMILIES:
+            cred_type = CREDENTIAL_FAMILIES[plugin_family]
+            # Try to extract username from output
+            username = _extract_username_from_output(plugin_output, plugin_name)
+            # Infer protocol from port
+            proto = _infer_protocol(port, protocol, plugin_name)
+
+        # Check by specific plugin ID
+        elif plugin_id in CREDENTIAL_PLUGIN_PATTERNS:
+            cred_type, proto = CREDENTIAL_PLUGIN_PATTERNS[plugin_id]
+
+        # Check by plugin name keywords (catch-all for credential family)
+        elif any(kw in plugin_name.lower() for kw in [
+            "default password", "default credential", "cleartext password",
+            "plaintext password", "password in clear", "unencrypted password",
+            "anonymous access", "no password", "blank password",
+            "weak password", "password transmitted in clear",
+        ]):
+            cred_type = "cleartext" if "clear" in plugin_name.lower() or "plain" in plugin_name.lower() else "default_account"
+            proto = _infer_protocol(port, protocol, plugin_name)
+
+        if not cred_type or not asset_id:
+            continue
+
+        dedup_key = (asset_id, plugin_id, username or "")
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        records.append({
+            "scan_id": scan_id,
+            "asset_id": asset_id,
+            "credential_type": cred_type,
+            "protocol": proto,
+            "username": username,
+            "severity": severity,
+            "port": port,
+            "description": (f.get("synopsis") or plugin_name or "")[:500],
+            "plugin_name": plugin_name,
+            "source_plugin": plugin_id,
+            "remediation": (solution)[:500] if solution else None,
+        })
+
+    return records
+
+
+def _extract_username_from_output(output: str, plugin_name: str) -> str | None:
+    """Try to extract username from plugin output."""
+    if not output:
+        return None
+    # Common patterns: "account 'root'", "user 'admin'", "login: admin"
+    import re
+    patterns = [
+        r"account\s+['\"]([^'\"]+)['\"]",
+        r"user(?:name)?\s*[:=]\s*['\"]?(\S+)",
+        r"login\s*[:=]\s*['\"]?(\S+)",
+        r"The\s+(\w+)\s+account",
+    ]
+    for pat in patterns:
+        m = re.search(pat, output, re.I)
+        if m:
+            return m.group(1).strip("'\"")
+    return None
+
+
+def _infer_protocol(port: int | None, protocol: str, plugin_name: str) -> str:
+    """Infer the protocol from port number or plugin name."""
+    if port:
+        port_map = {
+            21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 80: "http",
+            110: "pop3", 143: "imap", 161: "snmp", 443: "https", 445: "smb",
+            993: "imaps", 995: "pop3s", 1433: "mssql", 1521: "oracle",
+            3306: "mysql", 3389: "rdp", 5432: "postgres", 5900: "vnc",
+            5901: "vnc", 6379: "redis", 8080: "http", 8443: "https",
+            27017: "mongodb",
+        }
+        if port in port_map:
+            return port_map[port]
+
+    # Infer from plugin name
+    name_lower = plugin_name.lower()
+    for proto in ["ssh", "ftp", "telnet", "snmp", "vnc", "rdp", "smb", "http", "smtp", "ldap", "mysql", "mssql", "redis", "mongodb"]:
+        if proto in name_lower:
+            return proto
+
+    return protocol or "unknown"
+
+
 def extract_inventory_from_findings(findings: list[dict], dispatch: dict = None) -> dict:
     """
     Given a list of finding dicts (each with plugin_id, plugin_output,
@@ -2287,6 +2428,7 @@ def extract_inventory_from_findings(findings: list[dict], dispatch: dict = None)
         "processes": [],
         "database_instances": [],
         "domain_trusts": [],
+        "credentials": [],
     }
 
     for finding in findings:
@@ -2335,6 +2477,13 @@ def extract_inventory_from_findings(findings: list[dict], dispatch: dict = None)
 
     # Deduplicate users: same (username, domain, scan_id) → merge, prefer richer record
     result["users"] = _dedup_users(result["users"])
+
+    # Credential extraction works on families + keywords, not individual plugin dispatches
+    try:
+        result["credentials"] = extract_credentials_from_findings(
+            findings, findings[0].get("scan_id") if findings else 0)
+    except Exception as e:
+        logger.warning(f"Credential extraction failed: {e}")
 
     return result
 

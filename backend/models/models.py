@@ -716,6 +716,25 @@ class InventoryCertificate(Base):
     source_plugin = Column(String)
 
 
+class InventoryCredential(Base):
+    """Credential exposure findings extracted from credential-related plugins."""
+    __tablename__ = "inventory_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+
+    credential_type = Column(String, index=True)     # default_account | cleartext | brute_forceable | weak_config | shared_credential
+    protocol = Column(String, index=True)             # ssh, telnet, ftp, snmp, vnc, smb, http, rdp, etc.
+    username = Column(String)                          # detected username if available
+    severity = Column(String, index=True)              # critical, high, medium, low
+    port = Column(Integer)                             # port where credential issue was found
+    description = Column(Text)                         # brief description of the finding
+    plugin_name = Column(String)                       # original Nessus plugin name
+    source_plugin = Column(String, index=True)         # plugin_id
+    remediation = Column(Text)                         # suggested fix
+
+
 # ─────────────────────────────────────────────────────────
 # Campaigns & Ownership Models
 # ─────────────────────────────────────────────────────────

@@ -24,7 +24,7 @@ from models.models import (
     InventoryNetConn, InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
     InventoryShare, InventorySoftware, InventorySecurityControl,
     InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
-    InventoryAITool, InventoryProcess, InventoryDatabaseInstance,
+    InventoryAITool, InventoryProcess, InventoryDatabaseInstance, InventoryCredential,
     Campaign, CampaignFinding, FindingOwnership, AssetOwnership,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
     Tag, TagAssignment, AutoTagRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
@@ -334,6 +334,7 @@ def startup():
         "certificates":      (InventoryCertificate,      ["subject_alt_names"], ["is_expired", "is_ca", "is_self_signed"]),
         "processes":         (InventoryProcess,          [],                    []),
         "database_instances": (InventoryDatabaseInstance, [],                  ["is_running"]),
+        "credentials":        (InventoryCredential,       [],                  []),
     })
     # Run heavy tasks (schedulers, SLA backfill) in background so the port
     # is available immediately for Render's port-scan health check.
@@ -842,6 +843,11 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         findings_for_inventory.append({
             "plugin_id": f.plugin_id,
             "plugin_output": f.plugin_output,
+            "plugin_name": f.plugin_name,
+            "plugin_family": f.plugin_family,
+            "severity": f.severity,
+            "synopsis": f.synopsis,
+            "solution": f.solution,
             "asset_id": f.asset_id,
             "scan_id": f.scan_id,
             "asset_hostname": asset.hostname if asset else "",
@@ -933,6 +939,11 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             "trust_direction", "trust_type", "trust_attributes",
             "is_transitive", "is_sid_filtering_enabled",
             "source_domain", "when_created",
+        ]),
+        "credentials": (InventoryCredential, [
+            "scan_id", "asset_id", "source_plugin",
+            "credential_type", "protocol", "username", "severity",
+            "port", "description", "plugin_name", "remediation",
         ]),
     }
 
@@ -1134,7 +1145,7 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[L
         InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
         InventoryShare, InventorySoftware, InventorySecurityControl,
         InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
-        InventoryAITool, InventoryProcess, InventoryDatabaseInstance,
+        InventoryAITool, InventoryProcess, InventoryDatabaseInstance, InventoryCredential,
     ]:
         db.query(InvModel).filter(InvModel.scan_id == scan_id).delete(synchronize_session=False)
     # Remove scan comparisons referencing this scan
@@ -2717,6 +2728,7 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
     total_env_vars = _q(InventoryEnvVar).count()
     total_password_policies = _q(InventoryPasswordPolicy).count()
     total_ai_tools = _q(InventoryAITool).count()
+    total_credentials = _q(InventoryCredential).count()
     expired_certs = _q(InventoryCertificate).filter(InventoryCertificate.is_expired == True).count()
     expiring_soon = _q(InventoryCertificate).filter(
         InventoryCertificate.is_expired == False,
@@ -2804,6 +2816,7 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
             "password_policies": total_password_policies,
             "ai_tools": total_ai_tools,
             "database_instances": db_instance_count,
+            "credentials": total_credentials,
         },
         "attack_surface": {
             "domain_admins": [_inv_user_to_dict(u) for u in domain_admins],
@@ -2842,6 +2855,10 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
             "expiring_soon_certs": expiring_soon,
             "self_signed_certs": self_signed_certs,
             "sensitive_env_vars": sensitive_env_vars,
+            "credential_exposures": total_credentials,
+            "default_accounts": _q(InventoryCredential).filter(InventoryCredential.credential_type == "default_account").count(),
+            "cleartext_credentials": _q(InventoryCredential).filter(InventoryCredential.credential_type == "cleartext").count(),
+            "brute_forceable": _q(InventoryCredential).filter(InventoryCredential.credential_type == "brute_forceable").count(),
         },
     }
 
@@ -3421,6 +3438,58 @@ def list_inventory_ai_tools(
         "asset_env": (assets.get(r.asset_id) or {}).get("environment_tag"),
         "tool_name": r.tool_name, "category": r.category,
         "source_plugin": r.source_plugin,
+    } for r in rows]}
+
+
+@app.get("/api/inventory/credentials")
+def list_inventory_credentials(
+    scan_id: Optional[int] = None,
+    asset_id: Optional[int] = None,
+    credential_type: Optional[str] = None,
+    protocol: Optional[str] = None,
+    severity: Optional[str] = None,
+    search: Optional[str] = None,
+    sort_by: str = "severity",
+    order: str = "desc",
+    page: int = 1,
+    page_size: int = 100,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    q = db.query(InventoryCredential).join(Scan, InventoryCredential.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
+    if scan_id:
+        q = q.filter(InventoryCredential.scan_id == scan_id)
+    if asset_id:
+        q = q.filter(InventoryCredential.asset_id == asset_id)
+    if credential_type:
+        q = q.filter(InventoryCredential.credential_type == credential_type)
+    if protocol:
+        q = q.filter(InventoryCredential.protocol == protocol)
+    if severity:
+        q = q.filter(InventoryCredential.severity == severity)
+    if search:
+        q = q.filter(
+            InventoryCredential.plugin_name.ilike(f"%{search}%") |
+            InventoryCredential.username.ilike(f"%{search}%") |
+            InventoryCredential.protocol.ilike(f"%{search}%")
+        )
+    q = _apply_sort(q, InventoryCredential, sort_by, order, InventoryCredential.severity)
+    total = q.count()
+    if page_size == 0:
+        rows = q.all()
+    else:
+        rows = q.offset((page - 1) * page_size).limit(page_size).all()
+    assets = _asset_lookup(db, {r.asset_id for r in rows})
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "credentials": [{
+        "id": r.id, "scan_id": r.scan_id, "asset_id": r.asset_id,
+        "asset_label": _asset_label(assets.get(r.asset_id)),
+        "asset_ip": (assets.get(r.asset_id) or {}).get("ip"),
+        "asset_env": (assets.get(r.asset_id) or {}).get("environment_tag"),
+        "credential_type": r.credential_type, "protocol": r.protocol,
+        "username": r.username, "severity": r.severity, "port": r.port,
+        "description": r.description, "plugin_name": r.plugin_name,
+        "source_plugin": r.source_plugin, "remediation": r.remediation,
     } for r in rows]}
 
 
@@ -7931,6 +8000,11 @@ def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
         findings_for_inventory.append({
             "plugin_id": f.plugin_id,
             "plugin_output": f.plugin_output,
+            "plugin_name": f.plugin_name,
+            "plugin_family": f.plugin_family,
+            "severity": f.severity,
+            "synopsis": f.synopsis,
+            "solution": f.solution,
             "asset_id": f.asset_id,
             "scan_id": f.scan_id,
             "asset_hostname": asset.hostname if asset else "",
@@ -8020,6 +8094,11 @@ def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
             "trust_direction", "trust_type", "trust_attributes",
             "is_transitive", "is_sid_filtering_enabled",
             "source_domain", "when_created",
+        ]),
+        "credentials": (InventoryCredential, [
+            "scan_id", "asset_id", "source_plugin",
+            "credential_type", "protocol", "username", "severity",
+            "port", "description", "plugin_name", "remediation",
         ]),
     }
 
