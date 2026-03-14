@@ -16,6 +16,8 @@ import {
   Moon,
   Sun,
   Layers,
+  BookOpen,
+  HelpCircle,
 } from 'lucide-react'
 // Auth pages loaded eagerly (small, needed immediately)
 import Login from './components/auth/Login.jsx'
@@ -40,6 +42,7 @@ const WorkflowBuilder = React.lazy(() => import('./components/workflows/Workflow
 const AgentBuilder = React.lazy(() => import('./components/agents/AgentBuilder.jsx'))
 const AggregatedSolutions = React.lazy(() => import('./components/remediation/AggregatedSolutions.jsx'))
 const UserManagement = React.lazy(() => import('./components/settings/UserManagement.jsx'))
+const UserDocs = React.lazy(() => import('./components/docs/UserDocs.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {} })
@@ -389,12 +392,34 @@ function Sidebar({ collapsed, onToggle }) {
         )})}
 
 
-        {/* Settings — ungrouped at bottom */}
-        {(!NAV_SETTINGS.permission || hasPermission(NAV_SETTINGS.permission)) && (
+        {/* Docs & Settings — ungrouped at bottom */}
         <div style={{ marginTop: 'auto', paddingTop: 8, paddingBottom: 8 }}>
           {!collapsed && (
             <div style={{ height: 1, background: 'var(--border)', marginBottom: 8 }} />
           )}
+          <NavLink
+            to="/docs"
+            title="Documentation"
+            aria-label="Documentation"
+            style={({ isActive }) => ({
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '7px 10px',
+              borderRadius: 6,
+              color: isActive ? 'var(--nav-active-text)' : 'var(--muted)',
+              background: isActive ? 'var(--nav-active-bg)' : 'transparent',
+              textDecoration: 'none',
+              cursor: 'pointer',
+              boxShadow: isActive ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
+              transition: 'background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease',
+              justifyContent: collapsed ? 'center' : 'flex-start',
+            })}
+          >
+            <BookOpen size={18} />
+            {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>Docs</span>}
+          </NavLink>
+          {(!NAV_SETTINGS.permission || hasPermission(NAV_SETTINGS.permission)) && (
           <NavLink
             to={NAV_SETTINGS.path}
             title={NAV_SETTINGS.label}
@@ -417,8 +442,8 @@ function Sidebar({ collapsed, onToggle }) {
             <NAV_SETTINGS.icon size={18} />
             {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{NAV_SETTINGS.label}</span>}
           </NavLink>
+          )}
         </div>
-        )}
       </nav>
 
       {/* Org switcher (MSSP / superadmin) */}
@@ -471,6 +496,29 @@ function Sidebar({ collapsed, onToggle }) {
       {/* User menu */}
       <UserMenu collapsed={collapsed} />
     </aside>
+  )
+}
+
+function HelpButton() {
+  const navigate = useNavigate()
+  return (
+    <button
+      onClick={() => navigate('/docs')}
+      title="Help & Documentation"
+      aria-label="Help & Documentation"
+      style={{
+        position: 'fixed', bottom: 20, right: 20, zIndex: 90,
+        width: 44, height: 44, borderRadius: '50%',
+        background: 'var(--accent)', color: '#fff', border: 'none',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        cursor: 'pointer', boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+        transition: 'transform 0.15s ease, box-shadow 0.15s ease',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.1)'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)' }}
+      onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)' }}
+    >
+      <HelpCircle size={22} />
+    </button>
   )
 }
 
@@ -537,10 +585,12 @@ function AppShell() {
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/upload" element={<UploadScan />} />
                 <Route path="/profile" element={<UserManagement />} />
+                <Route path="/docs" element={<UserDocs />} />
               </Routes>
             </Suspense>
           </main>
         </div>
+        <HelpButton />
       </div>
     </ScanContext.Provider>
   )
