@@ -11,9 +11,14 @@ export const SUPPORTED_LANGUAGES = [
   { code: 'he', label: 'עברית', dir: 'rtl' },
   { code: 'ru', label: 'Русский', dir: 'ltr' },
   { code: 'zh', label: '中文', dir: 'ltr' },
+  { code: 'es', label: 'Español', dir: 'ltr' },
+  { code: 'pt', label: 'Português', dir: 'ltr' },
+  { code: 'nl', label: 'Nederlands', dir: 'ltr' },
+  { code: 'ar', label: 'العربية', dir: 'rtl' },
+  { code: 'it', label: 'Italiano', dir: 'ltr' },
 ]
 
-export const RTL_LANGUAGES = ['he']
+export const RTL_LANGUAGES = ['he', 'ar']
 
 i18n
   .use(HttpBackend)
