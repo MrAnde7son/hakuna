@@ -54,6 +54,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "assets": {
         "enabled": True,
         "key_fields": ["ip"],
+        "key_mode": "or",
         "strategy": "merge",
         "scope": "cross_scan",
     },
@@ -191,33 +192,58 @@ _LIST_EXPAND_FIELDS: dict[str, str] = {
 }
 
 
-def _make_keys(record: dict, key_fields: list[str]) -> list[tuple]:
+def _make_keys(record: dict, key_fields: list[str], key_mode: str = "and") -> list[tuple]:
     """Build hashable key(s) from selected fields.
 
-    Each non-null scalar key field produces its own key so that records
-    matching on *any* field are considered duplicates (OR-style).  This means
-    (ip=10.0.0.1, fqdn=None) will still match (ip=10.0.0.1, fqdn="dc1.lab")
-    via the shared ip key.
+    key_mode="or" (OR-style):
+        Each non-null scalar key field produces its own key so that records
+        matching on *any* field are considered duplicates.  Good for assets
+        where same IP = same asset regardless of FQDN.
+
+    key_mode="and" (AND-style / composite):
+        All key fields together form a single composite key.  Records must
+        match on ALL fields to be considered duplicates.  Good for inventory
+        entities like users (username + domain together identify a user).
 
     List-expand fields (e.g. "cve" → "cves") produce one key per element.
     Returns [] only if ALL key fields are missing/None.
     """
-    keys: list[tuple] = []
-
-    for field in key_fields:
-        col_name = _LIST_EXPAND_FIELDS.get(field)
-        if col_name:
-            # List-expand field: read the actual list column
-            vals = record.get(col_name)
-            if vals and isinstance(vals, list):
-                for v in vals:
-                    keys.append((field, str(v)))
-        else:
-            val = record.get(field)
-            if val is not None and val != "":
-                keys.append((field, str(val)))
-
-    return keys
+    if key_mode == "or":
+        # OR-style: each field is its own key
+        keys: list[tuple] = []
+        for field in key_fields:
+            col_name = _LIST_EXPAND_FIELDS.get(field)
+            if col_name:
+                vals = record.get(col_name)
+                if vals and isinstance(vals, list):
+                    for v in vals:
+                        keys.append((field, str(v)))
+            else:
+                val = record.get(field)
+                if val is not None and val != "":
+                    keys.append((field, str(val)))
+        return keys
+    else:
+        # AND-style: all fields form a single composite key
+        parts = []
+        has_any = False
+        for field in key_fields:
+            col_name = _LIST_EXPAND_FIELDS.get(field)
+            if col_name:
+                vals = record.get(col_name)
+                if vals and isinstance(vals, list):
+                    parts.append((field, tuple(sorted(str(v) for v in vals))))
+                    has_any = True
+                else:
+                    parts.append((field, ()))
+            else:
+                val = record.get(field)
+                if val is not None and val != "":
+                    parts.append((field, str(val)))
+                    has_any = True
+                else:
+                    parts.append((field, None))
+        return [tuple(parts)] if has_any else []
 
 
 def _is_ip_like(val: str) -> bool:
@@ -259,10 +285,11 @@ def _merge_dicts(first: dict, second: dict) -> dict:
     return result
 
 
-def dedup_records(records: list[dict], key_fields: list[str], strategy: str) -> list[dict]:
+def dedup_records(records: list[dict], key_fields: list[str], strategy: str, key_mode: str = "and") -> list[dict]:
     """
     Deduplicate a list of in-memory dicts.
 
+    key_mode: "and" = composite key (all fields must match), "or" = any field match.
     Returns a new list with duplicates resolved per strategy.
     """
     if not records or not key_fields:
@@ -273,7 +300,7 @@ def dedup_records(records: list[dict], key_fields: list[str], strategy: str) -> 
     kept: dict[int, dict] = {}    # id(rec) → rec, to avoid adding duplicates to result
 
     for rec in records:
-        keys = _make_keys(rec, key_fields)
+        keys = _make_keys(rec, key_fields, key_mode=key_mode)
         if not keys:
             no_key.append(rec)
             continue
@@ -358,6 +385,7 @@ def dedup_inventory(inventory: dict, cfg: dict) -> dict:
                 records,
                 entity_cfg.get("key_fields", []),
                 entity_cfg.get("strategy", "keep_first"),
+                key_mode=entity_cfg.get("key_mode", "and"),
             )
             after = len(records)
             if before != after:

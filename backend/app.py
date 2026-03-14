@@ -657,6 +657,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
                 parsed_assets,
                 asset_dcfg.get("key_fields", ["ip"]),
                 asset_dcfg.get("strategy", "merge"),
+                key_mode=asset_dcfg.get("key_mode", "and"),
             )
             if len(parsed_assets) < before:
                 logger.info(f"Within-scan asset dedup: {before} → {len(parsed_assets)} assets")

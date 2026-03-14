@@ -7,6 +7,7 @@
       "ip",
       "fqdn"
     ],
+    "key_mode": "or",
     "strategy": "merge",
     "scope": "cross_scan"
   },

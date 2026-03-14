@@ -4,7 +4,7 @@
  * Reports are saved to localStorage.
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import {
   BarChart2, PieChart as PieChartIcon, Table2, Hash, AlignLeft, Wrench,
   Shield, Users, Server, Bug, Plus, Trash2, ChevronUp, ChevronDown,
@@ -41,7 +41,7 @@ import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button
 const STORAGE_KEY = 'nessus_custom_reports'
 const MIGRATED_KEY = 'nessus_reports_migrated'
 const LANDING_KEY = 'nessus_landing_report'
-const DEFAULT_REPORT_ID = 'default-security-overview'
+const DEFAULT_REPORT_ID = 'default-executive-overview'
 
 function loadLandingId() {
   return localStorage.getItem(LANDING_KEY) || DEFAULT_REPORT_ID
@@ -222,18 +222,18 @@ const DATA_PRESETS = {
   finding_count_filtered: { label: 'Finding Count', group: 'Filtered', source: 'findings', type: 'metric', extract: d => d?.total ?? d?.findings?.length ?? 0, color: '#6366f1' },
   asset_count_filtered:   { label: 'Asset Count',   group: 'Filtered', source: 'assets',   type: 'metric', extract: d => d?.total ?? (d?.assets?.length ?? 0), color: '#6366f1' },
   // ── Inventory metrics ──
-  inv_domain_admins:      { label: 'Domain Admins',        group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.domain_admins ?? 0, color: '#dc2626' },
+  inv_domain_admins:      { label: 'Domain Admins',        group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => { const v = d?.attack_surface?.domain_admins; return Array.isArray(v) ? v.length : (v ?? 0) }, color: '#dc2626' },
   inv_local_admins:       { label: 'Local Admins',         group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.local_admins_count ?? 0, color: '#ea580c' },
-  inv_kerberoastable:     { label: 'Kerberoastable',       group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.kerberoastable_accounts ?? 0, color: '#f59e0b' },
+  inv_kerberoastable:     { label: 'Kerberoastable',       group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => { const v = d?.attack_surface?.kerberoastable_accounts; return Array.isArray(v) ? v.length : (v ?? 0) }, color: '#f59e0b' },
   inv_pw_never_expires:   { label: 'Password Never Expires', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.password_never_expires_count ?? 0, color: '#d97706' },
   inv_pw_never_changed:   { label: 'Never Changed Password', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.never_changed_password_count ?? 0, color: '#ea580c' },
-  inv_lateral_paths:      { label: 'Lateral Movement Paths', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.lateral_movement_paths ?? 0, color: '#ef4444' },
+  inv_lateral_paths:      { label: 'Lateral Movement Paths', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => { const v = d?.attack_surface?.lateral_movement_paths; return Array.isArray(v) ? v.length : (v ?? 0) }, color: '#ef4444' },
   inv_established_conns:  { label: 'Established Connections', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.established_connections ?? 0, color: '#6366f1' },
-  inv_logged_on_count:    { label: 'Logged On Users',      group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.logged_on_users ?? 0, color: '#8b5cf6' },
+  inv_logged_on_count:    { label: 'Logged On Users',      group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => { const v = d?.attack_surface?.logged_on_users; return Array.isArray(v) ? v.length : (v ?? 0) }, color: '#8b5cf6' },
   inv_writeable_shares:   { label: 'Writeable Shares',     group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.writeable_shares ?? 0, color: '#f59e0b' },
   inv_hosts_with_av:      { label: 'Hosts with AV',        group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.hosts_with_av ?? 0, color: '#16a34a' },
   inv_weak_pw_policies:   { label: 'Weak Password Policies', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.weak_password_policies ?? 0, color: '#dc2626' },
-  inv_domain_controllers: { label: 'Domain Controllers',   group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.domain_controllers ?? 0, color: '#7c3aed' },
+  inv_domain_controllers: { label: 'Domain Controllers',   group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => { const v = d?.attack_surface?.domain_controllers; return Array.isArray(v) ? v.length : (v ?? 0) }, color: '#7c3aed' },
   inv_expired_certs:      { label: 'Expired Certificates', group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.expired_certs ?? 0, color: '#dc2626' },
   inv_expiring_certs:     { label: 'Expiring Soon Certs',  group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.expiring_soon_certs ?? 0, color: '#d97706' },
   inv_self_signed_certs:  { label: 'Self-Signed Certs',    group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.self_signed_certs ?? 0, color: '#f59e0b' },
@@ -386,12 +386,13 @@ const DATA_PRESETS = {
     label: 'Attack Surface', group: 'Inventory', source: 'inv_summary', type: 'categories',
     extract: d => {
       const a = d?.attack_surface || {}
+      const len = v => Array.isArray(v) ? v.length : (v || 0)
       return [
-        { name: 'Domain Admins', value: a.domain_admins || 0, color: '#dc2626' },
+        { name: 'Domain Admins', value: len(a.domain_admins), color: '#dc2626' },
         { name: 'Local Admins', value: a.local_admins_count || 0, color: '#ea580c' },
-        { name: 'Kerberoastable', value: a.kerberoastable_accounts || 0, color: '#f59e0b' },
+        { name: 'Kerberoastable', value: len(a.kerberoastable_accounts), color: '#f59e0b' },
         { name: 'Pwd Never Expires', value: a.password_never_expires_count || 0, color: '#d97706' },
-        { name: 'Lateral Paths', value: a.lateral_movement_paths || 0, color: '#ef4444' },
+        { name: 'Lateral Paths', value: len(a.lateral_movement_paths), color: '#ef4444' },
         { name: 'Writeable Shares', value: a.writeable_shares || 0, color: '#8b5cf6' },
       ].filter(r => r.value > 0)
     },
@@ -973,7 +974,7 @@ const DEFAULT_DASHBOARD = {
     { id: 'dw12',type: 'table',     title: 'Remediation Queue',     width: 'full',    config: { preset: 'remediation_queue_data', limit: 10 } },
     { id: 'dw14',type: 'card',      title: 'Zombie Vulns',          width: 'quarter', config: { preset: 'zombie_count' } },
     { id: 'dw15',type: 'card',      title: 'Regressions',           width: 'quarter', config: { preset: 'regression_count' } },
-    { id: 'dw16',type: 'bar_chart', title: 'Finding Age',           width: 'half',    config: { preset: 'finding_age' } },
+    { id: 'dw16',type: 'bar_chart', title: 'Finding Age',           width: 'half',    config: { preset: 'age_distribution' } },
   ],
 }
 
@@ -1014,7 +1015,7 @@ const IDENTITY_ACCESS_DASHBOARD = {
     { id: 'ia3', type: 'card',      title: 'Kerberoastable',         width: 'quarter', config: { preset: 'inv_kerberoastable' } },
     { id: 'ia4', type: 'card',      title: 'Password Never Expires', width: 'quarter', config: { preset: 'inv_pw_never_expires' } },
     { id: 'ia5', type: 'pie_chart', title: 'Attack Surface',         width: 'half',    config: { preset: 'inv_attack_surface', donut: true } },
-    { id: 'ia6', type: 'pie_chart', title: 'User Types',             width: 'half',    config: { preset: 'inv_user_types', donut: true } },
+    { id: 'ia6', type: 'pie_chart', title: 'User Types',             width: 'half',    config: { preset: 'inv_user_type_breakdown', donut: true } },
     { id: 'ia7', type: 'card',      title: 'Never Changed Password', width: 'quarter', config: { preset: 'inv_pw_never_changed' } },
     { id: 'ia8', type: 'card',      title: 'Logged On Users',        width: 'quarter', config: { preset: 'inv_logged_on_count' } },
     { id: 'ia9', type: 'card',      title: 'Weak Password Policies', width: 'quarter', config: { preset: 'inv_weak_pw_policies' } },
@@ -1041,8 +1042,8 @@ const ATTACK_SURFACE_DASHBOARD = {
     { id: 'as8', type: 'card',      title: 'Sensitive Env Vars',      width: 'quarter', config: { preset: 'inv_sensitive_env_vars' } },
     { id: 'as9', type: 'pie_chart', title: 'Security Controls',       width: 'half',    config: { preset: 'inv_security_ctrl_types', donut: true } },
     { id: 'as10',type: 'pie_chart', title: 'Certificate Status',      width: 'half',    config: { preset: 'inv_cert_status', donut: true } },
-    { id: 'as11',type: 'pie_chart', title: 'Connection States',       width: 'half',    config: { preset: 'inv_conn_states', donut: true } },
-    { id: 'as12',type: 'bar_chart', title: 'Top Software Vendors',    width: 'half',    config: { preset: 'inv_top_software' } },
+    { id: 'as11',type: 'pie_chart', title: 'Connection States',       width: 'half',    config: { preset: 'inv_netconn_states', donut: true } },
+    { id: 'as12',type: 'bar_chart', title: 'Top Software Vendors',    width: 'half',    config: { preset: 'inv_software_vendors' } },
     { id: 'as13',type: 'table',     title: 'Missing Patches',         width: 'full',    config: { preset: 'inv_patches_table' } },
     { id: 'as14',type: 'table',     title: 'Network Shares',          width: 'full',    config: { preset: 'inv_shares_table' } },
     { id: 'as15',type: 'table',     title: 'Certificates',            width: 'full',    config: { preset: 'inv_certificates_table' } },
@@ -1064,7 +1065,7 @@ const REMEDIATION_DASHBOARD = {
     { id: 'rp8', type: 'line_chart',title: 'MTTR Trend',              width: 'half',    config: { preset: 'mttr_trend' } },
     { id: 'rp9', type: 'bar_chart', title: 'Remediation Velocity',    width: 'half',    config: { preset: 'velocity_trend', stacked: true } },
     { id: 'rp10',type: 'pie_chart', title: 'Effort Distribution',     width: 'half',    config: { preset: 'effort_breakdown', donut: true } },
-    { id: 'rp11',type: 'bar_chart', title: 'Finding Age',             width: 'full',    config: { preset: 'finding_age' } },
+    { id: 'rp11',type: 'bar_chart', title: 'Finding Age',             width: 'full',    config: { preset: 'age_distribution' } },
     { id: 'rp12',type: 'table',     title: 'Remediation Queue',       width: 'full',    config: { preset: 'remediation_queue_data', limit: 15 } },
     { id: 'rp13',type: 'table',     title: 'Quick Wins',              width: 'full',    config: { preset: 'quick_wins_table', limit: 10 } },
   ],
@@ -1118,6 +1119,12 @@ const DRILL_DOWN = {
   sla_on_track:     '/findings?sla_status=on_track',
   sla_at_risk:      '/findings?sla_status=at_risk',
   total_assets:     '/assets',
+  sla_compliance:   '/findings?sla_status=on_track',
+  coverage_pct:     '/assets',
+  credentialed_count: '/assets',
+  mttr_overall:     '/findings',
+  zombie_count:     '/findings',
+  regression_count: '/findings',
   // Inventory cards
   inv_domain_admins:   '/inventory?tab=users&is_domain_admin=true',
   inv_local_admins:    '/inventory?tab=users&is_admin=true',
@@ -1128,6 +1135,18 @@ const DRILL_DOWN = {
   inv_total_services:  '/inventory?tab=services',
   inv_total_software:  '/inventory?tab=software',
   inv_total_computers: '/inventory?tab=computers',
+  inv_total_certificates: '/inventory?tab=certificates',
+  inv_logged_on_count: '/inventory?tab=logged-on',
+  inv_pw_never_expires: '/inventory?tab=users',
+  inv_pw_never_changed: '/inventory?tab=users',
+  inv_domain_controllers: '/inventory?tab=computers&is_dc=true',
+  inv_lateral_paths:   '/inventory?tab=users',
+  inv_established_conns: '/inventory?tab=netconns&state=ESTABLISHED',
+  inv_weak_pw_policies: '/inventory?tab=password-policies',
+  inv_hosts_with_av:   '/inventory?tab=security-controls',
+  inv_expiring_certs:  '/inventory?tab=certificates',
+  inv_self_signed_certs: '/inventory?tab=certificates',
+  inv_sensitive_env_vars: '/inventory?tab=env-vars',
 
   // Categories (pie/bar) → function(name) => url
   severity_breakdown: name => {
@@ -2825,6 +2844,21 @@ export default function ReportBuilder() {
   const [landingId, setLandingId] = useState(loadLandingId)
   const [activeReport, setActiveReport] = useState(null)
   const [activeTab, setActiveTab] = useState('reports')
+  const { reportId: urlReportId } = useParams()
+  const navigate = useNavigate()
+  const initialLoadRef = useRef(true)
+
+  // Sync activeReport → URL
+  useEffect(() => {
+    if (activeReport?.id) {
+      const target = `/reports/${activeReport.id}`
+      if (window.location.pathname !== target) {
+        navigate(target, { replace: false })
+      }
+    } else if (activeReport === null && window.location.pathname.startsWith('/reports/')) {
+      navigate('/', { replace: false })
+    }
+  }, [activeReport])
 
   const loadFromApi = useCallback(async () => {
     try {
@@ -2833,7 +2867,7 @@ export default function ReportBuilder() {
       let needsReload = false
 
       // Ensure default dashboards exist and stay up-to-date
-      const ootb = [DEFAULT_DASHBOARD, EXECUTIVE_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD]
+      const ootb = [EXECUTIVE_DASHBOARD, DEFAULT_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD]
       for (const dash of ootb) {
         const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}`).join('|')
         const existing = templates.find(t => t.name === dash.name)
@@ -2859,20 +2893,39 @@ export default function ReportBuilder() {
       }
       const mapped = templates.map(templateToReport)
       setReports(mapped)
-      // Auto-open landing report on first load
+      // Auto-open: URL report ID takes priority, then landing report (only on initial load)
       if (!activeReport) {
-        const lid = loadLandingId()
-        const found = mapped.find(r => String(r.id) === String(lid)) || mapped[0] || null
-        setActiveReport(found)
+        if (urlReportId) {
+          const found = mapped.find(r => String(r.id) === String(urlReportId))
+          if (found) setActiveReport(found)
+        } else if (initialLoadRef.current) {
+          const targetId = loadLandingId()
+          const found = targetId ? mapped.find(r => String(r.id) === String(targetId)) : null
+          if (found) setActiveReport(found)
+        }
       }
+      initialLoadRef.current = false
     } catch (e) {
       console.error('Failed to load report templates', e)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [urlReportId])
 
   useEffect(() => { loadFromApi() }, [loadFromApi])
+
+  // Sync URL → activeReport (browser back/forward)
+  useEffect(() => {
+    if (!reports.length) return
+    if (urlReportId) {
+      if (String(activeReport?.id) !== String(urlReportId)) {
+        const found = reports.find(r => String(r.id) === String(urlReportId))
+        if (found) setActiveReport(found)
+      }
+    } else if (window.location.pathname === '/') {
+      if (activeReport !== null) setActiveReport(null)
+    }
+  }, [urlReportId, reports])
 
   const setLanding = (id) => {
     setLandingId(id)

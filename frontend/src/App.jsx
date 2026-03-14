@@ -49,7 +49,7 @@ const NAV_GROUPS = [
   {
     label: 'Intelligence',
     items: [
-      { path: '/', label: 'Reports', icon: BarChart3, exact: true },
+      { path: '/', label: 'Reports', icon: BarChart3, exact: true, alsoPaths: ['/reports'] },
       { path: '/threat-intel', label: 'Threat Intel', icon: ShieldAlert },
     ],
   },
@@ -352,27 +352,29 @@ function Sidebar({ collapsed, onToggle }) {
               <div style={{ height: 1, background: 'var(--border)', margin: '6px 0' }} />
             )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-              {group.items.map(({ path, label, icon: Icon, exact }) => (
+              {group.items.map(({ path, label, icon: Icon, exact, alsoPaths }) => (
                 <NavLink
                   key={path}
                   to={path}
                   end={exact}
                   title={label}
                   aria-label={label}
-                  style={({ isActive }) => ({
+                  style={({ isActive }) => {
+                    const active = isActive || (alsoPaths && alsoPaths.some(p => window.location.pathname.startsWith(p)))
+                    return {
                     display: 'flex',
                     alignItems: 'center',
                     gap: 10,
                     padding: '7px 10px',
                     borderRadius: 6,
-                    color: isActive ? 'var(--nav-active-text)' : 'var(--muted)',
-                    background: isActive ? 'var(--nav-active-bg)' : 'transparent',
+                    color: active ? 'var(--nav-active-text)' : 'var(--muted)',
+                    background: active ? 'var(--nav-active-bg)' : 'transparent',
                     textDecoration: 'none',
                     cursor: 'pointer',
-                    boxShadow: isActive ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
+                    boxShadow: active ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
                     transition: 'background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease',
                     justifyContent: collapsed ? 'center' : 'flex-start',
-                  })}
+                  }}}
                 >
                   <Icon size={18} />
                   {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{label}</span>}
@@ -513,6 +515,7 @@ function AppShell() {
             <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#71717a' }}>Loading...</div>}>
               <Routes>
                 <Route path="/" element={<Reports />} />
+                <Route path="/reports/:reportId" element={<Reports />} />
                 <Route path="/assets" element={<AssetInventory />} />
                 <Route path="/findings" element={<FindingExplorer />} />
                 <Route path="/findings/:id" element={<FindingDetail />} />
