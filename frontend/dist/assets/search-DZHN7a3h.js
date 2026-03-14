@@ -1,0 +1,5 @@
+<<<<<<<< HEAD:frontend/dist/assets/search-MkiCZIhl.js
+import{c}from"./index-CH8nCOAU.js";const r=c("Search",[["circle",{cx:"11",cy:"11",r:"8",key:"4ej97u"}],["path",{d:"m21 21-4.3-4.3",key:"1qie3q"}]]);export{r as S};
+========
+import{c}from"./index-3NUuqrwc.js";const r=c("Search",[["circle",{cx:"11",cy:"11",r:"8",key:"4ej97u"}],["path",{d:"m21 21-4.3-4.3",key:"1qie3q"}]]);export{r as S};
+>>>>>>>> origin/main:frontend/dist/assets/search-DZHN7a3h.js

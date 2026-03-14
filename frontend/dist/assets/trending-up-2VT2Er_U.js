@@ -1,0 +1,5 @@
+<<<<<<<< HEAD:frontend/dist/assets/trending-up-DSDp8n4V.js
+import{c as e}from"./index-CH8nCOAU.js";const o=e("TrendingUp",[["polyline",{points:"22 7 13.5 15.5 8.5 10.5 2 17",key:"126l90"}],["polyline",{points:"16 7 22 7 22 13",key:"kwv8wd"}]]);export{o as T};
+========
+import{c as e}from"./index-3NUuqrwc.js";const o=e("TrendingUp",[["polyline",{points:"22 7 13.5 15.5 8.5 10.5 2 17",key:"126l90"}],["polyline",{points:"16 7 22 7 22 13",key:"kwv8wd"}]]);export{o as T};
+>>>>>>>> origin/main:frontend/dist/assets/trending-up-2VT2Er_U.js

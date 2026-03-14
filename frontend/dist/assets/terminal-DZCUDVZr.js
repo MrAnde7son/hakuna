@@ -1,1 +1,5 @@
+<<<<<<<< HEAD:frontend/dist/assets/terminal-DZCUDVZr.js
 import{c as e}from"./index-CH8nCOAU.js";const i=e("Terminal",[["polyline",{points:"4 17 10 11 4 5",key:"akl6gq"}],["line",{x1:"12",x2:"20",y1:"19",y2:"19",key:"q2wloq"}]]);export{i as T};
+========
+import{c as e}from"./index-3NUuqrwc.js";const i=e("Terminal",[["polyline",{points:"4 17 10 11 4 5",key:"akl6gq"}],["line",{x1:"12",x2:"20",y1:"19",y2:"19",key:"q2wloq"}]]);export{i as T};
+>>>>>>>> origin/main:frontend/dist/assets/terminal-Mc4ZTwcH.js
