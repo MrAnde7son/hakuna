@@ -16,7 +16,7 @@ import OwnershipRules from './OwnershipRules.jsx'
 
 const KEY_FIELD_OPTIONS = {
   assets: ['ip', 'hostname', 'fqdn', 'netbios_name'],
-  findings: ['plugin_id', 'asset_id', 'port', 'protocol'],
+  findings: ['plugin_id', 'asset_id', 'port', 'protocol', 'cve'],
   users: ['username', 'domain', 'sid'],
   groups: ['group_name', 'domain', 'sid'],
   computers: ['computer_name', 'sid', 'dns_hostname'],

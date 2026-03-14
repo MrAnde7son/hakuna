@@ -32,6 +32,7 @@ import {
   getInventoryShares, getInventorySoftware, getInventorySecurityControls, getInventoryComputers,
   getInventoryPasswordPolicies, getInventoryCertificates, getInventoryAITools, getInventoryProcesses,
   getFunnel,
+  getRiskGrade,
 } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons } from '../shared/ui.jsx'
 
@@ -120,6 +121,7 @@ const DATA_SOURCES = {
   inv_certificates:   (scanId, f) => getInventoryCertificates({ scan_id: scanId, expired_only: f?.expired_only, expiring_days: f?.expiring_days, self_signed_only: f?.self_signed_only, page_size: 0 }),
   inv_ai_tools:       (scanId, f) => getInventoryAITools({ scan_id: scanId, category: f?.category, page_size: 0 }),
   inv_processes:      (scanId, f) => getInventoryProcesses({ scan_id: scanId, search: f?.search, page_size: 0 }),
+  risk_grade:         (scanId, f) => getRiskGrade(scanId, f?.tags, f?.tag_logic),
 }
 
 // Filter definitions per source — drives ConfigPanel filter UI
@@ -203,6 +205,7 @@ const DATA_PRESETS = {
   total_findings:   { label: 'Total Findings',     group: 'Severity',  source: 'summary', type: 'metric', extract: d => d?.total_findings ?? 0, color: 'var(--text-primary)' },
   excepted_findings:{ label: 'Excepted Findings',  group: 'Severity',  source: 'summary', type: 'metric', extract: d => d?.excepted_findings ?? 0, color: '#a78bfa' },
   total_assets:     { label: 'Total Assets',       group: 'Assets & Findings', source: 'summary', type: 'metric', extract: d => d?.total_assets ?? 0, color: '#6366f1' },
+  risk_grade:       { label: 'Risk Grade',          group: 'Risk',      source: 'risk_grade', type: 'grade', extract: d => d },
   exploit_count:    { label: 'Known Exploits',     group: 'Risk',      source: 'summary', type: 'metric', extract: d => d?.exploit_count ?? 0, color: '#f59e0b' },
   high_priority:    { label: 'High Priority',      group: 'Risk',      source: 'summary', type: 'metric', extract: d => d?.high_priority_count ?? 0, color: '#ea580c' },
   sla_compliance:   { label: 'SLA Compliance',     group: 'SLA & Ops', source: 'sla',     type: 'metric', extract: d => d?.compliance_pct ?? 0, format: 'pct', color: '#16a34a' },
@@ -338,6 +341,15 @@ const DATA_PRESETS = {
         { name: 'Low', value: b.low || 0, color: '#65a30d' },
       ].filter(r => r.value > 0)
     },
+  },
+  mttr_overall: {
+    label: 'Overall MTTR (days)', group: 'SLA & Ops', source: 'sla', type: 'metric',
+    extract: d => {
+      const m = d?.avg_mttr_days || {}
+      const vals = [m.critical, m.high, m.medium, m.low].filter(v => v && v > 0)
+      return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0
+    },
+    color: '#8b5cf6',
   },
   mttr_by_severity: {
     label: 'Avg MTTR by Severity', group: 'SLA & Ops', source: 'sla', type: 'categories',
@@ -539,6 +551,18 @@ const DATA_PRESETS = {
     extract: d => Array.isArray(d) ? d : [],
     xField: 'scan_name', fields: ['critical', 'high', 'medium', 'low', 'info'],
     colors: { critical: '#dc2626', high: '#ea580c', medium: '#d97706', low: '#65a30d', info: '#0ea5e9' },
+  },
+  // Dynamic composable series — metrics & grouping set via widget config
+  custom_series: {
+    label: 'Custom Time Series', group: 'Severity', source: 'metrics_timeline', type: 'series',
+    dynamic: true,
+    extract: (d, cfg) => {
+      const rows = Array.isArray(d) ? d : []
+      return aggregateByTimePeriod(rows, cfg?.time_group || 'scan')
+    },
+    xField: 'scan_name',
+    fields: [],   // filled dynamically from cfg.metrics
+    colors: {},   // filled dynamically from cfg.metrics
   },
 
   // ── Tables ──
@@ -807,6 +831,84 @@ const DATA_PRESETS = {
 
 const PRESET_GROUPS = ['Severity', 'Risk', 'Temporal', 'SLA & Ops', 'Tags', 'Assets & Findings', 'Inventory', 'Filtered']
 
+// ── Composable time-series metric catalogue ──────────────────────────────────
+// Each metric maps to a field returned by metrics_timeline (or trending/velocity)
+const SERIES_METRICS = [
+  { id: 'critical',             label: 'Critical',              group: 'Severity',          color: '#dc2626' },
+  { id: 'high',                 label: 'High',                  group: 'Severity',          color: '#ea580c' },
+  { id: 'medium',               label: 'Medium',                group: 'Severity',          color: '#d97706' },
+  { id: 'low',                  label: 'Low',                   group: 'Severity',          color: '#65a30d' },
+  { id: 'info',                 label: 'Info',                  group: 'Severity',          color: '#0ea5e9' },
+  { id: 'total_findings',       label: 'Total Findings',        group: 'Counts',            color: '#6366f1' },
+  { id: 'actionable_findings',  label: 'Actionable Findings',   group: 'Counts',            color: '#8b5cf6' },
+  { id: 'total_assets',         label: 'Total Assets',          group: 'Counts',            color: '#14b8a6' },
+  { id: 'exploit_count',        label: 'Exploitable',           group: 'Counts',            color: '#f59e0b' },
+  { id: 'sla_compliance_pct',   label: 'SLA Compliance %',      group: 'SLA & Workflow',    color: '#16a34a' },
+  { id: 'sla_on_track',         label: 'SLA On Track',          group: 'SLA & Workflow',    color: '#16a34a' },
+  { id: 'sla_at_risk',          label: 'SLA At Risk',           group: 'SLA & Workflow',    color: '#d97706' },
+  { id: 'sla_breached',         label: 'SLA Breached',          group: 'SLA & Workflow',    color: '#dc2626' },
+  { id: 'workflow_open',        label: 'Workflow Open',         group: 'SLA & Workflow',    color: '#6b7280' },
+  { id: 'workflow_in_progress', label: 'Workflow In Progress',  group: 'SLA & Workflow',    color: '#3b82f6' },
+  { id: 'workflow_resolved',    label: 'Workflow Resolved',     group: 'SLA & Workflow',    color: '#22c55e' },
+  { id: 'avg_risk_score',       label: 'Avg Risk Score',        group: 'Risk',              color: '#ef4444' },
+  { id: 'max_risk_score',       label: 'Max Risk Score',        group: 'Risk',              color: '#dc2626' },
+  { id: 'avg_mttr_days',        label: 'MTTR (days)',           group: 'Risk',              color: '#8b5cf6' },
+]
+const SERIES_METRIC_GROUPS = ['Severity', 'Counts', 'SLA & Workflow', 'Risk']
+const SERIES_METRIC_MAP = Object.fromEntries(SERIES_METRICS.map(m => [m.id, m]))
+
+const TIME_GROUP_OPTIONS = [
+  { value: 'scan', label: 'Per Scan' },
+  { value: 'day',  label: 'Daily' },
+  { value: 'week', label: 'Weekly' },
+  { value: 'month',label: 'Monthly' },
+  { value: 'year', label: 'Yearly' },
+]
+
+// Helper: aggregate metrics_timeline data by time period
+function aggregateByTimePeriod(data, groupBy) {
+  if (!Array.isArray(data) || data.length === 0 || groupBy === 'scan') return data
+  const buckets = {}
+  const numFields = ['critical','high','medium','low','info','total_findings','actionable_findings','total_assets','exploit_count',
+    'sla_on_track','sla_at_risk','sla_breached','sla_compliance_pct','workflow_open','workflow_in_progress','workflow_resolved',
+    'avg_risk_score','max_risk_score','avg_mttr_days']
+  for (const row of data) {
+    const dateStr = row.scan_date || ''
+    let key
+    if (groupBy === 'day') key = dateStr.slice(0, 10)
+    else if (groupBy === 'week') {
+      const d = new Date(dateStr)
+      if (isNaN(d)) { key = dateStr; } else {
+        const day = d.getDay()
+        const diff = d.getDate() - day + (day === 0 ? -6 : 1)
+        const monday = new Date(d.setDate(diff))
+        key = monday.toISOString().slice(0, 10)
+      }
+    } else if (groupBy === 'month') key = dateStr.slice(0, 7)
+    else if (groupBy === 'year') key = dateStr.slice(0, 4)
+    else key = row.scan_name || dateStr
+    if (!key) key = row.scan_name || `scan_${row.scan_id}`
+    if (!buckets[key]) buckets[key] = { _label: key, _count: 0 }
+    buckets[key]._count++
+    for (const f of numFields) {
+      if (row[f] != null) {
+        buckets[key][f] = (buckets[key][f] || 0) + row[f]
+      }
+    }
+  }
+  // Average the rate/score fields instead of summing
+  const avgFields = ['sla_compliance_pct', 'avg_risk_score', 'max_risk_score', 'avg_mttr_days']
+  return Object.values(buckets).map(b => {
+    const out = { scan_name: b._label }
+    for (const f of numFields) {
+      if (b[f] != null) {
+        out[f] = avgFields.includes(f) ? Math.round((b[f] / b._count) * 10) / 10 : b[f]
+      }
+    }
+    return out
+  })
+}
+
 // ─── Widget catalogue ────────────────────────────────────────────────────────
 
 const WIDGET_CATALOGUE = [
@@ -814,14 +916,10 @@ const WIDGET_CATALOGUE = [
     category: 'Charts',
     items: [
       { type: 'bar_chart',  label: 'Bar Chart',  icon: BarChart2,    desc: 'Vertical or horizontal bars', defaultWidth: 'full',  defaultConfig: { preset: 'severity_breakdown' } },
-      { type: 'line_chart', label: 'Line Chart',  icon: TrendingUp,   desc: 'Line or area over time',      defaultWidth: 'full',  defaultConfig: { preset: 'severity_trend' } },
+      { type: 'line_chart', label: 'Line Chart',  icon: TrendingUp,   desc: 'Line or area over time',      defaultWidth: 'full',  defaultConfig: { preset: 'custom_series', metrics: ['critical', 'high', 'medium', 'low'], time_group: 'scan' } },
       { type: 'pie_chart',  label: 'Pie / Donut', icon: PieChartIcon, desc: 'Proportional breakdown',      defaultWidth: 'half',  defaultConfig: { preset: 'severity_breakdown', donut: true } },
       { type: 'funnel',     label: 'Funnel',      icon: Filter,       desc: 'Progressive filter funnel', defaultWidth: 'half',  defaultConfig: { base_entity: 'findings', steps: [
-        { label: 'All Findings', filters: {} },
-        { label: 'Critical (CVSS ≥ 9)', filters: { min_cvss3: '9' } },
-        { label: 'In KEV', filters: { is_kev: 'true' } },
-        { label: 'On Critical Assets', filters: { on_critical_assets: 'true' } },
-        { label: 'Internet Exposed', filters: { on_internet_facing: 'true' } },
+        { label: 'Step 1', filters: {} },
       ] } },
     ],
   },
@@ -829,6 +927,7 @@ const WIDGET_CATALOGUE = [
     category: 'Data',
     items: [
       { type: 'card',    label: 'Metric Card', icon: Hash,     desc: 'Single number highlight', defaultWidth: 'quarter', defaultConfig: { preset: 'critical_count' } },
+      { type: 'risk_grade', label: 'Risk Grade', icon: Shield, desc: 'Composite A-F risk grade', defaultWidth: 'half', defaultConfig: { preset: 'risk_grade' } },
       { type: 'table',   label: 'Data Table',  icon: Table2,   desc: 'Tabular data view',       defaultWidth: 'full',    defaultConfig: { preset: 'top_assets', limit: 10 } },
       { type: 'heatmap', label: 'Heatmap',     icon: LayoutGrid, desc: 'Severity by family matrix', defaultWidth: 'full', defaultConfig: {} },
     ],
@@ -872,6 +971,9 @@ const DEFAULT_DASHBOARD = {
     { id: 'dw11',type: 'table',     title: 'Top Risky Assets',      width: 'full',    config: { preset: 'top_assets', limit: 10 } },
     { id: 'dw13',type: 'table',     title: 'Quick Wins',            width: 'full',    config: { preset: 'quick_wins_table', limit: 5 } },
     { id: 'dw12',type: 'table',     title: 'Remediation Queue',     width: 'full',    config: { preset: 'remediation_queue_data', limit: 10 } },
+    { id: 'dw14',type: 'card',      title: 'Zombie Vulns',          width: 'quarter', config: { preset: 'zombie_count' } },
+    { id: 'dw15',type: 'card',      title: 'Regressions',           width: 'quarter', config: { preset: 'regression_count' } },
+    { id: 'dw16',type: 'bar_chart', title: 'Finding Age',           width: 'half',    config: { preset: 'finding_age' } },
   ],
 }
 
@@ -880,21 +982,91 @@ const EXECUTIVE_DASHBOARD = {
   name: 'Executive Overview',
   createdAt: new Date(0).toISOString(),
   widgets: [
+    { id: 'ex0', type: 'risk_grade', title: 'Organization Risk Grade', width: 'half', config: { preset: 'risk_grade' } },
+    { id: 'ex5', type: 'pie_chart', title: 'Severity Distribution', width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
     { id: 'ex1', type: 'card',      title: 'Critical',              width: 'quarter', config: { preset: 'critical_count' } },
     { id: 'ex2', type: 'card',      title: 'SLA Compliance',        width: 'quarter', config: { preset: 'sla_compliance' } },
-    { id: 'ex3', type: 'card',      title: 'Exploitable',           width: 'quarter', config: { preset: 'exploit_count' } },
+    { id: 'ex3', type: 'card',      title: 'SLA Breached',          width: 'quarter', config: { preset: 'sla_breached' } },
     { id: 'ex4', type: 'card',      title: 'Quick Wins',            width: 'quarter', config: { preset: 'quick_wins' } },
-    { id: 'ex5', type: 'pie_chart', title: 'Severity Distribution', width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
     { id: 'ex6', type: 'pie_chart', title: 'SLA Status',            width: 'half',    config: { preset: 'sla_status', donut: true } },
+    { id: 'ex16',type: 'card',      title: 'Mean Time to Remediate', width: 'quarter', config: { preset: 'mttr_overall', label: 'days' } },
     { id: 'ex13',type: 'card',      title: 'Assessment Coverage',   width: 'quarter', config: { preset: 'coverage_pct' } },
     { id: 'ex14',type: 'card',      title: 'Credentialed Assets',   width: 'quarter', config: { preset: 'credentialed_count' } },
-    { id: 'ex15',type: 'pie_chart', title: 'Scan Coverage',         width: 'half',    config: { preset: 'coverage_breakdown', donut: true } },
+    { id: 'ex15',type: 'pie_chart', title: 'Scan Coverage',         width: 'quarter', config: { preset: 'coverage_breakdown', donut: true } },
+    { id: 'ex17',type: 'bar_chart', title: 'MTTR by Severity',     width: 'half',    config: { preset: 'mttr_by_severity' } },
+    { id: 'ex18',type: 'line_chart',title: 'MTTR Trend',            width: 'half',    config: { preset: 'mttr_trend' } },
     { id: 'ex7', type: 'bar_chart', title: 'Risk by Business Unit', width: 'full',    config: { preset: 'risk_by_tags', horizontal: true } },
     { id: 'ex8', type: 'table',     title: 'Business Unit Benchmark', width: 'full',  config: { preset: 'tag_benchmark' } },
     { id: 'ex9', type: 'line_chart',title: 'Risk Score Trend',      width: 'half',    config: { preset: 'risk_trend' } },
     { id: 'ex10',type: 'line_chart',title: 'SLA Compliance Trend',  width: 'half',    config: { preset: 'sla_trend', areaFill: true } },
     { id: 'ex11',type: 'bar_chart', title: 'Remediation Velocity',  width: 'half',    config: { preset: 'velocity_trend', stacked: true } },
     { id: 'ex12',type: 'line_chart',title: 'Severity Trend',        width: 'half',    config: { preset: 'severity_trend' } },
+  ],
+}
+
+const IDENTITY_ACCESS_DASHBOARD = {
+  id: 'default-identity-access',
+  name: 'Identity & Access Risk',
+  createdAt: new Date(0).toISOString(),
+  widgets: [
+    { id: 'ia1', type: 'card',      title: 'Domain Admins',          width: 'quarter', config: { preset: 'inv_domain_admins' } },
+    { id: 'ia2', type: 'card',      title: 'Local Admins',           width: 'quarter', config: { preset: 'inv_local_admins' } },
+    { id: 'ia3', type: 'card',      title: 'Kerberoastable',         width: 'quarter', config: { preset: 'inv_kerberoastable' } },
+    { id: 'ia4', type: 'card',      title: 'Password Never Expires', width: 'quarter', config: { preset: 'inv_pw_never_expires' } },
+    { id: 'ia5', type: 'pie_chart', title: 'Attack Surface',         width: 'half',    config: { preset: 'inv_attack_surface', donut: true } },
+    { id: 'ia6', type: 'pie_chart', title: 'User Types',             width: 'half',    config: { preset: 'inv_user_types', donut: true } },
+    { id: 'ia7', type: 'card',      title: 'Never Changed Password', width: 'quarter', config: { preset: 'inv_pw_never_changed' } },
+    { id: 'ia8', type: 'card',      title: 'Logged On Users',        width: 'quarter', config: { preset: 'inv_logged_on_count' } },
+    { id: 'ia9', type: 'card',      title: 'Weak Password Policies', width: 'quarter', config: { preset: 'inv_weak_pw_policies' } },
+    { id: 'ia10',type: 'card',      title: 'Domain Controllers',     width: 'quarter', config: { preset: 'inv_domain_controllers' } },
+    { id: 'ia11',type: 'table',     title: 'Privileged Users',       width: 'full',    config: { preset: 'inv_users_table', filters: { is_privileged: 'true' } } },
+    { id: 'ia12',type: 'table',     title: 'Privileged Groups',      width: 'full',    config: { preset: 'inv_groups_table', filters: { is_privileged: 'true' } } },
+    { id: 'ia13',type: 'table',     title: 'Password Policies',      width: 'full',    config: { preset: 'inv_pw_policies_table' } },
+    { id: 'ia14',type: 'table',     title: 'Logged On Users',        width: 'full',    config: { preset: 'inv_logged_on_table' } },
+  ],
+}
+
+const ATTACK_SURFACE_DASHBOARD = {
+  id: 'default-attack-surface',
+  name: 'Attack Surface & Hygiene',
+  createdAt: new Date(0).toISOString(),
+  widgets: [
+    { id: 'as1', type: 'card',      title: 'Expired Certificates',    width: 'quarter', config: { preset: 'inv_expired_certs' } },
+    { id: 'as2', type: 'card',      title: 'Expiring Soon',           width: 'quarter', config: { preset: 'inv_expiring_certs' } },
+    { id: 'as3', type: 'card',      title: 'Self-Signed Certs',       width: 'quarter', config: { preset: 'inv_self_signed_certs' } },
+    { id: 'as4', type: 'card',      title: 'Writeable Shares',        width: 'quarter', config: { preset: 'inv_writeable_shares' } },
+    { id: 'as5', type: 'card',      title: 'Lateral Movement Paths',  width: 'quarter', config: { preset: 'inv_lateral_paths' } },
+    { id: 'as6', type: 'card',      title: 'Established Connections', width: 'quarter', config: { preset: 'inv_established_conns' } },
+    { id: 'as7', type: 'card',      title: 'Hosts with AV',           width: 'quarter', config: { preset: 'inv_hosts_with_av' } },
+    { id: 'as8', type: 'card',      title: 'Sensitive Env Vars',      width: 'quarter', config: { preset: 'inv_sensitive_env_vars' } },
+    { id: 'as9', type: 'pie_chart', title: 'Security Controls',       width: 'half',    config: { preset: 'inv_security_ctrl_types', donut: true } },
+    { id: 'as10',type: 'pie_chart', title: 'Certificate Status',      width: 'half',    config: { preset: 'inv_cert_status', donut: true } },
+    { id: 'as11',type: 'pie_chart', title: 'Connection States',       width: 'half',    config: { preset: 'inv_conn_states', donut: true } },
+    { id: 'as12',type: 'bar_chart', title: 'Top Software Vendors',    width: 'half',    config: { preset: 'inv_top_software' } },
+    { id: 'as13',type: 'table',     title: 'Missing Patches',         width: 'full',    config: { preset: 'inv_patches_table' } },
+    { id: 'as14',type: 'table',     title: 'Network Shares',          width: 'full',    config: { preset: 'inv_shares_table' } },
+    { id: 'as15',type: 'table',     title: 'Certificates',            width: 'full',    config: { preset: 'inv_certificates_table' } },
+  ],
+}
+
+const REMEDIATION_DASHBOARD = {
+  id: 'default-remediation-progress',
+  name: 'Remediation Progress',
+  createdAt: new Date(0).toISOString(),
+  widgets: [
+    { id: 'rp1', type: 'risk_grade', title: 'Organization Risk Grade', width: 'half', config: { preset: 'risk_grade' } },
+    { id: 'rp2', type: 'pie_chart', title: 'SLA Status',              width: 'half',    config: { preset: 'sla_status', donut: true } },
+    { id: 'rp3', type: 'card',      title: 'Mean Time to Remediate',  width: 'quarter', config: { preset: 'mttr_overall', label: 'days' } },
+    { id: 'rp4', type: 'card',      title: 'SLA Breached',            width: 'quarter', config: { preset: 'sla_breached' } },
+    { id: 'rp5', type: 'card',      title: 'Zombie Vulns',            width: 'quarter', config: { preset: 'zombie_count' } },
+    { id: 'rp6', type: 'card',      title: 'Regressions',             width: 'quarter', config: { preset: 'regression_count' } },
+    { id: 'rp7', type: 'bar_chart', title: 'MTTR by Severity',        width: 'half',    config: { preset: 'mttr_by_severity' } },
+    { id: 'rp8', type: 'line_chart',title: 'MTTR Trend',              width: 'half',    config: { preset: 'mttr_trend' } },
+    { id: 'rp9', type: 'bar_chart', title: 'Remediation Velocity',    width: 'half',    config: { preset: 'velocity_trend', stacked: true } },
+    { id: 'rp10',type: 'pie_chart', title: 'Effort Distribution',     width: 'half',    config: { preset: 'effort_breakdown', donut: true } },
+    { id: 'rp11',type: 'bar_chart', title: 'Finding Age',             width: 'full',    config: { preset: 'finding_age' } },
+    { id: 'rp12',type: 'table',     title: 'Remediation Queue',       width: 'full',    config: { preset: 'remediation_queue_data', limit: 15 } },
+    { id: 'rp13',type: 'table',     title: 'Quick Wins',              width: 'full',    config: { preset: 'quick_wins_table', limit: 10 } },
   ],
 }
 
@@ -1024,7 +1196,17 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
   if (loading) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 100 }}><Spinner /></div>
   if (!data || !preset) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data available</div>
 
-  const extracted = preset.extract(data)
+  const extracted = preset.dynamic ? preset.extract(data, cfg) : preset.extract(data)
+
+  // For custom_series, resolve fields/colors dynamically from cfg.metrics
+  const resolvedPreset = (() => {
+    if (cfg.preset === 'custom_series' && Array.isArray(cfg.metrics) && cfg.metrics.length > 0) {
+      const fields = cfg.metrics.filter(m => SERIES_METRIC_MAP[m])
+      const colors = Object.fromEntries(fields.map(f => [f, SERIES_METRIC_MAP[f]?.color || PALETTE[0]]))
+      return { ...preset, fields, colors }
+    }
+    return preset
+  })()
 
   switch (widget.type) {
     case 'card': {
@@ -1046,6 +1228,54 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
           <div style={{ fontSize: 48, fontWeight: 800, color, lineHeight: 1 }}>{display}</div>
           <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8 }}>{cfg.label || preset.label}</div>
           {handleCardClick && <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6, opacity: 0.7 }}>Click to drill down →</div>}
+        </div>
+      )
+    }
+
+    case 'risk_grade': {
+      const grade = extracted?.grade ?? '?'
+      const score = extracted?.score ?? 0
+      const gradeColor = extracted?.grade_color ?? '#94a3b8'
+      const components = extracted?.components || {}
+      const weights = extracted?.weights || {}
+      const compLabels = {
+        severity_mix: 'Severity Mix',
+        sla_compliance: 'SLA Compliance',
+        remediation_velocity: 'Remediation Speed',
+        assessment_coverage: 'Assessment Coverage',
+        exploit_exposure: 'Exploit Exposure',
+      }
+      const compOrder = ['severity_mix', 'sla_compliance', 'remediation_velocity', 'assessment_coverage', 'exploit_exposure']
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 32, padding: '8px 0' }}>
+          {/* Big grade circle */}
+          <div style={{
+            width: 96, height: 96, borderRadius: '50%', flexShrink: 0,
+            background: gradeColor + '18', border: `3px solid ${gradeColor}`,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <div style={{ fontSize: 44, fontWeight: 800, color: gradeColor, lineHeight: 1 }}>{grade}</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: gradeColor, opacity: 0.8 }}>{score}/100</div>
+          </div>
+          {/* Component breakdown bars */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {compOrder.map(key => {
+              const val = components[key] ?? 0
+              const w = weights[key] ?? 0
+              const barColor = val >= 80 ? '#16a34a' : val >= 60 ? '#d97706' : '#dc2626'
+              return (
+                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 130, fontSize: 11, color: 'var(--text-muted)', textAlign: 'right', flexShrink: 0 }}>
+                    {compLabels[key] || key} <span style={{ opacity: 0.5 }}>({Math.round(w * 100)}%)</span>
+                  </div>
+                  <div style={{ flex: 1, height: 8, background: 'var(--bg-hover)', borderRadius: 4, overflow: 'hidden' }}>
+                    <div style={{ width: `${val}%`, height: '100%', background: barColor, borderRadius: 4, transition: 'width 0.5s' }} />
+                  </div>
+                  <div style={{ width: 30, fontSize: 11, fontWeight: 600, color: barColor, textAlign: 'right' }}>{Math.round(val)}</div>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )
     }
@@ -1111,8 +1341,9 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
       // series type
       const rows = Array.isArray(extracted) ? extracted : []
       if (rows.length < 2) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need 2+ data points</div>
-      const fields = preset.fields || []
-      const chartData = rows.map(r => ({ name: truncLabel(r[preset.xField]), ...Object.fromEntries(fields.map(f => [f, r[f] ?? null])) }))
+      const fields = resolvedPreset.fields || []
+      if (fields.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Select metrics to display</div>
+      const chartData = rows.map(r => ({ name: truncLabel(r[resolvedPreset.xField]), ...Object.fromEntries(fields.map(f => [f, r[f] ?? null])) }))
       return (
         <ResponsiveContainer width="100%" height={200}>
           <BarChart data={chartData} stackOffset={cfg.stacked ? 'sign' : 'none'}>
@@ -1120,9 +1351,9 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
             <XAxis dataKey="name" tick={{ ...TICK_STYLE, fontSize: 10 }} />
             <YAxis tick={TICK_STYLE} />
             <Tooltip contentStyle={TOOLTIP_STYLE} />
-            <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{v}</span>} />
+            <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{SERIES_METRIC_MAP[v]?.label || v}</span>} />
             {fields.map(f => (
-              <Bar key={f} dataKey={f} fill={preset.colors?.[f] || PALETTE[fields.indexOf(f) % PALETTE.length]} radius={[3, 3, 0, 0]} stackId={cfg.stacked ? 'a' : undefined} />
+              <Bar key={f} dataKey={f} fill={resolvedPreset.colors?.[f] || PALETTE[fields.indexOf(f) % PALETTE.length]} radius={[3, 3, 0, 0]} stackId={cfg.stacked ? 'a' : undefined} />
             ))}
           </BarChart>
         </ResponsiveContainer>
@@ -1132,8 +1363,9 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
     case 'line_chart': {
       const rows = Array.isArray(extracted) ? extracted : []
       if (rows.length < 2) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need 2+ data points</div>
-      const fields = preset.fields || []
-      const chartData = rows.map(r => ({ name: truncLabel(r[preset.xField]), ...Object.fromEntries(fields.map(f => [f, r[f] ?? null])) }))
+      const fields = resolvedPreset.fields || []
+      if (fields.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Select metrics to display</div>
+      const chartData = rows.map(r => ({ name: truncLabel(r[resolvedPreset.xField]), ...Object.fromEntries(fields.map(f => [f, r[f] ?? null])) }))
       const ChartComp = cfg.areaFill ? AreaChart : LineChart
       return (
         <ResponsiveContainer width="100%" height={220}>
@@ -1142,9 +1374,9 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
             <XAxis dataKey="name" tick={{ ...TICK_STYLE, fontSize: 10 }} />
             <YAxis tick={TICK_STYLE} />
             <Tooltip contentStyle={TOOLTIP_STYLE} />
-            <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{v}</span>} />
+            <Legend formatter={v => <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{SERIES_METRIC_MAP[v]?.label || v}</span>} />
             {fields.map(f => {
-              const color = preset.colors?.[f] || PALETTE[fields.indexOf(f) % PALETTE.length]
+              const color = resolvedPreset.colors?.[f] || PALETTE[fields.indexOf(f) % PALETTE.length]
               return cfg.areaFill
                 ? <Area key={f} type="monotone" dataKey={f} stroke={color} fill={color} fillOpacity={0.15} strokeWidth={2} dot={{ fill: color, r: 3 }} connectNulls />
                 : <Line key={f} type="monotone" dataKey={f} stroke={color} strokeWidth={2} dot={{ fill: color, r: 3 }} connectNulls />
@@ -1296,40 +1528,80 @@ function FunnelWidget({ widget, scanId }) {
 // ─── Funnel step filter options ───────────────────────────────────────────────
 
 const FUNNEL_FINDING_FILTERS = [
-  { key: 'severity', label: 'Severity =', type: 'select', options: [{ value: '', label: '—' }, { value: '4', label: 'Critical' }, { value: '3', label: 'High' }, { value: '2', label: 'Medium' }, { value: '1', label: 'Low' }] },
+  // Severity & scoring
+  { key: 'severity', label: 'Severity =', type: 'select', options: [{ value: '', label: '—' }, { value: '4', label: 'Critical' }, { value: '3', label: 'High' }, { value: '2', label: 'Medium' }, { value: '1', label: 'Low' }, { value: '0', label: 'Info' }] },
   { key: 'min_severity', label: 'Min Severity ≥', type: 'select', options: [{ value: '', label: '—' }, { value: '4', label: 'Critical' }, { value: '3', label: 'High' }, { value: '2', label: 'Medium' }, { value: '1', label: 'Low' }] },
   { key: 'min_cvss3', label: 'CVSS v3 ≥', type: 'number', placeholder: 'e.g. 9.0' },
+  { key: 'min_cvss4', label: 'CVSS v4 ≥', type: 'number', placeholder: 'e.g. 9.0' },
+  { key: 'min_vpr', label: 'VPR Score ≥', type: 'number', placeholder: 'e.g. 7.0' },
+  { key: 'min_epss', label: 'EPSS ≥', type: 'number', placeholder: 'e.g. 0.5' },
+  // Threat intel
   { key: 'is_kev', label: 'In CISA KEV', type: 'toggle' },
   { key: 'has_exploit', label: 'Has Exploit', type: 'toggle' },
   { key: 'ransomware_linked', label: 'Ransomware Linked', type: 'toggle' },
   { key: 'trending_in_news', label: 'Trending in News', type: 'toggle' },
   { key: 'zero_day', label: 'Zero-Day', type: 'toggle' },
-  { key: 'min_epss', label: 'EPSS ≥', type: 'number', placeholder: 'e.g. 0.5' },
+  { key: 'exploit_maturity', label: 'Exploit Maturity', type: 'select', options: [{ value: '', label: '—' }, { value: 'weaponized', label: 'Weaponized' }, { value: 'functional', label: 'Functional' }, { value: 'poc', label: 'PoC' }, { value: 'unproven', label: 'Unproven' }] },
+  // ATT&CK
+  { key: 'has_ttps', label: 'Has ATT&CK TTPs', type: 'toggle' },
+  { key: 'tactic', label: 'ATT&CK Tactic', type: 'select', options: [{ value: '', label: '—' }, { value: 'initial-access', label: 'Initial Access' }, { value: 'execution', label: 'Execution' }, { value: 'persistence', label: 'Persistence' }, { value: 'privilege-escalation', label: 'Privilege Escalation' }, { value: 'defense-evasion', label: 'Defense Evasion' }, { value: 'credential-access', label: 'Credential Access' }, { value: 'discovery', label: 'Discovery' }, { value: 'lateral-movement', label: 'Lateral Movement' }, { value: 'collection', label: 'Collection' }, { value: 'command-and-control', label: 'C2' }, { value: 'exfiltration', label: 'Exfiltration' }, { value: 'impact', label: 'Impact' }] },
+  { key: 'technique_id', label: 'ATT&CK Technique', type: 'text', placeholder: 'e.g. T1059' },
+  // Asset context
   { key: 'on_critical_assets', label: 'On Critical Assets', type: 'toggle' },
   { key: 'on_internet_facing', label: 'Internet Exposed', type: 'toggle' },
   { key: 'asset_min_risk', label: 'Asset Risk ≥', type: 'number', placeholder: 'e.g. 7' },
-  { key: 'has_ttps', label: 'Has ATT&CK TTPs', type: 'toggle' },
+  // Workflow & SLA
+  { key: 'workflow_status', label: 'Workflow Status', type: 'select', options: [{ value: '', label: '—' }, { value: 'open', label: 'Open' }, { value: 'in_progress', label: 'In Progress' }, { value: 'resolved', label: 'Resolved' }, { value: 'accepted_risk', label: 'Accepted Risk' }, { value: 'false_positive', label: 'False Positive' }, { value: 'compensating_control', label: 'Compensating Control' }] },
+  { key: 'vulnerability_state', label: 'Vulnerability State', type: 'select', options: [{ value: '', label: '—' }, { value: 'Active', label: 'Active' }, { value: 'New', label: 'New' }, { value: 'Resurfaced', label: 'Resurfaced' }, { value: 'Fixed', label: 'Fixed' }] },
   { key: 'sla_status', label: 'SLA Status', type: 'select', options: [{ value: '', label: '—' }, { value: 'breached', label: 'Breached' }, { value: 'at_risk', label: 'At Risk' }, { value: 'on_track', label: 'On Track' }] },
+  { key: 'is_regression', label: 'Is Regression', type: 'toggle' },
+  { key: 'has_exception', label: 'Has Exception', type: 'toggle' },
+  // Effort & ownership
   { key: 'effort_level', label: 'Effort', type: 'select', options: [{ value: '', label: '—' }, { value: 'quick_win', label: 'Quick Win' }, { value: 'medium', label: 'Medium' }, { value: 'complex', label: 'Complex' }] },
+  { key: 'owner_suggestion', label: 'Owner', type: 'select', options: [{ value: '', label: '—' }, { value: 'IT', label: 'IT' }, { value: 'DevOps', label: 'DevOps' }, { value: 'SecOps', label: 'SecOps' }, { value: 'AppSec', label: 'AppSec' }] },
+  // Plugin details
   { key: 'plugin_family', label: 'Plugin Family', type: 'text', placeholder: 'e.g. Windows' },
+  { key: 'plugin_name', label: 'Plugin Name Contains', type: 'text', placeholder: 'e.g. SSL' },
+  { key: 'port', label: 'Port =', type: 'number', placeholder: 'e.g. 443' },
+  { key: 'protocol', label: 'Protocol', type: 'select', options: [{ value: '', label: '—' }, { value: 'tcp', label: 'TCP' }, { value: 'udp', label: 'UDP' }] },
+  { key: 'cve', label: 'CVE Contains', type: 'text', placeholder: 'e.g. CVE-2021-44228' },
+  { key: 'risk_factor', label: 'Risk Factor', type: 'select', options: [{ value: '', label: '—' }, { value: 'Critical', label: 'Critical' }, { value: 'High', label: 'High' }, { value: 'Medium', label: 'Medium' }, { value: 'Low', label: 'Low' }, { value: 'None', label: 'None' }] },
   { key: 'search', label: 'Keyword', type: 'text', placeholder: 'Search...' },
 ]
 
 const FUNNEL_ASSET_FILTERS = [
+  // Asset properties
   { key: 'criticality', label: 'Criticality ≥', type: 'number', placeholder: 'e.g. 8' },
   { key: 'min_risk', label: 'Risk Score ≥', type: 'number', placeholder: 'e.g. 7' },
+  { key: 'os', label: 'OS Contains', type: 'text', placeholder: 'e.g. Windows Server' },
+  { key: 'environment', label: 'Environment', type: 'select', options: [{ value: '', label: '—' }, { value: 'external', label: 'External' }, { value: 'internet', label: 'Internet' }, { value: 'dmz', label: 'DMZ' }, { value: 'internal', label: 'Internal' }, { value: 'cloud', label: 'Cloud' }, { value: 'ot', label: 'OT' }] },
+  // Exposure & role
   { key: 'is_internet_facing', label: 'Internet Facing', type: 'toggle' },
+  { key: 'is_domain_controller', label: 'Is Domain Controller', type: 'toggle' },
+  { key: 'is_database_server', label: 'Is Database Server', type: 'toggle' },
+  { key: 'is_web_server', label: 'Is Web Server', type: 'toggle' },
+  { key: 'is_dns_server', label: 'Is DNS Server', type: 'toggle' },
+  { key: 'is_mail_server', label: 'Is Mail Server', type: 'toggle' },
+  // Severity counts
   { key: 'min_critical', label: 'Critical Findings ≥', type: 'number', placeholder: 'e.g. 1' },
   { key: 'min_high', label: 'High Findings ≥', type: 'number', placeholder: 'e.g. 1' },
+  { key: 'min_medium', label: 'Medium Findings ≥', type: 'number', placeholder: 'e.g. 5' },
   { key: 'has_findings', label: 'Has Any Findings', type: 'toggle' },
+  // Finding-based
   { key: 'has_critical_cves', label: 'Has Critical CVEs', type: 'toggle' },
   { key: 'has_kev_findings', label: 'Has KEV Findings', type: 'toggle' },
   { key: 'has_exploitable', label: 'Has Exploitable Vulns', type: 'toggle' },
+  { key: 'has_ransomware_findings', label: 'Has Ransomware-Linked Findings', type: 'toggle' },
+  // Identity & access
   { key: 'has_domain_admin_logged_on', label: 'Domain Admin Logged In', type: 'toggle' },
+  { key: 'has_privileged_user', label: 'Privileged User Logged In', type: 'toggle' },
+  { key: 'has_kerberoastable', label: 'Kerberoastable User Present', type: 'toggle' },
+  { key: 'has_writeable_share', label: 'Has Writeable Share', type: 'toggle' },
+  // Security controls
   { key: 'lacks_security_controls', label: 'No Security Controls', type: 'toggle' },
   { key: 'lacks_av', label: 'No Antivirus', type: 'toggle' },
   { key: 'lacks_edr', label: 'No EDR', type: 'toggle' },
-  { key: 'environment', label: 'Environment', type: 'text', placeholder: 'e.g. production' },
+  { key: 'lacks_firewall', label: 'No Firewall', type: 'toggle' },
   { key: 'search', label: 'Keyword', type: 'text', placeholder: 'Hostname, IP...' },
 ]
 
@@ -1437,46 +1709,56 @@ function FunnelConfigPanel({ cfg, set, Field, Select, TextInput }) {
 
 // ─── Widget config panel ──────────────────────────────────────────────────────
 
+const CfgField = ({ label, children }) => (
+  <div style={{ marginBottom: 14 }}>
+    <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{label}</div>
+    {children}
+  </div>
+)
+const CfgSelect = ({ value, onChange, options }) => (
+  <select value={value || ''} onChange={e => onChange(e.target.value)}
+    style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13 }}>
+    {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+  </select>
+)
+const CfgTextInput = ({ value, onChange, placeholder }) => (
+  <input value={value || ''} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+    style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13, boxSizing: 'border-box' }} />
+)
+const CfgToggle = ({ checked, onChange, label }) => (
+  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+    <input type="checkbox" checked={!!checked} onChange={e => onChange(e.target.checked)} />
+    {label}
+  </label>
+)
+
 function ConfigPanel({ widget, onUpdate, onClose }) {
   const cfg = widget.config || {}
   const set = (key, val) => onUpdate({ ...widget, config: { ...cfg, [key]: val } })
   const setTitle = (t) => onUpdate({ ...widget, title: t })
   const setWidth = (w) => onUpdate({ ...widget, width: w })
 
-  const Field = ({ label, children }) => (
-    <div style={{ marginBottom: 14 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{label}</div>
-      {children}
-    </div>
-  )
-  const Select = ({ value, onChange, options }) => (
-    <select value={value || ''} onChange={e => onChange(e.target.value)}
-      style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13 }}>
-      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
-  )
-  const TextInput = ({ value, onChange, placeholder }) => (
-    <input value={value || ''} onChange={e => onChange(e.target.value)} placeholder={placeholder}
-      style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13, boxSizing: 'border-box' }} />
-  )
-  const Toggle = ({ checked, onChange, label }) => (
-    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
-      <input type="checkbox" checked={!!checked} onChange={e => onChange(e.target.checked)} />
-      {label}
-    </label>
-  )
+  const Field = CfgField
+  const Select = CfgSelect
+  const TextInput = CfgTextInput
+  const Toggle = CfgToggle
+
+  // Determine if this is a series-type (time series) chart
+  const isSeriesChart = widget.type === 'line_chart' || (widget.type === 'bar_chart' && (cfg.preset === 'custom_series' || DATA_PRESETS[cfg.preset]?.type === 'series'))
+  const isCustomSeries = cfg.preset === 'custom_series'
 
   const presetType = widget.type === 'card' ? 'metric'
     : widget.type === 'pie_chart' ? 'categories'
     : widget.type === 'bar_chart' ? null // categories or series
     : widget.type === 'line_chart' ? 'series'
     : widget.type === 'table' ? 'table'
+    : widget.type === 'risk_grade' ? 'grade'
     : null
 
   const compatiblePresets = presetType
-    ? Object.entries(DATA_PRESETS).filter(([, p]) => p.type === presetType)
+    ? Object.entries(DATA_PRESETS).filter(([, p]) => p.type === presetType && !p.dynamic)
     : widget.type === 'bar_chart'
-      ? Object.entries(DATA_PRESETS).filter(([, p]) => p.type === 'categories' || p.type === 'series')
+      ? Object.entries(DATA_PRESETS).filter(([, p]) => (p.type === 'categories' || p.type === 'series') && !p.dynamic)
       : []
 
   const presetOptions = (() => {
@@ -1496,7 +1778,10 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
     return result
   })()
 
-  const isDataWidget = ['card', 'pie_chart', 'bar_chart', 'line_chart', 'table'].includes(widget.type)
+  const isDataWidget = ['card', 'pie_chart', 'bar_chart', 'line_chart', 'table', 'risk_grade'].includes(widget.type)
+
+  // For line/bar charts: determine if user wants custom time-series or a fixed preset
+  const showSeriesBuilder = (widget.type === 'line_chart' || widget.type === 'bar_chart') && isCustomSeries
 
   return (
     <div style={{ width: 260, flexShrink: 0, background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', padding: 16, overflowY: 'auto' }}>
@@ -1516,13 +1801,88 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
         <Select value={widget.width} onChange={setWidth} options={WIDTH_OPTIONS} />
       </Field>
 
-      {isDataWidget && presetOptions.length > 0 && (
+      {/* For line_chart and bar_chart: show mode selector (Custom Time Series vs preset) */}
+      {(widget.type === 'line_chart' || widget.type === 'bar_chart') && (
+        <Field label="Data Source">
+          <select
+            value={isCustomSeries ? 'custom_series' : 'preset'}
+            onChange={e => {
+              if (e.target.value === 'custom_series') {
+                set('preset', 'custom_series')
+              } else {
+                // Switch back to first compatible preset
+                const first = compatiblePresets[0]
+                if (first) set('preset', first[0])
+              }
+            }}
+            style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13 }}
+          >
+            <option value="custom_series">Custom Time Series</option>
+            <option value="preset">Fixed Preset</option>
+          </select>
+        </Field>
+      )}
+
+      {/* Fixed preset dropdown — shown for non-chart widgets, or chart widgets in preset mode */}
+      {isDataWidget && presetOptions.length > 0 && !showSeriesBuilder && !(widget.type === 'line_chart' && isCustomSeries) && (
         <Field label="Data Preset">
           <select value={cfg.preset || ''} onChange={e => set('preset', e.target.value)}
             style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13 }}>
             {presetOptions.map(o => <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>)}
           </select>
         </Field>
+      )}
+
+      {/* ── Custom Time Series: X / Y axis selectors ── */}
+      {showSeriesBuilder && (
+        <>
+          <Field label="X Axis (Time)">
+            <Select value={cfg.time_group || 'scan'} onChange={v => set('time_group', v)} options={TIME_GROUP_OPTIONS} />
+          </Field>
+
+          <Field label="Y Axis">
+            <select
+              value=""
+              onChange={e => {
+                if (!e.target.value) return
+                const current = cfg.metrics || []
+                if (!current.includes(e.target.value)) set('metrics', [...current, e.target.value])
+              }}
+              style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13 }}
+            >
+              <option value="">+ Add metric...</option>
+              {SERIES_METRIC_GROUPS.map(group => (
+                <optgroup key={group} label={group}>
+                  {SERIES_METRICS.filter(m => m.group === group && !(cfg.metrics || []).includes(m.id)).map(m => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </Field>
+
+          {(cfg.metrics || []).length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+              {(cfg.metrics || []).map(id => {
+                const m = SERIES_METRIC_MAP[id]
+                if (!m) return null
+                return (
+                  <span key={id} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 8px',
+                    background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 11,
+                  }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 2, background: m.color, flexShrink: 0 }} />
+                    <span style={{ color: 'var(--text-primary)' }}>{m.label}</span>
+                    <button
+                      onClick={() => set('metrics', (cfg.metrics || []).filter(x => x !== id))}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 0, lineHeight: 1, fontSize: 13 }}
+                    >&times;</button>
+                  </span>
+                )
+              })}
+            </div>
+          )}
+        </>
       )}
 
       {widget.type === 'card' && (
@@ -1542,7 +1902,7 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
           <Field label="Horizontal">
             <Toggle checked={cfg.horizontal} onChange={v => set('horizontal', v)} label="Horizontal layout" />
           </Field>
-          {DATA_PRESETS[cfg.preset]?.type === 'series' && (
+          {isSeriesChart && (
             <Field label="Stacked">
               <Toggle checked={cfg.stacked} onChange={v => set('stacked', v)} label="Stack bars" />
             </Field>
@@ -2473,7 +2833,7 @@ export default function ReportBuilder() {
       let needsReload = false
 
       // Ensure default dashboards exist and stay up-to-date
-      const ootb = [DEFAULT_DASHBOARD, EXECUTIVE_DASHBOARD]
+      const ootb = [DEFAULT_DASHBOARD, EXECUTIVE_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD]
       for (const dash of ootb) {
         const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}`).join('|')
         const existing = templates.find(t => t.name === dash.name)

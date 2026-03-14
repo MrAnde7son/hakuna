@@ -195,6 +195,14 @@ export const getSummary = (scanId, tags, tagLogic) => {
   const qs = p.toString()
   return request(`/reports/summary${qs ? `?${qs}` : ''}`)
 }
+export const getRiskGrade = (scanId, tags, tagLogic) => {
+  const p = new URLSearchParams()
+  if (scanId) p.set('scan_id', scanId)
+  if (tags) p.set('tags', tags)
+  if (tagLogic && tagLogic !== 'AND') p.set('tag_logic', tagLogic)
+  const qs = p.toString()
+  return request(`/reports/risk-grade${qs ? `?${qs}` : ''}`)
+}
 export const getPluginFamilies = (scanId, tags, tagLogic) => {
   const p = new URLSearchParams()
   if (scanId) p.set('scan_id', scanId)
@@ -223,6 +231,7 @@ const _inv = (path, params = {}) => {
 }
 export const getInventorySummary = (scanId) => _inv('summary', { scan_id: scanId })
 export const getInventoryUsers = (params) => _inv('users', params)
+export const getInventoryUserOrgTree = (params) => _inv('users/org-tree', params)
 export const getInventoryGroups = (params) => _inv('groups', params)
 export const getInventoryServices = (params) => _inv('services', params)
 export const getInventoryNetconns = (params) => _inv('netconns', params)

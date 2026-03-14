@@ -13,6 +13,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import or_
+
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent.parent / "config" / "dedup_config.json"
@@ -23,7 +25,7 @@ CONFIG_PATH = Path(__file__).parent.parent / "config" / "dedup_config.json"
 
 KEY_FIELD_OPTIONS: dict[str, list[str]] = {
     "assets": ["ip", "hostname", "fqdn", "netbios_name"],
-    "findings": ["plugin_id", "asset_id", "port", "protocol"],
+    "findings": ["plugin_id", "asset_id", "port", "protocol", "cve"],
     "users": ["username", "domain", "sid"],
     "groups": ["group_name", "domain", "sid"],
     "computers": ["computer_name", "sid", "dns_hostname"],
@@ -183,15 +185,45 @@ def save_config(cfg: dict) -> None:
 # Core dedup logic
 # ─────────────────────────────────────────────
 
-def _make_key(record: dict, key_fields: list[str]) -> tuple | None:
-    """Build a hashable key from selected fields. Returns None if any key field is missing/None."""
-    parts = []
+# Fields that expand into per-element matching (list field → singular config name)
+_LIST_EXPAND_FIELDS: dict[str, str] = {
+    "cve": "cves",  # key_field "cve" expands each element of the "cves" list column
+}
+
+
+def _make_keys(record: dict, key_fields: list[str]) -> list[tuple]:
+    """Build hashable key(s) from selected fields.
+
+    Each non-null scalar key field produces its own key so that records
+    matching on *any* field are considered duplicates (OR-style).  This means
+    (ip=10.0.0.1, fqdn=None) will still match (ip=10.0.0.1, fqdn="dc1.lab")
+    via the shared ip key.
+
+    List-expand fields (e.g. "cve" → "cves") produce one key per element.
+    Returns [] only if ALL key fields are missing/None.
+    """
+    keys: list[tuple] = []
+
     for field in key_fields:
-        val = record.get(field)
-        if val is None or val == "":
-            return None
-        parts.append(str(val))
-    return tuple(parts)
+        col_name = _LIST_EXPAND_FIELDS.get(field)
+        if col_name:
+            # List-expand field: read the actual list column
+            vals = record.get(col_name)
+            if vals and isinstance(vals, list):
+                for v in vals:
+                    keys.append((field, str(v)))
+        else:
+            val = record.get(field)
+            if val is not None and val != "":
+                keys.append((field, str(val)))
+
+    return keys
+
+
+def _is_ip_like(val: str) -> bool:
+    """Check if a string looks like an IP address."""
+    import re
+    return bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", val))
 
 
 def _merge_dicts(first: dict, second: dict) -> dict:
@@ -199,7 +231,8 @@ def _merge_dicts(first: dict, second: dict) -> dict:
     Merge two records using the merge strategy:
       - list fields → union (deduplicated)
       - bool fields → OR
-      - scalar fields → first non-null value wins
+      - scalar fields → first non-null value wins, but prefer
+        richer values (e.g. real hostname over IP-as-hostname)
     """
     result = dict(first)
     for k, v in second.items():
@@ -218,6 +251,10 @@ def _merge_dicts(first: dict, second: dict) -> dict:
             result[k] = merged_list
         elif isinstance(existing, bool) and isinstance(v, bool):
             result[k] = existing or v
+        elif k == "hostname" and isinstance(existing, str) and isinstance(v, str):
+            # Prefer a real hostname over an IP-as-hostname
+            if _is_ip_like(existing) and not _is_ip_like(v):
+                result[k] = v
         # else: first non-null wins (already set)
     return result
 
@@ -233,22 +270,49 @@ def dedup_records(records: list[dict], key_fields: list[str], strategy: str) -> 
 
     seen: dict[tuple, dict] = {}  # key → record
     no_key: list[dict] = []       # records with None key (always kept)
+    kept: dict[int, dict] = {}    # id(rec) → rec, to avoid adding duplicates to result
 
     for rec in records:
-        key = _make_key(rec, key_fields)
-        if key is None:
+        keys = _make_keys(rec, key_fields)
+        if not keys:
             no_key.append(rec)
             continue
 
-        if key not in seen:
-            seen[key] = rec
-        elif strategy == "keep_last":
-            seen[key] = rec
-        elif strategy == "merge":
-            seen[key] = _merge_dicts(seen[key], rec)
-        # keep_first: do nothing
+        # Check if any key already maps to an existing record
+        existing = None
+        for k in keys:
+            if k in seen:
+                existing = seen[k]
+                break
 
-    return list(seen.values()) + no_key
+        if existing is None:
+            # New record — register all its keys
+            for k in keys:
+                seen[k] = rec
+            kept[id(rec)] = rec
+        else:
+            # Duplicate — apply strategy
+            if strategy == "keep_last":
+                # Replace: point all old keys to new rec, add new keys
+                for k in keys:
+                    seen[k] = rec
+                # Remove old from kept, add new
+                kept.pop(id(existing), None)
+                kept[id(rec)] = rec
+            elif strategy == "merge":
+                merged = _merge_dicts(existing, rec)
+                # Update all keys (old + new) to point to merged
+                for k in keys:
+                    seen[k] = merged
+                # Also update any keys that pointed to existing
+                for k, v in seen.items():
+                    if v is existing:
+                        seen[k] = merged
+                kept.pop(id(existing), None)
+                kept[id(merged)] = merged
+            # keep_first: do nothing
+
+    return list(kept.values()) + no_key
 
 
 def dedup_inventory(inventory: dict, cfg: dict) -> dict:
@@ -334,18 +398,39 @@ def _merge_model_row(existing, incoming, strategy: str, list_fields: set[str], b
                 setattr(existing, attr, old_val or new_val)
             elif old_val is None and new_val is not None:
                 setattr(existing, attr, new_val)
+            elif attr == "hostname" and isinstance(old_val, str) and isinstance(new_val, str):
+                # Prefer a real hostname over an IP-as-hostname
+                if _is_ip_like(old_val) and not _is_ip_like(new_val):
+                    setattr(existing, attr, new_val)
 
 
 def _reassign_asset_children(db, old_asset_id: int, new_asset_id: int, ENTITY_MODEL_MAP: dict) -> None:
     """
     Before deleting a duplicate asset, reassign all its child records
-    (findings + all inventory types) to the surviving asset.
+    (findings + all inventory types + ownership) to the surviving asset.
     This prevents cascade-deletion of findings and inventory orphaning.
     """
-    from models.models import Finding
+    from models.models import Finding, AssetOwnership, TagAssignment
     db.query(Finding).filter(Finding.asset_id == old_asset_id).update(
         {"asset_id": new_asset_id}, synchronize_session=False
     )
+    # Reassign or delete ownership records (unique constraint on asset_id)
+    if db.query(AssetOwnership).filter(AssetOwnership.asset_id == new_asset_id).first():
+        db.query(AssetOwnership).filter(AssetOwnership.asset_id == old_asset_id).delete(synchronize_session=False)
+    else:
+        db.query(AssetOwnership).filter(AssetOwnership.asset_id == old_asset_id).update(
+            {"asset_id": new_asset_id}, synchronize_session=False
+        )
+    # Reassign tag assignments (delete dupes to avoid unique violations)
+    existing_tags = {
+        ta.tag_id for ta in
+        db.query(TagAssignment).filter(TagAssignment.asset_id == new_asset_id).all()
+    }
+    for ta in db.query(TagAssignment).filter(TagAssignment.asset_id == old_asset_id).all():
+        if ta.tag_id in existing_tags:
+            db.delete(ta)
+        else:
+            ta.asset_id = new_asset_id
     for entity_type, (Model, _, _) in ENTITY_MODEL_MAP.items():
         if entity_type in ("assets", "findings"):
             continue
@@ -388,7 +473,8 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
         .order_by(Scan.id.asc(), Asset.id.asc())
     )
     if org_id is not None:
-        q = q.filter(Scan.org_id == org_id)
+        # Include scans with matching org_id AND scans with no org (dev/legacy uploads)
+        q = q.filter(or_(Scan.org_id == org_id, Scan.org_id.is_(None)))
 
     rows = q.all()  # list of (Asset, scan_org_id)
 
@@ -397,38 +483,52 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
     to_delete: list[tuple] = []  # (old_asset, survivor_asset)
 
     for asset, scan_org_id in rows:
-        # Namespace by org so different orgs with the same IP never collide
-        key_parts = [str(scan_org_id if scan_org_id is not None else 0)]
-        skip = False
+        # Build OR-style keys: one per non-null key field, namespaced by org.
+        # When caller passes org_id, use it as the namespace (treats None-org scans as same).
+        # When caller passes org_id=None (dev/no-auth), treat all scans as same org.
+        effective_org = str(org_id) if org_id is not None else "0"
+        asset_keys = []
         for field in key_fields:
             val = getattr(asset, field, None)
-            if val is None or val == "":
-                skip = True
-                break
-            key_parts.append(str(val))
-        if skip:
+            if val is not None and val != "":
+                asset_keys.append((effective_org, field, str(val)))
+        if not asset_keys:
             continue
 
-        group_key = tuple(key_parts)
+        # Check if any key matches an existing survivor
+        existing = None
+        for k in asset_keys:
+            if k in seen:
+                existing = seen[k]
+                break
 
-        if group_key not in seen:
-            seen[group_key] = asset
+        if existing is None:
+            # New asset — register all its keys
+            for k in asset_keys:
+                seen[k] = asset
         else:
-            old_survivor = seen[group_key]
-            # Current asset is from a later scan (ASC order) → it becomes the new survivor
+            # Duplicate — apply strategy
             if strategy == "keep_first":
-                # Keep the oldest asset; mark the newer one for deletion
-                to_delete.append((asset, old_survivor))
-                # seen[group_key] stays as old_survivor
+                to_delete.append((asset, existing))
+                # Point new keys to existing survivor too
+                for k in asset_keys:
+                    seen[k] = existing
             elif strategy == "keep_last":
-                # New asset wins; old asset is discarded
-                to_delete.append((old_survivor, asset))
-                seen[group_key] = asset
+                to_delete.append((existing, asset))
+                # Re-point all keys that referenced old survivor to new one
+                for k, v in list(seen.items()):
+                    if v is existing:
+                        seen[k] = asset
+                for k in asset_keys:
+                    seen[k] = asset
             else:  # merge
-                # Fill gaps in new asset from old asset (list union, bool OR, null fallback)
-                _merge_model_row(asset, old_survivor, "merge", list_fields, bool_fields)
-                to_delete.append((old_survivor, asset))
-                seen[group_key] = asset
+                _merge_model_row(asset, existing, "merge", list_fields, bool_fields)
+                to_delete.append((existing, asset))
+                for k, v in list(seen.items()):
+                    if v is existing:
+                        seen[k] = asset
+                for k in asset_keys:
+                    seen[k] = asset
 
     removed = len(to_delete)
     for old_asset, survivor in to_delete:
@@ -488,26 +588,47 @@ def run_db_dedup(db, entity_type: str, scan_id: int | None, cfg: dict, ENTITY_MO
     to_delete: list[tuple] = []       # (duplicate_row, survivor_row)
 
     for row in rows:
-        key_parts = []
+        # Build key(s) — list-expand fields produce multiple keys per row
+        scalar_parts = []
+        expand_values = None
         skip = False
         for field in key_fields:
-            val = getattr(row, field, None)
-            if val is None or val == "":
-                skip = True
-                break
-            key_parts.append(str(val))
+            col_name = _LIST_EXPAND_FIELDS.get(field)
+            if col_name:
+                vals = getattr(row, col_name, None)
+                if not vals or not isinstance(vals, list):
+                    skip = True
+                    break
+                expand_values = [str(v) for v in vals]
+            else:
+                val = getattr(row, field, None)
+                if val is None or val == "":
+                    skip = True
+                    break
+                scalar_parts.append(str(val))
         if skip:
             continue
-        key = tuple(key_parts)
 
-        if key not in seen:
-            seen[key] = row
+        keys = [tuple(scalar_parts + [ev]) for ev in expand_values] if expand_values else [tuple(scalar_parts)]
+
+        # Check if any key matches an existing survivor
+        existing = None
+        for k in keys:
+            if k in seen:
+                existing = seen[k]
+                break
+
+        if existing is None:
+            for k in keys:
+                seen[k] = row
         else:
-            existing = seen[key]
             if strategy == "merge":
                 _merge_model_row(existing, row, strategy, set(list_fields), set(bool_fields))
             elif strategy == "keep_last":
                 _merge_model_row(existing, row, strategy, set(list_fields), set(bool_fields))
+            # Point all new keys to the survivor too
+            for k in keys:
+                seen[k] = existing
             to_delete.append((row, existing))
 
     removed = len(to_delete)

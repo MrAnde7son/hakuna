@@ -65,59 +65,61 @@ function scoreLabel(s) {
 function layoutNodes(rawNodes, rawEdges) {
   const g = new dagre.graphlib.Graph()
   g.setDefaultEdgeLabel(() => ({}))
-  g.setGraph({ rankdir: 'LR', ranksep: 180, nodesep: 50, marginx: 16, marginy: 16 })
-  rawNodes.forEach(n => g.setNode(n.id, { width: 180, height: 72 }))
+  g.setGraph({ rankdir: 'LR', ranksep: 160, nodesep: 60, marginx: 16, marginy: 16 })
+  rawNodes.forEach(n => g.setNode(n.id, { width: 120, height: 100 }))
   rawEdges.forEach(e => { try { g.setEdge(e.source, e.target) } catch (_) {} })
   dagre.layout(g)
   return rawNodes.map(n => {
     const pos = g.node(n.id)
-    return { ...n, position: { x: (pos?.x ?? 0) - 90, y: (pos?.y ?? 0) - 36 } }
+    return { ...n, position: { x: (pos?.x ?? 0) - 60, y: (pos?.y ?? 0) - 50 } }
   })
 }
 
-// ── Custom Nodes ──────────────────────────────────────────────────────────
+// ── Custom Nodes (circular icon style) ────────────────────────────────────
+const CIRCLE_SIZE = 44
+const handleStyle = { background: 'transparent', border: 'none', width: 1, height: 1 }
+
 function AssetNode({ data }) {
   const isStart = data._start
   const riskPct = Math.min((data.risk_score || 0) * 10, 100)
-  const riskColor = riskPct > 70 ? 'var(--critical)' : riskPct > 50 ? 'var(--warning)' : 'var(--success)'
+  const riskColor = riskPct > 70 ? '#ef4444' : riskPct > 50 ? '#f59e0b' : '#22c55e'
 
-  const bg = isStart ? 'var(--success-subtle)' : data.is_dc ? 'var(--warning-subtle)' : 'var(--card)'
-  const borderColor = isStart ? 'var(--success)' : data.is_dc ? 'var(--high)' : 'var(--border)'
-  const iconColor = isStart ? 'var(--success)' : data.is_dc ? 'var(--high)' : 'var(--text-secondary)'
-  const shadow = isStart ? '0 0 0 3px rgba(34,197,94,0.15), 0 2px 8px rgba(0,0,0,0.08)'
-    : '0 1px 4px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.04)'
+  const color = isStart ? '#22c55e' : data.is_dc ? '#ea580c' : '#64748b'
   const AssetIcon = data.is_dc ? Database : Server
 
   return (
-    <div style={{
-      background: bg, border: `2px solid ${borderColor}`,
-      borderRadius: 8, padding: '6px 10px', minWidth: 160, maxWidth: 180,
-      boxShadow: shadow,
-    }}>
-      <Handle type="target" position={Position.Left} style={{ background: '#94a3b8', width: 7, height: 7, border: '1.5px solid #fff' }} />
-      <Handle type="source" position={Position.Right} style={{ background: '#94a3b8', width: 7, height: 7, border: '1.5px solid #fff' }} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-        <div style={{
-          width: 22, height: 22, borderRadius: 5, background: iconColor + '18',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-        }}>
-          <AssetIcon size={13} color={iconColor} />
-        </div>
-        {isStart && <NBadge bg="var(--success-subtle)" fg="var(--success)" border="var(--success)">START</NBadge>}
-        {data.is_dc && <NBadge bg="var(--warning-subtle)" fg="var(--high)" border="var(--high)">DC</NBadge>}
-        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', flex: 1,
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 80 }}>
+      <Handle type="target" position={Position.Left} style={{ ...handleStyle, top: CIRCLE_SIZE / 2 }} />
+      <Handle type="source" position={Position.Right} style={{ ...handleStyle, top: CIRCLE_SIZE / 2 }} />
+      {/* Circle */}
+      <div style={{
+        width: CIRCLE_SIZE, height: CIRCLE_SIZE, borderRadius: '50%',
+        background: color, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: isStart
+          ? `0 0 0 4px ${color}30, 0 2px 8px rgba(0,0,0,0.15)`
+          : '0 2px 8px rgba(0,0,0,0.12)',
+      }}>
+        <AssetIcon size={20} color="#fff" strokeWidth={2} />
+      </div>
+      {/* Risk ring */}
+      <div style={{ width: CIRCLE_SIZE - 4, height: 3, background: '#e2e8f0', borderRadius: 99, marginTop: -2 }}>
+        <div style={{ width: `${riskPct}%`, height: '100%', background: riskColor, borderRadius: 99 }} />
+      </div>
+      {/* Label */}
+      <div style={{ textAlign: 'center', lineHeight: 1.2 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', maxWidth: 120,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {data.label}
-        </span>
+        </div>
       </div>
-      <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 4 }}>
+      {/* Badges */}
+      <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'center' }}>
+        {isStart && <NBadge bg="#22c55e18" fg="#22c55e" border="#22c55e">START</NBadge>}
+        {data.is_dc && <NBadge bg="#ea580c18" fg="#ea580c" border="#ea580c">DC</NBadge>}
         {data.critical_count > 0 && <NBadge bg="var(--danger-subtle)" fg="var(--danger)" border="var(--danger)">{data.critical_count}C</NBadge>}
         {data.high_count > 0 && <NBadge bg="var(--warning-subtle)" fg="var(--warning)" border="var(--warning)">{data.high_count}H</NBadge>}
         {!data.has_av && <NBadge bg="var(--danger-subtle)" fg="var(--danger)" border="var(--danger)">NoAV</NBadge>}
         {data.has_writeable_share && <NBadge bg="rgba(37,99,235,0.1)" fg="var(--primary)" border="var(--primary)">Share</NBadge>}
-      </div>
-      <div style={{ height: 3, background: 'var(--border)', borderRadius: 99 }}>
-        <div style={{ width: `${riskPct}%`, height: '100%', background: riskColor, borderRadius: 99 }} />
       </div>
     </div>
   )
@@ -133,42 +135,40 @@ const USER_TYPE_CFG = {
 }
 
 function UserNode({ data }) {
-  const bc = data.is_domain_admin ? 'var(--danger)'
-    : data.kerberoastable ? '#a855f7'
-    : data.is_local_admin ? 'var(--warning)'
-    : 'var(--primary)'
-  const bg = data.is_domain_admin ? 'var(--danger-subtle)'
-    : data.kerberoastable ? 'rgba(168,85,247,0.08)'
-    : data.is_local_admin ? 'var(--warning-subtle)'
-    : 'var(--card)'
-
   const typeCfg = USER_TYPE_CFG[data.user_type] || USER_TYPE_CFG.domain_user
-  const { Icon, iconColor, iconBg } = typeCfg
+  const { Icon } = typeCfg
+
+  const color = data.is_domain_admin ? '#ef4444'
+    : data.kerberoastable ? '#a855f7'
+    : data.is_local_admin ? '#f59e0b'
+    : typeCfg.iconColor
 
   return (
-    <div style={{
-      background: bg, border: `2px solid ${bc}`,
-      borderRadius: 8, padding: '6px 10px', minWidth: 140, maxWidth: 170,
-      boxShadow: '0 1px 4px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.04)',
-    }}>
-      <Handle type="target" position={Position.Left} style={{ background: '#94a3b8', width: 7, height: 7, border: '1.5px solid #fff' }} />
-      <Handle type="source" position={Position.Right} style={{ background: '#94a3b8', width: 7, height: 7, border: '1.5px solid #fff' }} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-        <div style={{
-          width: 22, height: 22, borderRadius: 5, background: iconBg,
-          border: `1px solid ${iconColor}33`,
-          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-        }}>
-          <Icon size={13} color={iconColor} />
-        </div>
-        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', flex: 1,
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 80 }}>
+      <Handle type="target" position={Position.Left} style={{ ...handleStyle, top: CIRCLE_SIZE / 2 }} />
+      <Handle type="source" position={Position.Right} style={{ ...handleStyle, top: CIRCLE_SIZE / 2 }} />
+      {/* Circle */}
+      <div style={{
+        width: CIRCLE_SIZE, height: CIRCLE_SIZE, borderRadius: '50%',
+        background: color, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: data.is_domain_admin
+          ? `0 0 0 4px ${color}30, 0 2px 8px rgba(0,0,0,0.15)`
+          : '0 2px 8px rgba(0,0,0,0.12)',
+      }}>
+        <Icon size={20} color="#fff" strokeWidth={2} />
+      </div>
+      {/* Label */}
+      <div style={{ textAlign: 'center', lineHeight: 1.2 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', maxWidth: 120,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {data.label}
-        </span>
+        </div>
+        <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{typeCfg.label}</div>
       </div>
-      <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-        {data.is_domain_admin && <NBadge bg="var(--danger-subtle)" fg="var(--danger)" border="var(--danger)">DA</NBadge>}
-        {data.is_local_admin && !data.is_domain_admin && <NBadge bg="var(--warning-subtle)" fg="var(--warning)" border="var(--warning)">LA</NBadge>}
+      {/* Badges */}
+      <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'center' }}>
+        {data.is_domain_admin && <NBadge bg="#ef444418" fg="#ef4444" border="#ef4444">DA</NBadge>}
+        {data.is_local_admin && !data.is_domain_admin && <NBadge bg="#f59e0b18" fg="#f59e0b" border="#f59e0b">LA</NBadge>}
         {data.kerberoastable && <NBadge bg="rgba(168,85,247,0.1)" fg="#a855f7" border="#a855f7">Kerb</NBadge>}
         {data.password_never_expires && <NBadge bg="var(--secondary)" fg="var(--text-secondary)" border="var(--border)">PNE</NBadge>}
         {data.user_type === 'service_account' && <NBadge bg="rgba(37,99,235,0.1)" fg="var(--primary)" border="var(--primary)">SVC</NBadge>}
@@ -355,7 +355,7 @@ function BlastRadiusFlow({ data }) {
       fitViewOptions={{ padding: 0.15 }}
       colorMode="light"
       proOptions={{ hideAttribution: true }}
-      nodesDraggable={false}
+      nodesDraggable={true}
       nodesConnectable={false}
       elementsSelectable={true}
     >
@@ -389,12 +389,11 @@ function BlastRadiusFlow({ data }) {
                 borderRadius: 4, padding: '2px 4px', cursor: 'pointer', textAlign: 'left',
               }}>
                 <div style={{
-                  width: 18, height: 18, borderRadius: 4,
-                  background: active ? bg : bg,
-                  border: `1px solid ${color}33`,
+                  width: 18, height: 18, borderRadius: '50%',
+                  background: color,
                   display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                 }}>
-                  <Icon size={11} color={color} />
+                  <Icon size={10} color="#fff" strokeWidth={2.5} />
                 </div>
                 <span style={{ color: active ? color : '#475569', fontWeight: active ? 700 : 400 }}>{label}</span>
               </button>
@@ -457,6 +456,55 @@ export function BlastRadiusScore({ score, reachable, daExposed, dcReachable, onC
       {daExposed && <span style={{ fontSize: 9, background: '#dc2626', color: '#fff', padding: '1px 4px', borderRadius: 3 }}>DA</span>}
       {dcReachable && <span style={{ fontSize: 9, background: '#ea580c', color: '#fff', padding: '1px 4px', borderRadius: 3 }}>DC</span>}
     </button>
+  )
+}
+
+// ── Attack Vectors (collapsible) ──────────────────────────────────────────
+function AttackVectorsSection({ vectors, hasData }) {
+  const [expanded, setExpanded] = useState(false)
+  const count = vectors.length
+  return (
+    <div style={{ padding: '12px 16px', borderBottom: hasData ? '1px solid var(--border)' : 'none' }}>
+      <div
+        onClick={() => setExpanded(e => !e)}
+        style={{
+          fontSize: 11, color: 'var(--text-secondary)', marginBottom: expanded ? 8 : 0,
+          textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600,
+          display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', userSelect: 'none',
+        }}
+      >
+        <span style={{
+          display: 'inline-block', transition: 'transform 0.15s',
+          transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)', fontSize: 10,
+        }}>&#9654;</span>
+        Attack Vectors
+        <span style={{
+          fontSize: 10, color: 'var(--text-muted)', fontWeight: 500, textTransform: 'none',
+          letterSpacing: 'normal',
+        }}>({count})</span>
+      </div>
+      {expanded && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {vectors.map((v, i) => (
+            <div key={i} style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '5px 8px', background: 'var(--bg-secondary)',
+              borderRadius: 6, fontSize: 12,
+            }}>
+              <div style={{
+                width: 7, height: 7, borderRadius: 99, flexShrink: 0,
+                background: SEV_COLOR[v.severity] || '#64748b',
+              }} />
+              <span style={{ color: 'var(--text-secondary)', flex: 1 }}>{v.label}</span>
+              <span style={{
+                fontSize: 10, color: SEV_COLOR[v.severity] || '#64748b',
+                textTransform: 'capitalize',
+              }}>{v.severity}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -574,31 +622,7 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
 
           {/* Attack vectors */}
           {data.vectors?.length > 0 && (
-            <div style={{ padding: '12px 16px', borderBottom: hasData ? '1px solid var(--border)' : 'none' }}>
-              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 8,
-                textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
-                Attack Vectors
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                {data.vectors.map((v, i) => (
-                  <div key={i} style={{
-                    display: 'flex', alignItems: 'center', gap: 8,
-                    padding: '5px 8px', background: 'var(--bg-secondary)',
-                    borderRadius: 6, fontSize: 12,
-                  }}>
-                    <div style={{
-                      width: 7, height: 7, borderRadius: 99, flexShrink: 0,
-                      background: SEV_COLOR[v.severity] || '#64748b',
-                    }} />
-                    <span style={{ color: 'var(--text-secondary)', flex: 1 }}>{v.label}</span>
-                    <span style={{
-                      fontSize: 10, color: SEV_COLOR[v.severity] || '#64748b',
-                      textTransform: 'capitalize',
-                    }}>{v.severity}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <AttackVectorsSection vectors={data.vectors} hasData={hasData} />
           )}
 
           {/* Graph */}

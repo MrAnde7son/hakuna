@@ -157,7 +157,7 @@ class Scan(Base):
 
     organization = relationship("Organization")
     assets = relationship("Asset", back_populates="scan", cascade="all, delete-orphan")
-    findings = relationship("Finding", back_populates="scan", cascade="all, delete-orphan")
+    findings = relationship("Finding", back_populates="scan", cascade="all, delete-orphan", foreign_keys="[Finding.scan_id]")
 
 
 class Asset(Base):
@@ -200,6 +200,13 @@ class Asset(Base):
     medium_count = Column(Integer, default=0)
     low_count = Column(Integer, default=0)
     info_count = Column(Integer, default=0)
+
+    # Lifecycle tracking (cross-scan)
+    first_seen = Column(DateTime, nullable=True)       # Earliest scan date this IP appeared
+    last_seen = Column(DateTime, nullable=True)        # Latest scan date this IP appeared
+    times_seen = Column(Integer, default=1)             # Number of scans this IP appeared in
+    asset_status = Column(String, default="active")     # active / stale
+    stale_since = Column(DateTime, nullable=True)       # When asset was first not seen in a rescan
 
     scan = relationship("Scan", back_populates="assets")
     findings = relationship("Finding", back_populates="asset", cascade="all, delete-orphan")
@@ -281,6 +288,11 @@ class Finding(Base):
     times_seen = Column(Integer, default=1)           # How many scans this finding has appeared in
     is_regression = Column(Boolean, default=False)    # True if it was fixed then reappeared
 
+    # Delta tracking: auto-set when a prior finding disappears from a rescan
+    auto_resolved = Column(Boolean, default=False)      # True if marked fixed by delta logic (vs manual)
+    auto_resolved_at = Column(DateTime, nullable=True)  # When delta logic marked it fixed
+    auto_resolved_by_scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)  # Which new scan caused the auto-resolve
+
     # SLA tracking
     sla_due_date = Column(DateTime, nullable=True)   # Computed: scan.created_at + SLA days
     resolved_at = Column(DateTime, nullable=True)    # When manually marked resolved
@@ -304,7 +316,7 @@ class Finding(Base):
     # Aggregated solution link (set when findings are grouped by root cause)
     aggregated_solution_id = Column(Integer, ForeignKey("aggregated_solutions.id"), nullable=True)
 
-    scan = relationship("Scan", back_populates="findings")
+    scan = relationship("Scan", back_populates="findings", foreign_keys="[Finding.scan_id]")
     asset = relationship("Asset", back_populates="findings")
     automate_clicks = relationship("AutomateClick", back_populates="finding", cascade="all, delete-orphan")
 
@@ -362,8 +374,19 @@ class InventoryUser(Base):
     password_last_set = Column(String)
     date_joined = Column(String)
 
+    # Identity classification
+    identity_type = Column(String, default="unknown")    # human | non_human | unknown
+    identity_subtype = Column(String)                    # service_account | machine_identity | bot | scheduled_task | employee | contractor
+
     # Source tracking (which plugin produced this record)
     source_plugin = Column(String)           # e.g. "69239", "10860", "10902"
+    source_systems = Column(JSON, default=list)  # ["AD", "Windows", "Linux", etc.]
+
+    # Organizational attributes (from AD or enrichment)
+    department = Column(String)
+    job_title = Column(String)
+    manager_dn = Column(String)              # DN of manager (from AD)
+    manager_username = Column(String)         # Resolved manager username
 
     # Last seen logged on to which host
     last_logon_host = Column(String)
@@ -385,6 +408,28 @@ class InventoryGroup(Base):
     members = Column(JSON, default=list)     # List of member CN/DN strings
     is_privileged = Column(Boolean, default=False)  # DA, EA, Admins, etc.
     source_plugin = Column(String)
+
+
+class InventoryDomainTrust(Base):
+    """AD domain trust relationships."""
+    __tablename__ = "inventory_domain_trusts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+
+    trusted_domain = Column(String, index=True)     # FQDN of trusted domain (trustPartner)
+    flat_name = Column(String)                       # NetBIOS name (e.g. RESEARCH)
+    sid = Column(String)                             # Domain SID
+    dn = Column(String)                              # DN of trust object
+    trust_direction = Column(String)                 # inbound / outbound / bidirectional
+    trust_type = Column(String)                      # downlevel / uplevel / mit_kerberos / dce
+    trust_attributes = Column(Integer)               # Raw flags
+    is_transitive = Column(Boolean, default=False)
+    is_sid_filtering_enabled = Column(Boolean, default=True)
+    source_domain = Column(String)                   # Domain where the trust was found
+    source_plugin = Column(String)
+    when_created = Column(String)
 
 
 class InventoryService(Base):

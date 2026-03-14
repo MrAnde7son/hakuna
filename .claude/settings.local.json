@@ -141,7 +141,9 @@
       "Bash(python -c \"from app import app; print\\(''OK, routes:'', len\\(app.routes\\)\\)\")",
       "Bash(curl -s http://localhost:8000/api/sources)",
       "Bash(curl -s http://localhost:8000/api/campaigns)",
-      "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/api/upload -F \"file=@/Users/itamar/Downloads/APA_Scan \\(6\\).nessus\")"
+      "Bash(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/api/upload -F \"file=@/Users/itamar/Downloads/APA_Scan \\(6\\).nessus\")",
+      "Bash(grep -rn \"mttr\\\\|MTTR\\\\|mean.*time.*remedi\" /Users/itamar/Documents/Git/nessus-remediation --include=*.py --include=*.js --include=*.jsx)",
+      "Bash(curl -s -X POST http://localhost:8000/api/auth/login -H \"Content-Type: application/json\" -d '{\"\"email\"\":\"\"mizrahi.itamar@gmail.com\"\",\"\"password\"\":\"\"test123\"\"}' -v)"
     ],
     "additionalDirectories": [
       "/Users/itamar/Documents/Git/nessus-remediation"
