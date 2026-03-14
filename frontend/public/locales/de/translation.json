@@ -18,7 +18,10 @@
     "agents": "Agenten",
     "settings": "Einstellungen",
     "expandNav": "Navigation erweitern",
-    "collapseNav": "Navigation einklappen"
+    "collapseNav": "Navigation einklappen",
+    "docs": "Doku",
+    "documentation": "Dokumentation",
+    "help": "Hilfe und Dokumentation"
   },
   "auth": {
     "signIn": "Anmelden",
@@ -251,5 +254,37 @@
     "builder": "Agenten-Generator",
     "create": "Agent erstellen",
     "automate": "Automatisieren"
+  },
+  "api": {
+    "method": "Methode",
+    "endpoint": "Endpunkt",
+    "description": "Beschreibung"
+  },
+  "docs": {
+    "title": "Dokumentation",
+    "search": "Dokumentation durchsuchen...",
+    "sections": {
+      "gettingStarted": "Erste Schritte",
+      "onboarding": "Einführung",
+      "dashboard": "Berichte und Dashboard",
+      "assets": "Assets",
+      "findings": "Befunde",
+      "inventory": "Inventar-Explorer",
+      "campaigns": "Behebungskampagnen",
+      "remediation": "Aggregierte Lösungen",
+      "agents": "KI-Agenten",
+      "threatIntel": "Bedrohungsintelligenz",
+      "tags": "Tags und Auto-Tagging",
+      "workflows": "Workflows",
+      "integrations": "Integrationen",
+      "exceptions": "Globale Ausnahmen",
+      "sla": "SLA-Überwachung",
+      "ownership": "Eigentümerschaft und RBAC",
+      "mssp": "Mandantenfähigkeit (MSSP)",
+      "exports": "Exporte und Konfiguration",
+      "riskConfig": "Risiko und Bewertung",
+      "apiReference": "API-Referenz",
+      "keyboardTips": "Tipps und Shortcuts"
+    }
   }
 }

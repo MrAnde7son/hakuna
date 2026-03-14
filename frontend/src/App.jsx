@@ -441,8 +441,8 @@ function Sidebar({ collapsed, onToggle }) {
           )}
           <NavLink
             to="/docs"
-            title="Documentation"
-            aria-label="Documentation"
+            title={t('nav.documentation')}
+            aria-label={t('nav.documentation')}
             style={({ isActive }) => ({
               display: 'flex',
               alignItems: 'center',
@@ -459,7 +459,7 @@ function Sidebar({ collapsed, onToggle }) {
             })}
           >
             <BookOpen size={18} />
-            {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>Docs</span>}
+            {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t('nav.docs')}</span>}
           </NavLink>
           {(!NAV_SETTINGS.permission || hasPermission(NAV_SETTINGS.permission)) && (
           <NavLink
@@ -542,12 +542,13 @@ function Sidebar({ collapsed, onToggle }) {
 }
 
 function HelpButton() {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   return (
     <button
       onClick={() => navigate('/docs')}
-      title="Help & Documentation"
-      aria-label="Help & Documentation"
+      title={t('nav.help')}
+      aria-label={t('nav.help')}
       style={{
         position: 'fixed', bottom: 20, right: 20, zIndex: 90,
         width: 44, height: 44, borderRadius: '50%',

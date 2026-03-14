@@ -18,7 +18,10 @@
     "agents": "Agents",
     "settings": "Paramètres",
     "expandNav": "Développer la navigation",
-    "collapseNav": "Réduire la navigation"
+    "collapseNav": "Réduire la navigation",
+    "docs": "Docs",
+    "documentation": "Documentation",
+    "help": "Aide et documentation"
   },
   "auth": {
     "signIn": "Se connecter",
@@ -251,5 +254,37 @@
     "builder": "Générateur d'agents",
     "create": "Créer un agent",
     "automate": "Automatiser"
+  },
+  "api": {
+    "method": "Méthode",
+    "endpoint": "Point d'accès",
+    "description": "Description"
+  },
+  "docs": {
+    "title": "Documentation",
+    "search": "Rechercher dans la documentation...",
+    "sections": {
+      "gettingStarted": "Pour commencer",
+      "onboarding": "Prise en main",
+      "dashboard": "Rapports et tableau de bord",
+      "assets": "Actifs",
+      "findings": "Découvertes",
+      "inventory": "Explorateur d'inventaire",
+      "campaigns": "Campagnes de remédiation",
+      "remediation": "Solutions agrégées",
+      "agents": "Agents IA",
+      "threatIntel": "Renseignement sur les menaces",
+      "tags": "Tags et auto-tagging",
+      "workflows": "Workflows",
+      "integrations": "Intégrations",
+      "exceptions": "Exceptions globales",
+      "sla": "Suivi SLA",
+      "ownership": "Propriété et RBAC",
+      "mssp": "Multi-tenancy (MSSP)",
+      "exports": "Exports et configuration",
+      "riskConfig": "Risque et scoring",
+      "apiReference": "Référence API",
+      "keyboardTips": "Conseils et raccourcis"
+    }
   }
 }

@@ -18,7 +18,10 @@
     "agents": "エージェント",
     "settings": "設定",
     "expandNav": "ナビゲーションを展開",
-    "collapseNav": "ナビゲーションを折りたたむ"
+    "collapseNav": "ナビゲーションを折りたたむ",
+    "docs": "ドキュメント",
+    "documentation": "ドキュメント",
+    "help": "ヘルプとドキュメント"
   },
   "auth": {
     "signIn": "サインイン",
@@ -246,10 +249,42 @@
     "action": "アクション",
     "condition": "条件"
   },
+  "api": {
+    "method": "メソッド",
+    "endpoint": "エンドポイント",
+    "description": "説明"
+  },
   "agents": {
     "title": "エージェント",
     "builder": "エージェントビルダー",
     "create": "エージェント作成",
     "automate": "自動化"
+  },
+  "docs": {
+    "title": "ドキュメント",
+    "search": "ドキュメントを検索...",
+    "sections": {
+      "gettingStarted": "はじめに",
+      "onboarding": "オンボーディング",
+      "dashboard": "レポートとダッシュボード",
+      "assets": "資産",
+      "findings": "検出結果",
+      "inventory": "インベントリエクスプローラー",
+      "campaigns": "修復キャンペーン",
+      "remediation": "集約ソリューション",
+      "agents": "AIエージェント",
+      "threatIntel": "脅威インテリジェンス",
+      "tags": "タグと自動タグ付け",
+      "workflows": "ワークフロー",
+      "integrations": "連携",
+      "exceptions": "グローバル例外",
+      "sla": "SLAトラッキング",
+      "ownership": "オーナーシップとRBAC",
+      "mssp": "マルチテナント（MSSP）",
+      "exports": "エクスポートと設定",
+      "riskConfig": "リスクとスコアリング",
+      "apiReference": "APIリファレンス",
+      "keyboardTips": "ヒントとショートカット"
+    }
   }
 }

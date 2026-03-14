@@ -18,7 +18,10 @@
     "agents": "סוכנים",
     "settings": "הגדרות",
     "expandNav": "הרחב ניווט",
-    "collapseNav": "כווץ ניווט"
+    "collapseNav": "כווץ ניווט",
+    "docs": "תיעוד",
+    "documentation": "תיעוד",
+    "help": "עזרה ותיעוד"
   },
   "auth": {
     "signIn": "התחברות",
@@ -246,10 +249,42 @@
     "action": "פעולה",
     "condition": "תנאי"
   },
+  "api": {
+    "method": "שיטה",
+    "endpoint": "נקודת קצה",
+    "description": "תיאור"
+  },
   "agents": {
     "title": "סוכנים",
     "builder": "בונה סוכנים",
     "create": "יצירת סוכן",
     "automate": "אוטומציה"
+  },
+  "docs": {
+    "title": "תיעוד",
+    "search": "חיפוש בתיעוד...",
+    "sections": {
+      "gettingStarted": "תחילת עבודה",
+      "onboarding": "הטמעה",
+      "dashboard": "דוחות ולוח מחוונים",
+      "assets": "נכסים",
+      "findings": "ממצאים",
+      "inventory": "סייר מלאי",
+      "campaigns": "מסעות תיקון",
+      "remediation": "פתרונות מצטברים",
+      "agents": "סוכני AI",
+      "threatIntel": "מודיעין איומים",
+      "tags": "תגיות ותיוג אוטומטי",
+      "workflows": "תהליכי עבודה",
+      "integrations": "אינטגרציות",
+      "exceptions": "חריגים גלובליים",
+      "sla": "מעקב SLA",
+      "ownership": "בעלות ובקרת גישה",
+      "mssp": "ריבוי דיירים (MSSP)",
+      "exports": "ייצוא והגדרות",
+      "riskConfig": "סיכון ודירוג",
+      "apiReference": "מדריך API",
+      "keyboardTips": "טיפים וקיצורי דרך"
+    }
   }
 }

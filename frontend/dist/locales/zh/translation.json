@@ -18,7 +18,10 @@
     "agents": "代理",
     "settings": "设置",
     "expandNav": "展开导航",
-    "collapseNav": "收起导航"
+    "collapseNav": "收起导航",
+    "docs": "文档",
+    "documentation": "文档",
+    "help": "帮助与文档"
   },
   "auth": {
     "signIn": "登录",
@@ -251,5 +254,37 @@
     "builder": "代理构建器",
     "create": "创建代理",
     "automate": "自动化"
+  },
+  "api": {
+    "method": "方法",
+    "endpoint": "端点",
+    "description": "描述"
+  },
+  "docs": {
+    "title": "文档",
+    "search": "搜索文档...",
+    "sections": {
+      "gettingStarted": "快速入门",
+      "onboarding": "入门指南",
+      "dashboard": "报告与仪表盘",
+      "assets": "资产",
+      "findings": "发现",
+      "inventory": "清单浏览器",
+      "campaigns": "修复活动",
+      "remediation": "聚合解决方案",
+      "agents": "AI 代理",
+      "threatIntel": "威胁情报",
+      "tags": "标签与自动标记",
+      "workflows": "工作流",
+      "integrations": "集成",
+      "exceptions": "全局例外",
+      "sla": "SLA 跟踪",
+      "ownership": "所有权与 RBAC",
+      "mssp": "多租户（MSSP）",
+      "exports": "导出与配置",
+      "riskConfig": "风险与评分",
+      "apiReference": "API 参考",
+      "keyboardTips": "技巧与快捷键"
+    }
   }
 }

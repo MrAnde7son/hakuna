@@ -18,7 +18,10 @@
     "agents": "Agents",
     "settings": "Settings",
     "expandNav": "Expand navigation",
-    "collapseNav": "Collapse navigation"
+    "collapseNav": "Collapse navigation",
+    "docs": "Docs",
+    "documentation": "Documentation",
+    "help": "Help & Documentation"
   },
   "auth": {
     "signIn": "Sign in",
@@ -251,5 +254,37 @@
     "builder": "Agent Builder",
     "create": "Create Agent",
     "automate": "Automate"
+  },
+  "api": {
+    "method": "Method",
+    "endpoint": "Endpoint",
+    "description": "Description"
+  },
+  "docs": {
+    "title": "Documentation",
+    "search": "Search docs...",
+    "sections": {
+      "gettingStarted": "Getting Started",
+      "onboarding": "Onboarding",
+      "dashboard": "Reports & Dashboard",
+      "assets": "Assets",
+      "findings": "Findings",
+      "inventory": "Inventory Explorer",
+      "campaigns": "Remediation Campaigns",
+      "remediation": "Aggregated Solutions",
+      "agents": "AI Agents",
+      "threatIntel": "Threat Intelligence",
+      "tags": "Tags & Auto-Tagging",
+      "workflows": "Workflows",
+      "integrations": "Integrations",
+      "exceptions": "Global Exceptions",
+      "sla": "SLA Tracking",
+      "ownership": "Ownership & RBAC",
+      "mssp": "Multi-Tenancy (MSSP)",
+      "exports": "Exports & Config",
+      "riskConfig": "Risk & Scoring",
+      "apiReference": "API Reference",
+      "keyboardTips": "Tips & Shortcuts"
+    }
   }
 }
