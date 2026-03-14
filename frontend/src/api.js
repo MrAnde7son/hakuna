@@ -205,6 +205,11 @@ export const getPluginFamilies = (scanId, tags, tagLogic) => {
 }
 export const getTrending = () => request('/reports/trending')
 export const getMetricsTimeline = () => request('/reports/metrics-timeline')
+export const getFunnel = (body) => request('/reports/funnel', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
 
 // Automate
 export const logAutomateClick = (findingId) =>

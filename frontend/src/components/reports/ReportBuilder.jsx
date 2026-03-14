@@ -11,7 +11,7 @@ import {
   Save, Eye, EyeOff, ArrowLeft, Copy, Settings2, GripVertical,
   CheckCircle, LayoutGrid, Maximize2, Minimize2, X, PenLine,
   TrendingUp, Zap, Clock, Home, Upload, GitCompare, Activity,
-  Download, FileImage, FileText, FileBarChart2, Sparkles
+  Download, FileImage, FileText, FileBarChart2, Sparkles, Filter
 } from 'lucide-react'
 import NLPReportBuilder from './NLPReportBuilder.jsx'
 import {
@@ -31,6 +31,7 @@ import {
   getInventoryNetconns, getInventoryTasks, getInventoryPatches, getInventoryLoggedOn,
   getInventoryShares, getInventorySoftware, getInventorySecurityControls, getInventoryComputers,
   getInventoryPasswordPolicies, getInventoryCertificates, getInventoryAITools, getInventoryProcesses,
+  getFunnel,
 } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons } from '../shared/ui.jsx'
 
@@ -815,6 +816,13 @@ const WIDGET_CATALOGUE = [
       { type: 'bar_chart',  label: 'Bar Chart',  icon: BarChart2,    desc: 'Vertical or horizontal bars', defaultWidth: 'full',  defaultConfig: { preset: 'severity_breakdown' } },
       { type: 'line_chart', label: 'Line Chart',  icon: TrendingUp,   desc: 'Line or area over time',      defaultWidth: 'full',  defaultConfig: { preset: 'severity_trend' } },
       { type: 'pie_chart',  label: 'Pie / Donut', icon: PieChartIcon, desc: 'Proportional breakdown',      defaultWidth: 'half',  defaultConfig: { preset: 'severity_breakdown', donut: true } },
+      { type: 'funnel',     label: 'Funnel',      icon: Filter,       desc: 'Progressive filter funnel', defaultWidth: 'half',  defaultConfig: { base_entity: 'findings', steps: [
+        { label: 'All Findings', filters: {} },
+        { label: 'Critical (CVSS ≥ 9)', filters: { min_cvss3: '9' } },
+        { label: 'In KEV', filters: { is_kev: 'true' } },
+        { label: 'On Critical Assets', filters: { on_critical_assets: 'true' } },
+        { label: 'Internet Exposed', filters: { on_internet_facing: 'true' } },
+      ] } },
     ],
   },
   {
@@ -1007,6 +1015,9 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
     return cfg.url
       ? <img src={cfg.url} alt={widget.title || 'Image'} style={{ maxWidth: '100%', borderRadius: 8 }} />
       : <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Set an image URL in widget config</div>
+  }
+  if (widget.type === 'funnel') {
+    return <FunnelWidget widget={widget} scanId={scanId} />
   }
 
   // Data widgets
@@ -1218,6 +1229,212 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
   }
 }
 
+// ─── Funnel widget (self-contained data fetching) ─────────────────────────────
+
+const FUNNEL_COLORS = ['#6366f1', '#818cf8', '#a5b4fc', '#c7d2fe', '#e0e7ff', '#93c5fd', '#60a5fa', '#3b82f6']
+
+function FunnelWidget({ widget, scanId }) {
+  const cfg = widget.config || {}
+  const [funnelData, setFunnelData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const stepsKey = JSON.stringify(cfg.steps || [])
+
+  useEffect(() => {
+    if (!cfg.steps || cfg.steps.length === 0) { setLoading(false); return }
+    setLoading(true)
+    getFunnel({ base_entity: cfg.base_entity || 'findings', scan_id: scanId || undefined, steps: cfg.steps })
+      .then(d => { setFunnelData(d); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [cfg.base_entity, stepsKey, scanId])
+
+  if (loading) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 100 }}><Spinner /></div>
+  if (!funnelData?.steps?.length) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Configure funnel steps in widget settings</div>
+
+  const steps = funnelData.steps
+  const maxCount = steps[0]?.count || 1
+
+  return (
+    <div style={{ padding: '4px 0' }}>
+      {steps.map((step, i) => {
+        const widthPct = Math.max(15, (step.count / maxCount) * 100)
+        const color = FUNNEL_COLORS[i % FUNNEL_COLORS.length]
+        const prevCount = i > 0 ? steps[i - 1].count : null
+        const dropPct = prevCount ? Math.round((1 - step.count / prevCount) * 100) : null
+        return (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+            <div style={{ width: 130, flexShrink: 0, textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>
+              {step.label}
+            </div>
+            <div style={{ flex: 1, position: 'relative' }}>
+              <div style={{
+                width: `${widthPct}%`,
+                margin: '0 auto',
+                background: `linear-gradient(135deg, ${color}, ${color}cc)`,
+                borderRadius: 6,
+                padding: '8px 12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minHeight: 32,
+                transition: 'width 0.4s ease',
+              }}>
+                <span style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>
+                  {step.count.toLocaleString()}
+                </span>
+              </div>
+            </div>
+            <div style={{ width: 60, flexShrink: 0, fontSize: 11, color: dropPct != null ? (dropPct > 50 ? '#dc2626' : '#d97706') : 'transparent', fontWeight: 600 }}>
+              {dropPct != null ? `−${dropPct}%` : ''}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ─── Funnel step filter options ───────────────────────────────────────────────
+
+const FUNNEL_FINDING_FILTERS = [
+  { key: 'severity', label: 'Severity =', type: 'select', options: [{ value: '', label: '—' }, { value: '4', label: 'Critical' }, { value: '3', label: 'High' }, { value: '2', label: 'Medium' }, { value: '1', label: 'Low' }] },
+  { key: 'min_severity', label: 'Min Severity ≥', type: 'select', options: [{ value: '', label: '—' }, { value: '4', label: 'Critical' }, { value: '3', label: 'High' }, { value: '2', label: 'Medium' }, { value: '1', label: 'Low' }] },
+  { key: 'min_cvss3', label: 'CVSS v3 ≥', type: 'number', placeholder: 'e.g. 9.0' },
+  { key: 'is_kev', label: 'In CISA KEV', type: 'toggle' },
+  { key: 'has_exploit', label: 'Has Exploit', type: 'toggle' },
+  { key: 'ransomware_linked', label: 'Ransomware Linked', type: 'toggle' },
+  { key: 'trending_in_news', label: 'Trending in News', type: 'toggle' },
+  { key: 'zero_day', label: 'Zero-Day', type: 'toggle' },
+  { key: 'min_epss', label: 'EPSS ≥', type: 'number', placeholder: 'e.g. 0.5' },
+  { key: 'on_critical_assets', label: 'On Critical Assets', type: 'toggle' },
+  { key: 'on_internet_facing', label: 'Internet Exposed', type: 'toggle' },
+  { key: 'asset_min_risk', label: 'Asset Risk ≥', type: 'number', placeholder: 'e.g. 7' },
+  { key: 'has_ttps', label: 'Has ATT&CK TTPs', type: 'toggle' },
+  { key: 'sla_status', label: 'SLA Status', type: 'select', options: [{ value: '', label: '—' }, { value: 'breached', label: 'Breached' }, { value: 'at_risk', label: 'At Risk' }, { value: 'on_track', label: 'On Track' }] },
+  { key: 'effort_level', label: 'Effort', type: 'select', options: [{ value: '', label: '—' }, { value: 'quick_win', label: 'Quick Win' }, { value: 'medium', label: 'Medium' }, { value: 'complex', label: 'Complex' }] },
+  { key: 'plugin_family', label: 'Plugin Family', type: 'text', placeholder: 'e.g. Windows' },
+  { key: 'search', label: 'Keyword', type: 'text', placeholder: 'Search...' },
+]
+
+const FUNNEL_ASSET_FILTERS = [
+  { key: 'criticality', label: 'Criticality ≥', type: 'number', placeholder: 'e.g. 8' },
+  { key: 'min_risk', label: 'Risk Score ≥', type: 'number', placeholder: 'e.g. 7' },
+  { key: 'is_internet_facing', label: 'Internet Facing', type: 'toggle' },
+  { key: 'min_critical', label: 'Critical Findings ≥', type: 'number', placeholder: 'e.g. 1' },
+  { key: 'min_high', label: 'High Findings ≥', type: 'number', placeholder: 'e.g. 1' },
+  { key: 'has_findings', label: 'Has Any Findings', type: 'toggle' },
+  { key: 'has_critical_cves', label: 'Has Critical CVEs', type: 'toggle' },
+  { key: 'has_kev_findings', label: 'Has KEV Findings', type: 'toggle' },
+  { key: 'has_exploitable', label: 'Has Exploitable Vulns', type: 'toggle' },
+  { key: 'has_domain_admin_logged_on', label: 'Domain Admin Logged In', type: 'toggle' },
+  { key: 'lacks_security_controls', label: 'No Security Controls', type: 'toggle' },
+  { key: 'lacks_av', label: 'No Antivirus', type: 'toggle' },
+  { key: 'lacks_edr', label: 'No EDR', type: 'toggle' },
+  { key: 'environment', label: 'Environment', type: 'text', placeholder: 'e.g. production' },
+  { key: 'search', label: 'Keyword', type: 'text', placeholder: 'Hostname, IP...' },
+]
+
+function FunnelConfigPanel({ cfg, set, Field, Select, TextInput }) {
+  const steps = cfg.steps || []
+  const baseEntity = cfg.base_entity || 'findings'
+  const filterDefs = baseEntity === 'assets' ? FUNNEL_ASSET_FILTERS : FUNNEL_FINDING_FILTERS
+
+  const setSteps = (newSteps) => set('steps', newSteps)
+  const updateStep = (idx, updates) => {
+    const copy = steps.map((s, i) => i === idx ? { ...s, ...updates } : s)
+    setSteps(copy)
+  }
+  const removeStep = (idx) => setSteps(steps.filter((_, i) => i !== idx))
+  const addStep = () => setSteps([...steps, { label: `Step ${steps.length + 1}`, filters: {} }])
+  const moveStep = (idx, dir) => {
+    const copy = [...steps]
+    const target = idx + dir
+    if (target < 0 || target >= copy.length) return
+    ;[copy[idx], copy[target]] = [copy[target], copy[idx]]
+    setSteps(copy)
+  }
+
+  const inputStyle = { width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13, boxSizing: 'border-box' }
+
+  return (
+    <>
+      <div style={{ height: 1, background: 'var(--border)', margin: '10px 0 14px' }} />
+      <Field label="Base Entity">
+        <Select value={baseEntity} onChange={v => set('base_entity', v)} options={[
+          { value: 'findings', label: 'Findings' },
+          { value: 'assets', label: 'Assets' },
+        ]} />
+      </Field>
+
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+        Funnel Steps ({steps.length})
+      </div>
+
+      {steps.map((step, i) => (
+        <div key={i} style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 8 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', minWidth: 16 }}>{i + 1}.</span>
+            <input value={step.label || ''} onChange={e => updateStep(i, { label: e.target.value })}
+              placeholder="Step label" style={{ ...inputStyle, flex: 1, padding: '5px 8px', fontSize: 12 }} />
+            <button onClick={() => moveStep(i, -1)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2 }} title="Move up"><ChevronUp size={12} /></button>
+            <button onClick={() => moveStep(i, 1)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2 }} title="Move down"><ChevronDown size={12} /></button>
+            <button onClick={() => removeStep(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', padding: 2 }} title="Remove"><X size={12} /></button>
+          </div>
+          <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Add filter for this step</div>
+          <select
+            value=""
+            onChange={e => {
+              const key = e.target.value
+              if (!key) return
+              const def = filterDefs.find(f => f.key === key)
+              const defaultVal = def?.type === 'toggle' ? 'true' : ''
+              updateStep(i, { filters: { ...step.filters, [key]: defaultVal } })
+            }}
+            style={{ ...inputStyle, fontSize: 11, marginBottom: 6 }}
+          >
+            <option value="">+ Add filter...</option>
+            {filterDefs.filter(fd => !(fd.key in (step.filters || {}))).map(fd => (
+              <option key={fd.key} value={fd.key}>{fd.label}</option>
+            ))}
+          </select>
+          {Object.entries(step.filters || {}).map(([fKey, fVal]) => {
+            const def = filterDefs.find(f => f.key === fKey)
+            if (!def) return null
+            return (
+              <div key={fKey} style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
+                <span style={{ fontSize: 11, color: 'var(--text-secondary)', minWidth: 80, flexShrink: 0 }}>{def.label}</span>
+                {def.type === 'toggle' ? (
+                  <span style={{ fontSize: 11, color: '#16a34a', fontWeight: 600 }}>Yes</span>
+                ) : def.type === 'select' ? (
+                  <select value={fVal || ''} onChange={e => updateStep(i, { filters: { ...step.filters, [fKey]: e.target.value } })}
+                    style={{ ...inputStyle, flex: 1, padding: '4px 6px', fontSize: 11 }}>
+                    {def.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                ) : (
+                  <input value={fVal || ''} onChange={e => updateStep(i, { filters: { ...step.filters, [fKey]: e.target.value } })}
+                    placeholder={def.placeholder} type={def.type === 'number' ? 'number' : 'text'}
+                    style={{ ...inputStyle, flex: 1, padding: '4px 6px', fontSize: 11 }} />
+                )}
+                <button onClick={() => {
+                  const { [fKey]: _, ...rest } = step.filters
+                  updateStep(i, { filters: rest })
+                }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', padding: 2 }}><X size={10} /></button>
+              </div>
+            )
+          })}
+        </div>
+      ))}
+
+      <button onClick={addStep} style={{
+        width: '100%', background: 'var(--bg-primary)', border: '1px dashed var(--border)',
+        borderRadius: 8, padding: '8px 0', fontSize: 12, color: 'var(--accent)',
+        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+      }}>
+        <Plus size={12} /> Add Step
+      </button>
+    </>
+  )
+}
+
 // ─── Widget config panel ──────────────────────────────────────────────────────
 
 function ConfigPanel({ widget, onUpdate, onClose }) {
@@ -1362,6 +1579,8 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
           <TextInput value={cfg.url} onChange={v => set('url', v)} placeholder="https://..." />
         </Field>
       )}
+
+      {widget.type === 'funnel' && <FunnelConfigPanel cfg={cfg} set={set} Field={Field} Select={Select} TextInput={TextInput} />}
 
       {/* Dynamic filters based on data source */}
       {(() => {

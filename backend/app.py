@@ -7011,6 +7011,177 @@ def get_risk_by_tags(
 
 
 # ─────────────────────────────────────────────────────────
+# Funnel Widget
+# ─────────────────────────────────────────────────────────
+
+class FunnelStep(BaseModel):
+    label: str
+    filters: dict = {}
+
+class FunnelRequest(BaseModel):
+    base_entity: str = "findings"  # "findings" or "assets"
+    scan_id: Optional[int] = None
+    steps: List[FunnelStep] = []
+
+@app.post("/api/reports/funnel")
+def compute_funnel(
+    body: FunnelRequest,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Compute counts for a multi-step funnel.
+    Each step progressively narrows results by applying cumulative filters.
+    Supports both findings-based and assets-based funnels."""
+    results = []
+
+    if body.base_entity == "findings":
+        base_q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+        base_q = apply_scan_org_filter(base_q, org_ids)
+        if body.scan_id:
+            base_q = base_q.filter(Finding.scan_id == body.scan_id)
+
+        q = base_q
+        for step in body.steps:
+            f = step.filters
+            # Severity
+            if f.get("severity") is not None:
+                q = q.filter(Finding.severity == int(f["severity"]))
+            if f.get("min_severity") is not None:
+                q = q.filter(Finding.severity >= int(f["min_severity"]))
+            # CVSS
+            if f.get("min_cvss3"):
+                q = q.filter(Finding.cvss3_score >= float(f["min_cvss3"]))
+            if f.get("min_cvss4"):
+                q = q.filter(Finding.cvss4_score >= float(f["min_cvss4"]))
+            # Threat intel
+            if f.get("is_kev") == True or f.get("is_kev") == "true":
+                q = q.filter(Finding.is_kev == True)
+            if f.get("has_exploit") == True or f.get("has_exploit") == "true":
+                q = q.filter(Finding.exploit_available == True)
+            if f.get("ransomware_linked") == True or f.get("ransomware_linked") == "true":
+                q = q.filter(Finding.ransomware_linked == True)
+            if f.get("trending_in_news") == True or f.get("trending_in_news") == "true":
+                q = q.filter(Finding.trending_in_news == True)
+            if f.get("min_epss"):
+                q = q.filter(Finding.epss_score >= float(f["min_epss"]))
+            # Zero-day
+            if f.get("zero_day") == True or f.get("zero_day") == "true":
+                q = q.filter(Finding.zero_day == True)
+            # SLA
+            if f.get("sla_status"):
+                q = q.filter(Finding.sla_status == f["sla_status"])
+            # Effort
+            if f.get("effort_level"):
+                q = q.filter(Finding.effort_level == f["effort_level"])
+            # Plugin family
+            if f.get("plugin_family"):
+                q = q.filter(Finding.plugin_family == f["plugin_family"])
+            # Search text
+            if f.get("search"):
+                q = q.filter(
+                    Finding.plugin_name.ilike(f"%{f['search']}%") |
+                    Finding.synopsis.ilike(f"%{f['search']}%")
+                )
+            # Workflow status
+            if f.get("workflow_status"):
+                q = q.filter(Finding.workflow_status == f["workflow_status"])
+            # Asset-level joins for findings funnel
+            if f.get("on_critical_assets") == True or f.get("on_critical_assets") == "true":
+                q = q.join(Asset, Finding.asset_id == Asset.id).filter(Asset.criticality >= 8)
+            if f.get("on_internet_facing") == True or f.get("on_internet_facing") == "true":
+                if "asset" not in str(q):
+                    q = q.join(Asset, Finding.asset_id == Asset.id)
+                q = q.filter(Asset.is_internet_facing == True)
+            if f.get("asset_min_risk"):
+                if "asset" not in str(q):
+                    q = q.join(Asset, Finding.asset_id == Asset.id)
+                q = q.filter(Asset.risk_score >= float(f["asset_min_risk"]))
+            # ATT&CK
+            if f.get("has_ttps") == True or f.get("has_ttps") == "true":
+                q = q.filter(Finding.matched_ttps.isnot(None), Finding.matched_ttps != "[]")
+
+            count = q.count()
+            results.append({"label": step.label, "count": count})
+
+    elif body.base_entity == "assets":
+        base_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
+        base_q = apply_scan_org_filter(base_q, org_ids)
+        if body.scan_id:
+            base_q = base_q.filter(Asset.scan_id == body.scan_id)
+
+        q = base_q
+        # Track asset IDs for subquery-based filters
+        need_asset_ids = False
+        asset_ids_filter = None
+
+        for step in body.steps:
+            f = step.filters
+            # Criticality
+            if f.get("criticality") is not None:
+                q = q.filter(Asset.criticality >= int(f["criticality"]))
+            if f.get("min_risk"):
+                q = q.filter(Asset.risk_score >= float(f["min_risk"]))
+            if f.get("environment"):
+                q = q.filter(Asset.environment_tag == f["environment"])
+            if f.get("is_internet_facing") == True or f.get("is_internet_facing") == "true":
+                q = q.filter(Asset.is_internet_facing == True)
+            if f.get("min_critical") is not None:
+                q = q.filter(Asset.critical_count >= int(f["min_critical"]))
+            if f.get("min_high") is not None:
+                q = q.filter(Asset.high_count >= int(f["min_high"]))
+            if f.get("has_findings") == True or f.get("has_findings") == "true":
+                q = q.filter((Asset.critical_count + Asset.high_count + Asset.medium_count + Asset.low_count) > 0)
+            # Finding-based subquery filters for asset funnel
+            if f.get("has_critical_cves") == True or f.get("has_critical_cves") == "true":
+                crit_asset_ids = db.query(Finding.asset_id).filter(Finding.severity == 4).distinct().subquery()
+                q = q.filter(Asset.id.in_(db.query(crit_asset_ids)))
+            if f.get("has_kev_findings") == True or f.get("has_kev_findings") == "true":
+                kev_asset_ids = db.query(Finding.asset_id).filter(Finding.is_kev == True).distinct().subquery()
+                q = q.filter(Asset.id.in_(db.query(kev_asset_ids)))
+            if f.get("has_exploitable") == True or f.get("has_exploitable") == "true":
+                exp_asset_ids = db.query(Finding.asset_id).filter(Finding.exploit_available == True).distinct().subquery()
+                q = q.filter(Asset.id.in_(db.query(exp_asset_ids)))
+            # Inventory-based filters
+            if f.get("has_domain_admin_logged_on") == True or f.get("has_domain_admin_logged_on") == "true":
+                # Assets where a domain admin user is logged on
+                da_usernames = db.query(InventoryUser.username).filter(
+                    InventoryUser.is_domain_admin == True
+                ).distinct().subquery()
+                da_asset_ids = db.query(InventoryLoggedOn.asset_id).filter(
+                    InventoryLoggedOn.username.in_(db.query(da_usernames))
+                ).distinct().subquery()
+                q = q.filter(Asset.id.in_(db.query(da_asset_ids)))
+            if f.get("lacks_security_controls") == True or f.get("lacks_security_controls") == "true":
+                has_ctrl_ids = db.query(InventorySecurityControl.asset_id).distinct().subquery()
+                q = q.filter(~Asset.id.in_(db.query(has_ctrl_ids)))
+            if f.get("lacks_av") == True or f.get("lacks_av") == "true":
+                has_av_ids = db.query(InventorySecurityControl.asset_id).filter(
+                    InventorySecurityControl.control_type == "antivirus"
+                ).distinct().subquery()
+                q = q.filter(~Asset.id.in_(db.query(has_av_ids)))
+            if f.get("lacks_edr") == True or f.get("lacks_edr") == "true":
+                has_edr_ids = db.query(InventorySecurityControl.asset_id).filter(
+                    InventorySecurityControl.control_type == "edr"
+                ).distinct().subquery()
+                q = q.filter(~Asset.id.in_(db.query(has_edr_ids)))
+            # Search
+            if f.get("search"):
+                pattern = f"%{f['search']}%"
+                q = q.filter(or_(
+                    Asset.hostname.ilike(pattern),
+                    Asset.ip.ilike(pattern),
+                    Asset.fqdn.ilike(pattern),
+                ))
+
+            count = q.count()
+            results.append({"label": step.label, "count": count})
+    else:
+        raise HTTPException(400, "base_entity must be 'findings' or 'assets'")
+
+    return {"base_entity": body.base_entity, "steps": results}
+
+
+# ─────────────────────────────────────────────────────────
 # NLP Report Query
 # ─────────────────────────────────────────────────────────
 
