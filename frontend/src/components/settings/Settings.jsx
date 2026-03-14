@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, ShieldOff, ClipboardList, UserCheck } from 'lucide-react'
+import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2 } from 'lucide-react'
 import { getDedupConfig, saveDedupConfig, runDedup, exportConfig } from '../../api.js'
 import { Card, ExportImportButtons } from '../shared/ui.jsx'
+import { useAuth } from '../../contexts/AuthContext.jsx'
 import RiskSettings from './RiskSettings.jsx'
 import UploadScan from '../upload/UploadScan.jsx'
 import TagManager from './TagManager.jsx'
@@ -11,6 +12,9 @@ import IntegrationSettings from './IntegrationSettings.jsx'
 import GlobalExceptions from './GlobalExceptions.jsx'
 import AuditLog from './AuditLog.jsx'
 import OwnershipRules from './OwnershipRules.jsx'
+import RoleManager from './RoleManager.jsx'
+import UsersPanel from './UsersPanel.jsx'
+import OrgsPanel from './OrgsPanel.jsx'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -258,7 +262,8 @@ function EntityCard({ entityKey, cfg, onChange }) {
 
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla', 'exceptions', 'integrations', 'audit-log', 'ownership']
+  const { isAdmin, isSuperadmin, isMSSP } = useAuth()
+  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla', 'exceptions', 'integrations', 'audit-log', 'ownership', 'users', 'roles', 'orgs']
   const tabParam = searchParams.get('tab')
   const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'upload'
   const setActiveTab = (id) => setSearchParams(prev => { prev.set('tab', id); return prev })
@@ -304,6 +309,11 @@ export default function Settings() {
     )
   }
 
+  const accessControlItems = []
+  if (isAdmin) accessControlItems.push({ id: 'users', label: 'Users', icon: <Users size={14} /> })
+  if (isAdmin) accessControlItems.push({ id: 'roles', label: 'Roles', icon: <ShieldCheck size={14} /> })
+  if (isSuperadmin || isMSSP) accessControlItems.push({ id: 'orgs', label: 'Organizations', icon: <Building2 size={14} /> })
+
   const NAV_GROUPS = [
     {
       label: 'Data Management',
@@ -327,6 +337,10 @@ export default function Settings() {
         { id: 'ownership', label: 'Ownership',  icon: <UserCheck size={14} /> },
       ],
     },
+    ...(accessControlItems.length > 0 ? [{
+      label: 'Access Control',
+      items: accessControlItems,
+    }] : []),
     {
       label: 'System',
       items: [
@@ -402,6 +416,15 @@ export default function Settings() {
 
       {/* Ownership tab */}
       {activeTab === 'ownership' && <OwnershipRules />}
+
+      {/* Users tab */}
+      {activeTab === 'users' && isAdmin && <UsersPanel />}
+
+      {/* Roles tab */}
+      {activeTab === 'roles' && isAdmin && <RoleManager />}
+
+      {/* Organizations tab */}
+      {activeTab === 'orgs' && (isSuperadmin || isMSSP) && <OrgsPanel />}
 
       {/* Dedup tab */}
       {activeTab === 'dedup' && <>
