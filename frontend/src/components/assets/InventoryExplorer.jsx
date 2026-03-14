@@ -4,14 +4,15 @@ import {
   Users, Shield, Server, Network, Clock,
   LogIn, AlertTriangle, Key, UserCheck,
   Activity, Layers, Share2, Package, Lock, Monitor, FileText, Terminal, Eye, EyeOff, BrainCircuit,
-  ChevronDown, ChevronLeft, ChevronRight, Download, Database, X
+  ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Download, Database, X,
+  Bot, User, Search, GitBranch
 } from 'lucide-react'
 import {
   Card, StatCard, Table, FilterBar, Select, Input,
   PageHeader, Spinner, EmptyState, Pill, Button
 } from '../shared/ui.jsx'
 import {
-  getInventorySummary, getInventoryUsers, getInventoryGroups,
+  getInventorySummary, getInventoryUsers, getInventoryUserOrgTree, getInventoryGroups,
   getInventoryServices, getInventoryNetconns, getInventoryTasks,
   getInventoryPatches, getInventoryLoggedOn,
   getInventoryShares, getInventorySoftware, getInventorySecurityControls,
@@ -192,7 +193,7 @@ function EnvPill({ env }) {
 }
 
 // ─── Group by asset helper ─────────────────────────────────
-function GroupedTable({ rows, columns, emptyMessage, groupByKey = 'asset_id', groupLabelKey = 'asset_label', groupEnvKey = 'asset_env', groupIpKey = 'asset_ip', onSort, sortBy, sortOrder, renderRowExtra }) {
+function GroupedTable({ rows, columns, emptyMessage, groupByKey = 'asset_id', groupLabelKey = 'asset_label', groupEnvKey = 'asset_env', groupIpKey = 'asset_ip', onSort, sortBy, sortOrder, renderRowExtra, onRowClick }) {
   const [collapsed, setCollapsed] = useState({})
 
   const groups = []
@@ -241,7 +242,7 @@ function GroupedTable({ rows, columns, emptyMessage, groupByKey = 'asset_id', gr
             </div>
             {/* Rows */}
             {open && (
-              <Table columns={columns} rows={g.rows} emptyMessage={emptyMessage} onSort={onSort} sortBy={sortBy} sortOrder={sortOrder} renderRowExtra={renderRowExtra} />
+              <Table columns={columns} rows={g.rows} emptyMessage={emptyMessage} onSort={onSort} sortBy={sortBy} sortOrder={sortOrder} renderRowExtra={renderRowExtra} onRowClick={onRowClick} />
             )}
           </div>
         )
@@ -261,16 +262,32 @@ function GroupByToggle({ value, onChange }) {
 
 // ─── Shared helpers ───────────────────────────────────────
 const USER_TYPE_COLORS = {
-  domain_user:      '#0ea5e9',
-  local_user:       '#8b5cf6',
-  computer_account: '#64748b',
-  service_account:  '#f59e0b',
+  domain_user:       '#0ea5e9',
+  local_user:        '#8b5cf6',
+  computer_account:  '#64748b',
+  service_account:   '#f59e0b',
+  machine_identity:  '#64748b',
+  bot:               '#a855f7',
+  api_key:           '#ec4899',
+  managed_identity:  '#6366f1',
+  oauth_app:         '#14b8a6',
+  scheduled_task:    '#78716c',
+  employee:          '#0ea5e9',
+  contractor:        '#f97316',
 }
 const USER_TYPE_LABELS = {
-  domain_user:      'Domain User',
-  local_user:       'Local User',
-  computer_account: 'Computer',
-  service_account:  'Service Account',
+  domain_user:       'Domain User',
+  local_user:        'Local User',
+  computer_account:  'Computer',
+  service_account:   'Service Acct',
+  machine_identity:  'Machine',
+  bot:               'Bot',
+  api_key:           'API Key',
+  managed_identity:  'Managed ID',
+  oauth_app:         'OAuth App',
+  scheduled_task:    'Sched. Task',
+  employee:          'Employee',
+  contractor:        'Contractor',
 }
 function UserTypePill({ type }) {
   return <Pill label={USER_TYPE_LABELS[type] || type} color={USER_TYPE_COLORS[type] || '#64748b'} />
@@ -535,6 +552,272 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
   )
 }
 
+// ─── Identity type & source badges ────────────────────────
+const IDENTITY_TYPE_CONFIG = {
+  human:     { label: 'Human',     color: '#16a34a', icon: User },
+  non_human: { label: 'Non-Human', color: '#9333ea', icon: Bot },
+  unknown:   { label: 'Unknown',   color: '#64748b', icon: Users },
+}
+
+function IdentityTypeBadge({ type }) {
+  const cfg = IDENTITY_TYPE_CONFIG[type] || IDENTITY_TYPE_CONFIG.unknown
+  const Icon = cfg.icon
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+      background: cfg.color + '18', color: cfg.color, border: `1px solid ${cfg.color}44`,
+    }}>
+      <Icon size={11} />{cfg.label}
+    </span>
+  )
+}
+
+const SOURCE_COLORS = {
+  'Active Directory': '#0ea5e9', 'Windows': '#0078d4', 'Linux': '#f59e0b',
+  'macOS': '#64748b', 'AWS': '#ff9900', 'Azure': '#0078d4', 'GCP': '#4285f4',
+  'OCI': '#f80000', 'Okta': '#007dc1', 'GitHub': '#8b5cf6', 'Other': '#94a3b8',
+}
+
+function SourceBadges({ sources }) {
+  if (!sources?.length) return <Count n="—" />
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+      {sources.map(s => (
+        <span key={s} style={{
+          display: 'inline-block', padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
+          background: (SOURCE_COLORS[s] || '#94a3b8') + '22', color: SOURCE_COLORS[s] || '#94a3b8',
+          border: `1px solid ${SOURCE_COLORS[s] || '#94a3b8'}44`, whiteSpace: 'nowrap',
+        }}>{s}</span>
+      ))}
+    </div>
+  )
+}
+
+// ─── User Detail Side Panel ───────────────────────────────
+function UserDetailPanel({ user, onClose }) {
+  if (!user) return null
+  const sections = [
+    { label: 'Identity', items: [
+      ['Username', user.domain ? `${user.domain}\\${user.username}` : user.username],
+      ['Identity Type', <IdentityTypeBadge type={user.identity_type} />],
+      ['Account Type', <UserTypePill type={user.user_type} />],
+      ['Subtype', user.identity_subtype || '—'],
+      ['SID', user.sid || '—'],
+      ['RID', user.rid ?? '—'],
+      ['DN', user.dn || '—'],
+    ]},
+    { label: 'Organization', show: user.identity_type !== 'non_human', items: [
+      ['Department', user.department || '—'],
+      ['Job Title', user.job_title || '—'],
+      ['Manager', user.manager_username ? (
+        <span style={{ color: 'var(--accent)', cursor: 'pointer' }}>{user.manager_username}</span>
+      ) : <span style={{ color: 'var(--text-muted)' }}>— <span style={{ fontSize: 10, color: '#0ea5e960', cursor: 'pointer' }}>Enrich</span></span>],
+    ]},
+    { label: 'Privileges', items: [
+      ['Local Admin', user.is_local_admin ? <PrivFlag yes={true} label="Admin" /> : '—'],
+      ['Domain Admin', user.is_domain_admin ? <PrivFlag yes={true} label="DA" /> : '—'],
+      ['Privileged', user.is_privileged ? <PrivFlag yes={true} label="Privileged" /> : '—'],
+    ]},
+    { label: 'Account State', items: [
+      ['Disabled', user.is_disabled ? <Pill label="Disabled" color="#64748b" /> : 'Active'],
+      ['Password Never Expires', user.password_never_expires ? <Pill label="Yes" color="#dc2626" /> : 'No'],
+      ['Password Last Set', user.password_last_set || '—'],
+      ['Date Joined', user.date_joined || '—'],
+      ['Never Logged In', user.never_logged_in ? 'Yes' : 'No'],
+      ['Never Changed Password', user.never_changed_password ? 'Yes' : 'No'],
+    ]},
+    { label: 'Sources', items: [
+      ['Systems', <SourceBadges sources={user.source_systems} />],
+      ['Source Plugin', user.source_plugin || '—'],
+      ['Last Logon Host', user.last_logon_host || '—'],
+      ['Asset', user.asset_label || '—'],
+    ]},
+  ]
+
+  return (
+    <>
+      <div style={{ position: 'fixed', inset: 0, zIndex: 999, background: 'rgba(0,0,0,0.35)' }} onClick={onClose} />
+      <div style={{
+        position: 'fixed', top: 0, right: 0, bottom: 0, width: 520, zIndex: 1000,
+        background: 'var(--bg-card)', borderLeft: '1px solid var(--border)',
+        boxShadow: '-8px 0 32px rgba(0,0,0,0.25)', overflowY: 'auto', padding: 0,
+      }}>
+        {/* Header */}
+        <div style={{
+          padding: '20px 24px 16px', borderBottom: '1px solid var(--border)',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+        }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 6 }}>
+              {user.username}
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <IdentityTypeBadge type={user.identity_type} />
+              <SourceBadges sources={user.source_systems} />
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Sections */}
+        <div style={{ padding: '8px 24px 24px' }}>
+          {sections.filter(s => s.show !== false).map(sec => (
+            <div key={sec.label} style={{ marginTop: 16 }}>
+              <div style={{
+                fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase',
+                letterSpacing: '0.06em', marginBottom: 8,
+              }}>{sec.label}</div>
+              <div style={{ display: 'grid', gap: 6 }}>
+                {sec.items.map(([k, v]) => (
+                  <div key={k} style={{ display: 'flex', fontSize: 13, gap: 8 }}>
+                    <span style={{ color: 'var(--text-muted)', minWidth: 140, flexShrink: 0 }}>{k}</span>
+                    <span style={{ color: 'var(--text-primary)', wordBreak: 'break-all' }}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {/* Groups */}
+          {user.member_of?.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{
+                fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase',
+                letterSpacing: '0.06em', marginBottom: 8,
+              }}>Group Memberships ({user.member_of.length})</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {user.member_of.map((g, i) => (
+                  <span key={i} style={{
+                    display: 'inline-block', padding: '2px 8px', fontSize: 12,
+                    background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                    borderRadius: 4, color: 'var(--text-primary)',
+                  }}>{g}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* SPNs */}
+          {user.spns?.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{
+                fontSize: 11, fontWeight: 700, color: '#f59e0b', textTransform: 'uppercase',
+                letterSpacing: '0.06em', marginBottom: 8,
+              }}>Kerberoastable SPNs ({user.spns.length})</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                {user.spns.map((s, i) => (
+                  <span key={i} style={{
+                    fontSize: 12, padding: '3px 8px', background: '#f59e0b12', border: '1px solid #f59e0b33',
+                    borderRadius: 4, color: '#f59e0b', fontFamily: 'monospace',
+                  }}>{s}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ─── Org Tree View ────────────────────────────────────────
+function OrgTreeNode({ node, depth, searchTerm, onSelect }) {
+  const [expanded, setExpanded] = useState(depth < 2)
+  const hasChildren = node.children?.length > 0
+  const matchesSearch = searchTerm && node.username?.toLowerCase().includes(searchTerm.toLowerCase())
+  const riskColor = node.is_domain_admin ? '#dc2626' : node.is_privileged ? '#f59e0b' : 'var(--border)'
+
+  return (
+    <div>
+      <div
+        onClick={() => onSelect(node)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
+          marginLeft: depth * 24, cursor: 'pointer',
+          borderLeft: depth > 0 ? `2px solid ${riskColor}` : 'none',
+          background: matchesSearch ? '#f59e0b18' : 'transparent',
+          borderRadius: 4, transition: 'background 0.15s',
+        }}
+        onMouseEnter={e => { if (!matchesSearch) e.currentTarget.style.background = 'var(--bg-secondary)' }}
+        onMouseLeave={e => { if (!matchesSearch) e.currentTarget.style.background = 'transparent' }}
+      >
+        {hasChildren ? (
+          <button
+            onClick={e => { e.stopPropagation(); setExpanded(!expanded) }}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'var(--text-muted)', display: 'flex' }}
+          >
+            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </button>
+        ) : <span style={{ width: 14 }} />}
+        <User size={14} style={{ color: riskColor === 'var(--border)' ? 'var(--text-muted)' : riskColor, flexShrink: 0 }} />
+        <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)' }}>{node.username}</span>
+        {node.job_title && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{node.job_title}</span>}
+        {node.department && <Pill label={node.department} color="#64748b" />}
+        {hasChildren && <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>{node.children.length} report{node.children.length !== 1 ? 's' : ''}</span>}
+      </div>
+      {expanded && hasChildren && node.children.map(child => (
+        <OrgTreeNode key={child.id || child.username} node={child} depth={depth + 1} searchTerm={searchTerm} onSelect={onSelect} />
+      ))}
+    </div>
+  )
+}
+
+function OrgTreeView({ scanId, onSelectUser }) {
+  const [tree, setTree] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [treeSearch, setTreeSearch] = useState('')
+
+  useEffect(() => {
+    setLoading(true)
+    getInventoryUserOrgTree({ scan_id: scanId })
+      .then(data => setTree(data))
+      .catch(() => setTree(null))
+      .finally(() => setLoading(false))
+  }, [scanId])
+
+  if (loading) return <Spinner />
+  if (!tree || !tree.roots?.length) {
+    return (
+      <EmptyState
+        icon={GitBranch}
+        message="No org tree available — manager data is required. Upload a credentialed AD scan with manager attributes."
+      />
+    )
+  }
+
+  const coverage = tree.total_users > 0 ? Math.round((tree.total_with_manager / tree.total_users) * 100) : 0
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+        <div style={{ position: 'relative', flex: 1, maxWidth: 280 }}>
+          <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+          <input
+            value={treeSearch} onChange={e => setTreeSearch(e.target.value)}
+            placeholder="Search tree…"
+            style={{
+              width: '100%', padding: '7px 10px 7px 30px', fontSize: 12,
+              background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+              borderRadius: 6, color: 'var(--text-primary)', outline: 'none',
+            }}
+          />
+        </div>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          {tree.total_users} users, {coverage}% have manager data
+        </span>
+      </div>
+      <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 8, maxHeight: 600, overflowY: 'auto' }}>
+        {tree.roots.map(root => (
+          <OrgTreeNode key={root.id || root.username} node={root} depth={0} searchTerm={treeSearch} onSelect={onSelectUser} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ─── Users tab ─────────────────────────────────────────────
 function UsersTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
@@ -543,11 +826,16 @@ function UsersTab({ scanId, assetId }) {
   const [loading, setLoading]         = useState(true)
   const [search, setSearch]           = useState('')
   const [userType, setUserType]       = useState(null)
+  const [identityType, setIdentityType] = useState(null)
+  const [identitySubtype, setIdentitySubtype] = useState(null)
+  const [department, setDepartment]   = useState('')
   const [isAdmin, setIsAdmin]         = useState(null)
   const [isDA, setIsDA]               = useState(null)
   const [groupByAsset, setGroupByAsset] = useState(false)
   const [sortBy, setSortBy]           = useState('username')
   const [sortOrder, setSortOrder]     = useState('asc')
+  const [selectedUser, setSelectedUser] = useState(null)
+  const [viewMode, setViewMode]       = useState('table') // 'table' | 'org_tree'
 
   const handleSort = (key) => {
     if (sortBy === key) { setSortOrder(o => o === 'asc' ? 'desc' : 'asc') }
@@ -555,15 +843,19 @@ function UsersTab({ scanId, assetId }) {
   }
 
   // Reset page when filters change
-  useEffect(() => { setPage(1) }, [scanId, assetId, search, userType, isAdmin, isDA])
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, userType, identityType, identitySubtype, department, isAdmin, isDA])
 
   const load = useCallback(() => {
+    if (viewMode === 'org_tree') return
     setLoading(true)
     getInventoryUsers({
       scan_id: scanId,
       asset_id: assetId || null,
       search: search || null,
       user_type: userType,
+      identity_type: identityType,
+      identity_subtype: identitySubtype,
+      department: department || null,
       is_admin: isAdmin,
       is_domain_admin: isDA,
       sort_by: sortBy,
@@ -571,49 +863,116 @@ function UsersTab({ scanId, assetId }) {
       page,
       page_size: INV_PAGE_SIZE,
     }).then(data => { setRows(data.users); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
-  }, [scanId, assetId, search, userType, isAdmin, isDA, sortBy, sortOrder, page])
+  }, [scanId, assetId, search, userType, identityType, identitySubtype, department, isAdmin, isDA, sortBy, sortOrder, page, viewMode])
 
   useEffect(() => { load() }, [load])
 
   const columns = [
-    { key: 'username',  label: 'Username', width: '18%', sortable: true,
+    { key: 'username',  label: 'Username', width: '15%', sortable: true,
       render: (v, r) => (
-        <span style={{ fontWeight: 600 }}>
+        <span style={{ fontWeight: 600, cursor: 'pointer' }} onClick={() => setSelectedUser(r)}>
           {r.domain ? `${r.domain}\\` : ''}{v}
         </span>
       )
     },
-    { key: 'user_type', label: 'Type',    width: '14%', sortable: true, render: v => <UserTypePill type={v} /> },
-    { key: 'is_local_admin',   label: 'Local Admin',   width: '10%', sortable: true, render: v => <PrivFlag yes={v} label="Admin" /> },
-    { key: 'is_domain_admin',  label: 'Domain Admin',  width: '10%', sortable: true, render: v => <PrivFlag yes={v} label="DA" /> },
-    { key: 'spns', label: 'Kerberoastable', width: '12%',
+    { key: 'identity_type', label: 'Identity', width: '9%', sortable: true,
+      render: v => <IdentityTypeBadge type={v} />
+    },
+    { key: 'user_type', label: 'Role / Subtype', width: '11%', sortable: true,
+      render: (v, r) => <UserTypePill type={r.identity_subtype || v} />
+    },
+    { key: 'source_systems', label: 'Sources', width: '11%',
+      render: v => <SourceBadges sources={v} />
+    },
+    { key: 'department', label: 'Department', width: '9%', sortable: true,
+      render: v => v ? <span style={{ fontSize: 12 }}>{v}</span> : <Count n="—" />
+    },
+    { key: 'manager_username', label: 'Manager', width: '9%', sortable: true,
+      render: (v) => v ? (
+        <span style={{ fontSize: 12, color: 'var(--accent)', cursor: 'pointer' }}
+          onClick={e => { e.stopPropagation(); /* could filter to manager */ }}
+        >{v}</span>
+      ) : <Count n="—" />
+    },
+    { key: 'is_local_admin',   label: 'Local Admin',   width: '8%', sortable: true, render: v => <PrivFlag yes={v} label="Admin" /> },
+    { key: 'is_domain_admin',  label: 'Domain Admin',  width: '8%', sortable: true, render: v => <PrivFlag yes={v} label="DA" /> },
+    { key: 'spns', label: 'Kerberoastable', width: '9%',
       render: v => v?.length > 0 ? <Pill label={`${v.length} SPN`} color="#f59e0b" /> : <Count n="—" />
     },
-    { key: 'password_never_expires', label: 'Pwd Never Expires', width: '14%', sortable: true,
-      render: v => v ? <Pill label="Never Expires" color="#dc2626" /> : <Count n="—" />
-    },
-    { key: 'member_of', label: 'Groups', width: '10%',
-      render: v => <Count n={v?.length || 0} />
-    },
-    { key: 'is_disabled', label: 'Disabled', width: '8%', sortable: true,
-      render: v => v ? <Pill label="Disabled" color="#64748b" /> : <Count n="—" />
-    },
-    { key: 'asset_label', label: 'Asset', width: '14%',
+    { key: 'asset_label', label: 'Asset', width: '11%',
       render: (v, r) => <>{v}<EnvPill env={r.asset_env} /></>
     },
+  ]
+
+  // Identity type toggle buttons
+  const identityButtons = [
+    { value: null,        label: 'All',       color: 'var(--text-muted)' },
+    { value: 'human',     label: 'Human',     color: '#16a34a' },
+    { value: 'non_human', label: 'Non-Human', color: '#9333ea' },
   ]
 
   const em = "No users found — try clearing filters or upload a credentialed scan."
   return (
     <Card>
+      {/* Primary identity type filter */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+        {identityButtons.map(b => (
+          <button key={String(b.value)} onClick={() => {
+            setIdentityType(b.value)
+            setIdentitySubtype(null)
+            setDepartment('')
+          }} style={{
+            padding: '5px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+            cursor: 'pointer', transition: 'all 0.15s',
+            background: identityType === b.value ? b.color + '18' : 'transparent',
+            color: identityType === b.value ? b.color : 'var(--text-muted)',
+            border: `1px solid ${identityType === b.value ? b.color + '66' : 'var(--border)'}`,
+          }}>{b.label}</button>
+        ))}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+          <button onClick={() => setViewMode('table')} style={{
+            padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+            background: viewMode === 'table' ? 'var(--accent)' + '22' : 'transparent',
+            color: viewMode === 'table' ? 'var(--accent)' : 'var(--text-muted)',
+            border: `1px solid ${viewMode === 'table' ? 'var(--accent)44' : 'var(--border)'}`,
+          }}>Table</button>
+          <button
+            onClick={() => setViewMode('org_tree')}
+            title="Show org hierarchy"
+            style={{
+              padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+              background: viewMode === 'org_tree' ? 'var(--accent)' + '22' : 'transparent',
+              color: viewMode === 'org_tree' ? 'var(--accent)' : 'var(--text-muted)',
+              border: `1px solid ${viewMode === 'org_tree' ? 'var(--accent)44' : 'var(--border)'}`,
+            }}>
+            <GitBranch size={11} style={{ marginRight: 3, verticalAlign: -1 }} />Org Tree
+          </button>
+        </div>
+      </div>
+
+      {/* Secondary filters */}
       <FilterBar>
-        <Input value={search} onChange={setSearch} placeholder="Search username / domain…" style={{ width: 220 }} />
+        <Input value={search} onChange={setSearch} placeholder="Search username / domain / dept…" style={{ width: 220 }} />
         <Select value={userType} onChange={setUserType} placeholder="All types" options={[
           { value: 'domain_user',      label: 'Domain User' },
           { value: 'local_user',       label: 'Local User' },
           { value: 'computer_account', label: 'Computer Account' },
           { value: 'service_account',  label: 'Service Account' },
         ]} />
+        {identityType === 'non_human' && (
+          <Select value={identitySubtype} onChange={setIdentitySubtype} placeholder="All subtypes" options={[
+            { value: 'service_account',  label: 'Service Account' },
+            { value: 'machine_identity', label: 'Machine Identity' },
+            { value: 'bot',              label: 'Bot' },
+            { value: 'api_key',          label: 'API Key' },
+            { value: 'managed_identity', label: 'Managed Identity' },
+            { value: 'oauth_app',        label: 'OAuth App' },
+            { value: 'scheduled_task',   label: 'Scheduled Task' },
+          ]} />
+        )}
+        {identityType === 'human' && (
+          <Input value={department} onChange={setDepartment} placeholder="Department…" style={{ width: 150 }} />
+        )}
         <Select value={isAdmin === null ? '' : String(isAdmin)} onChange={v => setIsAdmin(v === '' ? null : v === 'true')} placeholder="Any admin status" options={[
           { value: 'true',  label: 'Local Admin only' },
           { value: 'false', label: 'Non-admin only' },
@@ -621,13 +980,20 @@ function UsersTab({ scanId, assetId }) {
         <Select value={isDA === null ? '' : String(isDA)} onChange={v => setIsDA(v === '' ? null : v === 'true')} placeholder="Any DA status" options={[
           { value: 'true', label: 'Domain Admins only' },
         ]} />
-        <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
+        {viewMode === 'table' && <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />}
       </FilterBar>
-      {loading ? <Spinner /> : groupByAsset
-        ? <GroupedTable columns={columns} rows={rows} emptyMessage={em} onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
-        : <Table columns={columns} rows={rows} emptyMessage={em} onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+
+      {/* Content */}
+      {viewMode === 'org_tree' ? (
+        <OrgTreeView scanId={scanId} onSelectUser={setSelectedUser} />
+      ) : loading ? <Spinner /> : groupByAsset
+        ? <GroupedTable columns={columns} rows={rows} emptyMessage={em} onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} onRowClick={setSelectedUser} />
+        : <Table columns={columns} rows={rows} emptyMessage={em} onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} onRowClick={setSelectedUser} />
       }
-      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="users" />
+      {viewMode === 'table' && <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="users" />}
+
+      {/* Detail side panel */}
+      {selectedUser && <UserDetailPanel user={selectedUser} onClose={() => setSelectedUser(null)} />}
     </Card>
   )
 }

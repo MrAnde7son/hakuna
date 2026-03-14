@@ -70,6 +70,87 @@ def _rid_from_sid(sid: str):
 
 
 # ─────────────────────────────────────────────────────────
+# Identity type classification
+# ─────────────────────────────────────────────────────────
+
+# Patterns that indicate non-human identities
+_NHI_USERNAME_PATTERNS = re.compile(
+    r"(?i)"
+    r"^svc[-_]|[-_]svc$|"               # svc-backup, backup-svc
+    r"^sa[-_]|[-_]sa$|"                  # sa-sql, sql-sa
+    r"^bot[-_]|[-_]bot$|\[bot\]|"        # bot-deploy, [bot]
+    r"^sys[-_]|^system$|"                # sys-monitor, SYSTEM
+    r"^api[-_]|[-_]api$|"                # api-gateway
+    r"^task[-_]|^sched[-_]|"             # task-runner, sched-backup
+    r"^msa[-_]|^gmsa[-_]|"              # Managed Service Accounts
+    r"^health[-_]?check|"               # healthcheck
+    r"\$$"                               # computer accounts: HOST$
+)
+
+_NHI_WELLKNOWN = {
+    "system", "local service", "network service",
+    "defaultaccount", "guest", "wdagutilityaccount",
+    "krbtgt", "defaultapppool",
+}
+
+_SOURCE_FROM_PLUGIN = {
+    "69239": "Active Directory",
+    "167250": "Active Directory",
+    "10860": "Windows",
+    "10902": "Windows",
+    "10908": "Windows",
+    "38689": "Windows",
+}
+
+
+def classify_identity(user: dict) -> dict:
+    """Classify a user dict as human / non_human and set source_systems.
+
+    Mutates and returns the dict.
+    """
+    username = (user.get("username") or "").strip()
+    user_type = user.get("user_type", "")
+    uname_lower = username.lower()
+
+    # Determine source system from plugin
+    source = _SOURCE_FROM_PLUGIN.get(user.get("source_plugin", ""), "Other")
+    user["source_systems"] = [source]
+
+    # ── Non-human checks ──
+    is_nhi = False
+    subtype = None
+
+    if user_type == "computer_account" or uname_lower.endswith("$"):
+        is_nhi, subtype = True, "machine_identity"
+    elif user_type == "service_account":
+        is_nhi, subtype = True, "service_account"
+    elif uname_lower in _NHI_WELLKNOWN:
+        is_nhi, subtype = True, "machine_identity"
+    elif _NHI_USERNAME_PATTERNS.search(uname_lower):
+        is_nhi, subtype = True, "service_account"
+    elif user.get("spns"):
+        is_nhi, subtype = True, "service_account"
+
+    if is_nhi:
+        user["identity_type"] = "non_human"
+        user["identity_subtype"] = subtype
+    else:
+        # Positive human signals or default to human for real accounts
+        rid = user.get("rid")
+        if rid is not None and rid >= 1000:
+            user["identity_type"] = "human"
+        elif user.get("dn") or user.get("department") or user.get("manager_dn"):
+            user["identity_type"] = "human"
+        elif user_type in ("domain_user", "local_user") and rid is None:
+            user["identity_type"] = "human"
+        else:
+            user["identity_type"] = "unknown"
+        user["identity_subtype"] = None
+
+    return user
+
+
+# ─────────────────────────────────────────────────────────
 # Plugin 69239 — AD Users and Groups
 # ─────────────────────────────────────────────────────────
 
@@ -111,6 +192,10 @@ def extract_ad_users(plugin_output: str, asset_id: int, scan_id: int) -> list[di
             "never_logged_in": False,
             "never_changed_password": False,
             "last_logon_host": None,
+            "department": None,
+            "job_title": None,
+            "manager_dn": None,
+            "manager_username": None,
         }
 
         lines = block.split("\n")
@@ -176,6 +261,22 @@ def extract_ad_users(plugin_output: str, asset_id: int, scan_id: int) -> list[di
                     user["is_privileged"] = True
             elif in_spn and stripped and not any(k in line for k in ("Date", "Modified", "User Account", "Object SID", "Password", "Primary", "Member")):
                 user["spns"].append(stripped)
+            # AD organizational attributes
+            elif "Department" in line and ":" in line:
+                user["department"] = line.split(":", 1)[1].strip() or None
+                in_member_of = False
+                in_spn = False
+            elif "Title" in line and ":" in line and "Account" not in line:
+                user["job_title"] = line.split(":", 1)[1].strip() or None
+                in_member_of = False
+                in_spn = False
+            elif "Manager" in line and ":" in line:
+                mgr_dn = line.split(":", 1)[1].strip()
+                if mgr_dn:
+                    user["manager_dn"] = mgr_dn
+                    user["manager_username"] = _cn_from_dn(mgr_dn)
+                in_member_of = False
+                in_spn = False
 
         # Computer accounts (hostname$)
         if user["username"] and user["username"].endswith("$"):
@@ -185,6 +286,7 @@ def extract_ad_users(plugin_output: str, asset_id: int, scan_id: int) -> list[di
             user["user_type"] = "service_account"
 
         if user["username"]:
+            classify_identity(user)
             users.append(user)
 
     return users
@@ -214,7 +316,7 @@ def extract_local_users(plugin_output: str, asset_id: int, scan_id: int, asset_h
         elif "kerberos" in desc.lower():
             user_type = "service_account"
 
-        users.append({
+        rec = {
             "scan_id": scan_id,
             "asset_id": asset_id,
             "source_plugin": "10860",
@@ -237,7 +339,9 @@ def extract_local_users(plugin_output: str, asset_id: int, scan_id: int, asset_h
             "never_logged_in": False,
             "never_changed_password": False,
             "last_logon_host": asset_hostname or None,
-        })
+        }
+        classify_identity(rec)
+        users.append(rec)
 
     return users
 
@@ -266,7 +370,7 @@ def extract_admins_group(plugin_output: str, asset_id: int, scan_id: int, asset_
         is_domain_admin = False
         is_privileged = True  # All local admins are privileged
 
-        users.append({
+        rec = {
             "scan_id": scan_id,
             "asset_id": asset_id,
             "source_plugin": "10902",
@@ -289,7 +393,9 @@ def extract_admins_group(plugin_output: str, asset_id: int, scan_id: int, asset_
             "never_logged_in": False,
             "never_changed_password": False,
             "last_logon_host": asset_hostname or None,
-        })
+        }
+        classify_identity(rec)
+        users.append(rec)
 
     return users
 
@@ -319,7 +425,7 @@ def extract_last_logon(plugin_output: str, asset_id: int, scan_id: int, asset_ho
         domain = asset_hostname or "local"
         username = raw
 
-    return [{
+    rec = {
         "scan_id": scan_id,
         "asset_id": asset_id,
         "source_plugin": "38689",
@@ -342,7 +448,9 @@ def extract_last_logon(plugin_output: str, asset_id: int, scan_id: int, asset_ho
         "never_logged_in": False,
         "never_changed_password": False,
         "last_logon_host": asset_hostname or None,
-    }]
+    }
+    classify_identity(rec)
+    return [rec]
 
 
 # ─────────────────────────────────────────────────────────
@@ -405,6 +513,191 @@ def extract_ad_groups(plugin_output: str, asset_id: int, scan_id: int) -> list[d
             groups.append(group)
 
     return groups
+
+
+# ─────────────────────────────────────────────────────────
+# Plugin 167250 — LDAP Users (JSON format, full AD attributes)
+# ─────────────────────────────────────────────────────────
+
+def extract_ldap_users(plugin_output: str, asset_id: int, scan_id: int) -> list[dict]:
+    """Parse LDAP user JSON from plugin 167250.
+
+    Each line is a JSON array of [attr, [values]] pairs representing one AD object.
+    This plugin provides richer data than 69239, including department, title, manager.
+    """
+    if not plugin_output:
+        return []
+
+    users = []
+    for line in plugin_output.strip().split("\n"):
+        line = line.strip()
+        if not line.startswith("["):
+            continue
+        try:
+            pairs = json.loads(line)
+            attrs = {p[0]: p[1] for p in pairs if len(p) == 2}
+        except (json.JSONDecodeError, Exception):
+            continue
+
+        def first(key):
+            vals = attrs.get(key, [])
+            return vals[0] if vals else None
+
+        # Skip non-user objects (computers have objectClass "computer")
+        obj_classes = [c.lower() for c in attrs.get("objectClass", [])]
+        if "computer" in obj_classes:
+            continue
+        if "user" not in obj_classes and "person" not in obj_classes:
+            continue
+
+        username = first("sAMAccountName") or first("cn") or first("name")
+        if not username:
+            continue
+
+        dn = first("distinguishedName") or ""
+        sid = first("objectSid") or None
+        uac_str = first("userAccountControl")
+        uac = int(uac_str) if uac_str and uac_str.isdigit() else None
+
+        member_of = attrs.get("memberOf", [])
+        spns = attrs.get("servicePrincipalName", [])
+
+        # Manager / department / title
+        manager_dn_val = first("manager")
+        manager_username = _cn_from_dn(manager_dn_val) if manager_dn_val else None
+        department = first("department")
+        job_title = first("title")
+
+        # Privilege detection
+        is_domain_admin = False
+        is_privileged = False
+        for g in member_of:
+            gcn = _cn_from_dn(g).lower()
+            if gcn in ("domain admins", "enterprise admins", "schema admins"):
+                is_domain_admin = True
+                is_privileged = True
+            elif _is_privileged_group(gcn):
+                is_privileged = True
+
+        # Computer account check
+        user_type = "domain_user"
+        if username.endswith("$"):
+            user_type = "computer_account"
+        elif spns:
+            user_type = "service_account"
+
+        # UAC flags
+        is_disabled = bool(uac and uac & 2)
+        password_never_expires = bool(uac and uac & 65536)
+
+        # Password last set
+        pwd_last_set = first("pwdLastSet")
+
+        # When created → date_joined
+        date_joined = first("whenCreated")
+
+        user = {
+            "scan_id": scan_id,
+            "asset_id": asset_id,
+            "source_plugin": "167250",
+            "user_type": user_type,
+            "username": username,
+            "domain": _domain_from_dn(dn),
+            "sid": sid,
+            "rid": _rid_from_sid(sid) if sid else None,
+            "dn": dn,
+            "uac": uac,
+            "spns": spns,
+            "member_of": member_of,
+            "password_last_set": pwd_last_set,
+            "date_joined": date_joined,
+            "is_local_admin": False,
+            "is_domain_admin": is_domain_admin,
+            "is_privileged": is_privileged or bool(first("adminCount")),
+            "is_disabled": is_disabled,
+            "password_never_expires": password_never_expires,
+            "never_logged_in": first("logonCount") in (None, "0"),
+            "never_changed_password": pwd_last_set in (None, "0"),
+            "last_logon_host": None,
+            "department": department,
+            "job_title": job_title,
+            "manager_dn": manager_dn_val,
+            "manager_username": manager_username,
+        }
+        classify_identity(user)
+        users.append(user)
+
+    return users
+
+
+# ─────────────────────────────────────────────────────────
+# Plugin 168912 — Domain Trust Relationships (LDAP JSON)
+# ─────────────────────────────────────────────────────────
+
+_TRUST_DIRECTION = {0: "disabled", 1: "inbound", 2: "outbound", 3: "bidirectional"}
+_TRUST_TYPE = {1: "downlevel", 2: "uplevel", 3: "mit_kerberos", 4: "dce"}
+
+
+def extract_domain_trusts(plugin_output: str, asset_id: int, scan_id: int) -> list[dict]:
+    """Parse domain trust objects from plugin 168912 (LDAP trustedDomain objects)."""
+    if not plugin_output:
+        return []
+
+    trusts = []
+    for line in plugin_output.strip().split("\n"):
+        line = line.strip()
+        if not line.startswith("["):
+            continue
+        try:
+            pairs = json.loads(line)
+            attrs = {p[0]: p[1] for p in pairs if len(p) == 2}
+        except (json.JSONDecodeError, Exception):
+            continue
+
+        def first(key):
+            vals = attrs.get(key, [])
+            return vals[0] if vals else None
+
+        obj_classes = [c.lower() for c in attrs.get("objectClass", [])]
+        if "trusteddomain" not in obj_classes:
+            continue
+
+        trusted_domain = first("trustPartner") or first("cn") or first("name")
+        if not trusted_domain:
+            continue
+
+        dn = first("distinguishedName") or ""
+        direction_raw = first("trustDirection")
+        direction = _TRUST_DIRECTION.get(int(direction_raw), "unknown") if direction_raw and direction_raw.isdigit() else "unknown"
+        type_raw = first("trustType")
+        trust_type = _TRUST_TYPE.get(int(type_raw), "unknown") if type_raw and type_raw.isdigit() else "unknown"
+        attrs_raw = first("trustAttributes")
+        trust_attrs = int(attrs_raw) if attrs_raw and attrs_raw.isdigit() else 0
+
+        # trustAttributes flags:
+        #   0x01 = non-transitive, 0x02 = uplevel_only, 0x04 = quarantined (SID filtering),
+        #   0x08 = forest_transitive, 0x20 = within_forest
+        is_transitive = bool(trust_attrs & 0x08) or bool(trust_attrs & 0x20) or not bool(trust_attrs & 0x01)
+        is_sid_filtering = bool(trust_attrs & 0x04) or not bool(trust_attrs & 0x20)
+
+        trusts.append({
+            "scan_id": scan_id,
+            "asset_id": asset_id,
+            "source_plugin": "168912",
+            "trusted_domain": trusted_domain,
+            "flat_name": first("flatName"),
+            "sid": first("securityIdentifier"),
+            "dn": dn,
+            "trust_direction": direction,
+            "trust_type": trust_type,
+            "trust_attributes": trust_attrs,
+            "is_transitive": is_transitive,
+            "is_sid_filtering_enabled": is_sid_filtering,
+            "source_domain": _domain_from_dn(dn),
+            "when_created": first("whenCreated"),
+        })
+
+    return trusts
 
 
 # ─────────────────────────────────────────────────────────
@@ -1919,7 +2212,9 @@ PLUGIN_DISPATCH = {
     "10902": ("admins_group", extract_admins_group),
     "38689": ("last_logon", extract_last_logon),
     "69238": ("ad_groups", extract_ad_groups),
+    "167250": ("ldap_users", extract_ldap_users),
     "167251": ("ldap_groups", extract_ldap_groups),
+    "168912": ("domain_trusts", extract_domain_trusts),
     "10456": ("services", extract_services),
     "64582": ("netconns", extract_netstat_info),
     "58651": ("netconns", extract_netstat_active),
@@ -1952,7 +2247,7 @@ PLUGIN_DISPATCH = {
 }
 
 # User-producing plugins (their records go into InventoryUser)
-USER_PLUGINS = {"ad_users", "local_users", "admins_group", "last_logon"}
+USER_PLUGINS = {"ad_users", "ldap_users", "local_users", "admins_group", "last_logon"}
 # Group-producing plugins → InventoryGroup
 GROUP_PLUGINS = {"ad_groups", "ldap_groups"}
 
@@ -1991,6 +2286,7 @@ def extract_inventory_from_findings(findings: list[dict], dispatch: dict = None)
         "ai_tools": [],
         "processes": [],
         "database_instances": [],
+        "domain_trusts": [],
     }
 
     for finding in findings:
@@ -2037,7 +2333,76 @@ def extract_inventory_from_findings(findings: list[dict], dispatch: dict = None)
         elif table_key in result:
             result[table_key].extend(records)
 
+    # Deduplicate users: same (username, domain, scan_id) → merge, prefer richer record
+    result["users"] = _dedup_users(result["users"])
+
     return result
+
+
+# Priority: higher number = richer data source (preferred when merging)
+_PLUGIN_PRIORITY = {"167250": 3, "69239": 2, "10902": 1, "10860": 1, "38689": 0}
+
+
+def _dedup_users(users: list[dict]) -> list[dict]:
+    """Merge duplicate user records by (username_lower, domain_lower, scan_id).
+
+    When two plugins produce the same user, keep the higher-priority record
+    and merge source_systems + privilege flags from the lower-priority one.
+    """
+    seen: dict[tuple, dict] = {}
+    for u in users:
+        key = (
+            (u.get("username") or "").lower(),
+            (u.get("domain") or "").lower(),
+            u.get("scan_id"),
+        )
+        if key not in seen:
+            seen[key] = u
+        else:
+            existing = seen[key]
+            existing_pri = _PLUGIN_PRIORITY.get(existing.get("source_plugin", ""), 0)
+            new_pri = _PLUGIN_PRIORITY.get(u.get("source_plugin", ""), 0)
+
+            # Keep the higher-priority record as base
+            if new_pri > existing_pri:
+                base, donor = u, existing
+            else:
+                base, donor = existing, u
+
+            # Merge source_systems
+            sources = list(base.get("source_systems") or [])
+            for s in (donor.get("source_systems") or []):
+                if s not in sources:
+                    sources.append(s)
+            base["source_systems"] = sources
+
+            # Merge privilege flags (OR logic — if either says admin, keep it)
+            for flag in ("is_local_admin", "is_domain_admin", "is_privileged"):
+                if donor.get(flag):
+                    base[flag] = True
+
+            # Merge member_of lists
+            existing_groups = set(base.get("member_of") or [])
+            for g in (donor.get("member_of") or []):
+                if g not in existing_groups:
+                    base.setdefault("member_of", []).append(g)
+
+            # Fill empty fields from donor
+            for field in ("department", "job_title", "manager_dn", "manager_username",
+                          "sid", "dn", "uac", "password_last_set", "date_joined",
+                          "last_logon_host", "identity_type", "identity_subtype"):
+                if not base.get(field) and donor.get(field):
+                    base[field] = donor[field]
+
+            # Prefer non-"unknown" identity_type
+            if base.get("identity_type") == "unknown" and donor.get("identity_type") not in (None, "unknown"):
+                base["identity_type"] = donor["identity_type"]
+                if donor.get("identity_subtype"):
+                    base["identity_subtype"] = donor["identity_subtype"]
+
+            seen[key] = base
+
+    return list(seen.values())
 
 
 # ─────────────────────────────────────────────────────────────────────────────

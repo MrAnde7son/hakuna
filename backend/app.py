@@ -20,7 +20,7 @@ from core.database import get_db, init_db
 from models.models import (
     Organization, User,
     Scan, Asset, Finding, AutomateClick,
-    InventoryUser, InventoryGroup, InventoryService,
+    InventoryUser, InventoryGroup, InventoryDomainTrust, InventoryService,
     InventoryNetConn, InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
     InventoryShare, InventorySoftware, InventorySecurityControl,
     InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
@@ -316,7 +316,7 @@ def startup():
     logger.info("Database initialized, parsers registered")
     # Build ENTITY_MODEL_MAP after models are loaded
     ENTITY_MODEL_MAP.update({
-        "assets":            (Asset,                    [],                    []),
+        "assets":            (Asset,                    ["inferred_admin_contacts"],  ["is_internet_facing", "is_credentialed"]),
         "findings":          (Finding,                  ["cves"],              []),
         "users":             (InventoryUser,            ["spns", "member_of"], ["is_local_admin", "is_domain_admin", "is_privileged", "is_disabled", "password_never_expires", "never_logged_in", "never_changed_password"]),
         "groups":            (InventoryGroup,           ["members"],           ["is_privileged"]),
@@ -439,6 +439,165 @@ def _populate_temporal_fields(db: Session, scan):
 
 
 # ─────────────────────────────────────────────
+# Delta Reconciliation (auto-resolve fixed findings, asset lifecycle)
+# ─────────────────────────────────────────────
+
+# Workflow statuses that analysts set deliberately — never auto-resolve these
+_PROTECTED_STATUSES = {"accepted_risk", "false_positive", "compensating_control", "technical_debt"}
+
+
+def _reconcile_findings_delta(db: Session, scan) -> dict:
+    """Auto-resolve findings from prior scans that are absent in the new scan,
+    per-asset (matched by IP).  Only considers assets present in BOTH the new
+    scan and at least one prior scan — partial scans won't mark unrelated assets.
+
+    Returns dict with delta stats for the upload response."""
+    from sqlalchemy import and_
+
+    scan_date = _parse_scan_date(scan)
+
+    # Step 1: IPs in the new scan
+    new_assets = db.query(Asset).filter(Asset.scan_id == scan.id).all()
+    new_scan_ips = {a.ip for a in new_assets if a.ip}
+    if not new_scan_ips:
+        return {"auto_resolved": 0, "rescanned_assets": 0, "new_assets": 0}
+
+    # Step 2: Which of these IPs existed in prior scans? (same org only)
+    org_filter = []
+    if scan.org_id:
+        org_filter.append(Scan.org_id == scan.org_id)
+
+    prior_asset_ips = {
+        row.ip for row in
+        db.query(Asset.ip).join(Scan, Asset.scan_id == Scan.id).filter(
+            Asset.ip.in_(new_scan_ips),
+            Scan.id != scan.id,
+            *org_filter,
+        ).distinct().all()
+    }
+    # Only reconcile IPs that were seen before (rescanned assets)
+    rescanned_ips = new_scan_ips & prior_asset_ips
+    new_ips = new_scan_ips - prior_asset_ips
+
+    if not rescanned_ips:
+        # First time seeing all these assets — just set asset lifecycle fields
+        _update_asset_lifecycle(db, scan, scan_date, new_scan_ips, prior_asset_ips)
+        return {"auto_resolved": 0, "rescanned_assets": 0, "new_assets": len(new_ips)}
+
+    # Step 3: Build set of (plugin_id, ip) present in the new scan
+    new_finding_keys = set()
+    for plugin_id, ip in db.query(Finding.plugin_id, Asset.ip).join(
+        Asset, Finding.asset_id == Asset.id
+    ).filter(Finding.scan_id == scan.id).all():
+        new_finding_keys.add((plugin_id, ip or ""))
+
+    # Step 4: Find prior open findings for rescanned IPs
+    prior_q = db.query(Finding).join(
+        Asset, Finding.asset_id == Asset.id
+    ).join(
+        Scan, Finding.scan_id == Scan.id
+    ).filter(
+        Finding.scan_id != scan.id,
+        Asset.ip.in_(rescanned_ips),
+        Finding.auto_resolved == False,
+        Finding.severity > 0,  # Skip Info-level
+    )
+    if scan.org_id:
+        prior_q = prior_q.filter(Scan.org_id == scan.org_id)
+    # Exclude protected workflow statuses
+    prior_q = prior_q.filter(
+        ~Finding.workflow_status.in_(_PROTECTED_STATUSES)
+    )
+
+    # Eager-load asset IPs to avoid N+1
+    prior_findings = prior_q.all()
+    # Build asset_id → ip map for these findings
+    asset_ids = {f.asset_id for f in prior_findings}
+    asset_ip_map = {}
+    if asset_ids:
+        for a_id, a_ip in db.query(Asset.id, Asset.ip).filter(Asset.id.in_(asset_ids)).all():
+            asset_ip_map[a_id] = a_ip or ""
+
+    # Step 5: Auto-resolve findings absent from new scan
+    resolved_count = 0
+    for f in prior_findings:
+        ip = asset_ip_map.get(f.asset_id, "")
+        key = (f.plugin_id, ip)
+        if key not in new_finding_keys:
+            f.auto_resolved = True
+            f.auto_resolved_at = scan_date
+            f.auto_resolved_by_scan_id = scan.id
+            if f.workflow_status in ("open", "in_progress", None):
+                f.workflow_status = "resolved"
+                f.resolved_at = scan_date
+                f.status_changed_at = scan_date
+                f.sla_status = "resolved"
+            resolved_count += 1
+
+    # Step 6: Update asset lifecycle
+    _update_asset_lifecycle(db, scan, scan_date, new_scan_ips, prior_asset_ips)
+
+    db.flush()
+    logger.info(f"Delta reconciliation: {resolved_count} findings auto-resolved "
+                f"across {len(rescanned_ips)} rescanned assets")
+
+    return {
+        "auto_resolved": resolved_count,
+        "rescanned_assets": len(rescanned_ips),
+        "new_assets": len(new_ips),
+    }
+
+
+def _update_asset_lifecycle(db: Session, scan, scan_date: datetime,
+                            new_scan_ips: set, prior_asset_ips: set):
+    """Update first_seen/last_seen/status for assets based on the new scan."""
+
+    # Assets in the new scan: set lifecycle fields
+    for asset in db.query(Asset).filter(Asset.scan_id == scan.id).all():
+        asset.last_seen = scan_date
+        asset.asset_status = "active"
+        asset.stale_since = None
+
+        if asset.ip and asset.ip in prior_asset_ips:
+            # Seen before — pull earliest first_seen from prior assets with same IP
+            earliest = db.query(func.min(Asset.first_seen)).filter(
+                Asset.ip == asset.ip, Asset.id != asset.id,
+                Asset.first_seen.isnot(None),
+            ).scalar()
+            asset.first_seen = earliest or scan_date
+            # Count total scans this IP has appeared in
+            prior_count = db.query(func.count(func.distinct(Asset.scan_id))).filter(
+                Asset.ip == asset.ip, Asset.scan_id != scan.id,
+            ).scalar() or 0
+            asset.times_seen = prior_count + 1
+        else:
+            asset.first_seen = scan_date
+            asset.times_seen = 1
+
+    # Prior assets with rescanned IPs that are NOT in the new scan:
+    # mark stale if their IP was rescanned but they weren't updated
+    # (This covers the case where the same IP was in a prior scan of this org)
+    org_filter = []
+    if scan.org_id:
+        org_filter.append(Scan.org_id == scan.org_id)
+
+    # Mark prior-scan assets for rescanned IPs — update their last_seen
+    if prior_asset_ips & new_scan_ips:
+        returning_ips = prior_asset_ips & new_scan_ips
+        prior_assets = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(
+            Asset.ip.in_(returning_ips),
+            Asset.scan_id != scan.id,
+            *org_filter,
+        ).all()
+        for pa in prior_assets:
+            # Update last_seen on prior records too so queries across scans are consistent
+            if not pa.last_seen or scan_date > pa.last_seen:
+                pa.last_seen = scan_date
+
+    db.flush()
+
+
+# ─────────────────────────────────────────────
 # Upload & Ingest
 # ─────────────────────────────────────────────
 
@@ -498,6 +657,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
                 parsed_assets,
                 asset_dcfg.get("key_fields", ["ip"]),
                 asset_dcfg.get("strategy", "merge"),
+                key_mode=asset_dcfg.get("key_mode", "and"),
             )
             if len(parsed_assets) < before:
                 logger.info(f"Within-scan asset dedup: {before} → {len(parsed_assets)} assets")
@@ -642,6 +802,9 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     # ── Populate temporal tracking (first_seen / last_seen / regression) ──
     _populate_temporal_fields(db, scan)
 
+    # ── Delta reconciliation: auto-resolve findings fixed since last scan ──
+    delta_stats = _reconcile_findings_delta(db, scan)
+
     # ── Detect internet-facing assets & credentialed scan status via scanner detection plugin ──
     import ipaddress as _ipaddress
     detection_plugin_id = source_parser.get_scanner_detection_plugin()
@@ -700,7 +863,9 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
                                    "spns", "member_of", "password_last_set", "date_joined",
                                    "is_local_admin", "is_domain_admin", "is_privileged",
                                    "is_disabled", "password_never_expires", "never_logged_in",
-                                   "never_changed_password", "last_logon_host"]),
+                                   "never_changed_password", "last_logon_host",
+                                   "identity_type", "identity_subtype", "source_systems",
+                                   "department", "job_title", "manager_dn", "manager_username"]),
         "groups": (InventoryGroup, ["scan_id", "asset_id", "source_plugin",
                                      "group_name", "domain", "sid", "dn",
                                      "description", "members", "is_privileged"]),
@@ -761,6 +926,13 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             "scan_id", "asset_id", "source_plugin",
             "db_type", "instance_name", "version", "port",
             "databases", "named_pipes", "is_running",
+        ]),
+        "domain_trusts": (InventoryDomainTrust, [
+            "scan_id", "asset_id", "source_plugin",
+            "trusted_domain", "flat_name", "sid", "dn",
+            "trust_direction", "trust_type", "trust_attributes",
+            "is_transitive", "is_sid_filtering_enabled",
+            "source_domain", "when_created",
         ]),
     }
 
@@ -898,6 +1070,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         "scan_name": scan.scan_name,
         "assets": total_assets,
         "findings": total_findings,
+        "delta": delta_stats,
         "message": "Scan uploaded and processed successfully",
     }
 
@@ -1086,6 +1259,7 @@ def list_assets(
     min_high: Optional[int] = None,
     has_findings: Optional[bool] = None,
     server_role: Optional[str] = None,
+    asset_status: Optional[str] = None,
     tags: Optional[str] = None,
     tag_logic: str = "AND",
     expand_children: bool = False,
@@ -1123,6 +1297,8 @@ def list_assets(
         q = q.filter(Asset.high_count >= min_high)
     if has_findings is True:
         q = q.filter((Asset.critical_count + Asset.high_count + Asset.medium_count + Asset.low_count) > 0)
+    if asset_status:
+        q = q.filter(Asset.asset_status == asset_status)
     if tags:
         pairs = tag_engine.parse_tag_filter(tags)
         id_sets = tag_engine.resolve_tag_ids(pairs, expand_children, db)
@@ -1239,6 +1415,12 @@ def _asset_to_dict(a: Asset) -> dict:
         "inferred_admin_contacts": a.inferred_admin_contacts or [],
         "inferred_team": a.inferred_team,
         "owner_confidence": a.owner_confidence or "low",
+        # Lifecycle tracking
+        "first_seen": a.first_seen.isoformat() if a.first_seen else None,
+        "last_seen": a.last_seen.isoformat() if a.last_seen else None,
+        "times_seen": a.times_seen or 1,
+        "asset_status": a.asset_status or "active",
+        "stale_since": a.stale_since.isoformat() if a.stale_since else None,
         # Manual ownership (if set)
         "ownership": {
             "owner_name": own.owner_name,
@@ -1268,6 +1450,7 @@ def list_findings(
     min_epss: Optional[float] = None,
     sla_status: Optional[str] = None,
     effort_level: Optional[str] = None,
+    auto_resolved: Optional[bool] = None,
     cve: Optional[str] = None,
     search: Optional[str] = None,
     tags: Optional[str] = None,
@@ -1319,6 +1502,8 @@ def list_findings(
         q = q.filter(Finding.exception_id == None)
     if effort_level:
         q = q.filter(Finding.effort_level == effort_level)
+    if auto_resolved is not None:
+        q = q.filter(Finding.auto_resolved == auto_resolved)
     if cve:
         # Partial match within JSON-serialized cves array (case-insensitive)
         q = q.filter(Finding.cves.ilike(f"%{cve}%"))
@@ -1560,6 +1745,10 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dic
         "last_seen": f.last_seen.isoformat() if f.last_seen else None,
         "times_seen": f.times_seen or 1,
         "is_regression": f.is_regression or False,
+        # Delta tracking
+        "auto_resolved": f.auto_resolved or False,
+        "auto_resolved_at": f.auto_resolved_at.isoformat() if f.auto_resolved_at else None,
+        "auto_resolved_by_scan_id": f.auto_resolved_by_scan_id,
     }
     if include_full:
         base.update({
@@ -1799,6 +1988,136 @@ def get_summary(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_l
     }
 
 
+@app.get("/api/reports/risk-grade")
+def get_risk_grade(
+    scan_id: Optional[int] = None,
+    tags: Optional[str] = None,
+    tag_logic: str = "AND",
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Compute a composite organisation risk grade (0-100 score → A-F letter)."""
+    # ── Gather summary data ──
+    asset_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
+    finding_q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+    asset_q = apply_scan_org_filter(asset_q, org_ids)
+    finding_q = apply_scan_org_filter(finding_q, org_ids)
+    if scan_id:
+        asset_q = asset_q.filter(Asset.scan_id == scan_id)
+        finding_q = finding_q.filter(Finding.scan_id == scan_id)
+    if tags:
+        pairs = tag_engine.parse_tag_filter(tags)
+        id_sets = tag_engine.resolve_tag_ids(pairs, False, db)
+        asset_q = tag_engine.apply_asset_tag_filter(asset_q, id_sets, tag_logic, db)
+        finding_q = tag_engine.apply_finding_tag_filter(finding_q, id_sets, tag_logic, db)
+
+    total_assets = asset_q.count()
+    total_findings = finding_q.count()
+
+    sev_counts = {}
+    for sev in range(5):
+        sev_counts[sev] = finding_q.filter(Finding.severity == sev).count()
+    non_info = max(total_findings - sev_counts.get(0, 0), 1)
+    critical = sev_counts.get(4, 0)
+    high = sev_counts.get(3, 0)
+    exploit_count = finding_q.filter(Finding.exploit_available == True).count()
+
+    credentialed = asset_q.filter(Asset.is_credentialed == True).count()
+    coverage_pct = (credentialed / total_assets * 100) if total_assets > 0 else 0
+
+    # ── Gather SLA data ──
+    _ensure_sla_defaults(db)
+    sla_q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+    sla_q = apply_scan_org_filter(sla_q, org_ids)
+    if scan_id:
+        sla_q = sla_q.filter(Finding.scan_id == scan_id)
+    enabled_sevs = [c.severity for c in db.query(SLAConfig).filter(SLAConfig.is_enabled == True).all()]
+    sla_q = sla_q.filter(Finding.severity.in_(enabled_sevs))
+    sla_findings = sla_q.all()
+
+    sla_counts = {"on_track": 0, "at_risk": 0, "breached": 0, "resolved": 0, "n/a": 0}
+    cfg_map = {c.severity: c for c in db.query(SLAConfig).all()}
+    mttr_vals = []
+    for f in sla_findings:
+        status = f.sla_status or "n/a"
+        sla_counts[status] = sla_counts.get(status, 0) + 1
+        if f.resolved_at and f.sla_due_date:
+            cfg = cfg_map.get(f.severity)
+            if cfg:
+                from datetime import timedelta
+                obs_date = f.sla_due_date - timedelta(days=cfg.days_to_remediate)
+                days = (f.resolved_at - obs_date).total_seconds() / 86400
+                if days >= 0:
+                    mttr_vals.append(days)
+
+    total_sla = sum(sla_counts[k] for k in ("on_track", "at_risk", "breached", "resolved"))
+    compliance_pct = ((sla_counts["on_track"] + sla_counts["resolved"]) / total_sla * 100) if total_sla else 100
+    avg_mttr = (sum(mttr_vals) / len(mttr_vals)) if mttr_vals else 0
+
+    # ── Score components (each 0-100, higher = better) ──
+    # 1. Severity mix: penalise critical/high ratio
+    crit_high_ratio = (critical + high) / non_info if non_info else 0
+    severity_score = max(0, 100 - crit_high_ratio * 200)  # 50% crit+high → 0
+
+    # 2. SLA compliance (already 0-100)
+    sla_score = compliance_pct
+
+    # 3. Remediation velocity: MTTR < 7d = 100, >90d = 0
+    if avg_mttr <= 0:
+        velocity_score = 100  # no data or instant
+    else:
+        velocity_score = max(0, min(100, 100 - (avg_mttr - 7) * (100 / 83)))
+
+    # 4. Assessment coverage (already 0-100)
+    coverage_score = coverage_pct
+
+    # 5. Exploit exposure: % of non-info findings that are exploitable
+    exploit_ratio = exploit_count / non_info if non_info else 0
+    exploit_score = max(0, 100 - exploit_ratio * 300)  # 33% exploitable → 0
+
+    # ── Weighted composite ──
+    composite = (
+        severity_score * 0.25 +
+        sla_score * 0.25 +
+        velocity_score * 0.20 +
+        coverage_score * 0.15 +
+        exploit_score * 0.15
+    )
+    composite = max(0, min(100, round(composite, 1)))
+
+    # ── Letter grade ──
+    if composite >= 90:
+        grade, grade_color = "A", "#16a34a"
+    elif composite >= 80:
+        grade, grade_color = "B", "#65a30d"
+    elif composite >= 70:
+        grade, grade_color = "C", "#d97706"
+    elif composite >= 60:
+        grade, grade_color = "D", "#ea580c"
+    else:
+        grade, grade_color = "F", "#dc2626"
+
+    return {
+        "score": composite,
+        "grade": grade,
+        "grade_color": grade_color,
+        "components": {
+            "severity_mix": round(severity_score, 1),
+            "sla_compliance": round(sla_score, 1),
+            "remediation_velocity": round(velocity_score, 1),
+            "assessment_coverage": round(coverage_score, 1),
+            "exploit_exposure": round(exploit_score, 1),
+        },
+        "weights": {
+            "severity_mix": 0.25,
+            "sla_compliance": 0.25,
+            "remediation_velocity": 0.20,
+            "assessment_coverage": 0.15,
+            "exploit_exposure": 0.15,
+        },
+    }
+
+
 @app.get("/api/reports/plugin-families")
 def get_plugin_families(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_logic: str = "AND", db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return all unique plugin families for filter dropdowns."""
@@ -2005,6 +2324,10 @@ def list_inventory_users(
     scan_id: Optional[int] = None,
     asset_id: Optional[int] = None,
     user_type: Optional[str] = None,
+    identity_type: Optional[str] = None,
+    identity_subtype: Optional[str] = None,
+    department: Optional[str] = None,
+    has_manager: Optional[bool] = None,
     is_admin: Optional[bool] = None,
     is_domain_admin: Optional[bool] = None,
     is_privileged: Optional[bool] = None,
@@ -2024,8 +2347,23 @@ def list_inventory_users(
         q = q.filter(InventoryUser.asset_id == asset_id)
     if user_type:
         q = q.filter(InventoryUser.user_type == user_type)
+    if identity_type:
+        q = q.filter(InventoryUser.identity_type == identity_type)
+    if identity_subtype:
+        q = q.filter(InventoryUser.identity_subtype == identity_subtype)
+    if department:
+        q = q.filter(InventoryUser.department.ilike(f"%{department}%"))
+    if has_manager is not None:
+        if has_manager:
+            q = q.filter(InventoryUser.manager_username.isnot(None))
+        else:
+            q = q.filter(InventoryUser.manager_username.is_(None))
     if is_admin is not None:
-        q = q.filter(InventoryUser.is_local_admin == is_admin)
+        if is_admin:
+            q = q.filter(InventoryUser.is_local_admin == True)
+        else:
+            # "Non-admin" means not a local admin AND not a domain admin
+            q = q.filter(InventoryUser.is_local_admin == False, InventoryUser.is_domain_admin == False)
     if is_domain_admin is not None:
         q = q.filter(InventoryUser.is_domain_admin == is_domain_admin)
     if is_privileged is not None:
@@ -2033,7 +2371,9 @@ def list_inventory_users(
     if search:
         q = q.filter(
             InventoryUser.username.ilike(f"%{search}%") |
-            InventoryUser.domain.ilike(f"%{search}%")
+            InventoryUser.domain.ilike(f"%{search}%") |
+            InventoryUser.department.ilike(f"%{search}%") |
+            InventoryUser.job_title.ilike(f"%{search}%")
         )
     q = _apply_sort(q, InventoryUser, sort_by, order, InventoryUser.username)
     total = q.count()
@@ -2043,6 +2383,47 @@ def list_inventory_users(
         users = q.offset((page - 1) * page_size).limit(page_size).all()
     assets = _asset_lookup(db, {u.asset_id for u in users})
     return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "users": [_inv_user_to_dict(u, assets) for u in users]}
+
+
+@app.get("/api/inventory/users/org-tree")
+def get_user_org_tree(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return a hierarchical org tree built from the manager attribute of human AD users."""
+    q = db.query(InventoryUser).join(Scan, InventoryUser.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
+    q = q.filter(InventoryUser.scan_id == scan_id)
+    q = q.filter(InventoryUser.identity_type == "human")
+    users = q.all()
+    assets = _asset_lookup(db, {u.asset_id for u in users})
+
+    # Build lookup by username (lowercase) for tree construction
+    by_name = {}
+    for u in users:
+        udict = _inv_user_to_dict(u, assets)
+        udict["children"] = []
+        key = (u.username or "").lower()
+        if key not in by_name:
+            by_name[key] = udict
+        else:
+            # Merge source_systems from duplicate
+            existing = by_name[key]
+            for s in udict.get("source_systems") or []:
+                if s not in existing["source_systems"]:
+                    existing["source_systems"].append(s)
+
+    # Link children to parents
+    roots = []
+    for key, node in by_name.items():
+        mgr = (node.get("manager_username") or "").lower()
+        if mgr and mgr in by_name and mgr != key:
+            by_name[mgr]["children"].append(node)
+        else:
+            roots.append(node)
+
+    return {"roots": roots, "total_users": len(by_name), "total_with_manager": sum(1 for n in by_name.values() if n.get("manager_username"))}
 
 
 @app.get("/api/inventory/groups")
@@ -2962,6 +3343,47 @@ def list_inventory_databases(
     } for i in instances]}
 
 
+@app.get("/api/inventory/domain-trusts")
+def list_inventory_domain_trusts(
+    scan_id: Optional[int] = None,
+    asset_id: Optional[int] = None,
+    trust_direction: Optional[str] = None,
+    sort_by: str = "trusted_domain",
+    order: str = "asc",
+    page: int = 1,
+    page_size: int = 100,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    q = db.query(InventoryDomainTrust).join(Scan, InventoryDomainTrust.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
+    if scan_id:
+        q = q.filter(InventoryDomainTrust.scan_id == scan_id)
+    if asset_id:
+        q = q.filter(InventoryDomainTrust.asset_id == asset_id)
+    if trust_direction:
+        q = q.filter(InventoryDomainTrust.trust_direction == trust_direction)
+    q = _apply_sort(q, InventoryDomainTrust, sort_by, order, InventoryDomainTrust.trusted_domain)
+    total = q.count()
+    if page_size == 0:
+        trusts = q.all()
+    else:
+        trusts = q.offset((page - 1) * page_size).limit(page_size).all()
+    assets = _asset_lookup(db, {t.asset_id for t in trusts})
+    return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "domain_trusts": [{
+        "id": t.id, "scan_id": t.scan_id, "asset_id": t.asset_id,
+        "asset_label": _asset_label(assets.get(t.asset_id)),
+        "asset_ip": (assets.get(t.asset_id) or {}).get("ip"),
+        "trusted_domain": t.trusted_domain, "flat_name": t.flat_name,
+        "sid": t.sid, "dn": t.dn,
+        "trust_direction": t.trust_direction, "trust_type": t.trust_type,
+        "trust_attributes": t.trust_attributes,
+        "is_transitive": t.is_transitive, "is_sid_filtering_enabled": t.is_sid_filtering_enabled,
+        "source_domain": t.source_domain, "when_created": t.when_created,
+        "source_plugin": t.source_plugin,
+    } for t in trusts]}
+
+
 @app.get("/api/inventory/ai-tools")
 def list_inventory_ai_tools(
     scan_id: Optional[int] = None,
@@ -3058,6 +3480,13 @@ def _inv_user_to_dict(u: InventoryUser, assets: dict = None) -> dict:
         "rid": u.rid,
         "dn": u.dn,
         "user_type": u.user_type,
+        "identity_type": u.identity_type or "unknown",
+        "identity_subtype": u.identity_subtype,
+        "source_systems": u.source_systems or [],
+        "department": u.department,
+        "job_title": u.job_title,
+        "manager_dn": u.manager_dn,
+        "manager_username": u.manager_username,
         "is_local_admin": u.is_local_admin,
         "is_domain_admin": u.is_domain_admin,
         "is_privileged": u.is_privileged,
@@ -7011,6 +7440,249 @@ def get_risk_by_tags(
 
 
 # ─────────────────────────────────────────────────────────
+# Funnel Widget
+# ─────────────────────────────────────────────────────────
+
+class FunnelStep(BaseModel):
+    label: str
+    filters: dict = {}
+
+class FunnelRequest(BaseModel):
+    base_entity: str = "findings"  # "findings" or "assets"
+    scan_id: Optional[int] = None
+    steps: List[FunnelStep] = []
+
+@app.post("/api/reports/funnel")
+def compute_funnel(
+    body: FunnelRequest,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Compute counts for a multi-step funnel.
+    Each step progressively narrows results by applying cumulative filters.
+    Supports both findings-based and assets-based funnels."""
+    results = []
+
+    if body.base_entity == "findings":
+        base_q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+        base_q = apply_scan_org_filter(base_q, org_ids)
+        if body.scan_id:
+            base_q = base_q.filter(Finding.scan_id == body.scan_id)
+
+        q = base_q
+        for step in body.steps:
+            f = step.filters
+            _is_true = lambda v: v == True or v == "true"
+            # Severity
+            if f.get("severity") is not None and f["severity"] != "":
+                q = q.filter(Finding.severity == int(f["severity"]))
+            if f.get("min_severity") is not None and f["min_severity"] != "":
+                q = q.filter(Finding.severity >= int(f["min_severity"]))
+            # Scoring
+            if f.get("min_cvss3"):
+                q = q.filter(Finding.cvss3_score >= float(f["min_cvss3"]))
+            if f.get("min_cvss4"):
+                q = q.filter(Finding.cvss4_score >= float(f["min_cvss4"]))
+            if f.get("min_vpr"):
+                q = q.filter(Finding.vpr_score >= float(f["min_vpr"]))
+            if f.get("min_epss"):
+                q = q.filter(Finding.epss_score >= float(f["min_epss"]))
+            # Threat intel
+            if _is_true(f.get("is_kev")):
+                q = q.filter(Finding.is_kev == True)
+            if _is_true(f.get("has_exploit")):
+                q = q.filter(Finding.exploit_available == True)
+            if _is_true(f.get("ransomware_linked")):
+                q = q.filter(Finding.ransomware_linked == True)
+            if _is_true(f.get("trending_in_news")):
+                q = q.filter(Finding.trending_in_news == True)
+            if _is_true(f.get("zero_day")):
+                q = q.filter(Finding.zero_day == True)
+            if f.get("exploit_maturity"):
+                q = q.filter(Finding.exploit_maturity == f["exploit_maturity"])
+            # ATT&CK
+            if _is_true(f.get("has_ttps")):
+                q = q.filter(Finding.matched_ttps.isnot(None), Finding.matched_ttps != "[]")
+            if f.get("tactic"):
+                q = q.filter(Finding.matched_ttps.ilike(f'%"tactic": "{f["tactic"]}"%'))
+            if f.get("technique_id"):
+                q = q.filter(Finding.matched_ttps.ilike(f'%"technique_id": "{f["technique_id"]}%'))
+            # Workflow & state
+            if f.get("workflow_status"):
+                q = q.filter(Finding.workflow_status == f["workflow_status"])
+            if f.get("vulnerability_state"):
+                q = q.filter(Finding.vulnerability_state == f["vulnerability_state"])
+            if f.get("sla_status"):
+                q = q.filter(Finding.sla_status == f["sla_status"])
+            if _is_true(f.get("is_regression")):
+                q = q.filter(Finding.is_regression == True)
+            if _is_true(f.get("has_exception")):
+                q = q.filter(Finding.exception_id.isnot(None))
+            # Effort & ownership
+            if f.get("effort_level"):
+                q = q.filter(Finding.effort_level == f["effort_level"])
+            if f.get("owner_suggestion"):
+                q = q.filter(Finding.owner_suggestion == f["owner_suggestion"])
+            # Plugin details
+            if f.get("plugin_family"):
+                q = q.filter(Finding.plugin_family.ilike(f"%{f['plugin_family']}%"))
+            if f.get("plugin_name"):
+                q = q.filter(Finding.plugin_name.ilike(f"%{f['plugin_name']}%"))
+            if f.get("port"):
+                q = q.filter(Finding.port == int(f["port"]))
+            if f.get("protocol"):
+                q = q.filter(Finding.protocol == f["protocol"])
+            if f.get("cve"):
+                q = q.filter(Finding.cves.ilike(f"%{f['cve']}%"))
+            if f.get("risk_factor"):
+                q = q.filter(Finding.risk_factor == f["risk_factor"])
+            # Search text
+            if f.get("search"):
+                q = q.filter(
+                    Finding.plugin_name.ilike(f"%{f['search']}%") |
+                    Finding.synopsis.ilike(f"%{f['search']}%")
+                )
+            # Asset-level joins for findings funnel
+            need_asset_join = any(f.get(k) for k in ("on_critical_assets", "on_internet_facing", "asset_min_risk"))
+            if need_asset_join:
+                q = q.join(Asset, Finding.asset_id == Asset.id)
+            if _is_true(f.get("on_critical_assets")):
+                q = q.filter(Asset.criticality >= 8)
+            if _is_true(f.get("on_internet_facing")):
+                q = q.filter(Asset.is_internet_facing == True)
+            if f.get("asset_min_risk"):
+                q = q.filter(Asset.risk_score >= float(f["asset_min_risk"]))
+
+            count = q.count()
+            results.append({"label": step.label, "count": count})
+
+    elif body.base_entity == "assets":
+        base_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
+        base_q = apply_scan_org_filter(base_q, org_ids)
+        if body.scan_id:
+            base_q = base_q.filter(Asset.scan_id == body.scan_id)
+
+        q = base_q
+        # Track asset IDs for subquery-based filters
+        need_asset_ids = False
+        asset_ids_filter = None
+
+        for step in body.steps:
+            f = step.filters
+            _is_true = lambda v: v == True or v == "true"
+            # Asset properties
+            if f.get("criticality") is not None and f["criticality"] != "":
+                q = q.filter(Asset.criticality >= int(f["criticality"]))
+            if f.get("min_risk"):
+                q = q.filter(Asset.risk_score >= float(f["min_risk"]))
+            if f.get("os"):
+                q = q.filter(Asset.os.ilike(f"%{f['os']}%"))
+            if f.get("environment"):
+                q = q.filter(Asset.environment_tag == f["environment"])
+            # Exposure & role
+            if _is_true(f.get("is_internet_facing")):
+                q = q.filter(Asset.is_internet_facing == True)
+            if _is_true(f.get("is_domain_controller")):
+                q = q.filter(Asset.is_domain_controller == True)
+            # Service-based role detection
+            _svc_role_map = {
+                "is_database_server": ["mssql", "sqlserver", "mysql", "mysqld", "postgres",
+                                       "postgresql", "oracle", "mongodb", "mariadb", "redis", "db2"],
+                "is_web_server":  ["iis", "w3svc", "apache", "httpd", "nginx", "tomcat", "kestrel"],
+                "is_dns_server":  ["dns", "named", "bind", "dnsmasq", "unbound"],
+                "is_mail_server": ["exchange", "smtp", "imap", "pop3", "postfix", "sendmail", "exim"],
+            }
+            for role_key, patterns in _svc_role_map.items():
+                if _is_true(f.get(role_key)):
+                    svc_conditions = [InventoryService.service_name.ilike(f"%{p}%") for p in patterns]
+                    role_ids = db.query(InventoryService.asset_id).filter(or_(*svc_conditions)).distinct().subquery()
+                    q = q.filter(Asset.id.in_(db.query(role_ids)))
+            # Severity counts
+            if f.get("min_critical") is not None and f["min_critical"] != "":
+                q = q.filter(Asset.critical_count >= int(f["min_critical"]))
+            if f.get("min_high") is not None and f["min_high"] != "":
+                q = q.filter(Asset.high_count >= int(f["min_high"]))
+            if f.get("min_medium") is not None and f["min_medium"] != "":
+                q = q.filter(Asset.medium_count >= int(f["min_medium"]))
+            if _is_true(f.get("has_findings")):
+                q = q.filter((Asset.critical_count + Asset.high_count + Asset.medium_count + Asset.low_count) > 0)
+            # Finding-based subquery filters
+            if _is_true(f.get("has_critical_cves")):
+                crit_asset_ids = db.query(Finding.asset_id).filter(Finding.severity == 4).distinct().subquery()
+                q = q.filter(Asset.id.in_(db.query(crit_asset_ids)))
+            if _is_true(f.get("has_kev_findings")):
+                kev_asset_ids = db.query(Finding.asset_id).filter(Finding.is_kev == True).distinct().subquery()
+                q = q.filter(Asset.id.in_(db.query(kev_asset_ids)))
+            if _is_true(f.get("has_exploitable")):
+                exp_asset_ids = db.query(Finding.asset_id).filter(Finding.exploit_available == True).distinct().subquery()
+                q = q.filter(Asset.id.in_(db.query(exp_asset_ids)))
+            if _is_true(f.get("has_ransomware_findings")):
+                rw_asset_ids = db.query(Finding.asset_id).filter(Finding.ransomware_linked == True).distinct().subquery()
+                q = q.filter(Asset.id.in_(db.query(rw_asset_ids)))
+            # Identity & access (inventory-based)
+            if _is_true(f.get("has_domain_admin_logged_on")):
+                da_usernames = db.query(InventoryUser.username).filter(
+                    InventoryUser.is_domain_admin == True
+                ).distinct().subquery()
+                da_asset_ids = db.query(InventoryLoggedOn.asset_id).filter(
+                    InventoryLoggedOn.username.in_(db.query(da_usernames))
+                ).distinct().subquery()
+                q = q.filter(Asset.id.in_(db.query(da_asset_ids)))
+            if _is_true(f.get("has_privileged_user")):
+                priv_usernames = db.query(InventoryUser.username).filter(
+                    InventoryUser.is_privileged == True
+                ).distinct().subquery()
+                priv_asset_ids = db.query(InventoryLoggedOn.asset_id).filter(
+                    InventoryLoggedOn.username.in_(db.query(priv_usernames))
+                ).distinct().subquery()
+                q = q.filter(Asset.id.in_(db.query(priv_asset_ids)))
+            if _is_true(f.get("has_kerberoastable")):
+                kerb_asset_ids = db.query(InventoryUser.asset_id).filter(
+                    InventoryUser.spns.isnot(None), InventoryUser.spns != "[]"
+                ).distinct().subquery()
+                q = q.filter(Asset.id.in_(db.query(kerb_asset_ids)))
+            if _is_true(f.get("has_writeable_share")):
+                share_asset_ids = db.query(InventoryShare.asset_id).filter(
+                    InventoryShare.is_writeable == True
+                ).distinct().subquery()
+                q = q.filter(Asset.id.in_(db.query(share_asset_ids)))
+            # Security controls
+            if _is_true(f.get("lacks_security_controls")):
+                has_ctrl_ids = db.query(InventorySecurityControl.asset_id).distinct().subquery()
+                q = q.filter(~Asset.id.in_(db.query(has_ctrl_ids)))
+            if _is_true(f.get("lacks_av")):
+                has_av_ids = db.query(InventorySecurityControl.asset_id).filter(
+                    InventorySecurityControl.control_type == "antivirus"
+                ).distinct().subquery()
+                q = q.filter(~Asset.id.in_(db.query(has_av_ids)))
+            if _is_true(f.get("lacks_edr")):
+                has_edr_ids = db.query(InventorySecurityControl.asset_id).filter(
+                    InventorySecurityControl.control_type == "edr"
+                ).distinct().subquery()
+                q = q.filter(~Asset.id.in_(db.query(has_edr_ids)))
+            if _is_true(f.get("lacks_firewall")):
+                has_fw_ids = db.query(InventorySecurityControl.asset_id).filter(
+                    InventorySecurityControl.control_type == "firewall"
+                ).distinct().subquery()
+                q = q.filter(~Asset.id.in_(db.query(has_fw_ids)))
+            # Search
+            if f.get("search"):
+                pattern = f"%{f['search']}%"
+                q = q.filter(or_(
+                    Asset.hostname.ilike(pattern),
+                    Asset.ip.ilike(pattern),
+                    Asset.fqdn.ilike(pattern),
+                ))
+
+            count = q.count()
+            results.append({"label": step.label, "count": count})
+    else:
+        raise HTTPException(400, "base_entity must be 'findings' or 'assets'")
+
+    return {"base_entity": body.base_entity, "steps": results}
+
+
+# ─────────────────────────────────────────────────────────
 # NLP Report Query
 # ─────────────────────────────────────────────────────────
 
@@ -7278,7 +7950,9 @@ def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
                                    "spns", "member_of", "password_last_set", "date_joined",
                                    "is_local_admin", "is_domain_admin", "is_privileged",
                                    "is_disabled", "password_never_expires", "never_logged_in",
-                                   "never_changed_password", "last_logon_host"]),
+                                   "never_changed_password", "last_logon_host",
+                                   "identity_type", "identity_subtype", "source_systems",
+                                   "department", "job_title", "manager_dn", "manager_username"]),
         "groups": (InventoryGroup, ["scan_id", "asset_id", "source_plugin",
                                      "group_name", "domain", "sid", "dn",
                                      "description", "members", "is_privileged"]),
@@ -7339,6 +8013,13 @@ def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
             "scan_id", "asset_id", "source_plugin",
             "db_type", "instance_name", "version", "port",
             "databases", "named_pipes", "is_running",
+        ]),
+        "domain_trusts": (InventoryDomainTrust, [
+            "scan_id", "asset_id", "source_plugin",
+            "trusted_domain", "flat_name", "sid", "dn",
+            "trust_direction", "trust_type", "trust_attributes",
+            "is_transitive", "is_sid_filtering_enabled",
+            "source_domain", "when_created",
         ]),
     }
 

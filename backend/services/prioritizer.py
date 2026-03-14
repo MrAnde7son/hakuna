@@ -77,7 +77,11 @@ _PATCH_KEYWORDS = {"apply patch", "apply the patch", "upgrade to", "update to", 
 
 # Solution text keywords that indicate complex architectural change
 _COMPLEX_KEYWORDS = {"redesign", "implement", "replace the", "reconfigure", "segment", "migrate",
-                     "rewrite", "architect"}
+                     "rewrite", "architect", "end of life", "no longer supported",
+                     "upgrade to a supported", "no longer maintains"}
+
+# Plugin name patterns that indicate an OS/product end-of-life (always complex)
+_EOL_PLUGIN_KEYWORDS = {"seol", "end of life", "eol", "unsupported", "out of support"}
 
 # OS strings that indicate a server (vs workstation)
 _SERVER_OS_KEYWORDS = {
@@ -340,7 +344,11 @@ def compute_priority_score(
         is_workstation = asset_criticality <= 4
 
     # --- Decision tree ---
-    if is_complex_family or solution_is_complex:
+    is_eol = any(kw in plugin_name_lower for kw in _EOL_PLUGIN_KEYWORDS)
+    if is_eol:
+        # OS/product end-of-life requires full migration — never a quick win
+        effort_level = "complex"
+    elif is_complex_family or solution_is_complex:
         effort_level = "complex"
     elif is_patch_family or solution_is_patch:
         # Patch-based remediation: effort depends on reboot + asset type

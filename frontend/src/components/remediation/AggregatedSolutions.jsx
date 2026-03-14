@@ -273,14 +273,13 @@ export default function AggregatedSolutions() {
     setLoading(true)
     const params = {}
     if (activeScanId) params.scan_id = activeScanId
-    if (rootCauseFilter) params.category = rootCauseFilter
     getAggregatedSolutions(params)
       .then(setSolutions)
       .catch(console.error)
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { loadSolutions() }, [activeScanId, rootCauseFilter])
+  useEffect(() => { loadSolutions() }, [activeScanId])
 
   const handleRebuild = () => {
     setRebuilding(true)
@@ -290,8 +289,11 @@ export default function AggregatedSolutions() {
       .finally(() => setRebuilding(false))
   }
 
+  // Filter client-side
+  const filtered = rootCauseFilter ? solutions.filter(s => s.root_cause_type === rootCauseFilter) : solutions
+
   // Sort
-  const sorted = [...solutions].sort((a, b) => {
+  const sorted = [...filtered].sort((a, b) => {
     if (sortBy === 'efficiency') return (b.efficiency_score || 0) - (a.efficiency_score || 0)
     if (sortBy === 'risk') return (b.risk_reduction || 0) - (a.risk_reduction || 0)
     if (sortBy === 'severity') return (b.severity_max || 0) - (a.severity_max || 0)
@@ -299,9 +301,9 @@ export default function AggregatedSolutions() {
     return 0
   })
 
-  const totalFindings = solutions.reduce((sum, s) => sum + s.finding_count, 0)
-  const totalCVEs = solutions.reduce((sum, s) => sum + (s.cve_count || 0), 0)
-  const totalRiskReduction = solutions.reduce((sum, s) => sum + (s.risk_reduction || 0), 0)
+  const totalFindings = filtered.reduce((sum, s) => sum + s.finding_count, 0)
+  const totalCVEs = filtered.reduce((sum, s) => sum + (s.cve_count || 0), 0)
+  const totalRiskReduction = filtered.reduce((sum, s) => sum + (s.risk_reduction || 0), 0)
 
   // Summary stats by root cause
   const rootCauseSummary = {}
@@ -318,7 +320,7 @@ export default function AggregatedSolutions() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
         <PageHeader
           title="Remediation"
-          subtitle={`${solutions.length} actions collapse ${totalFindings} findings (${totalCVEs} CVEs) into single fixes`}
+          subtitle={`${filtered.length} actions collapse ${totalFindings} findings (${totalCVEs} CVEs) into single fixes`}
         />
         <button
           onClick={handleRebuild}
@@ -341,13 +343,13 @@ export default function AggregatedSolutions() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
           <Card style={{ padding: '14px 18px' }}>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Actions</div>
-            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text-primary)' }}>{solutions.length}</div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text-primary)' }}>{filtered.length}</div>
             <div style={{ fontSize: 11, color: '#10b981' }}>vs {totalFindings} individual fixes</div>
           </Card>
           <Card style={{ padding: '14px 18px' }}>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>CVEs Resolved</div>
             <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text-primary)' }}>{totalCVEs}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>collapsed into {solutions.length} actions</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>collapsed into {filtered.length} actions</div>
           </Card>
           <Card style={{ padding: '14px 18px' }}>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Risk Reduction</div>
@@ -357,7 +359,7 @@ export default function AggregatedSolutions() {
           <Card style={{ padding: '14px 18px' }}>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Efficiency</div>
             <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text-primary)' }}>
-              {totalFindings > 0 ? (totalFindings / solutions.length).toFixed(1) : 0}x
+              {totalFindings > 0 ? (totalFindings / filtered.length).toFixed(1) : 0}x
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>avg findings per action</div>
           </Card>
