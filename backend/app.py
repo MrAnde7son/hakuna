@@ -7786,10 +7786,26 @@ def nlp_report_query(
         aq = aq.filter(Asset.environment_tag.ilike(f"%{af['environment']}%"))
     if af.get("min_risk") is not None:
         aq = aq.filter(Asset.risk_score >= float(af["min_risk"]))
+    if af.get("max_risk") is not None:
+        aq = aq.filter(Asset.risk_score <= float(af["max_risk"]))
     if af.get("min_critical") is not None:
         aq = aq.filter(Asset.critical_count >= int(af["min_critical"]))
     if af.get("min_high") is not None:
         aq = aq.filter(Asset.high_count >= int(af["min_high"]))
+    if af.get("criticality") is not None:
+        aq = aq.filter(Asset.criticality >= int(af["criticality"]))
+    if af.get("asset_status"):
+        aq = aq.filter(Asset.asset_status == af["asset_status"])
+    if af.get("is_internet_facing"):
+        aq = aq.filter(Asset.is_internet_facing == True)
+    if af.get("tags"):
+        tag_list = [t.strip() for t in af["tags"].split(",")]
+        from models.models import TagAssignment, Tag
+        tag_subq = db.query(TagAssignment.asset_id).join(Tag, TagAssignment.tag_id == Tag.id).filter(
+            TagAssignment.asset_id.isnot(None),
+            or_(*[Tag.value.ilike(f"%{t}%") for t in tag_list])
+        )
+        aq = aq.filter(Asset.id.in_(tag_subq))
     aq = aq.order_by(desc(Asset.risk_score))
     total_assets = aq.count()
     assets = aq.limit(20).all()
@@ -7801,6 +7817,8 @@ def nlp_report_query(
         fq = fq.filter(Finding.scan_id == scan_id)
     if ff.get("severity") is not None:
         fq = fq.filter(Finding.severity == int(ff["severity"]))
+    elif ff.get("severity_list"):
+        fq = fq.filter(Finding.severity.in_([int(s) for s in ff["severity_list"]]))
     if ff.get("has_exploit"):
         fq = fq.filter(Finding.exploit_available == True)
     if ff.get("is_kev"):
@@ -7809,6 +7827,12 @@ def nlp_report_query(
         fq = fq.filter(Finding.ransomware_linked == True)
     if ff.get("trending_in_news"):
         fq = fq.filter(Finding.trending_in_news == True)
+    if ff.get("zero_day"):
+        fq = fq.filter(Finding.zero_day == True)
+    if ff.get("is_regression"):
+        fq = fq.filter(Finding.is_regression == True)
+    if ff.get("auto_resolved"):
+        fq = fq.filter(Finding.auto_resolved == True)
     if ff.get("min_epss") is not None:
         fq = fq.filter(Finding.epss_score >= float(ff["min_epss"]))
     if ff.get("min_cvss") is not None:
@@ -7816,14 +7840,40 @@ def nlp_report_query(
             or_(Finding.cvss3_score >= float(ff["min_cvss"]),
                 Finding.cvss2_score >= float(ff["min_cvss"]))
         )
+    if ff.get("min_vpr") is not None:
+        fq = fq.filter(Finding.vpr_score >= float(ff["min_vpr"]))
+    if ff.get("min_priority") is not None:
+        fq = fq.filter(Finding.priority_score >= float(ff["min_priority"]))
     if ff.get("sla_status"):
         fq = fq.filter(Finding.sla_status == ff["sla_status"])
     if ff.get("effort_level"):
         fq = fq.filter(Finding.effort_level == ff["effort_level"])
+    if ff.get("workflow_status"):
+        wf_val = ff["workflow_status"]
+        if wf_val == "excepted":
+            fq = fq.filter(Finding.exception_id.isnot(None))
+        else:
+            fq = fq.filter(Finding.workflow_status == wf_val)
     if ff.get("plugin_family"):
         fq = fq.filter(Finding.plugin_family.ilike(f"%{ff['plugin_family']}%"))
     if ff.get("cve"):
         fq = fq.filter(Finding.cves.ilike(f"%{ff['cve']}%"))
+    if ff.get("port"):
+        fq = fq.filter(Finding.port == ff["port"])
+    if ff.get("has_ttps"):
+        fq = fq.filter(Finding.matched_ttps.isnot(None), Finding.matched_ttps != "[]")
+    if ff.get("tactic"):
+        fq = fq.filter(Finding.matched_ttps.ilike(f"%{ff['tactic']}%"))
+    if ff.get("technique_id"):
+        fq = fq.filter(Finding.matched_ttps.ilike(f"%{ff['technique_id']}%"))
+    if ff.get("tags"):
+        tag_list = [t.strip() for t in ff["tags"].split(",")]
+        from models.models import TagAssignment, Tag
+        tag_subq = db.query(TagAssignment.finding_id).join(Tag, TagAssignment.tag_id == Tag.id).filter(
+            TagAssignment.finding_id.isnot(None),
+            or_(*[Tag.value.ilike(f"%{t}%") for t in tag_list])
+        )
+        fq = fq.filter(Finding.id.in_(tag_subq))
     if ff.get("search"):
         pat = f"%{ff['search']}%"
         fq = fq.filter(
@@ -7875,16 +7925,23 @@ def nlp_report_query(
             "severity_label": f.severity_label or ["Info","Low","Medium","High","Critical"][f.severity],
             "cvss3_score": f.cvss3_score,
             "vpr_score": f.vpr_score,
+            "epss_score": f.epss_score,
             "priority_score": f.priority_score,
             "effort_level": f.effort_level,
             "exploit_available": f.exploit_available,
             "is_kev": f.is_kev,
+            "ransomware_linked": f.ransomware_linked,
+            "trending_in_news": f.trending_in_news,
+            "zero_day": f.zero_day,
+            "is_regression": f.is_regression,
             "synopsis": f.synopsis,
             "solution": f.solution,
             "asset_id": f.asset_id,
+            "port": f.port,
             "cves": f.cves or [],
             "sla_status": f.sla_status,
             "workflow_status": f.workflow_status,
+            "matched_ttps": f.matched_ttps,
         }
 
     def _asset(a):
