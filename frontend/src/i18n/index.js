@@ -33,8 +33,9 @@ i18n
     backend: {
       loadPath: '/locales/{{lng}}/translation.json',
     },
+    lng: localStorage.getItem('i18nextLng') || 'en',
     detection: {
-      order: ['localStorage', 'navigator'],
+      order: ['localStorage'],
       caches: ['localStorage'],
       lookupLocalStorage: 'i18nextLng',
     },
