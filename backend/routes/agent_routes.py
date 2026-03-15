@@ -27,6 +27,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from hakuna.routing.model_router import SONNET as _DEFAULT_MODEL
+from agents.agent_engine import get_default_model, get_available_providers
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -39,7 +40,7 @@ class AgentCreate(BaseModel):
     system_prompt: str
     tools: List[str] = []
     guardrails: Dict = {}
-    model: str = _DEFAULT_MODEL
+    model: Optional[str] = None  # resolved at creation time from configured provider
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -62,6 +63,14 @@ def tool_catalog():
     return get_tool_catalog()
 
 
+@router.get("/available-models")
+def available_models(db: Session = Depends(get_db)):
+    """Return providers and models that have API keys configured."""
+    providers = get_available_providers(db)
+    default = get_default_model(db)
+    return {"providers": providers, "default_model": default}
+
+
 # ── Agent CRUD ───────────────────────────────────────────────────────
 
 @router.get("")
@@ -72,15 +81,17 @@ def list_agents(db: Session = Depends(get_db), org_ids: Optional[List[int]] = De
 
 
 @router.post("")
-def create_agent(body: AgentCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def create_agent(body: AgentCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
+    effective_org_id = int(x_org_context) if x_org_context else (user.org_id if user else None)
+    resolved_model = body.model or get_default_model(db)
     agent = Agent(
-        org_id=user.org_id if user else None,
+        org_id=effective_org_id,
         name=body.name,
         description=body.description,
         system_prompt=body.system_prompt,
         tools=body.tools,
         guardrails=body.guardrails,
-        model=body.model,
+        model=resolved_model,
     )
     db.add(agent)
     db.commit()
@@ -129,21 +140,22 @@ def list_templates():
 
 
 @router.post("/from-template")
-def create_from_template(body: dict, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def create_from_template(body: dict, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
     """Create an agent from a template."""
     template_id = body.get("template_id")
     template = next((t for t in AGENT_TEMPLATES if t["id"] == template_id), None)
     if not template:
         raise HTTPException(404, f"Template '{template_id}' not found")
 
+    effective_org_id = int(x_org_context) if x_org_context else (user.org_id if user else None)
     agent = Agent(
-        org_id=user.org_id if user else None,
+        org_id=effective_org_id,
         name=body.get("name", template["name"]),
         description=template["description"],
         system_prompt=template["system_prompt"],
         tools=template["tools"],
         guardrails=body.get("guardrails", template["guardrails"]),
-        model=body.get("model", _DEFAULT_MODEL),
+        model=body.get("model") or get_default_model(db),
     )
     db.add(agent)
     db.commit()
@@ -174,21 +186,22 @@ def export_agent(agent_id: int, db: Session = Depends(get_db), org_ids: Optional
 
 
 @router.post("/import")
-def import_agent(body: dict, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+def import_agent(body: dict, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
     """Import an agent from a JSON config."""
     name = body.get("name")
     system_prompt = body.get("system_prompt")
     if not name or not system_prompt:
         raise HTTPException(400, "Agent config must include 'name' and 'system_prompt'")
 
+    effective_org_id = int(x_org_context) if x_org_context else (user.org_id if user else None)
     agent = Agent(
-        org_id=user.org_id if user else None,
+        org_id=effective_org_id,
         name=body.get("name"),
         description=body.get("description"),
         system_prompt=body.get("system_prompt"),
         tools=body.get("tools", []),
         guardrails=body.get("guardrails", {}),
-        model=body.get("model", _DEFAULT_MODEL),
+        model=body.get("model") or get_default_model(db),
         memory=body.get("memory", {}),
     )
     db.add(agent)

@@ -651,6 +651,7 @@ export const runDedup = (entity_type, scan_id = null) => request('/dedup/run', {
 
 // Mini Agents
 export const getAgentToolCatalog = () => request('/agents/tool-catalog')
+export const getAvailableModels = () => request('/agents/available-models')
 export const getAgents = () => request('/agents')
 export const createAgent = (data) => request('/agents', {
   method: 'POST',

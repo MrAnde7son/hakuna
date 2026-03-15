@@ -5,11 +5,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { Card } from '../shared/ui.jsx'
+import { useNavigate } from 'react-router-dom'
 import {
   Bot, Plus, Trash2, Play, ChevronDown, ChevronRight, Clock, CheckCircle,
   XCircle, Loader2, Settings2, MessageSquare, Wrench, Shield, Brain,
   Zap, Calendar, Copy, Clipboard, Briefcase, Target, Ticket, Radio, AlarmClock,
-  Download, Upload, Tag, AlertCircle, FileText, Paperclip,
+  Download, Upload, Tag, AlertCircle, FileText, Paperclip, ExternalLink,
 } from 'lucide-react'
 import {
   getAgents, createAgent, updateAgent, deleteAgent,
@@ -18,6 +19,7 @@ import {
   getAgentSchedules, createAgentSchedule, updateAgentSchedule, deleteAgentSchedule,
   exportAgent, importAgent,
   getAgentDocuments, uploadAgentDocument, deleteAgentDocument,
+  getAvailableModels,
 } from '../../api.js'
 
 const MODELS = [
@@ -55,8 +57,10 @@ const TEMPLATE_ICONS = {
 }
 
 export default function AgentBuilder() {
+  const navigate = useNavigate()
   const [agents, setAgents] = useState([])
   const [toolCatalog, setToolCatalog] = useState([])
+  const [availableModels, setAvailableModels] = useState(null) // { providers, default_model }
   const [templates, setTemplates] = useState([])
   const [selected, setSelected] = useState(null)
   const [editing, setEditing] = useState(null)
@@ -78,6 +82,7 @@ export default function AgentBuilder() {
     refresh()
     getAgentToolCatalog().then(setToolCatalog).catch(() => {})
     getAgentTemplates().then(setTemplates).catch(() => {})
+    getAvailableModels().then(setAvailableModels).catch(() => {})
     getAgentSchedules().then(setSchedules).catch(() => {})
   }, [])
 
@@ -442,6 +447,8 @@ export default function AgentBuilder() {
                 agentId={selected.id}
                 documents={documents}
                 onDocumentsChange={() => getAgentDocuments(selected.id).then(setDocuments).catch(() => {})}
+                availableModels={availableModels}
+                navigate={navigate}
               />
             ) : tab === 'runs' ? (
               <RunsPanel
@@ -451,6 +458,7 @@ export default function AgentBuilder() {
                 selected={selected}
                 streamEvents={streamEvents}
                 running={running}
+                navigate={navigate}
               />
             ) : (
               <SchedulePanel
@@ -622,7 +630,7 @@ function TemplateGallery({ templates, onCreate, onClose }) {
 
 // ── Config Panel ──────────────────────────────────────────────────────
 
-function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuardrail, agentId, documents, onDocumentsChange }) {
+function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuardrail, agentId, documents, onDocumentsChange, availableModels, navigate }) {
   const docInputRef = useRef()
   const [uploading, setUploading] = useState(false)
 
@@ -729,22 +737,66 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
 
       {/* Model */}
       <Section icon={Brain} title="Model">
-        <select
-          value={editing.model || 'claude-sonnet-4-6'}
-          onChange={e => setEditing({ ...editing, model: e.target.value })}
-          style={{
-            padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)',
-            background: 'var(--bg)', color: 'var(--text-primary)', fontSize: 13, outline: 'none',
-          }}
-        >
-          {[...new Set(MODELS.map(m => m.group))].map(group => (
-            <optgroup key={group} label={group}>
-              {MODELS.filter(m => m.group === group).map(m => (
-                <option key={m.value} value={m.value}>{m.label}</option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
+        {availableModels && availableModels.providers.length === 0 ? (
+          <div style={{
+            display: 'flex', flexDirection: 'column', gap: 10, padding: '12px 14px',
+            background: 'var(--bg)', borderRadius: 8, border: '1px solid var(--border)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#f59e0b' }}>
+              <AlertCircle size={16} />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>No AI provider configured</span>
+            </div>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+              Connect at least one AI provider (Anthropic, OpenAI, Groq, or Google) to run agents.
+            </p>
+            <button
+              onClick={() => navigate('/settings')}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                background: '#3b82f6', color: '#fff', fontSize: 12, fontWeight: 500,
+                alignSelf: 'flex-start',
+              }}
+            >
+              <ExternalLink size={13} /> Go to Settings &rarr; Integrations
+            </button>
+          </div>
+        ) : (
+          <>
+            <select
+              value={editing.model || availableModels?.default_model || 'claude-sonnet-4-6'}
+              onChange={e => setEditing({ ...editing, model: e.target.value })}
+              style={{
+                padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)',
+                background: 'var(--bg)', color: 'var(--text-primary)', fontSize: 13, outline: 'none',
+              }}
+            >
+              {availableModels ? (
+                availableModels.providers.map(p => (
+                  <optgroup key={p.provider} label={`${p.display} ✓`}>
+                    {p.models.map(m => {
+                      const info = MODELS.find(x => x.value === m)
+                      return <option key={m} value={m}>{info?.label || m}</option>
+                    })}
+                  </optgroup>
+                ))
+              ) : (
+                [...new Set(MODELS.map(m => m.group))].map(group => (
+                  <optgroup key={group} label={group}>
+                    {MODELS.filter(m => m.group === group).map(m => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </optgroup>
+                ))
+              )}
+            </select>
+            {availableModels && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, marginLeft: 8 }}>
+                Showing only connected providers. <a href="#" onClick={e => { e.preventDefault(); navigate('/settings') }} style={{ color: '#3b82f6' }}>Manage integrations</a>
+              </span>
+            )}
+          </>
+        )}
       </Section>
 
       {/* Knowledge Base (RAG Documents) */}
@@ -846,7 +898,7 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
 
 // ── Runs Panel (with streaming) ──────────────────────────────────────
 
-function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, running }) {
+function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, running, navigate }) {
   const loadRun = async (run) => {
     try {
       const full = await getAgentRun(selected.id, run.id)
@@ -897,6 +949,18 @@ function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, runn
                 </div>
                 <div style={{ fontSize: 12, color: '#fca5a5', lineHeight: 1.5, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                   {activeRun.error}
+                  {activeRun.error?.includes('API key not configured') && (
+                    <button
+                      onClick={() => navigate('/settings')}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                        marginTop: 6, padding: '4px 10px', borderRadius: 4, border: 'none',
+                        cursor: 'pointer', background: '#3b82f6', color: '#fff', fontSize: 11,
+                      }}
+                    >
+                      <ExternalLink size={11} /> Go to Integrations
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
