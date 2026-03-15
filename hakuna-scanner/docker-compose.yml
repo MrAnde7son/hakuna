@@ -28,7 +28,7 @@ services:
   api:
     build: .
     command: >
-      sh -c "alembic upgrade head &&
+      sh -c "PYTHONPATH=/app alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "8000:8000"
@@ -37,8 +37,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna
       DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna
       REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app
     volumes:
-      - ./app:/app/app
+      - .:/app
       - pd_tools:/root/go/bin
     depends_on:
       postgres:
@@ -58,8 +59,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna
       DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna
       REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app
     volumes:
-      - ./app:/app/app
+      - .:/app
       - pd_tools:/root/go/bin
     depends_on:
       postgres:
@@ -77,8 +79,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna
       DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna
       REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app
     volumes:
-      - ./app:/app/app
+      - .:/app
     depends_on:
       redis:
         condition: service_healthy

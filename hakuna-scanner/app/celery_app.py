@@ -21,4 +21,10 @@ celery.conf.update(
     beat_schedule={},  # populated by scheduler module
 )
 
-celery.autodiscover_tasks(["app.tasks"])
+celery.conf.update(
+    include=[
+        "app.tasks.discovery",
+        "app.tasks.enrichment",
+        "app.tasks.scheduler",
+    ],
+)

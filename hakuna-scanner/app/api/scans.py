@@ -1,6 +1,7 @@
 """Scan triggering and status endpoints."""
 
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -27,8 +28,8 @@ class ScanRunResponse(BaseModel):
     status: str
     assets_found: int
     assets_changed: int
-    started_at: str | None = None
-    finished_at: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     error: str | None = None
 
     model_config = {"from_attributes": True}
