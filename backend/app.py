@@ -2025,6 +2025,30 @@ def get_risk_grade(
     total_assets = asset_q.count()
     total_findings = finding_q.count()
 
+    # No data → no meaningful grade
+    if total_assets == 0 and total_findings == 0:
+        return {
+            "score": None,
+            "grade": None,
+            "grade_color": "#94a3b8",
+            "components": {
+                "severity_mix": None,
+                "sla_compliance": None,
+                "remediation_velocity": None,
+                "assessment_coverage": None,
+                "exploit_exposure": None,
+            },
+            "weights": {
+                "severity_mix": 0.25,
+                "sla_compliance": 0.25,
+                "remediation_velocity": 0.20,
+                "assessment_coverage": 0.15,
+                "exploit_exposure": 0.15,
+            },
+            "total_assets": 0,
+            "total_findings": 0,
+        }
+
     sev_counts = {}
     for sev in range(5):
         sev_counts[sev] = finding_q.filter(Finding.severity == sev).count()

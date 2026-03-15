@@ -1465,9 +1465,10 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
     }
 
     case 'risk_grade': {
-      const grade = extracted?.grade ?? '?'
-      const score = extracted?.score ?? 0
+      const grade = extracted?.grade ?? null
+      const score = extracted?.score ?? null
       const gradeColor = extracted?.grade_color ?? '#94a3b8'
+      const hasData = grade != null && score != null
       const components = extracted?.components || {}
       const weights = extracted?.weights || {}
       const compLabels = {
@@ -1478,6 +1479,18 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
         exploit_exposure: 'Exploit Exposure',
       }
       const compOrder = ['severity_mix', 'sla_compliance', 'remediation_velocity', 'assessment_coverage', 'exploit_exposure']
+      if (!hasData) return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 32, padding: '8px 0' }}>
+          <div style={{
+            width: 96, height: 96, borderRadius: '50%', flexShrink: 0,
+            background: '#94a3b818', border: '3px solid #94a3b8',
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <div style={{ fontSize: 44, fontWeight: 800, color: '#94a3b8', lineHeight: 1 }}>—</div>
+          </div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No scan data available to compute a risk grade. Upload a scan to get started.</div>
+        </div>
+      )
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: 32, padding: '8px 0' }}>
           {/* Big grade circle */}

@@ -240,12 +240,37 @@ def compress_tool_result(tool_name: str, result: Any, max_items: int = 30) -> An
 
 # ── Scratchpad injection into system prompt ──────────────────────────
 
+def _get_document_summary(agent_id: int) -> Optional[str]:
+    """Return a summary of uploaded documents for the agent's system prompt."""
+    try:
+        from core.database import SessionLocal
+        from models.models import AgentDocument
+        db = SessionLocal()
+        try:
+            docs = db.query(AgentDocument).filter(AgentDocument.agent_id == agent_id).all()
+            if not docs:
+                return None
+            lines = [f"- {d.filename} ({d.chunk_count} chunks, {d.size_bytes:,} bytes)" for d in docs]
+            return (
+                "## Knowledge Base Documents\n"
+                "The following documents have been uploaded as reference material. "
+                "Use the `search_documents` tool to retrieve relevant content from them.\n"
+                + "\n".join(lines)
+            )
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Failed to load document summary for agent %s", agent_id)
+        return None
+
+
 def build_context_section(agent_id: int, agent_memory: Optional[dict] = None) -> str:
     """Build the context section to append to an agent's system prompt.
 
     Includes:
     - Persistent memory (from agent.memory)
     - Scratchpad state (from file)
+    - Knowledge base document listing (RAG)
     """
     sections = []
 
@@ -262,6 +287,10 @@ def build_context_section(agent_id: int, agent_memory: Optional[dict] = None) ->
             "Use write_scratchpad to update this state as you work.\n"
             + json.dumps(scratchpad, indent=2, default=str)
         )
+
+    doc_summary = _get_document_summary(agent_id)
+    if doc_summary:
+        sections.append(doc_summary)
 
     if not sections:
         return ""

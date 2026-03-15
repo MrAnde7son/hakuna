@@ -5,11 +5,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { Card } from '../shared/ui.jsx'
+import { useNavigate } from 'react-router-dom'
 import {
   Bot, Plus, Trash2, Play, ChevronDown, ChevronRight, Clock, CheckCircle,
   XCircle, Loader2, Settings2, MessageSquare, Wrench, Shield, Brain,
   Zap, Calendar, Copy, Clipboard, Briefcase, Target, Ticket, Radio, AlarmClock,
-  Download, Upload, Tag, AlertCircle,
+  Download, Upload, Tag, AlertCircle, FileText, Paperclip, ExternalLink,
 } from 'lucide-react'
 import {
   getAgents, createAgent, updateAgent, deleteAgent,
@@ -17,6 +18,8 @@ import {
   getAgentTemplates, createAgentFromTemplate,
   getAgentSchedules, createAgentSchedule, updateAgentSchedule, deleteAgentSchedule,
   exportAgent, importAgent,
+  getAgentDocuments, uploadAgentDocument, deleteAgentDocument,
+  getAvailableModels,
 } from '../../api.js'
 
 const MODELS = [
@@ -54,8 +57,10 @@ const TEMPLATE_ICONS = {
 }
 
 export default function AgentBuilder() {
+  const navigate = useNavigate()
   const [agents, setAgents] = useState([])
   const [toolCatalog, setToolCatalog] = useState([])
+  const [availableModels, setAvailableModels] = useState(null) // { providers, default_model }
   const [templates, setTemplates] = useState([])
   const [selected, setSelected] = useState(null)
   const [editing, setEditing] = useState(null)
@@ -68,6 +73,7 @@ export default function AgentBuilder() {
   const [saving, setSaving] = useState(false)
   const [showTemplates, setShowTemplates] = useState(false)
   const [schedules, setSchedules] = useState([])
+  const [documents, setDocuments] = useState([])
   const inputRef = useRef()
   const importRef = useRef()
   const streamRef = useRef(null) // for aborting streams
@@ -76,6 +82,7 @@ export default function AgentBuilder() {
     refresh()
     getAgentToolCatalog().then(setToolCatalog).catch(() => {})
     getAgentTemplates().then(setTemplates).catch(() => {})
+    getAvailableModels().then(setAvailableModels).catch(() => {})
     getAgentSchedules().then(setSchedules).catch(() => {})
   }, [])
 
@@ -89,6 +96,7 @@ export default function AgentBuilder() {
     setStreamEvents([])
     getAgentRuns(agent.id).then(setRuns).catch(() => setRuns([]))
     getAgentSchedules().then(setSchedules).catch(() => {})
+    getAgentDocuments(agent.id).then(setDocuments).catch(() => setDocuments([]))
   }
 
   const handleNew = async () => {
@@ -436,6 +444,11 @@ export default function AgentBuilder() {
                 toolCatalog={toolCatalog}
                 toggleTool={toggleTool}
                 updateGuardrail={updateGuardrail}
+                agentId={selected.id}
+                documents={documents}
+                onDocumentsChange={() => getAgentDocuments(selected.id).then(setDocuments).catch(() => {})}
+                availableModels={availableModels}
+                navigate={navigate}
               />
             ) : tab === 'runs' ? (
               <RunsPanel
@@ -445,6 +458,7 @@ export default function AgentBuilder() {
                 selected={selected}
                 streamEvents={streamEvents}
                 running={running}
+                navigate={navigate}
               />
             ) : (
               <SchedulePanel
@@ -616,7 +630,41 @@ function TemplateGallery({ templates, onCreate, onClose }) {
 
 // ── Config Panel ──────────────────────────────────────────────────────
 
-function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuardrail }) {
+function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuardrail, agentId, documents, onDocumentsChange, availableModels, navigate }) {
+  const docInputRef = useRef()
+  const [uploading, setUploading] = useState(false)
+
+  const handleDocUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploading(true)
+    try {
+      await uploadAgentDocument(agentId, file)
+      onDocumentsChange()
+    } catch (err) {
+      alert('Upload failed: ' + err.message)
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  const handleDocDelete = async (docId) => {
+    if (!confirm('Remove this document?')) return
+    try {
+      await deleteAgentDocument(agentId, docId)
+      onDocumentsChange()
+    } catch (err) {
+      alert('Delete failed: ' + err.message)
+    }
+  }
+
+  const formatSize = (bytes) => {
+    if (bytes < 1024) return bytes + ' B'
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, paddingTop: 8 }}>
       {/* System Prompt */}
@@ -689,22 +737,146 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
 
       {/* Model */}
       <Section icon={Brain} title="Model">
-        <select
-          value={editing.model || 'claude-sonnet-4-6'}
-          onChange={e => setEditing({ ...editing, model: e.target.value })}
-          style={{
-            padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)',
-            background: 'var(--bg)', color: 'var(--text-primary)', fontSize: 13, outline: 'none',
-          }}
-        >
-          {[...new Set(MODELS.map(m => m.group))].map(group => (
-            <optgroup key={group} label={group}>
-              {MODELS.filter(m => m.group === group).map(m => (
-                <option key={m.value} value={m.value}>{m.label}</option>
+        {availableModels && availableModels.providers.length === 0 ? (
+          <div style={{
+            display: 'flex', flexDirection: 'column', gap: 10, padding: '12px 14px',
+            background: 'var(--bg)', borderRadius: 8, border: '1px solid var(--border)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#f59e0b' }}>
+              <AlertCircle size={16} />
+              <span style={{ fontSize: 13, fontWeight: 500 }}>No AI provider configured</span>
+            </div>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+              Connect at least one AI provider (Anthropic, OpenAI, Groq, or Google) to run agents.
+            </p>
+            <button
+              onClick={() => navigate('/settings')}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                background: '#3b82f6', color: '#fff', fontSize: 12, fontWeight: 500,
+                alignSelf: 'flex-start',
+              }}
+            >
+              <ExternalLink size={13} /> Go to Settings &rarr; Integrations
+            </button>
+          </div>
+        ) : (
+          <>
+            <select
+              value={editing.model || availableModels?.default_model || 'claude-sonnet-4-6'}
+              onChange={e => setEditing({ ...editing, model: e.target.value })}
+              style={{
+                padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)',
+                background: 'var(--bg)', color: 'var(--text-primary)', fontSize: 13, outline: 'none',
+              }}
+            >
+              {availableModels ? (
+                availableModels.providers.map(p => (
+                  <optgroup key={p.provider} label={`${p.display} ✓`}>
+                    {p.models.map(m => {
+                      const info = MODELS.find(x => x.value === m)
+                      return <option key={m} value={m}>{info?.label || m}</option>
+                    })}
+                  </optgroup>
+                ))
+              ) : (
+                [...new Set(MODELS.map(m => m.group))].map(group => (
+                  <optgroup key={group} label={group}>
+                    {MODELS.filter(m => m.group === group).map(m => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </optgroup>
+                ))
+              )}
+            </select>
+            {availableModels && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, marginLeft: 8 }}>
+                Showing only connected providers. <a href="#" onClick={e => { e.preventDefault(); navigate('/settings') }} style={{ color: '#3b82f6' }}>Manage integrations</a>
+              </span>
+            )}
+          </>
+        )}
+      </Section>
+
+      {/* Knowledge Base (RAG Documents) */}
+      <Section icon={FileText} title={`Knowledge Base (${documents.length} files)`}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+            Upload reference documents (policies, runbooks, configs, reports) so the agent can search them during runs.
+            Add the <code style={{ background: 'var(--bg)', padding: '1px 5px', borderRadius: 3, fontSize: 11 }}>search_documents</code> tool to enable retrieval.
+          </div>
+
+          {/* Upload button */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              onClick={() => docInputRef.current?.click()}
+              disabled={uploading}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                border: '1px dashed var(--border)', background: 'transparent',
+                color: 'var(--accent)', cursor: uploading ? 'wait' : 'pointer',
+                opacity: uploading ? 0.6 : 1,
+              }}
+            >
+              {uploading ? <Loader2 size={13} className="spin" /> : <Paperclip size={13} />}
+              {uploading ? 'Uploading...' : 'Upload File'}
+            </button>
+            <input
+              ref={docInputRef}
+              type="file"
+              accept=".txt,.md,.csv,.json,.xml,.html,.htm,.log,.yaml,.yml,.nessus,.pdf,.py,.js,.ts,.conf,.cfg,.ini,.toml"
+              onChange={handleDocUpload}
+              style={{ display: 'none' }}
+            />
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              Max 10 MB &middot; .txt, .md, .csv, .json, .xml, .yaml, .log, .nessus, .pdf, etc.
+            </span>
+          </div>
+
+          {/* Document list */}
+          {documents.length > 0 && (
+            <div style={{
+              display: 'flex', flexDirection: 'column', gap: 4,
+              padding: 8, borderRadius: 6, background: 'var(--bg)', border: '1px solid var(--border)',
+            }}>
+              {documents.map(doc => (
+                <div key={doc.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '6px 8px', borderRadius: 4,
+                  background: 'var(--bg-card)',
+                }}>
+                  <FileText size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      fontSize: 12, fontWeight: 600, overflow: 'hidden',
+                      textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>
+                      {doc.filename}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      {formatSize(doc.size_bytes)} &middot; {doc.chunk_count} chunks
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleDocDelete(doc.id)}
+                    title="Remove document"
+                    style={{
+                      background: 'transparent', border: 'none', cursor: 'pointer',
+                      color: 'var(--text-muted)', padding: 4, borderRadius: 4,
+                      display: 'flex', alignItems: 'center',
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.color = '#ef4444'}
+                    onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
               ))}
-            </optgroup>
-          ))}
-        </select>
+            </div>
+          )}
+        </div>
       </Section>
 
       {/* Memory (read-only view) */}
@@ -726,7 +898,7 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
 
 // ── Runs Panel (with streaming) ──────────────────────────────────────
 
-function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, running }) {
+function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, running, navigate }) {
   const loadRun = async (run) => {
     try {
       const full = await getAgentRun(selected.id, run.id)
@@ -777,6 +949,18 @@ function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, runn
                 </div>
                 <div style={{ fontSize: 12, color: '#fca5a5', lineHeight: 1.5, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                   {activeRun.error}
+                  {activeRun.error?.includes('API key not configured') && (
+                    <button
+                      onClick={() => navigate('/settings')}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                        marginTop: 6, padding: '4px 10px', borderRadius: 4, border: 'none',
+                        cursor: 'pointer', background: '#3b82f6', color: '#fff', fontSize: 11,
+                      }}
+                    >
+                      <ExternalLink size={11} /> Go to Integrations
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

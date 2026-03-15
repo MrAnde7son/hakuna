@@ -651,6 +651,7 @@ export const runDedup = (entity_type, scan_id = null) => request('/dedup/run', {
 
 // Mini Agents
 export const getAgentToolCatalog = () => request('/agents/tool-catalog')
+export const getAvailableModels = () => request('/agents/available-models')
 export const getAgents = () => request('/agents')
 export const createAgent = (data) => request('/agents', {
   method: 'POST',
@@ -685,6 +686,16 @@ export const importAgent = (data) => request('/agents/import', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(data),
 })
+
+// Agent Documents (RAG)
+export const getAgentDocuments = (agentId) => request(`/agents/documents/${agentId}`)
+export const uploadAgentDocument = (agentId, file) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return request(`/agents/documents/${agentId}`, { method: 'POST', body: fd })
+}
+export const deleteAgentDocument = (agentId, docId) =>
+  request(`/agents/documents/${agentId}/${docId}`, { method: 'DELETE' })
 
 // Agent Schedules
 export const getAgentSchedules = () => request('/agents/schedules')

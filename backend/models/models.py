@@ -1197,6 +1197,23 @@ class Agent(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     runs = relationship("AgentRun", back_populates="agent", cascade="all, delete-orphan")
+    documents = relationship("AgentDocument", back_populates="agent", cascade="all, delete-orphan")
+
+
+class AgentDocument(Base):
+    """Uploaded file for RAG context — chunked text attached to an agent."""
+    __tablename__ = "agent_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=False, index=True)
+    filename = Column(String, nullable=False)
+    content_type = Column(String)                         # MIME type
+    size_bytes = Column(Integer, default=0)
+    chunks = Column(JSON, default=list)                   # list of text chunks for retrieval
+    chunk_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    agent = relationship("Agent", back_populates="documents")
 
 
 class AgentRun(Base):
