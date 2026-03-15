@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -20,6 +20,7 @@ from core.auth import (
     get_user_custom_roles, resolve_effective_permissions, ALL_PERMISSION_KEYS,
 )
 from core.audit import log_audit, diff as _diff
+from core.i18n import get_locale_from_request, t as translate
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -82,6 +83,7 @@ def _user_response(user: User, org: Organization) -> dict:
         "display_name": user.display_name,
         "role": user.role,
         "is_active": user.is_active,
+        "locale": user.locale or "en",
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
         "org": {
@@ -109,16 +111,17 @@ def _org_response(org: Organization) -> dict:
 # ── Public routes ─────────────────────────────────────────
 
 @router.post("/register")
-async def register(body: RegisterRequest, db: Session = Depends(get_db)):
+async def register(body: RegisterRequest, request: Request, db: Session = Depends(get_db)):
     """Register a new organization and its first admin user.
     Also serves as the bootstrap route for the first superadmin.
     """
+    locale = get_locale_from_request(request)
     # Check if email already exists
     if db.query(User).filter(User.email == body.email).first():
-        raise HTTPException(400, "Email already registered")
+        raise HTTPException(400, translate("email_exists", locale))
 
     if len(body.password) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
+        raise HTTPException(400, translate("password_too_short", locale))
 
     # Create org
     slug = _slugify(body.org_name)
@@ -160,17 +163,18 @@ async def register(body: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login")
-async def login(body: LoginRequest, db: Session = Depends(get_db)):
+async def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
     """Authenticate with email + password, returns JWT."""
+    locale = get_locale_from_request(request)
     user = db.query(User).filter(User.email == body.email).first()
     if not user or not verify_password(body.password, user.hashed_password):
-        raise HTTPException(401, "Invalid email or password")
+        raise HTTPException(401, translate("invalid_credentials", locale))
     if not user.is_active:
-        raise HTTPException(403, "Account is deactivated")
+        raise HTTPException(403, translate("account_deactivated", locale))
 
     org = db.query(Organization).filter(Organization.id == user.org_id).first()
     if not org or not org.is_active:
-        raise HTTPException(403, "Organization is deactivated")
+        raise HTTPException(403, translate("org_deactivated", locale))
 
     # Update last login
     user.last_login_at = datetime.utcnow()
@@ -225,6 +229,21 @@ async def change_password(body: ChangePasswordRequest, user: User = Depends(requ
               changes={"password": "changed"}, actor=user)
     db.commit()
     return {"status": "ok"}
+
+
+class UpdateLocaleRequest(BaseModel):
+    locale: str
+
+
+@router.put("/locale")
+async def update_locale(body: UpdateLocaleRequest, user: User = Depends(require_auth), db: Session = Depends(get_db)):
+    """Update the authenticated user's preferred locale."""
+    supported = {"en", "ja", "fr", "de", "he", "ru", "zh"}
+    if body.locale not in supported:
+        raise HTTPException(400, f"Unsupported locale. Supported: {', '.join(sorted(supported))}")
+    user.locale = body.locale
+    db.commit()
+    return {"status": "ok", "locale": user.locale}
 
 
 # ── User management (org_admin+) ─────────────────────────

@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   authMe, authLogin, authRegister,
   setStoredToken, clearStoredToken, getStoredToken,
@@ -16,6 +17,7 @@ export function AuthProvider({ children }) {
   const [effectivePermissions, setEffectivePermissions] = useState({})
   const [isLoading, setIsLoading] = useState(true)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const { i18n } = useTranslation()
 
   // Attempt to restore session from stored token
   useEffect(() => {
@@ -31,6 +33,10 @@ export function AuthProvider({ children }) {
         setAccessibleOrgs(data.accessible_orgs || [data.org])
         setEffectivePermissions(data.effective_permissions || {})
         setIsAuthenticated(true)
+        // Sync UI language with user's stored locale preference
+        if (data.locale && data.locale !== i18n.language) {
+          i18n.changeLanguage(data.locale)
+        }
       })
       .catch(() => {
         clearStoredToken()

@@ -3,9 +3,11 @@
  */
 import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
+import { useTranslation } from 'react-i18next'
 import { getTags, createCampaign, createAutoTagRule } from '../../api.js'
 
 export function SeverityBadge({ severity, label }) {
+  const { t } = useTranslation()
   const SEV_COLORS = {
     4: { bg: '#450a0a', text: '#fca5a5', border: '#991b1b' },
     3: { bg: '#431407', text: '#fdba74', border: '#9a3412' },
@@ -21,7 +23,7 @@ export function SeverityBadge({ severity, label }) {
       borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600,
       textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap',
     }}>
-      {label || ['Info', 'Low', 'Medium', 'High', 'Critical'][severity] || 'Info'}
+      {label || [t('severity.info'), t('severity.low'), t('severity.medium'), t('severity.high'), t('severity.critical')][severity] || t('severity.info')}
     </span>
   )
 }

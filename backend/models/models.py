@@ -36,6 +36,7 @@ class User(Base):
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     role = Column(String, default="analyst")  # superadmin | org_admin | analyst | viewer | custom
     is_active = Column(Boolean, default=True)
+    locale = Column(String, default="en")  # User's preferred language: en, ja, fr, de, he, ru, zh
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login_at = Column(DateTime, nullable=True)
 
