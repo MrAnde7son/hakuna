@@ -593,12 +593,308 @@ def build_ticket_pipeline() -> AgentPipeline:
     ])
 
 
+# ── Exception Review Pipeline ────────────────────────────────────────
+
+def build_exception_review_pipeline() -> AgentPipeline:
+    """Pre-built pipeline: Expiry Scan → Risk Reassessment → Recertification/Revocation."""
+    return AgentPipeline("exception_review", [
+        PipelineStage(
+            name="expiry_scan",
+            description="Find expiring and overdue risk exceptions",
+            system_prompt=(
+                "You are an exception expiry scanner. Your job:\n"
+                "1. Query all active exceptions and check their expiry/review dates\n"
+                "2. Bucket them into: EXPIRED (past expires_at), EXPIRING_SOON (within 14 days),\n"
+                "   REVIEW_OVERDUE (past review_by), and HEALTHY\n"
+                "3. For each non-healthy exception, pull the underlying finding details\n"
+                "4. Check if the original risk context has changed (asset still exists? severity changed?)\n\n"
+                "Output a JSON handoff:\n"
+                "```json\n"
+                '{"expired": [...], "expiring_soon": [...], "review_overdue": [...],\n'
+                ' "total_active": N, "total_needing_action": N,\n'
+                ' "finding_details": {exception_id: {finding_id, severity, asset_ip, ...}}}\n'
+                "```\n"
+                "Be thorough — check every active exception."
+            ),
+            tools=["query_findings", "get_finding_detail", "get_asset_profile", "get_sla_status"],
+            model_tier=ModelTier.DETERMINISTIC,
+            output_type="exception_audit",
+            max_steps=8,
+        ),
+        PipelineStage(
+            name="risk_reassessment",
+            description="Reassess whether exception justifications still apply",
+            system_prompt=(
+                "You are a risk reassessment agent. You receive exception audit data.\n\n"
+                "For each exception needing action, assess:\n"
+                "1. Has the threat landscape changed? (new exploits for the CVE? added to CISA KEV?)\n"
+                "2. Has the asset exposure changed? (became internet-facing? criticality increased?)\n"
+                "3. Is the compensating control still in place? (check security controls inventory)\n"
+                "4. Has the finding severity been updated by the scanner?\n"
+                "5. Are there similar findings on other assets that are NOT excepted?\n\n"
+                "For each exception, assign a reassessment verdict:\n"
+                "- RENEW: Original justification still valid, risk level unchanged\n"
+                "- REVOKE: Risk has materially increased, exception should be removed\n"
+                "- MODIFY: Conditions changed, exception needs updated scope/justification\n"
+                "- ESCALATE: Uncertain, requires human review with additional context\n\n"
+                "Think step-by-step for each verdict. Show your reasoning.\n\n"
+                "Output a JSON handoff:\n"
+                "```json\n"
+                '{"verdicts": [{"exception_id": N, "verdict": "...", "reasoning": "...",\n'
+                '  "risk_change": "increased/decreased/unchanged", "evidence": [...]}]}\n'
+                "```"
+            ),
+            tools=[
+                "get_finding_detail", "get_asset_profile", "get_exploit_findings",
+                "get_internet_facing_risk", "query_findings",
+            ],
+            model_tier=ModelTier.REASONING,
+            input_type="exception_audit",
+            output_type="reassessment_verdicts",
+            max_steps=12,
+        ),
+        PipelineStage(
+            name="recertification_report",
+            description="Produce recertification actions and summary report",
+            system_prompt=(
+                "You are a recertification report agent. You receive reassessment verdicts.\n\n"
+                "Produce a clear, actionable recertification report:\n\n"
+                "For RENEW verdicts:\n"
+                "- Draft a renewal note with updated justification\n"
+                "- Suggest new expiry date (typically +90 days or +180 days)\n\n"
+                "For REVOKE verdicts:\n"
+                "- List the findings that will return to active remediation\n"
+                "- Estimate SLA impact (when will they breach?)\n"
+                "- Suggest immediate owner assignment\n\n"
+                "For MODIFY verdicts:\n"
+                "- Specify what needs to change (scope, justification, severity override)\n"
+                "- Draft updated exception parameters\n\n"
+                "For ESCALATE verdicts:\n"
+                "- Summarize the uncertainty and what additional information is needed\n"
+                "- Suggest who should make the decision (CISO, risk committee, etc.)\n\n"
+                "Format as a markdown report with clear action items and owners."
+            ),
+            tools=["get_finding_detail", "get_owner_workload", "get_sla_status"],
+            model_tier=ModelTier.REASONING,
+            input_type="reassessment_verdicts",
+            max_steps=8,
+        ),
+    ])
+
+
+# ── Compliance Posture Pipeline ──────────────────────────────────────
+
+def build_compliance_posture_pipeline() -> AgentPipeline:
+    """Pre-built pipeline: SLA Audit → Owner Accountability → Board Report."""
+    return AgentPipeline("compliance_posture", [
+        PipelineStage(
+            name="sla_audit",
+            description="Full SLA compliance snapshot across all severities",
+            system_prompt=(
+                "You are an SLA audit agent. Your job:\n"
+                "1. Call `get_sla_status` to get the full SLA compliance picture\n"
+                "2. Break down compliance by severity: critical, high, medium, low\n"
+                "3. Calculate compliance rate per severity (resolved on time / total)\n"
+                "4. Identify the worst-performing severity tier\n"
+                "5. Get remediation velocity data to understand trending\n"
+                "6. Check for any findings breached > 30 days — these are extreme outliers\n\n"
+                "Output a JSON handoff:\n"
+                "```json\n"
+                '{"sla_snapshot": {"critical": {"total": N, "compliant": N, "breached": N, "at_risk": N},\n'
+                '  "high": {...}, "medium": {...}, "low": {...}},\n'
+                ' "overall_compliance_pct": N, "extreme_outliers": [...],\n'
+                ' "velocity": {"trend": "improving/declining/stable", "data": [...]}}\n'
+                "```"
+            ),
+            tools=["get_sla_status", "query_findings", "get_scan_summary", "list_scans"],
+            model_tier=ModelTier.DETERMINISTIC,
+            output_type="sla_audit",
+            max_steps=8,
+        ),
+        PipelineStage(
+            name="owner_accountability",
+            description="Group breaches by owner/team and compute per-team metrics",
+            system_prompt=(
+                "You are an owner accountability analyst. You receive SLA audit data.\n\n"
+                "Your job:\n"
+                "1. Call `get_owner_workload` to get per-owner finding distribution\n"
+                "2. For each owner with breached findings, calculate:\n"
+                "   - Total assigned findings\n"
+                "   - Resolved on time (count and %)\n"
+                "   - Currently breached (count)\n"
+                "   - Average days overdue for breached items\n"
+                "   - Remediation velocity (findings resolved per week)\n"
+                "3. Identify repeat offenders (owners with breaches in 3+ consecutive periods)\n"
+                "4. Rank owners by accountability score: A (< 5% breach) through F (> 50% breach)\n"
+                "5. Identify teams with no owner assigned — these are governance gaps\n\n"
+                "Think step-by-step. Use actual data, not estimates.\n\n"
+                "Output a JSON handoff:\n"
+                "```json\n"
+                '{"owner_scores": [{"owner": "...", "grade": "A-F", "total": N,\n'
+                '  "resolved_on_time": N, "breached": N, "avg_days_overdue": N,\n'
+                '  "velocity": N, "repeat_offender": true/false}],\n'
+                ' "unowned_findings": N, "governance_gaps": [...]}\n'
+                "```"
+            ),
+            tools=[
+                "get_owner_workload", "query_findings", "get_finding_detail",
+                "get_top_risky_assets",
+            ],
+            model_tier=ModelTier.REASONING,
+            input_type="sla_audit",
+            output_type="accountability_report",
+            max_steps=10,
+        ),
+        PipelineStage(
+            name="board_report",
+            description="Generate board-ready compliance posture report",
+            system_prompt=(
+                "You are an executive communications specialist. You receive SLA audit data\n"
+                "and owner accountability data. Produce a board-ready compliance posture report.\n\n"
+                "Rules for board communication:\n"
+                "- NO technical jargon (no CVEs, plugin IDs, IP addresses)\n"
+                "- Use business language: 'risk exposure', 'compliance rate', 'remediation velocity'\n"
+                "- Use trend arrows: improving ↑, declining ↓, stable →\n"
+                "- Use letter grades and traffic light colors (Red/Amber/Green)\n"
+                "- Compare to previous period where data allows\n"
+                "- Highlight top 3 risks and top 3 improvements\n\n"
+                "Report structure:\n"
+                "1. **Risk Posture Summary** — one paragraph, overall health\n"
+                "2. **Compliance Scorecard** — table with severity tiers and RAG status\n"
+                "3. **Trending** — are we getting better or worse? By how much?\n"
+                "4. **Team Performance** — top performers and underperformers (by grade)\n"
+                "5. **Key Risks** — top 3 business risks from unresolved vulnerabilities\n"
+                "6. **Recommendations** — 3 strategic actions for leadership\n\n"
+                "Format as clean markdown suitable for a slide deck or PDF export."
+            ),
+            tools=["get_scan_summary", "get_top_risky_assets"],
+            model_tier=ModelTier.REASONING,
+            input_type="accountability_report",
+            max_steps=8,
+        ),
+    ])
+
+
+# ── Threat-Driven Prioritization Pipeline ────────────────────────────
+
+def build_threat_driven_pipeline() -> AgentPipeline:
+    """Pre-built pipeline: Threat Intel Match → Exposure Mapping → Response Plan."""
+    return AgentPipeline("threat_driven_prioritization", [
+        PipelineStage(
+            name="threat_intel_match",
+            description="Match active threat campaigns against CVE inventory",
+            system_prompt=(
+                "You are a threat intelligence correlation agent. Your job:\n"
+                "1. Get the latest scan findings with CVE data\n"
+                "2. Cross-reference CVEs against known threat actor toolkits and active campaigns\n"
+                "3. Check for CISA KEV entries (actively exploited in the wild)\n"
+                "4. Check EPSS scores for exploit probability\n"
+                "5. Identify findings linked to ransomware families\n"
+                "6. Flag any zero-day or trending vulnerabilities\n\n"
+                "For each match, record:\n"
+                "- The threat actor(s) or campaign(s) that use this CVE\n"
+                "- The ATT&CK technique(s) enabled by this vulnerability\n"
+                "- Whether it's actively exploited (KEV) or high-probability (EPSS > 0.5)\n"
+                "- The kill chain stage it enables (initial access, lateral movement, etc.)\n\n"
+                "Output a JSON handoff:\n"
+                "```json\n"
+                '{"threat_matches": [{"cve": "...", "finding_ids": [...], "asset_count": N,\n'
+                '  "threat_actors": [...], "attack_techniques": [...], "kev": true/false,\n'
+                '  "epss": 0.X, "ransomware_linked": true/false, "kill_chain_stage": "..."}],\n'
+                ' "total_threat_linked_findings": N, "total_threat_linked_assets": N}\n'
+                "```"
+            ),
+            tools=[
+                "get_exploit_findings", "query_findings", "get_finding_detail",
+                "get_scan_summary", "list_scans",
+            ],
+            model_tier=ModelTier.DETERMINISTIC,
+            output_type="threat_matches",
+            max_steps=8,
+        ),
+        PipelineStage(
+            name="exposure_mapping",
+            description="Map threat matches to actual exposure based on asset context",
+            system_prompt=(
+                "You are an exposure mapping agent. You receive threat-matched findings.\n\n"
+                "For each threat match, assess the ACTUAL exposure:\n"
+                "1. Is the vulnerable asset internet-facing? (Check reachability context)\n"
+                "2. Does the asset host privileged accounts? (Check inventory for admin users)\n"
+                "3. Are there compensating controls? (Check security controls inventory)\n"
+                "4. What's the asset criticality? (Business impact if compromised)\n"
+                "5. Can this vulnerability enable lateral movement to higher-value targets?\n\n"
+                "Score each threat-finding combination on a 1-10 exposure scale:\n"
+                "- 9-10: Internet-facing + exploitable + no compensating control + high-value asset\n"
+                "- 7-8: Exploitable + high-value asset OR internet-facing + any severity\n"
+                "- 5-6: Internal + exploitable + standard asset\n"
+                "- 3-4: Internal + theoretical exploit + compensating controls exist\n"
+                "- 1-2: Air-gapped or fully mitigated by compensating controls\n\n"
+                "Think step-by-step for each scoring decision.\n\n"
+                "Output a JSON handoff:\n"
+                "```json\n"
+                '{"exposure_map": [{"cve": "...", "finding_ids": [...], "exposure_score": N,\n'
+                '  "internet_facing": true/false, "privileged_access": true/false,\n'
+                '  "compensating_controls": "...", "lateral_movement_risk": "high/medium/low",\n'
+                '  "reasoning": "..."}],\n'
+                ' "critical_exposures": [...], "mitigated_threats": [...]}\n'
+                "```"
+            ),
+            tools=[
+                "get_asset_profile", "get_internet_facing_risk", "get_top_risky_assets",
+                "get_finding_detail", "query_assets",
+            ],
+            model_tier=ModelTier.REASONING,
+            input_type="threat_matches",
+            output_type="exposure_map",
+            max_steps=12,
+        ),
+        PipelineStage(
+            name="response_plan",
+            description="Produce a threat-specific response plan with kill chain coverage",
+            system_prompt=(
+                "You are a threat response planner. You receive exposure-mapped threat data.\n\n"
+                "Produce a threat-specific response plan organized by urgency:\n\n"
+                "**Tier 1 — Immediate (24h)**: Exposure score 9-10\n"
+                "- Specific patch/mitigation for each finding\n"
+                "- Emergency change request details\n"
+                "- Compensating control if patch isn't immediately available\n\n"
+                "**Tier 2 — Urgent (72h)**: Exposure score 7-8\n"
+                "- Patch deployment plan\n"
+                "- Network segmentation recommendations\n"
+                "- Detection rule suggestions (what to monitor)\n\n"
+                "**Tier 3 — Planned (next maintenance window)**: Exposure score 5-6\n"
+                "- Standard remediation in next patch cycle\n"
+                "- Monitoring recommendations\n\n"
+                "**Tier 4 — Monitor**: Exposure score 1-4\n"
+                "- Track but no immediate action needed\n"
+                "- Document compensating controls\n\n"
+                "Also produce a kill chain coverage analysis:\n"
+                "- Which ATT&CK stages are currently exposed?\n"
+                "- Which stages would be covered after remediation?\n"
+                "- Where are the remaining gaps?\n\n"
+                "Format as a clear markdown report with tables and action items.\n"
+                "Include specific finding IDs, asset IPs, and recommended owners."
+            ),
+            tools=[
+                "get_finding_detail", "get_remediation_grouping", "get_owner_workload",
+                "get_quick_wins",
+            ],
+            model_tier=ModelTier.REASONING,
+            input_type="exposure_map",
+            max_steps=10,
+        ),
+    ])
+
+
 # ── Pipeline Registry ────────────────────────────────────────────────
 
 PIPELINE_REGISTRY = {
     "vulnerability_triage": build_triage_pipeline,
     "patch_planning": build_patch_planning_pipeline,
     "auto_ticketing": build_ticket_pipeline,
+    "exception_review": build_exception_review_pipeline,
+    "compliance_posture": build_compliance_posture_pipeline,
+    "threat_driven_prioritization": build_threat_driven_pipeline,
 }
 
 
