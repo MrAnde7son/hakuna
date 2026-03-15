@@ -1,11 +1,13 @@
 import React, { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { Upload, CheckCircle, AlertCircle, FileText, X } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { uploadScan, deleteScan } from '../../api.js'
 import { Card, PageHeader, Button } from '../shared/ui.jsx'
 
 function DropZone({ onFile, disabled }) {
+  const { t } = useTranslation()
   const [dragging, setDragging] = useState(false)
   const inputRef = useRef()
 
@@ -32,13 +34,13 @@ function DropZone({ onFile, disabled }) {
     >
       <Upload size={40} color={dragging ? '#6366f1' : 'var(--text-muted)'} style={{ marginBottom: 16 }} />
       <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 8 }}>
-        {dragging ? 'Drop it!' : 'Drop your scan report here'}
+        {dragging ? t('upload.dropIt') : t('upload.dropHere')}
       </div>
       <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
-        or click to browse · Supports HTML, .nessus XML, and CSV exports
+        {t('upload.browseHint')}
       </div>
       <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-        Files accepted: .html, .htm, .nessus, .csv
+        {t('upload.filesAccepted')}
       </div>
       <input
         ref={inputRef}
@@ -52,6 +54,7 @@ function DropZone({ onFile, disabled }) {
 }
 
 function UploadProgress({ file, status, result, error, onDismiss }) {
+  const { t } = useTranslation()
   return (
     <div style={{
       display: 'flex', gap: 14, padding: '14px 16px', borderRadius: 10,
@@ -73,10 +76,10 @@ function UploadProgress({ file, status, result, error, onDismiss }) {
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
           {(file.size / 1024).toFixed(0)} KB
         </div>
-        {status === 'uploading' && <div style={{ fontSize: 12, color: 'var(--accent)' }}>Parsing and ingesting...</div>}
+        {status === 'uploading' && <div style={{ fontSize: 12, color: 'var(--accent)' }}>{t('upload.parsing')}</div>}
         {status === 'done' && result && (
           <div style={{ fontSize: 12, color: '#86efac' }}>
-            ✓ Ingested {result.assets} assets and {result.findings} findings
+            ✓ {t('upload.ingested', { assets: result.assets, findings: result.findings })}
           </div>
         )}
         {status === 'error' && <div style={{ fontSize: 12, color: '#fca5a5' }}>{error}</div>}
