@@ -29,9 +29,9 @@ services:
     build: .
     command: >
       sh -c "PYTHONPATH=/app alembic upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+             uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload"
     ports:
-      - "8000:8000"
+      - "8001:8001"
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna

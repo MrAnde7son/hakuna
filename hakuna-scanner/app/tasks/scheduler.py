@@ -7,7 +7,7 @@ from sqlalchemy import text
 
 from app.celery_app import celery
 from app.config import settings
-from app.database import async_session
+from app.database import get_task_session
 from app.tasks.discovery import run_discovery_chain
 from app.tasks.enrichment import run_enrichment_chain
 
@@ -23,7 +23,8 @@ def _run_async(coro):
 
 
 async def _get_active_org_ids() -> list[str]:
-    async with async_session() as db:
+    sf = get_task_session()
+    async with sf() as db:
         result = await db.execute(
             text("""
                 SELECT DISTINCT o.id::text FROM orgs o
@@ -66,27 +67,6 @@ def trigger_all_enrichment():
     return {"orgs_scheduled": len(org_ids)}
 
 
-# Celery Beat schedule
-celery.conf.beat_schedule = {
-    "daily-discovery-2am": {
-        "task": "scheduler.trigger_all_discovery",
-        "schedule": {
-            "__type__": "crontab",
-            "hour": 2,
-            "minute": 0,
-        },
-    },
-    "daily-enrichment-4am": {
-        "task": "scheduler.trigger_all_enrichment",
-        "schedule": {
-            "__type__": "crontab",
-            "hour": 4,
-            "minute": 0,
-        },
-    },
-}
-
-# Apply the schedule using proper crontab
 from celery.schedules import crontab
 
 celery.conf.beat_schedule = {

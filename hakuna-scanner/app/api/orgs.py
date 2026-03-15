@@ -39,6 +39,12 @@ class DomainResponse(BaseModel):
 
 @router.post("", response_model=OrgResponse, status_code=201)
 async def create_org(body: OrgCreate, db: AsyncSession = Depends(get_db)):
+    # Return existing org if name matches
+    result = await db.execute(select(Org).where(Org.name == body.name).limit(1))
+    existing = result.scalar_one_or_none()
+    if existing:
+        return existing
+
     org = Org(name=body.name)
     db.add(org)
     await db.commit()
@@ -77,7 +83,17 @@ async def add_domain(org_id: uuid.UUID, body: DomainCreate, db: AsyncSession = D
     if not org:
         raise HTTPException(404, "Org not found")
 
-    domain = TargetDomain(org_id=org_id, domain=body.domain.strip().lower())
+    clean_domain = body.domain.strip().lower()
+
+    # Return existing if already added
+    result = await db.execute(
+        select(TargetDomain).where(TargetDomain.org_id == org_id, TargetDomain.domain == clean_domain)
+    )
+    existing = result.scalar_one_or_none()
+    if existing:
+        return existing
+
+    domain = TargetDomain(org_id=org_id, domain=clean_domain)
     db.add(domain)
     await db.commit()
     await db.refresh(domain)
