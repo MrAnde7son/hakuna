@@ -464,6 +464,288 @@ WORKFLOW_TEMPLATES = [
             {"edge_id": "e2", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
         ],
     },
+    # ── New Templates ────────────────────────────────────────────────────
+    {
+        "id": "regression_response",
+        "name": "Regression Response",
+        "description": "Auto-detect regressed findings (previously fixed, now reappeared), tag them, re-open tickets, and alert the owner",
+        "category": "incident",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_upload",
+             "label": "Scan Uploaded", "config": {}, "position_x": 60, "position_y": 260},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "condition_filter",
+             "label": "Is Regression?", "config": {
+                 "conditions": [{"field": "finding.is_regression", "op": "is_true", "value": ""}],
+                 "logic": "AND"
+             }, "position_x": 360, "position_y": 260},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "add_tag",
+             "label": "Tag Regression", "config": {"tag_category": "status", "tag_value": "regression", "target": "both"}, "position_x": 660, "position_y": 120},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "change_status",
+             "label": "Re-open Finding", "config": {"status": "open"}, "position_x": 660, "position_y": 260},
+            {"node_id": "a3", "node_type": "action", "node_subtype": "create_ticket",
+             "label": "Create Regression Ticket", "config": {
+                 "integration": "jira", "issue_type": "bug",
+                 "title_template": "[REGRESSION] {{plugin_name}} on {{asset_ip}}",
+                 "group_by": "one_per_asset", "priority": "high"
+             }, "position_x": 960, "position_y": 120},
+            {"node_id": "a4", "node_type": "action", "node_subtype": "slack_notify",
+             "label": "Alert Slack", "config": {
+                 "message_template": ":warning: {{count}} regressed findings detected — previously fixed vulnerabilities have reappeared. Tickets created."
+             }, "position_x": 960, "position_y": 380},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "f1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "f1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e4", "source_node_id": "a1", "target_node_id": "a3", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e5", "source_node_id": "a2", "target_node_id": "a4", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
+    {
+        "id": "exception_expiry_review",
+        "name": "Exception Expiry Review",
+        "description": "Weekly check for expiring risk exceptions — email owners for recertification and tag findings as review-due",
+        "category": "compliance",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "cron",
+             "label": "Weekly Monday 9 AM", "config": {"cron_expr": "0 9 * * 1"}, "position_x": 60, "position_y": 260},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "condition_filter",
+             "label": "Expiring Soon", "config": {
+                 "conditions": [{"field": "exception.expires_within_days", "op": "lte", "value": "14"}],
+                 "logic": "AND"
+             }, "position_x": 360, "position_y": 140},
+            {"node_id": "f2", "node_type": "filter", "node_subtype": "condition_filter",
+             "label": "Review Overdue", "config": {
+                 "conditions": [{"field": "exception.review_overdue", "op": "is_true", "value": ""}],
+                 "logic": "AND"
+             }, "position_x": 360, "position_y": 400},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "add_tag",
+             "label": "Tag Review Due", "config": {"tag_category": "compliance", "tag_value": "exception-review-due", "target": "finding"}, "position_x": 660, "position_y": 140},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "send_email",
+             "label": "Email: Expiring", "config": {
+                 "subject": "Action Required: {{count}} risk exceptions expiring within 14 days",
+                 "body_template": "The following risk exceptions are expiring soon and require recertification.\n\nPlease review each exception and either renew or allow it to expire so the findings return to active remediation.\n\nFailure to recertify will result in automatic re-activation of the underlying findings.",
+                 "include_findings_table": True
+             }, "position_x": 960, "position_y": 140},
+            {"node_id": "a3", "node_type": "action", "node_subtype": "send_email",
+             "label": "Email: Overdue Review", "config": {
+                 "subject": "Overdue: {{count}} risk exceptions past review-by date",
+                 "body_template": "The following risk exceptions have passed their scheduled review date and require immediate recertification.\n\nThese exceptions remain active but are overdue for review. Please recertify or revoke them promptly.",
+                 "include_findings_table": True
+             }, "position_x": 960, "position_y": 400},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "f1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "t1", "target_node_id": "f2", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e4", "source_node_id": "a1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e5", "source_node_id": "f2", "target_node_id": "a3", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
+    {
+        "id": "scan_delta_digest",
+        "name": "New Scan Delta Digest",
+        "description": "On scan upload, compare with previous scan and send a Slack/Teams summary of new, fixed, and recurring findings",
+        "category": "notification",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_upload",
+             "label": "Scan Uploaded", "config": {}, "position_x": 60, "position_y": 200},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "compute_delta",
+             "label": "Compare with Previous", "config": {"compare_mode": "auto_previous"}, "position_x": 360, "position_y": 200},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "slack_notify",
+             "label": "Slack Delta Summary", "config": {
+                 "message_template": ":bar_chart: *Scan Delta Report*\n\n:new: *New findings*: {{new_count}}\n:white_check_mark: *Fixed findings*: {{fixed_count}}\n:repeat: *Recurring*: {{recurring_count}}\n:arrow_up: *Regressions*: {{regression_count}}\n\nTotal assets scanned: {{asset_count}}"
+             }, "position_x": 660, "position_y": 120},
+            {"node_id": "a3", "node_type": "action", "node_subtype": "teams_notify",
+             "label": "Teams Delta Summary", "config": {
+                 "message_template": "Scan Delta Report — New: {{new_count}} | Fixed: {{fixed_count}} | Recurring: {{recurring_count}} | Regressions: {{regression_count}}"
+             }, "position_x": 660, "position_y": 320},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "a1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "a1", "target_node_id": "a3", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
+    {
+        "id": "internet_facing_escalation",
+        "name": "Internet-Facing Escalation",
+        "description": "Escalate high/critical findings on internet-facing assets — assign SecOps, create emergency Jira ticket, notify all channels",
+        "category": "incident",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_upload",
+             "label": "Scan Uploaded", "config": {}, "position_x": 60, "position_y": 260},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "condition_filter",
+             "label": "Internet-Facing?", "config": {
+                 "conditions": [{"field": "asset.ctx_reachability", "op": "eq", "value": "internet_facing"}],
+                 "logic": "AND"
+             }, "position_x": 320, "position_y": 260},
+            {"node_id": "f2", "node_type": "filter", "node_subtype": "severity_filter",
+             "label": "High & Critical", "config": {"operator": "gte", "value": "3"}, "position_x": 580, "position_y": 260},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "set_criticality",
+             "label": "Max Criticality", "config": {"criticality": "10"}, "position_x": 840, "position_y": 100},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "assign_owner",
+             "label": "Assign SecOps", "config": {"owner_role": "SecOps", "team": "Security Operations"}, "position_x": 840, "position_y": 260},
+            {"node_id": "a3", "node_type": "action", "node_subtype": "create_ticket",
+             "label": "Emergency Jira Ticket", "config": {
+                 "integration": "jira", "issue_type": "bug",
+                 "title_template": "[EMERGENCY] {{plugin_name}} — internet-facing {{asset_ip}}",
+                 "group_by": "one_per_finding", "priority": "highest"
+             }, "position_x": 1100, "position_y": 100},
+            {"node_id": "a4", "node_type": "action", "node_subtype": "slack_notify",
+             "label": "Slack Alert", "config": {
+                 "message_template": ":rotating_light: *INTERNET-FACING ESCALATION*\n{{count}} high/critical findings on internet-facing assets require immediate action. Emergency tickets created."
+             }, "position_x": 1100, "position_y": 260},
+            {"node_id": "a5", "node_type": "action", "node_subtype": "send_email",
+             "label": "Email CISO", "config": {
+                 "subject": "URGENT: {{count}} high/critical vulns on internet-facing assets",
+                 "body_template": "Internet-facing assets have been identified with high or critical vulnerabilities that present immediate external risk.\n\nEmergency Jira tickets have been created and assigned to Security Operations.\n\nPlease escalate through your incident response process.",
+                 "include_findings_table": True
+             }, "position_x": 1100, "position_y": 420},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "f1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "f1", "target_node_id": "f2", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "f2", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e4", "source_node_id": "f2", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e5", "source_node_id": "a1", "target_node_id": "a3", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e6", "source_node_id": "a2", "target_node_id": "a4", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e7", "source_node_id": "a2", "target_node_id": "a5", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
+    {
+        "id": "eol_software_campaign",
+        "name": "EOL/Unsupported Software Campaign",
+        "description": "Identify end-of-life software findings, create a remediation campaign, assign owners by tag, and generate grouped migration tickets",
+        "category": "patching",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_upload",
+             "label": "Scan Uploaded", "config": {}, "position_x": 60, "position_y": 260},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "condition_filter",
+             "label": "EOL Software?", "config": {
+                 "conditions": [{"field": "solution.root_cause_type", "op": "eq", "value": "eol_software"}],
+                 "logic": "AND"
+             }, "position_x": 360, "position_y": 260},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "add_tag",
+             "label": "Tag EOL", "config": {"tag_category": "risk", "tag_value": "end-of-life", "target": "both"}, "position_x": 660, "position_y": 120},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "create_campaign",
+             "label": "Create EOL Campaign", "config": {
+                 "name_template": "EOL Software Migration — {{date}}",
+                 "description": "Remediate end-of-life software by migrating to supported versions"
+             }, "position_x": 660, "position_y": 400},
+            {"node_id": "a3", "node_type": "action", "node_subtype": "create_ticket",
+             "label": "Migration Tickets", "config": {
+                 "integration": "jira", "issue_type": "task",
+                 "title_template": "[EOL] Migrate {{affected_component}} from {{current_version}} to supported version",
+                 "group_by": "one_per_asset", "priority": "high"
+             }, "position_x": 960, "position_y": 260},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "f1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "f1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e4", "source_node_id": "a1", "target_node_id": "a3", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
+    {
+        "id": "credential_coverage_check",
+        "name": "Credential Scan Coverage Check",
+        "description": "Weekly audit of uncredentialed scans — tag affected assets and notify scan operations team to fix coverage gaps",
+        "category": "compliance",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "cron",
+             "label": "Weekly Friday 6 AM", "config": {"cron_expr": "0 6 * * 5"}, "position_x": 60, "position_y": 200},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "condition_filter",
+             "label": "Uncredentialed?", "config": {
+                 "conditions": [{"field": "asset.credentialed_scan", "op": "is_false", "value": ""}],
+                 "logic": "AND"
+             }, "position_x": 360, "position_y": 200},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "add_tag",
+             "label": "Tag Uncredentialed", "config": {"tag_category": "scan-quality", "tag_value": "uncredentialed", "target": "asset"}, "position_x": 660, "position_y": 120},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "send_email",
+             "label": "Email Scan Ops", "config": {
+                 "subject": "Scan Coverage Gap: {{count}} assets scanned without credentials",
+                 "body_template": "The following assets were scanned without credentials, which means many local vulnerabilities, installed software, and configuration issues may be missed.\n\nPlease update scan policies to include valid credentials for these targets.\n\nUncredentialed scans typically miss 40-60% of vulnerabilities.",
+                 "include_findings_table": True
+             }, "position_x": 660, "position_y": 320},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "f1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "f1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
+    {
+        "id": "quick_wins_sprint",
+        "name": "Quick Wins Sprint",
+        "description": "Find high-efficiency remediation actions (one fix resolves many vulns), create a time-boxed campaign, and assign tickets",
+        "category": "triage",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "manual",
+             "label": "Manual Trigger", "config": {}, "position_x": 60, "position_y": 260},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "condition_filter",
+             "label": "High Efficiency?", "config": {
+                 "conditions": [
+                     {"field": "solution.efficiency_score", "op": "gte", "value": "7.0"},
+                     {"field": "solution.risk_reduction", "op": "gte", "value": "5.0"},
+                 ],
+                 "logic": "OR"
+             }, "position_x": 360, "position_y": 260},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "create_campaign",
+             "label": "Quick Wins Campaign", "config": {
+                 "name_template": "Quick Wins Sprint — {{date}}",
+                 "description": "Time-boxed sprint targeting highest-efficiency remediation actions for maximum risk reduction"
+             }, "position_x": 660, "position_y": 140},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "create_ticket",
+             "label": "Create Sprint Tickets", "config": {
+                 "integration": "jira", "issue_type": "task",
+                 "title_template": "[QUICK WIN] {{action_type}}: {{affected_component}} ({{finding_count}} vulns, {{asset_count}} assets)",
+                 "group_by": "one_per_solution", "priority": "medium"
+             }, "position_x": 660, "position_y": 400},
+            {"node_id": "a3", "node_type": "action", "node_subtype": "slack_notify",
+             "label": "Announce Sprint", "config": {
+                 "message_template": ":zap: *Quick Wins Sprint Created*\n{{count}} high-efficiency actions identified that will resolve multiple vulnerabilities per fix.\nEstimated risk reduction: {{risk_reduction}}%\nCampaign and Jira tickets ready for assignment."
+             }, "position_x": 960, "position_y": 260},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "f1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "f1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e4", "source_node_id": "a2", "target_node_id": "a3", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
+    {
+        "id": "mssp_client_digest",
+        "name": "MSSP Client Digest",
+        "description": "Scheduled weekly/monthly digest per client org — summarizes new findings, SLA status, trending, and sends branded email report",
+        "category": "notification",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "cron",
+             "label": "Weekly Monday 7 AM", "config": {"cron_expr": "0 7 * * 1"}, "position_x": 60, "position_y": 260},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "generate_report",
+             "label": "Generate Client Report", "config": {
+                 "report_type": "client_digest",
+                 "sections": ["executive_summary", "new_findings", "sla_compliance", "trending", "top_risks"],
+                 "per_org": True
+             }, "position_x": 360, "position_y": 260},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "send_email",
+             "label": "Email Client Digest", "config": {
+                 "subject": "Weekly Security Report — {{org_name}} — {{date}}",
+                 "body_template": "Dear {{org_name}} Team,\n\nPlease find your weekly vulnerability management digest below.\n\nKey Highlights:\n- New findings this week: {{new_count}}\n- Findings resolved: {{fixed_count}}\n- SLA compliance rate: {{sla_compliance_pct}}%\n- Current risk grade: {{risk_grade}}\n\nPlease review the detailed findings table and contact your account team with questions.",
+                 "include_findings_table": True,
+                 "per_org": True
+             }, "position_x": 660, "position_y": 160},
+            {"node_id": "a3", "node_type": "action", "node_subtype": "slack_notify",
+             "label": "Internal Summary", "config": {
+                 "message_template": ":envelope: *MSSP Client Digests Sent*\n{{org_count}} client reports delivered. Aggregate: {{total_new}} new findings, {{total_fixed}} resolved, avg SLA compliance: {{avg_sla_pct}}%"
+             }, "position_x": 660, "position_y": 380},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "a1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "a1", "target_node_id": "a3", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
 ]
 
 TEMPLATE_CATEGORIES = [
@@ -473,6 +755,7 @@ TEMPLATE_CATEGORIES = [
     {"id": "integration", "label": "Integration", "icon": "Globe"},
     {"id": "sla", "label": "SLA Management", "icon": "Clock"},
     {"id": "notification", "label": "Notification", "icon": "Mail"},
+    {"id": "compliance", "label": "Compliance & Audit", "icon": "CheckSquare"},
 ]
 
 
