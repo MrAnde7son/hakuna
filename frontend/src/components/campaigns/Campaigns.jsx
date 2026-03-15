@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Target, Plus, Play, Trash2, Clock, AlertTriangle, CheckCircle, PauseCircle,
-  ChevronRight, GitBranch, Zap, Settings, Download,
+  ChevronRight, GitBranch, Zap, Settings, Download, Search,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig } from '../../api.js'
@@ -309,6 +309,7 @@ function CreateWorkflowModal({ onClose, onCreate }) {
   const [templates, setTemplates] = useState([])
   const [categories, setCategories] = useState([])
   const [loadingTpl, setLoadingTpl] = useState(true)
+  const [tplSearch, setTplSearch] = useState('')
 
   useEffect(() => {
     getWorkflowTemplates().then(data => {
@@ -370,7 +371,24 @@ function CreateWorkflowModal({ onClose, onCreate }) {
               <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8' }}>No templates available</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {templates.map(tpl => (
+                <div style={{ position: 'relative', marginBottom: 4 }}>
+                  <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                  <input
+                    value={tplSearch}
+                    onChange={e => setTplSearch(e.target.value)}
+                    placeholder="Search templates..."
+                    style={{
+                      width: '100%', padding: '8px 12px 8px 32px', background: 'var(--bg-secondary)',
+                      border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
+                      color: 'var(--text-primary)', boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+                {templates.filter(tpl => {
+                  if (!tplSearch.trim()) return true
+                  const q = tplSearch.toLowerCase()
+                  return tpl.name?.toLowerCase().includes(q) || tpl.description?.toLowerCase().includes(q) || tpl.category?.toLowerCase().includes(q)
+                }).map(tpl => (
                   <button key={tpl.id} onClick={() => handleUseTemplate(tpl)}
                     disabled={saving}
                     style={{
@@ -455,6 +473,7 @@ export default function Campaigns() {
   const [showCreate, setShowCreate] = useState(false)
   const [showCreateWf, setShowCreateWf] = useState(false)
   const [tab, setTab] = useState('campaigns')
+  const [wfSearch, setWfSearch] = useState('')
 
   const load = () => {
     setLoading(true)
@@ -582,7 +601,24 @@ export default function Campaigns() {
           </EmptyState>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {workflows.map(w => (
+            <div style={{ position: 'relative', maxWidth: 320 }}>
+              <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+              <input
+                value={wfSearch}
+                onChange={e => setWfSearch(e.target.value)}
+                placeholder="Search workflows..."
+                style={{
+                  width: '100%', padding: '8px 12px 8px 32px', background: 'var(--bg-secondary)',
+                  border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
+                  color: 'var(--text-primary)', boxSizing: 'border-box',
+                }}
+              />
+            </div>
+            {workflows.filter(w => {
+              if (!wfSearch.trim()) return true
+              const q = wfSearch.toLowerCase()
+              return w.name?.toLowerCase().includes(q) || w.description?.toLowerCase().includes(q)
+            }).map(w => (
               <WorkflowCard key={w.id} workflow={w} onDelete={handleDeleteWf} />
             ))}
           </div>

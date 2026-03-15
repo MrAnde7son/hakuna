@@ -10,7 +10,7 @@ import {
   Bot, Plus, Trash2, Play, ChevronDown, ChevronRight, Clock, CheckCircle,
   XCircle, Loader2, Settings2, MessageSquare, Wrench, Shield, Brain,
   Zap, Calendar, Copy, Clipboard, Briefcase, Target, Ticket, Radio, AlarmClock,
-  Download, Upload, Tag, AlertCircle, FileText, Paperclip, ExternalLink,
+  Download, Upload, Tag, AlertCircle, FileText, Paperclip, ExternalLink, Search,
 } from 'lucide-react'
 import {
   getAgents, createAgent, updateAgent, deleteAgent,
@@ -54,6 +54,8 @@ const STATUS_ICON = {
 const TEMPLATE_ICONS = {
   clipboard: Clipboard, calendar: Calendar, briefcase: Briefcase,
   alarm: AlarmClock, radar: Radio, ticket: Ticket, target: Target, tag: Tag,
+  shield: Shield, alert: AlertCircle, file: FileText, brain: Brain,
+  zap: Zap, check: CheckCircle, settings: Settings2,
 }
 
 export default function AgentBuilder() {
@@ -516,14 +518,23 @@ export default function AgentBuilder() {
 // ── Template Gallery ──────────────────────────────────────────────────
 
 function TemplateGallery({ templates, onCreate, onClose }) {
+  const [search, setSearch] = useState('')
   const CATEGORY_COLORS = {
     read_only: { bg: '#dbeafe', text: '#1d4ed8', label: 'Read-only' },
     write: { bg: '#fef3c7', text: '#92400e', label: 'Write actions' },
   }
 
+  const filtered = templates.filter(t => {
+    if (!search.trim()) return true
+    const q = search.toLowerCase()
+    return t.name.toLowerCase().includes(q)
+      || t.description.toLowerCase().includes(q)
+      || (t.tools || []).some(tool => tool.toLowerCase().includes(q))
+  })
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflowY: 'auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <div>
           <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Agent Templates</h2>
           <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '4px 0 0' }}>
@@ -541,12 +552,33 @@ function TemplateGallery({ templates, onCreate, onClose }) {
         </button>
       </div>
 
+      <div style={{ position: 'relative', marginBottom: 14 }}>
+        <Search size={15} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+        <input
+          type="text"
+          placeholder="Search templates by name, description, or tool..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          style={{
+            width: '100%', padding: '9px 12px 9px 32px', borderRadius: 8,
+            border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+            fontSize: 13, color: 'var(--text)', outline: 'none', boxSizing: 'border-box',
+          }}
+        />
+      </div>
+
+      {filtered.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)', fontSize: 13 }}>
+          No templates match "{search}"
+        </div>
+      )}
+
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
         gap: 14,
       }}>
-        {templates.map(t => {
+        {filtered.map(t => {
           const TIcon = TEMPLATE_ICONS[t.icon] || Bot
           const mode = t.guardrails?.read_only ? 'read_only' : 'write'
           const modeStyle = CATEGORY_COLORS[mode]
