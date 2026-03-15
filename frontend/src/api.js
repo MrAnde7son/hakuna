@@ -34,6 +34,9 @@ async function request(path, opts = {}) {
   const headers = { ...(opts.headers || {}) }
   if (token) headers['Authorization'] = `Bearer ${token}`
   if (orgContext) headers['X-Org-Context'] = orgContext
+  // Send current locale for backend i18n
+  const locale = localStorage.getItem('i18nextLng')
+  if (locale) headers['Accept-Language'] = locale
 
   const res = await fetch(`${BASE}${path}`, { ...opts, headers })
 
@@ -73,6 +76,12 @@ export const authChangePassword = (data) => request('/auth/change-password', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(data),
+})
+
+export const authUpdateLocale = (locale) => request('/auth/locale', {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ locale }),
 })
 
 export const authInviteUser = (data) => request('/auth/invite', {
@@ -642,6 +651,7 @@ export const runDedup = (entity_type, scan_id = null) => request('/dedup/run', {
 
 // Mini Agents
 export const getAgentToolCatalog = () => request('/agents/tool-catalog')
+export const getAvailableModels = () => request('/agents/available-models')
 export const getAgents = () => request('/agents')
 export const createAgent = (data) => request('/agents', {
   method: 'POST',
@@ -676,6 +686,16 @@ export const importAgent = (data) => request('/agents/import', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(data),
 })
+
+// Agent Documents (RAG)
+export const getAgentDocuments = (agentId) => request(`/agents/documents/${agentId}`)
+export const uploadAgentDocument = (agentId, file) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return request(`/agents/documents/${agentId}`, { method: 'POST', body: fd })
+}
+export const deleteAgentDocument = (agentId, docId) =>
+  request(`/agents/documents/${agentId}/${docId}`, { method: 'DELETE' })
 
 // Agent Schedules
 export const getAgentSchedules = () => request('/agents/schedules')

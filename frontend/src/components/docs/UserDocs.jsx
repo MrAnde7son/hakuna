@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   BookOpen, ChevronRight, ChevronDown, Search, Upload, Server, Bug, Database,
   Target, Layers, Bot, BarChart3, ShieldAlert, Settings, Tag, Shield, Clock,
@@ -7,27 +8,27 @@ import {
 } from 'lucide-react'
 
 const SECTIONS = [
-  { id: 'getting-started', label: 'Getting Started', icon: BookOpen },
-  { id: 'onboarding', label: 'Onboarding', icon: Upload },
-  { id: 'dashboard', label: 'Reports & Dashboard', icon: BarChart3 },
-  { id: 'assets', label: 'Assets', icon: Server },
-  { id: 'findings', label: 'Findings', icon: Bug },
-  { id: 'inventory', label: 'Inventory Explorer', icon: Database },
-  { id: 'campaigns', label: 'Remediation Campaigns', icon: Target },
-  { id: 'remediation', label: 'Aggregated Solutions', icon: Layers },
-  { id: 'agents', label: 'AI Agents', icon: Bot },
-  { id: 'threat-intel', label: 'Threat Intelligence', icon: ShieldAlert },
-  { id: 'tags', label: 'Tags & Auto-Tagging', icon: Tag },
-  { id: 'workflows', label: 'Workflows', icon: Workflow },
-  { id: 'integrations', label: 'Integrations', icon: Link2 },
-  { id: 'exceptions', label: 'Global Exceptions', icon: Shield },
-  { id: 'sla', label: 'SLA Tracking', icon: Clock },
-  { id: 'ownership', label: 'Ownership & RBAC', icon: Users },
-  { id: 'mssp', label: 'Multi-Tenancy (MSSP)', icon: Building2 },
-  { id: 'exports', label: 'Exports & Config', icon: FileDown },
-  { id: 'risk-config', label: 'Risk & Scoring', icon: Zap },
-  { id: 'api-reference', label: 'API Reference', icon: Globe },
-  { id: 'keyboard-tips', label: 'Tips & Shortcuts', icon: BookMarked },
+  { id: 'getting-started', labelKey: 'docs.sections.gettingStarted', icon: BookOpen },
+  { id: 'onboarding', labelKey: 'docs.sections.onboarding', icon: Upload },
+  { id: 'dashboard', labelKey: 'docs.sections.dashboard', icon: BarChart3 },
+  { id: 'assets', labelKey: 'docs.sections.assets', icon: Server },
+  { id: 'findings', labelKey: 'docs.sections.findings', icon: Bug },
+  { id: 'inventory', labelKey: 'docs.sections.inventory', icon: Database },
+  { id: 'campaigns', labelKey: 'docs.sections.campaigns', icon: Target },
+  { id: 'remediation', labelKey: 'docs.sections.remediation', icon: Layers },
+  { id: 'agents', labelKey: 'docs.sections.agents', icon: Bot },
+  { id: 'threat-intel', labelKey: 'docs.sections.threatIntel', icon: ShieldAlert },
+  { id: 'tags', labelKey: 'docs.sections.tags', icon: Tag },
+  { id: 'workflows', labelKey: 'docs.sections.workflows', icon: Workflow },
+  { id: 'integrations', labelKey: 'docs.sections.integrations', icon: Link2 },
+  { id: 'exceptions', labelKey: 'docs.sections.exceptions', icon: Shield },
+  { id: 'sla', labelKey: 'docs.sections.sla', icon: Clock },
+  { id: 'ownership', labelKey: 'docs.sections.ownership', icon: Users },
+  { id: 'mssp', labelKey: 'docs.sections.mssp', icon: Building2 },
+  { id: 'exports', labelKey: 'docs.sections.exports', icon: FileDown },
+  { id: 'risk-config', labelKey: 'docs.sections.riskConfig', icon: Zap },
+  { id: 'api-reference', labelKey: 'docs.sections.apiReference', icon: Globe },
+  { id: 'keyboard-tips', labelKey: 'docs.sections.keyboardTips', icon: BookMarked },
 ]
 
 function Heading({ children, id }) {
@@ -106,14 +107,15 @@ function Tip({ children, type = 'info' }) {
 }
 
 function ApiTable({ rows }) {
+  const { t } = useTranslation()
   return (
     <div style={{ overflowX: 'auto', margin: '0 0 16px' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
         <thead>
           <tr style={{ borderBottom: '2px solid var(--border)' }}>
-            <th style={{ textAlign: 'left', padding: '8px 12px', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Method</th>
-            <th style={{ textAlign: 'left', padding: '8px 12px', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Endpoint</th>
-            <th style={{ textAlign: 'left', padding: '8px 12px', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Description</th>
+            <th style={{ textAlign: 'left', padding: '8px 12px', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('api.method')}</th>
+            <th style={{ textAlign: 'left', padding: '8px 12px', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('api.endpoint')}</th>
+            <th style={{ textAlign: 'left', padding: '8px 12px', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('api.description')}</th>
           </tr>
         </thead>
         <tbody>
@@ -923,13 +925,14 @@ Headers:
 /* ──────────────────── Main Component ──────────────────── */
 
 export default function UserDocs() {
+  const { t } = useTranslation()
   const [activeSection, setActiveSection] = useState('getting-started')
   const [search, setSearch] = useState('')
   const [tocCollapsed, setTocCollapsed] = useState({})
   const contentRef = useRef(null)
 
   const filteredSections = search
-    ? SECTIONS.filter(s => s.label.toLowerCase().includes(search.toLowerCase()))
+    ? SECTIONS.filter(s => t(s.labelKey).toLowerCase().includes(search.toLowerCase()))
     : SECTIONS
 
   const scrollTo = (id) => {
@@ -971,7 +974,7 @@ export default function UserDocs() {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
             <BookOpen size={20} color="var(--accent)" />
-            <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>Documentation</span>
+            <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>{t('docs.title')}</span>
           </div>
           <div style={{
             display: 'flex', alignItems: 'center', gap: 6,
@@ -981,7 +984,7 @@ export default function UserDocs() {
             <Search size={14} color="var(--muted)" />
             <input
               type="text"
-              placeholder="Search docs..."
+              placeholder={t('docs.search')}
               value={search}
               onChange={e => setSearch(e.target.value)}
               style={{
@@ -1015,7 +1018,7 @@ export default function UserDocs() {
                 onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent' }}
               >
                 <Icon size={15} style={{ flexShrink: 0, opacity: isActive ? 1 : 0.6 }} />
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t(s.labelKey)}</span>
               </button>
             )
           })}

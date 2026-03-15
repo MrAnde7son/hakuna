@@ -1715,3 +1715,65 @@ def request_clarification(db: Session, params: dict):
         "options": params.get("options", []),
         "context": params.get("context", ""),
     }
+
+
+# ── RAG Document Search Tool ──────────────────────────────────────────
+
+@agent_tool(
+    "search_documents",
+    "Search the knowledge base documents uploaded to this agent for relevant information. "
+    "Returns matching text chunks. Use this tool when the user asks about information that may "
+    "be in the uploaded documents or when you need reference material.",
+    {
+        "query": {"type": "string", "description": "The search query — keywords or a question to search for in the documents"},
+        "max_results": {"type": "integer", "description": "Maximum number of chunks to return (default 5)"},
+    },
+)
+def search_documents(db: Session, params: dict):
+    from models.models import AgentDocument
+    agent_id = params.get("_agent_id")
+    if not agent_id:
+        return {"error": "No agent context available"}
+
+    query = (params.get("query") or "").lower().strip()
+    max_results = min(params.get("max_results", 5), 15)
+
+    if not query:
+        return {"error": "Query is required"}
+
+    docs = db.query(AgentDocument).filter(AgentDocument.agent_id == agent_id).all()
+    if not docs:
+        return {"results": [], "message": "No documents uploaded to this agent."}
+
+    # Simple keyword-based retrieval: score each chunk by keyword overlap
+    query_terms = set(query.split())
+    scored = []
+    for doc in docs:
+        for i, chunk in enumerate(doc.chunks or []):
+            chunk_lower = chunk.lower()
+            # Score: count how many query terms appear in the chunk
+            score = sum(1 for term in query_terms if term in chunk_lower)
+            # Boost exact phrase match
+            if query in chunk_lower:
+                score += len(query_terms) * 2
+            if score > 0:
+                scored.append({
+                    "score": score,
+                    "filename": doc.filename,
+                    "chunk_index": i,
+                    "text": chunk,
+                })
+
+    # Sort by score descending
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    results = scored[:max_results]
+
+    # Strip internal score from output
+    for r in results:
+        del r["score"]
+
+    return {
+        "results": results,
+        "total_matches": len(scored),
+        "documents_searched": len(docs),
+    }

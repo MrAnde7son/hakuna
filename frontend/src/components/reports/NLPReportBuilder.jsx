@@ -17,6 +17,14 @@ const EXAMPLE_QUERIES = [
   'ransomware-linked vulnerabilities',
   'KEV findings on Linux hosts',
   'critical assets with more than 5 critical findings',
+  'zero-day vulnerabilities on internet-facing assets',
+  'regression findings that came back',
+  'findings with MITRE ATT&CK lateral movement tactics',
+  'false positives and accepted risk findings',
+  'findings on port 443 with VPR above 7',
+  'stale assets not recently scanned',
+  'high-value assets with critical findings in DMZ',
+  'findings tagged with PCI',
 ]
 
 const SEV_COLORS = {
@@ -110,7 +118,7 @@ function FindingsTable({ findings }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--border)' }}>
-              {['Severity', 'Plugin Name', 'Family', 'CVSS3', 'Priority', 'Exploit', 'KEV', 'Effort'].map(h => (
+              {['Severity', 'Plugin Name', 'Family', 'CVSS3', 'Priority', 'Exploit', 'KEV', 'Effort', 'Port', 'Workflow'].map(h => (
                 <th key={h} style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--muted)', fontWeight: 600, whiteSpace: 'nowrap', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{h}</th>
               ))}
             </tr>
@@ -150,6 +158,20 @@ function FindingsTable({ findings }) {
                       border: `1px solid ${f.effort_level === 'quick_win' ? '#16a34a44' : f.effort_level === 'complex' ? '#dc262644' : '#d9770644'}`,
                     }}>
                       {f.effort_level.replace('_', ' ')}
+                    </span>
+                  ) : '—'}
+                </td>
+                <td style={{ padding: '8px 12px', whiteSpace: 'nowrap', color: 'var(--muted)' }}>
+                  {f.port || '—'}
+                </td>
+                <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                  {f.workflow_status ? (
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 10, textTransform: 'capitalize',
+                      background: f.workflow_status === 'resolved' ? '#16a34a22' : f.workflow_status === 'in_progress' ? '#3b82f622' : f.workflow_status === 'accepted_risk' ? '#8b5cf622' : '#6b728022',
+                      color: f.workflow_status === 'resolved' ? '#16a34a' : f.workflow_status === 'in_progress' ? '#3b82f6' : f.workflow_status === 'accepted_risk' ? '#8b5cf6' : '#6b7280',
+                    }}>
+                      {f.workflow_status.replace(/_/g, ' ')}
                     </span>
                   ) : '—'}
                 </td>
@@ -246,17 +268,91 @@ function buildWidgetsFromResult(result) {
     })
   }
 
+  // Contextual stat cards based on query type
+  if (ff.has_exploit || ff.is_kev) {
+    widgets.push({
+      id: uid(), type: 'card', title: 'Known Exploits', width: 'quarter',
+      config: { preset: 'exploit_count' },
+    })
+  }
+  if (ff.sla_status) {
+    widgets.push({
+      id: uid(), type: 'card', title: 'SLA Breached', width: 'quarter',
+      config: { preset: 'sla_breached' },
+    })
+    widgets.push({
+      id: uid(), type: 'card', title: 'SLA Compliance', width: 'quarter',
+      config: { preset: 'sla_compliance' },
+    })
+  }
+  if (ff.effort_level === 'quick_win') {
+    widgets.push({
+      id: uid(), type: 'card', title: 'Quick Wins', width: 'quarter',
+      config: { preset: 'quick_wins' },
+    })
+  }
+  if (ff.is_regression) {
+    widgets.push({
+      id: uid(), type: 'card', title: 'Regressions', width: 'quarter',
+      config: { preset: 'regression_count' },
+    })
+  }
+
   // Severity breakdown pie (shows severity mix in results)
   widgets.push({
     id: uid(), type: 'pie_chart', title: 'Severity Distribution', width: 'half',
     config: { preset: 'severity_breakdown', donut: true, filters: hasFindingFilters ? ff : {} },
   })
 
+  // Contextual charts based on query type
+  if (ff.sla_status || ff.sla_status === undefined) {
+    // If SLA-related query, add SLA breakdown
+    if (ff.sla_status) {
+      widgets.push({
+        id: uid(), type: 'pie_chart', title: 'SLA Status', width: 'half',
+        config: { preset: 'sla_status', donut: true },
+      })
+    }
+  }
+
+  if (ff.effort_level) {
+    widgets.push({
+      id: uid(), type: 'pie_chart', title: 'Effort Distribution', width: 'half',
+      config: { preset: 'effort_breakdown', donut: true },
+    })
+  }
+
+  if (ff.has_ttps || ff.tactic || ff.technique_id) {
+    // Show severity trend for ATT&CK related queries
+    widgets.push({
+      id: uid(), type: 'bar_chart', title: 'Severity Breakdown', width: 'half',
+      config: { preset: 'severity_breakdown' },
+    })
+  }
+
+  // Add trend line for broader queries (no narrow single-filter)
+  const narrowFilters = ['cve', 'port', 'search']
+  const isNarrow = narrowFilters.some(k => ff[k]) && Object.keys(ff).length <= 2
+  if (!isNarrow) {
+    widgets.push({
+      id: uid(), type: 'line_chart', title: 'Severity Trend', width: 'full',
+      config: { preset: 'severity_trend' },
+    })
+  }
+
   // Findings table with NLP filters applied
   widgets.push({
-    id: uid(), type: 'table', title: 'Findings', width: hasFindingFilters ? 'full' : 'half',
+    id: uid(), type: 'table', title: 'Findings', width: 'full',
     config: { preset: 'findings_list', filters: hasFindingFilters ? { ...ff, page_size: 25 } : { page_size: 25 } },
   })
+
+  // Quick wins table if effort-related
+  if (ff.effort_level === 'quick_win') {
+    widgets.push({
+      id: uid(), type: 'table', title: 'Quick Wins', width: 'full',
+      config: { preset: 'quick_wins_table' },
+    })
+  }
 
   // Assets table if asset filters were used
   if (hasAssetFilters) {

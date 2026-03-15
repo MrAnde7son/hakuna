@@ -42,6 +42,19 @@ ENV_PATTERNS = [
     (r"\bcloud\b", "cloud"),
     (r"\bexternal\b", "external"),
     (r"\bproduction\b|\bprod\b", "production"),
+    (r"\bstaging\b|\bstage\b", "staging"),
+    (r"\bdevelopment\b|\bdev\b", "development"),
+    (r"\btest(?:ing)?\b|\bqa\b", "test"),
+]
+
+# ── Workflow status ───────────────────────────────────────────────────────────
+
+WORKFLOW_PATTERNS = [
+    (r"\bopen\s*(?:findings?|vulns?)?\b", "open"),
+    (r"\bin.progress\b|\bbeing\s*worked\b|\bassigned\b", "in_progress"),
+    (r"\baccepted?\s*risk\b|\brisk\s*accepted?\b", "accepted_risk"),
+    (r"\bfalse\s*positives?\b|\bfp\b", "false_positive"),
+    (r"\bexcepted\b|\bexception\b", "excepted"),
 ]
 
 # ── Plugin family keywords ─────────────────────────────────────────────────────
@@ -84,7 +97,10 @@ SORT_PATTERNS = [
     (r"\bnewest\b|\blatest\b|\brecent\b", ("created_at", "desc")),
     (r"\boldest\b|\bearli(?:est|er)\b", ("created_at", "asc")),
     (r"\bhighest\s*cvss\b|\bworst\s*cvss\b", ("cvss3_base_score", "desc")),
+    (r"\bhighest\s*epss\b|\bmost\s*likely\s*exploited\b", ("epss_score", "desc")),
+    (r"\bhighest\s*vpr\b|\bworst\s*vpr\b", ("vpr_score", "desc")),
     (r"\bquick(?:est)?\s*wins?\b", ("effort_level", "asc")),
+    (r"\bmost\s*affected\b|\bmost\s*assets\b", ("risk_score", "desc")),
 ]
 
 
@@ -129,26 +145,33 @@ def parse_nlp_query(query: str) -> dict:
         finding_filters["cve"] = cve_id
         chip("CVE", cve_id, "#ef4444")
 
-    # ── Severity ───────────────────────────────────────────────────────────────
+    # ── Severity (supports multiple: "critical and high") ───────────────────
     sev_value = None
+    sev_colors = {4: "#ef4444", 3: "#f97316", 2: "#eab308", 1: "#6b7280", 0: "#6b7280"}
+    matched_sevs = []
     for word, sev_int in SEVERITY_WORDS.items():
         if re.search(rf"\b{word}\b", ql):
-            sev_value = sev_int
-            finding_filters["severity"] = sev_int
-            # For assets, map severity to min counts
-            if sev_int == 4:
-                asset_filters["min_critical"] = asset_filters.get("min_critical", 1)
-                chip("Severity", word.capitalize(), "#ef4444")
-            elif sev_int == 3:
-                asset_filters["min_high"] = asset_filters.get("min_high", 1)
-                chip("Severity", word.capitalize(), "#f97316")
-            elif sev_int == 2:
-                chip("Severity", word.capitalize(), "#eab308")
-            elif sev_int in (0, 1):
-                chip("Severity", word.capitalize(), "#6b7280")
-            else:
-                chip("Severity", word.capitalize(), "#6366f1")
-            break
+            if sev_int not in [s for _, s in matched_sevs]:
+                matched_sevs.append((word, sev_int))
+    if len(matched_sevs) == 1:
+        word, sev_int = matched_sevs[0]
+        sev_value = sev_int
+        finding_filters["severity"] = sev_int
+        if sev_int == 4:
+            asset_filters["min_critical"] = asset_filters.get("min_critical", 1)
+        elif sev_int == 3:
+            asset_filters["min_high"] = asset_filters.get("min_high", 1)
+        chip("Severity", word.capitalize(), sev_colors.get(sev_int, "#6366f1"))
+    elif len(matched_sevs) > 1:
+        sev_ints = [s for _, s in matched_sevs]
+        sev_value = max(sev_ints)
+        finding_filters["severity_list"] = sev_ints
+        labels = [w.capitalize() for w, _ in matched_sevs]
+        chip("Severity", " + ".join(labels), sev_colors.get(max(sev_ints), "#6366f1"))
+        if 4 in sev_ints:
+            asset_filters["min_critical"] = asset_filters.get("min_critical", 1)
+        if 3 in sev_ints:
+            asset_filters["min_high"] = asset_filters.get("min_high", 1)
 
     # ── Exploit / KEV / Ransomware ─────────────────────────────────────────────
     if re.search(r"\bexploit(?:able|ed|s)?\b|\bweaponized\b|\bpoc\b|\bproof.of.concept\b", ql):
@@ -166,6 +189,89 @@ def parse_nlp_query(query: str) -> dict:
     if re.search(r"\btrending\b|\bin.the.news\b|\bnewsworthy\b", ql):
         finding_filters["trending_in_news"] = True
         chip("Trending", "Yes", "#0ea5e9")
+
+    # ── Zero-day ──────────────────────────────────────────────────────────────
+    if re.search(r"\bzero.?day\b|\b0.?day\b", ql):
+        finding_filters["zero_day"] = True
+        chip("Zero-Day", "Yes", "#dc2626")
+
+    # ── Regression ────────────────────────────────────────────────────────────
+    if re.search(r"\bregression\b|\bregressed\b|\breintroduced\b|\bcame\s*back\b", ql):
+        finding_filters["is_regression"] = True
+        chip("Regression", "Yes", "#ef4444")
+
+    # ── Auto-resolved ─────────────────────────────────────────────────────────
+    if re.search(r"\bauto.?resolved\b|\bautomatically\s*resolved\b", ql):
+        finding_filters["auto_resolved"] = True
+        chip("Auto-Resolved", "Yes", "#16a34a")
+
+    # ── Workflow status ───────────────────────────────────────────────────────
+    wf = _first_match(ql, WORKFLOW_PATTERNS)
+    if wf:
+        finding_filters["workflow_status"] = wf
+        label_map = {
+            "open": "Open", "in_progress": "In Progress",
+            "accepted_risk": "Accepted Risk", "false_positive": "False Positive",
+            "excepted": "Excepted",
+        }
+        chip("Workflow", label_map.get(wf, wf), "#3b82f6")
+
+    # ── MITRE ATT&CK / TTPs ──────────────────────────────────────────────────
+    if re.search(r"\batt&?ck\b|\bttps?\b|\bmitre\b|\btactics?\b|\btechniques?\b", ql):
+        finding_filters["has_ttps"] = True
+        chip("Has TTPs", "Yes", "#7c3aed")
+
+    tactic_match = re.search(
+        r"\b(initial.access|execution|persistence|privilege.escalation|"
+        r"defense.evasion|credential.access|discovery|lateral.movement|"
+        r"collection|exfiltration|command.and.control|impact|reconnaissance|"
+        r"resource.development)\b", ql, re.IGNORECASE
+    )
+    if tactic_match:
+        tactic_val = tactic_match.group(1).replace(" ", "-").replace(".", "-").title()
+        finding_filters["tactic"] = tactic_val
+        chip("Tactic", tactic_val, "#7c3aed")
+
+    technique_match = re.search(r"\b(t\d{4}(?:\.\d{3})?)\b", ql, re.IGNORECASE)
+    if technique_match:
+        finding_filters["technique_id"] = technique_match.group(1).upper()
+        chip("Technique", technique_match.group(1).upper(), "#7c3aed")
+
+    # ── VPR score ─────────────────────────────────────────────────────────────
+    vpr_match = re.search(r"\bvpr\b.*?(?:above|over|>|>=|at\s*least)?\s*(\d+(?:\.\d+)?)", ql) or \
+                re.search(r"(?:above|over|>|>=|at\s*least)\s*(\d+(?:\.\d+)?)\s*vpr", ql)
+    if vpr_match:
+        vpr_val = float(vpr_match.group(1))
+        finding_filters["min_vpr"] = vpr_val
+        chip("Min VPR", str(vpr_val), "#f59e0b")
+
+    # ── Internet-facing ───────────────────────────────────────────────────────
+    if re.search(r"\binternet.?facing\b|\bpublic.?facing\b|\bexposed\b|\bexternally\s*accessible\b", ql):
+        asset_filters["is_internet_facing"] = True
+        chip("Internet-Facing", "Yes", "#ef4444")
+
+    # ── Asset criticality ─────────────────────────────────────────────────────
+    crit_match = re.search(r"\bcriticality\s*(?:above|over|>|>=|at\s*least)?\s*(\d+)", ql)
+    if crit_match:
+        crit_val = int(crit_match.group(1))
+        asset_filters["criticality"] = crit_val
+        chip("Min Criticality", str(crit_val), "#f97316")
+    elif re.search(r"\bcritical\s*assets?\b|\bhigh.?value\s*assets?\b|\bhva\b", ql) and sev_value != 4:
+        asset_filters["criticality"] = 8
+        chip("High-Value Assets", "Criticality >= 8", "#f97316")
+
+    # ── Stale assets ──────────────────────────────────────────────────────────
+    if re.search(r"\bstale\b|\binactive\b|\bnot\s*scanned\b", ql):
+        asset_filters["asset_status"] = "stale"
+        chip("Status", "Stale", "#6b7280")
+
+    # ── Tags ──────────────────────────────────────────────────────────────────
+    tag_match = re.search(r"\btag(?:ged)?\s*(?:with\s*|:\s*|=\s*)?[\"']?([a-zA-Z0-9_:, -]+)[\"']?", ql)
+    if tag_match:
+        tag_val = tag_match.group(1).strip().rstrip(",")
+        asset_filters["tags"] = tag_val
+        finding_filters["tags"] = tag_val
+        chip("Tags", tag_val, "#14b8a6")
 
     # ── EPSS threshold ─────────────────────────────────────────────────────────
     epss_match = re.search(r"\bepss\b.*?(\d+(?:\.\d+)?)\s*%?", ql) or \
@@ -287,13 +393,22 @@ def parse_nlp_query(query: str) -> dict:
         r"\b(critical|high|medium|low|info|informational|severity|risk|score|"
         r"exploit(?:able|ed|s)?|weaponized|poc|proof.of.concept|kev|cisa|ransomware|"
         r"trending|news|newsworthy|quick\s*wins?|easy\s*fix(?:es)?|quick\s*fix(?:es)?|easy|complex|hard|difficult|"
-        r"dmz|internal|cloud|external|production|prod|"
+        r"dmz|internal|cloud|external|production|prod|staging|stage|development|dev|test(?:ing)?|qa|"
         r"windows|linux|ubuntu|debian|centos|red\s*hat|rhel|macos?|osx|solaris|aix|freebsd|cisco|"
         r"sla|breached|overdue|resolved|fixed|closed|on\s*track|at\s*risk|past\s*due|"
+        r"open|in.progress|assigned|accepted?\s*risk|false\s*positives?|fp|excepted|exception|"
+        r"zero.?day|0.?day|regression|regressed|reintroduced|auto.?resolved|"
+        r"att&?ck|ttps?|mitre|tactics?|techniques?|"
+        r"initial.access|execution|persistence|privilege.escalation|defense.evasion|"
+        r"credential.access|discovery|lateral.movement|collection|exfiltration|"
+        r"command.and.control|impact|reconnaissance|resource.development|"
+        r"internet.?facing|public.?facing|exposed|externally\s*accessible|"
+        r"stale|inactive|not\s*scanned|criticality|high.?value|hva|"
+        r"tagged?|"
         r"assets?|servers?|hosts?|findings?|vulnerabilit(?:y|ies)|vulns?|"
-        r"plugin\s*(?:id)?|nid|port|priority|greater|"
-        r"most|newest|latest|recent|oldest|earliest|worst|quickest|highest|"
-        r"epss|cvss|cve-\d{4}-\d{4,7})\b",
+        r"plugin\s*(?:id)?|nid|port|priority|greater|vpr|"
+        r"most|newest|latest|recent|oldest|earliest|worst|quickest|highest|likely|affected|"
+        r"epss|cvss|cve-\d{4}-\d{4,7}|t\d{4}(?:\.\d{3})?)\b",
         " ", residual, flags=re.IGNORECASE
     )
     # Remove standalone numbers (args to parsed patterns) but keep numbers

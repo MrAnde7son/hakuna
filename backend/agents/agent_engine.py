@@ -122,6 +122,44 @@ def _get_groq_client(db: Session):
     return _get_cached_client(f"groq:{api_key[:12]}", lambda: Groq(api_key=api_key))
 
 
+def get_available_providers(db: Session) -> list:
+    """Return list of providers that have an API key configured, with their models."""
+    _PROVIDER_INFO = {
+        "anthropic": {
+            "env_var": "ANTHROPIC_API_KEY",
+            "display": "Anthropic (Claude)",
+            "models": ["claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-6"],
+        },
+        "groq": {
+            "env_var": "GROQ_API_KEY",
+            "display": "Groq",
+            "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "deepseek-r1-distill-llama-70b"],
+        },
+        "openai": {
+            "env_var": "OPENAI_API_KEY",
+            "display": "OpenAI",
+            "models": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o3-mini"],
+        },
+        "google_gemini": {
+            "env_var": "GOOGLE_API_KEY",
+            "display": "Google Gemini",
+            "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+        },
+    }
+    result = []
+    for provider, info in _PROVIDER_INFO.items():
+        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
+        has_key = bool((cfg and cfg.config and cfg.config.get("api_key")) or os.environ.get(info["env_var"]))
+        if has_key:
+            result.append({
+                "provider": provider,
+                "display": info["display"],
+                "models": info["models"],
+                "configured": True,
+            })
+    return result
+
+
 # ── Default model per provider ────────────────────────────────────────
 
 # Provider → (env var, default model)
@@ -613,9 +651,22 @@ def run_agent(agent: Agent, user_input: str, db: Session) -> AgentRun:
     db.commit()
     db.refresh(run)
 
-    # Use agent's model, fall back to DB default, then hardcoded default
+    # Use agent's model, fall back to DB default, then hardcoded default.
+    # If the agent's configured model requires an API key that isn't set,
+    # fall back to whichever provider IS configured.
     model = agent.model or get_default_model(db)
     provider = detect_provider(model)
+    try:
+        _get_api_key(db, provider, {
+            "anthropic": "ANTHROPIC_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "google_gemini": "GOOGLE_API_KEY",
+            "groq": "GROQ_API_KEY",
+        }.get(provider, ""))
+    except RuntimeError:
+        # Configured model's provider has no key — fall back to default
+        model = get_default_model(db)
+        provider = detect_provider(model)
 
     try:
         if provider == "anthropic":
@@ -658,6 +709,17 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session):
 
     model = agent.model or get_default_model(db)
     provider = detect_provider(model)
+    # If the agent's model requires an API key that isn't configured, fall back
+    try:
+        _get_api_key(db, provider, {
+            "anthropic": "ANTHROPIC_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "google_gemini": "GOOGLE_API_KEY",
+            "groq": "GROQ_API_KEY",
+        }.get(provider, ""))
+    except RuntimeError:
+        model = get_default_model(db)
+        provider = detect_provider(model)
 
     try:
         if provider == "anthropic":
