@@ -8,13 +8,13 @@ import sys
 from typing import Optional, List, Dict
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db, SessionLocal
-from models.models import Agent, AgentRun, AgentSchedule, User
+from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, User
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from agents.agent_tools import get_tool_catalog
 from agents.agent_engine import run_agent, run_agent_streaming, update_agent_memory
@@ -278,6 +278,120 @@ def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+# ── Agent Documents (RAG context) ─────────────────────────────────────
+
+ALLOWED_DOC_TYPES = {
+    ".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm",
+    ".log", ".yaml", ".yml", ".nessus", ".pdf", ".py", ".js", ".ts",
+    ".conf", ".cfg", ".ini", ".toml",
+}
+MAX_DOC_SIZE = 10 * 1024 * 1024  # 10 MB
+CHUNK_SIZE = 1500  # chars per chunk
+CHUNK_OVERLAP = 200  # overlap between chunks
+
+
+def _chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> List[str]:
+    """Split text into overlapping chunks for retrieval."""
+    if len(text) <= chunk_size:
+        return [text]
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end]
+        if chunk.strip():
+            chunks.append(chunk)
+        start = end - overlap
+    return chunks
+
+
+def _extract_text(content: bytes, filename: str) -> str:
+    """Extract plain text from uploaded file content."""
+    ext = os.path.splitext(filename)[1].lower()
+    # For binary formats we could add specialized extraction later
+    # For now, decode as UTF-8 with fallback
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        return content.decode("latin-1")
+
+
+@router.get("/documents/{agent_id}")
+def list_agent_documents(agent_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    """List all documents attached to an agent."""
+    q = db.query(Agent).filter(Agent.id == agent_id)
+    q = apply_org_filter(q, Agent, org_ids)
+    agent = q.first()
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+    docs = db.query(AgentDocument).filter(AgentDocument.agent_id == agent_id).order_by(AgentDocument.created_at.desc()).all()
+    return [_doc_to_dict(d) for d in docs]
+
+
+@router.post("/documents/{agent_id}")
+async def upload_agent_document(agent_id: int, file: UploadFile = File(...), db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    """Upload a file as RAG context for an agent."""
+    q = db.query(Agent).filter(Agent.id == agent_id)
+    q = apply_org_filter(q, Agent, org_ids)
+    agent = q.first()
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+
+    # Validate extension
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_DOC_TYPES:
+        raise HTTPException(400, f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_DOC_TYPES))}")
+
+    # Read file
+    content = await file.read()
+    if len(content) > MAX_DOC_SIZE:
+        raise HTTPException(400, f"File too large ({len(content)} bytes). Max: {MAX_DOC_SIZE} bytes")
+
+    # Extract text and chunk
+    text = _extract_text(content, file.filename)
+    chunks = _chunk_text(text)
+
+    doc = AgentDocument(
+        agent_id=agent_id,
+        filename=file.filename,
+        content_type=file.content_type,
+        size_bytes=len(content),
+        chunks=chunks,
+        chunk_count=len(chunks),
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    return _doc_to_dict(doc)
+
+
+@router.delete("/documents/{agent_id}/{doc_id}")
+def delete_agent_document(agent_id: int, doc_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    """Delete a document from an agent."""
+    q = db.query(Agent).filter(Agent.id == agent_id)
+    q = apply_org_filter(q, Agent, org_ids)
+    if not q.first():
+        raise HTTPException(404, "Agent not found")
+    doc = db.query(AgentDocument).filter(AgentDocument.id == doc_id, AgentDocument.agent_id == agent_id).first()
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    db.delete(doc)
+    db.commit()
+    return {"ok": True}
+
+
+def _doc_to_dict(d: AgentDocument):
+    return {
+        "id": d.id,
+        "agent_id": d.agent_id,
+        "filename": d.filename,
+        "content_type": d.content_type,
+        "size_bytes": d.size_bytes,
+        "chunk_count": d.chunk_count,
+        "created_at": d.created_at.isoformat() if d.created_at else None,
+    }
+
+
 # ── Agent by ID (parameterized routes last) ──────────────────────────
 
 @router.get("/{agent_id}")
@@ -393,6 +507,7 @@ def _agent_to_dict(a: Agent):
         "system_prompt": a.system_prompt, "tools": a.tools,
         "guardrails": a.guardrails, "memory": a.memory,
         "model": a.model,
+        "document_count": len(a.documents) if a.documents else 0,
         "created_at": a.created_at.isoformat() if a.created_at else None,
         "updated_at": a.updated_at.isoformat() if a.updated_at else None,
     }

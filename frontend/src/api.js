@@ -677,6 +677,16 @@ export const importAgent = (data) => request('/agents/import', {
   body: JSON.stringify(data),
 })
 
+// Agent Documents (RAG)
+export const getAgentDocuments = (agentId) => request(`/agents/documents/${agentId}`)
+export const uploadAgentDocument = (agentId, file) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return request(`/agents/documents/${agentId}`, { method: 'POST', body: fd })
+}
+export const deleteAgentDocument = (agentId, docId) =>
+  request(`/agents/documents/${agentId}/${docId}`, { method: 'DELETE' })
+
 // Agent Schedules
 export const getAgentSchedules = () => request('/agents/schedules')
 export const createAgentSchedule = (data) => request('/agents/schedules', {
