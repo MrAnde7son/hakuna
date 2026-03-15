@@ -34,6 +34,9 @@ async function request(path, opts = {}) {
   const headers = { ...(opts.headers || {}) }
   if (token) headers['Authorization'] = `Bearer ${token}`
   if (orgContext) headers['X-Org-Context'] = orgContext
+  // Send current locale for backend i18n
+  const locale = localStorage.getItem('i18nextLng')
+  if (locale) headers['Accept-Language'] = locale
 
   const res = await fetch(`${BASE}${path}`, { ...opts, headers })
 
@@ -73,6 +76,12 @@ export const authChangePassword = (data) => request('/auth/change-password', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(data),
+})
+
+export const authUpdateLocale = (locale) => request('/auth/locale', {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ locale }),
 })
 
 export const authInviteUser = (data) => request('/auth/invite', {

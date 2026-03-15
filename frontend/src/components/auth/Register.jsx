@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 
 export default function Register() {
@@ -12,16 +13,17 @@ export default function Register() {
   const [loading, setLoading] = useState(false)
   const { register } = useAuth()
   const navigate = useNavigate()
+  const { t } = useTranslation()
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
     if (password !== confirmPassword) {
-      setError('Passwords do not match')
+      setError(t('auth.passwordsMismatch'))
       return
     }
     if (password.length < 8) {
-      setError('Password must be at least 8 characters')
+      setError(t('auth.passwordTooShort'))
       return
     }
     setLoading(true)
@@ -29,7 +31,7 @@ export default function Register() {
       await register(orgName, email, password, displayName)
       navigate('/')
     } catch (err) {
-      setError(err.message || 'Registration failed')
+      setError(err.message || t('auth.registrationFailed'))
     } finally {
       setLoading(false)
     }
@@ -62,9 +64,9 @@ export default function Register() {
       }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <img src="/logo-symbol.svg" alt="Logo" style={{ width: 40, height: 40, marginBottom: 12 }} />
-          <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Create your account</h1>
+          <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>{t('auth.createYourAccount')}</h1>
           <p style={{ fontSize: 13, color: 'var(--muted, #71717a)', marginTop: 4 }}>
-            Set up your organization on Hakuna
+            {t('auth.setupOrg')}
           </p>
         </div>
 
@@ -84,7 +86,7 @@ export default function Register() {
           )}
 
           <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Organization name</label>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('auth.orgName')}</label>
             <input
               type="text"
               value={orgName}
@@ -97,7 +99,7 @@ export default function Register() {
           </div>
 
           <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Your name</label>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('auth.yourName')}</label>
             <input
               type="text"
               value={displayName}
@@ -108,7 +110,7 @@ export default function Register() {
           </div>
 
           <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Email</label>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('auth.email')}</label>
             <input
               type="email"
               value={email}
@@ -120,19 +122,19 @@ export default function Register() {
           </div>
 
           <div style={{ marginBottom: 14 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Password</label>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('auth.password')}</label>
             <input
               type="password"
               value={password}
               onChange={e => setPassword(e.target.value)}
               required
-              placeholder="Min 8 characters"
+              placeholder={t('auth.minChars')}
               style={inputStyle}
             />
           </div>
 
           <div style={{ marginBottom: 20 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Confirm password</label>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t('auth.confirmPassword')}</label>
             <input
               type="password"
               value={confirmPassword}
@@ -158,14 +160,14 @@ export default function Register() {
               opacity: loading ? 0.6 : 1,
             }}
           >
-            {loading ? 'Creating account...' : 'Create account'}
+            {loading ? t('auth.creatingAccount') : t('auth.createAccount')}
           </button>
         </form>
 
         <div style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: 'var(--muted, #71717a)' }}>
-          Already have an account?{' '}
+          {t('auth.hasAccount')}{' '}
           <Link to="/login" style={{ color: 'var(--text-primary)', fontWeight: 600, textDecoration: 'none' }}>
-            Sign in
+            {t('auth.signIn')}
           </Link>
         </div>
       </div>
