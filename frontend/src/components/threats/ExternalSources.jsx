@@ -3,6 +3,7 @@
  * Supported source types: csv, servicenow, api
  */
 import React, { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Link2, Plus, Upload, RefreshCw, Settings2, Trash2, Save, X, Edit2, ArrowRight } from 'lucide-react'
 import { Card, Button, Spinner } from '../shared/ui.jsx'
 import {
@@ -16,20 +17,21 @@ const labelStyle = { fontSize: 11, fontWeight: 600, color: 'var(--text-secondary
 const inputStyle = { width: '100%', padding: '6px 10px', fontSize: 13, background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-primary)', boxSizing: 'border-box' }
 const iconBtnStyle = { background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', padding: 4, borderRadius: 4 }
 
-const SOURCE_TYPES = [
-  { value: 'csv',        label: 'CSV / File upload' },
-  { value: 'servicenow', label: 'ServiceNow CMDB' },
-  { value: 'api',        label: 'Generic REST API' },
+const getSourceTypes = (t) => [
+  { value: 'csv',        label: t('threats.csvFileUpload') },
+  { value: 'servicenow', label: t('threats.servicenowCmdb') },
+  { value: 'api',        label: t('threats.genericRestApi') },
 ]
-const MATCH_FIELDS = [
-  { value: 'any',      label: 'Any (IP, hostname, FQDN)' },
-  { value: 'ip',       label: 'IP address' },
-  { value: 'hostname', label: 'Hostname' },
+const getMatchFields = (t) => [
+  { value: 'any',      label: t('threats.anyIpHostFqdn') },
+  { value: 'ip',       label: t('assets.ip') },
+  { value: 'hostname', label: t('assets.hostname') },
   { value: 'fqdn',     label: 'FQDN' },
 ]
 
 // ─── Source config form ───────────────────────────────────────────────────────
 function SourceForm({ source, onSave, onCancel }) {
+  const { t } = useTranslation()
   const [name, setName]             = useState(source?.name || '')
   const [type, setType]             = useState(source?.source_type || 'csv')
   const [matchField, setMatchField] = useState(source?.match_field || 'any')
@@ -45,8 +47,11 @@ function SourceForm({ source, onSave, onCancel }) {
   const [saving, setSaving]         = useState(false)
   const [error, setError]           = useState(null)
 
+  const SOURCE_TYPES = getSourceTypes(t)
+  const MATCH_FIELDS = getMatchFields(t)
+
   const submit = async () => {
-    if (!name.trim()) { setError('Name is required'); return }
+    if (!name.trim()) { setError(t('threats.nameRequired')); return }
     setSaving(true); setError(null)
     try {
       const apiConfig = type !== 'csv' ? {
@@ -72,24 +77,24 @@ function SourceForm({ source, onSave, onCancel }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
-          {source ? 'Edit Source' : 'New External Source'}
+          {source ? t('threats.editSource') : t('threats.newExternalSource')}
         </span>
         <button onClick={onCancel} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}><X size={14} /></button>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <div>
-          <label style={labelStyle}>Source name</label>
+          <label style={labelStyle}>{t('threats.sourceName')}</label>
           <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. ServiceNow CMDB" style={inputStyle} />
         </div>
         <div>
-          <label style={labelStyle}>Type</label>
+          <label style={labelStyle}>{t('threats.sourceType')}</label>
           <select value={type} onChange={e => setType(e.target.value)} style={inputStyle}>
             {SOURCE_TYPES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </div>
         <div>
-          <label style={labelStyle}>Match assets by</label>
+          <label style={labelStyle}>{t('threats.matchField')}</label>
           <select value={matchField} onChange={e => setMatchField(e.target.value)} style={inputStyle}>
             {MATCH_FIELDS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
@@ -99,12 +104,12 @@ function SourceForm({ source, onSave, onCancel }) {
       {type !== 'csv' && (
         <>
           <div>
-            <label style={labelStyle}>Instance / API URL</label>
+            <label style={labelStyle}>{t('threats.apiUrl')}</label>
             <input value={apiUrl} onChange={e => setApiUrl(e.target.value)} placeholder="https://your-instance.service-now.com" style={inputStyle} />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div>
-              <label style={labelStyle}>Auth type</label>
+              <label style={labelStyle}>{t('threats.authType')}</label>
               <select value={authType} onChange={e => setAuthType(e.target.value)} style={inputStyle}>
                 <option value="basic">Basic (user / password)</option>
                 <option value="token">Bearer token</option>
@@ -150,14 +155,14 @@ function SourceForm({ source, onSave, onCancel }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <input type="checkbox" id="auto_create" checked={autoCreate} onChange={e => setAutoCreate(e.target.checked)} style={{ cursor: 'pointer' }} />
         <label htmlFor="auto_create" style={{ fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer' }}>
-          Auto-create internal tags when no mapping is defined (uses external tag name as-is)
+          {t('threats.autoCreateTags')}
         </label>
       </div>
 
       {error && <div style={{ fontSize: 12, color: '#dc2626', background: '#450a0a', borderRadius: 6, padding: '6px 10px' }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={submit} disabled={saving} style={{ flex: 1 }}><Save size={13} /> {saving ? 'Saving…' : source ? 'Update' : 'Create Source'}</Button>
-        <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+        <Button onClick={submit} disabled={saving} style={{ flex: 1 }}><Save size={13} /> {saving ? 'Saving…' : t('common.save')}</Button>
+        <Button variant="ghost" onClick={onCancel}>{t('common.cancel')}</Button>
       </div>
     </div>
   )
@@ -165,6 +170,7 @@ function SourceForm({ source, onSave, onCancel }) {
 
 // ─── Tag map row ──────────────────────────────────────────────────────────────
 function TagMapRow({ sourceId, map, allTags, onSaved, onDelete }) {
+  const { t } = useTranslation()
   const [editing, setEditing]   = useState(false)
   const [extTag, setExtTag]     = useState(map?.external_tag || '')
   const [intTagId, setIntTagId] = useState(map?.internal_tag_id || '')
@@ -214,7 +220,7 @@ function TagMapRow({ sourceId, map, allTags, onSaved, onDelete }) {
           <ArrowRight size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
           <select value={intTagId} onChange={e => setIntTagId(e.target.value)} style={{ ...inputStyle, width: 200 }}>
             <option value="">— Auto-create from name —</option>
-            {allTags.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            {allTags.map(tg => <option key={tg.id} value={tg.id}>{tg.label}</option>)}
           </select>
           <Button size="sm" onClick={handleSave} disabled={saving || !extTag.trim()}>
             <Save size={12} /> {saving ? '…' : map ? 'Update' : 'Add'}
@@ -228,6 +234,7 @@ function TagMapRow({ sourceId, map, allTags, onSaved, onDelete }) {
 
 // ─── Source card ──────────────────────────────────────────────────────────────
 function SourceCard({ source, allTags, onRefresh }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded]     = useState(false)
   const [editOpen, setEditOpen]     = useState(false)
   const [addingMap, setAddingMap]   = useState(false)
@@ -235,6 +242,8 @@ function SourceCard({ source, allTags, onRefresh }) {
   const [syncing, setSyncing]       = useState(false)
   const [syncResult, setSyncResult] = useState(null)
   const fileRef = React.useRef()
+
+  const SOURCE_TYPES = getSourceTypes(t)
 
   const handleDelete = async () => {
     if (!confirm(`Delete source "${source.name}"? Existing tag assignments are kept.`)) return
@@ -283,7 +292,7 @@ function SourceCard({ source, allTags, onRefresh }) {
     )
   }
 
-  const typeLabel = SOURCE_TYPES.find(t => t.value === source.source_type)?.label || source.source_type
+  const typeLabel = SOURCE_TYPES.find(st => st.value === source.source_type)?.label || source.source_type
 
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
@@ -313,16 +322,16 @@ function SourceCard({ source, allTags, onRefresh }) {
             <>
               <input ref={fileRef} type="file" accept=".csv,.txt" style={{ display: 'none' }} onChange={handleImport} />
               <Button size="sm" variant="ghost" onClick={() => fileRef.current?.click()} disabled={importing}>
-                <Upload size={12} /> {importing ? 'Importing…' : 'Import CSV'}
+                <Upload size={12} /> {importing ? 'Importing…' : t('threats.uploadCsv')}
               </Button>
             </>
           ) : (
             <Button size="sm" variant="ghost" onClick={handleSync} disabled={syncing}>
-              <RefreshCw size={12} /> {syncing ? 'Syncing…' : 'Sync Now'}
+              <RefreshCw size={12} /> {syncing ? 'Syncing…' : t('threats.syncNow')}
             </Button>
           )}
-          <button onClick={() => setEditOpen(true)} style={iconBtnStyle} title="Edit"><Settings2 size={13} /></button>
-          <button onClick={handleDelete} style={{ ...iconBtnStyle, color: '#dc2626' }} title="Delete"><Trash2 size={13} /></button>
+          <button onClick={() => setEditOpen(true)} style={iconBtnStyle} title={t('common.edit')}><Settings2 size={13} /></button>
+          <button onClick={handleDelete} style={{ ...iconBtnStyle, color: '#dc2626' }} title={t('common.delete')}><Trash2 size={13} /></button>
         </div>
       </div>
 
@@ -338,7 +347,7 @@ function SourceCard({ source, allTags, onRefresh }) {
         <div style={{ borderTop: '1px solid var(--border)', padding: '12px 16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
             <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Tag Translation Mappings
+              {t('threats.tagMappings')}
             </span>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
               {source.source_type === 'csv' && (
@@ -347,7 +356,7 @@ function SourceCard({ source, allTags, onRefresh }) {
                 </span>
               )}
               <Button size="sm" variant="ghost" onClick={() => setAddingMap(true)} disabled={addingMap}>
-                <Plus size={12} /> Add Mapping
+                <Plus size={12} /> {t('threats.addMapping')}
               </Button>
             </div>
           </div>
@@ -386,6 +395,7 @@ function SourceCard({ source, allTags, onRefresh }) {
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 export default function ExternalSources() {
+  const { t } = useTranslation()
   const [sources, setSources] = useState([])
   const [allTags, setAllTags] = useState([])
   const [loading, setLoading] = useState(true)
@@ -408,11 +418,10 @@ export default function ExternalSources() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
         <div style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 620 }}>
-          Connect an external source (ServiceNow CMDB, CSV export, etc.). Define how external tag names
-          translate to your internal tags. Assets are matched by IP, hostname, or FQDN.
+          {t('threats.noSourcesDesc')}
         </div>
         <Button size="sm" onClick={() => setCreating(true)} disabled={creating}>
-          <Plus size={13} /> Add Source
+          <Plus size={13} /> {t('threats.addSource')}
         </Button>
       </div>
 
@@ -425,11 +434,11 @@ export default function ExternalSources() {
       {sources.length === 0 && !creating ? (
         <Card style={{ textAlign: 'center', padding: '48px 24px' }}>
           <Link2 size={32} style={{ color: 'var(--text-muted)', opacity: 0.3, marginBottom: 12 }} />
-          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>No external sources connected</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>{t('threats.noSources')}</div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16, maxWidth: 420, margin: '0 auto 16px' }}>
-            Connect ServiceNow, upload a CSV export, or configure a REST API to sync asset tags into your internal tag taxonomy.
+            {t('threats.noSourcesDesc')}
           </div>
-          <Button onClick={() => setCreating(true)}><Plus size={13} /> Add First Source</Button>
+          <Button onClick={() => setCreating(true)}><Plus size={13} /> {t('threats.addSource')}</Button>
         </Card>
       ) : (
         sources.map(src => (

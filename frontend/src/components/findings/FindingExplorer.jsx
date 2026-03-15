@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getFindings, getPluginFamilies, getAssets, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership } from '../../api.js'
@@ -46,29 +47,29 @@ function TtpPill({ ttp }) {
   )
 }
 
-const GROUP_OPTIONS = [
-  { value: 'severity', label: 'Severity' },
-  { value: 'plugin_family', label: 'Plugin Family' },
-  { value: 'asset', label: 'Asset' },
-  { value: 'owner_suggestion', label: 'Owner' },
-  { value: 'effort_level', label: 'Effort' },
-  { value: 'cve', label: 'CVE' },
-  { value: 'root_cause', label: 'Root Cause' },
+const getGroupOptions = (t) => [
+  { value: 'severity', label: t('findings.severity') },
+  { value: 'plugin_family', label: t('findings.pluginFamily') },
+  { value: 'asset', label: t('findings.asset') },
+  { value: 'owner_suggestion', label: t('findings.owner') },
+  { value: 'effort_level', label: t('findings.effort') },
+  { value: 'cve', label: t('findings.cve') },
+  { value: 'root_cause', label: t('findings.rootCause') },
 ]
 
-const ROOT_CAUSE_LABELS = {
-  os_eol: 'OS End-of-Life',
-  software_eol: 'Software End-of-Life',
-  missing_patches: 'Missing Patches',
-  ssl_tls_config: 'SSL/TLS Configuration',
-  smb_hardening: 'SMB Hardening',
-  ssh_hardening: 'SSH Hardening',
-  rdp_hardening: 'RDP Hardening',
-  default_credentials: 'Default Credentials',
-}
+const getRootCauseLabels = (t) => ({
+  os_eol: t('rootCauses.osEol'),
+  software_eol: t('rootCauses.softwareEol'),
+  missing_patches: t('rootCauses.missingPatches'),
+  ssl_tls_config: t('rootCauses.sslTls'),
+  smb_hardening: t('rootCauses.smb'),
+  ssh_hardening: t('rootCauses.ssh'),
+  rdp_hardening: t('rootCauses.rdp'),
+  default_credentials: t('rootCauses.defaultCreds'),
+})
 
 const SEV_ORDER = { 4: 0, 3: 1, 2: 2, 1: 3, 0: 4 }
-const SEV_LABELS = { 4: 'Critical', 3: 'High', 2: 'Medium', 1: 'Low', 0: 'Info' }
+const getSevLabels = (t) => ({ 4: t('severity.critical'), 3: t('severity.high'), 2: t('severity.medium'), 1: t('severity.low'), 0: t('severity.info') })
 const SEV_COLORS = { 4: 'var(--critical)', 3: 'var(--high)', 2: 'var(--medium)', 1: 'var(--low)', 0: 'var(--muted)' }
 
 function getGroupKey(finding, groupBy) {
@@ -105,11 +106,11 @@ function groupFindings(findings, groupBy) {
   return entries
 }
 
-function GroupHeader({ groupBy, groupKey, count, open, onToggle }) {
+function GroupHeader({ groupBy, groupKey, count, open, onToggle, t }) {
   const isSev = groupBy === 'severity'
-  let label = isSev ? SEV_LABELS[Number(groupKey)] : groupKey
+  let label = isSev ? getSevLabels(t)[Number(groupKey)] : groupKey
   if (groupBy === 'root_cause') {
-    label = groupKey === 'ungrouped' ? 'No Root Cause Group' : `Root Cause #${groupKey}`
+    label = groupKey === 'ungrouped' ? t('findings.noRootCauseGroup') : t('findings.rootCauseGroup', { id: groupKey })
   }
   const color = isSev ? SEV_COLORS[Number(groupKey)] : 'var(--text-secondary)'
 
@@ -136,15 +137,17 @@ function GroupHeader({ groupBy, groupKey, count, open, onToggle }) {
   )
 }
 
-const SEV_OPTIONS = [
-  { value: '4', label: 'Critical' },
-  { value: '3', label: 'High' },
-  { value: '2', label: 'Medium' },
-  { value: '1', label: 'Low' },
-  { value: '0', label: 'Info' },
+const getSevOptions = (t) => [
+  { value: '4', label: t('severity.critical') },
+  { value: '3', label: t('severity.high') },
+  { value: '2', label: t('severity.medium') },
+  { value: '1', label: t('severity.low') },
+  { value: '0', label: t('severity.info') },
 ]
 
-function SLABadge({ status, dueDate }) {
+function SLABadge({ status, dueDate, t: tProp }) {
+  const { t: tHook } = useTranslation()
+  const t = tProp || tHook
   if (!status || status === 'n/a') return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
 
   const now = new Date()
@@ -152,10 +155,10 @@ function SLABadge({ status, dueDate }) {
   const daysLeft = due ? Math.ceil((due - now) / 86400000) : null
 
   const cfg = {
-    resolved: { color: 'var(--accent)',   bg: 'rgba(99,102,241,0.12)', label: 'Resolved' },
-    on_track: { color: 'var(--success)',  bg: 'rgba(22,163,74,0.1)',   label: daysLeft !== null ? `${daysLeft}d left` : 'On Track' },
-    at_risk:  { color: 'var(--warning)',  bg: 'rgba(217,119,6,0.12)',  label: daysLeft !== null ? `${daysLeft}d left` : 'At Risk' },
-    breached: { color: 'var(--danger)',   bg: 'rgba(220,38,38,0.12)',  label: daysLeft !== null ? `${Math.abs(daysLeft)}d over` : 'Breached' },
+    resolved: { color: 'var(--accent)',   bg: 'rgba(99,102,241,0.12)', label: t('sla.resolved') },
+    on_track: { color: 'var(--success)',  bg: 'rgba(22,163,74,0.1)',   label: daysLeft !== null ? t('sla.daysLeft', { days: daysLeft }) : t('sla.onTrack') },
+    at_risk:  { color: 'var(--warning)',  bg: 'rgba(217,119,6,0.12)',  label: daysLeft !== null ? t('sla.daysLeft', { days: daysLeft }) : t('sla.atRisk') },
+    breached: { color: 'var(--danger)',   bg: 'rgba(220,38,38,0.12)',  label: daysLeft !== null ? t('sla.daysOver', { days: Math.abs(daysLeft) }) : t('sla.breached') },
   }[status] || { color: 'var(--muted)', bg: 'transparent', label: status }
 
   return (
@@ -171,6 +174,7 @@ function SLABadge({ status, dueDate }) {
 }
 
 function BulkTagModal({ findingIds, onClose, onDone }) {
+  const { t } = useTranslation()
   const [selected, setSelected] = useState([])
   const [saving, setSaving] = useState(false)
 
@@ -196,14 +200,14 @@ function BulkTagModal({ findingIds, onClose, onDone }) {
         boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
       }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>
-          Tag {findingIds.length} finding{findingIds.length !== 1 ? 's' : ''}
+          {t('findings.tagCount', { count: findingIds.length })}
         </div>
-        <TagPicker selectedTags={selected} onChange={setSelected} placeholder="Search tags…" />
+        <TagPicker selectedTags={selected} onChange={setSelected} placeholder={t('findings.searchTags')} />
         <div style={{ display: 'flex', gap: 8 }}>
           <Button onClick={apply} disabled={saving || !selected.length}>
-            <Tag size={14} /> {saving ? 'Applying…' : 'Apply Tags'}
+            <Tag size={14} /> {saving ? t('findings.applying') : t('findings.applyTags')}
           </Button>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
         </div>
       </div>
     </div>
@@ -211,6 +215,7 @@ function BulkTagModal({ findingIds, onClose, onDone }) {
 }
 
 export default function FindingExplorer() {
+  const { t } = useTranslation()
   const { activeScanId } = useScan()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -463,19 +468,19 @@ export default function FindingExplorer() {
       )
     },
     {
-      key: 'severity', label: 'Sev', width: '80px', sortable: true,
+      key: 'severity', label: t('findings.sev'), width: '80px', sortable: true,
       render: (v, row) => <SeverityBadge severity={v} label={row.severity_label} />
     },
     {
-      key: 'priority_score', label: 'Priority', width: '120px', sortable: true,
+      key: 'priority_score', label: t('findings.priority'), width: '120px', sortable: true,
       render: (v) => <ScoreBar score={v} />
     },
     {
-      key: 'plugin_name', label: 'Plugin / Finding', width: '30%', sortable: true,
+      key: 'plugin_name', label: t('findings.pluginFinding'), width: '30%', sortable: true,
       render: (v, row) => (
         <div>
           <div style={{ fontWeight: 500, color: 'var(--text-primary)', fontSize: 13 }}>{v}</div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Plugin {row.plugin_id} · {row.plugin_family || '—'}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('findings.plugin')} {row.plugin_id} · {row.plugin_family || '—'}</div>
           {row.cves && row.cves.length > 0 && (
             <div style={{ marginTop: 3, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
               {row.cves.slice(0, 3).map(cve => (
@@ -507,7 +512,7 @@ export default function FindingExplorer() {
       )
     },
     {
-      key: 'asset_hostname', label: 'Asset', width: '15%', sortable: true,
+      key: 'asset_hostname', label: t('findings.asset'), width: '15%', sortable: true,
       render: (v, row) => (
         <div>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{v || row.asset_ip}</div>
@@ -516,7 +521,7 @@ export default function FindingExplorer() {
       )
     },
     {
-      key: 'cvss3_score', label: 'CVSS3', width: '70px', sortable: true,
+      key: 'cvss3_score', label: t('findings.cvss3'), width: '70px', sortable: true,
       render: (v, row) => {
         const score = v || row.cvss2_score
         if (!score) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
@@ -525,7 +530,7 @@ export default function FindingExplorer() {
       }
     },
     {
-      key: 'cvss2_score', label: 'CVSS2', width: '70px', sortable: true,
+      key: 'cvss2_score', label: t('findings.cvss2'), width: '70px', sortable: true,
       render: (v) => {
         if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
         const color = v >= 9 ? '#dc2626' : v >= 7 ? '#ea580c' : v >= 4 ? '#d97706' : '#65a30d'
@@ -533,7 +538,7 @@ export default function FindingExplorer() {
       }
     },
     {
-      key: 'cvss4_score', label: 'CVSS4', width: '70px', sortable: true,
+      key: 'cvss4_score', label: t('findings.cvss4'), width: '70px', sortable: true,
       render: (v) => {
         if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
         const color = v >= 9 ? '#dc2626' : v >= 7 ? '#ea580c' : v >= 4 ? '#d97706' : '#65a30d'
@@ -541,11 +546,11 @@ export default function FindingExplorer() {
       }
     },
     {
-      key: 'effort_level', label: 'Effort',
+      key: 'effort_level', label: t('findings.effort'),
       render: (v) => <EffortBadge effort={v} />
     },
     {
-      key: 'owner_suggestion', label: 'Owner',
+      key: 'owner_suggestion', label: t('findings.owner'),
       render: (_, row) => {
         const isOpen = ownershipEdit?.findingId === row.id
         const ro = row.resolved_owner
@@ -559,7 +564,7 @@ export default function FindingExplorer() {
             >
               {row.resolved_owner
                 ? <ResolvedOwnerBadge resolved={row.resolved_owner} />
-                : <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>+ Set owner</span>}
+                : <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('findings.setOwner')}</span>}
             </button>
             {isOpen && (
               <OwnershipEditPopover
@@ -577,20 +582,20 @@ export default function FindingExplorer() {
       }
     },
     {
-      key: 'exploit_available', label: 'Exploit',
+      key: 'exploit_available', label: t('findings.exploit'),
       render: (v, row) => {
-        if (row.zero_day) return <Pill label="0-day" color="#dc2626" />
-        if (v) return <Pill label="Known" color="#ea580c" />
-        if (row.exploit_maturity === 'unproven') return <Pill label="Unproven" color="#d97706" />
+        if (row.zero_day) return <Pill label={t('findings.zeroDay')} color="#dc2626" />
+        if (v) return <Pill label={t('findings.known')} color="#ea580c" />
+        if (row.exploit_maturity === 'unproven') return <Pill label={t('findings.unproven')} color="#d97706" />
         return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
       }
     },
     {
-      key: 'is_kev', label: 'KEV', sortable: true,
+      key: 'is_kev', label: t('findings.kev'), sortable: true,
       render: (v) => v ? <Pill label="KEV" color="#dc2626" /> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
     },
     {
-      key: 'epss_score', label: 'EPSS', width: '80px', sortable: true,
+      key: 'epss_score', label: t('findings.epss'), width: '80px', sortable: true,
       render: (v, row) => {
         if (v == null) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
         const color = v >= 0.5 ? 'var(--critical)' : v >= 0.2 ? 'var(--high)' : v >= 0.1 ? 'var(--medium)' : 'var(--low)'
@@ -605,19 +610,19 @@ export default function FindingExplorer() {
       }
     },
     {
-      key: 'ransomware_linked', label: 'Ransomware', sortable: true,
-      render: (v) => v ? <Pill label="Ransomware" color="#7c3aed" /> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+      key: 'ransomware_linked', label: t('findings.ransomware'), sortable: true,
+      render: (v) => v ? <Pill label={t('findings.ransomware')} color="#7c3aed" /> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
     },
     {
-      key: 'trending_in_news', label: 'Trending', sortable: true,
-      render: (v) => v ? <Pill label="In News" color="#0ea5e9" /> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+      key: 'trending_in_news', label: t('findings.trending'), sortable: true,
+      render: (v) => v ? <Pill label={t('findings.inNews')} color="#0ea5e9" /> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
     },
     {
-      key: 'sla_status', label: 'SLA', width: '90px', sortable: true,
+      key: 'sla_status', label: t('findings.sla'), width: '90px', sortable: true,
       render: (v, row) => <SLABadge status={v} dueDate={row.sla_due_date} />
     },
     {
-      key: 'vulnerability_state', label: 'State',
+      key: 'vulnerability_state', label: t('findings.state'),
       render: (v) => {
         if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
         const color = v === 'Active' ? 'var(--danger)' : v === 'New' ? 'var(--success)' : v === 'Resurfaced' ? 'var(--warning)' : 'var(--muted)'
@@ -625,7 +630,7 @@ export default function FindingExplorer() {
       }
     },
     {
-      key: 'vpr_score', label: 'VPR', width: '70px', sortable: true,
+      key: 'vpr_score', label: t('findings.vpr'), width: '70px', sortable: true,
       render: (v) => {
         if (v == null) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
         const color = v >= 7 ? 'var(--critical)' : v >= 5 ? 'var(--high)' : 'var(--low)'
@@ -633,7 +638,7 @@ export default function FindingExplorer() {
       }
     },
     {
-      key: 'risk_factor', label: 'Risk Factor',
+      key: 'risk_factor', label: t('findings.riskFactor'),
       render: (v) => {
         if (!v || v === 'None') return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
         const color = v === 'Critical' ? 'var(--critical)' : v === 'High' ? 'var(--high)' : v === 'Medium' ? 'var(--medium)' : v === 'Low' ? 'var(--low)' : 'var(--muted)'
@@ -641,14 +646,14 @@ export default function FindingExplorer() {
       }
     },
     {
-      key: 'port', label: 'Port', width: '80px',
+      key: 'port', label: t('findings.port'), width: '80px',
       render: (v, row) => {
         if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
         return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{v}/{row.protocol || '?'}</span>
       }
     },
     {
-      key: 'workflow_status', label: 'Status',
+      key: 'workflow_status', label: t('findings.status'),
       render: (v) => {
         if (!v || v === 'open') return <Pill label="Open" color="#6b7280" />
         const colorMap = { in_progress: '#0891b2', resolved: '#16a34a', accepted_risk: '#7c3aed', false_positive: '#6b7280', compensating_control: '#0891b2', technical_debt: '#d97706' }
@@ -658,11 +663,11 @@ export default function FindingExplorer() {
       }
     },
     {
-      key: 'workflow_assigned_to', label: 'Assigned To',
+      key: 'workflow_assigned_to', label: t('findings.assignedTo'),
       render: (v) => v ? <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{v}</span> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
     },
     {
-      key: 'exploit_maturity', label: 'Maturity',
+      key: 'exploit_maturity', label: t('findings.maturity'),
       render: (v) => {
         if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
         const colorMap = { weaponized: '#dc2626', functional: '#ea580c', poc: '#d97706', unproven: '#6b7280' }
@@ -672,7 +677,7 @@ export default function FindingExplorer() {
       }
     },
     {
-      key: 'first_seen', label: 'First Seen', width: '100px', sortable: true,
+      key: 'first_seen', label: t('findings.firstSeen'), width: '100px', sortable: true,
       render: (v, row) => {
         if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
         const date = new Date(v)
@@ -687,7 +692,7 @@ export default function FindingExplorer() {
       }
     },
     {
-      key: 'last_seen', label: 'Last Seen', width: '100px', sortable: true,
+      key: 'last_seen', label: t('findings.lastSeen'), width: '100px', sortable: true,
       render: (v, row) => {
         if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
         const date = new Date(v)
@@ -696,7 +701,7 @@ export default function FindingExplorer() {
         return (
           <div>
             <div style={{ fontSize: 12, color }}>{date.toLocaleDateString()}</div>
-            {row.is_regression && <Pill label="Regression" color="#7c3aed" />}
+            {row.is_regression && <Pill label={t('findings.regression')} color="#7c3aed" />}
           </div>
         )
       }
@@ -712,17 +717,17 @@ export default function FindingExplorer() {
   return (
     <div>
       <PageHeader
-        title="Findings"
-        subtitle={advancedMode ? `${total.toLocaleString()} findings matched` : `${total.toLocaleString()} total findings`}
+        title={t('findings.title')}
+        subtitle={advancedMode ? t('findings.matchedFindings', { count: total.toLocaleString() }) : t('findings.totalFindings', { count: total.toLocaleString() })}
         action={
           <div style={{ display: 'flex', gap: 8 }}>
             {selectedIds.size > 0 && (
               <Button size="sm" variant="ghost" onClick={() => setShowBulkTag(true)}>
-                <Tag size={14} /> Tag {selectedIds.size} selected
+                <Tag size={14} /> {t('findings.tagSelected', { count: selectedIds.size })}
               </Button>
             )}
             <Button variant="ghost" size="sm" onClick={() => exportDownload('findings', { scan_id: activeScanId, severity, plugin_family: family, has_exploit: hasExploit, is_kev: isKev, effort_level: effortLevel, search })}>
-              <Download size={14} /> Export CSV
+              <Download size={14} /> {t('findings.exportCsv')}
             </Button>
           </div>
         }
@@ -734,11 +739,11 @@ export default function FindingExplorer() {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <SlidersHorizontal size={14} style={{ color: 'var(--accent)' }} />
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Advanced Search</span>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— uses the full rule engine condition catalog</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{t('findings.advancedSearch')}</span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— {t('findings.advancedSearchHint')}</span>
             </div>
             <button onClick={exitAdvancedMode} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
-              <XIcon size={13} /> Exit advanced
+              <XIcon size={13} /> {t('findings.exitAdvanced')}
             </button>
           </div>
           <RuleBuilder
@@ -746,23 +751,23 @@ export default function FindingExplorer() {
             logic={advancedLogic}
             onChange={(conds, lgc) => { setAdvancedConditions(conds); setAdvancedLogic(lgc) }}
             showLogic
-            addLabel="Add condition"
+            addLabel={t('findings.addCondition')}
           />
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12 }}>
             <Button
               onClick={() => runAdvancedSearch(1)}
               disabled={advancedLoading || !advancedConditions.length}
             >
-              {advancedLoading ? 'Searching…' : 'Run Search'}
+              {advancedLoading ? t('findings.searching') : t('findings.runSearch')}
             </Button>
             {total > 0 && !advancedLoading && (
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{total.toLocaleString()}</span> findings matched
+                <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{total.toLocaleString()}</span> {t('findings.findingsMatched')}
               </span>
             )}
             {saveAsConditions.length > 0 && (
               <Button variant="ghost" size="sm" onClick={() => setShowSaveAs(true)} style={{ marginLeft: 'auto' }}>
-                <Bookmark size={13} /> Save as…
+                <Bookmark size={13} /> {t('findings.saveAs')}
               </Button>
             )}
           </div>
@@ -783,28 +788,28 @@ export default function FindingExplorer() {
           <Select
             value={severity !== null ? String(severity) : null}
             onChange={v => setFilter('severity', v)}
-            placeholder="All Severities"
-            options={SEV_OPTIONS}
+            placeholder={t('findings.allSeverities')}
+            options={getSevOptions(t)}
           />
 
           <Select
             value={family}
             onChange={v => setFilter('family', v)}
-            placeholder="All Families"
+            placeholder={t('findings.allFamilies')}
             options={families.map(f => ({ value: f, label: f }))}
           />
 
           <Select
             value={hasExploit !== null ? String(hasExploit) : null}
             onChange={v => setFilter('exploit', v)}
-            placeholder="Exploit"
-            options={[{ value: 'true', label: 'Has Exploit' }, { value: 'false', label: 'No Exploit' }]}
+            placeholder={t('findings.exploit')}
+            options={[{ value: 'true', label: t('findings.hasExploit') }, { value: 'false', label: t('findings.noExploit') }]}
           />
 
           <Select
             value={assetId}
             onChange={v => setFilter('asset_id', v)}
-            placeholder="All Assets"
+            placeholder={t('findings.allAssets')}
             options={assets.map(a => ({ value: String(a.id), label: a.hostname || a.ip }))}
           />
 
@@ -813,8 +818,8 @@ export default function FindingExplorer() {
           <Select
             value={groupBy}
             onChange={v => setFilter('group', v)}
-            placeholder="No Grouping"
-            options={GROUP_OPTIONS}
+            placeholder={t('findings.noGrouping')}
+            options={getGroupOptions(t)}
           />
 
           <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
@@ -834,16 +839,16 @@ export default function FindingExplorer() {
             onChange={updateColVis}
           />
 
-          <Button variant="ghost" size="sm" onClick={enterAdvancedMode} title="Switch to rule-engine query builder">
-            <SlidersHorizontal size={13} /> Advanced
+          <Button variant="ghost" size="sm" onClick={enterAdvancedMode} title={t('findings.advancedSearch')}>
+            <SlidersHorizontal size={13} /> {t('findings.advanced')}
           </Button>
 
           {hasActiveFilters && (
             <>
               <Button variant="ghost" size="sm" onClick={() => setShowSaveAs(true)}>
-                <Bookmark size={13} /> Save as…
+                <Bookmark size={13} /> {t('findings.saveAs')}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => { clearFilters(); setTagFilter([]) }}>Clear all</Button>
+              <Button variant="ghost" size="sm" onClick={() => { clearFilters(); setTagFilter([]) }}>{t('findings.clearAll')}</Button>
             </>
           )}
         </div>
@@ -852,8 +857,8 @@ export default function FindingExplorer() {
       {(loading || advancedLoading) ? <Spinner /> : (
         findings.length === 0 ? (
           <EmptyState icon={Bug}
-            title={advancedMode ? "No findings matched" : "No findings match"}
-            sub={advancedMode ? "Build conditions above and click Run Search" : "Try adjusting your filters"}
+            title={advancedMode ? t('findings.noFindingsMatched') : t('findings.noFindingsMatch')}
+            sub={advancedMode ? t('findings.buildConditions') : t('findings.adjustFilters')}
           />
         ) : groupBy ? (
           <>
@@ -863,6 +868,7 @@ export default function FindingExplorer() {
                   groupBy={groupBy} groupKey={key} count={rows.length}
                   open={!!openGroups[key]}
                   onToggle={() => toggleGroup(key)}
+                  t={t}
                 />
                 {openGroups[key] && (
                   <Card style={{ padding: 0, borderTopLeftRadius: 0, borderTopRightRadius: 0, marginBottom: 0 }}>
@@ -880,7 +886,7 @@ export default function FindingExplorer() {
             ))}
             {total > findings.length && (
               <p style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', marginTop: 8 }}>
-                Showing first {findings.length.toLocaleString()} of {total.toLocaleString()} findings. Use filters to narrow results.
+                {t('findings.showingFirst', { shown: findings.length.toLocaleString(), total: total.toLocaleString() })}
               </p>
             )}
           </>
@@ -901,13 +907,13 @@ export default function FindingExplorer() {
             {totalPages > 1 && (
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12 }}>
                 <Button variant="ghost" size="sm" disabled={page === 1} onClick={() => setFilter('page', page - 1)}>
-                  <ChevronLeft size={14} /> Prev
+                  <ChevronLeft size={14} /> {t('findings.prev')}
                 </Button>
                 <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                  Page {page} of {totalPages} ({total.toLocaleString()} findings)
+                  {t('findings.pageOf', { page, totalPages, total: total.toLocaleString() })}
                 </span>
                 <Button variant="ghost" size="sm" disabled={page >= totalPages} onClick={() => setFilter('page', page + 1)}>
-                  Next <ChevronRight size={14} />
+                  {t('common.next')} <ChevronRight size={14} />
                 </Button>
               </div>
             )}

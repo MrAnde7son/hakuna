@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import {
   Target, Plus, Play, Trash2, Clock, AlertTriangle, CheckCircle, PauseCircle,
   ChevronRight, GitBranch, Zap, Settings, Download, Search,
@@ -8,15 +9,16 @@ import { useScan } from '../../App.jsx'
 import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons } from '../shared/ui.jsx'
 
-const STATUS_META = {
-  draft:     { label: 'Draft',     color: 'var(--muted)',   bg: 'rgba(100,116,139,0.1)', border: 'rgba(100,116,139,0.25)', icon: Clock },
-  active:    { label: 'Active',    color: 'var(--primary)', bg: 'rgba(37,99,235,0.1)',   border: 'rgba(37,99,235,0.25)',   icon: Play },
-  completed: { label: 'Completed', color: 'var(--success)', bg: 'rgba(34,197,94,0.1)',   border: 'rgba(34,197,94,0.25)',   icon: CheckCircle },
-  paused:    { label: 'Paused',    color: 'var(--warning)', bg: 'rgba(245,158,11,0.1)',  border: 'rgba(245,158,11,0.25)',  icon: PauseCircle },
+const STATUS_KEYS = {
+  draft:     { key: 'campaigns.draft',     color: 'var(--muted)',   bg: 'rgba(100,116,139,0.1)', border: 'rgba(100,116,139,0.25)', icon: Clock },
+  active:    { key: 'campaigns.active',    color: 'var(--primary)', bg: 'rgba(37,99,235,0.1)',   border: 'rgba(37,99,235,0.25)',   icon: Play },
+  completed: { key: 'campaigns.completed', color: 'var(--success)', bg: 'rgba(34,197,94,0.1)',   border: 'rgba(34,197,94,0.25)',   icon: CheckCircle },
+  paused:    { key: 'campaigns.paused',    color: 'var(--warning)', bg: 'rgba(245,158,11,0.1)',  border: 'rgba(245,158,11,0.25)',  icon: PauseCircle },
 }
 
 function StatusBadge({ status }) {
-  const m = STATUS_META[status] || STATUS_META.draft
+  const { t } = useTranslation()
+  const m = STATUS_KEYS[status] || STATUS_KEYS.draft
   const Icon = m.icon
   return (
     <span style={{
@@ -26,12 +28,13 @@ function StatusBadge({ status }) {
       textTransform: 'uppercase', letterSpacing: '0.04em',
     }}>
       <Icon size={10} />
-      {m.label}
+      {t(m.key)}
     </span>
   )
 }
 
 function CreateCampaignModal({ scanId, onClose, onCreate }) {
+  const { t } = useTranslation()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
@@ -57,17 +60,17 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
         background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14,
         padding: 28, minWidth: 440, maxWidth: 540,
       }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 20 }}>New Remediation Campaign</div>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 20 }}>{t('campaigns.newRemediationCampaign')}</div>
 
         <form onSubmit={handleSubmit}>
           <div style={{ marginBottom: 16 }}>
             <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-              Campaign Name *
+              {t('campaigns.campaignName')}
             </label>
             <input
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder='e.g. Patch Tuesday March 2026, React2Shell, Critical CVE Blitz…'
+              placeholder={t('campaigns.campaignNamePlaceholder')}
               autoFocus
               style={{
                 width: '100%', padding: '8px 12px', background: 'var(--bg-secondary)',
@@ -79,12 +82,12 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
 
           <div style={{ marginBottom: 24 }}>
             <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-              Description
+              {t('campaigns.descriptionLabel')}
             </label>
             <textarea
               value={description}
               onChange={e => setDescription(e.target.value)}
-              placeholder='Describe the goal and scope of this campaign…'
+              placeholder={t('campaigns.descriptionPlaceholder')}
               rows={3}
               style={{
                 width: '100%', padding: '8px 12px', background: 'var(--bg-secondary)',
@@ -96,9 +99,9 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
           </div>
 
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <Button variant='ghost' onClick={onClose} type='button'>Cancel</Button>
+            <Button variant='ghost' onClick={onClose} type='button'>{t('common.cancel')}</Button>
             <Button type='submit' disabled={!name.trim() || saving}>
-              {saving ? 'Creating…' : 'Create Campaign'}
+              {saving ? t('campaigns.creating') : t('campaigns.create')}
             </Button>
           </div>
         </form>
@@ -108,6 +111,7 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
 }
 
 function CampaignCard({ campaign, onDelete, onRun }) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const [running, setRunning] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -157,14 +161,14 @@ function CampaignCard({ campaign, onDelete, onRun }) {
           </div>
         )}
         <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'var(--text-muted)' }}>
-          <span>{conditionCount} condition{conditionCount !== 1 ? 's' : ''}</span>
+          <span>{t('campaigns.conditions', { count: conditionCount })}</span>
           {campaign.finding_count > 0 && (
-            <span style={{ color: '#f87171' }}>{campaign.finding_count} findings</span>
+            <span style={{ color: '#f87171' }}>{t('campaigns.findingsCount', { count: campaign.finding_count })}</span>
           )}
           {campaign.last_run_at && (
-            <span>Last run: {new Date(campaign.last_run_at).toLocaleDateString()}</span>
+            <span>{t('campaigns.lastRun', { date: new Date(campaign.last_run_at).toLocaleDateString() })}</span>
           )}
-          {!campaign.last_run_at && <span style={{ color: '#f59e0b' }}>Never run</span>}
+          {!campaign.last_run_at && <span style={{ color: '#f59e0b' }}>{t('campaigns.neverRun')}</span>}
         </div>
       </div>
 
@@ -173,7 +177,7 @@ function CampaignCard({ campaign, onDelete, onRun }) {
         <button
           onClick={handleRun}
           disabled={running || conditionCount === 0}
-          title={conditionCount === 0 ? 'Add conditions first' : 'Run query now'}
+          title={conditionCount === 0 ? t('campaigns.addConditionsFirst') : t('campaigns.runQueryNow')}
           style={{
             display: 'flex', alignItems: 'center', gap: 5,
             padding: '6px 12px', borderRadius: 6, border: '1px solid #1e3a5f66',
@@ -182,7 +186,7 @@ function CampaignCard({ campaign, onDelete, onRun }) {
           }}
         >
           <Play size={12} />
-          {running ? 'Running…' : 'Run'}
+          {running ? t('campaigns.running') : t('campaigns.run')}
         </button>
 
         <button
@@ -201,7 +205,7 @@ function CampaignCard({ campaign, onDelete, onRun }) {
               URL.revokeObjectURL(url)
             } catch (err) { console.error('Export failed', err) }
           }}
-          title="Export campaign template"
+          title={t('campaigns.exportTemplate')}
           style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex' }}
         >
           <Download size={14} />
@@ -211,16 +215,16 @@ function CampaignCard({ campaign, onDelete, onRun }) {
           <>
             <button onClick={() => { onDelete(campaign.id); setConfirming(false) }}
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #991b1b', background: '#dc262622', color: '#f87171', fontSize: 12, cursor: 'pointer' }}>
-              Confirm
+              {t('common.confirm')}
             </button>
             <button onClick={() => setConfirming(false)}
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>
-              Cancel
+              {t('common.cancel')}
             </button>
           </>
         ) : (
           <button onClick={() => setConfirming(true)}
-            title='Delete campaign'
+            title={t('campaigns.deleteCampaign')}
             style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex' }}>
             <Trash2 size={14} />
           </button>
@@ -234,6 +238,7 @@ function CampaignCard({ campaign, onDelete, onRun }) {
 
 // ─── Workflow cards ─────────────────────────
 function WorkflowCard({ workflow, onDelete }) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const [confirming, setConfirming] = useState(false)
 
@@ -268,10 +273,10 @@ function WorkflowCard({ workflow, onDelete }) {
           </div>
         )}
         <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'var(--text-muted)' }}>
-          <span>{workflow.node_count || 0} nodes</span>
-          <span>{workflow.run_count || 0} runs</span>
+          <span>{t('campaigns.nodes', { count: workflow.node_count || 0 })}</span>
+          <span>{t('campaigns.runs', { count: workflow.run_count || 0 })}</span>
           {workflow.last_run_at && (
-            <span>Last run: {new Date(workflow.last_run_at).toLocaleDateString()}</span>
+            <span>{t('campaigns.lastRun', { date: new Date(workflow.last_run_at).toLocaleDateString() })}</span>
           )}
         </div>
       </div>
@@ -281,15 +286,15 @@ function WorkflowCard({ workflow, onDelete }) {
           <>
             <button onClick={() => { onDelete(workflow.id); setConfirming(false) }}
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #991b1b', background: '#dc262622', color: '#f87171', fontSize: 12, cursor: 'pointer' }}>
-              Confirm
+              {t('common.confirm')}
             </button>
             <button onClick={() => setConfirming(false)}
               style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', fontSize: 12, cursor: 'pointer' }}>
-              Cancel
+              {t('common.cancel')}
             </button>
           </>
         ) : (
-          <button onClick={() => setConfirming(true)} title='Delete workflow'
+          <button onClick={() => setConfirming(true)} title={t('campaigns.deleteWorkflow')}
             style={{ padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex' }}>
             <Trash2 size={14} />
           </button>
@@ -302,6 +307,7 @@ function WorkflowCard({ workflow, onDelete }) {
 }
 
 function CreateWorkflowModal({ onClose, onCreate }) {
+  const { t } = useTranslation()
   const [mode, setMode] = useState('template') // 'template' | 'custom'
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -338,6 +344,11 @@ function CreateWorkflowModal({ onClose, onCreate }) {
 
   const CATEGORY_ICONS = { triage: GitBranch, patching: Settings, incident: Zap, integration: Settings }
 
+  const modeTabs = [
+    { key: 'template', label: t('campaigns.useTemplate') },
+    { key: 'custom', label: t('campaigns.startFromScratch') },
+  ]
+
   return (
     <div style={{
       position: 'fixed', inset: 0, background: '#000a', zIndex: 200,
@@ -347,28 +358,25 @@ function CreateWorkflowModal({ onClose, onCreate }) {
         background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14,
         padding: 28, minWidth: 560, maxWidth: 640, maxHeight: '80vh', overflow: 'auto',
       }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16 }}>New Automation Workflow</div>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16 }}>{t('campaigns.newAutomationWorkflow')}</div>
 
         {/* Mode tabs */}
         <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
-          {[
-            { key: 'template', label: 'Use Template' },
-            { key: 'custom', label: 'Start from Scratch' },
-          ].map(t => (
-            <button key={t.key} onClick={() => setMode(t.key)} style={{
+          {modeTabs.map(tab => (
+            <button key={tab.key} onClick={() => setMode(tab.key)} style={{
               padding: '8px 16px', fontSize: 13, fontWeight: 600,
               background: 'none', border: 'none', cursor: 'pointer',
-              color: mode === t.key ? 'var(--text)' : 'var(--muted-2)',
-              borderBottom: mode === t.key ? '2px solid var(--text)' : '2px solid transparent',
+              color: mode === tab.key ? 'var(--text)' : 'var(--muted-2)',
+              borderBottom: mode === tab.key ? '2px solid var(--text)' : '2px solid transparent',
               marginBottom: -1,
-            }}>{t.label}</button>
+            }}>{tab.label}</button>
           ))}
         </div>
 
         {mode === 'template' ? (
           <div>
             {loadingTpl ? <Spinner /> : templates.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8' }}>No templates available</div>
+              <div style={{ textAlign: 'center', padding: 20, color: '#94a3b8' }}>{t('campaigns.noTemplatesAvailable')}</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ position: 'relative', marginBottom: 4 }}>
@@ -376,7 +384,7 @@ function CreateWorkflowModal({ onClose, onCreate }) {
                   <input
                     value={tplSearch}
                     onChange={e => setTplSearch(e.target.value)}
-                    placeholder="Search templates..."
+                    placeholder={t('campaigns.searchTemplates')}
                     style={{
                       width: '100%', padding: '8px 12px 8px 32px', background: 'var(--bg-secondary)',
                       border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
@@ -412,7 +420,7 @@ function CreateWorkflowModal({ onClose, onCreate }) {
                       <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{tpl.description}</div>
                       <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
                         <Pill color="#818cf8">{tpl.category}</Pill>
-                        <Pill color="#94a3b8">{tpl.nodes?.length || 0} nodes</Pill>
+                        <Pill color="#94a3b8">{t('campaigns.nodes', { count: tpl.nodes?.length || 0 })}</Pill>
                       </div>
                     </div>
                     <ChevronRight size={16} color='var(--text-muted)' />
@@ -425,10 +433,10 @@ function CreateWorkflowModal({ onClose, onCreate }) {
           <form onSubmit={handleCreateCustom}>
             <div style={{ marginBottom: 16 }}>
               <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-                Workflow Name *
+                {t('campaigns.workflowName')}
               </label>
               <input value={name} onChange={e => setName(e.target.value)}
-                placeholder='e.g. Auto-assign critical findings, Tag exploitable assets…'
+                placeholder={t('campaigns.workflowNamePlaceholder')}
                 autoFocus
                 style={{
                   width: '100%', padding: '8px 12px', background: 'var(--bg-secondary)',
@@ -439,10 +447,10 @@ function CreateWorkflowModal({ onClose, onCreate }) {
             </div>
             <div style={{ marginBottom: 24 }}>
               <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-                Description
+                {t('campaigns.descriptionLabel')}
               </label>
               <textarea value={description} onChange={e => setDescription(e.target.value)}
-                placeholder='Describe what this workflow automates…' rows={3}
+                placeholder={t('campaigns.workflowDescPlaceholder')} rows={3}
                 style={{
                   width: '100%', padding: '8px 12px', background: 'var(--bg-secondary)',
                   border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
@@ -452,9 +460,9 @@ function CreateWorkflowModal({ onClose, onCreate }) {
               />
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <Button variant='ghost' onClick={onClose} type='button'>Cancel</Button>
+              <Button variant='ghost' onClick={onClose} type='button'>{t('common.cancel')}</Button>
               <Button type='submit' disabled={!name.trim() || saving}>
-                {saving ? 'Creating…' : 'Create Workflow'}
+                {saving ? t('campaigns.creating') : t('campaigns.createWorkflow')}
               </Button>
             </div>
           </form>
@@ -465,6 +473,7 @@ function CreateWorkflowModal({ onClose, onCreate }) {
 }
 
 export default function Campaigns() {
+  const { t } = useTranslation()
   const { activeScanId } = useScan()
   const navigate = useNavigate()
   const [campaigns, setCampaigns] = useState([])
@@ -523,8 +532,8 @@ export default function Campaigns() {
   return (
     <div>
       <PageHeader
-        title="Campaigns & Workflows"
-        subtitle="Targeted remediation campaigns and automated workflows"
+        title={t('campaigns.campaignsAndWorkflows')}
+        subtitle={t('campaigns.subtitle')}
         action={
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <ExportImportButtons
@@ -532,14 +541,14 @@ export default function Campaigns() {
               exportFn={null}
               importFn={(file, conflict) => importConfig('campaign_workflow', file, conflict)}
               onImported={load}
-              label="Campaign Template"
+              label={t('campaigns.campaignTemplate')}
               showConflict={true}
             />
             <Button variant="ghost" onClick={() => setShowCreateWf(true)}>
-              <GitBranch size={14} /> New Workflow
+              <GitBranch size={14} /> {t('campaigns.newWorkflow')}
             </Button>
             <Button onClick={() => setShowCreate(true)}>
-              <Plus size={14} /> New Campaign
+              <Plus size={14} /> {t('campaigns.newCampaign')}
             </Button>
           </div>
         }
@@ -548,28 +557,28 @@ export default function Campaigns() {
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 16, borderBottom: '1px solid var(--border)' }}>
         {[
-          { key: 'campaigns', label: 'Campaigns', count: campaigns.length, icon: Target },
-          { key: 'workflows', label: 'Workflows', count: workflows.length, icon: GitBranch },
-        ].map(t => (
+          { key: 'campaigns', label: t('campaigns.title'), count: campaigns.length, icon: Target },
+          { key: 'workflows', label: t('workflows.title'), count: workflows.length, icon: GitBranch },
+        ].map(tb => (
           <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
+            key={tb.key}
+            onClick={() => setTab(tb.key)}
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
               padding: '10px 18px', fontSize: 13, fontWeight: 600,
               background: 'none', border: 'none', cursor: 'pointer',
-              color: tab === t.key ? 'var(--text)' : '#94a3b8',
-              borderBottom: tab === t.key ? '2px solid var(--text)' : '2px solid transparent',
+              color: tab === tb.key ? 'var(--text)' : '#94a3b8',
+              borderBottom: tab === tb.key ? '2px solid var(--text)' : '2px solid transparent',
               marginBottom: -1,
             }}
           >
-            <t.icon size={14} />
-            {t.label}
+            <tb.icon size={14} />
+            {tb.label}
             <span style={{
               fontSize: 11, padding: '1px 6px', borderRadius: 10,
-              background: tab === t.key ? 'var(--text)' : 'var(--secondary)',
-              color: tab === t.key ? 'var(--bg)' : 'var(--muted)',
-            }}>{t.count}</span>
+              background: tab === tb.key ? 'var(--text)' : 'var(--secondary)',
+              color: tab === tb.key ? 'var(--bg)' : 'var(--muted)',
+            }}>{tb.count}</span>
           </button>
         ))}
       </div>
@@ -578,10 +587,10 @@ export default function Campaigns() {
         ordered.length === 0 ? (
           <EmptyState
             icon={Target}
-            title="No campaigns yet"
-            sub="Create a campaign to build targeted remediation workflows with smart search queries and ownership assignments."
+            title={t('campaigns.noCampaignsYet')}
+            sub={t('campaigns.noCampaignsDesc')}
           >
-            <Button onClick={() => setShowCreate(true)}><Plus size={14} /> Create First Campaign</Button>
+            <Button onClick={() => setShowCreate(true)}><Plus size={14} /> {t('campaigns.createFirstCampaign')}</Button>
           </EmptyState>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -594,10 +603,10 @@ export default function Campaigns() {
         workflows.length === 0 ? (
           <EmptyState
             icon={GitBranch}
-            title="No workflows yet"
-            sub="Create an automation workflow with triggers, conditions, and actions to streamline your remediation process."
+            title={t('campaigns.noWorkflowsYet')}
+            sub={t('campaigns.noWorkflowsDesc')}
           >
-            <Button onClick={() => setShowCreateWf(true)}><GitBranch size={14} /> Create First Workflow</Button>
+            <Button onClick={() => setShowCreateWf(true)}><GitBranch size={14} /> {t('campaigns.createFirstWorkflow')}</Button>
           </EmptyState>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -606,7 +615,7 @@ export default function Campaigns() {
               <input
                 value={wfSearch}
                 onChange={e => setWfSearch(e.target.value)}
-                placeholder="Search workflows..."
+                placeholder={t('campaigns.searchWorkflows')}
                 style={{
                   width: '100%', padding: '8px 12px 8px 32px', background: 'var(--bg-secondary)',
                   border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,

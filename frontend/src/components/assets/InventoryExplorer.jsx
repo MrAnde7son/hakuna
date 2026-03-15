@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import {
   Users, Shield, Server, Network, Clock,
@@ -28,6 +29,7 @@ const INV_PAGE_SIZE = 100
 
 // ─── Pagination bar ───────────────────────────────────────
 function Pagination({ page, total, pageSize, onPageChange, noun = 'items' }) {
+  const { t } = useTranslation()
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   if (totalPages <= 1) return (
     <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>{total} {noun}</div>
@@ -39,13 +41,13 @@ function Pagination({ page, total, pageSize, onPageChange, noun = 'items' }) {
       </span>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
-          <ChevronLeft size={14} /> Prev
+          <ChevronLeft size={14} /> {t('common.prev')}
         </Button>
         <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           {page} / {totalPages}
         </span>
         <Button variant="ghost" size="sm" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>
-          Next <ChevronRight size={14} />
+          {t('common.next')} <ChevronRight size={14} />
         </Button>
       </div>
     </div>
@@ -53,44 +55,46 @@ function Pagination({ page, total, pageSize, onPageChange, noun = 'items' }) {
 }
 
 // ─── Tab config ───────────────────────────────────────────
-const TAB_GROUPS = [
-  { key: 'surface', label: 'Attack Surface', icon: AlertTriangle },
-  { label: 'Identity', icon: Users, children: [
-    { key: 'users',     label: 'Users',     icon: Users },
-    { key: 'groups',    label: 'Groups',    icon: Shield },
-    { key: 'loggedon',  label: 'Logged On', icon: LogIn },
-  ]},
-  { label: 'Infrastructure', icon: Server, children: [
-    { key: 'computers', label: 'Computers', icon: Monitor },
-    { key: 'databases', label: 'Databases', icon: Database },
-    { key: 'services',  label: 'Services',  icon: Server },
-    { key: 'software',  label: 'Software',  icon: Package },
-    { key: 'processes', label: 'Processes',  icon: Activity },
-  ]},
-  { label: 'Network', icon: Network, children: [
-    { key: 'netconns',  label: 'Connections', icon: Network },
-    { key: 'shares',    label: 'Shares',      icon: Share2 },
-  ]},
-  { label: 'Security', icon: Lock, children: [
-    { key: 'security',  label: 'Controls',        icon: Lock },
-    { key: 'patches',   label: 'Patches',         icon: Layers },
-    { key: 'policy',    label: 'Password Policy',  icon: FileText },
-    { key: 'certs',     label: 'Certificates',     icon: Lock },
-    { key: 'credentials', label: 'Credentials',  icon: Key },
-  ]},
-  { label: 'Configuration', icon: Terminal, children: [
-    { key: 'tasks',    label: 'Sched. Tasks',   icon: Clock },
-    { key: 'envvars',  label: 'Env Variables',  icon: Terminal },
-    { key: 'aitools',  label: 'AI Tools',       icon: BrainCircuit },
-  ]},
-]
+function getTabGroups(t) {
+  return [
+    { key: 'surface', label: t('inventory.attackSurface'), icon: AlertTriangle },
+    { label: t('inventory.identity'), icon: Users, children: [
+      { key: 'users',     label: t('inventory.users'),     icon: Users },
+      { key: 'groups',    label: t('inventory.groups'),    icon: Shield },
+      { key: 'loggedon',  label: t('inventory.loggedOn'), icon: LogIn },
+    ]},
+    { label: t('inventory.infrastructure'), icon: Server, children: [
+      { key: 'computers', label: t('inventory.computers'), icon: Monitor },
+      { key: 'databases', label: t('inventory.databases'), icon: Database },
+      { key: 'services',  label: t('inventory.services'),  icon: Server },
+      { key: 'software',  label: t('inventory.software'),  icon: Package },
+      { key: 'processes', label: t('inventory.processes'),  icon: Activity },
+    ]},
+    { label: t('inventory.network'), icon: Network, children: [
+      { key: 'netconns',  label: t('inventory.connections'), icon: Network },
+      { key: 'shares',    label: t('inventory.shares'),      icon: Share2 },
+    ]},
+    { label: t('inventory.security'), icon: Lock, children: [
+      { key: 'security',  label: t('inventory.controls'),        icon: Lock },
+      { key: 'patches',   label: t('inventory.patches'),         icon: Layers },
+      { key: 'policy',    label: t('inventory.passwordPolicy'),  icon: FileText },
+      { key: 'certs',     label: t('inventory.certificates'),     icon: Lock },
+      { key: 'credentials', label: t('inventory.credentials'),  icon: Key },
+    ]},
+    { label: t('inventory.configuration'), icon: Terminal, children: [
+      { key: 'tasks',    label: t('inventory.schedTasks'),   icon: Clock },
+      { key: 'envvars',  label: t('inventory.envVariables'),  icon: Terminal },
+      { key: 'aitools',  label: t('inventory.aiTools'),       icon: BrainCircuit },
+    ]},
+  ]
+}
 
-// Flat list of all valid tab keys (for URL validation)
-const ALL_TABS = TAB_GROUPS.flatMap(g => g.children ? g.children.map(c => c.key) : [g.key])
+// Flat list of all valid tab keys (for URL validation) — keys are static, no translation needed
+const ALL_TABS = ['surface', 'users', 'groups', 'loggedon', 'computers', 'databases', 'services', 'software', 'processes', 'netconns', 'shares', 'security', 'patches', 'policy', 'certs', 'credentials', 'tasks', 'envvars', 'aitools']
 
 // Find which group a tab key belongs to
-function groupForTab(tabKey) {
-  for (const g of TAB_GROUPS) {
+function groupForTab(tabKey, tabGroups) {
+  for (const g of tabGroups) {
     if (g.key === tabKey) return null
     if (g.children?.some(c => c.key === tabKey)) return g.label
   }
@@ -317,6 +321,7 @@ function Count({ n }) {
 
 // ─── Attack Surface tab ────────────────────────────────────
 function AttackSurfaceTab({ scanId, onTabChange }) {
+  const { t } = useTranslation()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
 
@@ -329,7 +334,7 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
   }, [scanId])
 
   if (loading) return <Spinner />
-  if (!data) return <EmptyState icon={AlertTriangle} title="No inventory data" sub="Upload a scan first — inventory is extracted automatically." />
+  if (!data) return <EmptyState icon={AlertTriangle} title={t('inventory.noDataYet')} sub={t('inventory.uploadToPopulate')} />
 
   const { counts, attack_surface: as } = data
 
@@ -2725,6 +2730,7 @@ function ProcessesTab({ scanId, assetId }) {
 
 // ─── Root ──────────────────────────────────────────────────
 export default function InventoryExplorer() {
+  const { t } = useTranslation()
   const { activeScanId } = useScan()
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get('tab')
@@ -2732,6 +2738,7 @@ export default function InventoryExplorer() {
   const setActiveTab = (key) => setSearchParams(prev => { prev.set('tab', key); return prev })
   const assetId = searchParams.get('asset_id')
   const assetName = searchParams.get('asset_name')
+  const tabGroups = useMemo(() => getTabGroups(t), [t])
 
   const TAB_EXPORT_MAP = {
     users: 'inventory/users', groups: 'inventory/groups', computers: 'inventory/computers',
@@ -2770,11 +2777,11 @@ export default function InventoryExplorer() {
   return (
     <div>
       <PageHeader
-        title="Inventory"
+        title={t('inventory.title')}
         subtitle="Structured entities extracted from scan data — users, groups, computers, shares, software, security controls, and more."
         action={TAB_EXPORT_MAP[activeTab] ? (
           <Button variant="ghost" size="sm" onClick={() => exportDownload(TAB_EXPORT_MAP[activeTab], { scan_id: activeScanId })}>
-            <Download size={14} /> Export CSV
+            <Download size={14} /> {t('inventory.exportCsv')}
           </Button>
         ) : null}
       />
@@ -2801,7 +2808,7 @@ export default function InventoryExplorer() {
         display: 'flex', gap: 2, marginBottom: 20,
         borderBottom: '1px solid var(--border)', paddingBottom: 0,
       }}>
-        {TAB_GROUPS.map((group) => {
+        {tabGroups.map((group) => {
           // Top-level tab (Attack Surface)
           if (group.key) {
             const active = activeTab === group.key

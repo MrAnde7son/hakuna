@@ -4,13 +4,14 @@
  * Reports are saved to localStorage.
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   BarChart2, PieChart as PieChartIcon, Table2, Hash, AlignLeft, Wrench,
   Shield, Users, Server, Bug, Plus, Trash2, ChevronUp, ChevronDown,
   Save, Eye, EyeOff, ArrowLeft, Copy, Settings2, GripVertical,
   CheckCircle, LayoutGrid, Maximize2, Minimize2, X, PenLine,
-  TrendingUp, Zap, Clock, Home, Upload, GitCompare, Activity,
+  TrendingUp, Zap, Clock, Home, Upload, GitCompare,
   Download, FileImage, FileText, FileBarChart2, Sparkles, Filter,
   Crosshair, TreePine, Gauge
 } from 'lucide-react'
@@ -30,7 +31,7 @@ import {
   getTemporalSummary, getRemediationVelocity,
   getReportTemplates, createReportTemplate, updateReportTemplate, deleteReportTemplate as apiDeleteTemplate,
   exportConfig,
-  getRiskByTags, getTags,
+  getRiskByTags, getTags, getBenchmarks,
   getInventorySummary, getInventoryUsers, getInventoryGroups, getInventoryServices,
   getInventoryNetconns, getInventoryTasks, getInventoryPatches, getInventoryLoggedOn,
   getInventoryShares, getInventorySoftware, getInventorySecurityControls, getInventoryComputers,
@@ -1162,25 +1163,25 @@ const EXECUTIVE_DASHBOARD = {
   name: 'Executive Overview',
   createdAt: new Date(0).toISOString(),
   widgets: [
-    { id: 'ex0', type: 'risk_grade', title: 'Organization Risk Grade', width: 'half', config: { preset: 'risk_grade' } },
+    { id: 'ex0', type: 'risk_grade', title: 'Organization Risk Grade', width: 'half', config: { preset: 'risk_grade', show_benchmark: true } },
     { id: 'ex5', type: 'pie_chart', title: 'Severity Distribution', width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
-    { id: 'ex1', type: 'card',      title: 'Critical',              width: 'quarter', config: { preset: 'critical_count' } },
-    { id: 'ex2', type: 'card',      title: 'SLA Compliance',        width: 'quarter', config: { preset: 'sla_compliance' } },
+    { id: 'ex1', type: 'card',      title: 'Critical',              width: 'quarter', config: { preset: 'critical_count', show_benchmark: true } },
+    { id: 'ex2', type: 'card',      title: 'SLA Compliance',        width: 'quarter', config: { preset: 'sla_compliance', show_benchmark: true } },
     { id: 'ex3', type: 'card',      title: 'SLA Breached',          width: 'quarter', config: { preset: 'sla_breached' } },
     { id: 'ex4', type: 'card',      title: 'Quick Wins',            width: 'quarter', config: { preset: 'quick_wins' } },
-    { id: 'ex6', type: 'pie_chart', title: 'SLA Status',            width: 'half',    config: { preset: 'sla_status', donut: true } },
-    { id: 'ex16',type: 'card',      title: 'Mean Time to Remediate', width: 'quarter', config: { preset: 'mttr_overall', label: 'days' } },
-    { id: 'ex13',type: 'card',      title: 'Assessment Coverage',   width: 'quarter', config: { preset: 'coverage_pct' } },
+    { id: 'ex16',type: 'card',      title: 'Mean Time to Remediate', width: 'quarter', config: { preset: 'mttr_overall', label: 'days', show_benchmark: true } },
+    { id: 'ex13',type: 'card',      title: 'Assessment Coverage',   width: 'quarter', config: { preset: 'coverage_pct', show_benchmark: true } },
     { id: 'ex14',type: 'card',      title: 'Credentialed Assets',   width: 'quarter', config: { preset: 'credentialed_count' } },
     { id: 'ex15',type: 'pie_chart', title: 'Scan Coverage',         width: 'quarter', config: { preset: 'coverage_breakdown', donut: true } },
+    { id: 'ex6', type: 'pie_chart', title: 'SLA Status',            width: 'half',    config: { preset: 'sla_status', donut: true } },
     { id: 'ex17',type: 'bar_chart', title: 'MTTR by Severity',     width: 'half',    config: { preset: 'mttr_by_severity' } },
     { id: 'ex18',type: 'line_chart',title: 'MTTR Trend',            width: 'half',    config: { preset: 'mttr_trend' } },
+    { id: 'ex10',type: 'line_chart',title: 'SLA Compliance Trend',  width: 'half',    config: { preset: 'sla_trend', areaFill: true } },
+    { id: 'ex9', type: 'line_chart',title: 'Risk Score Trend',      width: 'half',    config: { preset: 'risk_trend' } },
+    { id: 'ex12',type: 'line_chart',title: 'Severity Trend',        width: 'half',    config: { preset: 'severity_trend' } },
+    { id: 'ex11',type: 'bar_chart', title: 'Remediation Velocity',  width: 'full',    config: { preset: 'velocity_trend', stacked: true } },
     { id: 'ex7', type: 'bar_chart', title: 'Risk by Business Unit', width: 'full',    config: { preset: 'risk_by_tags', horizontal: true } },
     { id: 'ex8', type: 'table',     title: 'Business Unit Benchmark', width: 'full',  config: { preset: 'tag_benchmark' } },
-    { id: 'ex9', type: 'line_chart',title: 'Risk Score Trend',      width: 'half',    config: { preset: 'risk_trend' } },
-    { id: 'ex10',type: 'line_chart',title: 'SLA Compliance Trend',  width: 'half',    config: { preset: 'sla_trend', areaFill: true } },
-    { id: 'ex11',type: 'bar_chart', title: 'Remediation Velocity',  width: 'half',    config: { preset: 'velocity_trend', stacked: true } },
-    { id: 'ex12',type: 'line_chart',title: 'Severity Trend',        width: 'half',    config: { preset: 'severity_trend' } },
   ],
 }
 
@@ -1381,13 +1382,177 @@ const DRILL_DOWN = {
   },
 }
 
+// ─── Benchmark overlay for existing widgets ──────────────────────────────────
+
+const BENCHMARK_RATING_COLORS = {
+  excellent: '#16a34a',
+  good: '#65a30d',
+  fair: '#d97706',
+  poor: '#dc2626',
+}
+
+const BENCHMARK_RATING_LABELS = {
+  excellent: 'Excellent',
+  good: 'Good',
+  fair: 'Fair',
+  poor: 'Poor',
+}
+
+// Map widget presets → benchmark metric keys
+const PRESET_TO_BENCHMARK = {
+  // Cards
+  critical_count:   'critical_density',
+  sla_compliance:   'sla_compliance',
+  sla_breached:     'sla_compliance',
+  sla_on_track:     'sla_compliance',
+  coverage_pct:     'assessment_coverage',
+  credentialed_count: 'assessment_coverage',
+  exploit_count:    'exploit_exposure',
+  mttr_overall:     'mttr_critical',
+  // Risk grade
+  risk_grade:       'risk_grade',
+  // Gauge
+  gauge_sla_compliance: 'sla_compliance',
+  gauge_coverage:   'assessment_coverage',
+  // MTTR
+  mttr_by_severity: 'mttr_critical',
+}
+
+/** Hook: fetch benchmark data only when show_benchmark is enabled */
+function useBenchmarkData(enabled, scanId, filters) {
+  const [data, setData] = useState(null)
+  const industry = filters?.benchmark_industry || ''
+  const orgSize = filters?.benchmark_org_size || ''
+  const source = filters?.benchmark_source || ''
+  const key = `${enabled}|${scanId}|${industry}|${orgSize}|${source}`
+
+  useEffect(() => {
+    if (!enabled) { setData(null); return }
+    let cancelled = false
+    getBenchmarks(scanId, industry || undefined, orgSize || undefined, source || undefined)
+      .then(d => { if (!cancelled) setData(d) })
+      .catch(() => { if (!cancelled) setData(null) })
+    return () => { cancelled = true }
+  }, [key])
+
+  return data
+}
+
+/** Find the matching benchmark metric for a given preset */
+function findBenchmark(benchmarkData, presetKey) {
+  if (!benchmarkData?.metrics) return null
+  const metricKey = PRESET_TO_BENCHMARK[presetKey]
+  if (!metricKey) return null
+  return benchmarkData.metrics.find(m => m.metric === metricKey) || null
+}
+
+/** Compact inline benchmark bar — shown below a card/gauge value */
+function BenchmarkInline({ bm }) {
+  if (!bm || !bm.benchmark) return null
+  const ratingColor = BENCHMARK_RATING_COLORS[bm.rating] || '#94a3b8'
+  const markerPos = Math.max(2, Math.min(98, bm.percentile_rank ?? 50))
+  const hib = bm.higher_is_better
+  const sourceLabel = bm.effective_source === 'platform'
+    ? `Platform (${bm.platform_benchmark?.population_size || '?'} orgs)`
+    : bm.benchmark?.industry && bm.benchmark.industry !== 'all'
+      ? `Industry: ${bm.benchmark.industry}`
+      : 'Industry Benchmark'
+
+  return (
+    <div style={{ marginTop: 8, padding: '6px 8px', background: 'var(--bg-hover)', borderRadius: 6 }}>
+      {/* Percentile label */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{sourceLabel}</span>
+        <span style={{ fontSize: 10, fontWeight: 600, color: ratingColor }}>
+          {BENCHMARK_RATING_LABELS[bm.rating]} — P{bm.percentile_rank}
+        </span>
+      </div>
+      {/* Mini gauge bar */}
+      <div style={{ position: 'relative', height: 10, borderRadius: 3, overflow: 'hidden', background: 'var(--bg-secondary)' }}>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex' }}>
+          <div style={{ width: '25%', background: hib ? '#dc262615' : '#16a34a15' }} />
+          <div style={{ width: '25%', background: hib ? '#d9770615' : '#65a30d15' }} />
+          <div style={{ width: '25%', background: hib ? '#65a30d15' : '#d9770615' }} />
+          <div style={{ width: '25%', background: hib ? '#16a34a15' : '#dc262615' }} />
+        </div>
+        {[25, 50, 75].map(p => (
+          <div key={p} style={{ position: 'absolute', left: `${p}%`, top: 0, bottom: 0, width: 1, background: 'var(--border)', opacity: 0.5 }} />
+        ))}
+        <div style={{
+          position: 'absolute', left: `${markerPos}%`, top: 1, bottom: 1,
+          width: 8, marginLeft: -4, borderRadius: 2,
+          background: ratingColor, boxShadow: `0 0 3px ${ratingColor}50`,
+        }} />
+      </div>
+      {/* P25/P50/P75 labels */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
+        <span style={{ fontSize: 9, color: 'var(--text-muted)', opacity: 0.7 }}>P25</span>
+        <span style={{ fontSize: 9, color: 'var(--text-muted)', opacity: 0.7 }}>Median</span>
+        <span style={{ fontSize: 9, color: 'var(--text-muted)', opacity: 0.7 }}>P75</span>
+      </div>
+    </div>
+  )
+}
+
+/** Full benchmark bar — for risk_grade component rows */
+function BenchmarkGaugeBar({ label, benchmark, unit, higherIsBetter, percentileRank, rating, effectiveSource, populationSize }) {
+  const ratingColor = BENCHMARK_RATING_COLORS[rating] || '#94a3b8'
+  const formatVal = (v) => {
+    if (v == null) return '—'
+    if (unit === 'percent') return `${Math.round(v)}%`
+    if (unit === 'days') return `${v.toFixed?.(1) ?? v}d`
+    if (unit === 'score') return Math.round(v)
+    return v.toLocaleString?.() ?? v
+  }
+  const markerPos = Math.max(2, Math.min(98, percentileRank ?? 50))
+
+  return (
+    <div style={{ marginTop: 10, padding: '6px 10px', background: 'var(--bg-hover)', borderRadius: 6 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{effectiveSource === 'platform' ? `vs Platform (${populationSize || '?'} orgs)` : 'vs Industry'}</span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: ratingColor }}>
+          {BENCHMARK_RATING_LABELS[rating]} — P{percentileRank}
+        </span>
+      </div>
+      <div style={{ position: 'relative', height: 10, borderRadius: 3, overflow: 'hidden', background: 'var(--bg-secondary)' }}>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex' }}>
+          <div style={{ width: '25%', background: higherIsBetter ? '#dc262615' : '#16a34a15' }} />
+          <div style={{ width: '25%', background: higherIsBetter ? '#d9770615' : '#65a30d15' }} />
+          <div style={{ width: '25%', background: higherIsBetter ? '#65a30d15' : '#d9770615' }} />
+          <div style={{ width: '25%', background: higherIsBetter ? '#16a34a15' : '#dc262615' }} />
+        </div>
+        {[25, 50, 75].map(p => (
+          <div key={p} style={{ position: 'absolute', left: `${p}%`, top: 0, bottom: 0, width: 1, background: 'var(--border)', opacity: 0.5 }} />
+        ))}
+        <div style={{
+          position: 'absolute', left: `${markerPos}%`, top: 1, bottom: 1,
+          width: 8, marginLeft: -4, borderRadius: 2,
+          background: ratingColor, boxShadow: `0 0 3px ${ratingColor}50`,
+        }} />
+      </div>
+      {benchmark && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
+          <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>P25: {formatVal(benchmark.p25)}</span>
+          <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>P50: {formatVal(benchmark.p50)}</span>
+          <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>P75: {formatVal(benchmark.p75)}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic }) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const cfg = widget.config || {}
   const preset = DATA_PRESETS[cfg.preset]
   const sourceId = preset?.source || null
   const filters = { ...(cfg.filters || {}), category: cfg.category, period: cfg.period }
   const { data, loading } = useWidgetData(sourceId, scanId, filters, globalTags, globalTagLogic)
+
+  // Benchmark overlay — fetches benchmark data when show_benchmark is toggled on
+  const benchmarkData = useBenchmarkData(!!cfg.show_benchmark, scanId, cfg.filters)
+  const bm = cfg.show_benchmark ? findBenchmark(benchmarkData, cfg.preset) : null
 
   const drillDown = DRILL_DOWN[cfg.preset]
   // Auto-build drill-down for filtered findings presets (e.g. finding_count_filtered with plugin_family)
@@ -1418,7 +1583,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
   if (widget.type === 'image') {
     return cfg.url
       ? <img src={cfg.url} alt={widget.title || 'Image'} style={{ maxWidth: '100%', borderRadius: 8 }} />
-      : <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Set an image URL in widget config</div>
+      : <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.setImageUrl')}</div>
   }
   if (widget.type === 'funnel') {
     return <FunnelWidget widget={widget} scanId={scanId} />
@@ -1426,7 +1591,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
 
   // Data widgets
   if (loading) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 100 }}><Spinner /></div>
-  if (!data || !preset) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data available</div>
+  if (!data || !preset) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.noDataAvailable')}</div>
 
   const extracted = preset.dynamic ? preset.extract(data, cfg) : preset.extract(data)
 
@@ -1459,7 +1624,8 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
         >
           <div style={{ fontSize: 48, fontWeight: 800, color, lineHeight: 1 }}>{display}</div>
           <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8 }}>{cfg.label || preset.label}</div>
-          {handleCardClick && <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6, opacity: 0.7 }}>Click to drill down →</div>}
+          {handleCardClick && !bm && <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6, opacity: 0.7 }}>{t('findings.clickToDrillDown')}</div>}
+          {bm && <BenchmarkInline bm={bm} />}
         </div>
       )
     }
@@ -1488,45 +1654,59 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
           }}>
             <div style={{ fontSize: 44, fontWeight: 800, color: '#94a3b8', lineHeight: 1 }}>—</div>
           </div>
-          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>No scan data available to compute a risk grade. Upload a scan to get started.</div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>{t('findingDetail.noDataAvailable')}</div>
         </div>
       )
       return (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 32, padding: '8px 0' }}>
-          {/* Big grade circle */}
-          <div style={{
-            width: 96, height: 96, borderRadius: '50%', flexShrink: 0,
-            background: gradeColor + '18', border: `3px solid ${gradeColor}`,
-            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <div style={{ fontSize: 44, fontWeight: 800, color: gradeColor, lineHeight: 1 }}>{grade}</div>
-            <div style={{ fontSize: 11, fontWeight: 600, color: gradeColor, opacity: 0.8 }}>{score}/100</div>
-          </div>
-          {/* Component breakdown bars */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {compOrder.map(key => {
-              const val = components[key] ?? 0
-              const w = weights[key] ?? 0
-              const barColor = val >= 80 ? '#16a34a' : val >= 60 ? '#d97706' : '#dc2626'
-              return (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 130, fontSize: 11, color: 'var(--text-muted)', textAlign: 'right', flexShrink: 0 }}>
-                    {compLabels[key] || key} <span style={{ opacity: 0.5 }}>({Math.round(w * 100)}%)</span>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 32, padding: '8px 0' }}>
+            {/* Big grade circle */}
+            <div style={{
+              width: 96, height: 96, borderRadius: '50%', flexShrink: 0,
+              background: gradeColor + '18', border: `3px solid ${gradeColor}`,
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <div style={{ fontSize: 44, fontWeight: 800, color: gradeColor, lineHeight: 1 }}>{grade}</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: gradeColor, opacity: 0.8 }}>{score}/100</div>
+            </div>
+            {/* Component breakdown bars */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {compOrder.map(key => {
+                const val = components[key] ?? 0
+                const w = weights[key] ?? 0
+                const barColor = val >= 80 ? '#16a34a' : val >= 60 ? '#d97706' : '#dc2626'
+                return (
+                  <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ width: 130, fontSize: 11, color: 'var(--text-muted)', textAlign: 'right', flexShrink: 0 }}>
+                      {compLabels[key] || key} <span style={{ opacity: 0.5 }}>({Math.round(w * 100)}%)</span>
+                    </div>
+                    <div style={{ flex: 1, height: 8, background: 'var(--bg-hover)', borderRadius: 4, overflow: 'hidden' }}>
+                      <div style={{ width: `${val}%`, height: '100%', background: barColor, borderRadius: 4, transition: 'width 0.5s' }} />
+                    </div>
+                    <div style={{ width: 30, fontSize: 11, fontWeight: 600, color: barColor, textAlign: 'right' }}>{Math.round(val)}</div>
                   </div>
-                  <div style={{ flex: 1, height: 8, background: 'var(--bg-hover)', borderRadius: 4, overflow: 'hidden' }}>
-                    <div style={{ width: `${val}%`, height: '100%', background: barColor, borderRadius: 4, transition: 'width 0.5s' }} />
-                  </div>
-                  <div style={{ width: 30, fontSize: 11, fontWeight: 600, color: barColor, textAlign: 'right' }}>{Math.round(val)}</div>
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
           </div>
+          {bm && (
+            <BenchmarkGaugeBar
+              label={bm.label}
+              benchmark={bm.benchmark}
+              unit={bm.unit}
+              higherIsBetter={bm.higher_is_better}
+              percentileRank={bm.percentile_rank}
+              rating={bm.rating}
+              effectiveSource={bm.effective_source}
+              populationSize={bm.platform_benchmark?.population_size}
+            />
+          )}
         </div>
       )
     }
 
     case 'pie_chart': {
-      if (!Array.isArray(extracted) || extracted.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data</div>
+      if (!Array.isArray(extracted) || extracted.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.noData')}</div>
       const items = extracted.map((d, i) => ({ ...d, color: d.color || PALETTE[i % PALETTE.length] }))
       const hasDrill = drillDown && typeof drillDown === 'function'
       return (
@@ -1550,7 +1730,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
     case 'bar_chart': {
       if (preset.type === 'categories') {
         const items = Array.isArray(extracted) ? extracted : []
-        if (items.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data</div>
+        if (items.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.noData')}</div>
         const colored = items.map((d, i) => ({ ...d, color: d.color || PALETTE[i % PALETTE.length] }))
         const hasDrill = drillDown && typeof drillDown === 'function'
         const onBarClick = hasDrill ? (data) => handleSliceClick(data) : undefined
@@ -1585,9 +1765,9 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
       }
       // series type
       const rows = Array.isArray(extracted) ? extracted : []
-      if (rows.length < 2) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need 2+ data points</div>
+      if (rows.length < 2) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.needDataPoints')}</div>
       const fields = resolvedPreset.fields || []
-      if (fields.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Select metrics to display</div>
+      if (fields.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.selectMetrics')}</div>
       const chartData = rows.map(r => ({ name: truncLabel(r[resolvedPreset.xField]), ...Object.fromEntries(fields.map(f => [f, r[f] ?? null])) }))
       return (
         <ResponsiveContainer width="100%" height={200}>
@@ -1607,9 +1787,9 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
 
     case 'line_chart': {
       const rows = Array.isArray(extracted) ? extracted : []
-      if (rows.length < 2) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Need 2+ data points</div>
+      if (rows.length < 2) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.needDataPoints')}</div>
       const fields = resolvedPreset.fields || []
-      if (fields.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Select metrics to display</div>
+      if (fields.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.selectMetrics')}</div>
       const chartData = rows.map(r => ({ name: truncLabel(r[resolvedPreset.xField]), ...Object.fromEntries(fields.map(f => [f, r[f] ?? null])) }))
       const ChartComp = cfg.areaFill ? AreaChart : LineChart
       return (
@@ -1636,7 +1816,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
       const limit = parseInt(cfg.limit || 10)
       const display = rows.slice(0, limit)
       const cols = preset.columns || []
-      if (display.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data</div>
+      if (display.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.noData')}</div>
       return (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -1671,7 +1851,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
       const sevLabels = ['Critical', 'High', 'Medium', 'Low']
       const sevKeys = ['critical', 'high', 'medium', 'low']
       const heatColors = ['#dc2626', '#ea580c', '#d97706', '#65a30d']
-      if (families.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No family data</div>
+      if (families.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.noFamilyData')}</div>
       return (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
@@ -1703,7 +1883,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
 
     case 'radar': {
       const items = Array.isArray(extracted) ? extracted : []
-      if (items.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data</div>
+      if (items.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.noData')}</div>
       return (
         <ResponsiveContainer width="100%" height={250}>
           <RadarChart data={items} cx="50%" cy="50%" outerRadius="70%">
@@ -1755,13 +1935,14 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
               {gaugeData.label || 'Value'} / {max}{gaugeData.suffix || ''}
             </div>
           </div>
+          {bm && <div style={{ width: '100%', padding: '0 8px' }}><BenchmarkInline bm={bm} /></div>}
         </div>
       )
     }
 
     case 'treemap': {
       const items = Array.isArray(extracted) ? extracted.filter(d => d.size > 0) : []
-      if (items.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>No data</div>
+      if (items.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.noData')}</div>
       const colored = items.map((d, i) => ({
         ...d,
         fill: d.color || (() => {
@@ -1803,7 +1984,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
     }
 
     default:
-      return <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Unknown widget type: {widget.type}</div>
+      return <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>{t('reports.unknownWidget')}: {widget.type}</div>
   }
 }
 
@@ -1812,6 +1993,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
 const FUNNEL_COLORS = ['#6366f1', '#818cf8', '#a5b4fc', '#c7d2fe', '#e0e7ff', '#93c5fd', '#60a5fa', '#3b82f6']
 
 function FunnelWidget({ widget, scanId }) {
+  const { t } = useTranslation()
   const cfg = widget.config || {}
   const [funnelData, setFunnelData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -1826,7 +2008,7 @@ function FunnelWidget({ widget, scanId }) {
   }, [cfg.base_entity, stepsKey, scanId])
 
   if (loading) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 100 }}><Spinner /></div>
-  if (!funnelData?.steps?.length) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>Configure funnel steps in widget settings</div>
+  if (!funnelData?.steps?.length) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.configureFunnel')}</div>
 
   const steps = funnelData.steps
   const maxCount = steps[0]?.count || 1
@@ -1952,6 +2134,7 @@ const FUNNEL_ASSET_FILTERS = [
 ]
 
 function FunnelConfigPanel({ cfg, set, Field, Select, TextInput }) {
+  const { t } = useTranslation()
   const steps = cfg.steps || []
   const baseEntity = cfg.base_entity || 'findings'
   const filterDefs = baseEntity === 'assets' ? FUNNEL_ASSET_FILTERS : FUNNEL_FINDING_FILTERS
@@ -1976,7 +2159,7 @@ function FunnelConfigPanel({ cfg, set, Field, Select, TextInput }) {
   return (
     <>
       <div style={{ height: 1, background: 'var(--border)', margin: '10px 0 14px' }} />
-      <Field label="Base Entity">
+      <Field label={t('reports.funnel.baseEntity')}>
         <Select value={baseEntity} onChange={v => set('base_entity', v)} options={[
           { value: 'findings', label: 'Findings' },
           { value: 'assets', label: 'Assets' },
@@ -1984,7 +2167,7 @@ function FunnelConfigPanel({ cfg, set, Field, Select, TextInput }) {
       </Field>
 
       <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
-        Funnel Steps ({steps.length})
+        {t('reports.funnel.steps')} ({steps.length})
       </div>
 
       {steps.map((step, i) => (
@@ -1992,12 +2175,12 @@ function FunnelConfigPanel({ cfg, set, Field, Select, TextInput }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 8 }}>
             <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', minWidth: 16 }}>{i + 1}.</span>
             <input value={step.label || ''} onChange={e => updateStep(i, { label: e.target.value })}
-              placeholder="Step label" style={{ ...inputStyle, flex: 1, padding: '5px 8px', fontSize: 12 }} />
-            <button onClick={() => moveStep(i, -1)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2 }} title="Move up"><ChevronUp size={12} /></button>
-            <button onClick={() => moveStep(i, 1)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2 }} title="Move down"><ChevronDown size={12} /></button>
-            <button onClick={() => removeStep(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', padding: 2 }} title="Remove"><X size={12} /></button>
+              placeholder={t('reports.funnel.stepLabel')} style={{ ...inputStyle, flex: 1, padding: '5px 8px', fontSize: 12 }} />
+            <button onClick={() => moveStep(i, -1)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2 }} title={t('reports.funnel.moveUp')}><ChevronUp size={12} /></button>
+            <button onClick={() => moveStep(i, 1)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2 }} title={t('reports.funnel.moveDown')}><ChevronDown size={12} /></button>
+            <button onClick={() => removeStep(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', padding: 2 }} title={t('reports.funnel.remove')}><X size={12} /></button>
           </div>
-          <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Add filter for this step</div>
+          <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>{t('reports.funnel.addFilter')}</div>
           <select
             value=""
             onChange={e => {
@@ -2009,7 +2192,7 @@ function FunnelConfigPanel({ cfg, set, Field, Select, TextInput }) {
             }}
             style={{ ...inputStyle, fontSize: 11, marginBottom: 6 }}
           >
-            <option value="">+ Add filter...</option>
+            <option value="">{t('reports.funnel.addFilterOption')}</option>
             {filterDefs.filter(fd => !(fd.key in (step.filters || {}))).map(fd => (
               <option key={fd.key} value={fd.key}>{fd.label}</option>
             ))}
@@ -2047,7 +2230,7 @@ function FunnelConfigPanel({ cfg, set, Field, Select, TextInput }) {
         borderRadius: 8, padding: '8px 0', fontSize: 12, color: 'var(--accent)',
         cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
       }}>
-        <Plus size={12} /> Add Step
+        <Plus size={12} /> {t('reports.funnel.addStep')}
       </button>
     </>
   )
@@ -2079,6 +2262,7 @@ const CfgToggle = ({ checked, onChange, label }) => (
 )
 
 function ConfigPanel({ widget, onUpdate, onClose }) {
+  const { t } = useTranslation()
   const cfg = widget.config || {}
   const set = (key, val) => onUpdate({ ...widget, config: { ...cfg, [key]: val } })
   const setTitle = (t) => onUpdate({ ...widget, title: t })
@@ -2136,23 +2320,29 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
     <div style={{ width: 260, flexShrink: 0, background: 'var(--bg-secondary)', borderLeft: '1px solid var(--border)', padding: 16, overflowY: 'auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Settings2 size={14} color="var(--accent)" /> Widget Config
+          <Settings2 size={14} color="var(--accent)" /> {t('reports.widgetConfig')}
         </div>
         <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>
           <X size={14} />
         </button>
       </div>
 
-      <Field label="Widget Title">
-        <TextInput value={widget.title} onChange={setTitle} placeholder="Widget title..." />
+      <Field label={t('reports.widgetTitle')}>
+        <TextInput value={widget.title} onChange={setTitle} placeholder={t('reports.widgetTitlePlaceholder')} />
       </Field>
-      <Field label="Width">
-        <Select value={widget.width} onChange={setWidth} options={WIDTH_OPTIONS} />
+      <Field label={t('reports.width')}>
+        <Select value={widget.width} onChange={setWidth} options={[
+          { value: 'quarter', label: t('reports.widthOptions.quarter') },
+          { value: 'third', label: t('reports.widthOptions.third') },
+          { value: 'half', label: t('reports.widthOptions.half') },
+          { value: 'two-thirds', label: t('reports.widthOptions.twoThirds') },
+          { value: 'full', label: t('reports.widthOptions.full') },
+        ]} />
       </Field>
 
       {/* For line_chart and bar_chart: show mode selector (Custom Time Series vs preset) */}
       {(widget.type === 'line_chart' || widget.type === 'bar_chart') && (
-        <Field label="Data Source">
+        <Field label={t('reports.dataSource')}>
           <select
             value={isCustomSeries ? 'custom_series' : 'preset'}
             onChange={e => {
@@ -2166,15 +2356,15 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
             }}
             style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13 }}
           >
-            <option value="custom_series">Custom Time Series</option>
-            <option value="preset">Fixed Preset</option>
+            <option value="custom_series">{t('reports.customTimeSeries')}</option>
+            <option value="preset">{t('reports.fixedPreset')}</option>
           </select>
         </Field>
       )}
 
       {/* Fixed preset dropdown — shown for non-chart widgets, or chart widgets in preset mode */}
       {isDataWidget && presetOptions.length > 0 && !showSeriesBuilder && !(widget.type === 'line_chart' && isCustomSeries) && (
-        <Field label="Data Preset">
+        <Field label={t('reports.dataPreset')}>
           <select value={cfg.preset || ''} onChange={e => set('preset', e.target.value)}
             style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13 }}>
             {presetOptions.map(o => <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>)}
@@ -2185,11 +2375,11 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
       {/* ── Custom Time Series: X / Y axis selectors ── */}
       {showSeriesBuilder && (
         <>
-          <Field label="X Axis (Time)">
+          <Field label={t('reports.xAxis')}>
             <Select value={cfg.time_group || 'scan'} onChange={v => set('time_group', v)} options={TIME_GROUP_OPTIONS} />
           </Field>
 
-          <Field label="Y Axis">
+          <Field label={t('reports.yAxis')}>
             <select
               value=""
               onChange={e => {
@@ -2199,7 +2389,7 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
               }}
               style={{ width: '100%', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px', fontSize: 13 }}
             >
-              <option value="">+ Add metric...</option>
+              <option value="">{t('reports.addMetric')}</option>
               {SERIES_METRIC_GROUPS.map(group => (
                 <optgroup key={group} label={group}>
                   {SERIES_METRICS.filter(m => m.group === group && !(cfg.metrics || []).includes(m.id)).map(m => (
@@ -2235,61 +2425,93 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
       )}
 
       {widget.type === 'card' && (
-        <Field label="Display Label">
+        <Field label={t('reports.displayLabel')}>
           <TextInput value={cfg.label} onChange={v => set('label', v)} placeholder={DATA_PRESETS[cfg.preset]?.label || 'Label'} />
         </Field>
       )}
 
       {widget.type === 'pie_chart' && (
-        <Field label="Donut">
-          <Toggle checked={cfg.donut} onChange={v => set('donut', v)} label="Donut hole" />
+        <Field label={t('reports.donut')}>
+          <Toggle checked={cfg.donut} onChange={v => set('donut', v)} label={t('reports.donutHole')} />
         </Field>
       )}
 
       {widget.type === 'bar_chart' && (
         <>
-          <Field label="Horizontal">
-            <Toggle checked={cfg.horizontal} onChange={v => set('horizontal', v)} label="Horizontal layout" />
+          <Field label={t('reports.horizontal')}>
+            <Toggle checked={cfg.horizontal} onChange={v => set('horizontal', v)} label={t('reports.horizontalLayout')} />
           </Field>
           {isSeriesChart && (
-            <Field label="Stacked">
-              <Toggle checked={cfg.stacked} onChange={v => set('stacked', v)} label="Stack bars" />
+            <Field label={t('reports.stacked')}>
+              <Toggle checked={cfg.stacked} onChange={v => set('stacked', v)} label={t('reports.stackBars')} />
             </Field>
           )}
         </>
       )}
 
       {widget.type === 'line_chart' && (
-        <Field label="Area Fill">
-          <Toggle checked={cfg.areaFill} onChange={v => set('areaFill', v)} label="Fill area under lines" />
+        <Field label={t('reports.areaFill')}>
+          <Toggle checked={cfg.areaFill} onChange={v => set('areaFill', v)} label={t('reports.fillArea')} />
         </Field>
       )}
 
       {widget.type === 'table' && (
-        <Field label="Row Limit">
+        <Field label={t('reports.rowLimit')}>
           <Select value={String(cfg.limit || 10)} onChange={v => set('limit', v)}
-            options={[{ value: '5', label: '5 rows' }, { value: '10', label: '10 rows' }, { value: '20', label: '20 rows' }, { value: '50', label: '50 rows' }]} />
+            options={[{ value: '5', label: `5 ${t('reports.rows')}` }, { value: '10', label: `10 ${t('reports.rows')}` }, { value: '20', label: `20 ${t('reports.rows')}` }, { value: '50', label: `50 ${t('reports.rows')}` }]} />
         </Field>
       )}
 
       {widget.type === 'header' && (
         <>
-          <Field label="Title">
-            <TextInput value={cfg.title} onChange={v => set('title', v)} placeholder="Section title" />
+          <Field label={t('reports.sectionTitle')}>
+            <TextInput value={cfg.title} onChange={v => set('title', v)} placeholder={t('reports.sectionTitle')} />
           </Field>
-          <Field label="Subtitle">
-            <TextInput value={cfg.subtitle} onChange={v => set('subtitle', v)} placeholder="Optional subtitle" />
+          <Field label={t('reports.subtitle2')}>
+            <TextInput value={cfg.subtitle} onChange={v => set('subtitle', v)} placeholder={t('reports.optionalSubtitle')} />
           </Field>
         </>
       )}
 
       {widget.type === 'image' && (
-        <Field label="Image URL">
+        <Field label={t('reports.imageUrl')}>
           <TextInput value={cfg.url} onChange={v => set('url', v)} placeholder="https://..." />
         </Field>
       )}
 
       {widget.type === 'funnel' && <FunnelConfigPanel cfg={cfg} set={set} Field={Field} Select={Select} TextInput={TextInput} />}
+
+      {/* Benchmark overlay toggle — available when a benchmark mapping exists for this preset */}
+      {PRESET_TO_BENCHMARK[cfg.preset] && ['card', 'gauge', 'risk_grade'].includes(widget.type) && (
+        <>
+          <div style={{ height: 1, background: 'var(--border)', margin: '10px 0 14px' }} />
+          <Field label="Benchmark">
+            <Toggle checked={cfg.show_benchmark} onChange={v => set('show_benchmark', v)} label="Compare vs peers" />
+          </Field>
+          {cfg.show_benchmark && (
+            <>
+              <Field label="Source">
+                <Select value={cfg.filters?.benchmark_source || ''} onChange={v => set('filters', { ...(cfg.filters || {}), benchmark_source: v || undefined })} options={[
+                  { value: '', label: 'Auto (platform if available)' },
+                  { value: 'platform', label: 'Platform peers' },
+                  { value: 'industry', label: 'Industry reference' },
+                ]} />
+              </Field>
+              {(cfg.filters?.benchmark_source || '') !== 'platform' && (
+                <Field label="Industry">
+                  <Select value={cfg.filters?.benchmark_industry || ''} onChange={v => set('filters', { ...(cfg.filters || {}), benchmark_industry: v || undefined })} options={[
+                    { value: '', label: 'All Industries' },
+                    { value: 'financial', label: 'Financial' },
+                    { value: 'healthcare', label: 'Healthcare' },
+                    { value: 'technology', label: 'Technology' },
+                    { value: 'government', label: 'Government' },
+                  ]} />
+                </Field>
+              )}
+            </>
+          )}
+        </>
+      )}
 
       {/* Dynamic filters based on data source */}
       {(() => {
@@ -2301,7 +2523,7 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
         return (
           <>
             <div style={{ height: 1, background: 'var(--border)', margin: '10px 0 14px' }} />
-            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Filters</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>{t('common.filters')}</div>
             {sourceFilters.map(f => (
               <Field key={f.key} label={f.label}>
                 {f.type === 'select' ? (
@@ -2324,12 +2546,13 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
 // ─── Widget library sidebar ───────────────────────────────────────────────────
 
 function WidgetLibrary({ onAdd }) {
+  const { t } = useTranslation()
   return (
     <div style={{ width: 220, flexShrink: 0, background: 'var(--bg-secondary)', borderRight: '1px solid var(--border)', overflowY: 'auto', padding: '12px 0' }}>
-      <div style={{ padding: '0 14px 10px', fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Widget Library</div>
+      <div style={{ padding: '0 14px 10px', fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{t('reports.widgetLibrary')}</div>
       {WIDGET_CATALOGUE.map(cat => (
         <div key={cat.category}>
-          <div style={{ padding: '8px 14px 6px', fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', opacity: 0.6 }}>{cat.category}</div>
+          <div style={{ padding: '8px 14px 6px', fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', opacity: 0.6 }}>{t(`reports.${cat.category.toLowerCase()}`)}</div>
           {cat.items.map(w => {
             const Icon = w.icon
             return (
@@ -2635,6 +2858,7 @@ async function exportAsPPT(ref, name) {
 // ─── Export dropdown button ───────────────────────────────────────────────────
 
 function ExportDropdown({ canvasRef, reportName, disabled }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [exporting, setExporting] = useState(null)
   const ref = useRef()
@@ -2655,7 +2879,7 @@ function ExportDropdown({ canvasRef, reportName, disabled }) {
       else if (format === 'ppt') await exportAsPPT(canvasRef.current, reportName)
     } catch (e) {
       console.error('Export failed', e)
-      alert('Export failed: ' + e.message)
+      alert(t('reports.exportFailed') + ': ' + e.message)
     } finally {
       setExporting(null)
     }
@@ -2677,7 +2901,7 @@ function ExportDropdown({ canvasRef, reportName, disabled }) {
         {exporting
           ? <span style={{ width: 14, height: 14, border: '2px solid var(--border)', borderTopColor: 'var(--text-secondary)', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />
           : <Download size={14} />}
-        {exporting ? `Exporting ${exporting.toUpperCase()}…` : 'Export'}
+        {exporting ? t('reports.exporting', { format: exporting.toUpperCase() }) : t('common.export')}
       </button>
       {open && (
         <div style={{
@@ -2686,9 +2910,9 @@ function ExportDropdown({ canvasRef, reportName, disabled }) {
           minWidth: 160, padding: 4, boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
         }}>
           {[
-            { fmt: 'png', icon: FileImage, label: 'Export as PNG' },
-            { fmt: 'pdf', icon: FileText, label: 'Export as PDF' },
-            { fmt: 'ppt', icon: FileBarChart2, label: 'Export as PPT' },
+            { fmt: 'png', icon: FileImage, label: t('reports.exportAsPng') },
+            { fmt: 'pdf', icon: FileText, label: t('reports.exportAsPdf') },
+            { fmt: 'ppt', icon: FileBarChart2, label: t('reports.exportAsPpt') },
           ].map(({ fmt, icon: Icon, label }) => (
             <button
               key={fmt}
@@ -2713,6 +2937,7 @@ function ExportDropdown({ canvasRef, reportName, disabled }) {
 // ─── Global tag filter bar ────────────────────────────────────────────────────
 
 function GlobalTagFilterBar({ globalTags, setGlobalTags, globalTagLogic, setGlobalTagLogic, tagInputDraft, setTagInputDraft, availableTags }) {
+  const { t } = useTranslation()
   const [showSuggestions, setShowSuggestions] = useState(false)
   const lastWord = tagInputDraft.split(',').pop().trim()
   const suggestions = lastWord.length >= 1
@@ -2731,7 +2956,7 @@ function GlobalTagFilterBar({ globalTags, setGlobalTags, globalTagLogic, setGlob
       display: 'flex', alignItems: 'center', gap: 8, padding: '6px 16px',
       background: 'var(--bg-primary)', borderBottom: '1px solid var(--border)', flexShrink: 0,
     }}>
-      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>Tag Filter</span>
+      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>{t('reports.tagFilter')}</span>
       <div style={{ position: 'relative', flex: 1, maxWidth: 480 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg-secondary)', border: `1px solid ${globalTags ? '#6366f1' : 'var(--border)'}`, borderRadius: 6, padding: '3px 8px' }}>
           <input
@@ -2740,7 +2965,7 @@ function GlobalTagFilterBar({ globalTags, setGlobalTags, globalTagLogic, setGlob
             onFocus={() => setShowSuggestions(true)}
             onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
             onKeyDown={e => { if (e.key === 'Enter') { setGlobalTags(tagInputDraft.trim()); setShowSuggestions(false) } }}
-            placeholder="e.g. org:engineering,env:production — press Enter to apply"
+            placeholder={t('reports.tagPlaceholder')}
             style={{ flex: 1, background: 'none', border: 'none', color: 'var(--text-primary)', fontSize: 12, outline: 'none', minWidth: 0 }}
           />
           {tagInputDraft && tagInputDraft.trim() !== globalTags && (
@@ -2779,7 +3004,7 @@ function GlobalTagFilterBar({ globalTags, setGlobalTags, globalTagLogic, setGlob
       </select>
       {globalTags && (
         <span style={{ fontSize: 11, color: '#818cf8', background: '#6366f122', border: '1px solid #6366f144', borderRadius: 20, padding: '2px 10px', whiteSpace: 'nowrap' }}>
-          Filtering: {globalTags}
+          {t('reports.filtering')}: {globalTags}
         </span>
       )}
     </div>
@@ -2789,10 +3014,11 @@ function GlobalTagFilterBar({ globalTags, setGlobalTags, globalTagLogic, setGlob
 // ─── Builder view ─────────────────────────────────────────────────────────────
 
 function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
+  const { t } = useTranslation()
   const { activeScanId, scans } = useScan()
   const navigate = useNavigate()
   const [widgets, setWidgets] = useState(report.widgets || [])
-  const [name, setName] = useState(report.name || 'Untitled Report')
+  const [name, setName] = useState(report.name || t('reports.untitledReport'))
   const [selectedId, setSelectedId] = useState(null)
   const [preview, setPreview] = useState(true)
   const [saved, setSaved] = useState(false)
@@ -2857,7 +3083,7 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
         background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', flexShrink: 0,
       }}>
         <button onClick={onBack} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, padding: '4px 8px', borderRadius: 6 }}>
-          <ArrowLeft size={15} /> Reports
+          <ArrowLeft size={15} /> {t('reports.title')}
         </button>
 
         <div style={{ width: 1, height: 20, background: 'var(--border)' }} />
@@ -2893,22 +3119,22 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
           onClick={() => setPreview(p => !p)}
           style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: preview ? '#6366f122' : 'transparent', border: '1px solid var(--border)', color: preview ? '#818cf8' : 'var(--text-secondary)', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 500 }}
         >
-          {preview ? <><EyeOff size={14} /> Edit</> : <><Eye size={14} /> Preview</>}
+          {preview ? <><EyeOff size={14} /> {t('common.edit')}</> : <><Eye size={14} /> {t('reports.preview')}</>}
         </button>
 
         <button
           onClick={isLanding ? undefined : onSetLanding}
-          title={isLanding ? 'This is your landing page' : 'Set as landing page'}
+          title={isLanding ? t('reports.thisIsLanding') : t('reports.setAsLanding')}
           style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: isLanding ? '#16a34a22' : 'transparent', border: `1px solid ${isLanding ? '#16a34a' : 'var(--border)'}`, color: isLanding ? '#16a34a' : 'var(--text-secondary)', borderRadius: 6, cursor: isLanding ? 'default' : 'pointer', fontSize: 13, fontWeight: 500 }}
         >
-          <Home size={14} /> {isLanding ? 'Landing' : 'Set as Home'}
+          <Home size={14} /> {isLanding ? t('reports.landing') : t('reports.setAsHome')}
         </button>
 
         <button
           onClick={handleSave}
           style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', background: saved ? '#16a34a' : 'var(--accent)', border: 'none', color: '#fff', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600, transition: 'background 0.2s' }}
         >
-          {saved ? <><CheckCircle size={14} /> Saved!</> : <><Save size={14} /> Save</>}
+          {saved ? <><CheckCircle size={14} /> {t('reports.saved')}</> : <><Save size={14} /> {t('common.save')}</>}
         </button>
 
         <ExportDropdown canvasRef={canvasRef} reportName={name} disabled={widgets.length === 0} />
@@ -2938,7 +3164,7 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
           {preview && (
             <div style={{ maxWidth: 900, margin: '0 auto 20px', textAlign: 'center' }}>
               <h1 style={{ fontSize: 24, fontWeight: 800 }}>{name}</h1>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>Custom Security Report · Generated {new Date().toLocaleDateString()}</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>{t('reports.customReport', { date: new Date().toLocaleDateString() })}</div>
             </div>
           )}
 
@@ -2956,9 +3182,9 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
                 <Upload size={26} color="#818cf8" />
               </div>
               <div>
-                <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--text-primary)' }}>Upload your first scan</div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--text-primary)' }}>{t('reports.uploadFirstScan')}</div>
                 <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.5 }}>
-                  Import a Nessus scan (.nessus, .csv, or .html) to populate your dashboard with vulnerability data, asset inventory, and remediation priorities.
+                  {t('reports.uploadFirstScanDesc')}
                 </div>
               </div>
               <button
@@ -2969,7 +3195,7 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
                   display: 'flex', alignItems: 'center', gap: 8,
                 }}
               >
-                <Upload size={16} /> Upload Scan
+                <Upload size={16} /> {t('reports.uploadScan')}
               </button>
             </div>
           )}
@@ -2977,8 +3203,8 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
           {widgets.length === 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, color: 'var(--text-muted)', gap: 12 }}>
               <LayoutGrid size={48} color="var(--text-muted)" style={{ opacity: 0.4 }} />
-              <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-secondary)' }}>Canvas is empty</div>
-              <div style={{ fontSize: 13, textAlign: 'center', maxWidth: 280 }}>Click any widget from the library on the left to add it to your report</div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-secondary)' }}>{t('reports.canvasEmpty')}</div>
+              <div style={{ fontSize: 13, textAlign: 'center', maxWidth: 280 }}>{t('reports.canvasEmptyHint')}</div>
             </div>
           ) : (
             <div ref={canvasRef} style={{
@@ -3028,25 +3254,26 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
 // ─── Report list (landing) ────────────────────────────────────────────────────
 
 function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingId, onSetLanding, onRefresh }) {
+  const { t } = useTranslation()
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <div>
-          <h2 style={{ fontSize: 18, fontWeight: 700 }}>Reports</h2>
-          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>Build and save custom dashboards — set any as your landing page</div>
+          <h2 style={{ fontSize: 18, fontWeight: 700 }}>{t('reports.title')}</h2>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>{t('reports.subtitle')}</div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <ExportImportButtons
             configType="report_template"
             exportFn={() => exportConfig('report_template')}
             onImported={onRefresh}
-            label="Report Templates"
+            label={t('reports.reportTemplates')}
           />
           <button
             onClick={onCreate}
             style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 18px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
           >
-            <Plus size={16} /> New Report
+            <Plus size={16} /> {t('reports.newReport')}
           </button>
         </div>
       </div>
@@ -3057,15 +3284,15 @@ function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingI
           display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, textAlign: 'center',
         }}>
           <LayoutGrid size={48} color="var(--text-muted)" style={{ opacity: 0.4 }} />
-          <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-secondary)' }}>No custom reports yet</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-secondary)' }}>{t('reports.noReportsYet')}</div>
           <div style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 320 }}>
-            Create your first report by clicking "New Report". Mix and match widgets — stat cards, charts, tables, and text — and save for reuse.
+            {t('reports.noReportsDesc')}
           </div>
           <button
             onClick={onCreate}
             style={{ marginTop: 4, padding: '9px 20px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}
           >
-            <Plus size={15} /> Create first report
+            <Plus size={15} /> {t('reports.createFirst')}
           </button>
         </div>
       ) : (
@@ -3090,12 +3317,12 @@ function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingI
                       <div style={{ fontSize: 12, color: '#818cf8', fontWeight: 600 }}>+{report.widgets.length - 4}</div>
                     )}
                     {(report.widgets || []).length === 0 && (
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Empty report</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t('reports.emptyReport')}</div>
                     )}
                   </div>
                   {isHome && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 600, color: '#16a34a', background: '#16a34a22', padding: '4px 8px', borderRadius: 6 }}>
-                      <Home size={11} /> Landing
+                      <Home size={11} /> {t('reports.landing')}
                     </div>
                   )}
                 </div>
@@ -3103,22 +3330,22 @@ function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingI
                 <div style={{ padding: '14px 16px' }}>
                   <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{report.name}</div>
                   <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-                    {(report.widgets || []).length} widget{(report.widgets || []).length !== 1 ? 's' : ''} ·
-                    Created {new Date(report.createdAt).toLocaleDateString()}
+                    {(report.widgets || []).length} {(report.widgets || []).length !== 1 ? t('reports.widgets') : t('reports.widget')} ·
+                    {t('reports.created')} {new Date(report.createdAt).toLocaleDateString()}
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={() => onOpen(report)} style={{ flex: 1, padding: '7px', background: 'var(--accent)', border: 'none', color: '#fff', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
-                      Open
+                      {t('reports.open')}
                     </button>
                     {!isHome && (
-                      <button onClick={() => onSetLanding(report.id)} title="Set as landing page" style={{ padding: '7px 10px', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 6, cursor: 'pointer' }}>
+                      <button onClick={() => onSetLanding(report.id)} title={t('reports.setAsLanding')} style={{ padding: '7px 10px', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 6, cursor: 'pointer' }}>
                         <Home size={14} />
                       </button>
                     )}
-                    <button onClick={() => onDuplicate(report)} title="Duplicate" style={{ padding: '7px 10px', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 6, cursor: 'pointer' }}>
+                    <button onClick={() => onDuplicate(report)} title={t('reports.duplicate')} style={{ padding: '7px 10px', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 6, cursor: 'pointer' }}>
                       <Copy size={14} />
                     </button>
-                    <button onClick={() => onDelete(report.id)} title="Delete" style={{ padding: '7px 10px', background: 'transparent', border: '1px solid var(--border)', color: '#dc2626', borderRadius: 6, cursor: 'pointer' }}>
+                    <button onClick={() => onDelete(report.id)} title={t('common.delete')} style={{ padding: '7px 10px', background: 'transparent', border: '1px solid var(--border)', color: '#dc2626', borderRadius: 6, cursor: 'pointer' }}>
                       <Trash2 size={14} />
                     </button>
                   </div>
@@ -3135,9 +3362,10 @@ function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingI
 // ─── Root export ──────────────────────────────────────────────────────────────
 
 function TabBar({ active, onChange }) {
+  const { t } = useTranslation()
   const tabs = [
-    { id: 'reports', label: 'Reports', icon: BarChart2 },
-    { id: 'ai-query', label: 'AI Query', icon: Sparkles },
+    { id: 'reports', label: t('reports.title'), icon: BarChart2 },
+    { id: 'ai-query', label: t('reports.aiQuery'), icon: Sparkles },
   ]
   return (
     <div style={{
@@ -3169,6 +3397,7 @@ function TabBar({ active, onChange }) {
 }
 
 export default function ReportBuilder() {
+  const { t } = useTranslation()
   const [reports, setReports] = useState([])
   const [loading, setLoading] = useState(true)
   const [landingId, setLandingId] = useState(loadLandingId)
@@ -3199,7 +3428,7 @@ export default function ReportBuilder() {
       // Ensure default dashboards exist and stay up-to-date
       const ootb = [EXECUTIVE_DASHBOARD, DEFAULT_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD]
       for (const dash of ootb) {
-        const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}`).join('|')
+        const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}:${w.config?.show_benchmark ? 'bm' : ''}`).join('|')
         const existing = templates.find(t => t.name === dash.name)
         if (!existing) {
           await createReportTemplate({
@@ -3263,7 +3492,7 @@ export default function ReportBuilder() {
   }
 
   const createReport = () => {
-    const report = { id: null, name: 'Untitled Report', createdAt: new Date().toISOString(), widgets: [] }
+    const report = { id: null, name: t('reports.untitledReport'), createdAt: new Date().toISOString(), widgets: [] }
     setActiveReport(report)
   }
 
@@ -3291,7 +3520,7 @@ export default function ReportBuilder() {
   }
 
   const deleteReport = async (id) => {
-    if (!confirm('Delete this report?')) return
+    if (!confirm(t('reports.deleteConfirm'))) return
     try {
       await apiDeleteTemplate(id)
       const next = reports.filter(r => r.id !== id)
@@ -3318,7 +3547,7 @@ export default function ReportBuilder() {
     }
   }
 
-  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner /> Loading reports...</div>
+  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner /> {t('reports.loading')}</div>
 
   if (activeReport) {
     return (

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { Wrench, Zap, ChevronRight, AlertTriangle } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getRemediationQueue, createCampaign, runCampaign } from '../../api.js'
@@ -8,22 +9,10 @@ import {
   EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill
 } from '../shared/ui.jsx'
 
-const EFFORT_OPTIONS = [
-  { value: 'quick_win', label: 'Quick Win' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'complex', label: 'Complex' },
-]
-
-const OWNER_OPTIONS = [
-  { value: 'IT', label: 'IT' },
-  { value: 'DevOps', label: 'DevOps' },
-  { value: 'SecOps', label: 'SecOps' },
-  { value: 'AppSec', label: 'AppSec' },
-]
-
 const SEV_COLORS = ['var(--info)', 'var(--low)', 'var(--medium)', 'var(--high)', 'var(--critical)']
 
 function FindingCard({ finding, rank, scanId }) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const [expanded, setExpanded] = useState(false)
   const [creatingCampaign, setCreatingCampaign] = useState(false)
@@ -73,8 +62,8 @@ function FindingCard({ finding, rank, scanId }) {
             <SeverityBadge severity={finding.severity} label={finding.severity_label} />
             <EffortBadge effort={finding.effort_level} />
             <ResolvedOwnerBadge resolved={finding.resolved_owner} />
-            {finding.zero_day && <Pill label="0-DAY" color="var(--critical)" />}
-            {finding.exploit_available && !finding.zero_day && <Pill label="Exploit" color="var(--high)" />}
+            {finding.zero_day && <Pill label={t('findings.zeroDay')} color="var(--critical)" />}
+            {finding.exploit_available && !finding.zero_day && <Pill label={t('findings.exploit')} color="var(--high)" />}
           </div>
           <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', marginBottom: 4 }}>
             {finding.plugin_name}
@@ -82,7 +71,7 @@ function FindingCard({ finding, rank, scanId }) {
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
             {finding.asset_hostname || finding.asset_ip}
             {finding.plugin_family && ` · ${finding.plugin_family}`}
-            {finding.port && ` · Port ${finding.port}/${finding.protocol}`}
+            {finding.port && ` · ${t('findings.port')} ${finding.port}/${finding.protocol}`}
           </div>
           {finding.synopsis && (
             <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6, lineHeight: 1.5 }}>
@@ -93,7 +82,7 @@ function FindingCard({ finding, rank, scanId }) {
 
         {/* Score */}
         <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 90 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Priority</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>{t('findings.priority')}</div>
           <ScoreBar score={finding.priority_score} />
           {(finding.cvss3_score || finding.cvss2_score) && (
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
@@ -127,7 +116,7 @@ function FindingCard({ finding, rank, scanId }) {
               size="sm"
               style={{ background: 'rgba(99,102,241,0.13)', color: 'var(--accent)', border: '1px solid rgba(99,102,241,0.27)' }}
             >
-              <Zap size={13} /> {creatingCampaign ? 'Creating…' : 'Start a Campaign'}
+              <Zap size={13} /> {creatingCampaign ? t('remediation.creatingCampaign') : t('remediation.createCampaign')}
             </Button>
           </div>
         </div>
@@ -137,6 +126,7 @@ function FindingCard({ finding, rank, scanId }) {
 }
 
 export default function RemediationQueue() {
+  const { t } = useTranslation()
   const { activeScanId } = useScan()
   const [findings, setFindings] = useState([])
   const [loading, setLoading] = useState(true)
@@ -156,8 +146,8 @@ export default function RemediationQueue() {
   return (
     <div>
       <PageHeader
-        title="Remediation"
-        subtitle={`${findings.length} actionable findings, prioritized by risk`}
+        title={t('remediation.title')}
+        subtitle={t('remediation.subtitle')}
       />
 
       {/* Summary banner */}
@@ -183,24 +173,33 @@ export default function RemediationQueue() {
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-        <Select value={effort} onChange={setEffort} placeholder="All Effort Levels" options={EFFORT_OPTIONS} />
-        <Select value={owner} onChange={setOwner} placeholder="All Owners" options={OWNER_OPTIONS} />
+        <Select value={effort} onChange={setEffort} placeholder={t('remediation.allEfforts')} options={[
+          { value: 'quick_win', label: t('remediation.quickWin') },
+          { value: 'medium', label: t('remediation.medium') },
+          { value: 'complex', label: t('remediation.complex') },
+        ]} />
+        <Select value={owner} onChange={setOwner} placeholder={t('remediation.allOwners')} options={[
+          { value: 'IT', label: t('roles.it') },
+          { value: 'DevOps', label: t('roles.devops') },
+          { value: 'SecOps', label: t('roles.secops') },
+          { value: 'AppSec', label: t('roles.appsec') },
+        ]} />
         <Select
           value={String(minSev)}
           onChange={v => setMinSev(Number(v))}
-          placeholder="Min Severity"
+          placeholder={`${t('severity.medium')}+`}
           options={[
-            { value: '1', label: 'Low+' },
-            { value: '2', label: 'Medium+' },
-            { value: '3', label: 'High+' },
-            { value: '4', label: 'Critical only' },
+            { value: '1', label: `${t('severity.low')}+` },
+            { value: '2', label: `${t('severity.medium')}+` },
+            { value: '3', label: `${t('severity.high')}+` },
+            { value: '4', label: t('severity.critical') },
           ]}
         />
       </div>
 
       {loading ? <Spinner /> : (
         findings.length === 0 ? (
-          <EmptyState icon={Wrench} title="Queue is empty" sub="No findings match your current filters. Try adjusting severity or effort level." />
+          <EmptyState icon={Wrench} title={t('remediation.noFindings')} sub={t('remediation.noFindingsDesc')} />
         ) : (
           <div>
             {findings.map((f, i) => (

@@ -65,13 +65,19 @@ def infer_environment(asset_data: dict) -> str:
         if re.search(pattern, names):
             return tag
 
-    # IP range is a weak signal — some orgs use public IPs internally.
-    # Use it only as a last resort and keep the value editable in the UI.
     ip = asset_data.get("ip") or ""
+    scanner_type = asset_data.get("scanner_type") or ""
+    is_ext_scanner = scanner_type in ("cloud", "external")
+
+    # Public IP + external/cloud scanner = confirmed external-facing
+    if ip and not _is_private_ip(ip) and is_ext_scanner:
+        return "external"
+
+    # Private IP is always internal regardless of scanner
     if ip and _is_private_ip(ip):
         return "internal"
 
-    return "internal"  # safe default — better to under-classify than over-classify
+    return "internal"
 
 
 # ---------------------------------------------------------------------------

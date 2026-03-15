@@ -238,7 +238,7 @@ class UpdateLocaleRequest(BaseModel):
 @router.put("/locale")
 async def update_locale(body: UpdateLocaleRequest, user: User = Depends(require_auth), db: Session = Depends(get_db)):
     """Update the authenticated user's preferred locale."""
-    supported = {"en", "ja", "fr", "de", "he", "ru", "zh"}
+    supported = {"en", "ja", "fr", "de", "he", "ru", "zh", "es", "pt", "nl", "ar", "it"}
     if body.locale not in supported:
         raise HTTPException(400, f"Unsupported locale. Supported: {', '.join(sorted(supported))}")
     user.locale = body.locale

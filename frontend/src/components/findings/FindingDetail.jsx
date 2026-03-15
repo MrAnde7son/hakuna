@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight } from 'lucide-react'
 import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input } from '../shared/ui.jsx'
@@ -117,6 +118,7 @@ function RemediationSteps({ text }) {
 }
 
 export default function FindingDetail() {
+  const { t } = useTranslation()
   const { id } = useParams()
   const navigate = useNavigate()
   const [finding, setFinding] = useState(null)
@@ -224,7 +226,7 @@ export default function FindingDetail() {
         display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none',
         color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13, marginBottom: 16, padding: 0
       }}>
-        <ArrowLeft size={14} /> Back to findings
+        <ArrowLeft size={14} /> {t('findingDetail.backToFindings')}
       </button>
 
       {/* Header */}
@@ -239,10 +241,10 @@ export default function FindingDetail() {
             </div>
             <h1 style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.3, marginBottom: 6 }}>{finding.plugin_name}</h1>
             <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-              Plugin {finding.plugin_id}
+              {t('findingDetail.pluginId')} {finding.plugin_id}
               {finding.plugin_family && ` · ${finding.plugin_family}`}
               {finding.asset_hostname && ` · ${finding.asset_hostname}`}
-              {finding.port && ` · Port ${finding.port}/${finding.protocol}`}
+              {finding.port && ` · ${t('findingDetail.port')} ${finding.port}/${finding.protocol}`}
             </div>
           </div>
 
@@ -256,29 +258,29 @@ export default function FindingDetail() {
         {/* Score strip */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
           <div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>PRIORITY SCORE</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('findingDetail.priorityScore').toUpperCase()}</div>
             <ScoreBar score={finding.priority_score} />
           </div>
           {bestScore && (
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
-                {finding.cvss3_score ? 'CVSS v3' : 'CVSS v2'}
+                {finding.cvss3_score ? t('findingDetail.cvss3BaseScore') : t('findingDetail.cvssBaseScore')}
               </div>
               <ScoreBar score={bestScore} />
             </div>
           )}
           {finding.vpr_score && (
             <div>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>VPR SCORE</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('findingDetail.vprScore').toUpperCase()}</div>
               <ScoreBar score={finding.vpr_score} />
             </div>
           )}
           <div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>EFFORT</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('findingDetail.effortLevel').toUpperCase()}</div>
             <EffortBadge effort={finding.effort_level} />
           </div>
           <div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>OWNER</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('findingDetail.ownerSuggestion').toUpperCase()}</div>
             <ResolvedOwnerBadge resolved={finding.resolved_owner} />
           </div>
         </div>
@@ -306,10 +308,10 @@ export default function FindingDetail() {
         const resolvedDate = finding.resolved_at ? new Date(finding.resolved_at) : null
 
         const statusCfg = {
-          on_track: { color: '#16a34a', bg: 'rgba(22,163,74,0.08)', border: 'rgba(22,163,74,0.3)', label: 'On Track' },
-          at_risk:  { color: '#d97706', bg: 'rgba(217,119,6,0.08)',  border: 'rgba(217,119,6,0.3)',  label: 'At Risk' },
-          breached: { color: '#dc2626', bg: 'rgba(220,38,38,0.08)',  border: 'rgba(220,38,38,0.3)',  label: 'SLA Breached' },
-          resolved: { color: '#6366f1', bg: 'rgba(99,102,241,0.08)', border: 'rgba(99,102,241,0.3)', label: 'Resolved' },
+          on_track: { color: '#16a34a', bg: 'rgba(22,163,74,0.08)', border: 'rgba(22,163,74,0.3)', label: t('findingDetail.slaOnTrack') },
+          at_risk:  { color: '#d97706', bg: 'rgba(217,119,6,0.08)',  border: 'rgba(217,119,6,0.3)',  label: t('findingDetail.slaAtRisk') },
+          breached: { color: '#dc2626', bg: 'rgba(220,38,38,0.08)',  border: 'rgba(220,38,38,0.3)',  label: t('findingDetail.slaBreached') },
+          resolved: { color: '#6366f1', bg: 'rgba(99,102,241,0.08)', border: 'rgba(99,102,241,0.3)', label: t('findingDetail.slaResolved') },
         }[finding.sla_status] || { color: '#6b7280', bg: 'transparent', border: 'var(--border)', label: finding.sla_status }
 
         return (
@@ -339,12 +341,12 @@ export default function FindingDetail() {
                 {finding.sla_status !== 'resolved' ? (
                   <Button onClick={handleResolve} disabled={resolving} size="sm">
                     <CheckCircle size={13} />
-                    {resolving ? 'Marking…' : 'Mark Resolved'}
+                    {resolving ? 'Marking…' : t('findingDetail.resolve')}
                   </Button>
                 ) : (
                   <Button variant="ghost" onClick={handleUnresolve} disabled={resolving} size="sm">
                     <RotateCcw size={13} />
-                    {resolving ? 'Reopening…' : 'Reopen'}
+                    {resolving ? 'Reopening…' : t('findingDetail.unresolve')}
                   </Button>
                 )}
               </div>
@@ -362,22 +364,22 @@ export default function FindingDetail() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             {finding.is_regression && (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 4, background: 'rgba(220,38,38,0.15)', color: 'var(--danger)', fontSize: 12, fontWeight: 600 }}>
-                <RotateCcw size={11} /> Regression
+                <RotateCcw size={11} /> {t('findings.regression')}
               </span>
             )}
             {finding.first_seen && (
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                First seen: {new Date(finding.first_seen).toLocaleDateString()}
+                {t('findingDetail.firstSeen')}: {new Date(finding.first_seen).toLocaleDateString()}
               </span>
             )}
             {finding.last_seen && (
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                · Last seen: {new Date(finding.last_seen).toLocaleDateString()}
+                · {t('findingDetail.lastSeen')}: {new Date(finding.last_seen).toLocaleDateString()}
               </span>
             )}
             {finding.times_seen > 1 && (
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                · Seen in {finding.times_seen} scan{finding.times_seen !== 1 ? 's' : ''}
+                · {t('findingDetail.timesSeen')}: {finding.times_seen} {t('findingDetail.scans')}
               </span>
             )}
           </div>
@@ -388,13 +390,13 @@ export default function FindingDetail() {
       <Card style={{ marginBottom: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, paddingBottom: 12, borderBottom: '1px solid var(--border)' }}>
           <UserCheck size={16} color="var(--accent)" />
-          <span style={{ fontWeight: 600, fontSize: 14 }}>Workflow Status</span>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>{t('findingDetail.workflow')} {t('findingDetail.workflowStatus')}</span>
         </div>
         {(() => {
           const steps = [
-            { value: 'open', label: 'Open', color: '#6b7280' },
-            { value: 'in_progress', label: 'In Progress', color: '#3b82f6' },
-            { value: 'resolved', label: 'Resolved', color: '#22c55e' },
+            { value: 'open', label: t('findings.open'), color: '#6b7280' },
+            { value: 'in_progress', label: t('findingDetail.inProgress'), color: '#3b82f6' },
+            { value: 'resolved', label: t('findingDetail.slaResolved'), color: '#22c55e' },
           ]
           const currentStatus = finding.workflow_status || 'open'
           const currentIdx = steps.findIndex(s => s.value === currentStatus)
@@ -445,7 +447,7 @@ export default function FindingDetail() {
                 }}
               >
                 <ShieldOff size={13} />
-                {finding.exception_id ? 'Has Exception' : 'Create Exception'}
+                {finding.exception_id ? t('findingDetail.exception') : t('findingDetail.createException')}
               </button>
             </div>
           )
@@ -453,7 +455,7 @@ export default function FindingDetail() {
 
         {finding.workflow_assigned_to && (
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
-            Assigned to: <span style={{ color: 'var(--text)', fontWeight: 500 }}>{finding.workflow_assigned_to}</span>
+            {t('findings.assignedTo')}: <span style={{ color: 'var(--text)', fontWeight: 500 }}>{finding.workflow_assigned_to}</span>
           </div>
         )}
         {finding.status_changed_at && (
@@ -464,7 +466,7 @@ export default function FindingDetail() {
 
         {showExceptionForm && (
           <div style={{ marginTop: 12, padding: 14, background: 'var(--bg-muted)', borderRadius: 8, border: '1px solid var(--border)' }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Create Global Exception for Plugin {finding.plugin_id}</div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{t('findingDetail.createException')} — {t('findingDetail.pluginId')} {finding.plugin_id}</div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
               This will apply to all findings with this plugin across all scans.
             </div>
@@ -480,18 +482,18 @@ export default function FindingDetail() {
             />
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <Button size="sm" onClick={() => handleCreateException('accepted_risk')} style={{ background: '#d97706' }}>
-                Accept Risk
+                {t('findingDetail.acceptedRisk')}
               </Button>
               <Button size="sm" onClick={() => handleCreateException('false_positive')} style={{ background: '#3b82f6' }}>
-                False Positive
+                {t('findings.falsePositive')}
               </Button>
               <Button size="sm" onClick={() => handleCreateException('compensating_control')} style={{ background: '#10b981' }}>
-                Compensating Control
+                {t('findingDetail.compensatingControl')}
               </Button>
               <Button size="sm" onClick={() => handleCreateException('technical_debt')} style={{ background: '#7c3aed' }}>
-                Technical Debt
+                {t('findingDetail.technicalDebt')}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => setShowExceptionForm(false)}>Cancel</Button>
+              <Button variant="ghost" size="sm" onClick={() => setShowExceptionForm(false)}>{t('common.cancel')}</Button>
             </div>
           </div>
         )}
@@ -745,24 +747,24 @@ export default function FindingDetail() {
       )}
 
       {/* Remediation */}
-      <Section title="Remediation Steps" icon={Shield}>
+      <Section title={t('findingDetail.solution')} icon={Shield}>
         <RemediationSteps text={finding.remediation_steps} />
         {finding.solution && (
           <div style={{ marginTop: 14 }}>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Original Nessus Solution</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('findingDetail.solution')}</div>
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{finding.solution}</div>
           </div>
         )}
         <div style={{ marginTop: 16 }}>
           <Button onClick={handleCreateCampaign} disabled={creatingCampaign} style={{ width: '100%', justifyContent: 'center', padding: '11px 16px' }}>
-            <Zap size={16} /> {creatingCampaign ? 'Creating…' : 'Start a Campaign'}
+            <Zap size={16} /> {creatingCampaign ? 'Creating…' : t('findingDetail.createCampaign')}
           </Button>
         </div>
       </Section>
 
       {/* Description */}
       {finding.description && (
-        <Section title="Description" icon={Info} defaultOpen={false}>
+        <Section title={t('findingDetail.description')} icon={Info} defaultOpen={false}>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
             {finding.description}
           </div>
@@ -771,24 +773,24 @@ export default function FindingDetail() {
 
       {/* Plugin Output */}
       {finding.plugin_output && (
-        <Section title="Plugin Output" icon={Terminal} defaultOpen={false}>
+        <Section title={t('findingDetail.pluginOutput')} icon={Terminal} defaultOpen={false}>
           <PreText text={finding.plugin_output} />
         </Section>
       )}
 
       {/* Technical Details */}
-      <Section title="Technical Details" icon={Info} defaultOpen={false}>
-        <KeyVal label="Plugin ID" value={finding.plugin_id} />
-        <KeyVal label="Plugin Family" value={finding.plugin_family} />
-        <KeyVal label="Risk Factor" value={finding.risk_factor} />
-        <KeyVal label="Vulnerability State" value={finding.vulnerability_state} />
-        <KeyVal label="Port / Protocol" value={finding.port ? `${finding.port} / ${finding.protocol}` : null} />
-        <KeyVal label="CVSS v3 Score" value={finding.cvss3_score ? `${finding.cvss3_score} (${finding.cvss3_vector || ''})` : null} />
-        <KeyVal label="CVSS v2 Score" value={finding.cvss2_score ? `${finding.cvss2_score} (${finding.cvss2_vector || ''})` : null} />
-        <KeyVal label="VPR Score" value={finding.vpr_score} />
-        <KeyVal label="Exploit Available" value={finding.exploit_available ? 'Yes' : 'No'} />
-        <KeyVal label="Exploit Maturity" value={finding.exploit_maturity} />
-        <KeyVal label="Zero Day" value={finding.zero_day ? 'Yes' : null} />
+      <Section title={t('findingDetail.pluginDetails')} icon={Info} defaultOpen={false}>
+        <KeyVal label={t('findingDetail.pluginId')} value={finding.plugin_id} />
+        <KeyVal label={t('findingDetail.pluginFamily')} value={finding.plugin_family} />
+        <KeyVal label={t('findingDetail.riskFactor')} value={finding.risk_factor} />
+        <KeyVal label={t('findingDetail.vulnerabilityState')} value={finding.vulnerability_state} />
+        <KeyVal label={`${t('findingDetail.port')} / ${t('findingDetail.protocol')}`} value={finding.port ? `${finding.port} / ${finding.protocol}` : null} />
+        <KeyVal label={t('findingDetail.cvss3BaseScore')} value={finding.cvss3_score ? `${finding.cvss3_score} (${finding.cvss3_vector || ''})` : null} />
+        <KeyVal label={t('findingDetail.cvssBaseScore')} value={finding.cvss2_score ? `${finding.cvss2_score} (${finding.cvss2_vector || ''})` : null} />
+        <KeyVal label={t('findingDetail.vprScore')} value={finding.vpr_score} />
+        <KeyVal label={t('findingDetail.exploitAvailable')} value={finding.exploit_available ? t('common.yes') : t('common.no')} />
+        <KeyVal label={t('findingDetail.exploitMaturity')} value={finding.exploit_maturity} />
+        <KeyVal label={t('findingDetail.zeroDay')} value={finding.zero_day ? t('common.yes') : null} />
         <KeyVal label="Plugin Published" value={finding.plugin_pub_date} />
         <KeyVal label="Plugin Modified" value={finding.plugin_mod_date} />
 
@@ -799,7 +801,7 @@ export default function FindingDetail() {
           const hiddenCount = finding.cves.length - MAX_VISIBLE
           return (
             <div style={{ padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>CVE References ({finding.cves.length})</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>{t('findingDetail.cves')} ({finding.cves.length})</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
                 {visibleCves.map(cve => (
                   <a
@@ -844,7 +846,7 @@ export default function FindingDetail() {
         {/* See Also */}
         {finding.see_also && finding.see_also.length > 0 && (
           <div style={{ padding: '8px 0' }}>
-            <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>See Also</div>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>{t('findingDetail.references')}</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {finding.see_also.map((url, i) => (
                 <a key={i} href={url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: 4 }}>

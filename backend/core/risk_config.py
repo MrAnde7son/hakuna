@@ -7,7 +7,7 @@ Asset Risk Score formula (weighted sum, normalized to 0-10):
   intel          — real-world threat signals (KEV, EPSS, ransomware, trending, VPR)
   criticality    — asset criticality level (1-10) contribution
   controls       — penalty when compensating controls (AV/firewall) are absent
-  reachability   — port-aware: checks if finding ports are listening/established on the asset
+  reachability   — network reachability: internet-facing assets get max score; otherwise port-aware analysis
 
 Asset criticality auto-rules:
   Rules are evaluated in order against asset properties.
@@ -306,26 +306,30 @@ def compute_asset_risk_score(
         controls_component = 0.5    # unknown → neutral
 
     # ── 6. Reachability component ──
-    # For asset-level: proportion of finding ports that are reachable.
-    listening_ports = inv.get("listening_ports") or set()
-    established_ports = inv.get("established_ports") or set()
-    if listening_ports or established_ports:
-        reachable_count = 0
-        port_findings = 0
-        for f in findings:
-            fp = f.get("port")
-            if fp and str(fp).isdigit():
-                port_findings += 1
-                port_int = int(fp)
-                if port_int in established_ports:
-                    reachable_count += 1
-                elif port_int in listening_ports:
-                    reachable_count += 0.7
-        reachability_component = (reachable_count / port_findings) if port_findings else 0.5
+    # Internet-facing assets: all ports are reachable by any attacker on the internet.
+    if inv.get("is_internet_facing"):
+        reachability_component = 1.0
     else:
-        # No port inventory data — fall back to connection count
-        conns = int(inv.get("established_connections", 0))
-        reachability_component = min(conns / 20.0, 1.0)
+        # For asset-level: proportion of finding ports that are reachable.
+        listening_ports = inv.get("listening_ports") or set()
+        established_ports = inv.get("established_ports") or set()
+        if listening_ports or established_ports:
+            reachable_count = 0
+            port_findings = 0
+            for f in findings:
+                fp = f.get("port")
+                if fp and str(fp).isdigit():
+                    port_findings += 1
+                    port_int = int(fp)
+                    if port_int in established_ports:
+                        reachable_count += 1
+                    elif port_int in listening_ports:
+                        reachable_count += 0.7
+            reachability_component = (reachable_count / port_findings) if port_findings else 0.5
+        else:
+            # No port inventory data — fall back to connection count
+            conns = int(inv.get("established_connections", 0))
+            reachability_component = min(conns / 20.0, 1.0)
 
     # ── Weighted sum ──
     score = (

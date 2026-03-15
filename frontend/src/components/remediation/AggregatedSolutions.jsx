@@ -1,17 +1,12 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { Layers, ChevronDown, ChevronUp, ExternalLink, RefreshCw, ArrowRight, Monitor, Shield, Zap } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getAggregatedSolutions, rebuildAggregatedSolutions } from '../../api.js'
 import { Card, PageHeader, Spinner, EmptyState, SeverityBadge, EffortBadge, Select, FilterBar } from '../shared/ui.jsx'
 
-const ROOT_CAUSE_LABELS = {
-  eol_software: 'End-of-Life',
-  deprecated_protocol: 'Deprecated Protocol',
-  outdated_version: 'Outdated Version',
-  misconfiguration: 'Misconfiguration',
-  missing_patch: 'Missing Patches',
-}
+const ROOT_CAUSE_KEYS = ['eol_software', 'deprecated_protocol', 'outdated_version', 'misconfiguration', 'missing_patch']
 
 const ROOT_CAUSE_COLORS = {
   eol_software: '#dc2626',
@@ -19,15 +14,6 @@ const ROOT_CAUSE_COLORS = {
   outdated_version: '#d97706',
   misconfiguration: '#7c3aed',
   missing_patch: '#2563eb',
-}
-
-const ACTION_LABELS = {
-  migrate_to_supported: 'Migrate',
-  disable_protocol: 'Disable',
-  upgrade_component: 'Upgrade',
-  remediate_config: 'Fix Config',
-  apply_patch: 'Patch',
-  bulk_patch: 'Bulk Patch',
 }
 
 const ACTION_ICONS = {
@@ -40,8 +26,9 @@ const ACTION_ICONS = {
 }
 
 function RootCauseBadge({ type }) {
+  const { t } = useTranslation()
   const color = ROOT_CAUSE_COLORS[type] || '#6b7280'
-  const label = ROOT_CAUSE_LABELS[type] || type
+  const label = t(`aggregated.rootCauseLabels.${type}`, type)
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -54,7 +41,8 @@ function RootCauseBadge({ type }) {
 }
 
 function ActionBadge({ type }) {
-  const label = ACTION_LABELS[type] || type
+  const { t } = useTranslation()
+  const label = t(`aggregated.actionLabels.${type}`, type)
   const icon = ACTION_ICONS[type] || '🔨'
   return (
     <span style={{
@@ -83,6 +71,7 @@ function EfficiencyBar({ score, max = 100 }) {
 }
 
 function RecommendationCard({ rec }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const navigate = useNavigate()
 
@@ -111,7 +100,7 @@ function RecommendationCard({ rec }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <Shield size={12} />
-                {rec.finding_count} findings
+                {rec.finding_count} {t('aggregated.affectedFindings').toLowerCase()}
               </span>
               {rec.cve_count > 0 && (
                 <span>{rec.cve_count} CVEs</span>
@@ -148,7 +137,7 @@ function RecommendationCard({ rec }) {
             {/* Efficiency score */}
             <div style={{ marginTop: 8, maxWidth: 200 }}>
               <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                Efficiency
+                {t('aggregated.efficiency')}
               </div>
               <EfficiencyBar score={rec.efficiency_score} max={Math.max(rec.efficiency_score * 1.5, 50)} />
             </div>
@@ -187,7 +176,7 @@ function RecommendationCard({ rec }) {
           {rec.asset_hostnames && rec.asset_hostnames.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
-                Affected Hosts ({rec.asset_count})
+                {t('aggregated.affectedAssets')} ({rec.asset_count})
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {rec.asset_hostnames.map((h, i) => (
@@ -231,7 +220,7 @@ function RecommendationCard({ rec }) {
           {rec.finding_ids && rec.finding_ids.length > 0 && (
             <div style={{ marginTop: 16 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
-                Collapsed Findings ({rec.finding_count})
+                {t('aggregated.affectedFindings')} ({rec.finding_count})
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {rec.finding_ids.slice(0, 20).map(fid => (
@@ -262,6 +251,7 @@ function RecommendationCard({ rec }) {
 }
 
 export default function AggregatedSolutions() {
+  const { t } = useTranslation()
   const { activeScanId } = useScan()
   const [solutions, setSolutions] = useState([])
   const [loading, setLoading] = useState(true)
@@ -319,8 +309,8 @@ export default function AggregatedSolutions() {
     <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
         <PageHeader
-          title="Remediation"
-          subtitle={`${filtered.length} actions collapse ${totalFindings} findings (${totalCVEs} CVEs) into single fixes`}
+          title={t('aggregated.title')}
+          subtitle={t('aggregated.subtitle')}
         />
         <button
           onClick={handleRebuild}
@@ -334,7 +324,7 @@ export default function AggregatedSolutions() {
           }}
         >
           <RefreshCw size={14} style={rebuilding ? { animation: 'spin 1s linear infinite' } : {}} />
-          {rebuilding ? 'Rebuilding…' : 'Rebuild'}
+          {rebuilding ? t('aggregated.rebuilding') : t('aggregated.rebuild')}
         </button>
       </div>
 
@@ -342,7 +332,7 @@ export default function AggregatedSolutions() {
       {solutions.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
           <Card style={{ padding: '14px 18px' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Actions</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{t('common.actions')}</div>
             <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text-primary)' }}>{filtered.length}</div>
             <div style={{ fontSize: 11, color: '#10b981' }}>vs {totalFindings} individual fixes</div>
           </Card>
@@ -357,7 +347,7 @@ export default function AggregatedSolutions() {
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>of total scan risk</div>
           </Card>
           <Card style={{ padding: '14px 18px' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Efficiency</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{t('aggregated.efficiency')}</div>
             <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text-primary)' }}>
               {totalFindings > 0 ? (totalFindings / filtered.length).toFixed(1) : 0}x
             </div>
@@ -368,10 +358,11 @@ export default function AggregatedSolutions() {
 
       {/* Root cause stat cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
-        {Object.entries(ROOT_CAUSE_LABELS).map(([rc, label]) => {
+        {ROOT_CAUSE_KEYS.map(rc => {
           const data = rootCauseSummary[rc]
           if (!data) return null
           const color = ROOT_CAUSE_COLORS[rc]
+          const label = t(`aggregated.rootCauseLabels.${rc}`, rc)
           return (
             <Card
               key={rc}
@@ -401,15 +392,15 @@ export default function AggregatedSolutions() {
           value={rootCauseFilter}
           onChange={setRootCauseFilter}
           options={[
-            { value: '', label: 'All Root Causes' },
-            ...Object.entries(ROOT_CAUSE_LABELS).map(([v, l]) => ({ value: v, label: l })),
+            { value: '', label: t('aggregated.allRootCauses') },
+            ...ROOT_CAUSE_KEYS.map(rc => ({ value: rc, label: t(`aggregated.rootCauseLabels.${rc}`, rc) })),
           ]}
         />
         <Select
           value={sortBy}
           onChange={setSortBy}
           options={[
-            { value: 'efficiency', label: 'Sort: Efficiency' },
+            { value: 'efficiency', label: 'Sort: ' + t('aggregated.efficiency') },
             { value: 'risk', label: 'Sort: Risk Reduction' },
             { value: 'severity', label: 'Sort: Severity' },
             { value: 'findings', label: 'Sort: Finding Count' },
@@ -422,9 +413,9 @@ export default function AggregatedSolutions() {
       ) : solutions.length === 0 ? (
         <EmptyState
           icon={Layers}
-          title="No remediation actions"
+          title={t('aggregated.noSolutions')}
           sub={activeScanId
-            ? 'Click "Rebuild" to analyze findings, or upload a scan with related vulnerabilities'
+            ? t('aggregated.noSolutionsDesc')
             : 'Select a scan to view remediation actions'}
         />
       ) : (

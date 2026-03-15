@@ -196,6 +196,7 @@ class Asset(Base):
     is_internet_facing = Column(Boolean, default=False)
     is_credentialed = Column(Boolean, default=False)  # Was the scan authenticated?
     last_auth_run = Column(String)                     # LastAuthenticatedResults timestamp
+    system_type = Column(String)                        # e.g. "web_application" for WAS scans
 
     # Computed
     risk_score = Column(Float, default=0.0)
@@ -1304,6 +1305,33 @@ class AggregatedSolution(Base):
     @property
     def category(self):
         return self.root_cause_type
+
+
+# ─────────────────────────────────────────────────────────
+# Benchmarks
+# ─────────────────────────────────────────────────────────
+
+class BenchmarkReference(Base):
+    """Industry benchmark reference data for comparing org metrics against peers."""
+    __tablename__ = "benchmark_references"
+
+    id = Column(Integer, primary_key=True, index=True)
+    metric = Column(String, nullable=False, index=True)       # e.g. risk_grade, mttr_critical, sla_compliance
+    industry = Column(String, nullable=False, default="all")  # all, financial, healthcare, technology, government, etc.
+    org_size = Column(String, nullable=False, default="all")  # all, small, medium, large, enterprise
+    p25 = Column(Float, nullable=False)                       # 25th percentile (bottom quartile)
+    p50 = Column(Float, nullable=False)                       # median
+    p75 = Column(Float, nullable=False)                       # 75th percentile (top quartile)
+    p90 = Column(Float, nullable=True)                        # 90th percentile (top decile)
+    unit = Column(String, default="")                         # days, percent, score, count
+    higher_is_better = Column(Boolean, default=True)          # risk_grade score: higher=better; MTTR: lower=better
+    source = Column(String, nullable=True)                    # e.g. "Qualys 2024", "Verizon DBIR 2024"
+    source_year = Column(Integer, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("metric", "industry", "org_size", name="uq_benchmark_ref"),
+    )
 
 
 # ─────────────────────────────────────────────────────────

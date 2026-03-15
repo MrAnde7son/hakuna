@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import {
   Target, Play, Plus, X, ChevronDown, ChevronRight, ChevronLeft,
   User, Users, Zap, AlertTriangle, CheckCircle, Edit2, Save, Eye,
@@ -40,13 +41,14 @@ function getOwnerColors(role) {
 
 // ─── Query Builder ────────────────────────────────────────
 function QueryBuilder({ query, queryLogic, onChange, onLogicChange, onPreview, previewing, previewResult }) {
+  const { t } = useTranslation()
   return (
     <Card style={{ marginBottom: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
         <div>
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>Search Query</div>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>{t('campaigns.searchQuery')}</div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            Build conditions to find assets for this campaign.
+            {t('campaigns.searchQueryDesc')}
           </div>
         </div>
       </div>
@@ -57,7 +59,7 @@ function QueryBuilder({ query, queryLogic, onChange, onLogicChange, onPreview, p
           borderRadius: 8, border: '1px dashed var(--border)',
           fontSize: 12, color: 'var(--text-muted)', marginBottom: 10,
         }}>
-          No conditions yet — use "Add Condition" below to define which assets are included.
+          {t('campaigns.noConditions')}
         </div>
       )}
 
@@ -66,7 +68,7 @@ function QueryBuilder({ query, queryLogic, onChange, onLogicChange, onPreview, p
         logic={queryLogic}
         onChange={(conds, lgc) => { onChange(conds); onLogicChange(lgc) }}
         showLogic
-        addLabel="Add Condition"
+        addLabel={t('campaigns.addCondition')}
       />
 
       {/* Preview */}
@@ -83,13 +85,13 @@ function QueryBuilder({ query, queryLogic, onChange, onLogicChange, onPreview, p
           }}
         >
           <Eye size={13} />
-          {previewing ? 'Previewing…' : 'Preview'}
+          {previewing ? t('campaigns.previewing') : t('campaigns.preview')}
         </button>
         {previewResult && (
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            → <span style={{ color: '#60a5fa', fontWeight: 600 }}>{previewResult.asset_count} assets</span>
+            → <span style={{ color: '#60a5fa', fontWeight: 600 }}>{t('campaigns.assetsFound', { count: previewResult.asset_count })}</span>
             {' · '}
-            <span style={{ color: '#f87171', fontWeight: 600 }}>{previewResult.finding_count} findings</span>
+            <span style={{ color: '#f87171', fontWeight: 600 }}>{t('campaigns.findingsFound', { count: previewResult.finding_count })}</span>
           </div>
         )}
       </div>
@@ -101,6 +103,7 @@ function QueryBuilder({ query, queryLogic, onChange, onLogicChange, onPreview, p
 const OWNER_ROLES = ['IT', 'DevOps', 'SecOps', 'AppSec', 'Custom']
 
 function OwnershipEditor({ current, onSave, onCancel }) {
+  const { t } = useTranslation()
   const [ownerName, setOwnerName] = useState(current?.owner_name || '')
   const [ownerEmail, setOwnerEmail] = useState(current?.owner_email || '')
   const [ownerRole, setOwnerRole] = useState(current?.owner_role || '')
@@ -126,8 +129,8 @@ function OwnershipEditor({ current, onSave, onCancel }) {
       borderRadius: 10, padding: 16, display: 'flex', flexDirection: 'column', gap: 10,
     }}>
       <div style={{ display: 'flex', gap: 8 }}>
-        {inp(ownerName, setOwnerName, 'Owner name')}
-        {inp(ownerEmail, setOwnerEmail, 'Email')}
+        {inp(ownerName, setOwnerName, t('campaigns.ownerName'))}
+        {inp(ownerEmail, setOwnerEmail, t('campaigns.email'))}
         <select
           value={ownerRole}
           onChange={e => setOwnerRole(e.target.value)}
@@ -137,25 +140,26 @@ function OwnershipEditor({ current, onSave, onCancel }) {
             color: 'var(--text-primary)', minWidth: 90,
           }}
         >
-          <option value=''>Role…</option>
+          <option value=''>{t('campaigns.role')}</option>
           {OWNER_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
         </select>
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
-        {inp(team, setTeam, 'Team / squad')}
-        {inp(notes, setNotes, 'Notes')}
+        {inp(team, setTeam, t('campaigns.teamSquad'))}
+        {inp(notes, setNotes, t('campaigns.notes'))}
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
         <Button size='sm' onClick={() => onSave({ owner_name: ownerName, owner_email: ownerEmail, owner_role: ownerRole, team, notes })}>
-          <Save size={12} /> Save
+          <Save size={12} /> {t('common.save')}
         </Button>
-        <Button variant='ghost' size='sm' onClick={onCancel}>Cancel</Button>
+        <Button variant='ghost' size='sm' onClick={onCancel}>{t('common.cancel')}</Button>
       </div>
     </div>
   )
 }
 
 function OwnerChip({ role, name, team, editable, onEdit }) {
+  const { t } = useTranslation()
   const c = getOwnerColors(role)
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -165,7 +169,7 @@ function OwnerChip({ role, name, team, editable, onEdit }) {
         borderRadius: 6, padding: '3px 10px', fontSize: 11, fontWeight: 600,
       }}>
         <User size={10} />
-        {name || role || 'Unassigned'}
+        {name || role || t('campaigns.unassigned')}
         {team && <span style={{ opacity: 0.7 }}>· {team}</span>}
       </span>
       {editable && (
@@ -179,6 +183,7 @@ function OwnerChip({ role, name, team, editable, onEdit }) {
 
 // ─── Finding Card (campaign context) ─────────────────────
 function CampaignFindingCard({ finding, campaignId, onOwnerUpdate }) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const [expanded, setExpanded] = useState(false)
   const [editingOwner, setEditingOwner] = useState(false)
@@ -223,12 +228,12 @@ function CampaignFindingCard({ finding, campaignId, onOwnerUpdate }) {
             <SeverityBadge severity={finding.severity} label={finding.severity_label} />
             {finding.exploit_available && (
               <span style={{ fontSize: 10, fontWeight: 700, color: '#ea580c', background: '#431407', border: '1px solid #9a3412', borderRadius: 4, padding: '1px 6px' }}>
-                EXPLOIT
+                {t('campaigns.exploit')}
               </span>
             )}
             {finding.zero_day && (
               <span style={{ fontSize: 10, fontWeight: 700, color: '#dc2626', background: '#450a0a', border: '1px solid #991b1b', borderRadius: 4, padding: '1px 6px' }}>
-                0-DAY
+                {t('campaigns.zeroDay')}
               </span>
             )}
             {/* Status badge */}
@@ -242,10 +247,10 @@ function CampaignFindingCard({ finding, campaignId, onOwnerUpdate }) {
                 textTransform: 'uppercase', letterSpacing: '0.04em', cursor: 'pointer',
               }}
             >
-              <option value='open'>Open</option>
-              <option value='in_progress'>In Progress</option>
-              <option value='resolved'>Resolved</option>
-              <option value='wont_fix'>Won't Fix</option>
+              <option value='open'>{t('campaigns.open')}</option>
+              <option value='in_progress'>{t('campaigns.inProgress')}</option>
+              <option value='resolved'>{t('campaigns.resolved')}</option>
+              <option value='wont_fix'>{t('campaigns.wontFix')}</option>
             </select>
           </div>
           <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)', marginBottom: 2 }}>
@@ -281,7 +286,7 @@ function CampaignFindingCard({ finding, campaignId, onOwnerUpdate }) {
           {finding.remediation_steps && (
             <div style={{ marginTop: 10, padding: '10px 12px', background: '#14532d11', border: '1px solid #14532d33', borderRadius: 8 }}>
               <div style={{ fontSize: 10, fontWeight: 700, color: '#4ade80', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>
-                Recommended Steps
+                {t('campaigns.recommendedSteps')}
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                 {finding.remediation_steps}
@@ -320,7 +325,7 @@ function CampaignFindingCard({ finding, campaignId, onOwnerUpdate }) {
 
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <Button variant='ghost' size='sm' onClick={() => navigate(`/findings/${finding.id}`)}>
-              View Details <ChevronRight size={12} />
+              {t('campaigns.viewDetails')} <ChevronRight size={12} />
             </Button>
           </div>
         </div>
@@ -331,6 +336,7 @@ function CampaignFindingCard({ finding, campaignId, onOwnerUpdate }) {
 
 // ─── Owner Group Section ──────────────────────────────────
 function OwnerGroup({ group, campaignId, onOwnerUpdate, defaultExpanded = true }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [editingGroup, setEditingGroup] = useState(false)
   const c = getOwnerColors(group.owner_role)
@@ -357,7 +363,7 @@ function OwnerGroup({ group, campaignId, onOwnerUpdate, defaultExpanded = true }
 
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 700, fontSize: 15, color: c.text }}>
-            {group.owner_name || group.owner_role || 'Unassigned'}
+            {group.owner_name || group.owner_role || t('campaigns.unassigned')}
           </div>
           {group.team && (
             <div style={{ fontSize: 11, color: c.text, opacity: 0.7 }}>
@@ -370,18 +376,18 @@ function OwnerGroup({ group, campaignId, onOwnerUpdate, defaultExpanded = true }
         <div style={{ display: 'flex', gap: 14, fontSize: 12 }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{group.findings.length}</div>
-            <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>Findings</div>
+            <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{t('findings.title')}</div>
           </div>
           {group.critical_count > 0 && (
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontWeight: 700, color: '#fca5a5' }}>{group.critical_count}</div>
-              <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>Critical</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{t('severity.critical')}</div>
             </div>
           )}
           {group.exploit_count > 0 && (
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontWeight: 700, color: '#fb923c' }}>{group.exploit_count}</div>
-              <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>Exploits</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>{t('findings.exploit')}</div>
             </div>
           )}
         </div>
@@ -409,6 +415,7 @@ function OwnerGroup({ group, campaignId, onOwnerUpdate, defaultExpanded = true }
 const STATUS_OPTIONS = ['draft', 'active', 'paused', 'completed']
 
 export default function CampaignDetail() {
+  const { t } = useTranslation()
   const { id } = useParams()
   const navigate = useNavigate()
   const { activeScanId } = useScan()
@@ -426,6 +433,11 @@ export default function CampaignDetail() {
   const [nameVal, setNameVal] = useState('')
   const [descVal, setDescVal] = useState('')
   const [activeTab, setActiveTab] = useState('results') // 'query' | 'results'
+
+  const statusLabel = (s) => {
+    const map = { draft: t('campaigns.draft'), active: t('campaigns.active'), paused: t('campaigns.paused'), completed: t('campaigns.completed') }
+    return map[s] || s.charAt(0).toUpperCase() + s.slice(1)
+  }
 
   const load = useCallback((autoRun = false) => {
     setLoading(true)
@@ -510,7 +522,7 @@ export default function CampaignDetail() {
   }
 
   if (loading) return <Spinner />
-  if (!campaign) return <EmptyState icon={Target} title='Campaign not found' />
+  if (!campaign) return <EmptyState icon={Target} title={t('campaigns.notFound')} />
 
   const hasResults = campaign.owner_groups?.length > 0
   const totalFindings = campaign.finding_count || 0
@@ -521,7 +533,7 @@ export default function CampaignDetail() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, fontSize: 13 }}>
         <button onClick={() => navigate('/campaigns')}
           style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 0 }}>
-          <ChevronLeft size={14} /> Campaigns
+          <ChevronLeft size={14} /> {t('campaigns.title')}
         </button>
         <span style={{ color: 'var(--text-muted)' }}>/</span>
         <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{campaign.name}</span>
@@ -546,7 +558,7 @@ export default function CampaignDetail() {
             <textarea
               value={descVal}
               onChange={e => setDescVal(e.target.value)}
-              placeholder='Campaign description…'
+              placeholder={t('campaigns.campaignDescription')}
               rows={2}
               style={{
                 fontSize: 13, background: 'var(--bg-secondary)',
@@ -555,8 +567,8 @@ export default function CampaignDetail() {
               }}
             />
             <div style={{ display: 'flex', gap: 8 }}>
-              <Button size='sm' onClick={handleSaveName}><Save size={12} /> Save</Button>
-              <Button variant='ghost' size='sm' onClick={() => setEditingName(false)}>Cancel</Button>
+              <Button size='sm' onClick={handleSaveName}><Save size={12} /> {t('common.save')}</Button>
+              <Button variant='ghost' size='sm' onClick={() => setEditingName(false)}>{t('common.cancel')}</Button>
             </div>
           </div>
         ) : (
@@ -575,10 +587,10 @@ export default function CampaignDetail() {
                 <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>{campaign.description}</div>
               )}
               <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--text-muted)' }}>
-                {totalFindings > 0 && <span style={{ color: '#f87171', fontWeight: 600 }}>{totalFindings} findings</span>}
-                {campaign.critical_count > 0 && <span style={{ color: '#fca5a5' }}>{campaign.critical_count} critical</span>}
-                {campaign.exploit_count > 0 && <span style={{ color: '#fb923c' }}>{campaign.exploit_count} with exploits</span>}
-                {campaign.last_run_at && <span>Last run {new Date(campaign.last_run_at).toLocaleString()}</span>}
+                {totalFindings > 0 && <span style={{ color: '#f87171', fontWeight: 600 }}>{t('campaigns.findingsCount', { count: totalFindings })}</span>}
+                {campaign.critical_count > 0 && <span style={{ color: '#fca5a5' }}>{campaign.critical_count} {t('severity.critical').toLowerCase()}</span>}
+                {campaign.exploit_count > 0 && <span style={{ color: '#fb923c' }}>{campaign.exploit_count} {t('campaigns.withExploits').toLowerCase()}</span>}
+                {campaign.last_run_at && <span>{t('campaigns.lastRunAt', { date: new Date(campaign.last_run_at).toLocaleString() })}</span>}
               </div>
             </div>
 
@@ -593,12 +605,12 @@ export default function CampaignDetail() {
                   fontSize: 12, color: 'var(--text-primary)', cursor: 'pointer',
                 }}
               >
-                {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+                {STATUS_OPTIONS.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
               </select>
 
               {queryDirty && (
                 <Button variant='ghost' size='sm' onClick={handleSaveQuery} disabled={saving}>
-                  <Save size={12} /> {saving ? 'Saving…' : 'Save Query'}
+                  <Save size={12} /> {saving ? t('campaigns.savingQuery') : t('campaigns.saveQuery')}
                 </Button>
               )}
 
@@ -614,7 +626,7 @@ export default function CampaignDetail() {
                 }}
               >
                 {running ? <RefreshCw size={14} className='spin' /> : <Play size={14} />}
-                {running ? 'Running…' : 'Run Campaign'}
+                {running ? t('campaigns.running') : t('campaigns.runCampaign')}
               </button>
             </div>
           </div>
@@ -624,9 +636,9 @@ export default function CampaignDetail() {
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
         {[
-          { key: 'query', label: 'Query Builder', icon: Target },
-          { key: 'results', label: `Results${totalFindings > 0 ? ` (${totalFindings})` : ''}`, icon: Layers },
-          { key: 'workflows', label: 'Workflows', icon: GitBranch },
+          { key: 'query', label: t('campaigns.queryBuilder'), icon: Target },
+          { key: 'results', label: totalFindings > 0 ? t('campaigns.resultsWithCount', { count: totalFindings }) : t('campaigns.results'), icon: Layers },
+          { key: 'workflows', label: t('campaigns.workflows'), icon: GitBranch },
         ].map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -663,15 +675,15 @@ export default function CampaignDetail() {
           {!hasResults ? (
             <EmptyState
               icon={Play}
-              title={query.length === 0 ? 'Build your query first' : 'Run the campaign to see results'}
+              title={query.length === 0 ? t('campaigns.buildQueryFirst') : t('campaigns.runToSeeResults')}
               sub={query.length === 0
-                ? 'Switch to the Query Builder tab and add conditions to define which assets to target.'
-                : 'Click "Run Campaign" to execute the query and populate findings with owner assignments.'}
+                ? t('campaigns.buildQueryFirstDesc')
+                : t('campaigns.runToSeeResultsDesc')}
             >
               {query.length > 0 && (
                 <button onClick={handleRun} disabled={running}
                   style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 20px', borderRadius: 8, fontSize: 13, fontWeight: 700, border: 'none', background: '#1d4ed8', color: '#fff', cursor: 'pointer' }}>
-                  <Play size={14} /> Run Now
+                  <Play size={14} /> {t('campaigns.runNow')}
                 </button>
               )}
             </EmptyState>
@@ -680,19 +692,19 @@ export default function CampaignDetail() {
               {/* Summary bar */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 20 }}>
                 <div style={{ background: '#dc262622', border: '1px solid #dc262644', borderRadius: 10, padding: '12px 16px' }}>
-                  <div style={{ fontSize: 11, color: '#fca5a5', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Critical</div>
+                  <div style={{ fontSize: 11, color: '#fca5a5', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('campaigns.critical')}</div>
                   <div style={{ fontSize: 26, fontWeight: 700, color: '#fca5a5' }}>{campaign.critical_count}</div>
                 </div>
                 <div style={{ background: '#78350f22', border: '1px solid #78350f44', borderRadius: 10, padding: '12px 16px' }}>
-                  <div style={{ fontSize: 11, color: '#fcd34d', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>With Exploits</div>
+                  <div style={{ fontSize: 11, color: '#fcd34d', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('campaigns.withExploits')}</div>
                   <div style={{ fontSize: 26, fontWeight: 700, color: '#fcd34d' }}>{campaign.exploit_count}</div>
                 </div>
                 <div style={{ background: '#1e3a5f22', border: '1px solid #1e3a5f44', borderRadius: 10, padding: '12px 16px' }}>
-                  <div style={{ fontSize: 11, color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Owner Groups</div>
+                  <div style={{ fontSize: 11, color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('campaigns.ownerGroups')}</div>
                   <div style={{ fontSize: 26, fontWeight: 700, color: '#60a5fa' }}>{campaign.owner_groups?.length}</div>
                 </div>
                 <div style={{ background: '#14532d22', border: '1px solid #14532d44', borderRadius: 10, padding: '12px 16px' }}>
-                  <div style={{ fontSize: 11, color: '#4ade80', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Total Findings</div>
+                  <div style={{ fontSize: 11, color: '#4ade80', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('campaigns.totalFindings')}</div>
                   <div style={{ fontSize: 26, fontWeight: 700, color: '#4ade80' }}>{totalFindings}</div>
                 </div>
               </div>
@@ -721,6 +733,7 @@ export default function CampaignDetail() {
 
 // ─── Campaign Workflows Tab ──────────────────────
 function CampaignWorkflows({ campaignId, hasResults }) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const [workflows, setWorkflows] = useState([])
   const [templates, setTemplates] = useState([])
@@ -782,13 +795,13 @@ function CampaignWorkflows({ campaignId, hasResults }) {
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <div>
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>Automation Workflows</div>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>{t('campaigns.automationWorkflows')}</div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            Attach workflows to automate actions on campaign results
+            {t('campaigns.automationWorkflowsDesc')}
           </div>
         </div>
         <Button size="sm" onClick={() => setShowAdd(true)}>
-          <Plus size={14} /> Add Workflow
+          <Plus size={14} /> {t('campaigns.addWorkflow')}
         </Button>
       </div>
 
@@ -798,7 +811,7 @@ function CampaignWorkflows({ campaignId, hasResults }) {
           background: '#78350f11', border: '1px solid #78350f33',
           fontSize: 12, color: '#f59e0b',
         }}>
-          Run the campaign first to populate findings. Workflows will process the campaign results.
+          {t('campaigns.runCampaignFirst')}
         </div>
       )}
 
@@ -806,10 +819,10 @@ function CampaignWorkflows({ campaignId, hasResults }) {
       {workflows.length === 0 ? (
           <EmptyState
             icon={GitBranch}
-            title="No workflows attached"
-            sub="Add a workflow from a template or create a custom one to automate remediation actions."
+            title={t('campaigns.noWorkflowsAttached')}
+            sub={t('campaigns.noWorkflowsAttachedDesc')}
           >
-            <Button onClick={() => setShowAdd(true)}><GitBranch size={14} /> Add Workflow</Button>
+            <Button onClick={() => setShowAdd(true)}><GitBranch size={14} /> {t('campaigns.addWorkflow')}</Button>
           </EmptyState>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -836,16 +849,16 @@ function CampaignWorkflows({ campaignId, hasResults }) {
                         </div>
                       )}
                       <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                        <span>{wf.node_count || 0} nodes</span>
-                        <span>{wf.run_count || 0} runs</span>
-                        {wf.last_run_at && <span>Last: {new Date(wf.last_run_at).toLocaleString()}</span>}
+                        <span>{t('campaigns.nodes', { count: wf.node_count || 0 })}</span>
+                        <span>{t('campaigns.runs', { count: wf.run_count || 0 })}</span>
+                        {wf.last_run_at && <span>{t('campaigns.lastRunDate', { date: new Date(wf.last_run_at).toLocaleString() })}</span>}
                       </div>
                       {result && (
                         <div style={{ marginTop: 6 }}>
                           <Pill color={result.status === 'completed' ? '#22c55e' : '#ef4444'}>
                             {result.status === 'completed'
-                              ? `Completed - ${result.items_processed} items processed`
-                              : `Failed: ${result.error || 'Unknown error'}`}
+                              ? t('campaigns.completedItems', { count: result.items_processed })
+                              : t('campaigns.failedError', { error: result.error || t('campaigns.unknownError') })}
                           </Pill>
                         </div>
                       )}
@@ -854,12 +867,12 @@ function CampaignWorkflows({ campaignId, hasResults }) {
                     <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                       <Button size="sm" variant="ghost"
                         onClick={() => navigate(`/workflows/${wf.id}`)}>
-                        <Edit2 size={12} /> Edit
+                        <Edit2 size={12} /> {t('common.edit')}
                       </Button>
                       <Button size="sm" variant="primary"
                         onClick={() => handleRun(wf.id)}
                         disabled={executing === wf.id || !hasResults}>
-                        <Play size={12} /> {executing === wf.id ? 'Running...' : 'Run'}
+                        <Play size={12} /> {executing === wf.id ? t('campaigns.running') : t('campaigns.run')}
                       </Button>
                       <button onClick={() => handleDelete(wf.id)}
                         style={{ padding: '4px 6px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex' }}>
@@ -885,14 +898,14 @@ function CampaignWorkflows({ campaignId, hasResults }) {
             padding: 28, minWidth: 520, maxWidth: 600, maxHeight: '80vh', overflow: 'auto',
           }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <div style={{ fontWeight: 700, fontSize: 16 }}>Add Workflow to Campaign</div>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>{t('campaigns.addWorkflowToCampaign')}</div>
               <button onClick={() => setShowAdd(false)}
                 style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={18} /></button>
             </div>
 
             {/* Templates */}
             <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#818cf8', marginBottom: 8, letterSpacing: '0.05em' }}>
-              From Template
+              {t('campaigns.fromTemplate')}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 20 }}>
               {templates.map(tpl => (
@@ -917,14 +930,14 @@ function CampaignWorkflows({ campaignId, hasResults }) {
                     <div style={{ fontWeight: 600, fontSize: 13 }}>{tpl.name}</div>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tpl.description}</div>
                   </div>
-                  <Pill color="#94a3b8">{tpl.nodes?.length || 0} nodes</Pill>
+                  <Pill color="#94a3b8">{t('campaigns.nodes', { count: tpl.nodes?.length || 0 })}</Pill>
                 </button>
               ))}
             </div>
 
             {/* Custom */}
             <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#64748b', marginBottom: 8, letterSpacing: '0.05em' }}>
-              Or
+              {t('campaigns.or')}
             </div>
             <button onClick={handleCreateCustom}
               style={{
@@ -935,8 +948,8 @@ function CampaignWorkflows({ campaignId, hasResults }) {
               }}>
               <Plus size={18} color='#94a3b8' />
               <div>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>Create Custom Workflow</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Build from scratch in the visual editor</div>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>{t('campaigns.createCustomWorkflow')}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('campaigns.buildFromScratch')}</div>
               </div>
             </button>
           </div>

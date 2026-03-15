@@ -5,6 +5,7 @@ import os
 import re
 import json
 import logging
+import ipaddress
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
@@ -29,13 +30,14 @@ from models.models import (
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
     Tag, TagAssignment, AutoTagRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
     SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog, AggregatedSolution,
+    BenchmarkReference,
 )
 from parsers.parser import detect_and_parse, load_intel_json
 from parsers.registry import detect_parser, list_parsers, init_parsers
 from services.normalizer import compute_normalized_id
 from services.prioritizer import compute_priority_score
 from parsers.inventory_extractor import extract_inventory_from_findings, _cn_from_dn
-from services.asset_classifier import classify_asset
+from services.asset_classifier import classify_asset, _is_private_ip
 import services.dedup as dedup_engine
 import core.risk_config as risk_engine
 import services.campaign_query as cq
@@ -56,9 +58,20 @@ from routes.threat_intel_routes import router as threat_intel_router
 from routes.export import router as export_router
 from routes.config_portability import router as config_portability_router
 from routes.agent_routes import router as agent_router
+from routes.benchmark_routes import router as benchmark_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _is_public_ip(ip_str: str) -> bool:
+    """Return True if the IP is a routable public address."""
+    if not ip_str:
+        return False
+    try:
+        return not ipaddress.ip_address(ip_str).is_private
+    except ValueError:
+        return False
 
 
 def _apply_sort(q, model, sort_by: str, order: str, default_attr):
@@ -246,6 +259,7 @@ app.include_router(threat_intel_router)
 app.include_router(export_router)
 app.include_router(config_portability_router)
 app.include_router(agent_router)
+app.include_router(benchmark_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
@@ -671,7 +685,12 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         if risk_cfg.get("auto_apply_rules_on_upload"):
             auto_crit = risk_engine.evaluate_criticality_rules(asset_data, risk_cfg)
 
+        # Enrich asset_data with scan-level context for classification
+        asset_data["scanner_type"] = scan_data.get("scanner_type")
         ctx = classify_asset(asset_data)
+        # Internet-facing = public IP scanned by an external/cloud scanner
+        is_ext_scanner = scan_data.get("scanner_type") in ("cloud", "external")
+        is_facing = _is_public_ip(asset_data.get("ip")) and is_ext_scanner
         asset = Asset(
             scan_id=scan.id,
             ip=asset_data.get("ip"),
@@ -684,6 +703,8 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             scan_end=asset_data.get("scan_end"),
             is_credentialed=asset_data.get("is_credentialed", False),
             last_auth_run=asset_data.get("last_auth_run"),
+            system_type=asset_data.get("system_type"),
+            is_internet_facing=is_facing,
             criticality=auto_crit if auto_crit is not None else 5,
             critical_count=asset_data.get("critical_count", 0),
             high_count=asset_data.get("high_count", 0),
@@ -2098,8 +2119,10 @@ def get_risk_grade(
     sla_score = compliance_pct
 
     # 3. Remediation velocity: MTTR < 7d = 100, >90d = 0
-    if avg_mttr <= 0:
-        velocity_score = 100  # no data or instant
+    if not mttr_vals:
+        velocity_score = 50  # no remediation data yet — neutral score
+    elif avg_mttr <= 0:
+        velocity_score = 100  # instant remediation
     else:
         velocity_score = max(0, min(100, 100 - (avg_mttr - 7) * (100 / 83)))
 
@@ -3621,7 +3644,7 @@ def _inv_group_to_dict(g: InventoryGroup, assets: dict = None) -> dict:
 # Risk Score Helpers
 # ─────────────────────────────────────────────
 
-def _get_asset_inventory_context(db: Session, asset_id: int) -> dict:
+def _get_asset_inventory_context(db: Session, asset_id: int, asset: "Asset | None" = None) -> dict:
     """Build inventory context dict for risk scoring."""
     # Compensating controls
     av = db.query(InventorySecurityControl).filter(
@@ -3650,12 +3673,21 @@ def _get_asset_inventory_context(db: Session, asset_id: int) -> dict:
         elif state == "ESTABLISHED":
             established_ports.add(row.local_port)
     est_count = len(established_ports)
+    # Internet-facing detection: public IP or external/dmz environment tag
+    is_internet_facing = False
+    if asset is not None:
+        env = (asset.environment_tag or "").lower()
+        if env in ("external", "dmz"):
+            is_internet_facing = True
+        elif asset.ip and not _is_private_ip(asset.ip):
+            is_internet_facing = True
     return {
         "has_av":                  av is not None if av is not None else None,
         "has_firewall":            fw is not None if fw is not None else None,
         "established_connections": est_count,
         "listening_ports":         listening_ports,
         "established_ports":       established_ports,
+        "is_internet_facing":      is_internet_facing,
     }
 
 
@@ -3681,7 +3713,7 @@ def _recompute_risk_for_scan(db: Session, scan_id: int, cfg: Optional[dict] = No
             }
             for f in findings
         ]
-        inv_ctx = _get_asset_inventory_context(db, asset.id)
+        inv_ctx = _get_asset_inventory_context(db, asset.id, asset=asset)
         asset.risk_score = risk_engine.compute_asset_risk_score(
             findings_dicts,
             asset_criticality=asset.criticality or 5,
@@ -3826,7 +3858,7 @@ def recalculate_risk(body: RecalculateBody, db: Session = Depends(get_db)):
             }
             for f in findings
         ]
-        inv_ctx = _get_asset_inventory_context(db, asset.id)
+        inv_ctx = _get_asset_inventory_context(db, asset.id, asset=asset)
         asset.risk_score = risk_engine.compute_asset_risk_score(
             findings_dicts,
             asset_criticality=asset.criticality or 5,

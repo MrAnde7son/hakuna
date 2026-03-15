@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useScan } from '../../App.jsx'
@@ -44,6 +45,7 @@ function SevCounts({ asset }) {
 }
 
 function CriticalityEditor({ asset, onUpdate }) {
+  const { t } = useTranslation()
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState(asset.criticality)
 
@@ -53,7 +55,7 @@ function CriticalityEditor({ asset, onUpdate }) {
     setEditing(false)
   }
 
-  const LABELS = { 1: 'Minimal', 2: 'Very Low', 3: 'Low', 4: 'Low-Med', 5: 'Medium', 6: 'Med-High', 7: 'High', 8: 'Very High', 9: 'Critical', 10: 'Maximum' }
+  const LABELS = Object.fromEntries([1,2,3,4,5,6,7,8,9,10].map(n => [n, t(`assets.critLabels.${n}`)]))
 
   if (!editing) {
     return (
@@ -73,7 +75,7 @@ function CriticalityEditor({ asset, onUpdate }) {
       >
         {[1,2,3,4,5,6,7,8,9,10].map(n => <option key={n} value={n}>{n} – {LABELS[n]}</option>)}
       </select>
-      <Button size="sm" onClick={save}>Save</Button>
+      <Button size="sm" onClick={save}>{t('common.save')}</Button>
       <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>✕</Button>
     </div>
   )
@@ -82,6 +84,7 @@ function CriticalityEditor({ asset, onUpdate }) {
 const ENV_COLORS = { internet: 'var(--critical)', dmz: 'var(--high)', internal: 'var(--low)', ot: 'var(--medium)' }
 
 function RowActions({ row, onNavigate }) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -93,8 +96,8 @@ function RowActions({ row, onNavigate }) {
   }, [open])
 
   const items = [
-    { icon: AlertTriangle, label: 'View Findings', action: () => onNavigate(`/findings?asset_id=${row.id}`) },
-    { icon: Database, label: 'View Inventory', action: () => onNavigate(`/inventory?asset_id=${row.id}&asset_name=${encodeURIComponent(row.hostname || row.ip)}`) },
+    { icon: AlertTriangle, label: t('assets.viewFindings'), action: () => onNavigate(`/findings?asset_id=${row.id}`) },
+    { icon: Database, label: t('assets.viewInventory'), action: () => onNavigate(`/inventory?asset_id=${row.id}&asset_name=${encodeURIComponent(row.hostname || row.ip)}`) },
   ]
 
   return (
@@ -198,6 +201,7 @@ function BlastCell({ br, onExpand }) {
 
 // Bulk tag modal
 function BulkTagModal({ assetIds, onClose, onDone }) {
+  const { t } = useTranslation()
   const [selected, setSelected] = useState([])
   const [saving, setSaving] = useState(false)
 
@@ -223,25 +227,25 @@ function BulkTagModal({ assetIds, onClose, onDone }) {
         boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
       }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>
-          Tag {assetIds.length} asset{assetIds.length !== 1 ? 's' : ''}
+          {t('assets.tagCount', { count: assetIds.length })}
         </div>
-        <TagPicker selectedTags={selected} onChange={setSelected} placeholder="Search tags…" />
+        <TagPicker selectedTags={selected} onChange={setSelected} placeholder={t('findings.searchTags')} />
         <div style={{ display: 'flex', gap: 8 }}>
           <Button onClick={apply} disabled={saving || !selected.length}>
-            <Tag size={14} /> {saving ? 'Applying…' : 'Apply Tags'}
+            <Tag size={14} /> {saving ? t('findings.applying') : t('findings.applyTags')}
           </Button>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
         </div>
       </div>
     </div>
   )
 }
 
-const CRITICALITY_LABELS = { 1: 'Minimal', 2: 'Very Low', 3: 'Low', 4: 'Low-Med', 5: 'Medium', 6: 'Med-High', 7: 'High', 8: 'Very High', 9: 'Critical', 10: 'Maximum' }
-
 export default function AssetInventory() {
+  const { t } = useTranslation()
   const ASSET_PAGE_SIZE = 50
   const { activeScanId } = useScan()
+  const CRITICALITY_LABELS = Object.fromEntries([1,2,3,4,5,6,7,8,9,10].map(n => [n, t(`assets.critLabels.${n}`)]))
   const [assets, setAssets] = useState([])
   const [totalAssets, setTotalAssets] = useState(0)
   const [page, setPage] = useState(1)
@@ -401,7 +405,7 @@ export default function AssetInventory() {
       )
     },
     {
-      key: 'hostname', label: 'Asset', width: '22%', sortable: true,
+      key: 'hostname', label: t('assets.title'), width: '22%', sortable: true,
       render: (_, row) => (
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -448,11 +452,11 @@ export default function AssetInventory() {
       )
     },
     {
-      key: 'os', label: 'OS', width: '15%', sortable: true,
+      key: 'os', label: t('assets.os'), width: '15%', sortable: true,
       render: (_, row) => <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{row.os || '—'}</span>
     },
     {
-      key: 'environment_tag', label: 'Env', sortable: true,
+      key: 'environment_tag', label: t('assets.env'), sortable: true,
       render: (v, row) => {
         const color = ENV_COLORS[v] || 'var(--text-muted)'
         const confirmed = row.environment_confirmed
@@ -471,8 +475,8 @@ export default function AssetInventory() {
                   fontSize: 11, fontWeight: 600, textTransform: 'capitalize',
                 }}>{v || 'internal'}</span>
                 {confirmed
-                  ? <span style={{ fontSize: 9, color: '#22c55e', fontWeight: 600 }}>CONFIRMED</span>
-                  : <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 600 }}>INFERRED</span>}
+                  ? <span style={{ fontSize: 9, color: '#22c55e', fontWeight: 600 }}>{t('assets.confirmed')}</span>
+                  : <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 600 }}>{t('assets.inferred')}</span>}
               </div>
             </button>
             {isOpen && (
@@ -495,15 +499,15 @@ export default function AssetInventory() {
       }
     },
     {
-      key: 'criticality', label: 'Crit.', sortable: true,
+      key: 'criticality', label: t('assets.crit'), sortable: true,
       render: (_, row) => <CriticalityEditor asset={row} onUpdate={load} />
     },
     {
-      key: 'critical_count', label: 'Findings', sortable: true,
+      key: 'critical_count', label: t('assets.findingsCount'), sortable: true,
       render: (_, row) => <SevCounts asset={row} />
     },
     {
-      key: 'inferred_team', label: 'Owner', width: '140px',
+      key: 'inferred_team', label: t('findings.owner'), width: '140px',
       render: (_, row) => {
         const own = row.ownership
         const isOpen = ownershipEdit?.assetId === row.id
@@ -517,7 +521,7 @@ export default function AssetInventory() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <OwnerBadge owner={own.owner_role || own.owner_name} />
                 {own.owner_name && <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{own.owner_name}</span>}
-                <span style={{ fontSize: 9, color: '#22c55e', fontWeight: 600 }}>MANUAL</span>
+                <span style={{ fontSize: 9, color: '#22c55e', fontWeight: 600 }}>{t('assets.manual')}</span>
               </div>
             ) : row.inferred_team ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -533,7 +537,7 @@ export default function AssetInventory() {
                 )}
               </div>
             ) : (
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>+ Set owner</span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('assets.setOwner')}</span>
             )}
           </button>
         )
@@ -556,11 +560,11 @@ export default function AssetInventory() {
       }
     },
     {
-      key: 'risk_score', label: 'Risk Score', width: '130px', sortable: true,
+      key: 'risk_score', label: t('assets.riskScore'), width: '130px', sortable: true,
       render: (v) => <RiskScore score={v} />
     },
     {
-      key: 'blast_radius', label: 'Blast Radius', width: '160px',
+      key: 'blast_radius', label: t('assets.blastRadius'), width: '160px',
       render: (_, row) => (
         <BlastCell
           br={blastMap[String(row.id)]}
@@ -569,13 +573,13 @@ export default function AssetInventory() {
       )
     },
     {
-      key: 'is_internet_facing', label: 'Internet Facing',
+      key: 'is_internet_facing', label: t('assets.internetFacing'),
       render: (v) => v
-        ? <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 999, background: '#dc262622', color: '#dc2626', border: '1px solid #dc262644', fontSize: 11, fontWeight: 600 }}>Internet</span>
+        ? <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 999, background: '#dc262622', color: '#dc2626', border: '1px solid #dc262644', fontSize: 11, fontWeight: 600 }}>{t('assets.internet')}</span>
         : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
     },
     {
-      key: 'scan_start', label: 'Scan Start', width: '110px',
+      key: 'scan_start', label: t('assets.scanStart'), width: '110px',
       render: (v) => {
         if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
         const date = new Date(v)
@@ -583,7 +587,7 @@ export default function AssetInventory() {
       }
     },
     {
-      key: 'business_context', label: 'Business Context',
+      key: 'business_context', label: t('assets.businessContext'),
       render: (v, row) => {
         const confirmed = row.business_context_confirmed
         const isOpen = contextEdit?.assetId === row.id && contextEdit?.field === 'business_context'
@@ -603,11 +607,11 @@ export default function AssetInventory() {
                     {row.biz_revenue_impact && <span style={{ fontSize: 10, fontWeight: 600, color: revenueColors[row.biz_revenue_impact] || 'var(--text-muted)', textTransform: 'uppercase' }}>{row.biz_revenue_impact}</span>}
                   </div>
                   {confirmed
-                    ? <span style={{ fontSize: 9, color: '#22c55e', fontWeight: 600 }}>CONFIRMED</span>
-                    : <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 600 }}>INFERRED</span>}
+                    ? <span style={{ fontSize: 9, color: '#22c55e', fontWeight: 600 }}>{t('assets.confirmed')}</span>
+                    : <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 600 }}>{t('assets.inferred')}</span>}
                 </div>
               ) : (
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>+ Set context</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('assets.setContext')}</span>
               )}
             </button>
             {isOpen && (
@@ -631,7 +635,7 @@ export default function AssetInventory() {
       }
     },
     {
-      key: 'biz_revenue_impact', label: 'Revenue Impact',
+      key: 'biz_revenue_impact', label: t('assets.revenueImpact'),
       render: (v) => {
         if (!v) return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>
         const colors = { none: '#6b7280', low: '#22c55e', medium: '#eab308', high: '#f97316', critical: '#dc2626' }
@@ -652,20 +656,20 @@ export default function AssetInventory() {
   return (
     <div>
       <PageHeader
-        title="Assets"
-        subtitle={advancedMode ? `${assets.length} assets matched` : `${totalAssets} assets discovered`}
+        title={t('assets.title')}
+        subtitle={advancedMode ? t('assets.assetsMatched', { count: assets.length }) : t('assets.assetsDiscovered', { count: totalAssets })}
         action={
           <div style={{ display: 'flex', gap: 8 }}>
             {selectedIds.size > 0 && (
               <Button size="sm" variant="ghost" onClick={() => setShowBulkTag(true)}>
-                <Tag size={14} /> Tag {selectedIds.size} selected
+                <Tag size={14} /> {t('assets.tagSelected', { count: selectedIds.size })}
               </Button>
             )}
             <Button variant="ghost" size="sm" onClick={() => exportDownload('assets', { scan_id: activeScanId, environment: filters.environment, search: filters.search })}>
-              <Download size={14} /> Export CSV
+              <Download size={14} /> {t('assets.exportCsv')}
             </Button>
             <Button variant="ghost" size="sm" onClick={load}>
-              <RefreshCw size={14} /> Refresh
+              <RefreshCw size={14} /> {t('common.refresh')}
             </Button>
           </div>
         }
@@ -677,11 +681,11 @@ export default function AssetInventory() {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <SlidersHorizontal size={14} style={{ color: 'var(--accent)' }} />
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Advanced Search</span>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— uses the full rule engine condition catalog</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{t('assets.advancedSearch')}</span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— {t('assets.advancedSearchHint')}</span>
             </div>
             <button onClick={exitAdvancedMode} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
-              <XIcon size={13} /> Exit advanced
+              <XIcon size={13} /> {t('assets.exitAdvanced')}
             </button>
           </div>
           <RuleBuilder
@@ -696,16 +700,16 @@ export default function AssetInventory() {
               onClick={runAdvancedSearch}
               disabled={advancedLoading || !advancedConditions.length}
             >
-              {advancedLoading ? 'Searching…' : 'Run Search'}
+              {advancedLoading ? t('assets.searching') : t('assets.runSearch')}
             </Button>
             {assets.length > 0 && !advancedLoading && (
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{assets.length}</span> assets matched
+                {t('assets.assetsMatched', { count: assets.length })}
               </span>
             )}
             {advancedConditions.length > 0 && (
               <Button variant="ghost" size="sm" onClick={() => setShowSaveAs(true)} style={{ marginLeft: 'auto' }}>
-                <Bookmark size={13} /> Save as…
+                <Bookmark size={13} /> {t('assets.saveAs')}
               </Button>
             )}
           </div>
@@ -742,15 +746,15 @@ export default function AssetInventory() {
         <Select
           value={filters.env}
           onChange={v => setFilters(f => ({ ...f, env: v }))}
-          placeholder="All Environments"
+          placeholder={t('assets.allEnvironments')}
           options={[
-            { value: 'dmz', label: 'DMZ' },
-            { value: 'internal', label: 'Internal' },
-            { value: 'cloud', label: 'Cloud' },
-            { value: 'development', label: 'Development' },
-            { value: 'production', label: 'Production' },
-            { value: 'staging', label: 'Staging' },
-            { value: 'ot', label: 'OT/ICS' },
+            { value: 'dmz', label: t('assets.envOptions.dmz') },
+            { value: 'internal', label: t('assets.envOptions.internal') },
+            { value: 'cloud', label: t('assets.envOptions.cloud') },
+            { value: 'development', label: t('assets.envOptions.development') },
+            { value: 'production', label: t('assets.envOptions.production') },
+            { value: 'staging', label: t('assets.envOptions.staging') },
+            { value: 'ot', label: t('assets.envOptions.ot') },
           ]}
         />
 
@@ -759,28 +763,28 @@ export default function AssetInventory() {
           onChange={e => setFilters(f => ({ ...f, serverRole: e.target.value }))}
           style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: filters.serverRole ? 'var(--text-primary)' : 'var(--text-muted)', borderRadius: 6, padding: '5px 8px', fontSize: 12 }}
         >
-          <option value="">All Roles</option>
-          <option value="web_server">Web Server</option>
-          <option value="dns_server">DNS Server</option>
-          <option value="database">Database</option>
-          <option value="mail_server">Mail Server</option>
-          <option value="ftp_server">FTP Server</option>
+          <option value="">{t('assets.allRoles')}</option>
+          <option value="web_server">{t('assets.roleOptions.web_server')}</option>
+          <option value="dns_server">{t('assets.roleOptions.dns_server')}</option>
+          <option value="database">{t('assets.roleOptions.database')}</option>
+          <option value="mail_server">{t('assets.roleOptions.mail_server')}</option>
+          <option value="ftp_server">{t('assets.roleOptions.ftp_server')}</option>
         </select>
 
         <Select
           value={filters.criticality}
           onChange={v => setFilters(f => ({ ...f, criticality: v }))}
-          placeholder="Any Criticality"
+          placeholder={t('assets.anyCriticality')}
           options={[1,2,3,4,5,6,7,8,9,10].map(n => ({ value: String(n), label: `${n} – ${CRITICALITY_LABELS[n]}` }))}
         />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Risk</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t('assets.risk')}</span>
           <input
             type="number" min={0} max={10} step={0.1}
             value={filters.minRisk}
             onChange={e => setFilters(f => ({ ...f, minRisk: e.target.value }))}
-            placeholder="Min"
+            placeholder={t('assets.min')}
             style={{
               width: 60, background: 'var(--bg-card)', border: '1px solid var(--border)',
               color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
@@ -791,7 +795,7 @@ export default function AssetInventory() {
             type="number" min={0} max={10} step={0.1}
             value={filters.maxRisk}
             onChange={e => setFilters(f => ({ ...f, maxRisk: e.target.value }))}
-            placeholder="Max"
+            placeholder={t('assets.max')}
             style={{
               width: 60, background: 'var(--bg-card)', border: '1px solid var(--border)',
               color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
@@ -800,7 +804,7 @@ export default function AssetInventory() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 12, color: '#dc2626', whiteSpace: 'nowrap' }}>Min Critical</span>
+          <span style={{ fontSize: 12, color: '#dc2626', whiteSpace: 'nowrap' }}>{t('assets.minCritical')}</span>
           <input
             type="number" min={0}
             value={filters.minCritical}
@@ -814,7 +818,7 @@ export default function AssetInventory() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 12, color: '#ea580c', whiteSpace: 'nowrap' }}>Min High</span>
+          <span style={{ fontSize: 12, color: '#ea580c', whiteSpace: 'nowrap' }}>{t('assets.minHigh')}</span>
           <input
             type="number" min={0}
             value={filters.minHigh}
@@ -841,16 +845,16 @@ export default function AssetInventory() {
         />
 
         <Button size="sm" variant="ghost" onClick={enterAdvancedMode} title="Switch to rule-engine query builder">
-          <SlidersHorizontal size={13} /> Advanced
+          <SlidersHorizontal size={13} /> {t('assets.advanced')}
         </Button>
 
         {(activeFilterCount > 0 || tagFilter.length > 0) && (
           <>
             <Button size="sm" variant="ghost" onClick={() => setShowSaveAs(true)}>
-              <Bookmark size={13} /> Save as…
+              <Bookmark size={13} /> {t('assets.saveAs')}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => { clearFilters(); setTagFilter([]) }}>
-              <X size={13} /> Clear
+              <X size={13} /> {t('assets.clear')}
             </Button>
           </>
         )}
@@ -859,8 +863,8 @@ export default function AssetInventory() {
       {(loading || advancedLoading) ? <Spinner /> : (
         assets.length === 0 ? (
           <EmptyState icon={Server}
-            title={advancedMode ? "No assets matched" : "No assets found"}
-            sub={advancedMode ? "Build conditions above and click Run Search" : "Upload a Nessus scan to populate asset inventory"}
+            title={advancedMode ? t('assets.noAssetsMatched') : t('assets.noAssetsFound')}
+            sub={advancedMode ? t('assets.buildConditions') : t('assets.uploadToPopulate')}
           />
         ) : (
           <Card style={{ padding: 0 }}>
@@ -871,7 +875,7 @@ export default function AssetInventory() {
               onSort={handleSort}
               sortBy={sortBy}
               sortOrder={sortOrder}
-              emptyMessage="No assets match the current filters"
+              emptyMessage={t('assets.noFiltersMatch')}
             />
             {!advancedMode && Math.ceil(totalAssets / ASSET_PAGE_SIZE) > 1 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 16px', borderTop: '1px solid var(--border)' }}>
@@ -880,13 +884,13 @@ export default function AssetInventory() {
                 </span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
-                    <ChevronLeft size={14} /> Prev
+                    <ChevronLeft size={14} /> {t('assets.prev')}
                   </Button>
                   <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                     {page} / {Math.ceil(totalAssets / ASSET_PAGE_SIZE)}
                   </span>
                   <Button variant="ghost" size="sm" disabled={page >= Math.ceil(totalAssets / ASSET_PAGE_SIZE)} onClick={() => setPage(p => p + 1)}>
-                    Next <ChevronRight size={14} />
+                    {t('common.next')} <ChevronRight size={14} />
                   </Button>
                 </div>
               </div>
@@ -935,7 +939,7 @@ export default function AssetInventory() {
             }}>
               <Crosshair size={15} color="var(--accent)" />
               <span style={{ flex: 1, fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
-                Blast Radius — {assets.find(a => a.id === expandedAsset)?.hostname ||
+                {t('assets.blastRadius')} — {assets.find(a => a.id === expandedAsset)?.hostname ||
                                 assets.find(a => a.id === expandedAsset)?.ip}
               </span>
               <button

@@ -431,14 +431,21 @@ def parse_nessus_xml(xml_content: str, filename: str) -> dict:
         raise ValueError(f"Invalid .nessus XML: {e}")
 
     scan_info = {"filename": filename, "scan_name": None, "scan_date": None,
-                 "scan_type": "nessus_xml", "scanner_ip": None, "nessus_version": None, "policy_used": None}
+                 "scan_type": "nessus_xml", "scanner_ip": None, "nessus_version": None,
+                 "policy_used": None, "scanner_type": None}
 
-    # Extract policy name
+    # Extract policy name and scanner type from preferences
     policy = root.find("Policy")
     if policy is not None:
         pname = policy.findtext("policyName")
         if pname:
             scan_info["policy_used"] = pname
+        # Extract scanner_type (e.g. "cloud" for Tenable WAS cloud scanners)
+        server_prefs = policy.find("Preferences/ServerPreferences")
+        if server_prefs is not None:
+            st = server_prefs.findtext("scanner_type")
+            if st:
+                scan_info["scanner_type"] = st
 
     report = root.find("Report")
     if report is None:
@@ -457,7 +464,7 @@ def parse_nessus_xml(xml_content: str, filename: str) -> dict:
         asset = {
             "hostname": host_name, "ip": None, "fqdn": None, "os": None,
             "netbios_name": None, "mac_address": None, "scan_start": None, "scan_end": None,
-            "is_credentialed": False, "last_auth_run": None,
+            "is_credentialed": False, "last_auth_run": None, "system_type": None,
             "critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0, "info_count": 0,
         }
         props = report_host.find("HostProperties")
@@ -483,9 +490,17 @@ def parse_nessus_xml(xml_content: str, filename: str) -> dict:
                     asset["is_credentialed"] = v.lower() == "true"
                 elif n == "LastAuthenticatedResults":
                     asset["last_auth_run"] = v
+                elif n == "system-type":
+                    asset["system_type"] = v
 
-        if not asset["ip"] and re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host_name):
-            asset["ip"] = host_name
+        # Extract IP: bare IP, or IP embedded in a URL-style hostname (WAS scans)
+        if not asset["ip"]:
+            if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host_name):
+                asset["ip"] = host_name
+            else:
+                ip_match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", host_name)
+                if ip_match:
+                    asset["ip"] = ip_match.group(1)
 
         asset_map[host_name] = asset
         assets.append(asset)
@@ -536,7 +551,7 @@ def parse_nessus_xml(xml_content: str, filename: str) -> dict:
                     finding["see_also"] = [u.strip() for u in text.split() if u.strip().startswith("http")]
                 elif tag == "cve":
                     finding["cves"].append(text)
-                elif tag == "cvss_base_score":
+                elif tag in ("cvss_base_score", "cvss"):
                     try:
                         v = float(text)
                         if v > 0:
@@ -545,7 +560,7 @@ def parse_nessus_xml(xml_content: str, filename: str) -> dict:
                         pass
                 elif tag == "cvss_vector":
                     finding["cvss2_vector"] = text
-                elif tag == "cvss3_base_score":
+                elif tag in ("cvss3_base_score", "cvssv3"):
                     try:
                         v = float(text)
                         if v > 0:
@@ -587,13 +602,16 @@ def parse_nessus_xml(xml_content: str, filename: str) -> dict:
             host_findings.append(finding)
         findings.extend(host_findings)
 
-    # Derive scan_date from the earliest HOST_START across all assets
+    # Derive scan_date from the earliest HOST_START (or HOST_END as fallback) across all assets
     if not scan_info["scan_date"]:
-        host_starts = [a["scan_start"] for a in assets if a.get("scan_start")]
-        if host_starts:
+        host_times = [a["scan_start"] for a in assets if a.get("scan_start") and a["scan_start"] != "None"]
+        if not host_times:
+            host_times = [a["scan_end"] for a in assets if a.get("scan_end") and a["scan_end"] != "None"]
+        if host_times:
             parsed_dates = []
-            for ds in host_starts:
-                for fmt in ("%a %b %d %H:%M:%S %Y", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+            for ds in host_times:
+                for fmt in ("%a %b %d %H:%M:%S %Y", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S",
+                            "%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
                     try:
                         parsed_dates.append(datetime.strptime(ds, fmt))
                         break

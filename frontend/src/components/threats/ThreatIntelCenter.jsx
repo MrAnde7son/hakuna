@@ -3,6 +3,7 @@
  * Comprehensive Threat Intelligence hub — newsroom, CVE intel, threat groups, impact analysis, campaigns.
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Shield, AlertTriangle, Zap, Globe, Users, Activity, RefreshCw,
@@ -20,8 +21,8 @@ import {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Renders markdown-style [text](url) links and (Citation: ...) notes in plain text */
-function renderDescription(text) {
-  if (!text) return 'No description available.'
+function renderDescription(text, fallback = 'No description available.') {
+  if (!text) return fallback
   const parts = []
   const linkRe = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g
   let last = 0, match
@@ -78,11 +79,16 @@ const MOTIVATION_COLORS = {
   unknown: '#6b7280',
 }
 
-const TABS = [
-  { key: 'newsroom', label: 'Newsroom', icon: Radio },
-  { key: 'cves', label: 'CVE', icon: Database },
-  { key: 'groups', label: 'Threat Groups', icon: Users },
-]
+const TAB_KEYS = ['newsroom', 'cves', 'groups']
+const TAB_ICONS = { newsroom: Radio, cves: Database, groups: Users }
+
+function getTabConfig(t) {
+  return [
+    { key: 'newsroom', label: t('threats.newsroom'), icon: Radio },
+    { key: 'cves', label: t('threats.cve'), icon: Database },
+    { key: 'groups', label: t('threats.threatGroups'), icon: Users },
+  ]
+}
 
 // ─── Utility helpers ──────────────────────────────────────────────────────────
 
@@ -210,12 +216,13 @@ function Modal({ title, onClose, children, width = 520 }) {
 // ─── Stats Bar ────────────────────────────────────────────────────────────────
 
 function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
+  const { t } = useTranslation()
   return (
     <div style={{ marginBottom: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
         <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 10 }}>
           <Shield size={22} color="#6366f1" />
-          Threat Intelligence Center
+          {t('threats.center')}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {syncResult && (
@@ -225,7 +232,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           )}
           <Button onClick={onSync} disabled={syncing} variant="ghost" size="sm">
             {syncing ? <InlineSpinner size={14} /> : <RefreshCw size={14} />}
-            {syncing ? 'Syncing…' : 'Sync Intel'}
+            {syncing ? t('threats.syncing') : t('threats.syncIntel')}
           </Button>
         </div>
       </div>
@@ -281,12 +288,14 @@ function Server({ size = 16, color }) {
 // ─── Tab Bar ─────────────────────────────────────────────────────────────────
 
 function TabBar({ active, onChange }) {
+  const { t } = useTranslation()
+  const tabs = getTabConfig(t)
   return (
     <div style={{
       display: 'flex', gap: 2, borderBottom: '1px solid var(--border)',
       marginBottom: 24, overflowX: 'auto',
     }}>
-      {TABS.map(({ key, label, icon: Icon }) => {
+      {tabs.map(({ key, label, icon: Icon }) => {
         const isActive = active === key
         return (
           <button
@@ -388,16 +397,27 @@ function ThreatGroupSpotlight() {
 
 // ─── Advisory type helpers ────────────────────────────────────────────────────
 
-const ADVISORY_TYPE_META = {
-  advisory:   { label: 'Advisory',   color: '#2563eb' },
-  alert:      { label: 'Alert',      color: '#dc2626' },
-  ics:        { label: 'ICS',        color: '#d97706' },
-  ics_medical:{ label: 'ICS-Med',    color: '#9333ea' },
-  malware:    { label: 'Malware',    color: '#64748b' },
+const ADVISORY_TYPE_COLORS = {
+  advisory:    '#2563eb',
+  alert:       '#dc2626',
+  ics:         '#d97706',
+  ics_medical: '#9333ea',
+  malware:     '#64748b',
+}
+
+function getAdvisoryTypeMeta(t) {
+  return {
+    advisory:    { label: t('threats.advisory'),  color: '#2563eb' },
+    alert:       { label: t('threats.alert'),     color: '#dc2626' },
+    ics:         { label: t('threats.ics'),        color: '#d97706' },
+    ics_medical: { label: t('threats.icsMed'),     color: '#9333ea' },
+    malware:     { label: t('threats.malware'),    color: '#64748b' },
+  }
 }
 
 function AdvisoryTypeBadge({ type }) {
-  const meta = ADVISORY_TYPE_META[type] || { label: type, color: '#6b7280' }
+  const { t } = useTranslation()
+  const meta = getAdvisoryTypeMeta(t)[type] || { label: type, color: '#6b7280' }
   return (
     <span style={{
       fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10,
@@ -408,6 +428,7 @@ function AdvisoryTypeBadge({ type }) {
 }
 
 function AdvisoriesPanel({ onSearchCve }) {
+  const { t } = useTranslation()
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -439,7 +460,7 @@ function AdvisoriesPanel({ onSearchCve }) {
     <div style={{ marginTop: 24 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
         <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <FileText size={14} /> CISA Advisories
+          <FileText size={14} /> {t('threats.cisaAdvisories')}
         </h3>
         {total > 0 && (
           <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 2 }}>{total} total</span>
@@ -451,7 +472,7 @@ function AdvisoriesPanel({ onSearchCve }) {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search advisories…"
+            placeholder={t('threats.searchAdvisories')}
             style={{
               background: 'var(--bg-card)', border: '1px solid var(--border)',
               color: 'var(--text-primary)', borderRadius: 7, padding: '5px 10px 5px 28px',
@@ -468,11 +489,11 @@ function AdvisoriesPanel({ onSearchCve }) {
       {loading ? (
         <div style={{ display: 'flex', justifyContent: 'center', padding: '20px 0' }}><Spinner /></div>
       ) : items.length === 0 ? (
-        <EmptyState icon={FileText} title="No advisories" sub="Run Sync Intel to load CISA advisories" />
+        <EmptyState icon={FileText} title={t('threats.noAdvisories')} sub={t('threats.noAdvisoriesDesc')} />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {items.map(adv => {
-            const accentColor = ADVISORY_TYPE_META[adv.advisory_type]?.color || '#2563eb'
+            const accentColor = ADVISORY_TYPE_COLORS[adv.advisory_type] || '#2563eb'
             // Only show advisory_id if it looks like a real structured ID (AA##/ICSA/ICSMA)
             const structuredId = /^(AA|ICSA|ICSMA)-?\d/i.test(adv.advisory_id) ? adv.advisory_id : null
             return (
@@ -493,7 +514,7 @@ function AdvisoriesPanel({ onSearchCve }) {
                       href={adv.url}
                       target="_blank"
                       rel="noreferrer"
-                      title="View on CISA"
+                      title={t('threats.viewOnCisa')}
                       style={{
                         flexShrink: 0, color: 'var(--text-muted)',
                         display: 'flex', alignItems: 'center',
@@ -559,6 +580,7 @@ function AdvisoriesPanel({ onSearchCve }) {
 }
 
 function NewsroomTab({ cves, onSearchCve }) {
+  const { t } = useTranslation()
   const [ransomwareOnly, setRansomwareOnly] = useState(false)
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(0)
@@ -586,8 +608,8 @@ function NewsroomTab({ cves, onSearchCve }) {
         {/* Summary pills */}
         <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
           {[
-            { label: `${ransomwareCount} ransomware-linked`, color: '#ea580c' },
-            { label: `${overdueCount} missed KEV deadlines`, color: '#7c3aed' },
+            { label: t('threats.ransomwareLinked', { count: ransomwareCount }), color: '#ea580c' },
+            { label: t('threats.missedKevDeadlines', { count: overdueCount }), color: '#7c3aed' },
           ].map(({ label, color }) => (
             <span key={label} style={{
               fontSize: 12, fontWeight: 600, padding: '4px 10px',
@@ -604,7 +626,7 @@ function NewsroomTab({ cves, onSearchCve }) {
             <input
               value={search}
               onChange={e => { setSearch(e.target.value); setPage(0) }}
-              placeholder="Search CVE ID or description…"
+              placeholder={t('threats.searchCve')}
               style={{
                 width: '100%', boxSizing: 'border-box',
                 background: 'var(--bg-card)', border: '1px solid var(--border)',
@@ -622,7 +644,7 @@ function NewsroomTab({ cves, onSearchCve }) {
         {/* KEV entries */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {pageSlice.length === 0 ? (
-            <EmptyState icon={AlertCircle} title="No KEV entries" sub="Run Sync Intel to load the CISA catalog" />
+            <EmptyState icon={AlertCircle} title={t('threats.noKevEntries')} sub={t('threats.noKevEntriesDesc')} />
           ) : pageSlice.map(c => {
             const isOverdue = c.kev_due_date && new Date(c.kev_due_date) < new Date()
             const isRansomware = c.kev_ransomware_use && c.kev_ransomware_use !== 'Unknown'
@@ -648,7 +670,7 @@ function NewsroomTab({ cves, onSearchCve }) {
                     fontSize: 12, color: 'var(--text-secondary)',
                     overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
                   }}>
-                    {c.description || 'No description available'}
+                    {c.description || t('threats.noDescription')}
                   </div>
                   <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
                     {isRansomware && <Pill label="Ransomware" color="#ea580c" small />}
@@ -668,7 +690,7 @@ function NewsroomTab({ cves, onSearchCve }) {
                 {/* Action */}
                 <button
                   onClick={() => onSearchCve && onSearchCve(c.cve_id)}
-                  title="Search this CVE in CVE Intel"
+                  title={t('threats.searchThisInCveIntel')}
                   style={{
                     flexShrink: 0, background: 'transparent', border: '1px solid var(--border)',
                     borderRadius: 6, padding: '5px 8px', cursor: 'pointer', color: 'var(--text-muted)',
@@ -742,6 +764,7 @@ function CveSources({ cve }) {
 }
 
 function CveRow({ cve, expanded, onToggle }) {
+  const { t } = useTranslation()
   return (
     <>
       <tr
@@ -827,7 +850,7 @@ function CveRow({ cve, expanded, onToggle }) {
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>Description</div>
                 <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                  {cve.description || 'No description available.'}
+                  {cve.description || t('threats.noDescription')}
                 </div>
               </div>
               <div>
@@ -866,6 +889,7 @@ function CveRow({ cve, expanded, onToggle }) {
 }
 
 function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEpss = 0, initialInScanOnly = false }) {
+  const { t } = useTranslation()
   const { activeScanId } = useScan()
   const [cves, setCves] = useState([])
   const [total, setTotal] = useState(0)
@@ -935,7 +959,7 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
         <input
           value={search}
           onChange={e => { setSearch(e.target.value); setPage(0) }}
-          placeholder="Search CVE ID or keyword…"
+          placeholder={t('threats.searchCveKeyword')}
           style={{
             background: 'none', border: 'none', outline: 'none',
             color: 'var(--text-primary)', fontSize: 13, flex: 1, minWidth: 180,
@@ -946,9 +970,9 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
           <input type="checkbox" checked={kevOnly} onChange={e => { setKevOnly(e.target.checked); setPage(0) }} />
           KEV Only
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }} title={activeScanId ? 'CVEs found in the selected scan' : 'CVEs found across all uploaded scans'}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }} title={activeScanId ? t('threats.showScanMatches') : t('threats.showAllMatches')}>
           <input type="checkbox" checked={inScanOnly} onChange={e => { setInScanOnly(e.target.checked); setPage(0) }} />
-          In My Environment
+          {t('threats.inScanOnly')}
         </label>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Min EPSS</span>
@@ -989,14 +1013,14 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
                   {[
-                    { label: 'CVE ID', key: 'cve_id' },
-                    { label: 'CVSS', key: 'cvss3_score' },
+                    { label: t('threats.cveId'), key: 'cve_id' },
+                    { label: t('threats.cvss'), key: 'cvss3_score' },
                     { label: 'EPSS', key: 'epss_score' },
                     { label: 'KEV', key: 'in_kev' },
                     { label: 'Exploit', key: null },
-                    { label: 'Sources', key: null },
-                    { label: 'In Scans', key: 'in_scan_count' },
-                    { label: 'Published', key: 'published_date' },
+                    { label: t('threats.sources'), key: null },
+                    { label: t('threats.inScans'), key: 'in_scan_count' },
+                    { label: t('threats.published'), key: 'published_date' },
                   ].map(h => {
                     const active = sortBy === h.key
                     return (
@@ -1030,7 +1054,7 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
                 {cves.length === 0 ? (
                   <tr>
                     <td colSpan={8} style={{ padding: '40px 12px', textAlign: 'center', color: 'var(--text-muted)' }}>
-                      No CVEs match current filters
+                      {t('threats.noKevEntries')}
                     </td>
                   </tr>
                 ) : cves.map(cve => (
@@ -1071,6 +1095,7 @@ const SEVERITY_LABELS = ['Info', 'Low', 'Medium', 'High', 'Critical']
 const SEVERITY_COLORS = ['#6b7280', '#16a34a', '#d97706', '#ea580c', '#dc2626']
 
 function GroupCard({ group, exposure }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const [ttps, setTtps] = useState([])
   const [loadingTtps, setLoadingTtps] = useState(false)
@@ -1206,7 +1231,7 @@ function GroupCard({ group, exposure }) {
           {hasExposure && (
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: '#dc2626', textTransform: 'uppercase', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 5 }}>
-                <AlertTriangle size={11} /> Your Environment Exposure
+                <AlertTriangle size={11} /> {t('threats.impactAnalysis')}
               </div>
               {loadingExposure ? (
                 <InlineSpinner />
@@ -1216,7 +1241,7 @@ function GroupCard({ group, exposure }) {
                   {detailExposure.matched_cves?.length > 0 && (
                     <div style={{ marginBottom: 10 }}>
                       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
-                        Matching CVEs ({detailExposure.matched_cves.length})
+                        {t('threats.matchedCves')} ({detailExposure.matched_cves.length})
                       </div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                         {detailExposure.matched_cves.slice(0, 10).map(cve => (
@@ -1236,7 +1261,7 @@ function GroupCard({ group, exposure }) {
                   {detailExposure.affected_assets?.length > 0 && (
                     <div style={{ marginBottom: 10 }}>
                       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
-                        Affected Assets ({detailExposure.matched_assets})
+                        {t('threats.affectedAssets')} ({detailExposure.matched_assets})
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                         {detailExposure.affected_assets.slice(0, 5).map(a => (
@@ -1267,7 +1292,7 @@ function GroupCard({ group, exposure }) {
                   {detailExposure.top_findings?.length > 0 && (
                     <div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
-                        Matched Findings (top {Math.min(detailExposure.top_findings.length, 5)})
+                        {t('threats.matchedFindings')} (top {Math.min(detailExposure.top_findings.length, 5)})
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                         {detailExposure.top_findings.slice(0, 5).map(f => (
@@ -1311,7 +1336,7 @@ function GroupCard({ group, exposure }) {
           )}
 
           <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 12 }}>
-            {renderDescription(group.description)}
+            {renderDescription(group.description, t('threats.noDescription'))}
           </div>
           {group.aliases?.length > 0 && (
             <div style={{ marginBottom: 12 }}>
@@ -1323,7 +1348,7 @@ function GroupCard({ group, exposure }) {
           )}
           <div>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8 }}>
-              TTPs ({ttps.length})
+              {t('threats.techniques')} ({ttps.length})
               {hasExposure && exposure.matched_ttps?.length > 0 && (
                 <span style={{ marginLeft: 8, color: '#16a34a', fontWeight: 700 }}>
                   · {exposure.matched_ttps.length} matched in your env
@@ -1380,6 +1405,7 @@ function GroupCard({ group, exposure }) {
 }
 
 function ThreatGroupsTab({ initialInMyEnv = false }) {
+  const { t } = useTranslation()
   const { activeScanId } = useScan()
   const [groups, setGroups] = useState([])
   const [loading, setLoading] = useState(false)
@@ -1485,7 +1511,7 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Search threat groups…"
+          placeholder={t('threats.searchThreatGroups')}
           style={{
             background: 'none', border: 'none', outline: 'none',
             color: 'var(--text-primary)', fontSize: 13, flex: 1, minWidth: 180,
@@ -1499,7 +1525,7 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
             color: 'var(--text-secondary)', borderRadius: 6, padding: '5px 10px', fontSize: 12, outline: 'none',
           }}
         >
-          <option value="">All motivations</option>
+          <option value="">{t('threats.allMotivations')}</option>
           {['financial', 'espionage', 'destruction', 'hacktivism'].map(m => (
             <option key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1)}</option>
           ))}
@@ -1510,10 +1536,10 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
         </label>
         <label
           style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}
-          title={activeScanId ? 'Show only groups with CVE matches in your active scan' : 'Show only groups with CVE matches across all uploaded scans'}
+          title={activeScanId ? t('threats.showScanMatches') : t('threats.showAllMatches')}
         >
           <input type="checkbox" checked={inScanOnly} onChange={e => setInScanOnly(e.target.checked)} />
-          In My Environment
+          {t('threats.inScanOnly')}
           {!loadingExposure && inScanOnly && (
             <span style={{ fontSize: 10, color: '#dc2626', fontWeight: 700, marginLeft: 2 }}>
               ({visibleGroups.length})
@@ -1531,8 +1557,8 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
       {loading ? <Spinner /> : groups.length === 0 ? (
         <EmptyState
           icon={Users}
-          title="No threat groups found"
-          sub="Try adjusting your search filters"
+          title={t('threats.noThreatGroups')}
+          sub={t('threats.noThreatGroupsDesc')}
         />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14 }}>
@@ -1554,7 +1580,7 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
 export default function ThreatIntelCenter() {
   const { tab: tabParam } = useParams()
   const navigate = useNavigate()
-  const VALID_TABS = TABS.map(t => t.key)
+  const VALID_TABS = TAB_KEYS
   const tab = VALID_TABS.includes(tabParam) ? tabParam : 'newsroom'
   const setTab = (t) => navigate(`/threat-intel/${t}`, { replace: true })
   const [stats, setStats] = useState(null)

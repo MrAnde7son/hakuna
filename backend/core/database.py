@@ -65,6 +65,7 @@ def _migrate_add_columns():
             ("times_seen", "INTEGER DEFAULT 1"),
             ("asset_status", 'VARCHAR DEFAULT "active"'),
             ("stale_since", "DATETIME"),
+            ("system_type", "VARCHAR"),
         ],
         "findings": [
             ("first_seen", "DATETIME"),

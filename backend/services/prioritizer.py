@@ -8,6 +8,7 @@ Priority score (0-10) factoring:
   - Asset criticality (user-defined 1-5)
   - Plugin family context signals
   - Informational plugin signals (attack surface indicators)
+  - Internet-facing exposure (maxes reachability for external/dmz/public-IP assets)
 """
 
 PLUGIN_FAMILY_WEIGHTS = {
@@ -260,23 +261,28 @@ def compute_priority_score(
     else:
         controls_factor = 0.5    # unknown → neutral
 
-    # Port-aware reachability: check if the finding's specific port is
-    # listening or has established connections on the asset.
-    finding_port = finding.get("port")
-    listening_ports = inv.get("listening_ports") or set()
-    established_ports = inv.get("established_ports") or set()
-    if finding_port and str(finding_port).isdigit():
-        port_int = int(finding_port)
-        if port_int in established_ports:
-            reachability_factor = 1.0    # actively connected on this port
-        elif port_int in listening_ports:
-            reachability_factor = 0.7    # port is open/listening
-        else:
-            reachability_factor = 0.0    # port not reachable
+    # Internet-facing assets: any attacker on the internet can reach all ports,
+    # so all findings are fully reachable regardless of local netstat data.
+    if inv.get("is_internet_facing"):
+        reachability_factor = 1.0
     else:
-        # No port on finding (e.g. local check) — fall back to general connectivity
-        conns = int(inv.get("established_connections", 0))
-        reachability_factor = min(conns / 20.0, 1.0)
+        # Port-aware reachability: check if the finding's specific port is
+        # listening or has established connections on the asset.
+        finding_port = finding.get("port")
+        listening_ports = inv.get("listening_ports") or set()
+        established_ports = inv.get("established_ports") or set()
+        if finding_port and str(finding_port).isdigit():
+            port_int = int(finding_port)
+            if port_int in established_ports:
+                reachability_factor = 1.0    # actively connected on this port
+            elif port_int in listening_ports:
+                reachability_factor = 0.7    # port is open/listening
+            else:
+                reachability_factor = 0.0    # port not reachable
+        else:
+            # No port on finding (e.g. local check) — fall back to general connectivity
+            conns = int(inv.get("established_connections", 0))
+            reachability_factor = min(conns / 20.0, 1.0)
 
     # --- Weighted score ---
     if risk_cfg is not None:

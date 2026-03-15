@@ -220,6 +220,15 @@ export const getPluginFamilies = (scanId, tags, tagLogic) => {
   const qs = p.toString()
   return request(`/reports/plugin-families${qs ? `?${qs}` : ''}`)
 }
+export const getBenchmarks = (scanId, industry, orgSize, source) => {
+  const p = new URLSearchParams()
+  if (scanId) p.set('scan_id', scanId)
+  if (industry) p.set('industry', industry)
+  if (orgSize) p.set('org_size', orgSize)
+  if (source) p.set('source', source)
+  const qs = p.toString()
+  return request(`/benchmarks${qs ? `?${qs}` : ''}`)
+}
 export const getTrending = () => request('/reports/trending')
 export const getMetricsTimeline = () => request('/reports/metrics-timeline')
 export const getFunnel = (body) => request('/reports/funnel', {
