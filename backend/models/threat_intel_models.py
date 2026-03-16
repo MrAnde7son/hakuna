@@ -160,3 +160,28 @@ class IntelRemediationCampaign(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     threat_campaign = relationship("ThreatCampaign", back_populates="remediation_campaigns")
+
+
+class ProductLifecycle(Base):
+    """Product lifecycle data from endoflife.date — tracks latest versions and EOL status."""
+    __tablename__ = "product_lifecycles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_name = Column(String, nullable=False, index=True)   # Display name: ".NET", "Node.js"
+    slug = Column(String, nullable=False, index=True)            # endoflife.date slug: "dotnet", "nodejs"
+    cycle = Column(String, nullable=False)                       # Release cycle: "6.0", "18", "3.11"
+    latest_version = Column(String)                              # Latest patch: "6.0.36"
+    release_date = Column(String)                                # Cycle first released
+    eol = Column(String)                                         # EOL date string or "true"/"false"
+    is_eol = Column(Boolean, default=False)                      # Computed: past EOL or eol=="true"
+    lts = Column(Boolean, default=False)
+    support_end = Column(String)                                 # Active support end date
+    latest_release_date = Column(String)                         # When latest_version was released
+    link = Column(String)                                        # URL to release page
+    raw_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("slug", "cycle", name="uq_product_lifecycle_slug_cycle"),
+    )

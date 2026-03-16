@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Layers, ChevronDown, ChevronUp, ExternalLink, RefreshCw, ArrowRight, Monitor, Shield, Zap } from 'lucide-react'
+import { Layers, ChevronDown, ChevronUp, ExternalLink, RefreshCw, ArrowRight, Monitor, Shield, Zap, AlertTriangle, Info, CheckCircle } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getAggregatedSolutions, rebuildAggregatedSolutions } from '../../api.js'
 import { Card, PageHeader, Spinner, EmptyState, SeverityBadge, EffortBadge, Select, FilterBar } from '../shared/ui.jsx'
@@ -70,6 +70,117 @@ function EfficiencyBar({ score, max = 100 }) {
   )
 }
 
+const VERDICT_STYLES = {
+  high_risk: { bg: '#dc262618', border: '#dc262640', color: '#dc2626', icon: AlertTriangle, label: 'High Risk' },
+  needs_review: { bg: '#f59e0b18', border: '#f59e0b40', color: '#f59e0b', icon: Info, label: 'Needs Review' },
+  safe: { bg: '#10b98118', border: '#10b98140', color: '#10b981', icon: CheckCircle, label: 'Safe' },
+}
+
+function VerdictBadge({ verdict }) {
+  const style = VERDICT_STYLES[verdict]
+  if (!style) return null
+  const Icon = style.icon
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+      background: style.bg, color: style.color, border: `1px solid ${style.border}`,
+    }}>
+      <Icon size={11} /> {style.label}
+    </span>
+  )
+}
+
+function DownstreamImpactBanner({ impact }) {
+  if (!impact) return null
+  const style = VERDICT_STYLES[impact.verdict] || VERDICT_STYLES.safe
+  const Icon = style.icon
+  const remainingCount = impact.introduced_cves?.length || 0
+  const wasUpgraded = impact.upgraded_to && impact.original_version
+
+  return (
+    <div style={{
+      marginTop: 14, padding: '12px 16px', borderRadius: 8,
+      background: style.bg, border: `1px solid ${style.border}`,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <Icon size={16} style={{ color: style.color }} />
+        <span style={{ fontSize: 13, fontWeight: 700, color: style.color }}>
+          Post-Upgrade Assessment: {style.label}
+        </span>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+          {remainingCount === 0
+            ? 'No known CVEs remain after upgrade'
+            : `${remainingCount} CVE${remainingCount !== 1 ? 's' : ''} remain post-upgrade`
+          }
+        </span>
+      </div>
+
+      {wasUpgraded && (
+        <div style={{
+          fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8,
+          padding: '6px 10px', borderRadius: 4, background: 'var(--bg-secondary)',
+        }}>
+          Auto-selected <strong>{impact.upgraded_to}</strong> over {impact.original_version} as the best available target version
+        </div>
+      )}
+
+      {remainingCount > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+            CVEs Remaining Post-Upgrade ({remainingCount})
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {impact.introduced_cves.slice(0, 20).map(cve => (
+              <span key={cve.cve_id} style={{
+                padding: '2px 8px', borderRadius: 3, fontSize: 10, fontFamily: 'monospace',
+                background: cve.severity === 'critical' ? '#dc262620' : cve.severity === 'high' ? '#ea580c20' : 'var(--bg-tertiary)',
+                color: cve.severity === 'critical' ? '#dc2626' : cve.severity === 'high' ? '#ea580c' : 'var(--text-muted)',
+                fontWeight: cve.severity === 'critical' || cve.severity === 'high' ? 600 : 400,
+              }}>
+                {cve.cve_id} ({cve.severity}{cve.cvss3_score ? ` ${cve.cvss3_score}` : ''})
+              </span>
+            ))}
+            {remainingCount > 20 && (
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', padding: '2px 4px' }}>
+                +{remainingCount - 20} more
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {impact.alternative_versions && impact.alternative_versions.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+            Other Versions Considered
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {impact.alternative_versions.map(alt => {
+              const altStyle = VERDICT_STYLES[alt.verdict] || VERDICT_STYLES.safe
+              return (
+                <div key={alt.version} style={{
+                  padding: '6px 12px', borderRadius: 6, fontSize: 12,
+                  background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                  display: 'flex', alignItems: 'center', gap: 8,
+                }}>
+                  <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{alt.version}</span>
+                  <span style={{ fontSize: 10, color: altStyle.color, fontWeight: 600 }}>
+                    {alt.verdict === 'safe' ? 'Safe' : alt.verdict === 'needs_review' ? 'Review' : 'Risk'}
+                  </span>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                    {alt.introduced_cve_count} CVE{alt.introduced_cve_count !== 1 ? 's' : ''} remain
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RecommendationCard({ rec }) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
@@ -89,6 +200,9 @@ function RecommendationCard({ rec }) {
               <RootCauseBadge type={rec.root_cause_type} />
               <SeverityBadge severity={rec.severity_max} />
               <EffortBadge effort={rec.effort_level} />
+              {rec.downstream_impact && rec.downstream_impact.verdict !== 'safe' && (
+                <VerdictBadge verdict={rec.downstream_impact.verdict} />
+              )}
             </div>
 
             {/* Title */}
@@ -163,6 +277,9 @@ function RecommendationCard({ rec }) {
               {rec.vs_alternative}
             </div>
           )}
+
+          {/* Downstream impact assessment */}
+          <DownstreamImpactBanner impact={rec.downstream_impact} />
 
           {/* Description */}
           <div style={{

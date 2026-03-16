@@ -616,6 +616,47 @@ def _update_asset_lifecycle(db: Session, scan, scan_date: datetime,
 # Upload & Ingest
 # ─────────────────────────────────────────────
 
+def _find_duplicate_scan(db: Session, scan_name: str, scan_date, org_id) -> Optional[Scan]:
+    """Find an existing scan with matching (scan_name, scan_date, org_id)."""
+    q = db.query(Scan).filter(Scan.scan_name == scan_name)
+    if scan_date:
+        q = q.filter(Scan.scan_date == scan_date)
+    if org_id is not None:
+        q = q.filter(Scan.org_id == org_id)
+    else:
+        q = q.filter(Scan.org_id.is_(None))
+    return q.first()
+
+
+def _delete_scan_cascade(db: Session, scan: Scan):
+    """Delete a scan and all its dependent records (inventory, aggregations, etc.)."""
+    scan_id = scan.id
+    # Aggregated solutions
+    db.query(AggregatedSolution).filter(AggregatedSolution.scan_id == scan_id).delete(synchronize_session=False)
+    # Inventory models
+    for InvModel in [
+        InventoryUser, InventoryGroup, InventoryService, InventoryNetConn,
+        InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
+        InventoryShare, InventorySoftware, InventorySecurityControl,
+        InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
+        InventoryAITool, InventoryProcess, InventoryDatabaseInstance, InventoryCredential,
+        InventoryDomainTrust,
+    ]:
+        db.query(InvModel).filter(InvModel.scan_id == scan_id).delete(synchronize_session=False)
+    # Scan comparisons
+    db.query(ScanComparison).filter(
+        (ScanComparison.base_scan_id == scan_id) | (ScanComparison.compare_scan_id == scan_id)
+    ).delete(synchronize_session=False)
+    # Ownership & campaign rows via assets/findings
+    asset_subq = db.query(Asset.id).filter(Asset.scan_id == scan_id).scalar_subquery()
+    finding_subq = db.query(Finding.id).filter(Finding.asset_id.in_(asset_subq)).scalar_subquery()
+    db.query(AssetOwnership).filter(AssetOwnership.asset_id.in_(asset_subq)).delete(synchronize_session=False)
+    db.query(FindingOwnership).filter(FindingOwnership.finding_id.in_(finding_subq)).delete(synchronize_session=False)
+    db.query(CampaignFinding).filter(CampaignFinding.finding_id.in_(finding_subq)).delete(synchronize_session=False)
+    db.delete(scan)  # ORM cascade handles Asset → Finding → AutomateClick
+    db.flush()
+
+
 @app.post("/api/upload")
 async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
     """Upload and parse a vulnerability scan file (Nessus, Qualys, etc.)."""
@@ -641,6 +682,15 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     scan_data = parsed["scan"]
     # Use X-Org-Context if set (e.g. superadmin uploading into a specific org)
     effective_org_id = int(x_org_context) if x_org_context else (user.org_id if user else None)
+
+    # ── Duplicate scan detection: replace existing scan with same identity ──
+    _scan_name = scan_data.get("scan_name") or file.filename
+    _scan_date = scan_data.get("scan_date")
+    existing_scan = _find_duplicate_scan(db, _scan_name, _scan_date, effective_org_id)
+    if existing_scan:
+        logger.info(f"Replacing existing scan '{_scan_name}' (id={existing_scan.id}) with re-upload")
+        _delete_scan_cascade(db, existing_scan)
+
     scan = Scan(
         org_id=effective_org_id,
         filename=file.filename,
@@ -1160,28 +1210,9 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[L
     scan = q.filter(Scan.id == scan_id).first()
     if not scan:
         raise HTTPException(404, "Scan not found")
-    # Inventory models have no ORM cascade from Scan, so delete them explicitly
-    for InvModel in [
-        InventoryUser, InventoryGroup, InventoryService, InventoryNetConn,
-        InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
-        InventoryShare, InventorySoftware, InventorySecurityControl,
-        InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
-        InventoryAITool, InventoryProcess, InventoryDatabaseInstance, InventoryCredential,
-    ]:
-        db.query(InvModel).filter(InvModel.scan_id == scan_id).delete(synchronize_session=False)
-    # Remove scan comparisons referencing this scan
-    db.query(ScanComparison).filter(
-        (ScanComparison.base_scan_id == scan_id) | (ScanComparison.compare_scan_id == scan_id)
-    ).delete(synchronize_session=False)
-    # Delete ownership & campaign rows that reference assets/findings (no ORM cascade)
-    asset_subq = db.query(Asset.id).filter(Asset.scan_id == scan_id).scalar_subquery()
-    finding_subq = db.query(Finding.id).filter(Finding.asset_id.in_(asset_subq)).scalar_subquery()
-    db.query(AssetOwnership).filter(AssetOwnership.asset_id.in_(asset_subq)).delete(synchronize_session=False)
-    db.query(FindingOwnership).filter(FindingOwnership.finding_id.in_(finding_subq)).delete(synchronize_session=False)
-    db.query(CampaignFinding).filter(CampaignFinding.finding_id.in_(finding_subq)).delete(synchronize_session=False)
     _scan_name = scan.scan_name or scan.filename
     _scan_org = scan.org_id
-    db.delete(scan)  # cascades to Asset → Finding → AutomateClick via ORM
+    _delete_scan_cascade(db, scan)
     log_audit(db, "delete", "scan", scan_id, entity_name=_scan_name, org_id=_scan_org)
     db.commit()
     return {"message": "Scan deleted"}
@@ -7089,6 +7120,8 @@ def _agg_solution_to_dict(a: AggregatedSolution, db: Session) -> dict:
         "priority_score": a.priority_score,
         "risk_reduction": a.risk_reduction or 0,
         "efficiency_score": a.efficiency_score or 0,
+        # Downstream impact assessment (upgrade/migrate actions only)
+        "downstream_impact": a.downstream_impact,
         # Operational
         "effort_level": a.effort_level,
         "owner_suggestion": a.owner_suggestion,

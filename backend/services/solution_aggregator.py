@@ -23,6 +23,7 @@ from typing import Optional, List, Set
 from sqlalchemy.orm import Session
 
 from models.models import Finding, Asset, AggregatedSolution
+from services.downstream_impact import assess_downstream_impact, VERDICT_MULTIPLIERS
 
 logger = logging.getLogger(__name__)
 
@@ -689,6 +690,270 @@ def aggregate_solutions(db, scan_id):
         linked += finding_count
         created += 1
 
+    # ── Downstream impact assessment ─────────────────────
+    _run_downstream_impact_on_all(db, scan_id)
+
     db.flush()
     logger.info("Remediation engine: %d recommendations, %d findings linked", created, linked)
     return {"created": created, "findings_linked": linked}
+
+
+def _enrich_with_lifecycle(db, component, target_version):
+    """
+    Look up ProductLifecycle data for a component and return the actual
+    latest version from endoflife.date if it's newer than the scan's target.
+    """
+    try:
+        from threat_intel.threat_intel_sync import _resolve_slug
+        from models.threat_intel_models import ProductLifecycle
+    except ImportError:
+        return None
+
+    slug = _resolve_slug(component)
+    if not slug:
+        return None
+
+    cycles = (
+        db.query(ProductLifecycle)
+        .filter(ProductLifecycle.slug == slug)
+        .order_by(ProductLifecycle.is_eol, ProductLifecycle.cycle.desc())
+        .all()
+    )
+    if not cycles:
+        return None
+
+    # Find the cycle matching the target version (prefix match)
+    matched_cycle = None
+    for c in cycles:
+        if target_version and target_version.startswith(c.cycle):
+            matched_cycle = c
+            break
+
+    if matched_cycle and matched_cycle.latest_version:
+        # If the target version is already the latest, or cycle is EOL → find best
+        from services.downstream_impact import _parse_version_tuple
+        try:
+            target_t = _parse_version_tuple(target_version)
+            latest_t = _parse_version_tuple(matched_cycle.latest_version)
+        except Exception:
+            target_t = latest_t = None
+
+        result = {
+            "slug": slug,
+            "cycle": matched_cycle.cycle,
+            "is_eol": matched_cycle.is_eol,
+            "eol_date": matched_cycle.eol if matched_cycle.is_eol else None,
+            "lts": matched_cycle.lts,
+        }
+
+        if matched_cycle.is_eol:
+            # Find the newest non-EOL cycle
+            for c in cycles:
+                if not c.is_eol and c.latest_version:
+                    result["latest_version"] = c.latest_version
+                    result["recommended_cycle"] = c.cycle
+                    return result
+            # All cycles EOL — still suggest the newest cycle's latest
+            result["latest_version"] = cycles[0].latest_version if cycles else None
+            result["recommended_cycle"] = cycles[0].cycle if cycles else None
+            return result
+
+        if target_t and latest_t and target_t < latest_t:
+            result["latest_version"] = matched_cycle.latest_version
+            return result
+
+    return None
+
+
+def _pick_best_version(impact, current_version):
+    """
+    Given a downstream impact result, check if any alternative version is
+    strictly better than the current target (fewer remaining CVEs and/or
+    better verdict).  Returns the best alternative dict or None.
+    """
+    alternatives = impact.get("alternative_versions") or []
+    if not alternatives:
+        return None
+
+    current_verdict = impact.get("verdict", "safe")
+    current_remaining = len(impact.get("introduced_cves") or [])
+
+    # Verdict ranking: safe > needs_review > high_risk
+    _verdict_rank = {"safe": 0, "needs_review": 1, "high_risk": 2}
+    current_rank = _verdict_rank.get(current_verdict, 1)
+
+    best = None
+    for alt in alternatives:
+        alt_rank = _verdict_rank.get(alt.get("verdict", "needs_review"), 1)
+        alt_remaining = alt.get("introduced_cve_count", 999)
+
+        # Must be strictly better: fewer remaining CVEs or better verdict
+        if alt_remaining < current_remaining or alt_rank < current_rank:
+            if best is None:
+                best = alt
+            else:
+                best_rank = _verdict_rank.get(best.get("verdict", "needs_review"), 1)
+                best_remaining = best.get("introduced_cve_count", 999)
+                # Prefer fewer remaining CVEs, then better verdict
+                if (alt_remaining, alt_rank) < (best_remaining, best_rank):
+                    best = alt
+
+    return best
+
+
+def _run_downstream_impact_on_all(db, scan_id):
+    """Run downstream impact assessment on upgrade/migrate recommendations."""
+    eligible = (
+        db.query(AggregatedSolution)
+        .filter(
+            AggregatedSolution.scan_id == scan_id,
+            AggregatedSolution.action_type.in_(["upgrade_component", "migrate_to_supported"]),
+        )
+        .all()
+    )
+
+    # Build a map of all target versions and their resolved CVEs/findings
+    # across sibling recommendations so we can suggest better versions
+    sibling_data = _collect_sibling_data(eligible)
+
+    for agg in eligible:
+        to_version = None
+        if agg.action_details and isinstance(agg.action_details, dict):
+            to_version = agg.action_details.get("to_version")
+        if not to_version and agg.target_version:
+            to_version = agg.target_version
+        if not to_version:
+            continue
+
+        # Find alternative target versions from sibling recommendations
+        comp_lower = (agg.affected_component or "").lower()
+        siblings = sibling_data.get(comp_lower, [])
+        # Only suggest versions higher than current target
+        to_clean = to_version.rstrip(".")
+        candidates = []
+        for s in siblings:
+            if s["version"] == to_clean:
+                continue
+            candidates.append(s)
+
+        impact = assess_downstream_impact(
+            db,
+            scan_id=scan_id,
+            component=agg.affected_component,
+            to_version=to_version,
+            resolved_finding_ids=agg.finding_ids or [],
+            resolved_cve_ids=agg.cve_ids or [],
+            candidate_versions=candidates,
+        )
+        if impact is not None:
+            # If a better version exists, upgrade the recommendation to use it
+            best_alt = _pick_best_version(impact, to_version)
+            if best_alt:
+                old_version = to_version
+                new_version = best_alt["version"]
+                agg.target_version = new_version
+                if agg.action_details and isinstance(agg.action_details, dict):
+                    agg.action_details = {**agg.action_details, "to_version": new_version}
+                agg.title = _build_title(
+                    agg.action_type, agg.affected_component,
+                    new_version, agg.asset_count, agg.finding_count,
+                )
+                # Update impact to reflect the better version
+                impact["original_version"] = old_version
+                impact["upgraded_to"] = new_version
+                impact["verdict"] = best_alt["verdict"]
+                impact["introduced_cves"] = []  # will be recomputed below
+                impact["net_cve_delta"] = best_alt.get("net_cve_delta", impact["net_cve_delta"])
+                # Recompute for the new version
+                recomputed = assess_downstream_impact(
+                    db,
+                    scan_id=scan_id,
+                    component=agg.affected_component,
+                    to_version=new_version,
+                    resolved_finding_ids=list(
+                        set(agg.finding_ids or []) | set(best_alt.get("_combined_finding_ids", []))
+                    ),
+                    resolved_cve_ids=list(
+                        set(agg.cve_ids or []) | set(best_alt.get("_combined_cve_ids", []))
+                    ),
+                    candidate_versions=[],
+                )
+                if recomputed:
+                    recomputed["original_version"] = old_version
+                    recomputed["upgraded_to"] = new_version
+                    impact = recomputed
+
+            # Enrich with product lifecycle data (endoflife.date)
+            lifecycle = _enrich_with_lifecycle(db, agg.affected_component, agg.target_version or to_version)
+            if lifecycle:
+                impact["lifecycle"] = lifecycle
+                lc_ver = lifecycle.get("latest_version")
+                current_target = agg.target_version or to_version
+                if lc_ver and lc_ver != current_target:
+                    agg.target_version = lc_ver
+                    if agg.action_details and isinstance(agg.action_details, dict):
+                        agg.action_details = {**agg.action_details, "to_version": lc_ver}
+                    agg.title = _build_title(
+                        agg.action_type, agg.affected_component,
+                        lc_ver, agg.asset_count, agg.finding_count,
+                    )
+                    if not impact.get("original_version"):
+                        impact["original_version"] = to_version
+                    impact["upgraded_to"] = lc_ver
+
+            agg.downstream_impact = impact
+            # Apply verdict multiplier to efficiency_score
+            verdict = impact.get("verdict", "safe")
+            multiplier = VERDICT_MULTIPLIERS.get(verdict, 1.0)
+            agg.efficiency_score = round((agg.efficiency_score or 0) * multiplier, 2)
+    db.flush()
+
+
+def _collect_sibling_data(eligible):
+    """
+    Build a map of component_name → [{"version", "finding_ids", "cve_ids"}]
+    across sibling recommendations (same component family, different versions).
+
+    Groups variants like ".NET", "Microsoft .NET core", "Microsoft ASP.NET Core"
+    under a common family so they can suggest each other's versions.
+    Each entry carries the finding_ids and cve_ids it resolves, so the
+    alternative assessment can compute what upgrading to that version fixes.
+    """
+    import re
+
+    def _component_family(name):
+        """Normalize component name to a family key."""
+        n = (name or "").lower().strip()
+        n = re.sub(r'^(microsoft|security updates? for)\s+', '', n)
+        n = re.sub(r'(\.net|dotnet)\s*(framework|core|)\s*\d*', '.net', n)
+        n = re.sub(r'asp\.net\s*core?', '.net', n)
+        n = re.sub(r'\s+', ' ', n).strip()
+        return n
+
+    # Collect per-family version data
+    family_data = {}  # family → [{"version", "finding_ids", "cve_ids"}]
+    for agg in eligible:
+        version = agg.target_version
+        if not version:
+            if agg.action_details and isinstance(agg.action_details, dict):
+                version = agg.action_details.get("to_version")
+        if not version:
+            continue
+        version = version.rstrip(".")
+        family = _component_family(agg.affected_component)
+        if family not in family_data:
+            family_data[family] = []
+        family_data[family].append({
+            "version": version,
+            "finding_ids": agg.finding_ids or [],
+            "cve_ids": agg.cve_ids or [],
+        })
+
+    # Index by raw component name so lookup works
+    result = {}
+    for agg in eligible:
+        comp_lower = (agg.affected_component or "").lower()
+        family = _component_family(agg.affected_component)
+        result[comp_lower] = family_data.get(family, [])
+
+    return result

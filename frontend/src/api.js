@@ -493,6 +493,8 @@ export const threatImpactSearch = (data) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   })
+export const getProductLifecycles = (params = {}) => _ti('products', params)
+export const getProductLifecycle = (slug) => _ti(`products/${slug}`)
 export const getIntelCampaigns = () => _ti('remediation-campaigns')
 export const createIntelCampaign = (data) =>
   request('/threat-intel/remediation-campaigns', {

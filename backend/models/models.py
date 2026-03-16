@@ -1292,6 +1292,9 @@ class AggregatedSolution(Base):
     risk_reduction = Column(Float, default=0.0)              # % of total scan risk resolved
     efficiency_score = Column(Float, default=0.0)            # (vulns_resolved / actions) × risk × breadth
 
+    # Downstream impact assessment (populated for upgrade_component / migrate_to_supported)
+    downstream_impact = Column(JSON, nullable=True)          # {verdict, net_severity_delta, introduced_cves, alternative_versions}
+
     effort_level = Column(String)
     owner_suggestion = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
