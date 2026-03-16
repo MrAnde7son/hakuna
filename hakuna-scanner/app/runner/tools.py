@@ -121,7 +121,7 @@ class TlsxRunner(BaseRunner):
         path = self._write_hosts()
         return [
             "tlsx", "-l", path, "-json", "-silent",
-            "-san", "-cn", "-so", "-cipher", "-tls-version",
+            "-so", "-cipher", "-tls-version",
         ]
 
     async def run(self, org_id: str | None = None):
@@ -148,7 +148,7 @@ class CdncheckRunner(BaseRunner):
 
     def build_command(self) -> list[str]:
         path = self._write_hosts()
-        return ["cdncheck", "-i", path, "-json", "-silent"]
+        return ["cdncheck", "-l", path, "-json", "-silent"]
 
     async def run(self, org_id: str | None = None):
         try:

@@ -1,5 +1,6 @@
 """Normalize tool output → Asset ORM rows via upsert."""
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -102,13 +103,13 @@ async def update_dns_records(
         await db.execute(
             text("""
                 UPDATE assets SET
-                    dns_records = :dns,
+                    dns_records = cast(:dns as jsonb),
                     ip = COALESCE(:ip, ip),
                     last_seen = :now
                 WHERE org_id = :org_id AND hostname = :hostname
             """),
             {
-                "dns": dns_data,
+                "dns": json.dumps(dns_data),
                 "ip": ip,
                 "org_id": org_id,
                 "hostname": hostname,
@@ -175,7 +176,7 @@ async def update_enrichment(
                     http_status = :status,
                     http_title = :title,
                     http_url = :url,
-                    tech_stack = :tech,
+                    tech_stack = cast(:tech as jsonb),
                     cdn_provider = :cdn,
                     waf = :waf,
                     last_enriched = :now,
@@ -186,7 +187,7 @@ async def update_enrichment(
                 "status": entry.get("status_code") or entry.get("status-code"),
                 "title": entry.get("title"),
                 "url": entry.get("url"),
-                "tech": tech,
+                "tech": json.dumps(tech) if tech else None,
                 "cdn": cdn_name if isinstance(cdn_name, str) else (cdn_name[0] if cdn_name else None),
                 "waf": waf if isinstance(waf, str) else (waf[0] if waf else None),
                 "org_id": org_id,
@@ -229,12 +230,12 @@ async def update_tls(
         await db.execute(
             text("""
                 UPDATE assets SET
-                    tls_cert = :tls,
+                    tls_cert = cast(:tls as jsonb),
                     last_enriched = :now,
                     last_seen = :now
                 WHERE org_id = :org_id AND hostname = :host
             """),
-            {"tls": tls_cert, "org_id": org_id, "host": host, "now": now},
+            {"tls": json.dumps(tls_cert), "org_id": org_id, "host": host, "now": now},
         )
         updated += 1
 

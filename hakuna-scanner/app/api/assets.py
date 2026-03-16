@@ -3,8 +3,10 @@
 import uuid
 from datetime import datetime
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +22,11 @@ class AssetResponse(BaseModel):
     hostname: str
     ip: str | None = None
     asn: str | None = None
+
+    @field_validator("ip", mode="before")
+    @classmethod
+    def coerce_ip(cls, v: Any) -> str | None:
+        return str(v) if v is not None else None
     asn_org: str | None = None
     open_ports: list[int] | None = None
     http_status: int | None = None

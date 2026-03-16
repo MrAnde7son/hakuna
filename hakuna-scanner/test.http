@@ -2,14 +2,15 @@ curl -X POST http://localhost:8001/api/v1/orgs \
   -H 'Content-Type: application/json' \
   -d '{"name": "FXP"}'
 
-
 curl -X POST http://localhost:8001/api/v1/orgs/adaf0476-3c69-42af-9345-bf9818106da9/domains \
   -H 'Content-Type: application/json' \
   -d '{"domain": "fxp.co.il"}'
-
 
 curl -X POST http://localhost:8001/api/v1/orgs/adaf0476-3c69-42af-9345-bf9818106da9/scans \
   -H 'Content-Type: application/json' \
   -d '{"scan_type": "full"}'
 
 curl http://localhost:8001/api/v1/orgs/adaf0476-3c69-42af-9345-bf9818106da9/scans
+
+curl http://localhost:8001/api/v1/orgs/adaf0476-3c69-42af-9345-bf9818106da9/assets
+

@@ -1,5 +1,6 @@
 """Delta engine: compare new scan results against existing DB state and emit events."""
 
+import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -239,14 +240,14 @@ async def _insert_event(
     await db.execute(
         text("""
             INSERT INTO asset_events (id, org_id, asset_id, event_type, payload, created_at)
-            VALUES (:id, :org_id, :asset_id, :event_type, :payload, :now)
+            VALUES (:id, :org_id, :asset_id, :event_type, cast(:payload as jsonb), :now)
         """),
         {
             "id": uuid.uuid4(),
             "org_id": org_id,
             "asset_id": asset_id,
             "event_type": event_type,
-            "payload": payload,
+            "payload": json.dumps(payload),
             "now": created_at,
         },
     )
