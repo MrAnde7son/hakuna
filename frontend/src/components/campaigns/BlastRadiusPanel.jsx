@@ -31,10 +31,12 @@ import { getBlastRadius } from '../../api.js'
 
 // ── Colours ─────────────────────────────────────────────────────────────
 const EDGE_CFG = {
+  // Identity & access
   local_admin:         { color: '#f59e0b', label: 'Local Admin' },
   domain_admin:        { color: '#ef4444', label: 'Domain Admin' },
-  network_connection:  { color: '#3b82f6', label: 'Network' },
   credential_exposure: { color: '#a855f7', label: 'Cred Exposure' },
+  weak_credential:     { color: '#dc2626', label: 'Weak Cred', dash: '6 3' },
+  // Remote access
   rdp_access:          { color: '#0ea5e9', label: 'RDP Access' },
   dcom_access:         { color: '#06b6d4', label: 'DCOM Access' },
   power_user:          { color: '#d97706', label: 'Power User' },
@@ -43,6 +45,12 @@ const EDGE_CFG = {
   sudo_access:         { color: '#dc2626', label: 'Sudo Access' },
   docker_access:       { color: '#1d4ed8', label: 'Docker' },
   admin_read:          { color: 'var(--text-secondary)', label: 'Admin Read' },
+  // Network & infrastructure
+  network_connection:  { color: '#3b82f6', label: 'Network' },
+  domain_trust:        { color: '#f97316', label: 'Domain Trust', dash: '8 4' },
+  writeable_share:     { color: '#2563eb', label: 'Writeable Share', dash: '4 3' },
+  // Persistence & exploitation
+  scheduled_task:      { color: '#e11d48', label: 'Scheduled Task' },
 }
 
 const SEV_COLOR = { critical: '#ef4444', high: '#f59e0b', medium: '#3b82f6', low: '#64748b' }
@@ -63,11 +71,36 @@ function scoreLabel(s) {
 
 // ── Dagre layout ─────────────────────────────────────────────────────────
 function layoutNodes(rawNodes, rawEdges) {
-  const g = new dagre.graphlib.Graph()
+  const g = new dagre.graphlib.Graph({ multigraph: true })
   g.setDefaultEdgeLabel(() => ({}))
-  g.setGraph({ rankdir: 'LR', ranksep: 160, nodesep: 60, marginx: 16, marginy: 16 })
-  rawNodes.forEach(n => g.setNode(n.id, { width: 120, height: 100 }))
-  rawEdges.forEach(e => { try { g.setEdge(e.source, e.target) } catch (_) {} })
+
+  // Separate asset and user nodes for sizing
+  const assetCount = rawNodes.filter(n => n.type === 'asset').length
+  const userCount = rawNodes.filter(n => n.type === 'user').length
+  const total = rawNodes.length
+
+  // Adaptive spacing: tighter for larger graphs
+  const ranksep = total > 20 ? 120 : total > 10 ? 150 : 180
+  const nodesep = total > 20 ? 50 : total > 10 ? 60 : 70
+
+  // Use TB for small graphs (cleaner), LR for larger ones (fits better)
+  const rankdir = total <= 8 ? 'TB' : 'LR'
+
+  g.setGraph({ rankdir, ranksep, nodesep, marginx: 24, marginy: 24, ranker: 'network-simplex' })
+
+  rawNodes.forEach(n => {
+    const w = n.type === 'asset' ? 140 : 110
+    const h = n.type === 'asset' ? 110 : 90
+    g.setNode(n.id, { width: w, height: h })
+  })
+
+  // Skip self-loop edges (they confuse dagre layout)
+  rawEdges.forEach(e => {
+    if (e.source !== e.target) {
+      try { g.setEdge(e.source, e.target, {}, e.id) } catch (_) {}
+    }
+  })
+
   dagre.layout(g)
   return rawNodes.map(n => {
     const pos = g.node(n.id)
@@ -107,15 +140,20 @@ function AssetNode({ data }) {
       </div>
       {/* Label */}
       <div style={{ textAlign: 'center', lineHeight: 1.2 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', maxWidth: 120,
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', maxWidth: 130,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          title={`${data.label}${data.ip ? ` (${data.ip})` : ''}`}>
           {data.label}
         </div>
+        {data.ip && data.label !== data.ip && (
+          <div style={{ fontSize: 9, color: 'var(--text-muted)' }}>{data.ip}</div>
+        )}
       </div>
       {/* Badges */}
       <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'center' }}>
         {isStart && <NBadge bg="#22c55e18" fg="#22c55e" border="#22c55e">START</NBadge>}
         {data.is_dc && <NBadge bg="#ea580c18" fg="#ea580c" border="#ea580c">DC</NBadge>}
+        {data.is_internet_facing && <NBadge bg="#7c3aed18" fg="#7c3aed" border="#7c3aed">EXT</NBadge>}
         {data.critical_count > 0 && <NBadge bg="var(--danger-subtle)" fg="var(--danger)" border="var(--danger)">{data.critical_count}C</NBadge>}
         {data.high_count > 0 && <NBadge bg="var(--warning-subtle)" fg="var(--warning)" border="var(--warning)">{data.high_count}H</NBadge>}
         {!data.has_av && <NBadge bg="var(--danger-subtle)" fg="var(--danger)" border="var(--danger)">NoAV</NBadge>}
@@ -200,16 +238,26 @@ const NODE_LEGEND = [
 ]
 
 const EDGE_LEGEND = [
+  // Identity & access
   { key: 'domain_admin',        color: '#ef4444', label: 'Domain Admin' },
   { key: 'local_admin',         color: '#f59e0b', label: 'Local Admin' },
+  { key: 'credential_exposure', color: '#a855f7', label: 'Cred Exposure' },
+  { key: 'weak_credential',     color: '#dc2626', label: 'Weak Cred' },
+  // Remote access
   { key: 'rdp_access',          color: '#0ea5e9', label: 'RDP Access' },
   { key: 'dcom_access',         color: '#06b6d4', label: 'DCOM Access' },
+  { key: 'power_user',          color: '#d97706', label: 'Power User' },
   { key: 'winrm_access',        color: '#7c3aed', label: 'WinRM' },
   { key: 'ssh_access',          color: '#10b981', label: 'SSH Access' },
   { key: 'sudo_access',         color: '#dc2626', label: 'Sudo Access' },
   { key: 'docker_access',       color: '#1d4ed8', label: 'Docker' },
+  { key: 'admin_read',          color: 'var(--text-secondary)', label: 'Admin Read' },
+  // Network & infrastructure
   { key: 'network_connection',  color: '#3b82f6', label: 'Network' },
-  { key: 'credential_exposure', color: '#a855f7', label: 'Cred Exposure' },
+  { key: 'domain_trust',        color: '#f97316', label: 'Domain Trust' },
+  { key: 'writeable_share',     color: '#2563eb', label: 'Writeable Share' },
+  // Persistence
+  { key: 'scheduled_task',      color: '#e11d48', label: 'Sched Task' },
 ]
 
 // ── Mini ReactFlow graph ──────────────────────────────────────────────────
@@ -220,21 +268,45 @@ function BlastRadiusFlow({ data }) {
   const [blastNode, setBlastNode] = useState(null)
   const [legendFilter, setLegendFilter] = useState(null)
 
-  const styledEdges = useMemo(() =>
-    data.edges.map(e => ({
-      ...e,
-      animated: e.type === 'credential_exposure',
-      style: { stroke: EDGE_CFG[e.type]?.color || '#475569', strokeWidth: 1.5 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: EDGE_CFG[e.type]?.color || '#475569', width: 12, height: 12 },
-      label: e.data?.label,
-      labelStyle: { fontSize: 9, fill: '#64748b' },
-      labelBgStyle: { fill: '#f9fafb', fillOpacity: 0.95 },
-      labelBgPadding: [2, 4],
-      labelBgBorderRadius: 3,
-    })),
-  [data.edges])
+  // Filter out self-loop edges (they can't be rendered well in ReactFlow)
+  const displayEdges = useMemo(() => data.edges.filter(e => e.source !== e.target), [data.edges])
 
-  const positioned = useMemo(() => layoutNodes(data.nodes, data.edges), [data.nodes, data.edges])
+  const styledEdges = useMemo(() => {
+    // Count edges between each pair — if multiple, show detail; if unique, short type is enough
+    const pairCounts = {}
+    displayEdges.forEach(e => {
+      const pk = `${e.source}→${e.target}`
+      pairCounts[pk] = (pairCounts[pk] || 0) + 1
+    })
+    const busy = displayEdges.length > 20
+
+    return displayEdges.map(e => {
+      const cfg = EDGE_CFG[e.type] || {}
+      const color = cfg.color || '#475569'
+      const shortLabel = cfg.label || e.type.replace(/_/g, ' ')
+      const detailLabel = e.data?.label || shortLabel
+      const pk = `${e.source}→${e.target}`
+      // If multiple edges between same pair, always show detail to distinguish them
+      // On busy graphs, use short type name; otherwise full detail
+      const displayLabel = pairCounts[pk] > 1 ? detailLabel : (busy ? shortLabel : detailLabel)
+      return {
+        ...e,
+        animated: e.type === 'credential_exposure',
+        style: {
+          stroke: color, strokeWidth: 1.5,
+          ...(cfg.dash ? { strokeDasharray: cfg.dash } : {}),
+        },
+        markerEnd: { type: MarkerType.ArrowClosed, color, width: 12, height: 12 },
+        label: displayLabel,
+        labelStyle: { fontSize: busy ? 8 : 9, fill: color },
+        labelBgStyle: { fill: 'var(--bg-card)', fillOpacity: 0.92 },
+        labelBgPadding: [2, 4],
+        labelBgBorderRadius: 3,
+      }
+    })
+  }, [displayEdges])
+
+  const positioned = useMemo(() => layoutNodes(data.nodes, displayEdges), [data.nodes, displayEdges])
 
   useEffect(() => {
     if (!data.nodes.length) return
@@ -299,7 +371,7 @@ function BlastRadiusFlow({ data }) {
     const q = [focusId]
     while (q.length) {
       const cur = q.shift()
-      data.edges.forEach(e => {
+      displayEdges.forEach(e => {
         if (e.source === cur && !reachable.has(e.target)) {
           reachable.add(e.target); q.push(e.target)
         }
@@ -318,7 +390,7 @@ function BlastRadiusFlow({ data }) {
         opacity: hasBlast && !(reachable.has(e.source) && reachable.has(e.target)) ? 0.06 : 1,
       },
     })))
-  }, [data, blastNode, legendFilter, styledEdges, positioned])
+  }, [data, blastNode, legendFilter, styledEdges, positioned, displayEdges])
 
   const onNodeClick = useCallback((_, node) => {
     setLegendFilter(null)
@@ -585,6 +657,24 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
               <span style={{ fontSize: 10, background: 'rgba(14,165,233,0.1)', color: 'var(--info)',
                 border: '1px solid var(--info)', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
                 RDP/DCOM
+              </span>
+            )}
+            {data.has_weak_creds && (
+              <span style={{ fontSize: 10, background: '#dc262618', color: '#dc2626',
+                border: '1px solid #dc2626', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
+                WeakCred
+              </span>
+            )}
+            {data.has_exploitable && (
+              <span style={{ fontSize: 10, background: '#7f1d1d18', color: '#b91c1c',
+                border: '1px solid #b91c1c', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
+                Exploit
+              </span>
+            )}
+            {data.has_exposed_dbs && (
+              <span style={{ fontSize: 10, background: 'rgba(99,102,241,0.1)', color: '#6366f1',
+                border: '1px solid #6366f1', borderRadius: 4, padding: '2px 6px', fontWeight: 700 }}>
+                DB
               </span>
             )}
           </div>

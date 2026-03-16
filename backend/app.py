@@ -4631,6 +4631,43 @@ def get_blast_radius_bulk(
     for u in all_users_scan:
         users_by_asset.setdefault(u.asset_id, []).append(u)
 
+    # Pre-fetch new data sources for enhanced scoring
+    all_creds = db.query(InventoryCredential).filter(InventoryCredential.scan_id == scan_id).all()
+    creds_by_asset: dict[int, list] = {}
+    for c in all_creds:
+        creds_by_asset.setdefault(c.asset_id, []).append(c)
+
+    all_exploitable = db.query(Finding).filter(
+        Finding.scan_id == scan_id, Finding.severity >= 3, Finding.exploit_available == True,
+    ).all()
+    exploitable_by_asset: dict[int, list] = {}
+    for f in all_exploitable:
+        exploitable_by_asset.setdefault(f.asset_id, []).append(f)
+
+    all_dbs = db.query(InventoryDatabaseInstance).filter(
+        InventoryDatabaseInstance.scan_id == scan_id, InventoryDatabaseInstance.is_running == True,
+    ).all()
+    dbs_by_asset: dict[int, list] = {}
+    for d in all_dbs:
+        dbs_by_asset.setdefault(d.asset_id, []).append(d)
+
+    all_patches = db.query(InventoryPatch).filter(InventoryPatch.scan_id == scan_id).all()
+    patches_by_asset: dict[int, list] = {}
+    for p in all_patches:
+        if (p.vuln_count or 0) >= 5:
+            patches_by_asset.setdefault(p.asset_id, []).append(p)
+
+    # Scheduled tasks running as privileged users
+    all_schtasks = db.query(InventoryScheduledTask).filter(InventoryScheduledTask.scan_id == scan_id).all()
+    schtask_priv_assets: set = set()
+    for t in all_schtasks:
+        run_user = (t.run_as_user or "").strip().lower()
+        if run_user and run_user in users_by_name:
+            for mu in users_by_name[run_user]:
+                if mu.is_domain_admin or mu.is_local_admin or mu.is_privileged:
+                    schtask_priv_assets.add(t.asset_id)
+                    break
+
     results = {}
 
     for asset in all_assets:
@@ -4730,12 +4767,24 @@ def get_blast_radius_bulk(
 
         dc_reachable = bool(reachable & dc_asset_ids)
 
+        # Additional factors from new data sources
+        has_weak_creds = len(creds_by_asset.get(asset_id, [])) > 0
+        has_exploitable = len(exploitable_by_asset.get(asset_id, [])) > 0
+        has_exposed_dbs = len(dbs_by_asset.get(asset_id, [])) > 0
+        has_schtask_priv = asset_id in schtask_priv_assets
+        has_missing_patches = len(patches_by_asset.get(asset_id, [])) > 0
+
         score = min(len(reachable) * 1.5, 5.0)
         if dc_reachable:              score += 3.0
         if da_exposed:                score += 2.0
         elif la_exposed:              score += 1.0
         if kerb_exposed:              score += 1.0
         if group_access_exposed:      score += 0.5
+        if has_weak_creds:            score += 1.5
+        if has_exploitable:           score += 1.0
+        if has_schtask_priv:          score += 0.5
+        if has_missing_patches:       score += 0.5
+        if has_exposed_dbs:           score += 0.5
         score = min(round(score, 1), 10.0)
 
         results[str(asset_id)] = {
@@ -4745,6 +4794,9 @@ def get_blast_radius_bulk(
             "da_exposed": da_exposed,
             "dc_reachable": dc_reachable,
             "group_access_exposed": group_access_exposed,
+            "has_weak_creds": has_weak_creds,
+            "has_exploitable": has_exploitable,
+            "has_exposed_dbs": has_exposed_dbs,
         }
 
     return results
@@ -4795,8 +4847,9 @@ def get_blast_radius(
 
     def _asset_node_data(a):
         return {
-            "label": a.ip or a.hostname or f"Asset {a.id}",
+            "label": a.hostname or a.fqdn or a.netbios_name or a.ip or f"Asset {a.id}",
             "ip": a.ip, "hostname": a.hostname, "os": a.os,
+            "is_internet_facing": a.is_internet_facing,
             "risk_score": a.risk_score, "criticality": a.criticality,
             "critical_count": a.critical_count, "high_count": a.high_count,
             "medium_count": a.medium_count,
@@ -4815,6 +4868,12 @@ def get_blast_radius(
             edges.append({"id": eid, "source": source, "target": target,
                           "type": etype, "data": {"label": label}})
 
+    def _user_nid(u):
+        """Canonical node ID for a user — deduplicates same user across assets."""
+        name = (u.username or "unknown").lower()
+        dom = (u.domain or "local").lower()
+        return f"user-{dom}-{name}"
+
     def _user_node_data(u):
         return {
             "label": u.username or "unknown",
@@ -4828,6 +4887,21 @@ def get_blast_radius(
             "password_never_expires": u.password_never_expires,
             "member_of": u.member_of or [],
         }
+
+    def _add_user_node(u):
+        """Add user node with dedup — merges privilege flags from multiple records."""
+        nid = _user_nid(u)
+        if nid in nodes:
+            # Merge: elevate privilege flags from any record
+            d = nodes[nid]["data"]
+            if u.is_domain_admin: d["is_domain_admin"] = True
+            if u.is_local_admin:  d["is_local_admin"] = True
+            if u.is_privileged:   d["is_privileged"] = True
+            if u.spns:            d["kerberoastable"] = True
+            if u.password_never_expires: d["password_never_expires"] = True
+        else:
+            add_node(nid, "user", _user_node_data(u))
+        return nid
 
     # Pre-compute DC asset IDs for group membership paths
     dc_asset_ids = [a.id for a in all_assets if _asset_dc(a.id)]
@@ -4894,9 +4968,8 @@ def get_blast_radius(
                 ).first()
                 if not user:
                     continue
-                unid = f"user-{user.id}"
-                add_node(unid, "user", _user_node_data(user))
-                add_edge(f"e-logon-{cur_id}-{user.id}",
+                unid = _add_user_node(user)
+                add_edge(f"e-logon-{cur_id}-{unid}",
                          f"asset-{cur_id}", unid, "credential_exposure", "Logged On")
 
             # 3. Admin accounts declared on this asset
@@ -4908,11 +4981,10 @@ def get_blast_radius(
                     InventoryUser.is_local_admin == True,
                 ),
             ).all():
-                unid = f"user-{user.id}"
-                add_node(unid, "user", _user_node_data(user))
+                unid = _add_user_node(user)
                 etype = "domain_admin" if user.is_domain_admin else "local_admin"
                 elabel = "Domain Admin" if user.is_domain_admin else "Local Admin"
-                add_edge(f"e-admin-{user.id}-{cur_id}",
+                add_edge(f"e-admin-{unid}-{cur_id}",
                          unid, f"asset-{cur_id}", etype, elabel)
 
                 # Domain admins expose all other assets they control (1 hop)
@@ -4928,7 +5000,7 @@ def get_blast_radius(
                             continue
                         add_node(f"asset-{other.asset_id}", "asset",
                                  _asset_node_data(other_asset))
-                        add_edge(f"e-admin-{user.id}-{other.asset_id}",
+                        add_edge(f"e-admin-{unid}-{other.asset_id}",
                                  unid, f"asset-{other.asset_id}",
                                  "domain_admin", "Domain Admin")
                         if other.asset_id not in visited_assets:
@@ -4952,9 +5024,8 @@ def get_blast_radius(
                     if cn_lower not in _AD_ACCESS_GROUPS:
                         continue
                     etype, elabel = _AD_ACCESS_GROUPS[cn_lower]
-                    unid = f"user-{user.id}"
-                    add_node(unid, "user", _user_node_data(user))
-                    add_edge(f"e-account-{user.id}-{cur_id}",
+                    unid = _add_user_node(user)
+                    add_edge(f"e-account-{unid}-{cur_id}",
                              f"asset-{cur_id}", unid,
                              "credential_exposure", "Has Account")
                     # Create edges to all DC assets
@@ -4964,7 +5035,7 @@ def get_blast_radius(
                             continue
                         add_node(f"asset-{dc_id}", "asset", _asset_node_data(dc_asset))
                         add_edge(
-                            f"e-grp-dc-{user.id}-{dc_id}-{cn_lower.replace(' ', '_')}",
+                            f"e-grp-dc-{unid}-{dc_id}-{cn_lower.replace(' ', '_')}",
                             unid, f"asset-{dc_id}",
                             etype, f"{elabel} → DC",
                         )
@@ -4989,15 +5060,158 @@ def get_blast_radius(
                     if not cn or cn.endswith("$"):
                         continue  # skip computer accounts
                     for mu in users_by_name_idx.get(cn.lower(), []):
-                        munid = f"user-{mu.id}"
-                        add_node(munid, "user", _user_node_data(mu))
+                        munid = _add_user_node(mu)
                         add_edge(
-                            f"e-grp-{mu.id}-{cur_id}-{etype}",
+                            f"e-grp-{munid}-{cur_id}-{etype}",
                             munid, f"asset-{cur_id}",
                             etype, elabel,
                         )
 
         queue = next_queue
+
+    # ── 6. Scheduled tasks running as privileged users (persistence paths) ──
+    for nid, n in list(nodes.items()):
+        if n["type"] != "asset":
+            continue
+        aid = int(nid.split("-")[1])
+        for task in db.query(InventoryScheduledTask).filter(
+            InventoryScheduledTask.asset_id == aid,
+            InventoryScheduledTask.scan_id == scan_id,
+        ).all():
+            run_user = (task.run_as_user or "").strip()
+            if not run_user:
+                continue
+            # Match to a known privileged user
+            for mu in users_by_name_idx.get(run_user.lower(), []):
+                if mu.is_domain_admin or mu.is_local_admin or mu.is_privileged:
+                    munid = _add_user_node(mu)
+                    add_edge(
+                        f"e-schtask-{task.id}-{munid}-{aid}",
+                        munid, nid,
+                        "scheduled_task", f"Task: {(task.task_uri or '?').rsplit(chr(92), 1)[-1][:20]}",
+                    )
+                    break
+
+    # ── 7. Domain trusts (cross-domain attack paths from DC assets) ──
+    for nid, n in list(nodes.items()):
+        if n["type"] != "asset" or not n["data"].get("is_dc"):
+            continue
+        aid = int(nid.split("-")[1])
+        for trust in db.query(InventoryDomainTrust).filter(
+            InventoryDomainTrust.asset_id == aid,
+            InventoryDomainTrust.scan_id == scan_id,
+        ).all():
+            # Try to find the trusted domain's DC asset by matching hostname/fqdn
+            trusted_name = (trust.trusted_domain or "").lower()
+            flat = (trust.flat_name or "").lower()
+            for other_a in all_assets:
+                other_fqdn = (other_a.fqdn or "").lower()
+                other_host = (other_a.hostname or "").lower()
+                if not (trusted_name and (trusted_name in other_fqdn or flat == other_host)):
+                    continue
+                if other_a.id == aid:
+                    continue
+                other_nid = f"asset-{other_a.id}"
+                add_node(other_nid, "asset", _asset_node_data(other_a))
+                direction = trust.trust_direction or "bidirectional"
+                add_edge(
+                    f"e-trust-{trust.id}",
+                    nid, other_nid,
+                    "domain_trust", f"Trust ({direction[:5]})",
+                )
+                if other_a.id not in visited_assets:
+                    visited_assets.add(other_a.id)
+
+    # ── 8. Weak / exposed credentials on visited assets ──
+    for nid, n in list(nodes.items()):
+        if n["type"] != "asset":
+            continue
+        aid = int(nid.split("-")[1])
+        for cred in db.query(InventoryCredential).filter(
+            InventoryCredential.asset_id == aid,
+            InventoryCredential.scan_id == scan_id,
+        ).limit(5).all():
+            proto = (cred.protocol or "unknown").upper()
+            add_edge(
+                f"e-cred-{cred.id}",
+                nid, nid,  # self-loop (vulnerability on this asset)
+                "weak_credential", f"{cred.credential_type or 'Weak'} ({proto}:{cred.port or '?'})",
+            )
+
+    # ── 9. Exploitable findings / CVEs on the focal asset ──
+    exploit_findings = db.query(Finding).filter(
+        Finding.asset_id == asset_id,
+        Finding.scan_id == scan_id,
+        Finding.severity >= 3,  # High + Critical
+        Finding.exploit_available == True,
+    ).limit(10).all()
+
+    # ── 10. Listening risky services on visited assets ──
+    _RISKY_PORTS = {
+        22: "SSH", 23: "Telnet", 135: "RPC", 139: "NetBIOS", 445: "SMB",
+        1433: "MSSQL", 1521: "Oracle", 3306: "MySQL", 3389: "RDP",
+        5432: "PostgreSQL", 5900: "VNC", 5985: "WinRM", 5986: "WinRM-S",
+        6379: "Redis", 8080: "HTTP-Alt", 8443: "HTTPS-Alt", 9200: "Elastic",
+        27017: "MongoDB",
+    }
+    listening_services = {}  # aid → list of (port, svc_name)
+    for nid, n in list(nodes.items()):
+        if n["type"] != "asset":
+            continue
+        aid = int(nid.split("-")[1])
+        for conn in db.query(InventoryNetConn).filter(
+            InventoryNetConn.asset_id == aid,
+            InventoryNetConn.scan_id == scan_id,
+            InventoryNetConn.state.in_(["LISTEN", "LISTENING"]),
+        ).all():
+            port = conn.local_port
+            if port and port in _RISKY_PORTS:
+                listening_services.setdefault(aid, []).append(
+                    (port, _RISKY_PORTS[port])
+                )
+
+    # ── 11. Missing critical patches on focal asset ──
+    missing_patches = db.query(InventoryPatch).filter(
+        InventoryPatch.asset_id == asset_id,
+        InventoryPatch.scan_id == scan_id,
+    ).all()
+    critical_patches = [p for p in missing_patches if (p.vuln_count or 0) >= 5]
+
+    # ── 12. Exposed database instances on visited assets ──
+    db_instances = {}  # aid → list of InventoryDatabaseInstance
+    for nid, n in list(nodes.items()):
+        if n["type"] != "asset":
+            continue
+        aid = int(nid.split("-")[1])
+        for dbi in db.query(InventoryDatabaseInstance).filter(
+            InventoryDatabaseInstance.asset_id == aid,
+            InventoryDatabaseInstance.scan_id == scan_id,
+            InventoryDatabaseInstance.is_running == True,
+        ).all():
+            db_instances.setdefault(aid, []).append(dbi)
+
+    # ── 13. Writeable shares on visited assets (explicit edges) ──
+    for nid, n in list(nodes.items()):
+        if n["type"] != "asset":
+            continue
+        aid = int(nid.split("-")[1])
+        for share in db.query(InventoryShare).filter(
+            InventoryShare.asset_id == aid,
+            InventoryShare.scan_id == scan_id,
+            InventoryShare.is_writeable == True,
+        ).limit(3).all():
+            add_edge(
+                f"e-share-{share.id}",
+                nid, nid,
+                "writeable_share", f"Share: {share.share_name or '?'}",
+            )
+
+    # ── 14. Expired / weak certificates on focal asset ──
+    expired_certs = db.query(InventoryCertificate).filter(
+        InventoryCertificate.asset_id == asset_id,
+        InventoryCertificate.scan_id == scan_id,
+        InventoryCertificate.is_expired == True,
+    ).all()
 
     # Compute blast radius score 0–10
     reachable_asset_ids = {
@@ -5022,12 +5236,29 @@ def get_blast_radius(
     ]
     group_access_exposed = len(group_access_edges) > 0
 
+    has_weak_creds = any(e["type"] == "weak_credential" for e in edges)
+    has_exploitable = len(exploit_findings) > 0
+    has_trust_paths = any(e["type"] == "domain_trust" for e in edges)
+    has_schtask_priv = any(e["type"] == "scheduled_task" for e in edges)
+    has_missing_patches = len(critical_patches) > 0
+    has_exposed_dbs = sum(len(v) for v in db_instances.values()) > 0
+    has_expired_certs = len(expired_certs) > 0
+    is_internet_facing = asset.is_internet_facing or False
+
     score = min(len(reachable_asset_ids) * 1.5, 5.0)
     if dc_reachable:              score += 3.0
     if da_exposed:                score += 2.0
     elif la_exposed:              score += 1.0
     if kerb_exposed:              score += 1.0
     if group_access_exposed:      score += 0.5
+    if has_weak_creds:            score += 1.5
+    if has_exploitable:           score += 1.0
+    if has_trust_paths:           score += 0.5
+    if has_schtask_priv:          score += 0.5
+    if has_missing_patches:       score += 0.5
+    if has_exposed_dbs:           score += 0.5
+    if has_expired_certs:         score += 0.3
+    if is_internet_facing:        score += 1.5  # externally reachable = major risk multiplier
     score = min(round(score, 1), 10.0)
 
     _GROUP_ACCESS_LABELS = {
@@ -5084,6 +5315,79 @@ def get_blast_radius(
                     "severity": aseverity,
                 })
 
+    # New vector categories
+    for f in exploit_findings:
+        cve_str = ", ".join((f.cves or [])[:3]) or f.plugin_name or f"Plugin {f.plugin_id}"
+        vectors.append({
+            "type": "vuln_exploit",
+            "label": f"Exploitable: {cve_str}" + (" [KEV]" if f.is_kev else ""),
+            "severity": "critical" if f.severity >= 4 else "high",
+        })
+    for e in edges:
+        if e["type"] == "weak_credential":
+            vectors.append({
+                "type": "weak_credential",
+                "label": f"Weak credential: {e['data']['label']}",
+                "severity": "critical",
+            })
+        elif e["type"] == "scheduled_task":
+            un = nodes.get(e["source"])
+            vectors.append({
+                "type": "scheduled_task",
+                "label": f"Privileged task: {un['data'].get('username', '?')} — {e['data']['label']}",
+                "severity": "high",
+            })
+        elif e["type"] == "domain_trust":
+            ta = nodes.get(e["target"])
+            vectors.append({
+                "type": "domain_trust",
+                "label": f"Domain trust → {ta['data'].get('label', '?')}",
+                "severity": "medium",
+            })
+        elif e["type"] == "writeable_share":
+            vectors.append({
+                "type": "writeable_share",
+                "label": f"Writeable share: {e['data']['label']}",
+                "severity": "medium",
+            })
+    for aid, svcs in listening_services.items():
+        a = asset_map.get(aid)
+        lbl = a.ip or a.hostname if a else str(aid)
+        svc_names = ", ".join(s[1] for s in svcs[:4])
+        vectors.append({
+            "type": "service_exposure",
+            "label": f"Risky services on {lbl}: {svc_names}",
+            "severity": "medium",
+        })
+    for aid, dbis in db_instances.items():
+        a = asset_map.get(aid)
+        lbl = a.ip or a.hostname if a else str(aid)
+        db_names = ", ".join(f"{d.db_type}:{d.port}" for d in dbis[:3])
+        vectors.append({
+            "type": "db_exposure",
+            "label": f"Database on {lbl}: {db_names}",
+            "severity": "high",
+        })
+    if critical_patches:
+        total_cves = sum(p.vuln_count or 0 for p in critical_patches)
+        vectors.append({
+            "type": "missing_patch",
+            "label": f"Missing {len(critical_patches)} critical patches ({total_cves} CVEs)",
+            "severity": "high",
+        })
+    if expired_certs:
+        vectors.append({
+            "type": "expired_cert",
+            "label": f"{len(expired_certs)} expired certificate(s)",
+            "severity": "medium",
+        })
+    if is_internet_facing:
+        vectors.insert(0, {
+            "type": "internet_facing",
+            "label": "Internet-facing asset — externally reachable",
+            "severity": "critical",
+        })
+
     return {
         "asset_id": asset_id,
         "score": score,
@@ -5093,7 +5397,10 @@ def get_blast_radius(
         "dc_reachable": dc_reachable,
         "kerberoastable_exposed": kerb_exposed,
         "group_access_exposed": group_access_exposed,
-        "vectors": vectors[:15],
+        "has_weak_creds": has_weak_creds,
+        "has_exploitable": has_exploitable,
+        "has_exposed_dbs": has_exposed_dbs,
+        "vectors": vectors[:25],
         "nodes": list(nodes.values()),
         "edges": edges,
     }
