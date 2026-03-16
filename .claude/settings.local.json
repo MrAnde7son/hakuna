@@ -147,7 +147,10 @@
       "Read(//Users/itamar/Downloads/**)",
       "Bash(python -c \"from agents.agent_engine import get_available_providers, get_default_model; print\\(''OK''\\)\")",
       "Bash(osascript -e 'quit app \"\"Docker Desktop\"\"')",
-      "Bash(osascript -e 'quit app \"\"Docker\"\"')"
+      "Bash(osascript -e 'quit app \"\"Docker\"\"')",
+      "Read(//Applications/Docker.app/**)",
+      "Bash(open -a \"Docker Desktop\")",
+      "Bash(open -a Docker)"
     ],
     "additionalDirectories": [
       "/Users/itamar/Documents/Git/nessus-remediation"
