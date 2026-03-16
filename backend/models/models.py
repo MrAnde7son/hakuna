@@ -21,6 +21,10 @@ class Organization(Base):
     settings = Column(JSON, default=dict)  # org-level config overrides
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # EASM integration (hakuna-scanner)
+    easm_org_id = Column(String, nullable=True)       # UUID of org in hakuna-scanner
+    easm_domain = Column(String, nullable=True)        # Corporate domain extracted from email
+
     parent = relationship("Organization", remote_side=[id], backref="children")
     users = relationship("User", back_populates="organization")
 

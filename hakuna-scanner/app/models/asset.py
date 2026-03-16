@@ -19,6 +19,7 @@ class Asset(Base):
     asn: Mapped[str | None] = mapped_column(String(32), nullable=True)
     asn_org: Mapped[str | None] = mapped_column(Text, nullable=True)
     open_ports: Mapped[list[int] | None] = mapped_column(ARRAY(Integer), nullable=True)
+    services: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     http_title: Mapped[str | None] = mapped_column(Text, nullable=True)
     http_url: Mapped[str | None] = mapped_column(Text, nullable=True)

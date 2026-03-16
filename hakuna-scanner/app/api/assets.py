@@ -29,6 +29,7 @@ class AssetResponse(BaseModel):
         return str(v) if v is not None else None
     asn_org: str | None = None
     open_ports: list[int] | None = None
+    services: dict | None = None
     http_status: int | None = None
     http_title: str | None = None
     http_url: str | None = None

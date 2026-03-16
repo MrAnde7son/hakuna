@@ -68,6 +68,7 @@ def _export_jsonl(assets: list[Asset]) -> StreamingResponse:
                 "hostname": a.hostname,
                 "ip": str(a.ip) if a.ip else None,
                 "open_ports": a.open_ports,
+                "services": a.services,
                 "http_url": a.http_url,
                 "http_status": a.http_status,
                 "tech_stack": a.tech_stack,

@@ -21,6 +21,7 @@ from core.auth import (
 )
 from core.audit import log_audit, diff as _diff
 from core.i18n import get_locale_from_request, t as translate
+from services.easm import trigger_easm_for_new_org
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -154,6 +155,12 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
 
     token = create_access_token(user.id, org.id, user.role)
     logger.info(f"New registration: {body.email} → org '{org.name}' (role={role})")
+
+    # Trigger EASM discovery for corporate email domains (non-blocking)
+    try:
+        await trigger_easm_for_new_org(db, org, body.email)
+    except Exception as e:
+        logger.warning(f"EASM trigger failed (non-fatal): {e}")
 
     return {
         "access_token": token,

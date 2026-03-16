@@ -8,7 +8,7 @@ class Settings(BaseSettings):
 
     celery_concurrency: int = 4
     scan_timeout_seconds: int = 600
-    naabu_ports: str = "80,443,8080,8443,8888,9000,9443,3000,5000"
+    naabu_ports: str = "21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1433,1521,2049,3306,3389,5432,5900,5985,6379,8080,8443,8888,9000,9443,3000,5000,27017"
     subfinder_sources: str = "all"
     uncover_sources: str = "shodan,censys,fofa"
     org_scan_stagger_seconds: int = 30

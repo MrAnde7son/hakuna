@@ -47,6 +47,7 @@ import services.workflow_engine as workflow_engine
 from services.nlp_search import parse_nlp_query
 import services.integrations as integ_module
 import services.ownership_inference as ownership_inference
+from services.easm import enrich_assets_from_easm
 import services.solution_aggregator as solution_aggregator
 from core.audit import log_audit, diff as _diff
 from core.auth import (
@@ -59,6 +60,7 @@ from routes.export import router as export_router
 from routes.config_portability import router as config_portability_router
 from routes.agent_routes import router as agent_router
 from routes.benchmark_routes import router as benchmark_router
+from routes.easm_routes import router as easm_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -260,6 +262,7 @@ app.include_router(export_router)
 app.include_router(config_portability_router)
 app.include_router(agent_router)
 app.include_router(benchmark_router)
+app.include_router(easm_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
@@ -1087,6 +1090,15 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             except Exception as e:
                 db.rollback()
                 logger.warning(f"Cross-scan asset dedup failed (non-fatal): {e}")
+
+    # ── EASM enrichment: match Nessus assets against external discovery data ──
+    if effective_org_id:
+        try:
+            easm_org = db.query(Organization).filter(Organization.id == effective_org_id).first()
+            if easm_org and easm_org.easm_org_id:
+                await enrich_assets_from_easm(db, easm_org, scan.id)
+        except Exception as e:
+            logger.warning(f"EASM enrichment failed (non-fatal): {e}")
 
     total_findings = len(parsed["findings"])
     total_assets = len(asset_map)

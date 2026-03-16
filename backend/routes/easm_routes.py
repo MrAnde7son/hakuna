@@ -1,0 +1,160 @@
+"""
+EASM (External Attack Surface Management) routes.
+Prefix: /api/easm
+"""
+import logging
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
+from core.database import get_db
+from core.auth import get_current_user, require_auth
+from models.models import Organization, User
+from services.easm import (
+    extract_corporate_domain,
+    trigger_easm_for_new_org,
+    import_easm_assets,
+    get_easm_assets,
+    get_easm_asset_stats,
+    get_easm_events,
+    get_easm_scan_status,
+    trigger_easm_scan,
+    add_easm_domain,
+)
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/easm", tags=["easm"])
+
+
+def _get_org(db: Session, user: User) -> Organization:
+    org = db.query(Organization).filter(Organization.id == user.org_id).first()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+    return org
+
+
+@router.get("/status")
+async def easm_status(db: Session = Depends(get_db), user: User = Depends(require_auth)):
+    """Get EASM integration status for the current org."""
+    org = _get_org(db, user)
+
+    if not org.easm_org_id:
+        return {
+            "enabled": False,
+            "domain": org.easm_domain,
+            "message": "EASM not configured. Register with a corporate email to enable.",
+        }
+
+    stats = await get_easm_asset_stats(org.easm_org_id)
+    return {
+        "enabled": True,
+        "domain": org.easm_domain,
+        "hakuna_org_id": org.easm_org_id,
+        "stats": stats,
+    }
+
+
+@router.post("/scan")
+async def trigger_scan(
+    scan_type: str = Query("full", regex="^(full|discovery|enrichment)$"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Manually trigger an EASM scan."""
+    org = _get_org(db, user)
+
+    if not org.easm_org_id:
+        raise HTTPException(400, "EASM not configured for this organization")
+
+    scan_id = await trigger_easm_scan(org.easm_org_id, scan_type)
+    if not scan_id:
+        raise HTTPException(502, "Failed to trigger EASM scan — hakuna-scanner may be unavailable")
+
+    return {"scan_id": scan_id, "scan_type": scan_type, "status": "queued"}
+
+
+@router.get("/scans/{scan_id}")
+async def scan_status(
+    scan_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Get status of a specific EASM scan."""
+    org = _get_org(db, user)
+    if not org.easm_org_id:
+        raise HTTPException(400, "EASM not configured")
+
+    status = await get_easm_scan_status(org.easm_org_id, scan_id)
+    if not status:
+        raise HTTPException(404, "Scan not found")
+    return status
+
+
+@router.get("/assets")
+async def list_easm_assets(
+    limit: int = Query(100, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """List EASM-discovered assets (from hakuna-scanner, not yet imported)."""
+    org = _get_org(db, user)
+    if not org.easm_org_id:
+        raise HTTPException(400, "EASM not configured")
+
+    assets = await get_easm_assets(org.easm_org_id, limit=limit, offset=offset)
+    if assets is None:
+        raise HTTPException(502, "Failed to fetch EASM assets")
+    return assets
+
+
+@router.post("/import")
+async def import_assets(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Import EASM-discovered assets into the main platform as a synthetic scan."""
+    org = _get_org(db, user)
+    if not org.easm_org_id:
+        raise HTTPException(400, "EASM not configured")
+
+    result = await import_easm_assets(db, org)
+    if result is None:
+        raise HTTPException(502, "Failed to import EASM assets")
+    return result
+
+
+@router.get("/events")
+async def list_events(
+    since: Optional[str] = None,
+    limit: int = Query(100, le=1000),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Get recent EASM change events (new assets, IP changes, cert expirations, etc.)."""
+    org = _get_org(db, user)
+    if not org.easm_org_id:
+        raise HTTPException(400, "EASM not configured")
+
+    events = await get_easm_events(org.easm_org_id, since=since, limit=limit)
+    if events is None:
+        raise HTTPException(502, "Failed to fetch EASM events")
+    return events
+
+
+@router.post("/domain")
+async def add_domain(
+    domain: str = Query(..., min_length=3),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Add an additional target domain for EASM scanning."""
+    org = _get_org(db, user)
+    if not org.easm_org_id:
+        raise HTTPException(400, "EASM not configured")
+
+    success = await add_easm_domain(org.easm_org_id, domain)
+    if not success:
+        raise HTTPException(502, "Failed to add domain")
+    return {"domain": domain, "status": "added"}

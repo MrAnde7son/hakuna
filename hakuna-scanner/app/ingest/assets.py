@@ -127,24 +127,45 @@ async def update_ports(
     org_id: uuid.UUID,
     port_results: list[dict],
 ) -> int:
-    """Update open_ports on assets from naabu output."""
+    """Update open_ports and services on assets from naabu -sV output."""
     host_ports: dict[str, list[int]] = {}
+    host_services: dict[str, dict[int, dict]] = {}
+
     for entry in port_results:
         host = (entry.get("host") or entry.get("ip") or "").strip().lower()
         port = entry.get("port")
-        if host and port:
-            host_ports.setdefault(host, []).append(int(port))
+        if not host or not port:
+            continue
+
+        port = int(port)
+        host_ports.setdefault(host, []).append(port)
+
+        # Extract service version info from naabu -sV
+        svc = entry.get("service") or {}
+        if svc:
+            host_services.setdefault(host, {})[port] = {
+                "name": svc.get("name", ""),
+                "product": svc.get("product", ""),
+                "version": svc.get("version", ""),
+            }
 
     updated = 0
     now = datetime.now(timezone.utc)
     for host, ports in host_ports.items():
         ports = sorted(set(ports))
+        services = host_services.get(host, {})
+        # Build services as {port: {name, product, version}}
+        services_json = json.dumps({str(p): services[p] for p in sorted(services)}) if services else None
+
         await db.execute(
             text("""
-                UPDATE assets SET open_ports = :ports, last_seen = :now
+                UPDATE assets SET
+                    open_ports = :ports,
+                    services = CASE WHEN :services IS NOT NULL THEN cast(:services as jsonb) ELSE services END,
+                    last_seen = :now
                 WHERE org_id = :org_id AND (hostname = :host OR host(ip) = :host)
             """),
-            {"ports": ports, "org_id": org_id, "host": host, "now": now},
+            {"ports": ports, "services": services_json, "org_id": org_id, "host": host, "now": now},
         )
         updated += 1
 
