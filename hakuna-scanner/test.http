@@ -1,0 +1,15 @@
+curl -X POST http://localhost:8001/api/v1/orgs \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "FXP"}'
+
+curl -X POST http://localhost:8001/api/v1/orgs/cf052e47-dd77-4009-b3c8-28b5bc34cdb2/domains \
+  -H 'Content-Type: application/json' \
+  -d '{"domain": "fxp.co.il"}'
+
+curl -X POST http://localhost:8001/api/v1/orgs/cf052e47-dd77-4009-b3c8-28b5bc34cdb2/scans \
+  -H 'Content-Type: application/json' \
+  -d '{"scan_type": "full"}'
+
+curl http://localhost:8001/api/v1/orgs/f38fbd8f-ecba-4a56-a0c0-fc5ca338b48b/scans
+
+curl http://localhost:8001/api/v1/orgs/cf052e47-dd77-4009-b3c8-28b5bc34cdb2/assets

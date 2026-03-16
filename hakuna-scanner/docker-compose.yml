@@ -1,0 +1,92 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: hakuna
+      POSTGRES_PASSWORD: hakuna
+      POSTGRES_DB: hakuna
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hakuna"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    command: >
+      sh -c "PYTHONPATH=/app alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload"
+    ports:
+      - "8001:8001"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna
+      DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna
+      REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app
+    volumes:
+      - .:/app
+      - pd_tools:/root/go/bin
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    tty: true
+    command: >
+      celery -A app.celery_app:celery worker
+      --loglevel=info
+      --concurrency=4
+      -Q celery
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna
+      DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna
+      REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app
+    volumes:
+      - .:/app
+      - pd_tools:/root/go/bin
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    command: >
+      celery -A app.celery_app:celery beat
+      --loglevel=info
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna
+      DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna
+      REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app
+    volumes:
+      - .:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  pg_data:
+  pd_tools:

@@ -626,7 +626,8 @@ function AppShell() {
                 <Route path="/tags" element={<TagManager />} />
                 <Route path="/threat-intel/:tab?" element={<ThreatIntelCenter />} />
                 <Route path="/settings" element={<Settings />} />
-                <Route path="/upload" element={<UploadScan />} />
+                <Route path="/scans" element={<Navigate to="/settings?tab=upload" replace />} />
+                <Route path="/upload" element={<Navigate to="/settings?tab=upload" replace />} />
                 <Route path="/profile" element={<UserManagement />} />
                 <Route path="/docs" element={<UserDocs />} />
               </Routes>

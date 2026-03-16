@@ -48,6 +48,7 @@ import services.workflow_engine as workflow_engine
 from services.nlp_search import parse_nlp_query
 import services.integrations as integ_module
 import services.ownership_inference as ownership_inference
+from services.easm import enrich_assets_from_easm
 import services.solution_aggregator as solution_aggregator
 from core.audit import log_audit, diff as _diff
 from core.auth import (
@@ -60,6 +61,7 @@ from routes.export import router as export_router
 from routes.config_portability import router as config_portability_router
 from routes.agent_routes import router as agent_router
 from routes.benchmark_routes import router as benchmark_router
+from routes.easm_routes import router as easm_router
 from routes.sbom_routes import router as sbom_router
 
 logging.basicConfig(level=logging.INFO)
@@ -262,6 +264,7 @@ app.include_router(export_router)
 app.include_router(config_portability_router)
 app.include_router(agent_router)
 app.include_router(benchmark_router)
+app.include_router(easm_router)
 app.include_router(sbom_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
@@ -1156,6 +1159,15 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
                 db.rollback()
                 logger.warning(f"Cross-scan asset dedup failed (non-fatal): {e}")
 
+    # ── EASM enrichment: match Nessus assets against external discovery data ──
+    if effective_org_id:
+        try:
+            easm_org = db.query(Organization).filter(Organization.id == effective_org_id).first()
+            if easm_org and easm_org.easm_org_id:
+                await enrich_assets_from_easm(db, easm_org, scan.id)
+        except Exception as e:
+            logger.warning(f"EASM enrichment failed (non-fatal): {e}")
+
     total_findings = len(parsed["findings"])
     total_assets = len(asset_map)
     logger.info(f"Ingested scan '{file.filename}': {total_assets} assets, {total_findings} findings")
@@ -1215,6 +1227,7 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
             "nessus_version": s.nessus_version,
             "source_type": s.source_type or "nessus",
             "source_version": s.source_version,
+            "raw_metadata": s.raw_metadata,
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "asset_count": asset_count,
             "finding_count": finding_count,
@@ -1510,6 +1523,8 @@ def _asset_to_dict(a: Asset) -> dict:
             "team": own.team,
             "notes": own.notes,
         } if own else None,
+        # EASM enrichment data
+        "easm_data": a.easm_data,
     }
 
 
@@ -2494,14 +2509,15 @@ def list_inventory_users(
 
 @app.get("/api/inventory/users/org-tree")
 def get_user_org_tree(
-    scan_id: int,
+    scan_id: Optional[int] = None,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Return a hierarchical org tree built from the manager attribute of human AD users."""
     q = db.query(InventoryUser).join(Scan, InventoryUser.scan_id == Scan.id)
     q = apply_scan_org_filter(q, org_ids)
-    q = q.filter(InventoryUser.scan_id == scan_id)
+    if scan_id:
+        q = q.filter(InventoryUser.scan_id == scan_id)
     q = q.filter(InventoryUser.identity_type == "human")
     users = q.all()
     assets = _asset_lookup(db, {u.asset_id for u in users})

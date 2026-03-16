@@ -145,7 +145,14 @@
       "Bash(curl -s -X POST http://localhost:8000/api/auth/login -H \"Content-Type: application/json\" -d '{\"\"email\"\":\"\"mizrahi.itamar@gmail.com\"\",\"\"password\"\":\"\"test123\"\"}' -v)",
       "Bash(grep -B5 -A5 \"preset: ''inv_user_types''\" /Users/itamar/Documents/Git/nessus-remediation/frontend/src/components/reports/ReportBuilder.jsx)",
       "Read(//Users/itamar/Downloads/**)",
-      "Bash(python -c \"from agents.agent_engine import get_available_providers, get_default_model; print\\(''OK''\\)\")"
+      "Bash(python -c \"from agents.agent_engine import get_available_providers, get_default_model; print\\(''OK''\\)\")",
+      "Bash(osascript -e 'quit app \"\"Docker Desktop\"\"')",
+      "Bash(osascript -e 'quit app \"\"Docker\"\"')",
+      "Read(//Applications/Docker.app/**)",
+      "Bash(open -a \"Docker Desktop\")",
+      "Bash(open -a Docker)",
+      "Bash(curl -s http://localhost:8001/api/v1/orgs)",
+      "Bash(python -c \"from services.easm import scan_domain, import_easm_assets_for_domain; from routes.easm_routes import router; print\\(''OK''\\)\")"
     ],
     "additionalDirectories": [
       "/Users/itamar/Documents/Git/nessus-remediation"
