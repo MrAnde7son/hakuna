@@ -269,6 +269,16 @@ export const getInventoryProcesses = (params) => _inv('processes', params)
 export const getInventoryDatabases = (params) => _inv('databases', params)
 export const getInventoryCredentials = (params) => _inv('credentials', params)
 
+// SBOM
+const _sbom = (path, params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/sbom/${path}${q.toString() ? '?' + q : ''}`)
+}
+export const getSBOMComponents = (params) => _sbom('components', params)
+export const getSBOMComponentVulns = (id) => request(`/sbom/components/${id}/vulnerabilities`)
+export const getSBOMBlastRadius = (params) => _sbom('blast-radius', params)
+export const getSBOMAssetSummary = (params) => _sbom('asset-summary', params)
+
 // Ownership
 export const setAssetOwnership = (id, data) =>
   request(`/assets/${id}/ownership`, {
