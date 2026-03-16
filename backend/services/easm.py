@@ -14,7 +14,7 @@ from typing import Optional
 import httpx
 
 from sqlalchemy.orm import Session
-from models.models import Organization, Scan, Asset
+from models.models import Organization, Scan, Asset, Finding
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +138,18 @@ async def get_easm_events(hakuna_org_id: str, since: Optional[str] = None, limit
     return data if isinstance(data, list) else None
 
 
+async def get_easm_domains(hakuna_org_id: str) -> Optional[list]:
+    """List target domains for a hakuna org."""
+    data = await _hakuna_request("GET", f"/orgs/{hakuna_org_id}/domains")
+    return data if isinstance(data, list) else None
+
+
+async def get_easm_scan_runs(hakuna_org_id: str, limit: int = 20) -> Optional[list]:
+    """List recent scan runs for a hakuna org."""
+    data = await _hakuna_request("GET", f"/orgs/{hakuna_org_id}/scans", params={"limit": limit})
+    return data if isinstance(data, list) else None
+
+
 # ── Registration hook ───────────────────────────────────────────────
 
 async def trigger_easm_for_new_org(db: Session, org: Organization, email: str):
@@ -176,22 +188,287 @@ async def trigger_easm_for_new_org(db: Session, org: Organization, email: str):
 
 # ── Asset import (EASM → main platform) ────────────────────────────
 
-async def import_easm_assets(db: Session, org: Organization) -> Optional[dict]:
-    """
-    Pull EASM-discovered assets from hakuna-scanner and create them as a
-    synthetic scan (source_type='easm') in the main platform.
+def _build_easm_data(ea: dict) -> dict:
+    """Build the easm_data blob from a hakuna-scanner asset."""
+    return {
+        "easm_asset_id": ea.get("id"),
+        "tech_stack": ea.get("tech_stack") or [],
+        "open_ports": ea.get("open_ports") or [],
+        "services": ea.get("services") or {},
+        "tls_cert": ea.get("tls_cert") or {},
+        "cdn_provider": ea.get("cdn_provider"),
+        "waf": ea.get("waf"),
+        "dns_records": ea.get("dns_records") or {},
+        "http_status": ea.get("http_status"),
+        "http_title": ea.get("http_title"),
+        "http_url": ea.get("http_url"),
+        "easm_tags": ea.get("tags") or [],
+        "easm_source": ea.get("source"),
+        "first_seen_easm": ea.get("first_seen"),
+        "last_seen_easm": ea.get("last_seen"),
+        "last_enriched_easm": ea.get("last_enriched"),
+    }
 
-    Returns summary dict or None on failure.
-    """
-    if not org.easm_org_id:
-        return None
 
-    easm_assets = await get_easm_assets(org.easm_org_id)
-    if not easm_assets:
-        logger.info(f"No EASM assets to import for org '{org.name}'")
-        return {"imported": 0}
+# ── EASM finding definitions ───────────────────────────────────────
 
-    # Create synthetic scan record
+SEVERITY_LABELS = {0: "Info", 1: "Low", 2: "Medium", 3: "High", 4: "Critical"}
+
+
+def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -> int:
+    """Generate one finding per EASM observation. Idempotent: skips existing plugin_id+asset combos."""
+    now = datetime.utcnow()
+    hostname = ea.get("hostname", "")
+
+    # Collect existing plugin_ids for this asset to skip duplicates
+    existing_plugins = set()
+    for f in db.query(Finding.plugin_id).filter(
+        Finding.scan_id == scan_id,
+        Finding.asset_id == asset.id,
+        Finding.source_type == "easm",
+    ).all():
+        existing_plugins.add(f.plugin_id)
+
+    findings_to_add = []
+
+    # ── Tech stack: one finding per technology ─────────────────────
+    for tech_name in (ea.get("tech_stack") or []):
+        pid = f"EASM-TECH-{tech_name.upper().replace(' ', '-')}"
+        if pid in existing_plugins:
+            continue
+        findings_to_add.append(Finding(
+            scan_id=scan_id, asset_id=asset.id,
+            source_type="easm", source_vuln_id=pid,
+            plugin_id=pid,
+            plugin_name=f"{tech_name} Detected",
+            plugin_family="EASM: Web Technology",
+            severity=0, severity_label="Info", risk_factor="None",
+            synopsis=f"The web technology '{tech_name}' was detected on {hostname}.",
+            description=f"External attack surface scanning identified that {hostname} is running {tech_name}. "
+                        f"This information was gathered via HTTP response analysis.",
+            solution="No action required. Review if this technology should be publicly exposed.",
+            plugin_output=f"Detected technology: {tech_name}\nHost: {hostname}",
+            first_seen=now, last_seen=now,
+        ))
+
+    # ── Open ports: one finding per port ──────────────────────────
+    services = ea.get("services") or {}
+    for port in (ea.get("open_ports") or []):
+        pid = f"EASM-PORT-{port}"
+        if pid in existing_plugins:
+            # Update last_seen on existing port finding
+            db.query(Finding).filter(
+                Finding.scan_id == scan_id,
+                Finding.asset_id == asset.id,
+                Finding.plugin_id == pid,
+            ).update({"last_seen": now})
+            continue
+        svc = services.get(str(port), {})
+        svc_name = svc.get("name", "unknown") if svc else "unknown"
+        svc_detail = f"{svc.get('product', '')} {svc.get('version', '')}".strip() if svc else ""
+        output_lines = [f"Port: {port}/tcp", f"State: open", f"Service: {svc_name}"]
+        if svc_detail:
+            output_lines.append(f"Product: {svc_detail}")
+        findings_to_add.append(Finding(
+            scan_id=scan_id, asset_id=asset.id,
+            source_type="easm", source_vuln_id=pid,
+            plugin_id=pid,
+            plugin_name=f"Open Port: {port}/tcp ({svc_name})",
+            plugin_family="EASM: Port Scan",
+            severity=0, severity_label="Info", risk_factor="None",
+            port=str(port), protocol="tcp",
+            synopsis=f"Port {port}/tcp is open on {hostname}.",
+            description=f"External port scanning identified that {hostname} has port {port}/tcp open "
+                        f"with service '{svc_name}'. This port is reachable from the internet.",
+            solution="Review if this port needs to be publicly accessible. Close unnecessary ports.",
+            plugin_output="\n".join(output_lines),
+            first_seen=now, last_seen=now,
+        ))
+
+    # ── TLS certificate ───────────────────────────────────────────
+    cert = ea.get("tls_cert") or {}
+    if cert.get("expiry"):
+        pid = "EASM-TLS-CERT"
+        expiry_str = cert["expiry"]
+        try:
+            expiry = datetime.fromisoformat(expiry_str.replace("Z", "+00:00"))
+            days_left = (expiry - datetime.utcnow()).days
+        except (ValueError, AttributeError):
+            expiry = None
+            days_left = None
+
+        # Severity based on expiry
+        if days_left is not None and days_left < 0:
+            sev, sev_label, risk = 4, "Critical", "Critical"
+        elif days_left is not None and days_left < 30:
+            sev, sev_label, risk = 3, "High", "High"
+        elif days_left is not None and days_left < 90:
+            sev, sev_label, risk = 2, "Medium", "Medium"
+        else:
+            sev, sev_label, risk = 0, "Info", "None"
+
+        if pid in existing_plugins:
+            # Update severity — cert may have moved from info to expiring
+            db.query(Finding).filter(
+                Finding.scan_id == scan_id,
+                Finding.asset_id == asset.id,
+                Finding.plugin_id == pid,
+            ).update({
+                "severity": sev, "severity_label": sev_label, "risk_factor": risk,
+                "last_seen": now,
+                "plugin_output": _build_tls_output(hostname, cert, days_left),
+            })
+        else:
+            findings_to_add.append(Finding(
+                scan_id=scan_id, asset_id=asset.id,
+                source_type="easm", source_vuln_id=pid,
+                plugin_id=pid,
+                plugin_name="TLS Certificate" if sev == 0 else (
+                    "TLS Certificate Expired" if days_left < 0 else "TLS Certificate Expiring Soon"
+                ),
+                plugin_family="EASM: TLS/SSL",
+                severity=sev, severity_label=sev_label, risk_factor=risk,
+                synopsis=f"TLS certificate for {hostname} — {'expired' if days_left is not None and days_left < 0 else f'{days_left} days remaining' if days_left is not None else 'unknown expiry'}.",
+                description=f"External TLS inspection of {hostname} revealed certificate details. "
+                            f"Issuer: {cert.get('issuer', 'unknown')}. "
+                            f"Subject: {cert.get('subject', 'unknown')}.",
+                solution="Renew the certificate before expiry." if sev > 0 else "No action required.",
+                plugin_output=_build_tls_output(hostname, cert, days_left),
+                first_seen=now, last_seen=now,
+            ))
+
+    # ── CDN detection ─────────────────────────────────────────────
+    cdn = ea.get("cdn_provider")
+    if cdn:
+        pid = f"EASM-CDN-{cdn.upper().replace(' ', '-')}"
+        if pid not in existing_plugins:
+            findings_to_add.append(Finding(
+                scan_id=scan_id, asset_id=asset.id,
+                source_type="easm", source_vuln_id=pid,
+                plugin_id=pid,
+                plugin_name=f"CDN Detected: {cdn}",
+                plugin_family="EASM: Infrastructure",
+                severity=0, severity_label="Info", risk_factor="None",
+                synopsis=f"{hostname} is behind CDN provider '{cdn}'.",
+                description=f"External scanning detected that {hostname} routes traffic through {cdn} CDN. "
+                            f"This means the origin server IP may be hidden behind CDN infrastructure.",
+                solution="No action required. Ensure CDN configuration is properly secured.",
+                plugin_output=f"CDN Provider: {cdn}\nHost: {hostname}",
+                first_seen=now, last_seen=now,
+            ))
+
+    # ── WAF detection ─────────────────────────────────────────────
+    waf = ea.get("waf")
+    if waf:
+        pid = f"EASM-WAF-{waf.upper().replace(' ', '-')}"
+        if pid not in existing_plugins:
+            findings_to_add.append(Finding(
+                scan_id=scan_id, asset_id=asset.id,
+                source_type="easm", source_vuln_id=pid,
+                plugin_id=pid,
+                plugin_name=f"WAF Detected: {waf}",
+                plugin_family="EASM: Infrastructure",
+                severity=0, severity_label="Info", risk_factor="None",
+                synopsis=f"{hostname} is protected by WAF '{waf}'.",
+                description=f"External scanning detected that {hostname} is protected by the {waf} web application firewall.",
+                solution="No action required. Ensure WAF rules are kept up to date.",
+                plugin_output=f"WAF: {waf}\nHost: {hostname}",
+                first_seen=now, last_seen=now,
+            ))
+
+    # ── HTTP service ──────────────────────────────────────────────
+    http_status = ea.get("http_status")
+    if http_status is not None:
+        pid = "EASM-HTTP-SERVICE"
+        http_title = ea.get("http_title") or ""
+        http_url = ea.get("http_url") or ""
+        if pid not in existing_plugins:
+            findings_to_add.append(Finding(
+                scan_id=scan_id, asset_id=asset.id,
+                source_type="easm", source_vuln_id=pid,
+                plugin_id=pid,
+                plugin_name=f"HTTP Service Detected ({http_status})",
+                plugin_family="EASM: Web Service",
+                severity=0, severity_label="Info", risk_factor="None",
+                port="443" if http_url.startswith("https") else "80", protocol="tcp",
+                synopsis=f"HTTP service detected on {hostname}.",
+                description=f"External HTTP probing of {hostname} returned status {http_status}.",
+                solution="No action required. Verify the service should be publicly accessible.",
+                plugin_output=f"URL: {http_url}\nStatus: {http_status}\nTitle: {http_title}",
+                first_seen=now, last_seen=now,
+            ))
+        else:
+            db.query(Finding).filter(
+                Finding.scan_id == scan_id,
+                Finding.asset_id == asset.id,
+                Finding.plugin_id == pid,
+            ).update({
+                "last_seen": now,
+                "plugin_output": f"URL: {http_url}\nStatus: {http_status}\nTitle: {http_title}",
+            })
+
+    # ── DNS records ───────────────────────────────────────────────
+    dns = ea.get("dns_records") or {}
+    if dns:
+        pid = "EASM-DNS-RECORDS"
+        if pid not in existing_plugins:
+            output_lines = [f"Host: {hostname}"]
+            for rtype, values in dns.items():
+                if isinstance(values, list):
+                    for v in values:
+                        output_lines.append(f"  {rtype}: {v}")
+                else:
+                    output_lines.append(f"  {rtype}: {values}")
+            findings_to_add.append(Finding(
+                scan_id=scan_id, asset_id=asset.id,
+                source_type="easm", source_vuln_id=pid,
+                plugin_id=pid,
+                plugin_name="DNS Records",
+                plugin_family="EASM: DNS",
+                severity=0, severity_label="Info", risk_factor="None",
+                synopsis=f"DNS records for {hostname}.",
+                description=f"External DNS resolution for {hostname} returned the following records.",
+                solution="No action required. Review DNS records for accuracy.",
+                plugin_output="\n".join(output_lines),
+                first_seen=now, last_seen=now,
+            ))
+
+    db.add_all(findings_to_add)
+    return len(findings_to_add)
+
+
+def _build_tls_output(hostname: str, cert: dict, days_left: Optional[int]) -> str:
+    lines = [f"Host: {hostname}"]
+    if cert.get("subject"):
+        lines.append(f"Subject: {cert['subject']}")
+    if cert.get("issuer"):
+        lines.append(f"Issuer: {cert['issuer']}")
+    if cert.get("sans"):
+        sans = cert["sans"] if isinstance(cert["sans"], list) else [cert["sans"]]
+        lines.append(f"SANs: {', '.join(sans)}")
+    if cert.get("expiry"):
+        lines.append(f"Expiry: {cert['expiry']}")
+    if days_left is not None:
+        lines.append(f"Days remaining: {days_left}")
+    if cert.get("version"):
+        lines.append(f"TLS Version: {cert['version']}")
+    if cert.get("cipher"):
+        lines.append(f"Cipher: {cert['cipher']}")
+    return "\n".join(lines)
+
+
+def _get_or_create_easm_scan(db: Session, org: Organization) -> Scan:
+    """Find the existing EASM scan for this org, or create one."""
+    scan = (
+        db.query(Scan)
+        .filter(Scan.org_id == org.id, Scan.source_type == "easm")
+        .first()
+    )
+    if scan:
+        # Update the scan date to reflect latest sync
+        scan.scan_date = datetime.utcnow().isoformat()
+        return scan
+
     scan = Scan(
         org_id=org.id,
         filename=f"easm-discovery-{org.easm_domain}",
@@ -202,23 +479,54 @@ async def import_easm_assets(db: Session, org: Organization) -> Optional[dict]:
         raw_metadata={
             "hakuna_org_id": org.easm_org_id,
             "domain": org.easm_domain,
-            "asset_count": len(easm_assets),
         },
     )
     db.add(scan)
     db.flush()
+    return scan
 
-    imported = 0
+
+async def import_easm_assets(db: Session, org: Organization) -> Optional[dict]:
+    """
+    Pull EASM-discovered assets from hakuna-scanner and upsert them
+    into a single EASM scan in the main platform.
+
+    Idempotent: updates existing assets by hostname, creates new ones.
+    Returns summary dict or None on failure.
+    """
+    if not org.easm_org_id:
+        return None
+
+    easm_assets = await get_easm_assets(org.easm_org_id)
+    if not easm_assets:
+        logger.info(f"No EASM assets to import for org '{org.name}'")
+        return {"imported": 0, "updated": 0}
+
+    scan = _get_or_create_easm_scan(db, org)
+
+    # Index existing EASM assets by fqdn for upsert
+    existing = {}
+    for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
+        if a.fqdn:
+            existing[a.fqdn.lower()] = a
+        elif a.ip:
+            existing[a.ip] = a
+
+    created = 0
+    updated = 0
+    findings_created = 0
+    now = datetime.utcnow()
+
     for ea in easm_assets:
         hostname = ea.get("hostname", "")
         ip = ea.get("ip", "")
         if not hostname and not ip:
             continue
 
-        # Build FQDN from hostname
         fqdn = hostname if "." in hostname else None
+        easm_data = _build_easm_data(ea)
 
-        # Build OS hint from tech_stack if available
+        # Try OS detection from tech stack
         tech = ea.get("tech_stack") or []
         os_hint = None
         if isinstance(tech, list):
@@ -228,31 +536,66 @@ async def import_easm_assets(db: Session, org: Organization) -> Optional[dict]:
                     os_hint = t
                     break
 
-        # Map open ports to a summary string
-        ports = ea.get("open_ports") or []
-        services_data = ea.get("services") or {}
+        # Upsert: find by fqdn or ip
+        lookup_key = (fqdn or "").lower() or ip
+        asset = existing.get(lookup_key)
 
-        asset = Asset(
-            scan_id=scan.id,
-            ip=ip or None,
-            hostname=hostname.split(".")[0] if hostname else None,
-            fqdn=fqdn,
-            os=os_hint,
-            is_internet_facing=True,  # EASM assets are external by definition
-            environment_tag="external",
-            criticality=5,
-            first_seen=datetime.utcnow(),
-            last_seen=datetime.utcnow(),
-        )
-        db.add(asset)
-        imported += 1
+        if asset:
+            # Update existing
+            asset.ip = ip or asset.ip
+            asset.easm_data = easm_data
+            asset.last_seen = now
+            asset.is_internet_facing = True
+            if os_hint and not asset.os:
+                asset.os = os_hint
+            updated += 1
+        else:
+            # Create new
+            asset = Asset(
+                scan_id=scan.id,
+                ip=ip or None,
+                hostname=hostname.split(".")[0] if hostname else None,
+                fqdn=fqdn,
+                os=os_hint,
+                is_internet_facing=True,
+                environment_tag="external",
+                criticality=5,
+                first_seen=now,
+                last_seen=now,
+                easm_data=easm_data,
+            )
+            db.add(asset)
+            db.flush()  # Need asset.id for findings
+            created += 1
+
+        # Generate findings for this asset
+        findings_created += _generate_easm_findings(db, scan.id, asset, ea)
+
+    # Update scan metadata
+    scan.raw_metadata = {
+        "hakuna_org_id": org.easm_org_id,
+        "domain": org.easm_domain,
+        "asset_count": created + updated,
+        "last_sync": now.isoformat(),
+    }
+
+    # Update asset severity counts
+    for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
+        counts = {"critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0, "info_count": 0}
+        for f in db.query(Finding.severity).filter(Finding.asset_id == a.id).all():
+            key = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}.get(f.severity, "info_count")
+            counts[key] += 1
+        for k, v in counts.items():
+            setattr(a, k, v)
 
     db.commit()
-    logger.info(f"Imported {imported} EASM assets for org '{org.name}' (scan_id={scan.id})")
+    logger.info(f"EASM sync for org '{org.name}': assets created={created} updated={updated}, findings={findings_created} (scan_id={scan.id})")
 
     return {
         "scan_id": scan.id,
-        "imported": imported,
+        "created": created,
+        "updated": updated,
+        "findings_created": findings_created,
         "domain": org.easm_domain,
     }
 
@@ -322,6 +665,9 @@ async def enrich_assets_from_easm(db: Session, org: Organization, scan_id: int):
         # Store EASM metadata in environment_tag if not already set
         if asset.environment_tag in (None, "internal"):
             asset.environment_tag = "internet-facing"
+
+        # Store full EASM enrichment data
+        asset.easm_data = _build_easm_data(ea)
 
         enriched += 1
 

@@ -2,15 +2,15 @@ curl -X POST http://localhost:8001/api/v1/orgs \
   -H 'Content-Type: application/json' \
   -d '{"name": "FXP"}'
 
-curl -X POST http://localhost:8001/api/v1/orgs/adaf0476-3c69-42af-9345-bf9818106da9/domains \
+curl -X POST http://localhost:8001/api/v1/orgs/cf052e47-dd77-4009-b3c8-28b5bc34cdb2/domains \
   -H 'Content-Type: application/json' \
   -d '{"domain": "fxp.co.il"}'
 
-curl -X POST http://localhost:8001/api/v1/orgs/adaf0476-3c69-42af-9345-bf9818106da9/scans \
+curl -X POST http://localhost:8001/api/v1/orgs/cf052e47-dd77-4009-b3c8-28b5bc34cdb2/scans \
   -H 'Content-Type: application/json' \
   -d '{"scan_type": "full"}'
 
-curl http://localhost:8001/api/v1/orgs/adaf0476-3c69-42af-9345-bf9818106da9/scans
+curl http://localhost:8001/api/v1/orgs/cf052e47-dd77-4009-b3c8-28b5bc34cdb2/scans
 
-curl http://localhost:8001/api/v1/orgs/adaf0476-3c69-42af-9345-bf9818106da9/assets
+curl http://localhost:8001/api/v1/orgs/cf052e47-dd77-4009-b3c8-28b5bc34cdb2/assets
 

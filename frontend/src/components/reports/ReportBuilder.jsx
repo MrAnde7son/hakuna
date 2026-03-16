@@ -3188,7 +3188,7 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
                 </div>
               </div>
               <button
-                onClick={() => navigate('/upload')}
+                onClick={() => navigate('/settings?tab=upload')}
                 style={{
                   marginTop: 4, padding: '10px 24px', background: 'var(--accent)', border: 'none',
                   color: '#fff', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14,

@@ -161,7 +161,7 @@ async def update_ports(
             text("""
                 UPDATE assets SET
                     open_ports = :ports,
-                    services = CASE WHEN :services IS NOT NULL THEN cast(:services as jsonb) ELSE services END,
+                    services = COALESCE(cast(:services as json), services),
                     last_seen = :now
                 WHERE org_id = :org_id AND (hostname = :host OR host(ip) = :host)
             """),

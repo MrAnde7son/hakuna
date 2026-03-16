@@ -49,6 +49,7 @@ services:
 
   worker:
     build: .
+    tty: true
     command: >
       celery -A app.celery_app:celery worker
       --loglevel=info

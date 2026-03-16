@@ -81,6 +81,7 @@ class BaseRunner:
     async def _execute(self, cmd: list[str]) -> RunResult:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

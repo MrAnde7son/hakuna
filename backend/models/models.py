@@ -210,6 +210,9 @@ class Asset(Base):
     low_count = Column(Integer, default=0)
     info_count = Column(Integer, default=0)
 
+    # EASM enrichment (from hakuna-scanner)
+    easm_data = Column(JSON, nullable=True)  # {tech_stack, open_ports, tls_cert, cdn_provider, waf, dns_records, http_status, http_title, http_url, easm_tags, easm_source, easm_asset_id}
+
     # Lifecycle tracking (cross-scan)
     first_seen = Column(DateTime, nullable=True)       # Earliest scan date this IP appeared
     last_seen = Column(DateTime, nullable=True)        # Latest scan date this IP appeared

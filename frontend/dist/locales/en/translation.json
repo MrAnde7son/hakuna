@@ -22,7 +22,8 @@
     "docs": "Docs",
     "documentation": "Documentation",
     "help": "Help & Documentation",
-    "blastRadius": "Blast Radius"
+    "blastRadius": "Blast Radius",
+    "scans": "Scans"
   },
   "auth": {
     "signIn": "Sign in",

@@ -740,6 +740,15 @@ export const getAggregatedSolutions = (params = {}) => {
 export const getAggregatedSolution = (id) => request(`/aggregated-solutions/${id}`)
 export const rebuildAggregatedSolutions = (scanId) => request(`/aggregated-solutions/rebuild${scanId ? '?scan_id=' + scanId : ''}`, { method: 'POST' })
 
+// EASM (External Attack Surface)
+export const getEasmStatus = () => request('/easm/status')
+export const syncEasmAssets = () => request('/easm/sync', { method: 'POST' })
+export const triggerEasmScan = (scanType = 'full') => request(`/easm/scan?scan_type=${scanType}`, { method: 'POST' })
+export const getEasmEvents = (since, limit = 100) => request(`/easm/events?limit=${limit}${since ? '&since=' + since : ''}`)
+export const addEasmDomain = (domain) => request(`/easm/domain?domain=${encodeURIComponent(domain)}`, { method: 'POST' })
+export const getEasmDomains = () => request('/easm/domains')
+export const getEasmScanRuns = (limit = 10) => request(`/easm/scan-runs?limit=${limit}`)
+
 // Agent Pipelines
 export const getAgentPipelines = () => request('/agents/pipelines')
 export const runAgentPipeline = (pipelineId, input, modelOverrides = {}) => request(`/agents/pipelines/${pipelineId}/run`, {

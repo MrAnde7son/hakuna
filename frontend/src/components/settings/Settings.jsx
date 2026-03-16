@@ -5,7 +5,7 @@ import { getDedupConfig, saveDedupConfig, runDedup, exportConfig } from '../../a
 import { Card, ExportImportButtons } from '../shared/ui.jsx'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import RiskSettings from './RiskSettings.jsx'
-import UploadScan from '../upload/UploadScan.jsx'
+import ScanManagement from '../scans/ScanManagement.jsx'
 import TagManager from './TagManager.jsx'
 import SLASettings from './SLASettings.jsx'
 import IntegrationSettings from './IntegrationSettings.jsx'
@@ -393,8 +393,8 @@ export default function Settings() {
       {/* Content */}
       <div style={{ flex: 1, padding: 24, maxWidth: 760 }}>
 
-      {/* Upload tab */}
-      {activeTab === 'upload' && <UploadScan />}
+      {/* Scans tab */}
+      {activeTab === 'upload' && <ScanManagement />}
 
       {/* Risk tab */}
       {activeTab === 'risk' && <RiskSettings />}

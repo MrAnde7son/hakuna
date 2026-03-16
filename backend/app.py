@@ -1522,6 +1522,8 @@ def _asset_to_dict(a: Asset) -> dict:
             "team": own.team,
             "notes": own.notes,
         } if own else None,
+        # EASM enrichment data
+        "easm_data": a.easm_data,
     }
 
 

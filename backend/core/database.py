@@ -68,6 +68,7 @@ def _migrate_add_columns():
             ("asset_status", 'VARCHAR DEFAULT "active"'),
             ("stale_since", "DATETIME"),
             ("system_type", "VARCHAR"),
+            ("easm_data", "JSON"),
         ],
         "findings": [
             ("first_seen", "DATETIME"),

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents } from '../../api.js'
+import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets } from '../../api.js'
 import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
@@ -370,6 +370,14 @@ export default function AssetInventory() {
     return () => clearTimeout(debounceRef.current)
   }, [activeScanId, sortBy, sortOrder, tagFilter, tagLogic, filters, advancedMode, page])
 
+  // Auto-sync EASM assets on mount (background, non-blocking)
+  const easmSynced = useRef(false)
+  useEffect(() => {
+    if (easmSynced.current) return
+    easmSynced.current = true
+    syncEasmAssets().then(() => { if (!advancedMode) load() }).catch(() => {})
+  }, [])
+
   const runAdvancedSearch = () => {
     if (!advancedConditions.length) return
     setAdvancedLoading(true)
@@ -427,6 +435,13 @@ export default function AssetInventory() {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 13 }}>{row.hostname || row.ip}</span>
+            {row.easm_data && (
+              <span style={{
+                display: 'inline-block', padding: '1px 5px', borderRadius: 4,
+                background: '#6366f122', color: '#6366f1', border: '1px solid #6366f144',
+                fontSize: 10, fontWeight: 700, lineHeight: '16px',
+              }} title="Discovered via External Attack Surface Management">EASM</span>
+            )}
             {row.is_domain_controller && (
               <span style={{
                 display: 'inline-block', padding: '1px 5px', borderRadius: 4,
@@ -683,7 +698,7 @@ export default function AssetInventory() {
     },
   ]
 
-  const defaultHidden = new Set(['is_internet_facing', 'scan_start', 'biz_revenue_impact'])
+  const defaultHidden = new Set(['is_internet_facing', 'scan_start', 'biz_revenue_impact', 'sbom_risk'])
   const visibleColumns = allColumns.filter(c =>
     c.key === '_select' || c.key === '_actions' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
   )

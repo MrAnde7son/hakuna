@@ -21,6 +21,8 @@ from services.easm import (
     get_easm_scan_status,
     trigger_easm_scan,
     add_easm_domain,
+    get_easm_domains,
+    get_easm_scan_runs,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,18 +112,19 @@ async def list_easm_assets(
 
 
 @router.post("/import")
-async def import_assets(
+@router.post("/sync")
+async def sync_assets(
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
 ):
-    """Import EASM-discovered assets into the main platform as a synthetic scan."""
+    """Sync EASM-discovered assets into the main platform (idempotent upsert)."""
     org = _get_org(db, user)
     if not org.easm_org_id:
         raise HTTPException(400, "EASM not configured")
 
     result = await import_easm_assets(db, org)
     if result is None:
-        raise HTTPException(502, "Failed to import EASM assets")
+        raise HTTPException(502, "Failed to sync EASM assets")
     return result
 
 
@@ -141,6 +144,39 @@ async def list_events(
     if events is None:
         raise HTTPException(502, "Failed to fetch EASM events")
     return events
+
+
+@router.get("/domains")
+async def list_domains(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """List all target domains for the current org."""
+    org = _get_org(db, user)
+    if not org.easm_org_id:
+        raise HTTPException(400, "EASM not configured")
+
+    domains = await get_easm_domains(org.easm_org_id)
+    if domains is None:
+        raise HTTPException(502, "Failed to fetch domains")
+    return domains
+
+
+@router.get("/scan-runs")
+async def list_scan_runs(
+    limit: int = Query(10, le=50),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """List recent EASM scan runs with status."""
+    org = _get_org(db, user)
+    if not org.easm_org_id:
+        raise HTTPException(400, "EASM not configured")
+
+    runs = await get_easm_scan_runs(org.easm_org_id, limit=limit)
+    if runs is None:
+        raise HTTPException(502, "Failed to fetch scan runs")
+    return runs
 
 
 @router.post("/domain")

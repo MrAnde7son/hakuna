@@ -30,13 +30,13 @@ async def emit_new_asset_events(
         await db.execute(
             text("""
                 INSERT INTO asset_events (id, org_id, asset_id, event_type, payload, created_at)
-                VALUES (:id, :org_id, :asset_id, 'new_asset', :payload, :now)
+                VALUES (:id, :org_id, :asset_id, 'new_asset', cast(:payload as jsonb), :now)
             """),
             {
                 "id": uuid.uuid4(),
                 "org_id": org_id,
                 "asset_id": asset_id,
-                "payload": {"hostname": asset.hostname, "ip": str(asset.ip) if asset.ip else None, "source": asset.source},
+                "payload": json.dumps({"hostname": asset.hostname, "ip": str(asset.ip) if asset.ip else None, "source": asset.source}),
                 "now": now,
             },
         )
