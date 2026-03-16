@@ -69,6 +69,8 @@ def _migrate_add_columns():
             ("stale_since", "DATETIME"),
             ("system_type", "VARCHAR"),
             ("easm_data", "JSON"),
+            ("internet_facing_confidence", "VARCHAR"),
+            ("internet_facing_methods", "JSON"),
         ],
         "findings": [
             ("first_seen", "DATETIME"),

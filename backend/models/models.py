@@ -198,6 +198,8 @@ class Asset(Base):
     # Scanner context (per-asset, from plugin 19506 / host properties)
     scanner_ip = Column(String)
     is_internet_facing = Column(Boolean, default=False)
+    internet_facing_confidence = Column(String, nullable=True)   # confirmed / high / medium / low
+    internet_facing_methods = Column(JSON, default=list)          # e.g. ["public_ip", "inbound_netconn", "public_ca_cert"]
     is_credentialed = Column(Boolean, default=False)  # Was the scan authenticated?
     last_auth_run = Column(String)                     # LastAuthenticatedResults timestamp
     system_type = Column(String)                        # e.g. "web_application" for WAS scans

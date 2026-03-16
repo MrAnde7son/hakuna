@@ -126,6 +126,8 @@ def export_assets(
             "Low": a.low_count,
             "Info": a.info_count,
             "Internet Facing": a.is_internet_facing or False,
+            "Internet Facing Confidence": a.internet_facing_confidence or "",
+            "Internet Facing Methods": ", ".join(a.internet_facing_methods or []),
             "Primary User": a.inferred_primary_user,
             "Team": a.inferred_team,
         }

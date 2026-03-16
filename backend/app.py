@@ -1051,6 +1051,15 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         db.commit()
         logger.info(f"Boosted criticality to 9 (Critical) for {len(dc_assets)} domain controller(s)")
 
+    # ── Enhanced internet-reachability detection (uses inventory data) ──
+    try:
+        reachability_stats = _apply_reachability_detection(db, scan.id)
+        if reachability_stats["newly_flagged"]:
+            logger.info(f"Reachability detection: {reachability_stats['newly_flagged']} asset(s) newly flagged as internet-facing")
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"Reachability detection failed (non-fatal): {e}")
+
     # ── Recompute asset risk scores using full formula (findings + inventory) ──
     _recompute_risk_for_scan(db, scan.id, risk_cfg)
 
@@ -1496,6 +1505,8 @@ def _asset_to_dict(a: Asset) -> dict:
         "biz_revenue_impact": a.biz_revenue_impact,
         "scanner_ip": a.scanner_ip,
         "is_internet_facing": a.is_internet_facing or False,
+        "internet_facing_confidence": a.internet_facing_confidence,
+        "internet_facing_methods": a.internet_facing_methods or [],
         "is_credentialed": a.is_credentialed or False,
         "last_auth_run": a.last_auth_run,
         "risk_score": a.risk_score,
@@ -3738,14 +3749,17 @@ def _get_asset_inventory_context(db: Session, asset_id: int, asset: "Asset | Non
         elif state == "ESTABLISHED":
             established_ports.add(row.local_port)
     est_count = len(established_ports)
-    # Internet-facing detection: public IP or external/dmz environment tag
+    # Internet-facing: prefer persisted flag (set by reachability detector + upload heuristics)
     is_internet_facing = False
     if asset is not None:
-        env = (asset.environment_tag or "").lower()
-        if env in ("external", "dmz"):
+        if asset.is_internet_facing:
             is_internet_facing = True
-        elif asset.ip and not _is_private_ip(asset.ip):
-            is_internet_facing = True
+        else:
+            env = (asset.environment_tag or "").lower()
+            if env in ("external", "dmz"):
+                is_internet_facing = True
+            elif asset.ip and not _is_private_ip(asset.ip):
+                is_internet_facing = True
     return {
         "has_av":                  av is not None if av is not None else None,
         "has_firewall":            fw is not None if fw is not None else None,
@@ -3754,6 +3768,76 @@ def _get_asset_inventory_context(db: Session, asset_id: int, asset: "Asset | Non
         "established_ports":       established_ports,
         "is_internet_facing":      is_internet_facing,
     }
+
+
+def _apply_reachability_detection(db: Session, scan_id: int) -> dict:
+    """Run enhanced reachability detection for all assets in a scan."""
+    from services.reachability_detector import detect_internet_reachability
+
+    assets = db.query(Asset).filter(Asset.scan_id == scan_id).all()
+    newly_flagged = 0
+    updated = 0
+
+    for asset in assets:
+        # Gather inventory data
+        netconns = [
+            {"state": nc.state, "remote_addr": nc.remote_addr, "local_port": nc.local_port}
+            for nc in db.query(InventoryNetConn).filter(InventoryNetConn.asset_id == asset.id).all()
+        ]
+        certificates = [
+            {
+                "is_self_signed": c.is_self_signed,
+                "issuer_o": c.issuer_o,
+                "issuer_cn": c.issuer_cn,
+                "subject_cn": c.subject_cn,
+            }
+            for c in db.query(InventoryCertificate).filter(InventoryCertificate.asset_id == asset.id).all()
+        ]
+        # Only fetch plugin_output for relevant families (performance)
+        findings_q = db.query(Finding.plugin_family, Finding.plugin_output).filter(
+            Finding.asset_id == asset.id,
+        ).all()
+        findings = [
+            {"plugin_family": f.plugin_family, "plugin_output": f.plugin_output}
+            for f in findings_q
+        ]
+
+        result = detect_internet_reachability(
+            asset_ip=asset.ip or "",
+            environment_tag=asset.environment_tag or "",
+            netconns=netconns,
+            certificates=certificates,
+            findings=findings,
+            easm_data=asset.easm_data,
+        )
+
+        if not result.is_internet_facing:
+            continue
+
+        # Only upgrade — never downgrade an existing flag
+        was_flagged = asset.is_internet_facing or False
+        existing_rank = {"confirmed": 4, "high": 3, "medium": 2, "low": 1}.get(
+            asset.internet_facing_confidence or "", 0
+        )
+        new_rank = {"confirmed": 4, "high": 3, "medium": 2, "low": 1}.get(
+            result.confidence or "", 0
+        )
+
+        if not was_flagged or new_rank > existing_rank:
+            asset.is_internet_facing = True
+            asset.internet_facing_confidence = result.confidence
+            # Merge methods (keep existing + add new)
+            existing_methods = asset.internet_facing_methods or []
+            merged = list(dict.fromkeys(existing_methods + result.methods))
+            asset.internet_facing_methods = merged
+            updated += 1
+            if not was_flagged:
+                newly_flagged += 1
+
+    if updated:
+        db.commit()
+
+    return {"newly_flagged": newly_flagged, "updated": updated, "total_assets": len(assets)}
 
 
 def _recompute_risk_for_scan(db: Session, scan_id: int, cfg: Optional[dict] = None):
@@ -4850,6 +4934,7 @@ def get_blast_radius(
             "label": a.hostname or a.fqdn or a.netbios_name or a.ip or f"Asset {a.id}",
             "ip": a.ip, "hostname": a.hostname, "os": a.os,
             "is_internet_facing": a.is_internet_facing,
+            "internet_facing_methods": a.internet_facing_methods or [],
             "risk_score": a.risk_score, "criticality": a.criticality,
             "critical_count": a.critical_count, "high_count": a.high_count,
             "medium_count": a.medium_count,
@@ -8614,6 +8699,22 @@ def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
         logger.warning(f"SBOM rebuild failed (non-fatal): {e}")
 
     return {"scan_id": scan_id, "extracted": {k: v for k, v in inv_counts.items() if v}}
+
+
+@app.post("/api/scans/{scan_id}/redetect-reachability")
+def redetect_reachability(scan_id: int, db: Session = Depends(get_db)):
+    """Re-run internet-reachability detection for an existing scan."""
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    stats = _apply_reachability_detection(db, scan_id)
+
+    # Recompute risk if any assets were updated
+    if stats["updated"]:
+        _recompute_risk_for_scan(db, scan_id)
+
+    return {"scan_id": scan_id, **stats}
 
 
 if __name__ == "__main__":
