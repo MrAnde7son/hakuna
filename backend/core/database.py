@@ -29,6 +29,7 @@ def init_db():
         InventoryNetConn, InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
         InventoryShare, InventorySoftware, InventorySecurityControl,
         InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
+        SBOMComponent, SBOMVulnerability,
         AssetOwnership, FindingOwnership,
         Campaign, CampaignFinding,
         Tag, TagAssignment, AutoTagRule,

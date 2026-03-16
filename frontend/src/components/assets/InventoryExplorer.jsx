@@ -21,6 +21,7 @@ import {
   getInventoryCertificates, getInventoryAITools, getInventoryProcesses,
   getInventoryDatabases, getInventoryCredentials,
   getSecurityCoverage,
+  getSBOMComponents, getSBOMComponentVulns, getSBOMAssetSummary,
   exportDownload,
 } from '../../api.js'
 import { useScan } from '../../App.jsx'
@@ -1417,6 +1418,161 @@ function SwCategoryPill({ category }) {
   )
 }
 
+// ── SBOM-aware priority / EOL / running badges ──────────
+
+const PRIORITY_COLORS = {
+  P1: '#dc2626', P2: '#ea580c', P3: '#d97706', P4: '#2563eb', P5: '#64748b',
+}
+
+function PriorityBadge({ tier }) {
+  if (!tier) return null
+  return (
+    <span style={{
+      display: 'inline-block', fontSize: 10, fontWeight: 700, padding: '1px 7px',
+      borderRadius: 9999, background: (PRIORITY_COLORS[tier] || '#64748b') + '18',
+      color: PRIORITY_COLORS[tier] || '#64748b',
+    }}>{tier}</span>
+  )
+}
+
+function EolBadge({ status, date }) {
+  if (!status || status === 'active' || status === 'unknown') return null
+  const color = status === 'eol' ? '#dc2626' : '#d97706'
+  const label = status === 'eol' ? 'EOL' : 'EOL Soon'
+  return (
+    <span title={date ? `EOL: ${date}` : ''} style={{
+      display: 'inline-block', fontSize: 10, fontWeight: 700, padding: '1px 7px',
+      borderRadius: 9999, background: color + '18', color,
+    }}>{label}</span>
+  )
+}
+
+function RunningDot({ running }) {
+  return (
+    <span title={running ? 'Running' : 'Not running'} style={{
+      display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+      background: running ? '#22c55e' : '#d1d5db', marginRight: 4,
+    }} />
+  )
+}
+
+function CveBadge({ count, maxSeverity }) {
+  if (!count) return <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>
+  const colors = ['#64748b', '#3b82f6', '#f59e0b', '#ea580c', '#dc2626']
+  const color = colors[maxSeverity] || '#64748b'
+  return (
+    <span style={{
+      display: 'inline-block', fontSize: 10, fontWeight: 700, padding: '1px 7px',
+      borderRadius: 9999, background: color + '18', color,
+    }}>{count} CVE{count !== 1 ? 's' : ''}</span>
+  )
+}
+
+const TYPE_BADGE_COLORS = {
+  application: '#3b82f6', library: '#8b5cf6', runtime: '#10b981', os: '#f59e0b', firmware: '#64748b',
+}
+
+function TypeBadge({ type }) {
+  const color = TYPE_BADGE_COLORS[type] || '#64748b'
+  return (
+    <span style={{
+      display: 'inline-block', fontSize: 10, fontWeight: 600, padding: '1px 7px',
+      borderRadius: 9999, background: color + '18', color, textTransform: 'capitalize',
+    }}>{type || 'unknown'}</span>
+  )
+}
+
+
+// ── Expandable CVE detail row ───────────────────────────
+
+function SBOMVulnDetail({ componentId }) {
+  const [vulns, setVulns] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    setLoading(true)
+    getSBOMComponentVulns(componentId)
+      .then(d => setVulns(d.vulnerabilities || []))
+      .catch(() => setVulns([]))
+      .finally(() => setLoading(false))
+  }, [componentId])
+
+  if (loading) return <div style={{ padding: 12 }}><Spinner /></div>
+  if (!vulns || vulns.length === 0) return <div style={{ padding: 12, fontSize: 12, color: 'var(--text-muted)' }}>No CVEs found.</div>
+
+  const sevLabels = ['Info', 'Low', 'Medium', 'High', 'Critical']
+  const sevColors = ['#64748b', '#3b82f6', '#f59e0b', '#ea580c', '#dc2626']
+
+  return (
+    <div style={{ padding: '8px 16px 12px', background: 'var(--bg-secondary)', borderTop: '1px solid var(--border)' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        CVE Details
+      </div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--border)' }}>
+            <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 600 }}>CVE</th>
+            <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 600 }}>Severity</th>
+            <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 600 }}>CVSS</th>
+            <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 600 }}>EPSS</th>
+            <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 600 }}>KEV</th>
+            <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 600 }}>Priority</th>
+            <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 600 }}>Remediation</th>
+          </tr>
+        </thead>
+        <tbody>
+          {vulns.map(v => (
+            <tr key={v.id} style={{ borderBottom: '1px solid var(--border)' }}>
+              <td style={{ padding: '4px 8px', fontFamily: 'monospace', fontWeight: 600 }}>{v.cve_id}</td>
+              <td style={{ padding: '4px 8px' }}>
+                <span style={{ color: sevColors[v.severity] || '#64748b', fontWeight: 600 }}>{sevLabels[v.severity] || '—'}</span>
+              </td>
+              <td style={{ padding: '4px 8px', fontFamily: 'monospace' }}>{v.cvss_score?.toFixed(1) || '—'}</td>
+              <td style={{ padding: '4px 8px', fontFamily: 'monospace' }}>{v.epss_score != null ? (v.epss_score * 100).toFixed(1) + '%' : '—'}</td>
+              <td style={{ padding: '4px 8px' }}>{v.in_kev ? <span style={{ color: '#dc2626', fontWeight: 700 }}>KEV</span> : '—'}</td>
+              <td style={{ padding: '4px 8px' }}><PriorityBadge tier={v.priority_tier} /></td>
+              <td style={{ padding: '4px 8px', fontSize: 11, color: 'var(--text-muted)', maxWidth: 300 }}>{v.remediation_note || '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+
+// ── Children (bundled libraries) row ────────────────────
+
+function SBOMChildrenRow({ parentId, sbomMap }) {
+  const children = useMemo(() => {
+    if (!sbomMap) return []
+    return Object.values(sbomMap).filter(c => c.parent_component_id === parentId)
+  }, [parentId, sbomMap])
+
+  if (children.length === 0) return null
+
+  return (
+    <div style={{ padding: '6px 16px 10px 36px', background: 'var(--bg-secondary)', borderTop: '1px solid var(--border)' }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4 }}>
+        Bundled Libraries ({children.length})
+      </div>
+      {children.map(c => (
+        <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '3px 0', fontSize: 12 }}>
+          <span style={{ width: 8 }}>{'└'}</span>
+          <span style={{ fontWeight: 600, flex: 1 }}>{c.name}</span>
+          <code style={{ color: 'var(--text-muted)' }}>{c.version || '—'}</code>
+          <TypeBadge type={c.component_type} />
+          <RunningDot running={c.is_running} />
+          <EolBadge status={c.eol_status} date={c.eol_date} />
+          <CveBadge count={c.cve_count} maxSeverity={c.max_severity} />
+          <PriorityBadge tier={c.priority_tier} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+
 function SoftwareTab({ scanId, assetId }) {
   const [rows, setRows]               = useState([])
   const [total, setTotal]             = useState(0)
@@ -1427,14 +1583,21 @@ function SoftwareTab({ scanId, assetId }) {
   const [groupByAsset, setGroupByAsset] = useState(false)
   const [sortBy, setSortBy]           = useState('name')
   const [sortOrder, setSortOrder]     = useState('asc')
+  const [expandedRow, setExpandedRow] = useState(null)
+  const [sbomFilter, setSbomFilter]   = useState('')  // '' | 'has_cves' | 'eol' | 'running_vuln'
+
+  // SBOM data
+  const [sbomComps, setSbomComps]     = useState([])
+  const [sbomSummary, setSbomSummary] = useState(null)
 
   const handleSort = (key) => {
     if (sortBy === key) { setSortOrder(o => o === 'asc' ? 'desc' : 'asc') }
     else { setSortBy(key); setSortOrder('asc') }
   }
 
-  useEffect(() => { setPage(1) }, [scanId, assetId, search, category])
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, category, sbomFilter])
 
+  // Fetch software inventory
   const load = useCallback(() => {
     setLoading(true)
     getInventorySoftware({ scan_id: scanId, asset_id: assetId || null, search: search || null, category: category || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
@@ -1443,7 +1606,32 @@ function SoftwareTab({ scanId, assetId }) {
 
   useEffect(() => { load() }, [load])
 
-  // Fetch all rows (without category filter) to build the category summary bar — use page_size=0 to get all
+  // Fetch SBOM components for enrichment
+  useEffect(() => {
+    getSBOMComponents({ scan_id: scanId, asset_id: assetId || null, page_size: 0 })
+      .then(data => setSbomComps(data.components || []))
+      .catch(() => setSbomComps([]))
+  }, [scanId, assetId])
+
+  // Fetch SBOM summary
+  useEffect(() => {
+    getSBOMAssetSummary({ scan_id: scanId, asset_id: assetId || null })
+      .then(data => setSbomSummary(data))
+      .catch(() => setSbomSummary(null))
+  }, [scanId, assetId])
+
+  // Build lookup from software_id → sbom component
+  const sbomMap = useMemo(() => {
+    const map = {}
+    for (const c of sbomComps) {
+      if (c.software_id) map[c.software_id] = c
+      // Also index by name+version for fallback
+      map[`${(c.name || '').toLowerCase()}|${c.version || ''}`] = c
+    }
+    return map
+  }, [sbomComps])
+
+  // Fetch all rows for category bar
   const [allRows, setAllRows] = useState([])
   useEffect(() => {
     getInventorySoftware({ scan_id: scanId, asset_id: assetId || null, search: search || null, page_size: 0 })
@@ -1459,29 +1647,83 @@ function SoftwareTab({ scanId, assetId }) {
     return Object.entries(counts).sort((a, b) => b[1] - a[1])
   }, [allRows])
 
+  // Enrich rows with SBOM data
+  const enrichedRows = useMemo(() => {
+    let result = rows.map(r => {
+      const sbom = sbomMap[r.id] || sbomMap[`${(r.name || '').toLowerCase()}|${r.version || ''}`]
+      return { ...r, sbom }
+    })
+    // Apply SBOM filters
+    if (sbomFilter === 'has_cves') result = result.filter(r => r.sbom && r.sbom.cve_count > 0)
+    if (sbomFilter === 'eol') result = result.filter(r => r.sbom && (r.sbom.eol_status === 'eol' || r.sbom.eol_status === 'approaching_eol'))
+    if (sbomFilter === 'running_vuln') result = result.filter(r => r.sbom && r.sbom.is_running && r.sbom.cve_count > 0)
+    return result
+  }, [rows, sbomMap, sbomFilter])
+
   const columns = [
-    { key: 'name', label: 'Software Name', width: '28%', sortable: true,
-      render: v => <span style={{ fontWeight: 600 }}>{v}</span>
+    { key: 'name', label: 'Software Name', width: '22%', sortable: true,
+      render: (v, r) => (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {r.sbom && <RunningDot running={r.sbom.is_running} />}
+          <span style={{ fontWeight: 600 }}>{v}</span>
+        </span>
+      )
     },
-    { key: 'category', label: 'Category', width: '12%', sortable: true,
+    { key: 'component_type', label: 'Type', width: '8%',
+      render: (_, r) => r.sbom ? <TypeBadge type={r.sbom.component_type} /> : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>
+    },
+    { key: 'category', label: 'Category', width: '10%', sortable: true,
       render: v => <SwCategoryPill category={v} />
     },
-    { key: 'version', label: 'Version', width: '15%', sortable: true,
+    { key: 'version', label: 'Version', width: '10%', sortable: true,
       render: v => <code style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '—'}</code>
     },
-    { key: 'vendor', label: 'Vendor', width: '13%', sortable: true,
+    { key: 'vendor', label: 'Vendor', width: '10%', sortable: true,
       render: v => <span style={{ fontSize: 13 }}>{v || '—'}</span>
     },
-    { key: 'installed_on', label: 'Installed On', width: '12%', sortable: true,
-      render: v => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '—'}</span>
+    { key: 'eol_status', label: 'EOL', width: '7%',
+      render: (_, r) => r.sbom ? <EolBadge status={r.sbom.eol_status} date={r.sbom.eol_date} /> : null
     },
-    { key: 'asset_label', label: 'Asset', width: '20%',
+    { key: 'cve_count', label: 'CVEs', width: '8%',
+      render: (_, r) => r.sbom ? <CveBadge count={r.sbom.cve_count} maxSeverity={r.sbom.max_severity} /> : null
+    },
+    { key: 'priority', label: 'Priority', width: '7%',
+      render: (_, r) => r.sbom ? <PriorityBadge tier={r.sbom.priority_tier} /> : null
+    },
+    { key: 'asset_label', label: 'Asset', width: '18%',
       render: (v, r) => <>{v}<EnvPill env={r.asset_env} /></>
     },
   ]
 
   return (
     <Card>
+      {/* SBOM Summary Bar */}
+      {sbomSummary && sbomSummary.total_components > 0 && (
+        <div style={{ display: 'flex', gap: 12, marginBottom: 14, padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
+          <div style={{ fontSize: 12 }}>
+            <span style={{ fontWeight: 700 }}>{sbomSummary.total_components}</span> components
+          </div>
+          <div style={{ fontSize: 12 }}>
+            <span style={{ fontWeight: 700, color: '#dc2626' }}>{sbomSummary.total_cves}</span> CVEs
+          </div>
+          {Object.entries(sbomSummary.by_priority || {}).sort().map(([tier, count]) => (
+            <div key={tier} style={{ fontSize: 12 }}>
+              <PriorityBadge tier={tier} /> <span style={{ fontWeight: 600 }}>{count}</span>
+            </div>
+          ))}
+          {sbomSummary.eol_components?.length > 0 && (
+            <div style={{ fontSize: 12 }}>
+              <span style={{ fontWeight: 700, color: '#dc2626' }}>{sbomSummary.eol_components.length}</span> EOL
+            </div>
+          )}
+          {sbomSummary.running_vulnerable?.length > 0 && (
+            <div style={{ fontSize: 12 }}>
+              <span style={{ fontWeight: 700, color: '#ea580c' }}>{sbomSummary.running_vulnerable.length}</span> running + vulnerable
+            </div>
+          )}
+        </div>
+      )}
+
       {categoryCounts.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
           <button onClick={() => setCategory('')}
@@ -1510,13 +1752,36 @@ function SoftwareTab({ scanId, assetId }) {
       )}
       <FilterBar>
         <Input value={search} onChange={setSearch} placeholder="Search software name…" style={{ width: 260 }} />
+        <Select value={sbomFilter} onChange={setSbomFilter} options={[
+          { value: '', label: 'All Software' },
+          { value: 'has_cves', label: 'Has SBOM findings' },
+          { value: 'eol', label: 'Has EOL software' },
+          { value: 'running_vuln', label: 'Running + vulnerable' },
+        ]} />
         <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
       </FilterBar>
       {loading ? <Spinner /> : groupByAsset
-        ? <GroupedTable columns={columns} rows={rows} emptyMessage="No installed software found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
-        : <Table columns={columns} rows={rows} emptyMessage="No installed software found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+        ? <GroupedTable columns={columns} rows={enrichedRows} emptyMessage="No installed software found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+        : <Table
+            columns={columns}
+            rows={enrichedRows}
+            emptyMessage="No installed software found."
+            onSort={handleSort}
+            sortBy={sortBy}
+            sortOrder={sortOrder}
+            onRowClick={r => setExpandedRow(expandedRow === r.id ? null : r.id)}
+            renderRowExtra={r => {
+              if (expandedRow !== r.id || !r.sbom) return null
+              return (
+                <tr><td colSpan={columns.length} style={{ padding: 0 }}>
+                  <SBOMChildrenRow parentId={r.sbom.id} sbomMap={Object.fromEntries(sbomComps.map(c => [c.id, c]))} />
+                  {r.sbom.cve_count > 0 && <SBOMVulnDetail componentId={r.sbom.id} />}
+                </td></tr>
+              )
+            }}
+          />
       }
-      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="packages" />
+      <Pagination page={page} total={sbomFilter ? enrichedRows.length : total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="packages" />
     </Card>
   )
 }

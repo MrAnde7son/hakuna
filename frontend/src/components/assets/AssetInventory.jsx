@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership } from '../../api.js'
+import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents } from '../../api.js'
 import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
@@ -251,6 +251,7 @@ export default function AssetInventory() {
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [blastMap, setBlastMap] = useState({})
+  const [sbomRiskMap, setSbomRiskMap] = useState({})
   const [expandedAsset, setExpandedAsset] = useState(null)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [showBulkTag, setShowBulkTag] = useState(false)
@@ -330,6 +331,22 @@ export default function AssetInventory() {
           Promise.all(scanIds.map(sid => getBlastRadiusBulk(sid)))
             .then(results => setBlastMap(Object.assign({}, ...results)))
             .catch(err => console.error('Blast radius bulk fetch failed:', err))
+          // Fetch SBOM risk per asset
+          Promise.all(scanIds.map(sid => getSBOMComponents({ scan_id: sid, page_size: 0 })))
+            .then(results => {
+              const riskMap = {}
+              for (const data of results) {
+                for (const c of (data.components || [])) {
+                  if (!riskMap[c.asset_id]) riskMap[c.asset_id] = { p1: 0, p2: 0, cves: 0, eol: 0 }
+                  if (c.priority_tier === 'P1') riskMap[c.asset_id].p1++
+                  if (c.priority_tier === 'P2') riskMap[c.asset_id].p2++
+                  riskMap[c.asset_id].cves += (c.cve_count || 0)
+                  if (c.eol_status === 'eol' || c.eol_status === 'approaching_eol') riskMap[c.asset_id].eol++
+                }
+              }
+              setSbomRiskMap(riskMap)
+            })
+            .catch(() => {})
         }
       })
       .finally(() => setLoading(false))
@@ -571,6 +588,24 @@ export default function AssetInventory() {
           onExpand={() => setExpandedAsset(prev => prev === row.id ? null : row.id)}
         />
       )
+    },
+    {
+      key: 'sbom_risk', label: 'SBOM', width: '80px',
+      render: (_, row) => {
+        const risk = sbomRiskMap[row.id]
+        if (!risk || (risk.p1 === 0 && risk.p2 === 0 && risk.cves === 0 && risk.eol === 0)) return null
+        const color = risk.p1 > 0 ? '#dc2626' : risk.p2 > 0 ? '#ea580c' : risk.eol > 0 ? '#d97706' : '#3b82f6'
+        return (
+          <span title={`P1:${risk.p1} P2:${risk.p2} CVEs:${risk.cves} EOL:${risk.eol}`} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 3,
+            fontSize: 10, fontWeight: 700, padding: '1px 7px',
+            borderRadius: 9999, background: color + '18', color,
+          }}>
+            <AlertTriangle size={10} />
+            {risk.p1 > 0 ? `${risk.p1} P1` : risk.p2 > 0 ? `${risk.p2} P2` : `${risk.cves} CVE`}
+          </span>
+        )
+      }
     },
     {
       key: 'is_internet_facing', label: t('assets.internetFacing'),

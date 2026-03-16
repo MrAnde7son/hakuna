@@ -26,6 +26,7 @@ from models.models import (
     InventoryShare, InventorySoftware, InventorySecurityControl,
     InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
     InventoryAITool, InventoryProcess, InventoryDatabaseInstance, InventoryCredential,
+    SBOMComponent, SBOMVulnerability,
     Campaign, CampaignFinding, FindingOwnership, AssetOwnership,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
     Tag, TagAssignment, AutoTagRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
@@ -59,6 +60,7 @@ from routes.export import router as export_router
 from routes.config_portability import router as config_portability_router
 from routes.agent_routes import router as agent_router
 from routes.benchmark_routes import router as benchmark_router
+from routes.sbom_routes import router as sbom_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -260,6 +262,7 @@ app.include_router(export_router)
 app.include_router(config_portability_router)
 app.include_router(agent_router)
 app.include_router(benchmark_router)
+app.include_router(sbom_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
@@ -631,6 +634,11 @@ def _find_duplicate_scan(db: Session, scan_name: str, scan_date, org_id) -> Opti
 def _delete_scan_cascade(db: Session, scan: Scan):
     """Delete a scan and all its dependent records (inventory, aggregations, etc.)."""
     scan_id = scan.id
+    # SBOM records (vulns before components due to FK)
+    sbom_comp_ids = [c[0] for c in db.query(SBOMComponent.id).filter(SBOMComponent.scan_id == scan_id).all()]
+    if sbom_comp_ids:
+        db.query(SBOMVulnerability).filter(SBOMVulnerability.component_id.in_(sbom_comp_ids)).delete(synchronize_session=False)
+    db.query(SBOMComponent).filter(SBOMComponent.scan_id == scan_id).delete(synchronize_session=False)
     # Aggregated solutions
     db.query(AggregatedSolution).filter(AggregatedSolution.scan_id == scan_id).delete(synchronize_session=False)
     # Inventory models
@@ -1052,6 +1060,16 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     except Exception as e:
         db.rollback()
         logger.warning(f"Security catalog detection failed (non-fatal): {e}")
+
+    # ── Build SBOM from inventory software + findings correlation ──
+    try:
+        from services.sbom_pipeline import build_sbom_from_inventory
+        sbom_stats = build_sbom_from_inventory(db, scan.id)
+        if sbom_stats.get("components"):
+            logger.info(f"SBOM: {sbom_stats}")
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"SBOM pipeline failed (non-fatal): {e}")
 
     # ── Apply auto-tag rules to newly imported scan ──
     tag_results = tag_engine.run_all_auto_tag_rules(db, scan_id=scan.id)
@@ -8262,6 +8280,15 @@ def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
         inv_counts[key] = len(records)
         if records:
             db.commit()
+
+    # Rebuild SBOM from updated inventory
+    try:
+        from services.sbom_pipeline import build_sbom_from_inventory
+        sbom_stats = build_sbom_from_inventory(db, scan_id)
+        inv_counts["sbom_components"] = sbom_stats.get("components", 0)
+        inv_counts["sbom_vulnerabilities"] = sbom_stats.get("vulnerabilities", 0)
+    except Exception as e:
+        logger.warning(f"SBOM rebuild failed (non-fatal): {e}")
 
     return {"scan_id": scan_id, "extracted": {k: v for k, v in inv_counts.items() if v}}
 

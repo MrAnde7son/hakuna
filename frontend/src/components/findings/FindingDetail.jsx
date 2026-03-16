@@ -804,15 +804,24 @@ export default function FindingDetail() {
               <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>{t('findingDetail.cves')} ({finding.cves.length})</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
                 {visibleCves.map(cve => (
-                  <a
-                    key={cve}
-                    href={`https://nvd.nist.gov/vuln/detail/${cve}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ display: 'flex', alignItems: 'center', gap: 4 }}
-                  >
-                    <Pill label={cve} color="#f59e0b" />
-                  </a>
+                  <span key={cve} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                    <a
+                      href={`https://nvd.nist.gov/vuln/detail/${cve}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                    >
+                      <Pill label={cve} color="#f59e0b" />
+                    </a>
+                    <a
+                      href={`/inventory?tab=software`}
+                      onClick={e => { e.preventDefault(); navigate(`/inventory?tab=software`) }}
+                      title="View in software inventory"
+                      style={{ fontSize: 10, color: 'var(--accent)', fontWeight: 600, textDecoration: 'none', whiteSpace: 'nowrap' }}
+                    >
+                      software
+                    </a>
+                  </span>
                 ))}
                 {hiddenCount > 0 && !showAllCves && (
                   <button
