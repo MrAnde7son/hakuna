@@ -23,6 +23,7 @@ from services.easm import (
     add_easm_domain,
     get_easm_domains,
     get_easm_scan_runs,
+    create_easm_org,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,43 @@ async def easm_status(db: Session = Depends(get_db), user: User = Depends(requir
         "domain": org.easm_domain,
         "hakuna_org_id": org.easm_org_id,
         "stats": stats,
+    }
+
+
+@router.post("/setup")
+async def setup_easm(
+    domain: str = Query(..., min_length=3),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Set up EASM for the current org: create hakuna org, add domain, trigger scan."""
+    org = _get_org(db, user)
+
+    if org.easm_org_id:
+        raise HTTPException(400, "EASM is already configured for this organization")
+
+    # Create hakuna org
+    hakuna_org_id = await create_easm_org(org.name)
+    if not hakuna_org_id:
+        raise HTTPException(502, "Failed to create EASM org — hakuna-scanner may be unavailable")
+
+    # Add target domain
+    if not await add_easm_domain(hakuna_org_id, domain):
+        logger.warning(f"Failed to add domain '{domain}' to EASM org {hakuna_org_id}")
+
+    # Trigger initial scan
+    scan_id = await trigger_easm_scan(hakuna_org_id)
+
+    # Persist on org
+    org.easm_org_id = hakuna_org_id
+    org.easm_domain = domain
+    db.commit()
+
+    return {
+        "enabled": True,
+        "domain": domain,
+        "hakuna_org_id": hakuna_org_id,
+        "scan_id": scan_id,
     }
 
 
