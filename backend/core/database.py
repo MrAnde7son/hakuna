@@ -45,6 +45,7 @@ def init_db():
     from models.threat_intel_models import (  # noqa: F401
         ThreatGroup, TTP, ThreatGroupTTP,
         ThreatCVE, ThreatCampaign, IntelRemediationCampaign, CisaAdvisory,
+        ProductLifecycle,
     )
     Base.metadata.create_all(bind=engine)
     _migrate_add_columns()
