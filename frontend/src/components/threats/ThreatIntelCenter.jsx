@@ -1661,7 +1661,7 @@ function ProductsTab() {
     <EmptyState
       icon={Package}
       title="No product lifecycle data"
-      sub="Run Sync Intel to fetch product data from endoflife.date"
+      sub="Run Sync Intel to fetch product data"
     />
   )
 
