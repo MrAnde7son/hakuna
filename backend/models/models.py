@@ -745,6 +745,68 @@ class InventoryCredential(Base):
 
 
 # ─────────────────────────────────────────────────────────
+# SBOM Models
+# ─────────────────────────────────────────────────────────
+
+class SBOMComponent(Base):
+    """Software component with EOL & running status, linked from InventorySoftware."""
+    __tablename__ = "sbom_components"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    software_id = Column(Integer, ForeignKey("inventory_software.id"), nullable=True)
+
+    name = Column(String, index=True)
+    version = Column(String)
+    vendor = Column(String)
+    cpe = Column(String)                              # CPE 2.3 URI
+    purl = Column(String)                             # Package URL
+    component_type = Column(String, index=True)       # application | library | runtime | os | firmware
+
+    parent_component_id = Column(Integer, ForeignKey("sbom_components.id"), nullable=True)
+    parent = relationship("SBOMComponent", remote_side="SBOMComponent.id", backref="children")
+
+    is_running = Column(Boolean, default=False)
+    eol_date = Column(String)
+    eol_status = Column(String, default="unknown")    # active | eol | approaching_eol | unknown
+
+    cve_count = Column(Integer, default=0)
+    max_severity = Column(Integer, default=0)         # 0-4 matching Finding severity
+    max_cvss = Column(Float)
+    priority_tier = Column(String)                    # P1-P5
+
+    source_plugin = Column(String)
+
+    __table_args__ = (
+        UniqueConstraint("scan_id", "asset_id", "name", "version", name="uq_sbom_component"),
+    )
+
+
+class SBOMVulnerability(Base):
+    """CVE associated with an SBOM component."""
+    __tablename__ = "sbom_vulnerabilities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    component_id = Column(Integer, ForeignKey("sbom_components.id"), nullable=False, index=True)
+    finding_id = Column(Integer, ForeignKey("findings.id"), nullable=True)
+
+    cve_id = Column(String, index=True)
+    severity = Column(Integer, default=0)             # 0-4
+    cvss_score = Column(Float)
+    epss_score = Column(Float)
+    in_kev = Column(Boolean, default=False)
+    remediation_note = Column(Text)
+    priority_tier = Column(String)                    # P1-P5
+
+    component = relationship("SBOMComponent", backref="vulnerabilities")
+
+    __table_args__ = (
+        UniqueConstraint("component_id", "cve_id", name="uq_sbom_vuln"),
+    )
+
+
+# ─────────────────────────────────────────────────────────
 # Campaigns & Ownership Models
 # ─────────────────────────────────────────────────────────
 
@@ -1295,6 +1357,9 @@ class AggregatedSolution(Base):
     priority_score = Column(Float, default=0.0)
     risk_reduction = Column(Float, default=0.0)              # % of total scan risk resolved
     efficiency_score = Column(Float, default=0.0)            # (vulns_resolved / actions) × risk × breadth
+
+    # Downstream impact assessment (populated for upgrade_component / migrate_to_supported)
+    downstream_impact = Column(JSON, nullable=True)          # {verdict, net_severity_delta, introduced_cves, alternative_versions}
 
     effort_level = Column(String)
     owner_suggestion = Column(String)

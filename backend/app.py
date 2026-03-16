@@ -26,6 +26,7 @@ from models.models import (
     InventoryShare, InventorySoftware, InventorySecurityControl,
     InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
     InventoryAITool, InventoryProcess, InventoryDatabaseInstance, InventoryCredential,
+    SBOMComponent, SBOMVulnerability,
     Campaign, CampaignFinding, FindingOwnership, AssetOwnership,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
     Tag, TagAssignment, AutoTagRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
@@ -61,6 +62,7 @@ from routes.config_portability import router as config_portability_router
 from routes.agent_routes import router as agent_router
 from routes.benchmark_routes import router as benchmark_router
 from routes.easm_routes import router as easm_router
+from routes.sbom_routes import router as sbom_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -263,6 +265,7 @@ app.include_router(config_portability_router)
 app.include_router(agent_router)
 app.include_router(benchmark_router)
 app.include_router(easm_router)
+app.include_router(sbom_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
@@ -619,6 +622,52 @@ def _update_asset_lifecycle(db: Session, scan, scan_date: datetime,
 # Upload & Ingest
 # ─────────────────────────────────────────────
 
+def _find_duplicate_scan(db: Session, scan_name: str, scan_date, org_id) -> Optional[Scan]:
+    """Find an existing scan with matching (scan_name, scan_date, org_id)."""
+    q = db.query(Scan).filter(Scan.scan_name == scan_name)
+    if scan_date:
+        q = q.filter(Scan.scan_date == scan_date)
+    if org_id is not None:
+        q = q.filter(Scan.org_id == org_id)
+    else:
+        q = q.filter(Scan.org_id.is_(None))
+    return q.first()
+
+
+def _delete_scan_cascade(db: Session, scan: Scan):
+    """Delete a scan and all its dependent records (inventory, aggregations, etc.)."""
+    scan_id = scan.id
+    # SBOM records (vulns before components due to FK)
+    sbom_comp_ids = [c[0] for c in db.query(SBOMComponent.id).filter(SBOMComponent.scan_id == scan_id).all()]
+    if sbom_comp_ids:
+        db.query(SBOMVulnerability).filter(SBOMVulnerability.component_id.in_(sbom_comp_ids)).delete(synchronize_session=False)
+    db.query(SBOMComponent).filter(SBOMComponent.scan_id == scan_id).delete(synchronize_session=False)
+    # Aggregated solutions
+    db.query(AggregatedSolution).filter(AggregatedSolution.scan_id == scan_id).delete(synchronize_session=False)
+    # Inventory models
+    for InvModel in [
+        InventoryUser, InventoryGroup, InventoryService, InventoryNetConn,
+        InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
+        InventoryShare, InventorySoftware, InventorySecurityControl,
+        InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
+        InventoryAITool, InventoryProcess, InventoryDatabaseInstance, InventoryCredential,
+        InventoryDomainTrust,
+    ]:
+        db.query(InvModel).filter(InvModel.scan_id == scan_id).delete(synchronize_session=False)
+    # Scan comparisons
+    db.query(ScanComparison).filter(
+        (ScanComparison.base_scan_id == scan_id) | (ScanComparison.compare_scan_id == scan_id)
+    ).delete(synchronize_session=False)
+    # Ownership & campaign rows via assets/findings
+    asset_subq = db.query(Asset.id).filter(Asset.scan_id == scan_id).scalar_subquery()
+    finding_subq = db.query(Finding.id).filter(Finding.asset_id.in_(asset_subq)).scalar_subquery()
+    db.query(AssetOwnership).filter(AssetOwnership.asset_id.in_(asset_subq)).delete(synchronize_session=False)
+    db.query(FindingOwnership).filter(FindingOwnership.finding_id.in_(finding_subq)).delete(synchronize_session=False)
+    db.query(CampaignFinding).filter(CampaignFinding.finding_id.in_(finding_subq)).delete(synchronize_session=False)
+    db.delete(scan)  # ORM cascade handles Asset → Finding → AutomateClick
+    db.flush()
+
+
 @app.post("/api/upload")
 async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
     """Upload and parse a vulnerability scan file (Nessus, Qualys, etc.)."""
@@ -644,6 +693,15 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     scan_data = parsed["scan"]
     # Use X-Org-Context if set (e.g. superadmin uploading into a specific org)
     effective_org_id = int(x_org_context) if x_org_context else (user.org_id if user else None)
+
+    # ── Duplicate scan detection: replace existing scan with same identity ──
+    _scan_name = scan_data.get("scan_name") or file.filename
+    _scan_date = scan_data.get("scan_date")
+    existing_scan = _find_duplicate_scan(db, _scan_name, _scan_date, effective_org_id)
+    if existing_scan:
+        logger.info(f"Replacing existing scan '{_scan_name}' (id={existing_scan.id}) with re-upload")
+        _delete_scan_cascade(db, existing_scan)
+
     scan = Scan(
         org_id=effective_org_id,
         filename=file.filename,
@@ -1006,6 +1064,16 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         db.rollback()
         logger.warning(f"Security catalog detection failed (non-fatal): {e}")
 
+    # ── Build SBOM from inventory software + findings correlation ──
+    try:
+        from services.sbom_pipeline import build_sbom_from_inventory
+        sbom_stats = build_sbom_from_inventory(db, scan.id)
+        if sbom_stats.get("components"):
+            logger.info(f"SBOM: {sbom_stats}")
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"SBOM pipeline failed (non-fatal): {e}")
+
     # ── Apply auto-tag rules to newly imported scan ──
     tag_results = tag_engine.run_all_auto_tag_rules(db, scan_id=scan.id)
     if tag_results:
@@ -1172,28 +1240,9 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[L
     scan = q.filter(Scan.id == scan_id).first()
     if not scan:
         raise HTTPException(404, "Scan not found")
-    # Inventory models have no ORM cascade from Scan, so delete them explicitly
-    for InvModel in [
-        InventoryUser, InventoryGroup, InventoryService, InventoryNetConn,
-        InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
-        InventoryShare, InventorySoftware, InventorySecurityControl,
-        InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
-        InventoryAITool, InventoryProcess, InventoryDatabaseInstance, InventoryCredential,
-    ]:
-        db.query(InvModel).filter(InvModel.scan_id == scan_id).delete(synchronize_session=False)
-    # Remove scan comparisons referencing this scan
-    db.query(ScanComparison).filter(
-        (ScanComparison.base_scan_id == scan_id) | (ScanComparison.compare_scan_id == scan_id)
-    ).delete(synchronize_session=False)
-    # Delete ownership & campaign rows that reference assets/findings (no ORM cascade)
-    asset_subq = db.query(Asset.id).filter(Asset.scan_id == scan_id).scalar_subquery()
-    finding_subq = db.query(Finding.id).filter(Finding.asset_id.in_(asset_subq)).scalar_subquery()
-    db.query(AssetOwnership).filter(AssetOwnership.asset_id.in_(asset_subq)).delete(synchronize_session=False)
-    db.query(FindingOwnership).filter(FindingOwnership.finding_id.in_(finding_subq)).delete(synchronize_session=False)
-    db.query(CampaignFinding).filter(CampaignFinding.finding_id.in_(finding_subq)).delete(synchronize_session=False)
     _scan_name = scan.scan_name or scan.filename
     _scan_org = scan.org_id
-    db.delete(scan)  # cascades to Asset → Finding → AutomateClick via ORM
+    _delete_scan_cascade(db, scan)
     log_audit(db, "delete", "scan", scan_id, entity_name=_scan_name, org_id=_scan_org)
     db.commit()
     return {"message": "Scan deleted"}
@@ -7101,6 +7150,8 @@ def _agg_solution_to_dict(a: AggregatedSolution, db: Session) -> dict:
         "priority_score": a.priority_score,
         "risk_reduction": a.risk_reduction or 0,
         "efficiency_score": a.efficiency_score or 0,
+        # Downstream impact assessment (upgrade/migrate actions only)
+        "downstream_impact": a.downstream_impact,
         # Operational
         "effort_level": a.effort_level,
         "owner_suggestion": a.owner_suggestion,
@@ -8241,6 +8292,15 @@ def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
         inv_counts[key] = len(records)
         if records:
             db.commit()
+
+    # Rebuild SBOM from updated inventory
+    try:
+        from services.sbom_pipeline import build_sbom_from_inventory
+        sbom_stats = build_sbom_from_inventory(db, scan_id)
+        inv_counts["sbom_components"] = sbom_stats.get("components", 0)
+        inv_counts["sbom_vulnerabilities"] = sbom_stats.get("vulnerabilities", 0)
+    except Exception as e:
+        logger.warning(f"SBOM rebuild failed (non-fatal): {e}")
 
     return {"scan_id": scan_id, "extracted": {k: v for k, v in inv_counts.items() if v}}
 

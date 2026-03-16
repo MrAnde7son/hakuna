@@ -179,7 +179,7 @@ def fetch_nvd_cve(cve_id: str) -> Optional[dict]:
             cvss4_vector = cvss_data.get("vectorString")
             break
 
-        # Affected products
+        # Affected products — capture full version range from NVD CPE data
         affected_products = []
         for config in cve_data.get("configurations", []):
             for node in config.get("nodes", []):
@@ -187,11 +187,27 @@ def fetch_nvd_cve(cve_id: str) -> Optional[dict]:
                     cpe_uri = cpe_match.get("criteria", "")
                     parts = cpe_uri.split(":")
                     if len(parts) >= 5:
-                        affected_products.append({
+                        # Extract version from CPE string (part 5) if present
+                        cpe_version = parts[5] if len(parts) > 5 and parts[5] not in ("*", "-", "") else ""
+                        prod = {
                             "vendor": parts[3],
                             "product": parts[4],
-                            "versions": cpe_match.get("versionEndIncluding", ""),
-                        })
+                            "cpe_version": cpe_version,
+                        }
+                        # Capture all four NVD version range fields
+                        for field in ("versionStartIncluding", "versionStartExcluding",
+                                      "versionEndIncluding", "versionEndExcluding"):
+                            val = cpe_match.get(field, "")
+                            if val:
+                                prod[field] = val
+                        # Keep backward compat: "versions" = best ceiling
+                        prod["versions"] = (
+                            cpe_match.get("versionEndIncluding")
+                            or cpe_match.get("versionEndExcluding")
+                            or cpe_version
+                            or ""
+                        )
+                        affected_products.append(prod)
 
         # CWE IDs
         cwe_ids = []
@@ -324,7 +340,7 @@ def sync_nvd_scores(db, batch_size: int = 50) -> dict:
             record.cvss4_vector = nvd_data["cvss4_vector"]
         if nvd_data.get("description") and not record.description:
             record.description = nvd_data["description"]
-        if nvd_data.get("affected_products") and not record.affected_products:
+        if nvd_data.get("affected_products"):
             record.affected_products = nvd_data["affected_products"]
         if nvd_data.get("cwe_ids") and not record.cwe_ids:
             record.cwe_ids = nvd_data["cwe_ids"]
@@ -1129,3 +1145,255 @@ def sync_cisa_advisories_to_db(db) -> dict:
     total = db.query(CisaAdvisory).count()
     logger.info("CISA advisories sync: +%d added, %d updated, %d total", added, updated, total)
     return {"added": added, "updated": updated, "total": total}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# endoflife.date — Product Lifecycle Data
+# ═══════════════════════════════════════════════════════════════════════
+
+_COMPONENT_TO_EOL_SLUG = {
+    ".net": "dotnet",
+    "dotnet": "dotnet",
+    "asp.net core": "dotnet",
+    ".net framework": "dotnet-framework",
+    "node.js": "nodejs",
+    "nodejs": "nodejs",
+    "openssl": "openssl",
+    "apache": "apache",
+    "apache http server": "apache",
+    "nginx": "nginx",
+    "php": "php",
+    "python": "python",
+    "ruby": "ruby",
+    "java": "java-se",
+    "openjdk": "java-se",
+    "jquery": "jquery",
+    "postgresql": "postgresql",
+    "mysql": "mysql",
+    "mariadb": "mariadb",
+    "mongodb": "mongodb",
+    "redis": "redis",
+    "elasticsearch": "elasticsearch",
+    "tomcat": "tomcat",
+    "apache tomcat": "tomcat",
+    "spring framework": "spring-framework",
+    "spring boot": "spring-boot",
+    "iis": "iis",
+    "sql server": "mssqlserver",
+    "windows server": "windows-server",
+    "windows server 2016": "windows-server",
+    "windows server 2019": "windows-server",
+    "windows server 2022": "windows-server",
+    "windows 10": "windows",
+    "windows 11": "windows",
+    "ubuntu": "ubuntu",
+    "debian": "debian",
+    "centos": "centos",
+    "red hat enterprise linux": "rhel",
+    "rhel": "rhel",
+    "vmware esxi": "esxi",
+    "docker engine": "docker-engine",
+    "kubernetes": "kubernetes",
+    "go": "go",
+    "golang": "go",
+    "rust": "rust",
+    "angular": "angular",
+    "react": "react",
+    "vue": "vue",
+    "django": "django",
+    "rails": "ruby-on-rails",
+    "wordpress": "wordpress",
+    "curl": "curl",
+    "git": "git",
+    "jenkins": "jenkins",
+    "grafana": "grafana",
+    "kong": "kong",
+    "haproxy": "haproxy",
+    "varnish": "varnish",
+    "rabbitmq": "rabbitmq",
+    "kafka": "kafka",
+    "terraform": "terraform",
+    "ansible": "ansible",
+}
+
+
+def _resolve_slug(component):
+    """Map a component name (from scan/aggregation) to an endoflife.date slug."""
+    if not component:
+        return None
+    import re
+    c = component.lower().strip()
+    # Strip common prefixes
+    c = re.sub(r'^(microsoft|security updates? for)\s+', '', c)
+    c = re.sub(r'\s+', ' ', c).strip()
+
+    # Direct match
+    if c in _COMPONENT_TO_EOL_SLUG:
+        return _COMPONENT_TO_EOL_SLUG[c]
+
+    # Try without trailing version/noise
+    c_base = re.sub(r'\s*\d+(\.\d+)*\s*$', '', c).strip()
+    if c_base in _COMPONENT_TO_EOL_SLUG:
+        return _COMPONENT_TO_EOL_SLUG[c_base]
+
+    # Partial match — check if any key is a substring
+    for key, slug in _COMPONENT_TO_EOL_SLUG.items():
+        if key in c or c in key:
+            return slug
+
+    return None
+
+
+def fetch_endoflife_cycles(slug):
+    """Fetch release cycles from endoflife.date API for a product slug."""
+    import urllib.request
+    url = "https://endoflife.date/api/%s.json" % slug
+    try:
+        ctx = _get_ssl_context()
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": "nessus-remediation/1.0",
+        })
+        with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+            import json
+            return json.loads(resp.read().decode())
+    except Exception as e:
+        logger.debug("endoflife.date fetch failed for %s: %s", slug, e)
+        return []
+
+
+def _fetch_all_endoflife_products():
+    """Fetch the full product catalog from endoflife.date."""
+    url = "https://endoflife.date/api/all.json"
+    try:
+        ctx = _get_ssl_context()
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": "nessus-remediation/1.0",
+        })
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as e:
+        logger.warning("endoflife.date catalog fetch failed: %s", e)
+        return []
+
+
+def sync_product_lifecycles(db, scan_id=None):
+    """
+    Sync product lifecycle data from endoflife.date for ALL products
+    in their catalog.
+
+    Fetches the full product list from endoflife.date/api/all.json,
+    then fetches release cycles for each product.
+    """
+    import time
+    from models.threat_intel_models import ProductLifecycle
+
+    # Fetch full product catalog
+    all_slugs = _fetch_all_endoflife_products()
+    if not all_slugs:
+        logger.warning("endoflife.date sync: could not fetch product catalog")
+        return {"products_synced": 0, "cycles_upserted": 0}
+
+    logger.info("endoflife.date sync: found %d products in catalog", len(all_slugs))
+
+    # Build slug → display_name map (prettify slug as display name)
+    slug_map = {}
+    for slug in all_slugs:
+        if isinstance(slug, str) and slug.strip():
+            display = slug.replace("-", " ").title()
+            slug_map[slug.strip()] = display
+
+    if not slug_map:
+        logger.info("endoflife.date sync: no products to sync")
+        return {"products_synced": 0, "cycles_upserted": 0}
+
+    products_synced = 0
+    cycles_upserted = 0
+
+    total_slugs = len(slug_map)
+    for idx, (slug, display_name) in enumerate(slug_map.items()):
+        if idx % 50 == 0:
+            logger.info("endoflife.date sync: %d/%d products...", idx, total_slugs)
+        cycles = fetch_endoflife_cycles(slug)
+        if not cycles:
+            continue
+
+        products_synced += 1
+
+        for cycle_data in cycles:
+            cycle = str(cycle_data.get("cycle", ""))
+            if not cycle:
+                continue
+
+            # Parse EOL status
+            eol_raw = cycle_data.get("eol", False)
+            is_eol = False
+            eol_str = str(eol_raw) if eol_raw is not None else ""
+            if isinstance(eol_raw, bool):
+                is_eol = eol_raw
+            elif isinstance(eol_raw, str) and eol_raw not in ("", "false"):
+                if eol_raw == "true":
+                    is_eol = True
+                else:
+                    try:
+                        from datetime import datetime as _dt
+                        eol_date = _dt.strptime(eol_raw, "%Y-%m-%d")
+                        is_eol = eol_date < _dt.utcnow()
+                    except (ValueError, TypeError):
+                        pass
+
+            # Parse LTS
+            lts_raw = cycle_data.get("lts", False)
+            is_lts = lts_raw is True or lts_raw == "true"
+
+            # Support end
+            support_raw = cycle_data.get("support", "")
+            support_str = str(support_raw) if support_raw not in (None, True, False) else ""
+
+            # Upsert
+            existing = (
+                db.query(ProductLifecycle)
+                .filter(ProductLifecycle.slug == slug, ProductLifecycle.cycle == cycle)
+                .first()
+            )
+            if existing:
+                existing.product_name = display_name
+                existing.latest_version = str(cycle_data.get("latest", ""))
+                existing.release_date = str(cycle_data.get("releaseDate", ""))
+                existing.eol = eol_str
+                existing.is_eol = is_eol
+                existing.lts = is_lts
+                existing.support_end = support_str
+                existing.latest_release_date = str(cycle_data.get("latestReleaseDate", ""))
+                existing.link = cycle_data.get("link", "")
+                existing.raw_data = cycle_data
+                existing.updated_at = datetime.utcnow()
+            else:
+                record = ProductLifecycle(
+                    product_name=display_name,
+                    slug=slug,
+                    cycle=cycle,
+                    latest_version=str(cycle_data.get("latest", "")),
+                    release_date=str(cycle_data.get("releaseDate", "")),
+                    eol=eol_str,
+                    is_eol=is_eol,
+                    lts=is_lts,
+                    support_end=support_str,
+                    latest_release_date=str(cycle_data.get("latestReleaseDate", "")),
+                    link=cycle_data.get("link", ""),
+                    raw_data=cycle_data,
+                )
+                db.add(record)
+            cycles_upserted += 1
+
+        try:
+            db.commit()
+        except Exception as e:
+            logger.warning("endoflife.date commit failed for %s: %s", slug, e)
+            db.rollback()
+
+        time.sleep(0.1)  # be polite to community API
+
+    logger.info("endoflife.date sync: %d products, %d cycles upserted", products_synced, cycles_upserted)
+    return {"products_synced": products_synced, "cycles_upserted": cycles_upserted}

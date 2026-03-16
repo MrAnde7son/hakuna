@@ -21,7 +21,8 @@
     "collapseNav": "Collapse navigation",
     "docs": "Docs",
     "documentation": "Documentation",
-    "help": "Help & Documentation"
+    "help": "Help & Documentation",
+    "blastRadius": "Blast Radius"
   },
   "auth": {
     "signIn": "Sign in",

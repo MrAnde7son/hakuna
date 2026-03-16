@@ -468,6 +468,69 @@ def _reassign_asset_children(db, old_asset_id: int, new_asset_id: int, ENTITY_MO
             )
 
 
+def _dedup_inventory_on_assets(db, asset_ids: set, cfg: dict, ENTITY_MODEL_MAP: dict) -> int:
+    """
+    After cross-scan asset merge, dedup inventory records on survivor assets.
+    Records from different scans may have the same key (e.g. same username+domain)
+    and need to be collapsed.
+    """
+    inv_cfg = cfg.get("inventory", {})
+    total_removed = 0
+
+    for entity_type, (Model, list_fields_list, bool_fields_list) in ENTITY_MODEL_MAP.items():
+        if entity_type in ("assets", "findings"):
+            continue
+        if not hasattr(Model, "asset_id"):
+            continue
+
+        entity_cfg = inv_cfg.get(entity_type, {})
+        if not entity_cfg.get("enabled", True):
+            continue
+        key_fields = entity_cfg.get("key_fields", [])
+        if not key_fields:
+            continue
+        strategy = entity_cfg.get("strategy", "keep_first")
+        list_fields = set(list_fields_list)
+        bool_fields = set(bool_fields_list)
+
+        for asset_id in asset_ids:
+            asset_id_col = getattr(Model, "asset_id", None)
+            if asset_id_col is None:
+                continue
+            rows = db.query(Model).filter(asset_id_col == asset_id).order_by(Model.id).all()
+            if len(rows) < 2:
+                continue
+
+            seen: dict[tuple, Any] = {}
+            for row in rows:
+                parts = []
+                skip = False
+                for field in key_fields:
+                    if field == "asset_id":
+                        parts.append(str(asset_id))
+                        continue
+                    val = getattr(row, field, None)
+                    if val is None or val == "":
+                        skip = True
+                        break
+                    parts.append(str(val))
+                if skip:
+                    continue
+                key = tuple(parts)
+                if key in seen:
+                    survivor = seen[key]
+                    if strategy == "merge":
+                        _merge_model_row(survivor, row, strategy, list_fields, bool_fields)
+                    elif strategy == "keep_last":
+                        _merge_model_row(survivor, row, strategy, list_fields, bool_fields)
+                    db.delete(row)
+                    total_removed += 1
+                else:
+                    seen[key] = row
+
+    return total_removed
+
+
 def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) -> dict:
     """
     Cross-scan asset dedup: within each org, find duplicate assets (same key_fields
@@ -559,14 +622,20 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
                     seen[k] = asset
 
     removed = len(to_delete)
+    survivor_ids = set()
     for old_asset, survivor in to_delete:
         _reassign_asset_children(db, old_asset.id, survivor.id, ENTITY_MODEL_MAP)
+        survivor_ids.add(survivor.id)
         db.expire(old_asset)
         db.delete(old_asset)
 
     if removed:
+        db.flush()
+        # After reassigning children, dedup inventory on survivor assets
+        # to eliminate duplicates created by merging records from multiple scans
+        inv_removed = _dedup_inventory_on_assets(db, survivor_ids, cfg, ENTITY_MODEL_MAP)
         db.commit()
-        logger.info(f"Cross-scan asset dedup: removed {removed} duplicates (org_id={org_id!r})")
+        logger.info(f"Cross-scan asset dedup: removed {removed} duplicate assets, {inv_removed} duplicate inventory records (org_id={org_id!r})")
 
     return {"removed": removed, "entity_type": "assets", "scope": "cross_scan"}
 

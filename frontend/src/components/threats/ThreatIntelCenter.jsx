@@ -9,13 +9,14 @@ import {
   Shield, AlertTriangle, Zap, Globe, Users, Activity, RefreshCw,
   Search, Filter, ChevronDown, ChevronUp, ChevronRight, ExternalLink,
   BookOpen, AlertCircle, CheckCircle, Clock, Plus, X,
-  FileText, TrendingUp, Flag, Database, Radio,
+  FileText, TrendingUp, Flag, Database, Radio, Package,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { Card, Button, Spinner, EmptyState, StatCard, SeverityBadge, ScoreBar } from '../shared/ui.jsx'
 import {
   getThreatIntelStats, getThreatCves, getThreatGroups, getThreatTtps,
   syncThreatIntel, getGroupExposure, getCisaAdvisories,
+  getProductLifecycles, getProductLifecycle,
 } from '../../api.js'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -79,14 +80,15 @@ const MOTIVATION_COLORS = {
   unknown: '#6b7280',
 }
 
-const TAB_KEYS = ['newsroom', 'cves', 'groups']
-const TAB_ICONS = { newsroom: Radio, cves: Database, groups: Users }
+const TAB_KEYS = ['newsroom', 'cves', 'groups', 'products']
+const TAB_ICONS = { newsroom: Radio, cves: Database, groups: Users, products: Package }
 
 function getTabConfig(t) {
   return [
     { key: 'newsroom', label: t('threats.newsroom'), icon: Radio },
     { key: 'cves', label: t('threats.cve'), icon: Database },
     { key: 'groups', label: t('threats.threatGroups'), icon: Users },
+    { key: 'products', label: 'Products', icon: Package },
   ]
 }
 
@@ -1575,6 +1577,254 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
   )
 }
 
+// ─── Products Tab (endoflife.date) ────────────────────────────────────────────
+
+function EolBadge({ isEol, eolDate }) {
+  if (isEol) {
+    return (
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+        background: '#dc262618', color: '#dc2626', border: '1px solid #dc262640',
+      }}>
+        <AlertCircle size={11} /> End of Life
+      </span>
+    )
+  }
+  // Check if EOL within 6 months
+  if (eolDate && eolDate !== 'false' && eolDate !== 'true') {
+    try {
+      const eol = new Date(eolDate)
+      const now = new Date()
+      const sixMonths = new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000)
+      if (eol <= sixMonths) {
+        return (
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+            background: '#f59e0b18', color: '#f59e0b', border: '1px solid #f59e0b40',
+          }}>
+            <Clock size={11} /> EOL Soon
+          </span>
+        )
+      }
+    } catch {}
+  }
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+      background: '#10b98118', color: '#10b981', border: '1px solid #10b98140',
+    }}>
+      <CheckCircle size={11} /> Supported
+    </span>
+  )
+}
+
+function ProductsTab() {
+  const [products, setProducts] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [eolFilter, setEolFilter] = useState('all') // all | eol | supported | soon
+  const [scanOnly, setScanOnly] = useState(false)
+  const [expanded, setExpanded] = useState({})
+  const [visibleCount, setVisibleCount] = useState(50)
+
+  useEffect(() => {
+    setVisibleCount(50)
+    setLoading(true)
+    getProductLifecycles({ search: search || undefined, in_scan: scanOnly || undefined })
+      .then(setProducts)
+      .catch(() => setProducts([]))
+      .finally(() => setLoading(false))
+  }, [search, scanOnly])
+
+  const toggleExpand = (slug) => setExpanded(prev => ({ ...prev, [slug]: !prev[slug] }))
+
+  // Client-side EOL filter
+  const filtered = products.filter(p => {
+    if (eolFilter === 'eol') return p.cycles.some(c => c.is_eol)
+    if (eolFilter === 'supported') return p.cycles.some(c => !c.is_eol)
+    if (eolFilter === 'soon') return p.cycles.some(c => {
+      if (c.is_eol || !c.eol || c.eol === 'false' || c.eol === 'true') return false
+      try {
+        const eol = new Date(c.eol)
+        const sixM = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000)
+        return eol <= sixM
+      } catch { return false }
+    })
+    return true
+  })
+
+  if (loading) return <Spinner />
+  if (!products.length) return (
+    <EmptyState
+      icon={Package}
+      title="No product lifecycle data"
+      sub="Run Sync Intel to fetch product data"
+    />
+  )
+
+  return (
+    <div>
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
+          <Search size={14} style={{ position: 'absolute', left: 10, top: 9, color: 'var(--text-muted)' }} />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search products..."
+            style={{
+              width: '100%', padding: '7px 12px 7px 30px', borderRadius: 6,
+              border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+              color: 'var(--text-primary)', fontSize: 13,
+            }}
+          />
+        </div>
+        {['all', 'supported', 'soon', 'eol'].map(f => (
+          <button
+            key={f}
+            onClick={() => setEolFilter(f)}
+            style={{
+              padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              border: eolFilter === f ? '1px solid var(--accent)' : '1px solid var(--border)',
+              background: eolFilter === f ? 'var(--accent)' : 'var(--bg-secondary)',
+              color: eolFilter === f ? '#fff' : 'var(--text-secondary)',
+            }}
+          >
+            {f === 'all' ? 'All' : f === 'eol' ? 'End of Life' : f === 'soon' ? 'EOL Soon' : 'Supported'}
+          </button>
+        ))}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={scanOnly} onChange={e => setScanOnly(e.target.checked)} />
+          In scan only
+        </label>
+      </div>
+
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+        {filtered.length} product{filtered.length !== 1 ? 's' : ''} tracked
+      </div>
+
+      {/* Product list */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {filtered.slice(0, visibleCount).map(p => {
+          const isOpen = expanded[p.slug]
+          const activeCycles = p.cycles.filter(c => !c.is_eol)
+          const eolCycles = p.cycles.filter(c => c.is_eol)
+          const latestActive = activeCycles[0]
+          const hasEol = eolCycles.length > 0
+
+          return (
+            <Card key={p.slug} style={{ overflow: 'hidden' }}>
+              <div
+                onClick={() => toggleExpand(p.slug)}
+                style={{ padding: '14px 18px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12 }}
+              >
+                <Package size={18} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
+                      {p.product_name}
+                    </span>
+                    {p.in_scan && (
+                      <span style={{
+                        padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 600,
+                        background: '#2563eb18', color: '#2563eb', border: '1px solid #2563eb40',
+                      }}>
+                        In Scan
+                      </span>
+                    )}
+                    {latestActive && (
+                      <span style={{ fontSize: 12, color: '#10b981', fontWeight: 600 }}>
+                        Latest: {latestActive.latest_version}
+                      </span>
+                    )}
+                    {latestActive?.lts && (
+                      <span style={{
+                        padding: '1px 6px', borderRadius: 3, fontSize: 10, fontWeight: 500,
+                        background: 'var(--bg-tertiary)', color: 'var(--text-muted)',
+                      }}>
+                        LTS
+                      </span>
+                    )}
+                    {hasEol && (
+                      <span style={{ fontSize: 11, color: '#dc2626' }}>
+                        {eolCycles.length} EOL cycle{eolCycles.length > 1 ? 's' : ''}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                    {p.cycles.length} release cycle{p.cycles.length !== 1 ? 's' : ''} tracked
+                    {' · '}
+                    {activeCycles.length} supported, {eolCycles.length} end-of-life
+                  </div>
+                </div>
+                {isOpen ? <ChevronUp size={16} style={{ color: 'var(--text-muted)' }} /> : <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />}
+              </div>
+
+              {isOpen && (
+                <div style={{ borderTop: '1px solid var(--border)', padding: '12px 18px' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.05em' }}>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>Cycle</th>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>Latest Version</th>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>Released</th>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>EOL Date</th>
+                        <th style={{ textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>Status</th>
+                        <th style={{ textAlign: 'center', padding: '6px 8px', borderBottom: '1px solid var(--border)' }}>LTS</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {p.cycles.map(c => (
+                        <tr key={c.cycle} style={{ background: c.is_eol ? '#dc262608' : undefined }}>
+                          <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', fontWeight: 600, color: 'var(--text-primary)' }}>
+                            {c.cycle}
+                          </td>
+                          <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', fontFamily: 'monospace', color: c.is_eol ? 'var(--text-muted)' : '#10b981', fontWeight: 600 }}>
+                            {c.latest_version}
+                          </td>
+                          <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+                            {c.release_date || '—'}
+                          </td>
+                          <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', color: c.is_eol ? '#dc2626' : 'var(--text-muted)' }}>
+                            {c.eol && c.eol !== 'false' && c.eol !== 'true' ? c.eol : c.eol === 'true' ? 'Yes' : '—'}
+                          </td>
+                          <td style={{ padding: '8px', borderBottom: '1px solid var(--border)' }}>
+                            <EolBadge isEol={c.is_eol} eolDate={c.eol} />
+                          </td>
+                          <td style={{ padding: '8px', borderBottom: '1px solid var(--border)', textAlign: 'center' }}>
+                            {c.lts && <span style={{ fontSize: 10, fontWeight: 600, color: '#2563eb' }}>LTS</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
+          )
+        })}
+        {visibleCount < filtered.length && (
+          <button
+            onClick={() => setVisibleCount(v => v + 50)}
+            style={{
+              padding: '10px 20px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+              cursor: 'pointer', border: '1px solid var(--border)',
+              background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
+              alignSelf: 'center', marginTop: 8,
+            }}
+          >
+            Show more ({filtered.length - visibleCount} remaining)
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function ThreatIntelCenter() {
@@ -1716,6 +1966,10 @@ export default function ThreatIntelCenter() {
 
       {tab === 'groups' && (
         <ThreatGroupsTab initialInMyEnv={groupsInitialInMyEnv} />
+      )}
+
+      {tab === 'products' && (
+        <ProductsTab />
       )}
     </div>
   )

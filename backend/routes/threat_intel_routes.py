@@ -16,6 +16,7 @@ from models.models import Finding, Asset, Scan
 from models.threat_intel_models import (
     ThreatGroup, TTP, ThreatGroupTTP,
     ThreatCVE, ThreatCampaign, IntelRemediationCampaign, CisaAdvisory,
+    ProductLifecycle,
 )
 import threat_intel.threat_intel_sync as sync_engine
 import threat_intel.ttp_matcher as ttp_matcher
@@ -99,6 +100,14 @@ def get_stats(db: Session = Depends(get_db)):
             if matched >= min_match:
                 exposed_groups += 1
 
+    # Product lifecycle counts
+    total_products = db.query(func.count(func.distinct(ProductLifecycle.slug))).scalar() or 0
+    eol_products = (
+        db.query(func.count(func.distinct(ProductLifecycle.slug)))
+        .filter(ProductLifecycle.is_eol == True)
+        .scalar() or 0
+    )
+
     return {
         "total_cves": total_cves,
         "kev_count": kev_count,
@@ -107,6 +116,8 @@ def get_stats(db: Session = Depends(get_db)):
         "remediation_campaigns": remediation_campaigns,
         "affected_assets": affected_assets,
         "avg_epss": avg_epss,
+        "total_products": total_products,
+        "eol_products": eol_products,
     }
 
 
@@ -1013,6 +1024,11 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
     if advisory_sync_fn:
         background_tasks.add_task(advisory_sync_fn, db)
 
+    # endoflife.date product lifecycles — background
+    eol_sync_fn = getattr(sync_engine, 'sync_product_lifecycles', None)
+    if eol_sync_fn:
+        background_tasks.add_task(eol_sync_fn, db)
+
     return {
         "status": "ok",
         "kev_added": kev_result.get("added", 0),
@@ -1024,7 +1040,7 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
             f"KEV: +{kev_result.get('added', 0)} new, {kev_result.get('updated', 0)} updated. "
             f"EPSS: {epss_result.get('updated', 0)} refreshed. "
             f"Findings enriched: {enrich_result.get('enriched', 0)}. "
-            f"NVD CVSS + MITRE ATT&CK + CISA advisories: syncing in background."
+            f"NVD CVSS + MITRE ATT&CK + CISA advisories + endoflife.date: syncing in background."
         ),
     }
 
@@ -1149,3 +1165,103 @@ def _compute_campaign_priority(cve_ids: list, db: Session) -> float:
 
     score = (4.0 if has_kev else 0.0) + (max_epss * 3.0) + (max_cvss / 10.0 * 3.0)
     return min(round(score, 2), 10.0)
+
+
+# ─────────────────────────────────────────────
+# Product Lifecycle (endoflife.date)
+# ─────────────────────────────────────────────
+
+@router.get("/products")
+def list_products(
+    search: Optional[str] = None,
+    is_eol: Optional[bool] = None,
+    in_scan: Optional[bool] = None,
+    db: Session = Depends(get_db),
+):
+    """List products with their lifecycle data, grouped by product slug."""
+    from models.models import AggregatedSolution
+
+    q = db.query(ProductLifecycle)
+    if search:
+        q = q.filter(or_(
+            ProductLifecycle.product_name.ilike(f"%{search}%"),
+            ProductLifecycle.slug.ilike(f"%{search}%"),
+        ))
+
+    # Get all scan component slugs for in_scan marking/filtering
+    scan_slugs = set()
+    components = [r[0] for r in db.query(AggregatedSolution.affected_component).distinct().all() if r[0]]
+    for comp in components:
+        slug = sync_engine._resolve_slug(comp)
+        if slug:
+            scan_slugs.add(slug)
+
+    rows = q.order_by(ProductLifecycle.slug, desc(ProductLifecycle.is_eol), ProductLifecycle.cycle).all()
+
+    # Group by slug
+    products = {}
+    for r in rows:
+        if r.slug not in products:
+            products[r.slug] = {
+                "slug": r.slug,
+                "product_name": r.product_name,
+                "in_scan": r.slug in scan_slugs,
+                "cycles": [],
+            }
+        products[r.slug]["cycles"].append({
+            "cycle": r.cycle,
+            "latest_version": r.latest_version,
+            "release_date": r.release_date,
+            "eol": r.eol,
+            "is_eol": r.is_eol,
+            "lts": r.lts,
+            "support_end": r.support_end,
+            "latest_release_date": r.latest_release_date,
+            "link": r.link,
+        })
+
+    result = list(products.values())
+
+    # Apply filters that work on grouped data
+    if is_eol is not None:
+        if is_eol:
+            result = [p for p in result if any(c["is_eol"] for c in p["cycles"])]
+        else:
+            result = [p for p in result if any(not c["is_eol"] for c in p["cycles"])]
+    if in_scan is True:
+        result = [p for p in result if p["in_scan"]]
+    elif in_scan is False:
+        result = [p for p in result if not p["in_scan"]]
+
+    return result
+
+
+@router.get("/products/{slug}")
+def get_product(slug: str, db: Session = Depends(get_db)):
+    """Get all lifecycle cycles for a specific product."""
+    rows = (
+        db.query(ProductLifecycle)
+        .filter(ProductLifecycle.slug == slug)
+        .order_by(ProductLifecycle.cycle)
+        .all()
+    )
+    if not rows:
+        raise HTTPException(404, f"Product '{slug}' not found")
+    return {
+        "slug": slug,
+        "product_name": rows[0].product_name,
+        "cycles": [
+            {
+                "cycle": r.cycle,
+                "latest_version": r.latest_version,
+                "release_date": r.release_date,
+                "eol": r.eol,
+                "is_eol": r.is_eol,
+                "lts": r.lts,
+                "support_end": r.support_end,
+                "latest_release_date": r.latest_release_date,
+                "link": r.link,
+            }
+            for r in rows
+        ],
+    }
