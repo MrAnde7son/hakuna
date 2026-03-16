@@ -742,13 +742,15 @@ export const rebuildAggregatedSolutions = (scanId) => request(`/aggregated-solut
 
 // EASM (External Attack Surface)
 export const getEasmStatus = () => request('/easm/status')
-export const syncEasmAssets = () => request('/easm/sync', { method: 'POST' })
+export const scanEasmDomain = (domain, scanType = 'full') => request(`/easm/scan-domain?domain=${encodeURIComponent(domain)}&scan_type=${scanType}`, { method: 'POST' })
+export const refreshEasmScan = (scanId) => request(`/easm/refresh/${scanId}`, { method: 'POST' })
 export const triggerEasmScan = (scanType = 'full') => request(`/easm/scan?scan_type=${scanType}`, { method: 'POST' })
 export const getEasmEvents = (since, limit = 100) => request(`/easm/events?limit=${limit}${since ? '&since=' + since : ''}`)
 export const setupEasm = (domain) => request(`/easm/setup?domain=${encodeURIComponent(domain)}`, { method: 'POST' })
 export const addEasmDomain = (domain) => request(`/easm/domain?domain=${encodeURIComponent(domain)}`, { method: 'POST' })
 export const getEasmDomains = () => request('/easm/domains')
 export const getEasmScanRuns = (limit = 10) => request(`/easm/scan-runs?limit=${limit}`)
+export const syncEasmAssets = () => request('/easm/sync', { method: 'POST' })
 
 // Agent Pipelines
 export const getAgentPipelines = () => request('/agents/pipelines')

@@ -9,7 +9,7 @@ Responsibilities:
 import os
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 import httpx
 
@@ -236,6 +236,12 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
         pid = f"EASM-TECH-{tech_name.upper().replace(' ', '-')}"
         if pid in existing_plugins:
             continue
+        # Check for versioned tech — old versions get higher priority
+        tech_priority = 1.0
+        effort = "quick_win"
+        if ":" in tech_name:
+            tech_priority = 2.5  # versioned tech = worth reviewing
+            effort = "medium"
         findings_to_add.append(Finding(
             scan_id=scan_id, asset_id=asset.id,
             source_type="easm", source_vuln_id=pid,
@@ -243,6 +249,8 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
             plugin_name=f"{tech_name} Detected",
             plugin_family="EASM: Web Technology",
             severity=0, severity_label="Info", risk_factor="None",
+            priority_score=tech_priority, effort_level=effort,
+            owner_suggestion="SecOps",
             synopsis=f"The web technology '{tech_name}' was detected on {hostname}.",
             description=f"External attack surface scanning identified that {hostname} is running {tech_name}. "
                         f"This information was gathered via HTTP response analysis.",
@@ -269,6 +277,10 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
         output_lines = [f"Port: {port}/tcp", f"State: open", f"Service: {svc_name}"]
         if svc_detail:
             output_lines.append(f"Product: {svc_detail}")
+        # Non-standard ports get higher priority
+        standard_ports = {80, 443, 22, 25, 53}
+        port_int = int(port) if isinstance(port, str) else port
+        port_priority = 2.0 if port_int not in standard_ports else 1.0
         findings_to_add.append(Finding(
             scan_id=scan_id, asset_id=asset.id,
             source_type="easm", source_vuln_id=pid,
@@ -276,6 +288,8 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
             plugin_name=f"Open Port: {port}/tcp ({svc_name})",
             plugin_family="EASM: Port Scan",
             severity=0, severity_label="Info", risk_factor="None",
+            priority_score=port_priority, effort_level="quick_win",
+            owner_suggestion="IT",
             port=str(port), protocol="tcp",
             synopsis=f"Port {port}/tcp is open on {hostname}.",
             description=f"External port scanning identified that {hostname} has port {port}/tcp open "
@@ -292,7 +306,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
         expiry_str = cert["expiry"]
         try:
             expiry = datetime.fromisoformat(expiry_str.replace("Z", "+00:00"))
-            days_left = (expiry - datetime.utcnow()).days
+            days_left = (expiry.replace(tzinfo=None) - datetime.utcnow()).days
         except (ValueError, AttributeError):
             expiry = None
             days_left = None
@@ -307,6 +321,20 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
         else:
             sev, sev_label, risk = 0, "Info", "None"
 
+        # Priority based on cert urgency
+        if days_left is not None and days_left < 0:
+            tls_priority = 9.0
+            tls_effort = "medium"
+        elif days_left is not None and days_left < 30:
+            tls_priority = 7.0
+            tls_effort = "medium"
+        elif days_left is not None and days_left < 90:
+            tls_priority = 4.0
+            tls_effort = "quick_win"
+        else:
+            tls_priority = 1.0
+            tls_effort = "quick_win"
+
         if pid in existing_plugins:
             # Update severity — cert may have moved from info to expiring
             db.query(Finding).filter(
@@ -315,6 +343,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 Finding.plugin_id == pid,
             ).update({
                 "severity": sev, "severity_label": sev_label, "risk_factor": risk,
+                "priority_score": tls_priority, "effort_level": tls_effort,
                 "last_seen": now,
                 "plugin_output": _build_tls_output(hostname, cert, days_left),
             })
@@ -328,6 +357,8 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 ),
                 plugin_family="EASM: TLS/SSL",
                 severity=sev, severity_label=sev_label, risk_factor=risk,
+                priority_score=tls_priority, effort_level=tls_effort,
+                owner_suggestion="IT",
                 synopsis=f"TLS certificate for {hostname} — {'expired' if days_left is not None and days_left < 0 else f'{days_left} days remaining' if days_left is not None else 'unknown expiry'}.",
                 description=f"External TLS inspection of {hostname} revealed certificate details. "
                             f"Issuer: {cert.get('issuer', 'unknown')}. "
@@ -349,6 +380,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 plugin_name=f"CDN Detected: {cdn}",
                 plugin_family="EASM: Infrastructure",
                 severity=0, severity_label="Info", risk_factor="None",
+                priority_score=0.5, effort_level="quick_win", owner_suggestion="IT",
                 synopsis=f"{hostname} is behind CDN provider '{cdn}'.",
                 description=f"External scanning detected that {hostname} routes traffic through {cdn} CDN. "
                             f"This means the origin server IP may be hidden behind CDN infrastructure.",
@@ -369,6 +401,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 plugin_name=f"WAF Detected: {waf}",
                 plugin_family="EASM: Infrastructure",
                 severity=0, severity_label="Info", risk_factor="None",
+                priority_score=0.5, effort_level="quick_win", owner_suggestion="SecOps",
                 synopsis=f"{hostname} is protected by WAF '{waf}'.",
                 description=f"External scanning detected that {hostname} is protected by the {waf} web application firewall.",
                 solution="No action required. Ensure WAF rules are kept up to date.",
@@ -390,6 +423,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 plugin_name=f"HTTP Service Detected ({http_status})",
                 plugin_family="EASM: Web Service",
                 severity=0, severity_label="Info", risk_factor="None",
+                priority_score=1.0, effort_level="quick_win", owner_suggestion="IT",
                 port="443" if http_url.startswith("https") else "80", protocol="tcp",
                 synopsis=f"HTTP service detected on {hostname}.",
                 description=f"External HTTP probing of {hostname} returned status {http_status}.",
@@ -426,6 +460,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 plugin_name="DNS Records",
                 plugin_family="EASM: DNS",
                 severity=0, severity_label="Info", risk_factor="None",
+                priority_score=0.5, effort_level="quick_win", owner_suggestion="IT",
                 synopsis=f"DNS records for {hostname}.",
                 description=f"External DNS resolution for {hostname} returned the following records.",
                 solution="No action required. Review DNS records for accuracy.",
@@ -457,28 +492,21 @@ def _build_tls_output(hostname: str, cert: dict, days_left: Optional[int]) -> st
     return "\n".join(lines)
 
 
-def _get_or_create_easm_scan(db: Session, org: Organization) -> Scan:
-    """Find the existing EASM scan for this org, or create one."""
-    scan = (
-        db.query(Scan)
-        .filter(Scan.org_id == org.id, Scan.source_type == "easm")
-        .first()
-    )
-    if scan:
-        # Update the scan date to reflect latest sync
-        scan.scan_date = datetime.utcnow().isoformat()
-        return scan
-
+def _create_easm_scan(db: Session, org: Organization, domain: str, scan_type: str = "full") -> Scan:
+    """Create a new EASM scan record for a specific domain."""
+    now = datetime.utcnow()
+    label = scan_type.replace("_", " ").title()
     scan = Scan(
         org_id=org.id,
-        filename=f"easm-discovery-{org.easm_domain}",
-        scan_name=f"EASM Discovery — {org.easm_domain}",
-        scan_date=datetime.utcnow().isoformat(),
-        scan_type="easm_discovery",
+        filename=f"easm-{scan_type}-{domain}-{now.strftime('%Y%m%d-%H%M%S')}",
+        scan_name=f"EASM {label} — {domain}",
+        scan_date=now.isoformat(),
+        scan_type=f"easm_{scan_type}",
         source_type="easm",
         raw_metadata={
             "hakuna_org_id": org.easm_org_id,
-            "domain": org.easm_domain,
+            "domain": domain,
+            "scan_type": scan_type,
         },
     )
     db.add(scan)
@@ -486,34 +514,11 @@ def _get_or_create_easm_scan(db: Session, org: Organization) -> Scan:
     return scan
 
 
-async def import_easm_assets(db: Session, org: Organization) -> Optional[dict]:
-    """
-    Pull EASM-discovered assets from hakuna-scanner and upsert them
-    into a single EASM scan in the main platform.
-
-    Idempotent: updates existing assets by hostname, creates new ones.
-    Returns summary dict or None on failure.
-    """
-    if not org.easm_org_id:
-        return None
-
-    easm_assets = await get_easm_assets(org.easm_org_id)
-    if not easm_assets:
-        logger.info(f"No EASM assets to import for org '{org.name}'")
-        return {"imported": 0, "updated": 0}
-
-    scan = _get_or_create_easm_scan(db, org)
-
-    # Index existing EASM assets by fqdn for upsert
-    existing = {}
-    for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
-        if a.fqdn:
-            existing[a.fqdn.lower()] = a
-        elif a.ip:
-            existing[a.ip] = a
-
+def _import_assets_for_domain(
+    db: Session, scan: Scan, easm_assets: list, domain: str,
+) -> Tuple[int, int]:
+    """Import assets belonging to a specific domain into a scan. Returns (created, findings_created)."""
     created = 0
-    updated = 0
     findings_created = 0
     now = datetime.utcnow()
 
@@ -521,6 +526,10 @@ async def import_easm_assets(db: Session, org: Organization) -> Optional[dict]:
         hostname = ea.get("hostname", "")
         ip = ea.get("ip", "")
         if not hostname and not ip:
+            continue
+
+        # Filter: only assets whose hostname ends with this domain
+        if hostname and not hostname.lower().endswith(domain.lower()):
             continue
 
         fqdn = hostname if "." in hostname else None
@@ -536,46 +545,50 @@ async def import_easm_assets(db: Session, org: Organization) -> Optional[dict]:
                     os_hint = t
                     break
 
-        # Upsert: find by fqdn or ip
-        lookup_key = (fqdn or "").lower() or ip
-        asset = existing.get(lookup_key)
+        asset = Asset(
+            scan_id=scan.id,
+            ip=ip or None,
+            hostname=hostname.split(".")[0] if hostname else None,
+            fqdn=fqdn,
+            os=os_hint,
+            is_internet_facing=True,
+            environment_tag="external",
+            criticality=5,
+            first_seen=now,
+            last_seen=now,
+            easm_data=easm_data,
+        )
+        db.add(asset)
+        db.flush()
+        created += 1
 
-        if asset:
-            # Update existing
-            asset.ip = ip or asset.ip
-            asset.easm_data = easm_data
-            asset.last_seen = now
-            asset.is_internet_facing = True
-            if os_hint and not asset.os:
-                asset.os = os_hint
-            updated += 1
-        else:
-            # Create new
-            asset = Asset(
-                scan_id=scan.id,
-                ip=ip or None,
-                hostname=hostname.split(".")[0] if hostname else None,
-                fqdn=fqdn,
-                os=os_hint,
-                is_internet_facing=True,
-                environment_tag="external",
-                criticality=5,
-                first_seen=now,
-                last_seen=now,
-                easm_data=easm_data,
-            )
-            db.add(asset)
-            db.flush()  # Need asset.id for findings
-            created += 1
-
-        # Generate findings for this asset
         findings_created += _generate_easm_findings(db, scan.id, asset, ea)
 
+    return created, findings_created
+
+
+async def import_easm_assets_for_domain(
+    db: Session, org: Organization, domain: str, scan_type: str = "full",
+) -> Optional[dict]:
+    """
+    Import EASM-discovered assets for a single domain into a new scan record.
+    Each domain scan is its own row in the scan list.
+    """
+    if not org.easm_org_id:
+        return None
+
+    easm_assets = await get_easm_assets(org.easm_org_id) or []
+
+    scan = _create_easm_scan(db, org, domain, scan_type)
+    created, findings_created = _import_assets_for_domain(db, scan, easm_assets, domain)
+
     # Update scan metadata
+    now = datetime.utcnow()
     scan.raw_metadata = {
         "hakuna_org_id": org.easm_org_id,
-        "domain": org.easm_domain,
-        "asset_count": created + updated,
+        "domain": domain,
+        "scan_type": scan_type,
+        "asset_count": created,
         "last_sync": now.isoformat(),
     }
 
@@ -589,15 +602,117 @@ async def import_easm_assets(db: Session, org: Organization) -> Optional[dict]:
             setattr(a, k, v)
 
     db.commit()
-    logger.info(f"EASM sync for org '{org.name}': assets created={created} updated={updated}, findings={findings_created} (scan_id={scan.id})")
+    logger.info(f"EASM scan for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
 
     return {
         "scan_id": scan.id,
         "created": created,
-        "updated": updated,
         "findings_created": findings_created,
-        "domain": org.easm_domain,
+        "domain": domain,
     }
+
+
+async def scan_domain(
+    db: Session, org: Organization, domain: str, scan_type: str = "full",
+) -> Optional[dict]:
+    """
+    Full flow: add domain to hakuna (idempotent), trigger scan,
+    create a scan record marked as 'running'.
+    Assets are imported later when the scan completes (via refresh_easm_scan).
+    """
+    if not org.easm_org_id:
+        return None
+
+    # Ensure domain is registered in hakuna (idempotent)
+    await add_easm_domain(org.easm_org_id, domain)
+
+    # Trigger scan in hakuna
+    run_id = await trigger_easm_scan(org.easm_org_id, scan_type)
+
+    # Create scan record marked as running
+    scan = _create_easm_scan(db, org, domain, scan_type)
+    scan.raw_metadata = {
+        **scan.raw_metadata,
+        "run_id": run_id,
+        "status": "running" if run_id else "failed",
+    }
+    db.commit()
+
+    return {
+        "scan_id": scan.id,
+        "run_id": run_id,
+        "domain": domain,
+        "status": "running" if run_id else "failed",
+    }
+
+
+async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Optional[dict]:
+    """
+    Check hakuna scan status. If completed, import assets into the scan record.
+    Returns updated status.
+    """
+    if not org.easm_org_id:
+        return None
+
+    scan = db.query(Scan).filter(Scan.id == scan_id, Scan.source_type == "easm").first()
+    if not scan:
+        return None
+
+    meta = scan.raw_metadata or {}
+    run_id = meta.get("run_id")
+    domain = meta.get("domain")
+    current_status = meta.get("status")
+
+    # Already completed — nothing to do
+    if current_status == "completed":
+        return {"scan_id": scan.id, "status": "completed", "domain": domain}
+
+    # Check status in hakuna
+    if run_id:
+        run_status = await get_easm_scan_status(org.easm_org_id, run_id)
+        hakuna_status = (run_status or {}).get("status", "unknown")
+    else:
+        hakuna_status = "failed"
+
+    # Map hakuna statuses
+    if hakuna_status in ("completed", "done"):
+        # Import assets now that scan is done
+        easm_assets = await get_easm_assets(org.easm_org_id) or []
+        created, findings_created = _import_assets_for_domain(db, scan, easm_assets, domain)
+
+        now = datetime.utcnow()
+        scan.raw_metadata = {
+            **meta,
+            "status": "completed",
+            "asset_count": created,
+            "last_sync": now.isoformat(),
+        }
+
+        # Update asset severity counts
+        for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
+            counts = {"critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0, "info_count": 0}
+            for f in db.query(Finding.severity).filter(Finding.asset_id == a.id).all():
+                key = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}.get(f.severity, "info_count")
+                counts[key] += 1
+            for k, v in counts.items():
+                setattr(a, k, v)
+
+        db.commit()
+        logger.info(f"EASM scan completed for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
+
+        return {"scan_id": scan.id, "status": "completed", "created": created, "findings_created": findings_created, "domain": domain}
+
+    elif hakuna_status in ("failed", "error"):
+        scan.raw_metadata = {**meta, "status": "failed"}
+        db.commit()
+        return {"scan_id": scan.id, "status": "failed", "domain": domain}
+
+    else:
+        # Still running/queued
+        status = "running" if hakuna_status == "running" else hakuna_status
+        scan.raw_metadata = {**meta, "status": status}
+        db.commit()
+        return {"scan_id": scan.id, "status": status, "domain": domain}
 
 
 # ── EASM enrichment for Nessus assets ──────────────────────────────

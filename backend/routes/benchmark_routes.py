@@ -227,7 +227,7 @@ def _compute_org_metrics(db: Session, org_ids: Optional[List[int]], scan_id: Opt
     all_mttr = [v for vals in mttr_by_sev.values() for v in vals]
     avg_mttr_all = (sum(all_mttr) / len(all_mttr)) if all_mttr else 0
     if not all_mttr:
-        velocity_score = 50
+        velocity_score = 100 if (critical + high == 0) else 50
     elif avg_mttr_all <= 0:
         velocity_score = 100
     else:

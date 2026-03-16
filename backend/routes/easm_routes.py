@@ -14,7 +14,9 @@ from models.models import Organization, User
 from services.easm import (
     extract_corporate_domain,
     trigger_easm_for_new_org,
-    import_easm_assets,
+    import_easm_assets_for_domain,
+    scan_domain,
+    refresh_easm_scan,
     get_easm_assets,
     get_easm_asset_stats,
     get_easm_events,
@@ -75,24 +77,55 @@ async def setup_easm(
     if not hakuna_org_id:
         raise HTTPException(502, "Failed to create EASM org — hakuna-scanner may be unavailable")
 
-    # Add target domain
-    if not await add_easm_domain(hakuna_org_id, domain):
-        logger.warning(f"Failed to add domain '{domain}' to EASM org {hakuna_org_id}")
-
-    # Trigger initial scan
-    scan_id = await trigger_easm_scan(hakuna_org_id)
-
     # Persist on org
     org.easm_org_id = hakuna_org_id
     org.easm_domain = domain
     db.commit()
 
+    # Scan the domain (adds domain + triggers scan + creates scan record)
+    result = await scan_domain(db, org, domain)
+
     return {
         "enabled": True,
         "domain": domain,
         "hakuna_org_id": hakuna_org_id,
-        "scan_id": scan_id,
+        "scan_id": result.get("scan_id") if result else None,
     }
+
+
+@router.post("/scan-domain")
+async def scan_domain_endpoint(
+    domain: str = Query(..., min_length=3),
+    scan_type: str = Query("full", regex="^(full|discovery|enrichment)$"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Add a domain (if new), trigger scan, and create a per-domain scan record."""
+    org = _get_org(db, user)
+    if not org.easm_org_id:
+        raise HTTPException(400, "EASM not configured for this organization")
+
+    result = await scan_domain(db, org, domain, scan_type)
+    if result is None:
+        raise HTTPException(502, "Failed to scan domain — hakuna-scanner may be unavailable")
+    return result
+
+
+@router.post("/refresh/{scan_id}")
+async def refresh_scan(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Check hakuna scan status and import assets if completed."""
+    org = _get_org(db, user)
+    if not org.easm_org_id:
+        raise HTTPException(400, "EASM not configured")
+
+    result = await refresh_easm_scan(db, org, scan_id)
+    if result is None:
+        raise HTTPException(404, "Scan not found")
+    return result
 
 
 @router.post("/scan")
@@ -101,7 +134,7 @@ async def trigger_scan(
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
 ):
-    """Manually trigger an EASM scan."""
+    """Manually trigger an EASM scan (all domains)."""
     org = _get_org(db, user)
 
     if not org.easm_org_id:
@@ -152,15 +185,17 @@ async def list_easm_assets(
 @router.post("/import")
 @router.post("/sync")
 async def sync_assets(
+    domain: str = Query(..., min_length=3),
+    scan_type: str = Query("full", regex="^(full|discovery|enrichment)$"),
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
 ):
-    """Sync EASM-discovered assets into the main platform (idempotent upsert)."""
+    """Import EASM-discovered assets for a domain as a new scan."""
     org = _get_org(db, user)
     if not org.easm_org_id:
         raise HTTPException(400, "EASM not configured")
 
-    result = await import_easm_assets(db, org)
+    result = await import_easm_assets_for_domain(db, org, domain, scan_type=scan_type)
     if result is None:
         raise HTTPException(502, "Failed to sync EASM assets")
     return result

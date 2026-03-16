@@ -2,13 +2,12 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Upload, CheckCircle, AlertCircle, FileText, X, Radar, Globe, Plus,
-  RefreshCw, Trash2, Search, Clock, Server, Shield, ChevronDown,
-  ChevronRight, Play, MonitorSmartphone, XCircle, Loader, Check,
+  RefreshCw, Trash2, Search, Clock, Server, Shield, Loader,
+  Play, MonitorSmartphone,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import {
-  uploadScan, deleteScan, getEasmStatus, syncEasmAssets, triggerEasmScan,
-  addEasmDomain, getEasmDomains, getEasmScanRuns, setupEasm,
+  uploadScan, deleteScan, getEasmStatus, scanEasmDomain, refreshEasmScan, setupEasm,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner } from '../shared/ui.jsx'
 
@@ -43,31 +42,6 @@ function SourceBadge({ sourceType }) {
     }}>
       <Icon size={12} />
       {meta.label}
-    </span>
-  )
-}
-
-
-// ── Scan run status badge ────────────────────────────────────────────
-
-const SCAN_STATUS = {
-  queued:    { label: 'Queued',    color: '#a78bfa', bg: '#a78bfa22', icon: Clock },
-  running:   { label: 'Running',   color: '#0ea5e9', bg: '#0ea5e922', icon: Loader },
-  completed: { label: 'Completed', color: '#16a34a', bg: '#16a34a22', icon: Check },
-  failed:    { label: 'Failed',    color: '#dc2626', bg: '#dc262622', icon: XCircle },
-}
-
-function ScanRunStatusBadge({ status }) {
-  const s = SCAN_STATUS[status] || SCAN_STATUS.queued
-  const Icon = s.icon
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 4,
-      background: s.bg, color: s.color, border: `1px solid ${s.color}44`,
-      borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600,
-    }}>
-      <Icon size={11} style={status === 'running' ? { animation: 'spin 1.5s linear infinite' } : {}} />
-      {s.label}
     </span>
   )
 }
@@ -121,32 +95,56 @@ function DropZone({ onFile, disabled }) {
 
 // ── Upload progress bar ──────────────────────────────────────────────
 
-function UploadProgress({ file, status, result, error, onDismiss }) {
+function UploadRow({ upload, onDismiss }) {
+  const { file, status, result, error } = upload
+  const borderColor = status === 'done' ? '#16a34a44' : status === 'error' ? '#dc262644' : 'var(--border)'
+  const meta = getSourceMeta('nessus')
+
   return (
     <div style={{
-      display: 'flex', gap: 12, padding: '12px 14px', borderRadius: 8,
-      background: 'var(--bg-secondary)', border: `1px solid ${
-        status === 'done' ? '#16a34a44' : status === 'error' ? '#dc262644' : 'var(--border)'
-      }`, alignItems: 'center',
+      padding: '14px 16px', borderBottom: `1px solid ${borderColor}`,
+      background: status === 'uploading' ? 'rgba(99,102,241,0.03)' : status === 'error' ? 'rgba(220,38,38,0.03)' : 'rgba(22,163,106,0.03)',
     }}>
-      <div style={{ flexShrink: 0 }}>
-        {status === 'uploading' && <Spinner size={18} />}
-        {status === 'done' && <CheckCircle size={18} color="#16a34a" />}
-        {status === 'error' && <AlertCircle size={18} color="#dc2626" />}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</div>
-        {status === 'uploading' && <div style={{ fontSize: 12, color: 'var(--accent)' }}>Parsing & importing...</div>}
-        {status === 'done' && result && (
-          <div style={{ fontSize: 12, color: '#86efac' }}>
-            {result.assets} assets, {result.findings} findings imported
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+        <div style={{
+          width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+          background: meta.bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          {status === 'uploading' && <Spinner size={18} />}
+          {status === 'done' && <CheckCircle size={18} color="#16a34a" />}
+          {status === 'error' && <AlertCircle size={18} color="#dc2626" />}
+        </div>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+            <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {file.name}
+            </span>
+            {status === 'uploading' && (
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                background: '#6366f118', color: '#6366f1', border: '1px solid #6366f144',
+                borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600,
+              }}>
+                <Loader size={10} style={{ animation: 'spin 1.5s linear infinite' }} />
+                Importing
+              </span>
+            )}
           </div>
-        )}
-        {status === 'error' && <div style={{ fontSize: 12, color: '#fca5a5' }}>{error}</div>}
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            {status === 'uploading' && 'Parsing & importing...'}
+            {status === 'done' && result && (
+              <span style={{ color: '#16a34a' }}>{result.assets} assets, {result.findings} findings imported</span>
+            )}
+            {status === 'error' && <span style={{ color: '#dc2626' }}>{error}</span>}
+          </div>
+        </div>
+
+        <button onClick={onDismiss} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', flexShrink: 0, padding: 4 }}>
+          <X size={14} />
+        </button>
       </div>
-      <button onClick={onDismiss} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', flexShrink: 0, padding: 4 }}>
-        <X size={14} />
-      </button>
+      {status === 'uploading' && <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>}
     </div>
   )
 }
@@ -154,60 +152,36 @@ function UploadProgress({ file, status, result, error, onDismiss }) {
 
 // ── New scan modal ───────────────────────────────────────────────────
 
-function NewScanModal({ onClose, onFile, uploading, easmEnabled, easmDomain, easmDomains, onTriggerEasm, onAddDomain, onSyncEasm, onSetupEasm }) {
+function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, onSetupEasm }) {
   const [mode, setMode] = useState(null)
-  const [easmScanType, setEasmScanType] = useState('full')
-  const [triggeringEasm, setTriggeringEasm] = useState(false)
-  const [syncingEasm, setSyncingEasm] = useState(false)
-  const [settingUp, setSettingUp] = useState(false)
-  const [setupDomain, setSetupDomain] = useState('')
-  const [setupError, setSetupError] = useState(null)
-  const [newDomain, setNewDomain] = useState('')
-  const [addingDomain, setAddingDomain] = useState(false)
-  const [domainAdded, setDomainAdded] = useState(null)
+  const [domain, setDomain] = useState('')
+  const [scanType, setScanType] = useState('full')
+  const [scanning, setScanning] = useState(false)
+  const [error, setError] = useState(null)
 
-  const handleTriggerEasm = async () => {
-    setTriggeringEasm(true)
+  const handleScanDomain = async () => {
+    if (!domain.trim()) return
+    setScanning(true)
+    setError(null)
     try {
-      await onTriggerEasm(easmScanType)
+      await onScanDomain(domain.trim(), scanType)
       onClose()
-    } catch {
-      setTriggeringEasm(false)
-    }
-  }
-
-  const handleSyncEasm = async () => {
-    setSyncingEasm(true)
-    try {
-      await onSyncEasm()
-      onClose()
-    } catch {
-      setSyncingEasm(false)
+    } catch (err) {
+      setError(err.message)
+      setScanning(false)
     }
   }
 
   const handleSetup = async () => {
-    if (!setupDomain.trim()) return
-    setSettingUp(true)
-    setSetupError(null)
+    if (!domain.trim()) return
+    setScanning(true)
+    setError(null)
     try {
-      await onSetupEasm(setupDomain.trim())
+      await onSetupEasm(domain.trim())
       onClose()
     } catch (err) {
-      setSetupError(err.message)
-      setSettingUp(false)
-    }
-  }
-
-  const handleAddDomain = async () => {
-    if (!newDomain.trim()) return
-    setAddingDomain(true)
-    try {
-      await onAddDomain(newDomain.trim())
-      setDomainAdded(newDomain.trim())
-      setNewDomain('')
-    } finally {
-      setAddingDomain(false)
+      setError(err.message)
+      setScanning(false)
     }
   }
 
@@ -231,7 +205,7 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, easmDomain, eas
         {!mode && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
             <SourceOption icon={Upload} label="Import File" description="Upload Nessus, Qualys, CSV" color="#6366f1" onClick={() => setMode('upload')} />
-            <SourceOption icon={Globe} label="EASM Scan" description={easmEnabled ? 'External attack surface' : 'Set up EASM scanning'} color="#0ea5e9" onClick={() => setMode(easmEnabled ? 'easm' : 'easm-setup')} />
+            <SourceOption icon={Globe} label="EASM Scan" description={easmEnabled ? 'Scan a domain' : 'Set up EASM scanning'} color="#0ea5e9" onClick={() => setMode(easmEnabled ? 'easm' : 'easm-setup')} />
             <SourceOption icon={MonitorSmartphone} label="VM Scanner" description="Coming soon" color="#ec4899" disabled disabledMessage="Coming soon" />
           </div>
         )}
@@ -263,8 +237,8 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, easmDomain, eas
                 Domain
               </label>
               <input
-                value={setupDomain}
-                onChange={e => setSetupDomain(e.target.value)}
+                value={domain}
+                onChange={e => setDomain(e.target.value)}
                 placeholder="yourdomain.com"
                 onKeyDown={e => e.key === 'Enter' && handleSetup()}
                 autoFocus
@@ -275,13 +249,13 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, easmDomain, eas
                 }}
               />
             </div>
-            {setupError && (
+            {error && (
               <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 12, padding: '8px 10px', background: '#dc262611', borderRadius: 6 }}>
-                {setupError}
+                {error}
               </div>
             )}
-            <Button onClick={handleSetup} disabled={settingUp || !setupDomain.trim()} style={{ width: '100%', background: '#0ea5e9' }}>
-              {settingUp ? 'Setting up...' : 'Enable EASM & Start Discovery'}
+            <Button onClick={handleSetup} disabled={scanning || !domain.trim()} style={{ width: '100%', background: '#0ea5e9' }}>
+              {scanning ? 'Setting up...' : 'Enable EASM & Start Discovery'}
             </Button>
           </div>
         )}
@@ -290,63 +264,23 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, easmDomain, eas
           <div>
             <BackButton onClick={() => setMode(null)} />
 
-            {/* Current domains */}
-            <div style={{ marginBottom: 14 }}>
-              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 6, color: 'var(--text-muted)' }}>
-                Target Domains
-              </label>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {(easmDomains || []).map(d => (
-                  <span key={d.id || d.domain} style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 5,
-                    padding: '5px 10px', borderRadius: 6,
-                    background: '#0ea5e911', border: '1px solid #0ea5e933',
-                    fontSize: 12, color: 'var(--text-primary)',
-                  }}>
-                    <Globe size={12} color="#0ea5e9" />
-                    {d.domain}
-                    {d.domain === easmDomain && (
-                      <span style={{ fontSize: 10, color: '#0ea5e9', fontWeight: 600 }}>primary</span>
-                    )}
-                  </span>
-                ))}
-                {(!easmDomains || easmDomains.length === 0) && easmDomain && (
-                  <span style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 5,
-                    padding: '5px 10px', borderRadius: 6,
-                    background: '#0ea5e911', border: '1px solid #0ea5e933',
-                    fontSize: 12, color: 'var(--text-primary)',
-                  }}>
-                    <Globe size={12} color="#0ea5e9" />
-                    {easmDomain}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Add domain */}
+            {/* Domain input */}
             <div style={{ marginBottom: 16 }}>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input
-                  value={newDomain}
-                  onChange={e => setNewDomain(e.target.value)}
-                  placeholder="Add another domain..."
-                  onKeyDown={e => e.key === 'Enter' && handleAddDomain()}
-                  style={{
-                    flex: 1, padding: '8px 12px', borderRadius: 8,
-                    border: '1px solid var(--border)', background: 'var(--bg)',
-                    color: 'var(--text-primary)', fontSize: 13,
-                  }}
-                />
-                <Button size="sm" onClick={handleAddDomain} disabled={addingDomain || !newDomain.trim()}>
-                  {addingDomain ? '...' : <><Plus size={13} /> Add</>}
-                </Button>
-              </div>
-              {domainAdded && (
-                <div style={{ fontSize: 12, color: '#16a34a', marginTop: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <Check size={12} /> Added {domainAdded}
-                </div>
-              )}
+              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 6, color: 'var(--text-muted)' }}>
+                Domain to scan
+              </label>
+              <input
+                value={domain}
+                onChange={e => setDomain(e.target.value)}
+                placeholder="example.com"
+                onKeyDown={e => e.key === 'Enter' && handleScanDomain()}
+                autoFocus
+                style={{
+                  width: '100%', padding: '10px 12px', borderRadius: 8,
+                  border: '1px solid var(--border)', background: 'var(--bg)',
+                  color: 'var(--text-primary)', fontSize: 14, boxSizing: 'border-box',
+                }}
+              />
             </div>
 
             {/* Scan type */}
@@ -356,12 +290,12 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, easmDomain, eas
                 {['full', 'discovery', 'enrichment'].map(t => (
                   <button
                     key={t}
-                    onClick={() => setEasmScanType(t)}
+                    onClick={() => setScanType(t)}
                     style={{
                       flex: 1, padding: '10px 12px', borderRadius: 8,
-                      border: `1px solid ${easmScanType === t ? '#0ea5e9' : 'var(--border)'}`,
-                      background: easmScanType === t ? '#0ea5e922' : 'transparent',
-                      color: easmScanType === t ? '#0ea5e9' : 'var(--text-secondary)',
+                      border: `1px solid ${scanType === t ? '#0ea5e9' : 'var(--border)'}`,
+                      background: scanType === t ? '#0ea5e922' : 'transparent',
+                      color: scanType === t ? '#0ea5e9' : 'var(--text-secondary)',
                       cursor: 'pointer', fontSize: 13, fontWeight: 600,
                       textTransform: 'capitalize',
                     }}
@@ -371,19 +305,24 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, easmDomain, eas
                 ))}
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <Button onClick={handleSyncEasm} disabled={syncingEasm || triggeringEasm} style={{ flex: 1, background: '#0ea5e9' }}>
-                <RefreshCw size={13} style={syncingEasm ? { animation: 'spin 1s linear infinite' } : {}} />
-                {syncingEasm ? 'Syncing...' : 'Sync Assets'}
-              </Button>
-              <Button onClick={handleTriggerEasm} disabled={triggeringEasm || syncingEasm} variant="ghost" style={{ flex: 1 }}>
-                <Play size={13} />
-                {triggeringEasm ? 'Triggering...' : 'New Scan'}
-              </Button>
-            </div>
+
+            {error && (
+              <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 12, padding: '8px 10px', background: '#dc262611', borderRadius: 6 }}>
+                {error}
+              </div>
+            )}
+
+            <Button onClick={handleScanDomain} disabled={scanning || !domain.trim()} style={{ width: '100%', background: '#0ea5e9' }}>
+              {scanning ? (
+                <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Scanning...</>
+              ) : (
+                <><Play size={13} /> Scan Domain</>
+              )}
+            </Button>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>
-              Sync imports existing discoveries. New Scan triggers a fresh scan first.
+              Adds the domain, triggers a scan, and imports results.
             </div>
+            <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
           </div>
         )}
       </div>
@@ -433,168 +372,37 @@ function SourceOption({ icon: Icon, label, description, color, disabled, disable
 }
 
 
-// ── EASM panel (inline in scan card) ─────────────────────────────────
+// ── EASM scan status badge ────────────────────────────────────────────
 
-function EasmPanel({ easmStatus, onSync, onAddDomain, domains, scanRuns, onRefreshRuns }) {
-  const [syncing, setSyncing] = useState(false)
-  const [newDomain, setNewDomain] = useState('')
-  const [addingDomain, setAddingDomain] = useState(false)
-  const [showDomainInput, setShowDomainInput] = useState(false)
-
-  const handleSync = async () => {
-    setSyncing(true)
-    try { await onSync() } finally { setSyncing(false) }
-  }
-
-  const handleAddDomain = async () => {
-    if (!newDomain.trim()) return
-    setAddingDomain(true)
-    try {
-      await onAddDomain(newDomain.trim())
-      setNewDomain('')
-      setShowDomainInput(false)
-    } finally {
-      setAddingDomain(false)
-    }
-  }
-
-  if (!easmStatus?.enabled) return null
-
-  const hasActiveRun = scanRuns?.some(r => r.status === 'queued' || r.status === 'running')
-
+function EasmStatusBadge({ status }) {
+  if (!status || status === 'completed') return null
+  const isRunning = status === 'running' || status === 'queued'
+  const isFailed = status === 'failed' || status === 'error'
+  const color = isRunning ? '#0ea5e9' : isFailed ? '#dc2626' : '#a78bfa'
+  const label = isRunning ? 'Scanning...' : isFailed ? 'Failed' : status
   return (
-    <div style={{ marginTop: 10, background: 'var(--bg-secondary)', borderRadius: 8, overflow: 'hidden' }}>
-      {/* Actions row */}
-      <div style={{ padding: '12px 16px', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <Button size="sm" onClick={handleSync} disabled={syncing}>
-          <RefreshCw size={13} style={syncing ? { animation: 'spin 1s linear infinite' } : {}} />
-          {syncing ? 'Syncing...' : 'Sync Assets'}
-        </Button>
-        <Button size="sm" variant="ghost" onClick={() => setShowDomainInput(v => !v)}>
-          <Plus size={13} /> Add Domain
-        </Button>
-        {easmStatus.stats && (
-          <div style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>
-            {easmStatus.stats.total_assets || 0} discovered assets
-          </div>
-        )}
-      </div>
-
-      {/* Add domain input */}
-      {showDomainInput && (
-        <div style={{ padding: '0 16px 12px', display: 'flex', gap: 8 }}>
-          <input
-            value={newDomain}
-            onChange={e => setNewDomain(e.target.value)}
-            placeholder="example.com"
-            onKeyDown={e => e.key === 'Enter' && handleAddDomain()}
-            autoFocus
-            style={{
-              flex: 1, padding: '6px 10px', borderRadius: 6,
-              border: '1px solid var(--border)', background: 'var(--bg)',
-              color: 'var(--text-primary)', fontSize: 13,
-            }}
-          />
-          <Button size="sm" onClick={handleAddDomain} disabled={addingDomain || !newDomain.trim()}>
-            {addingDomain ? '...' : 'Add'}
-          </Button>
-        </div>
-      )}
-
-      {/* Domains */}
-      {domains && domains.length > 0 && (
-        <div style={{ padding: '0 16px 12px' }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
-            Target Domains
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {domains.map(d => (
-              <span key={d.id || d.domain} style={{
-                display: 'inline-flex', alignItems: 'center', gap: 4,
-                padding: '3px 8px', borderRadius: 5,
-                background: d.active !== false ? '#0ea5e911' : 'var(--bg)',
-                border: `1px solid ${d.active !== false ? '#0ea5e933' : 'var(--border)'}`,
-                fontSize: 12, color: d.active !== false ? 'var(--text-primary)' : 'var(--text-muted)',
-              }}>
-                <Globe size={11} color={d.active !== false ? '#0ea5e9' : 'var(--text-muted)'} />
-                {d.domain}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Scan run history */}
-      {scanRuns && scanRuns.length > 0 && (
-        <div style={{ borderTop: '1px solid var(--border)' }}>
-          <div style={{
-            padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Scan History
-            </div>
-            {hasActiveRun && (
-              <button onClick={onRefreshRuns} style={{
-                background: 'none', border: 'none', cursor: 'pointer', color: 'var(--accent)',
-                fontSize: 11, padding: 0, display: 'flex', alignItems: 'center', gap: 3,
-              }}>
-                <RefreshCw size={10} /> Refresh
-              </button>
-            )}
-          </div>
-          <div style={{ padding: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {scanRuns.slice(0, 5).map(run => (
-              <ScanRunRow key={run.id} run={run} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
-    </div>
-  )
-}
-
-function ScanRunRow({ run }) {
-  const started = run.started_at ? new Date(run.started_at) : null
-  const finished = run.finished_at ? new Date(run.finished_at) : null
-  const duration = started && finished ? formatDuration(finished - started) : null
-
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
-      background: 'var(--bg)', borderRadius: 6, border: '1px solid var(--border)',
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      background: `${color}18`, color, border: `1px solid ${color}44`,
+      borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600,
     }}>
-      <ScanRunStatusBadge status={run.status} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12, color: 'var(--text-primary)', fontWeight: 500 }}>
-          {run.scan_type} scan
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {started && <span>{formatAge(started.toISOString())}</span>}
-          {duration && <span>{duration}</span>}
-          {run.status === 'completed' && (
-            <span>
-              {run.assets_found || 0} found{run.assets_changed ? `, ${run.assets_changed} changed` : ''}
-            </span>
-          )}
-          {run.status === 'failed' && run.error && (
-            <span style={{ color: '#dc2626' }}>{run.error}</span>
-          )}
-        </div>
-      </div>
-    </div>
+      {isRunning && <Loader size={10} style={{ animation: 'spin 1.5s linear infinite' }} />}
+      {label}
+      {isRunning && <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>}
+    </span>
   )
 }
 
 
 // ── Scan card ────────────────────────────────────────────────────────
 
-function ScanCard({ scan, onDelete, deleting, easmStatus, onSyncEasm, onAddDomain, domains, scanRuns, onRefreshRuns, onSelect }) {
-  const [expanded, setExpanded] = useState(false)
-  const isEasm = scan.source_type === 'easm'
+function ScanCard({ scan, onDelete, deleting, onSelect, onRescan }) {
   const meta = getSourceMeta(scan.source_type)
+  const isEasm = scan.source_type === 'easm'
   const age = scan.created_at ? formatAge(scan.created_at) : null
+  const domain = isEasm ? scan.raw_metadata?.domain : null
+  const easmStatus = isEasm ? scan.raw_metadata?.status : null
+  const isRunning = easmStatus === 'running' || easmStatus === 'queued'
 
   return (
     <div style={{
@@ -621,10 +429,7 @@ function ScanCard({ scan, onDelete, deleting, easmStatus, onSyncEasm, onAddDomai
               {scan.scan_name || scan.filename}
             </span>
             <SourceBadge sourceType={scan.source_type} />
-            {/* Show latest scan run status for EASM */}
-            {isEasm && scanRuns && scanRuns.length > 0 && (
-              <ScanRunStatusBadge status={scanRuns[0].status} />
-            )}
+            <EasmStatusBadge status={easmStatus} />
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             {age && <span><Clock size={11} style={{ marginRight: 3, verticalAlign: -1 }} />{age}</span>}
@@ -635,20 +440,20 @@ function ScanCard({ scan, onDelete, deleting, easmStatus, onSyncEasm, onAddDomai
         </div>
 
         <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
-          {isEasm && (
+          {isEasm && domain && onRescan && !isRunning && (
             <button
-              onClick={() => setExpanded(v => !v)}
-              title="EASM controls"
+              onClick={() => onRescan(domain)}
+              title={`Rescan ${domain}`}
               style={{
-                background: expanded ? '#0ea5e911' : 'none',
-                border: `1px solid ${expanded ? '#0ea5e944' : 'var(--border)'}`,
+                background: 'none', border: '1px solid var(--border)',
                 borderRadius: 6, padding: '5px 8px', cursor: 'pointer',
-                color: 'var(--text-muted)',
-                display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
+                color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
+                transition: 'all 0.15s',
               }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = '#0ea5e9'; e.currentTarget.style.color = '#0ea5e9' }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}
             >
-              <Radar size={13} color="#0ea5e9" />
-              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              <RefreshCw size={12} />
             </button>
           )}
           <Button size="sm" onClick={() => onSelect(scan.id)}>View</Button>
@@ -670,17 +475,6 @@ function ScanCard({ scan, onDelete, deleting, easmStatus, onSyncEasm, onAddDomai
           )}
         </div>
       </div>
-
-      {isEasm && expanded && (
-        <EasmPanel
-          easmStatus={easmStatus}
-          onSync={onSyncEasm}
-          onAddDomain={onAddDomain}
-          domains={domains}
-          scanRuns={scanRuns}
-          onRefreshRuns={onRefreshRuns}
-        />
-      )}
     </div>
   )
 }
@@ -689,7 +483,8 @@ function ScanCard({ scan, onDelete, deleting, easmStatus, onSyncEasm, onAddDomai
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function formatAge(isoDate) {
-  const d = new Date(isoDate)
+  // Backend stores UTC times without 'Z' suffix — ensure correct parsing
+  const d = new Date(isoDate.endsWith('Z') ? isoDate : isoDate + 'Z')
   const now = new Date()
   const diffMs = now - d
   const mins = Math.floor(diffMs / 60000)
@@ -701,16 +496,6 @@ function formatAge(isoDate) {
   if (days < 30) return `${days}d ago`
   return d.toLocaleDateString()
 }
-
-function formatDuration(ms) {
-  const secs = Math.floor(ms / 1000)
-  if (secs < 60) return `${secs}s`
-  const mins = Math.floor(secs / 60)
-  if (mins < 60) return `${mins}m ${secs % 60}s`
-  const hrs = Math.floor(mins / 60)
-  return `${hrs}h ${mins % 60}m`
-}
-
 
 // ── Main component ───────────────────────────────────────────────────
 
@@ -724,37 +509,33 @@ export default function ScanManagement() {
   const [filter, setFilter] = useState('all')
   const [search, setSearch] = useState('')
   const [easmStatus, setEasmStatus] = useState(null)
-  const [easmDomains, setEasmDomains] = useState([])
-  const [easmScanRuns, setEasmScanRuns] = useState([])
 
-  // Load EASM data on mount
+  // Load EASM status on mount
   useEffect(() => {
     getEasmStatus()
-      .then(status => {
-        setEasmStatus(status)
-        if (status?.enabled || status?.domain) {
-          getEasmDomains().then(setEasmDomains).catch(() => {})
-          getEasmScanRuns().then(setEasmScanRuns).catch(() => {})
-        }
-      })
+      .then(setEasmStatus)
       .catch(() => setEasmStatus(null))
   }, [])
 
-  // Auto-poll scan runs if any are active
+  // Poll running EASM scans — refresh their status and import assets when done
   useEffect(() => {
-    const hasActive = easmScanRuns.some(r => r.status === 'queued' || r.status === 'running')
-    if (!hasActive) return
-    const interval = setInterval(() => {
-      getEasmScanRuns().then(setEasmScanRuns).catch(() => {})
+    const runningScans = scans.filter(s =>
+      s.source_type === 'easm' &&
+      s.raw_metadata?.status &&
+      (s.raw_metadata.status === 'running' || s.raw_metadata.status === 'queued')
+    )
+    if (runningScans.length === 0) return
+
+    const interval = setInterval(async () => {
+      for (const s of runningScans) {
+        try {
+          await refreshEasmScan(s.id)
+        } catch { /* ignore */ }
+      }
+      await refreshScans()
     }, 10000)
     return () => clearInterval(interval)
-  }, [easmScanRuns])
-
-  const refreshEasmData = useCallback(() => {
-    if (!easmStatus?.enabled) return
-    getEasmDomains().then(setEasmDomains).catch(() => {})
-    getEasmScanRuns().then(setEasmScanRuns).catch(() => {})
-  }, [easmStatus?.enabled])
+  }, [scans, refreshScans])
 
   // ── Handlers ─────────────────────────────────────────────────────
 
@@ -787,37 +568,26 @@ export default function ScanManagement() {
     navigate('/')
   }
 
-  const handleSyncEasm = async () => {
-    await syncEasmAssets()
+  const handleScanDomain = async (domain, scanType) => {
+    const result = await scanEasmDomain(domain, scanType)
     await refreshScans()
-    const status = await getEasmStatus()
-    setEasmStatus(status)
-    refreshEasmData()
+    if (result?.scan_id) {
+      setActiveScanId(result.scan_id)
+    }
+    // Refresh EASM status in case it changed
+    getEasmStatus().then(setEasmStatus).catch(() => {})
   }
 
-  const handleAddDomain = async (domain) => {
-    await addEasmDomain(domain)
-    // Refresh domains list
-    getEasmDomains().then(setEasmDomains).catch(() => {})
-  }
-
-  const handleTriggerEasm = async (scanType) => {
-    await triggerEasmScan(scanType)
-    setTimeout(() => {
-      getEasmScanRuns().then(setEasmScanRuns).catch(() => {})
-    }, 500)
+  const handleRescanDomain = async (domain) => {
+    await scanEasmDomain(domain, 'full')
+    await refreshScans()
   }
 
   const handleSetupEasm = async (domain) => {
     await setupEasm(domain)
-    // Refresh everything — EASM is now enabled
     const status = await getEasmStatus()
     setEasmStatus(status)
     await refreshScans()
-    if (status?.enabled) {
-      getEasmDomains().then(setEasmDomains).catch(() => {})
-      getEasmScanRuns().then(setEasmScanRuns).catch(() => {})
-    }
   }
 
   // ── Filter & search ──────────────────────────────────────────────
@@ -851,22 +621,6 @@ export default function ScanManagement() {
           </Button>
         }
       />
-
-      {/* Upload progress */}
-      {uploads.length > 0 && (
-        <div style={{ marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {uploads.map(u => (
-            <UploadProgress
-              key={u.id}
-              file={u.file}
-              status={u.status}
-              result={u.result}
-              error={u.error}
-              onDismiss={() => setUploads(prev => prev.filter(up => up.id !== u.id))}
-            />
-          ))}
-        </div>
-      )}
 
       {/* Filters bar */}
       <Card style={{ marginBottom: 16, padding: '12px 16px' }}>
@@ -914,27 +668,9 @@ export default function ScanManagement() {
         </div>
       </Card>
 
-      {/* EASM banner (if EASM enabled but no EASM scan exists) */}
-      {easmStatus?.enabled && !scans.some(s => s.source_type === 'easm') && (
-        <Card style={{ marginBottom: 16, padding: '16px 20px', borderColor: '#0ea5e944' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <Globe size={20} color="#0ea5e9" />
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: 13 }}>EASM is configured for {easmStatus.domain}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                Sync external attack surface data to see internet-facing assets
-              </div>
-            </div>
-            <Button size="sm" onClick={handleSyncEasm} style={{ background: '#0ea5e9' }}>
-              <RefreshCw size={13} /> Sync Now
-            </Button>
-          </div>
-        </Card>
-      )}
-
       {/* Scan list */}
       <Card style={{ padding: 0, overflow: 'hidden' }}>
-        {filteredScans.length === 0 ? (
+        {filteredScans.length === 0 && uploads.length === 0 ? (
           <div style={{ padding: 40, textAlign: 'center' }}>
             <Radar size={40} color="var(--text-muted)" style={{ marginBottom: 12, opacity: 0.5 }} />
             <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6, color: 'var(--text-secondary)' }}>
@@ -959,19 +695,22 @@ export default function ScanManagement() {
             }}>
               {filteredScans.length} scan{filteredScans.length !== 1 ? 's' : ''}
             </div>
+            {/* Inline upload rows at top of list */}
+            {uploads.map(u => (
+              <UploadRow
+                key={u.id}
+                upload={u}
+                onDismiss={() => setUploads(prev => prev.filter(up => up.id !== u.id))}
+              />
+            ))}
             {filteredScans.map(scan => (
               <ScanCard
                 key={scan.id}
                 scan={scan}
                 onDelete={handleDelete}
                 deleting={deletingId === scan.id}
-                easmStatus={easmStatus}
-                onSyncEasm={handleSyncEasm}
-                onAddDomain={handleAddDomain}
-                domains={easmDomains}
-                scanRuns={easmScanRuns}
-                onRefreshRuns={refreshEasmData}
                 onSelect={handleSelectScan}
+                onRescan={handleRescanDomain}
               />
             ))}
           </div>
@@ -985,11 +724,7 @@ export default function ScanManagement() {
           onFile={handleFile}
           uploading={uploads.some(u => u.status === 'uploading')}
           easmEnabled={easmStatus?.enabled}
-          easmDomain={easmStatus?.domain}
-          easmDomains={easmDomains}
-          onTriggerEasm={handleTriggerEasm}
-          onAddDomain={handleAddDomain}
-          onSyncEasm={handleSyncEasm}
+          onScanDomain={handleScanDomain}
           onSetupEasm={handleSetupEasm}
         />
       )}

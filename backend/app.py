@@ -1227,6 +1227,7 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
             "nessus_version": s.nessus_version,
             "source_type": s.source_type or "nessus",
             "source_version": s.source_version,
+            "raw_metadata": s.raw_metadata,
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "asset_count": asset_count,
             "finding_count": finding_count,
@@ -2508,14 +2509,15 @@ def list_inventory_users(
 
 @app.get("/api/inventory/users/org-tree")
 def get_user_org_tree(
-    scan_id: int,
+    scan_id: Optional[int] = None,
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Return a hierarchical org tree built from the manager attribute of human AD users."""
     q = db.query(InventoryUser).join(Scan, InventoryUser.scan_id == Scan.id)
     q = apply_scan_org_filter(q, org_ids)
-    q = q.filter(InventoryUser.scan_id == scan_id)
+    if scan_id:
+        q = q.filter(InventoryUser.scan_id == scan_id)
     q = q.filter(InventoryUser.identity_type == "human")
     users = q.all()
     assets = _asset_lookup(db, {u.asset_id for u in users})
