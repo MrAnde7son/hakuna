@@ -3,11 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import {
   Upload, CheckCircle, AlertCircle, FileText, X, Radar, Globe, Plus,
   RefreshCw, Trash2, Search, Clock, Server, Shield, Loader,
-  Play, MonitorSmartphone,
+  Play, MonitorSmartphone, History, ChevronDown, ChevronUp,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import {
   uploadScan, deleteScan, getEasmStatus, scanEasmDomain, refreshEasmScan, setupEasm,
+  getEasmScanRuns,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner } from '../shared/ui.jsx'
 
@@ -394,6 +395,85 @@ function EasmStatusBadge({ status }) {
 }
 
 
+// ── Scan run history (EASM) ──────────────────────────────────────────
+
+function ScanRunHistory({ expanded }) {
+  const [runs, setRuns] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!expanded) return
+    if (runs) return // already loaded
+    setLoading(true)
+    getEasmScanRuns(20)
+      .then(setRuns)
+      .catch(() => setRuns([]))
+      .finally(() => setLoading(false))
+  }, [expanded])
+
+  if (!expanded) return null
+
+  const statusColor = (s) => {
+    if (s === 'completed' || s === 'done') return '#22c55e'
+    if (s === 'failed' || s === 'error') return '#dc2626'
+    if (s === 'running' || s === 'queued') return '#0ea5e9'
+    return '#71717a'
+  }
+
+  return (
+    <div style={{
+      borderTop: '1px solid var(--border)', padding: '10px 16px 6px',
+      background: 'var(--bg-secondary)',
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8 }}>
+        <History size={11} style={{ marginRight: 4, verticalAlign: -1 }} />
+        Scan History
+      </div>
+      {loading && <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 0' }}><Loader size={12} style={{ animation: 'spin 1.5s linear infinite', marginRight: 4, verticalAlign: -1 }} />Loading...</div>}
+      {runs && runs.length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 0' }}>No scan history yet.</div>
+      )}
+      {runs && runs.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 4 }}>
+          {[...runs].sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0)).map((run, i) => (
+            <React.Fragment key={run.id || i}>
+              <div style={{
+                display: 'flex', gap: 10, alignItems: 'center', fontSize: 12,
+                padding: '5px 8px', borderRadius: 5, background: 'var(--bg)',
+                border: '1px solid var(--border)',
+              }}>
+                <span style={{
+                  width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                  background: statusColor(run.status),
+                }} />
+                <span style={{ fontWeight: 500, minWidth: 70 }}>{run.scan_type || 'full'}</span>
+                <span style={{ color: 'var(--text-muted)', flex: 1 }}>
+                  {run.started_at ? formatAge(run.started_at) : '—'}
+                </span>
+                <span style={{ color: 'var(--text-muted)' }}>
+                  {run.assets_found || 0} found{run.assets_changed ? `, ${run.assets_changed} changed` : ''}
+                </span>
+                <span style={{
+                  fontSize: 10, fontWeight: 600, textTransform: 'uppercase',
+                  color: statusColor(run.status),
+                }}>
+                  {run.status}
+                </span>
+              </div>
+              {run.error && (
+                <div style={{ fontSize: 11, color: '#dc2626', padding: '2px 8px 4px 25px', marginTop: -2 }}>
+                  {run.error}
+                </div>
+              )}
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 // ── Scan card ────────────────────────────────────────────────────────
 
 function ScanCard({ scan, onDelete, deleting, onSelect, onRescan }) {
@@ -403,78 +483,107 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan }) {
   const domain = isEasm ? scan.raw_metadata?.domain : null
   const easmStatus = isEasm ? scan.raw_metadata?.status : null
   const isRunning = easmStatus === 'running' || easmStatus === 'queued'
+  const [showHistory, setShowHistory] = useState(false)
+  const [rescanning, setRescanning] = useState(false)
 
   return (
     <div style={{
-      padding: '14px 16px', borderBottom: '1px solid var(--border)',
+      borderBottom: '1px solid var(--border)',
       transition: 'background 0.1s',
     }}
-      onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-secondary)'}
-      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
     >
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-        <div style={{
-          width: 36, height: 36, borderRadius: 8, flexShrink: 0,
-          background: meta.bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-          <meta.icon size={18} color={meta.color} />
-        </div>
-
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-            <span
-              style={{ fontWeight: 600, fontSize: 14, cursor: 'pointer', color: 'var(--text-primary)' }}
-              onClick={() => onSelect(scan.id)}
-            >
-              {scan.scan_name || scan.filename}
-            </span>
-            <SourceBadge sourceType={scan.source_type} />
-            <EasmStatusBadge status={easmStatus} />
+      <div style={{ padding: '14px 16px' }}
+        onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-secondary)'}
+        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+      >
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <div style={{
+            width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+            background: meta.bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <meta.icon size={18} color={meta.color} />
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            {age && <span><Clock size={11} style={{ marginRight: 3, verticalAlign: -1 }} />{age}</span>}
-            <span><Server size={11} style={{ marginRight: 3, verticalAlign: -1 }} />{scan.asset_count || 0} assets</span>
-            <span><Shield size={11} style={{ marginRight: 3, verticalAlign: -1 }} />{(scan.finding_count || 0).toLocaleString()} findings</span>
-            {scan.source_version && <span>{scan.source_version}</span>}
-          </div>
-        </div>
 
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
-          {isEasm && domain && onRescan && !isRunning && (
-            <button
-              onClick={() => onRescan(domain)}
-              title={`Rescan ${domain}`}
-              style={{
-                background: 'none', border: '1px solid var(--border)',
-                borderRadius: 6, padding: '5px 8px', cursor: 'pointer',
-                color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
-                transition: 'all 0.15s',
-              }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = '#0ea5e9'; e.currentTarget.style.color = '#0ea5e9' }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}
-            >
-              <RefreshCw size={12} />
-            </button>
-          )}
-          <Button size="sm" onClick={() => onSelect(scan.id)}>View</Button>
-          {deleting ? (
-            <Spinner size={16} />
-          ) : (
-            <button
-              onClick={() => onDelete(scan.id)}
-              title="Delete scan"
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                color: 'var(--text-muted)', padding: 4, transition: 'color 0.15s',
-              }}
-              onMouseEnter={e => e.currentTarget.style.color = '#dc2626'}
-              onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
-            >
-              <Trash2 size={15} />
-            </button>
-          )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+              <span
+                style={{ fontWeight: 600, fontSize: 14, cursor: 'pointer', color: 'var(--text-primary)' }}
+                onClick={() => onSelect(scan.id)}
+              >
+                {scan.scan_name || scan.filename}
+              </span>
+              <SourceBadge sourceType={scan.source_type} />
+              <EasmStatusBadge status={easmStatus} />
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              {age && <span><Clock size={11} style={{ marginRight: 3, verticalAlign: -1 }} />{age}</span>}
+              <span><Server size={11} style={{ marginRight: 3, verticalAlign: -1 }} />{scan.asset_count || 0} assets</span>
+              <span><Shield size={11} style={{ marginRight: 3, verticalAlign: -1 }} />{(scan.finding_count || 0).toLocaleString()} findings</span>
+              {scan.source_version && <span>{scan.source_version}</span>}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+            {isEasm && (
+              <button
+                onClick={() => setShowHistory(h => !h)}
+                title="Scan history"
+                style={{
+                  background: 'none', border: '1px solid var(--border)',
+                  borderRadius: 6, padding: '5px 8px', cursor: 'pointer',
+                  color: showHistory ? '#0ea5e9' : 'var(--text-muted)',
+                  borderColor: showHistory ? '#0ea5e9' : 'var(--border)',
+                  display: 'flex', alignItems: 'center', gap: 3, fontSize: 12,
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { if (!showHistory) { e.currentTarget.style.borderColor = '#0ea5e944'; e.currentTarget.style.color = '#0ea5e9' }}}
+                onMouseLeave={e => { if (!showHistory) { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}}
+              >
+                <History size={12} />
+                {showHistory ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+              </button>
+            )}
+            {isEasm && domain && onRescan && !isRunning && (
+              <button
+                disabled={rescanning}
+                onClick={async () => {
+                  setRescanning(true)
+                  try { await onRescan(domain) } finally { setRescanning(false) }
+                }}
+                title={`Rescan ${domain}`}
+                style={{
+                  background: 'none', border: '1px solid var(--border)',
+                  borderRadius: 6, padding: '5px 8px', cursor: rescanning ? 'wait' : 'pointer',
+                  color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
+                  transition: 'all 0.15s', opacity: rescanning ? 0.5 : 1,
+                }}
+                onMouseEnter={e => { if (!rescanning) { e.currentTarget.style.borderColor = '#0ea5e9'; e.currentTarget.style.color = '#0ea5e9' }}}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}
+              >
+                <RefreshCw size={12} style={rescanning ? { animation: 'spin 1s linear infinite' } : undefined} />
+              </button>
+            )}
+            <Button size="sm" onClick={() => onSelect(scan.id)}>View</Button>
+            {deleting ? (
+              <Spinner size={16} />
+            ) : (
+              <button
+                onClick={() => onDelete(scan.id)}
+                title="Delete scan"
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: 'var(--text-muted)', padding: 4, transition: 'color 0.15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.color = '#dc2626'}
+                onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
+              >
+                <Trash2 size={15} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
+      {isEasm && <ScanRunHistory expanded={showHistory} />}
     </div>
   )
 }
@@ -579,7 +688,11 @@ export default function ScanManagement() {
   }
 
   const handleRescanDomain = async (domain) => {
-    await scanEasmDomain(domain, 'full')
+    try {
+      await scanEasmDomain(domain, 'full')
+    } catch (err) {
+      console.error('Rescan failed:', err)
+    }
     await refreshScans()
   }
 

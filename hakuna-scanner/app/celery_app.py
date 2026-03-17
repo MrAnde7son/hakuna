@@ -25,6 +25,10 @@ celery.conf.update(
     include=[
         "app.tasks.discovery",
         "app.tasks.enrichment",
+        "app.tasks.nmap",
         "app.tasks.scheduler",
     ],
+    task_routes={
+        "nmap.nmap_enrich_asset": {"queue": "nmap_queue"},
+    },
 )

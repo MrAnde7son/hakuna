@@ -70,6 +70,29 @@ services:
       redis:
         condition: service_healthy
 
+  nmap-worker:
+    build: .
+    tty: true
+    command: >
+      celery -A app.celery_app:celery worker
+      --loglevel=info
+      --concurrency=5
+      -Q nmap_queue
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://hakuna:hakuna@postgres:5432/hakuna
+      DATABASE_URL_SYNC: postgresql://hakuna:hakuna@postgres:5432/hakuna
+      REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app
+    volumes:
+      - .:/app
+      - pd_tools:/root/go/bin
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   beat:
     build: .
     command: >
