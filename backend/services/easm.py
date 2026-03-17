@@ -741,11 +741,20 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
         return {"scan_id": scan.id, "status": "failed", "domain": domain}
 
     else:
-        # Still running/queued
+        # Still running/queued — relay progress info
         status = "running" if hakuna_status == "running" else hakuna_status
-        scan.raw_metadata = {**meta, "status": status}
+        progress = {}
+        if run_status:
+            progress = {
+                "current_stage": run_status.get("current_stage"),
+                "stage_index": run_status.get("stage_index", 0),
+                "total_stages": run_status.get("total_stages", 0),
+                "stage_started_at": run_status.get("stage_started_at"),
+                "stage_log": run_status.get("stage_log"),
+            }
+        scan.raw_metadata = {**meta, "status": status, **progress}
         db.commit()
-        return {"scan_id": scan.id, "status": status, "domain": domain}
+        return {"scan_id": scan.id, "status": status, "domain": domain, **progress}
 
 
 # ── EASM enrichment for Nessus assets ──────────────────────────────

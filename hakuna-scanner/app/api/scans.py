@@ -31,6 +31,11 @@ class ScanRunResponse(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     error: str | None = None
+    current_stage: str | None = None
+    stage_index: int = 0
+    total_stages: int = 0
+    stage_started_at: datetime | None = None
+    stage_log: list | None = None
 
     model_config = {"from_attributes": True}
 

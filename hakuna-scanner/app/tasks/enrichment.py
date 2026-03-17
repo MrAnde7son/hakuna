@@ -310,11 +310,24 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
     async def _run():
         sf = get_task_session()
 
+        steps = [
+            ("tlsx", _do_tlsx),
+            ("httpx", _do_httpx),
+            ("cdncheck", _do_cdncheck),
+            ("katana", _do_katana),
+            ("nmap_dispatch", None),  # handled separately
+        ]
+
         async with sf() as db:
             if scan_run_id:
                 await db.execute(
-                    text("UPDATE scan_runs SET status = 'running', started_at = :now WHERE id = :id"),
-                    {"id": scan_run_id, "now": datetime.now(timezone.utc)},
+                    text("""
+                        UPDATE scan_runs SET
+                            status = 'running', started_at = :now,
+                            total_stages = :total, stage_index = 0
+                        WHERE id = :id
+                    """),
+                    {"id": scan_run_id, "now": datetime.now(timezone.utc), "total": len(steps)},
                 )
                 await db.commit()
 
@@ -322,26 +335,37 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
         snapshot = await _get_asset_snapshot(sf, org_id)
 
         results = {}
-        steps = [
-            ("tlsx", _do_tlsx),
-            ("httpx", _do_httpx),
-            ("cdncheck", _do_cdncheck),
-            ("katana", _do_katana),
-        ]
+        stage_log = []
 
-        for step_name, step_fn in steps:
+        for i, (step_name, step_fn) in enumerate(steps):
+            step_start = datetime.now(timezone.utc)
+
+            # Update current stage
+            if scan_run_id:
+                async with get_task_session()() as db:
+                    await db.execute(
+                        text("""
+                            UPDATE scan_runs SET
+                                current_stage = :stage, stage_index = :idx,
+                                stage_started_at = :now
+                            WHERE id = :id
+                        """),
+                        {"id": scan_run_id, "stage": step_name, "idx": i + 1, "now": step_start},
+                    )
+                    await db.commit()
+
             try:
-                results[step_name] = await step_fn(get_task_session(), org_id)
+                if step_name == "nmap_dispatch":
+                    results["nmap"] = await _dispatch_nmap(get_task_session(), org_id)
+                else:
+                    results[step_name] = await step_fn(get_task_session(), org_id)
+                duration = (datetime.now(timezone.utc) - step_start).total_seconds()
+                stage_log.append({"stage": step_name, "status": "done", "duration_s": round(duration, 1)})
             except Exception as e:
                 logger.error("enrichment step %s failed for org %s: %s", step_name, org_id, e)
                 results[step_name] = {"error": str(e)}
-
-        # Dispatch nmap (async, non-blocking — runs on separate queue)
-        try:
-            results["nmap"] = await _dispatch_nmap(get_task_session(), org_id)
-        except Exception as e:
-            logger.error("nmap dispatch failed for org %s: %s", org_id, e)
-            results["nmap"] = {"error": str(e)}
+                duration = (datetime.now(timezone.utc) - step_start).total_seconds()
+                stage_log.append({"stage": step_name, "status": "error", "duration_s": round(duration, 1), "error": str(e)})
 
         # Post-enrichment: auto-tag + delta detection
         sf2 = get_task_session()
@@ -359,13 +383,15 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                     text("""
                         UPDATE scan_runs SET
                             status = 'done', finished_at = :now,
-                            assets_changed = :changed
+                            assets_changed = :changed,
+                            current_stage = NULL, stage_log = :log
                         WHERE id = :id
                     """),
                     {
                         "id": scan_run_id,
                         "now": datetime.now(timezone.utc),
                         "changed": total_updated,
+                        "log": json.dumps(stage_log),
                     },
                 )
                 await db.commit()

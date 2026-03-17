@@ -1,0 +1,33 @@
+id: example-custom-http-check
+
+info:
+  name: Example Custom HTTP Endpoint Check
+  author: hakuna
+  severity: info
+  description: |
+    A generic HTTP check that detects common server information disclosure.
+    This is an example custom template demonstrating the required metadata format.
+  tags: always,http,generic,exposure
+  metadata:
+    source: custom
+    verified: true
+    cpe: "cpe:2.3:a:*:*:*:*:*:*:*:*:*:*"
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers-condition: or
+    matchers:
+      - type: status
+        status:
+          - 200
+          - 301
+          - 302
+    extractors:
+      - type: regex
+        name: server-header
+        part: header
+        group: 1
+        regex:
+          - "Server: (.+)"
