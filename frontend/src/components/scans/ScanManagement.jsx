@@ -8,7 +8,7 @@ import {
 import { useScan } from '../../App.jsx'
 import {
   uploadScan, deleteScan, getEasmStatus, scanEasmDomain, refreshEasmScan, setupEasm,
-  getEasmScanRuns, startVmScan, getVmScanStatus, getVmHealth, getEasmAssets,
+  getEasmScanRuns, startVmScan, getVmScanStatus, getVmHealth, getEasmAssets, getAssets,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner } from '../shared/ui.jsx'
 
@@ -207,7 +207,7 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
             <SourceOption icon={Upload} label="Import File" description="Upload Nessus, Qualys, CSV" color="#6366f1" onClick={() => setMode('upload')} />
             <SourceOption icon={Globe} label="EASM Scan" description={easmEnabled ? 'Scan a domain' : 'Set up EASM scanning'} color="#0ea5e9" onClick={() => setMode(easmEnabled ? 'easm' : 'easm-setup')} />
-            <SourceOption icon={MonitorSmartphone} label="VM Scanner" description="Nuclei vulnerability scan" color="#ec4899" onClick={() => setMode('vm')} />
+            <SourceOption icon={MonitorSmartphone} label="VM Scanner" description="Vulnerability scan" color="#ec4899" onClick={() => setMode('vm')} />
           </div>
         )}
 
@@ -340,32 +340,42 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
 }
 
 function VmScannerPanel({ onClose, onBack, onVmScan }) {
+  const [tab, setTab] = useState('manual') // 'manual' | 'assets'
   const [assets, setAssets] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState(new Set())
+  const [assetSearch, setAssetSearch] = useState('')
   const [scanning, setScanning] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
+  const [manualTarget, setManualTarget] = useState('')
 
+  // Load assets when switching to "assets" tab
   useEffect(() => {
-    getEasmAssets()
+    if (tab !== 'assets' || assets !== null) return
+    setLoading(true)
+    getAssets({ page_size: 500 })
       .then(data => {
         const list = Array.isArray(data) ? data : data?.assets || []
         setAssets(list)
-        // Pre-select all confirmed_alive
-        const alive = list.filter(a => a.liveness_state === 'confirmed_alive')
-        setSelected(new Set(alive.map(a => a.id)))
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }, [])
+  }, [tab, assets])
 
-  const aliveAssets = (assets || []).filter(a => a.liveness_state === 'confirmed_alive')
-  const allSelected = aliveAssets.length > 0 && selected.size === aliveAssets.length
+  const filteredAssets = (assets || []).filter(a => {
+    if (!assetSearch) return true
+    const q = assetSearch.toLowerCase()
+    return (a.hostname || '').toLowerCase().includes(q)
+      || (a.ip || '').toLowerCase().includes(q)
+      || (a.fqdn || '').toLowerCase().includes(q)
+  })
+
+  const allSelected = filteredAssets.length > 0 && filteredAssets.every(a => selected.has(a.id))
 
   const toggleAll = () => {
     if (allSelected) setSelected(new Set())
-    else setSelected(new Set(aliveAssets.map(a => a.id)))
+    else setSelected(new Set(filteredAssets.map(a => a.id)))
   }
 
   const toggle = (id) => {
@@ -378,13 +388,20 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
   }
 
   const handleScan = async () => {
-    if (selected.size === 0) return
     setScanning(true)
     setError(null)
     try {
-      const ids = [...selected]
-      const scanAll = ids.length === aliveAssets.length
-      const res = await startVmScan(scanAll ? null : ids)
+      let res
+      if (tab === 'manual') {
+        // Parse manual targets (comma, newline, or space separated)
+        const targets = manualTarget.split(/[,\n]+/).map(t => t.trim()).filter(Boolean)
+        if (targets.length === 0) return
+        res = await startVmScan({ targets })
+      } else {
+        if (selected.size === 0) return
+        const ids = [...selected].map(String)
+        res = await startVmScan({ assetIds: ids })
+      }
       setResult(res)
       if (onVmScan) onVmScan(res)
     } catch (err) {
@@ -392,6 +409,34 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
     } finally {
       setScanning(false)
     }
+  }
+
+  const manualTargets = manualTarget.split(/[,\n]+/).map(t => t.trim()).filter(Boolean)
+  const canScan = tab === 'manual' ? manualTargets.length > 0 : selected.size > 0
+
+  const tabStyle = (active) => ({
+    flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 600,
+    background: 'none', border: 'none', cursor: 'pointer',
+    borderBottom: `2px solid ${active ? '#ec4899' : 'transparent'}`,
+    color: active ? '#ec4899' : 'var(--text-muted)',
+  })
+
+  if (result) {
+    const queued = (result.assets_queued || 0) + (result.targets_queued || 0)
+    return (
+      <div>
+        <BackButton onClick={onBack} />
+        <div style={{ textAlign: 'center', padding: 20 }}>
+          <CheckCircle size={32} color="#22c55e" style={{ marginBottom: 10 }} />
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Scan Queued</div>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+            {queued} target{queued !== 1 ? 's' : ''} queued for VM scanning.
+            Results will appear in findings as they complete.
+          </div>
+          <Button onClick={onClose} style={{ background: '#ec4899' }}>Done</Button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -402,97 +447,127 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
         padding: '12px 14px', borderRadius: 8, marginBottom: 14,
         background: '#ec489908', border: '1px solid #ec489922',
       }}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 3 }}>Nuclei Vulnerability Scanner</div>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 3 }}>Vulnerability Scanner</div>
         <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          Run Nuclei against confirmed-alive EASM assets. Templates are auto-selected based on tech stack and CPE data.
+          Run against targets. Provide IPs/hostnames or select from existing assets.
         </div>
       </div>
 
-      {loading && (
-        <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>
-          <Loader size={16} style={{ animation: 'spin 1.5s linear infinite', marginRight: 6, verticalAlign: -3 }} />
-          Loading assets...
-          <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+      {/* Tab switcher */}
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 14 }}>
+        <button style={tabStyle(tab === 'manual')} onClick={() => setTab('manual')}>Enter Target</button>
+        <button style={tabStyle(tab === 'assets')} onClick={() => setTab('assets')}>Select Assets</button>
+      </div>
+
+      {/* Manual target input */}
+      {tab === 'manual' && (
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 6, color: 'var(--text-muted)' }}>
+            Target(s) — IP, hostname, or URL
+          </label>
+          <textarea
+            value={manualTarget}
+            onChange={e => setManualTarget(e.target.value)}
+            placeholder={'192.168.1.1\nexample.com\nhttps://app.example.com'}
+            rows={4}
+            autoFocus
+            style={{
+              width: '100%', padding: '10px 12px', borderRadius: 8,
+              border: '1px solid var(--border)', background: 'var(--bg)',
+              color: 'var(--text-primary)', fontSize: 13, fontFamily: 'monospace',
+              boxSizing: 'border-box', resize: 'vertical',
+            }}
+          />
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, marginBottom: 14 }}>
+            One target per line, or comma-separated. {manualTargets.length > 0 && `${manualTargets.length} target${manualTargets.length !== 1 ? 's' : ''} detected.`}
+          </div>
         </div>
       )}
 
-      {!loading && aliveAssets.length === 0 && (
-        <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>
-          No confirmed-alive assets found. Run an EASM scan first to discover assets.
-        </div>
-      )}
-
-      {!loading && aliveAssets.length > 0 && !result && (
-        <>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8,
-            padding: '6px 0', borderBottom: '1px solid var(--border)',
-          }}>
-            <input type="checkbox" checked={allSelected} onChange={toggleAll}
-              style={{ accentColor: '#ec4899' }} />
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' }}>
-              {selected.size} of {aliveAssets.length} assets selected
-            </span>
-          </div>
-
-          <div style={{ maxHeight: 240, overflowY: 'auto', marginBottom: 14 }}>
-            {aliveAssets.map(asset => (
-              <label key={asset.id} style={{
-                display: 'flex', alignItems: 'center', gap: 10,
-                padding: '7px 4px', cursor: 'pointer', fontSize: 13,
-                borderRadius: 5,
-              }}
-                onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-secondary)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-              >
-                <input type="checkbox" checked={selected.has(asset.id)} onChange={() => toggle(asset.id)}
-                  style={{ accentColor: '#ec4899' }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {asset.hostname || asset.ip}
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 8 }}>
-                    {asset.ip && <span>{asset.ip}</span>}
-                    {asset.open_ports && asset.open_ports.length > 0 && (
-                      <span>ports: {asset.open_ports.slice(0, 5).join(', ')}{asset.open_ports.length > 5 ? '...' : ''}</span>
-                    )}
-                    {asset.tech_stack && (
-                      <span>{Object.keys(asset.tech_stack).slice(0, 3).join(', ')}</span>
-                    )}
-                  </div>
-                </div>
-              </label>
-            ))}
-          </div>
-
-          {error && (
-            <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 12, padding: '8px 10px', background: '#dc262611', borderRadius: 6 }}>
-              {error}
+      {/* Asset selection */}
+      {tab === 'assets' && (
+        <div>
+          {loading && (
+            <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>
+              <Loader size={16} style={{ animation: 'spin 1.5s linear infinite', marginRight: 6, verticalAlign: -3 }} />
+              Loading assets...
+              <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
             </div>
           )}
 
-          <Button onClick={handleScan} disabled={scanning || selected.size === 0} style={{ width: '100%', background: '#ec4899' }}>
-            {scanning ? (
-              <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Scanning...</>
-            ) : (
-              <><Play size={13} /> Scan {selected.size} Asset{selected.size !== 1 ? 's' : ''}</>
-            )}
-          </Button>
-          <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
-        </>
-      )}
+          {!loading && (assets || []).length === 0 && (
+            <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>
+              No assets found. Upload a scan or run an EASM scan first, or use "Enter Target" to scan directly.
+            </div>
+          )}
 
-      {result && (
-        <div style={{ textAlign: 'center', padding: 20 }}>
-          <CheckCircle size={32} color="#22c55e" style={{ marginBottom: 10 }} />
-          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Scan Queued</div>
-          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
-            {result.assets_queued} asset{result.assets_queued !== 1 ? 's' : ''} queued for Nuclei scanning.
-            Results will appear in findings as they complete.
-          </div>
-          <Button onClick={onClose} style={{ background: '#ec4899' }}>Done</Button>
+          {!loading && (assets || []).length > 0 && (
+            <>
+              <input
+                value={assetSearch}
+                onChange={e => setAssetSearch(e.target.value)}
+                placeholder="Filter assets..."
+                style={{
+                  width: '100%', padding: '8px 10px', borderRadius: 6,
+                  border: '1px solid var(--border)', background: 'var(--bg)',
+                  color: 'var(--text-primary)', fontSize: 12, marginBottom: 8,
+                  boxSizing: 'border-box',
+                }}
+              />
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8,
+                padding: '6px 0', borderBottom: '1px solid var(--border)',
+              }}>
+                <input type="checkbox" checked={allSelected} onChange={toggleAll}
+                  style={{ accentColor: '#ec4899' }} />
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' }}>
+                  {selected.size} of {filteredAssets.length} selected
+                </span>
+              </div>
+
+              <div style={{ maxHeight: 220, overflowY: 'auto', marginBottom: 14 }}>
+                {filteredAssets.map(asset => (
+                  <label key={asset.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '7px 4px', cursor: 'pointer', fontSize: 13,
+                    borderRadius: 5,
+                  }}
+                    onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-secondary)'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                  >
+                    <input type="checkbox" checked={selected.has(asset.id)} onChange={() => toggle(asset.id)}
+                      style={{ accentColor: '#ec4899' }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {asset.hostname || asset.ip || asset.fqdn || `Asset #${asset.id}`}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 8 }}>
+                        {asset.ip && <span>{asset.ip}</span>}
+                        {asset.fqdn && asset.fqdn !== asset.hostname && <span>{asset.fqdn}</span>}
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
+
+      {error && (
+        <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 12, padding: '8px 10px', background: '#dc262611', borderRadius: 6 }}>
+          {error}
+        </div>
+      )}
+
+      <Button onClick={handleScan} disabled={scanning || !canScan} style={{ width: '100%', background: '#ec4899' }}>
+        {scanning ? (
+          <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Scanning...</>
+        ) : (
+          <><Play size={13} /> Scan {tab === 'manual' ? `${manualTargets.length} Target${manualTargets.length !== 1 ? 's' : ''}` : `${selected.size} Asset${selected.size !== 1 ? 's' : ''}`}</>
+        )}
+      </Button>
+      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
     </div>
   )
 }
