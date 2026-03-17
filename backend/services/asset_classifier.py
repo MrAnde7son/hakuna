@@ -129,6 +129,33 @@ _ROLE_RULES = [
     (r"\b(ws|wks|workstation|laptop|desktop|pc)\b",             "Workstation"),
 ]
 
+# ---------------------------------------------------------------------------
+# Default criticality by business context (1-10)
+# Applied when no auto-rule or manual override sets criticality.
+# ---------------------------------------------------------------------------
+
+CONTEXT_CRITICALITY = {
+    "Domain Controller":   9,
+    "Active Directory":    9,
+    "Identity Provider":   9,
+    "Database Server":     8,
+    "Mail Server":         8,
+    "Web Server":          7,
+    "Application Server":  7,
+    "VPN Gateway":         7,
+    "Firewall":            7,
+    "Load Balancer":       7,
+    "File Server":         6,
+    "Backup Server":       6,
+    "Proxy":               6,
+    "Management Server":   6,
+    "Terminal Server":     5,
+    "Network Device":      5,
+    "DevOps Server":       5,
+    "Print Server":        4,
+    "Workstation":         3,
+}
+
 def infer_business_context(asset_data: dict) -> Optional[str]:
     """Return best-guess business context string, or None if no confident match."""
     names = _names(asset_data)
@@ -151,10 +178,17 @@ def infer_business_context(asset_data: dict) -> Optional[str]:
 
 def classify_asset(asset_data: dict) -> dict:
     """
-    Returns {"environment_tag": str, "business_context": str|None}
+    Returns {"environment_tag": str, "business_context": str|None,
+             "context_criticality": int|None}
     to be merged into asset creation kwargs.
+
+    context_criticality is the suggested baseline criticality derived from
+    the inferred business context.  Callers should treat it as a default
+    that auto-rules and manual overrides can supersede.
     """
+    biz_ctx = infer_business_context(asset_data)
     return {
         "environment_tag": infer_environment(asset_data),
-        "business_context": infer_business_context(asset_data),
+        "business_context": biz_ctx,
+        "context_criticality": CONTEXT_CRITICALITY.get(biz_ctx) if biz_ctx else None,
     }

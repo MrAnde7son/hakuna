@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets } from '../../api.js'
+import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getTags } from '../../api.js'
 import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
@@ -260,6 +260,29 @@ export default function AssetInventory() {
   const [tagLogic, setTagLogic] = useState('AND')
   const [ownershipEdit, setOwnershipEdit] = useState(null) // { assetId, current, anchorRef }
   const [contextEdit, setContextEdit] = useState(null) // { assetId, field, currentValue }
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // Sync tagFilter from URL ?tags= param on mount
+  const tagsSynced = useRef(false)
+  useEffect(() => {
+    if (tagsSynced.current) return
+    const urlTags = searchParams.get('tags')
+    if (!urlTags) return
+    tagsSynced.current = true
+    const tagStrings = urlTags.split(',').map(s => s.trim()).filter(Boolean)
+    if (!tagStrings.length) return
+    getTags().then(allTags => {
+      const matched = tagStrings.map(ts => {
+        const [cat, ...rest] = ts.split(':')
+        const val = rest.join(':')
+        // Try matching by label first, then by category:value
+        return allTags.find(t => t.label === ts) ||
+               allTags.find(t => t.category === cat && t.value === val)
+      }).filter(Boolean).map(t => ({ tag_id: t.id, label: t.label, category: t.category, value: t.value, color: t.color }))
+      if (matched.length) setTagFilter(matched)
+    }).catch(() => {})
+  }, [searchParams])
 
   // Advanced rule-engine search
   const [advancedMode, setAdvancedMode] = useState(false)
@@ -273,8 +296,6 @@ export default function AssetInventory() {
   const [filters, setFilters] = useState({
     search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '',
   })
-  const navigate = useNavigate()
-  const [searchParams, setSearchParams] = useSearchParams()
 
   const sortBy = searchParams.get('sort') || 'risk_score'
   const sortOrder = searchParams.get('order') || 'desc'

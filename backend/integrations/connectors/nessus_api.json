@@ -1,0 +1,186 @@
+{
+  "id": "nessus_api",
+  "name": "Nessus Scanner \u2014 API",
+  "description": "Pull vulnerability findings from a Nessus scanner via its REST API",
+  "logo": "/logos/vendors/nessus.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "steps": [
+      {
+        "id": "export",
+        "method": "POST",
+        "path": "/scans/{{params.scan_id}}/export",
+        "headers": {
+          "Content-Type": "application/json",
+          "X-ApiKeys": "accessKey={{credentials.access_key}};secretKey={{credentials.secret_key}}"
+        },
+        "body": {
+          "format": "json"
+        },
+        "extract": {
+          "file_id": "file"
+        }
+      },
+      {
+        "id": "poll_status",
+        "method": "GET",
+        "path": "/scans/{{params.scan_id}}/export/{{steps.export.file_id}}/status",
+        "headers": {
+          "X-ApiKeys": "accessKey={{credentials.access_key}};secretKey={{credentials.secret_key}}"
+        },
+        "poll": {
+          "interval_seconds": 5,
+          "timeout_seconds": 300,
+          "until": "response.status == 'ready'"
+        }
+      },
+      {
+        "id": "download",
+        "method": "GET",
+        "path": "/scans/{{params.scan_id}}/export/{{steps.export.file_id}}/download",
+        "headers": {
+          "X-ApiKeys": "accessKey={{credentials.access_key}};secretKey={{credentials.secret_key}}"
+        }
+      }
+    ]
+  },
+  "records_path": "vulnerabilities",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Nessus Scanner URL",
+      "placeholder": "https://nessus.yourcompany.com:8834"
+    },
+    "steps": [
+      {
+        "instruction": "Log into your Nessus scanner web UI"
+      },
+      {
+        "instruction": "Go to Settings \u2192 My Account \u2192 API Keys",
+        "deeplink_path": "/#/settings/my-account/api-keys"
+      },
+      {
+        "instruction": "Click Generate and copy the Access Key",
+        "capture": {
+          "field": "access_key",
+          "label": "Paste Access Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the Secret Key",
+        "capture": {
+          "field": "secret_key",
+          "label": "Paste Secret Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/server/status",
+      "headers": {
+        "X-ApiKeys": "accessKey={{access_key}};secretKey={{secret_key}}"
+      },
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "connected_status": "response.status"
+      },
+      "error_message": "Could not connect to Nessus scanner. Check the URL and API keys."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "plugin_id",
+      "target": "plugin_id"
+    },
+    {
+      "source": "plugin_name",
+      "target": "title"
+    },
+    {
+      "source": "host_name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "host_ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "4": "critical",
+          "3": "high",
+          "2": "medium",
+          "1": "low",
+          "0": "info"
+        }
+      }
+    },
+    {
+      "source": "cvss3_base_score",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "cve[0]",
+      "target": "cve_id"
+    },
+    {
+      "source": "exploit_available",
+      "target": "exploit_available",
+      "transform": {
+        "type": "boolean",
+        "truthy": [
+          "true",
+          "True",
+          "1"
+        ]
+      }
+    },
+    {
+      "source": "solution",
+      "target": "solution"
+    },
+    {
+      "source": "synopsis",
+      "target": "description"
+    },
+    {
+      "source": "first_found",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "last_found",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "plugin_id",
+    "asset.ip_address"
+  ],
+  "params_schema": {
+    "scan_id": {
+      "type": "string",
+      "required": true,
+      "description": "Nessus scan ID to export results from"
+    }
+  }
+}

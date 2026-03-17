@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <rect width="40" height="40" rx="8" fill="#0052CC"/>
+  <!-- Jira diamond/chevron mark -->
+  <path d="M20 8 L30 20 L20 32 L16 28 L22 20 L16 12 Z" fill="#fff"/>
+  <path d="M20 8 L10 20 L20 32 L24 28 L18 20 L24 12 Z" fill="#B3D4FF"/>
+</svg>

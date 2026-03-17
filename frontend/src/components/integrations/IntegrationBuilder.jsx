@@ -1,0 +1,1182 @@
+import { useState, useEffect } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { ArrowLeft, ArrowRight, Check, ChevronRight, ChevronDown, Zap, Database as DbIcon, FileText, Globe, Wand2, Eye, EyeOff, List } from 'lucide-react'
+import { Card, Button, Spinner } from '../shared/ui.jsx'
+import {
+  getConnectors, getConnector, getIntegrationSchema, getAcquisitionFlow,
+  validateCredentials, createCredential, integrationConnect, integrationPreview,
+  ibCreateIntegration, ibUpdateIntegration, ibGetIntegration,
+  discoverApi, parseDocs, uploadIntegrationFile,
+} from '../../api.js'
+import StepAuthenticate from './steps/StepAuthenticate.jsx'
+import StepFieldMapper from './steps/StepFieldMapper.jsx'
+
+const STEPS = [
+  { key: 'source', label: 'Choose Source' },
+  { key: 'auth', label: 'Authenticate' },
+  { key: 'configure', label: 'Connect' },
+  { key: 'records', label: 'Pick Records' },
+  { key: 'map', label: 'Map Fields' },
+  { key: 'preview', label: 'Preview' },
+  { key: 'save', label: 'Save' },
+]
+
+const TRANSPORT_ICONS = { api: Globe, sql: DbIcon, file: FileText, mcp: Zap }
+
+const AUTH_TYPES = [
+  { value: 'none', label: 'None' },
+  { value: 'bearer', label: 'Bearer Token' },
+  { value: 'api_key', label: 'API Key (Header)' },
+  { value: 'basic', label: 'Basic Auth' },
+]
+
+export default function IntegrationBuilder({ embedded, editId: embeddedEditId, onBack, onDone }) {
+  const navigate = !embedded ? useNavigate() : null
+  const routeParams = !embedded ? useParams() : {}
+  const editId = embeddedEditId || routeParams.id
+  const goBack = onBack || (() => navigate('/integrations'))
+  const goDone = onDone || (() => navigate('/integrations'))
+  const [step, setStep] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [connectError, setConnectError] = useState(null)
+
+  // State accumulated across steps
+  const [connectors, setConnectors] = useState([])
+  const [selectedConnector, setSelectedConnector] = useState(null)
+  const [connectorDetail, setConnectorDetail] = useState(null)
+  const [credentialsId, setCredentialsId] = useState(null)
+  const [connectedUser, setConnectedUser] = useState(null)
+  const [transportConfig, setTransportConfig] = useState({})
+  const [transportType, setTransportType] = useState('api')
+  const [recordsPath, setRecordsPath] = useState('')
+  const [rawResponse, setRawResponse] = useState(null)
+  const [sampleRecords, setSampleRecords] = useState([])
+  const [detectedPaths, setDetectedPaths] = useState([])
+  const [fieldMap, setFieldMap] = useState([])
+  const [schema, setSchema] = useState([])
+  const [previewRecords, setPreviewRecords] = useState([])
+  const [suggestions, setSuggestions] = useState(null)
+  const [integrationName, setIntegrationName] = useState('')
+  const [direction, setDirection] = useState('pull')
+  const [entity, setEntity] = useState('finding')
+  const [dedupKey, setDedupKey] = useState([])
+  const [schedule, setSchedule] = useState('')
+  const [enabled, setEnabled] = useState(false)
+
+  // Inline auth for custom builds
+  const [inlineAuthType, setInlineAuthType] = useState('none')
+  const [inlineAuthValues, setInlineAuthValues] = useState({})
+  const [showSecrets, setShowSecrets] = useState(false)
+
+  // Discovery
+  const [discoverUrl, setDiscoverUrl] = useState('')
+  const [discovering, setDiscovering] = useState(false)
+  const [discoveryResult, setDiscoveryResult] = useState(null)
+  const [discoveryError, setDiscoveryError] = useState(null)
+  const [selectedEndpoint, setSelectedEndpoint] = useState(null)
+
+  useEffect(() => {
+    getConnectors().then(setConnectors).catch(console.error)
+    getIntegrationSchema('finding').then(s => setSchema(Array.isArray(s) ? s : [])).catch(console.error)
+  }, [])
+
+  // If editing, load existing integration
+  useEffect(() => {
+    if (!editId) return
+    ibGetIntegration(editId).then(i => {
+      setIntegrationName(i.name)
+      setDirection(i.direction)
+      setEntity(i.entity)
+      setTransportType(i.transport_type)
+      setTransportConfig(i.transport_config || {})
+      setRecordsPath(i.records_path || '')
+      setFieldMap(i.field_map || [])
+      setDedupKey(i.dedup_key || [])
+      setSchedule(i.schedule || '')
+      setEnabled(i.enabled)
+      setCredentialsId(i.credentials_id)
+      if (i.template_id) setSelectedConnector(i.template_id)
+      setStep(4) // jump to field mapper for edits
+    }).catch(console.error)
+  }, [editId])
+
+  // ── Step 0: Choose Source ──
+  const handleSelectConnector = async (connectorId) => {
+    setLoading(true)
+    try {
+      const detail = await getConnector(connectorId)
+      setSelectedConnector(connectorId)
+      setConnectorDetail(detail)
+      setDirection(detail.direction)
+      setEntity(detail.entity)
+      setTransportType(detail.transport_type)
+      setTransportConfig(detail.transport_config || {})
+      setFieldMap(detail.default_field_map || [])
+      setDedupKey(detail.dedup_key || [])
+      setRecordsPath(detail.records_path || '')
+      setIntegrationName(detail.name)
+
+      const s = await getIntegrationSchema(detail.entity)
+      setSchema(Array.isArray(s) ? s : [])
+
+      // Go to auth if connector needs it, otherwise configure
+      if (!detail.credential_acquisition) {
+        setStep(2)
+      } else {
+        setStep(1)
+      }
+    } catch (e) {
+      alert('Failed to load connector: ' + e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSelectCustomTransport = (type) => {
+    setTransportType(type)
+    setSelectedConnector(null)
+    setConnectorDetail(null)
+    setDirection('pull')
+    setEntity('finding')
+    setStep(2) // go to configure (which now has inline auth)
+  }
+
+  // ── Step 2: Connect ──
+  const handleConnect = async () => {
+    setLoading(true)
+    setConnectError(null)
+    try {
+      // If inline auth was provided, save credentials first
+      let cId = credentialsId
+      if (inlineAuthType !== 'none' && !cId) {
+        const cred = await createCredential({
+          name: `${transportConfig.base_url || 'Custom'} credentials`,
+          connector_id: selectedConnector || 'custom',
+          auth_type: inlineAuthType,
+          values: inlineAuthValues,
+          instance_url: transportConfig.base_url || null,
+        })
+        cId = cred.id
+        setCredentialsId(cId)
+      }
+
+      const result = await integrationConnect({
+        transport_type: transportType,
+        transport_config: transportConfig,
+        credentials_id: cId,
+        records_path: undefined, // don't send — we'll pick from response
+      })
+      setRawResponse(result.raw_response)
+      setSampleRecords(result.sample_records || [])
+      setDetectedPaths(result.detected_paths || [])
+
+      // Auto-detect records path
+      if (result.detected_records_path) {
+        setRecordsPath(result.detected_records_path)
+      }
+
+      setStep(3) // advance to records picker
+    } catch (e) {
+      setConnectError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── Step 3: Pick Records — re-connect with chosen path ──
+  const handlePickRecords = async (path) => {
+    setRecordsPath(path)
+    setLoading(true)
+    try {
+      const result = await integrationConnect({
+        transport_type: transportType,
+        transport_config: transportConfig,
+        credentials_id: credentialsId,
+        records_path: path,
+      })
+      setSampleRecords(result.sample_records || [])
+      setDetectedPaths(result.detected_paths || [])
+      setStep(4) // advance to field mapper
+    } catch (e) {
+      alert('Failed to fetch records at path: ' + e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── Step 5: Preview ──
+  const handlePreview = async () => {
+    setLoading(true)
+    try {
+      const result = await integrationPreview({
+        transport_type: transportType,
+        transport_config: transportConfig,
+        credentials_id: credentialsId,
+        records_path: recordsPath || undefined,
+        field_map: fieldMap,
+        auto_suggest_flag: false,
+      })
+      setPreviewRecords(result.records || [])
+      setStep(5)
+    } catch (e) {
+      alert('Preview failed: ' + e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── Step 4: Auto-suggest ──
+  const handleAutoSuggest = async () => {
+    setLoading(true)
+    try {
+      const result = await integrationPreview({
+        transport_type: transportType,
+        transport_config: transportConfig,
+        credentials_id: credentialsId,
+        records_path: recordsPath || undefined,
+        field_map: [],
+        auto_suggest_flag: true,
+      })
+      if (result.suggestions) {
+        setSuggestions(result.suggestions)
+        setFieldMap(result.suggestions)
+      }
+    } catch (e) {
+      console.error('Auto-suggest failed:', e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── Step 6: Save ──
+  const handleSave = async (andRun = false) => {
+    setLoading(true)
+    try {
+      const payload = {
+        name: integrationName,
+        direction, entity,
+        transport_type: transportType,
+        transport_config: transportConfig,
+        credentials_id: credentialsId,
+        records_path: recordsPath || null,
+        field_map: fieldMap,
+        dedup_key: dedupKey,
+        schedule: schedule || null,
+        enabled,
+        template_id: selectedConnector || null,
+      }
+
+      let result
+      if (editId) {
+        result = await ibUpdateIntegration(editId, payload)
+      } else {
+        result = await ibCreateIntegration(payload)
+      }
+
+      if (andRun && result.id) {
+        await import('../../api.js').then(api => api.ibRunIntegration(result.id))
+      }
+
+      goDone()
+    } catch (e) {
+      alert('Save failed: ' + e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── Render steps ──
+  const renderStep = () => {
+    switch (step) {
+      case 0: return renderChooseSource()
+      case 1: return renderAuth()
+      case 2: return renderConfigure()
+      case 3: return renderRecordsPicker()
+      case 4: return renderFieldMapper()
+      case 5: return renderPreview()
+      case 6: return renderSave()
+      default: return null
+    }
+  }
+
+  // ── Discovery handler ──
+  const handleDiscover = async () => {
+    if (!discoverUrl) return
+    setDiscovering(true)
+    setDiscoveryError(null)
+    setDiscoveryResult(null)
+    try {
+      const result = await discoverApi(discoverUrl)
+      if (result.spec_source === 'none') {
+        setDiscoveryError(result.error || 'No spec found')
+      } else {
+        setDiscoveryResult(result)
+        setTransportConfig(prev => ({ ...prev, base_url: result.base_url || discoverUrl }))
+      }
+    } catch (e) {
+      setDiscoveryError(e.message)
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  const handleSelectEndpoint = (ep) => {
+    setSelectedEndpoint(ep)
+    setTransportConfig({
+      base_url: discoveryResult?.base_url || discoverUrl,
+      method: ep.method,
+      path: ep.path,
+      headers: {},
+      query_params: {},
+      pagination: ep.pagination_hints || {},
+    })
+    if (ep.response_schema?.records_path) {
+      setRecordsPath(ep.response_schema.records_path)
+    }
+    setTransportType('api')
+    setDirection('pull')
+    setIntegrationName(discoveryResult?.tool_name || '')
+    setStep(2) // go to Connect (with inline auth)
+  }
+
+  const handleLlmParse = async (url) => {
+    setDiscovering(true)
+    setDiscoveryError(null)
+    try {
+      const result = await parseDocs({ url })
+      if (result.endpoints?.length > 0) {
+        setDiscoveryResult(result)
+      } else {
+        setDiscoveryError('Could not extract endpoints from docs')
+      }
+    } catch (e) {
+      setDiscoveryError(e.message)
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  // ── Step 0: Choose Source ──
+  const renderChooseSource = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      {/* Section A: Templates */}
+      <div>
+        <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 600 }}>Start from a template</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
+          {connectors.map(c => (
+            <Card key={c.id} onClick={() => handleSelectConnector(c.id)} style={{ cursor: 'pointer', padding: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <VendorLogo src={c.logo} size={28} />
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.description}</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <Badge bg={DIRECTION_BADGE[c.direction]?.bg} text={DIRECTION_BADGE[c.direction]?.text} label={c.direction.toUpperCase()} />
+                <Badge bg={ENTITY_BADGE[c.entity]?.bg} text={ENTITY_BADGE[c.entity]?.text} label={c.entity.toUpperCase()} />
+                <Badge bg="var(--border)" text="var(--text-muted)" label={c.transport_type.toUpperCase()} />
+              </div>
+            </Card>
+          ))}
+        </div>
+      </div>
+
+      {/* Section B: Connect any tool (discovery) */}
+      <div>
+        <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 600 }}>Connect any tool</h3>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            placeholder="Enter the URL of the tool you want to connect"
+            value={discoverUrl}
+            onChange={e => setDiscoverUrl(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleDiscover()}
+            style={{ ...inputStyle, flex: 1 }}
+          />
+          <Button onClick={handleDiscover} disabled={discovering || !discoverUrl}>
+            {discovering ? <><Spinner /> Discovering...</> : 'Discover API'}
+          </Button>
+        </div>
+
+        {/* Discovery progress / error */}
+        {discoveryError && !discoveryResult && (
+          <div style={{ marginTop: 12, padding: 14, borderRadius: 8, background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>{discoveryError}</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                placeholder="Paste API docs URL for AI parsing"
+                id="llm-docs-url"
+                style={{ ...inputStyle, flex: 1, fontSize: 12 }}
+              />
+              <Button onClick={() => handleLlmParse(document.getElementById('llm-docs-url').value)}
+                disabled={discovering}
+                style={{ fontSize: 12, padding: '6px 12px' }}>
+                {discovering ? <Spinner /> : 'Parse with AI'}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Endpoint Explorer */}
+        {discoveryResult && discoveryResult.endpoints?.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10,
+              padding: '8px 12px', background: '#22c55e12', border: '1px solid #22c55e30', borderRadius: 8,
+            }}>
+              <Check size={14} color="#22c55e" />
+              <span style={{ fontSize: 12, color: '#22c55e' }}>
+                Found {discoveryResult.spec_source} spec — {discoveryResult.endpoint_count} endpoints
+                {discoveryResult.tool_name && ` for ${discoveryResult.tool_name}`}
+              </span>
+              {discoveryResult.ai_generated && (
+                <Badge bg="#eab30820" text="#eab308" label="AI-generated — review carefully" />
+              )}
+            </div>
+
+            {/* Endpoint list grouped by tag */}
+            <EndpointExplorer
+              endpoints={discoveryResult.endpoints}
+              authSchemes={discoveryResult.auth_schemes}
+              onSelect={handleSelectEndpoint}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Section C: Build custom */}
+      <div>
+        <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 600 }}>Build custom</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          {['api', 'sql', 'file', 'mcp'].map(t => {
+            const Icon = TRANSPORT_ICONS[t]
+            return (
+              <Card key={t} onClick={() => handleSelectCustomTransport(t)} style={{ cursor: 'pointer', padding: 16, textAlign: 'center' }}>
+                <Icon size={28} color="var(--text-muted)" style={{ marginBottom: 8 }} />
+                <div style={{ fontWeight: 600, fontSize: 13, textTransform: 'uppercase' }}>{t}</div>
+              </Card>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+
+  // ── Step 1: Auth (template connectors only) ──
+  const renderAuth = () => (
+    <StepAuthenticate
+      connectorId={selectedConnector}
+      connectorDetail={connectorDetail}
+      onComplete={(cId, user) => {
+        setCredentialsId(cId)
+        setConnectedUser(user)
+        setStep(2)
+      }}
+      onSkip={() => setStep(2)}
+    />
+  )
+
+  // ── Step 2: Configure + inline auth + connect ──
+  const renderConfigure = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Connect to API</h3>
+
+      {transportType === 'api' && (
+        <>
+          {/* URL + method */}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <select
+              value={transportConfig.method || 'GET'}
+              onChange={e => setTransportConfig({ ...transportConfig, method: e.target.value })}
+              style={selectStyle}
+            >
+              {['GET', 'POST', 'PUT', 'PATCH'].map(m => <option key={m}>{m}</option>)}
+            </select>
+            <input
+              placeholder="Base URL (e.g. https://cloud.tenable.com)"
+              value={transportConfig.base_url || ''}
+              onChange={e => setTransportConfig({ ...transportConfig, base_url: e.target.value })}
+              style={{ ...inputStyle, flex: 1 }}
+            />
+          </div>
+          <input
+            placeholder="Path (e.g. /assets)"
+            value={transportConfig.path || ''}
+            onChange={e => setTransportConfig({ ...transportConfig, path: e.target.value })}
+            style={inputStyle}
+          />
+
+          {/* Inline auth — only for custom builds (no saved credentials yet) */}
+          {!credentialsId && (
+            <div style={{ padding: 16, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Authentication
+              </div>
+              <select
+                value={inlineAuthType}
+                onChange={e => { setInlineAuthType(e.target.value); setInlineAuthValues({}) }}
+                style={{ ...inputStyle, marginBottom: 10 }}
+              >
+                {AUTH_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+
+              {inlineAuthType === 'bearer' && (
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showSecrets ? 'text' : 'password'}
+                    placeholder="Bearer token / Access token"
+                    value={inlineAuthValues.access_token || ''}
+                    onChange={e => setInlineAuthValues({ ...inlineAuthValues, access_token: e.target.value })}
+                    style={inputStyle}
+                  />
+                  <SecretToggle show={showSecrets} onToggle={() => setShowSecrets(!showSecrets)} />
+                </div>
+              )}
+
+              {inlineAuthType === 'api_key' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <input
+                    placeholder="Header name (e.g. X-ApiKeys, Authorization)"
+                    value={inlineAuthValues.header_name || ''}
+                    onChange={e => setInlineAuthValues({ ...inlineAuthValues, header_name: e.target.value })}
+                    style={inputStyle}
+                  />
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type={showSecrets ? 'text' : 'password'}
+                      placeholder="Header value (e.g. accessKey=...;secretKey=...)"
+                      value={inlineAuthValues.api_key || ''}
+                      onChange={e => setInlineAuthValues({ ...inlineAuthValues, api_key: e.target.value })}
+                      style={inputStyle}
+                    />
+                    <SecretToggle show={showSecrets} onToggle={() => setShowSecrets(!showSecrets)} />
+                  </div>
+                </div>
+              )}
+
+              {inlineAuthType === 'basic' && (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    placeholder="Username"
+                    value={inlineAuthValues.username || ''}
+                    onChange={e => setInlineAuthValues({ ...inlineAuthValues, username: e.target.value })}
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <div style={{ position: 'relative', flex: 1 }}>
+                    <input
+                      type={showSecrets ? 'text' : 'password'}
+                      placeholder="Password"
+                      value={inlineAuthValues.password || ''}
+                      onChange={e => setInlineAuthValues({ ...inlineAuthValues, password: e.target.value })}
+                      style={inputStyle}
+                    />
+                    <SecretToggle show={showSecrets} onToggle={() => setShowSecrets(!showSecrets)} />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {credentialsId && (
+            <div style={{
+              padding: '8px 14px', borderRadius: 8, background: '#22c55e12', border: '1px solid #22c55e30',
+              fontSize: 12, color: '#22c55e', display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+              <Check size={14} /> Credentials saved{connectedUser ? ` — connected as ${connectedUser}` : ''}
+            </div>
+          )}
+        </>
+      )}
+
+      {transportType === 'file' && (
+        <div>
+          <div
+            onDragOver={e => { e.preventDefault(); e.currentTarget.style.borderColor = 'var(--accent)' }}
+            onDragLeave={e => { e.currentTarget.style.borderColor = 'var(--border)' }}
+            onDrop={async e => {
+              e.preventDefault()
+              e.currentTarget.style.borderColor = 'var(--border)'
+              const file = e.dataTransfer.files[0]
+              if (!file) return
+              setLoading(true)
+              try {
+                const result = await uploadIntegrationFile(file)
+                setTransportConfig({ ...transportConfig, path: result.path, source: 'local', format: result.format })
+              } catch (err) { alert('Upload failed: ' + err.message) }
+              finally { setLoading(false) }
+            }}
+            style={{
+              border: '2px dashed var(--border)', borderRadius: 8, padding: 24, textAlign: 'center',
+              cursor: 'pointer', transition: 'border-color 0.15s',
+            }}
+            onClick={() => document.getElementById('file-upload-input').click()}
+          >
+            <FileText size={28} color="var(--text-muted)" style={{ marginBottom: 8 }} />
+            <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+              Drop a file here or click to browse
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              Supports .nessus, .csv, .json, .xml
+            </div>
+            <input
+              id="file-upload-input"
+              type="file"
+              accept=".nessus,.csv,.json,.xml,.html"
+              style={{ display: 'none' }}
+              onChange={async e => {
+                const file = e.target.files[0]
+                if (!file) return
+                setLoading(true)
+                try {
+                  const result = await uploadIntegrationFile(file)
+                  setTransportConfig({ ...transportConfig, path: result.path, source: 'local', format: result.format })
+                } catch (err) { alert('Upload failed: ' + err.message) }
+                finally { setLoading(false) }
+              }}
+            />
+          </div>
+          {transportConfig.path && (
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>
+              File: {transportConfig.path.split('/').pop()} ({transportConfig.format})
+            </div>
+          )}
+        </div>
+      )}
+
+      {transportType === 'sql' && (
+        <textarea
+          placeholder="SQL query"
+          value={transportConfig.query || ''}
+          onChange={e => setTransportConfig({ ...transportConfig, query: e.target.value })}
+          style={{ ...inputStyle, fontFamily: 'var(--mono)', minHeight: 100 }}
+        />
+      )}
+
+      {connectError && (
+        <div style={{ padding: '10px 14px', borderRadius: 8, background: '#ef444412', border: '1px solid #ef444430', color: '#ef4444', fontSize: 12 }}>
+          {connectError}
+        </div>
+      )}
+
+      <Button onClick={handleConnect} disabled={loading || !transportConfig.base_url}>
+        {loading ? <><Spinner /> Connecting...</> : <>Connect & Fetch Response <ArrowRight size={14} style={{ marginLeft: 6 }} /></>}
+      </Button>
+    </div>
+  )
+
+  // ── Step 3: Pick Records from Response ──
+  const renderRecordsPicker = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Pick the records array</h3>
+      <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
+        Click an array in the response to select it as the data source. Arrays of objects are highlighted.
+      </p>
+
+      {recordsPath && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px',
+          background: 'var(--accent)10', border: '1px solid var(--accent)30', borderRadius: 8,
+        }}>
+          <List size={14} color="var(--accent)" />
+          <span style={{ fontSize: 12 }}>Selected: <b style={{ fontFamily: 'var(--mono)' }}>{recordsPath}</b></span>
+          {sampleRecords.length > 0 && (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>({sampleRecords.length} items)</span>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 16 }}>
+        {/* Left: JSON tree of raw response */}
+        <div style={{ flex: 1, maxHeight: 500, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 8 }}>
+          {rawResponse && (
+            <JsonTreePicker
+              data={rawResponse}
+              onSelectArray={(path, items) => {
+                setRecordsPath(path)
+                setSampleRecords(items.slice(0, 10))
+                // Re-detect paths from first record
+                if (items[0] && typeof items[0] === 'object') {
+                  // We'll re-fetch with the path on confirm
+                }
+              }}
+              selectedPath={recordsPath}
+            />
+          )}
+        </div>
+
+        {/* Right: first record preview */}
+        <div style={{ width: '40%', maxHeight: 500, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase' }}>
+            First Record Preview
+          </div>
+          {sampleRecords[0] ? (
+            <pre style={{ margin: 0, fontSize: 11, fontFamily: 'var(--mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--text)' }}>
+              {JSON.stringify(sampleRecords[0], null, 2)}
+            </pre>
+          ) : (
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Select an array to see a preview</span>
+          )}
+        </div>
+      </div>
+
+      <Button onClick={() => handlePickRecords(recordsPath)} disabled={loading || !recordsPath}>
+        {loading ? <><Spinner /> Fetching...</> : <>Use These Records <ArrowRight size={14} style={{ marginLeft: 6 }} /></>}
+      </Button>
+    </div>
+  )
+
+  // ── Step 4: Field Mapper ──
+  const renderFieldMapper = () => (
+    <StepFieldMapper
+      detectedPaths={detectedPaths}
+      sampleRecords={sampleRecords}
+      schema={schema}
+      fieldMap={fieldMap}
+      onFieldMapChange={setFieldMap}
+      onAutoSuggest={handleAutoSuggest}
+      suggestions={suggestions}
+      loading={loading}
+      onNext={handlePreview}
+    />
+  )
+
+  // ── Step 5: Preview ──
+  const renderPreview = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Preview Mapping</h3>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+        {previewRecords.length} records previewed. {previewRecords.filter(r => r.errors.length > 0).length} with errors.
+      </div>
+
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)' }}>
+              <th style={thStyle}>#</th>
+              {fieldMap.map(m => <th key={m.target} style={thStyle}>{m.target}</th>)}
+              <th style={thStyle}>Errors</th>
+            </tr>
+          </thead>
+          <tbody>
+            {previewRecords.map((r, i) => (
+              <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={tdStyle}>{i + 1}</td>
+                {fieldMap.map(m => {
+                  const val = getNestedValue(r.mapped, m.target)
+                  const hasError = r.errors.some(e => e.target === m.target && e.level === 'error')
+                  return (
+                    <td key={m.target} style={{ ...tdStyle, background: hasError ? '#450a0a33' : undefined }}>
+                      {val !== null && val !== undefined ? String(val) : '—'}
+                    </td>
+                  )
+                })}
+                <td style={tdStyle}>
+                  {r.errors.length > 0 && (
+                    <span style={{ color: '#ef4444', fontSize: 11 }}>{r.errors.length} error{r.errors.length > 1 ? 's' : ''}</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button onClick={() => setStep(4)} style={{ background: 'transparent', color: 'var(--text)', border: '1px solid var(--border)' }}>
+          <ArrowLeft size={14} /> Fix Mappings
+        </Button>
+        <Button onClick={() => setStep(6)}>Looks Good <ArrowRight size={14} style={{ marginLeft: 4 }} /></Button>
+      </div>
+    </div>
+  )
+
+  // ── Step 6: Save & Schedule ──
+  const renderSave = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 500 }}>
+      <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Save & Schedule</h3>
+
+      <div>
+        <label style={labelStyle}>Integration Name</label>
+        <input value={integrationName} onChange={e => setIntegrationName(e.target.value)} style={inputStyle} />
+      </div>
+
+      <div>
+        <label style={labelStyle}>Entity</label>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {['asset', 'finding', 'action'].map(e => (
+            <button key={e} onClick={() => setEntity(e)} style={{
+              ...pillButtonStyle,
+              background: entity === e ? 'var(--accent)' : 'transparent',
+              color: entity === e ? '#fff' : 'var(--text)',
+              border: entity === e ? 'none' : '1px solid var(--border)',
+            }}>
+              {e.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label style={labelStyle}>Schedule</label>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {[
+            { label: 'On demand', value: '' },
+            { label: 'Every 15m', value: '*/15 * * * *' },
+            { label: 'Hourly', value: '0 * * * *' },
+            { label: 'Every 6h', value: '0 */6 * * *' },
+            { label: 'Daily', value: '0 0 * * *' },
+          ].map(s => (
+            <button key={s.value} onClick={() => setSchedule(s.value)} style={{
+              ...pillButtonStyle,
+              background: schedule === s.value ? 'var(--accent)' : 'transparent',
+              color: schedule === s.value ? '#fff' : 'var(--text)',
+              border: schedule === s.value ? 'none' : '1px solid var(--border)',
+            }}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+        <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+        <span style={{ fontSize: 13 }}>Enable immediately</span>
+      </label>
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <Button onClick={() => handleSave(false)} disabled={loading || !integrationName}>
+          {loading ? <Spinner /> : 'Save'}
+        </Button>
+        <Button onClick={() => handleSave(true)} disabled={loading || !integrationName}
+          style={{ background: 'var(--accent)' }}>
+          {loading ? <Spinner /> : 'Save & Run Now'}
+        </Button>
+      </div>
+    </div>
+  )
+
+  return (
+    <div style={{ padding: '24px 32px', maxWidth: 1100 }}>
+      <button onClick={goBack}
+        style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', marginBottom: 16, fontSize: 13 }}>
+        <ArrowLeft size={14} /> Back to Integrations
+      </button>
+
+      {/* Progress bar */}
+      <div style={{ display: 'flex', gap: 2, marginBottom: 32 }}>
+        {STEPS.map((s, i) => (
+          <div key={s.key} style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <div
+              onClick={() => { if (i < step) setStep(i) }}
+              style={{
+                width: 24, height: 24, borderRadius: '50%', display: 'flex',
+                alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600,
+                background: i <= step ? 'var(--accent)' : 'var(--border)',
+                color: i <= step ? '#fff' : 'var(--text-muted)',
+                cursor: i < step ? 'pointer' : 'default',
+              }}
+            >
+              {i < step ? <Check size={12} /> : i + 1}
+            </div>
+            <span style={{ fontSize: 11, color: i <= step ? 'var(--text)' : 'var(--text-muted)', fontWeight: i === step ? 600 : 400 }}>
+              {s.label}
+            </span>
+            {i < STEPS.length - 1 && <ChevronRight size={12} color="var(--text-muted)" />}
+          </div>
+        ))}
+      </div>
+
+      {renderStep()}
+    </div>
+  )
+}
+
+// ── JSON Tree Picker — clickable arrays ──
+
+function JsonTreePicker({ data, onSelectArray, selectedPath, _path = '', _depth = 0 }) {
+  const [expanded, setExpanded] = useState(_depth < 2)
+
+  if (_depth > 5) return <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>...</span>
+
+  if (Array.isArray(data)) {
+    const isArrayOfObjects = data.length > 0 && typeof data[0] === 'object' && data[0] !== null
+    const isSelected = selectedPath === _path
+    return (
+      <div>
+        <div
+          onClick={(e) => { e.stopPropagation(); if (isArrayOfObjects) onSelectArray(_path, data) }}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 4, padding: '2px 4px', borderRadius: 4,
+            cursor: isArrayOfObjects ? 'pointer' : 'default',
+            background: isSelected ? 'var(--accent)18' : isArrayOfObjects ? '#3b82f608' : 'transparent',
+            border: isSelected ? '1px solid var(--accent)' : isArrayOfObjects ? '1px solid #3b82f620' : '1px solid transparent',
+          }}
+        >
+          <span onClick={(e) => { e.stopPropagation(); setExpanded(!expanded) }} style={{ cursor: 'pointer', userSelect: 'none' }}>
+            {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </span>
+          <span style={{
+            fontSize: 11, fontWeight: 600,
+            color: isArrayOfObjects ? '#3b82f6' : 'var(--text-muted)',
+          }}>
+            Array [{data.length}]
+          </span>
+          {isArrayOfObjects && !isSelected && (
+            <span style={{ fontSize: 10, color: '#3b82f6', marginLeft: 4 }}>← click to select</span>
+          )}
+          {isSelected && (
+            <span style={{ fontSize: 10, color: 'var(--accent)', fontWeight: 600, marginLeft: 4 }}>SELECTED</span>
+          )}
+        </div>
+        {expanded && data.length > 0 && (
+          <div style={{ paddingLeft: 16 }}>
+            {typeof data[0] === 'object' ? (
+              <JsonTreePicker data={data[0]} onSelectArray={onSelectArray} selectedPath={selectedPath} _path={_path + '[0]'} _depth={_depth + 1} />
+            ) : (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>
+                {JSON.stringify(data[0])}
+              </span>
+            )}
+            {data.length > 1 && <div style={{ fontSize: 10, color: 'var(--text-muted)', padding: '2px 0' }}>...{data.length - 1} more</div>}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  if (data && typeof data === 'object') {
+    return (
+      <div>
+        {Object.entries(data).map(([key, value]) => {
+          const childPath = _path ? `${_path}.${key}` : key
+          const isObj = value && typeof value === 'object'
+          return (
+            <div key={key} style={{ paddingLeft: _depth > 0 ? 16 : 0 }}>
+              <KeyNode
+                keyName={key}
+                value={value}
+                expanded={isObj && _depth < 2}
+                onToggle={null}
+              >
+                {isObj ? (
+                  <JsonTreePicker data={value} onSelectArray={onSelectArray} selectedPath={selectedPath} _path={childPath} _depth={_depth + 1} />
+                ) : null}
+              </KeyNode>
+              {!isObj && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '1px 0' }}>
+                  <span style={{ fontSize: 11, color: '#a78bfa', fontFamily: 'var(--mono)' }}>{key}</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>:</span>
+                  <span style={{ fontSize: 11, color: typeof value === 'string' ? '#86efac' : '#fcd34d', fontFamily: 'var(--mono)', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>
+                    {JSON.stringify(value)}
+                  </span>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+
+  return <span style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--text)' }}>{JSON.stringify(data)}</span>
+}
+
+function KeyNode({ keyName, value, children }) {
+  const [open, setOpen] = useState(true)
+  const isObj = value && typeof value === 'object'
+  if (!isObj) return null
+
+  return (
+    <div>
+      <div
+        onClick={() => setOpen(!open)}
+        style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', padding: '1px 0' }}
+      >
+        {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+        <span style={{ fontSize: 11, color: '#a78bfa', fontFamily: 'var(--mono)', fontWeight: 600 }}>{keyName}</span>
+      </div>
+      {open && <div style={{ paddingLeft: 8 }}>{children}</div>}
+    </div>
+  )
+}
+
+// ── Endpoint Explorer ──
+
+function EndpointExplorer({ endpoints, authSchemes, onSelect }) {
+  const [search, setSearch] = useState('')
+  const [selectedIdx, setSelectedIdx] = useState(null)
+
+  // Group by first tag
+  const groups = {}
+  endpoints.forEach((ep, i) => {
+    const tag = ep.tags?.[0] || 'General'
+    if (!groups[tag]) groups[tag] = []
+    groups[tag].push({ ...ep, _idx: i })
+  })
+
+  const filtered = search
+    ? endpoints.filter(ep =>
+        ep.path.toLowerCase().includes(search.toLowerCase()) ||
+        ep.summary?.toLowerCase().includes(search.toLowerCase()) ||
+        ep.operation_id?.toLowerCase().includes(search.toLowerCase())
+      ).map((ep, i) => ({ ...ep, _idx: i }))
+    : null
+
+  const METHOD_COLORS = {
+    GET: '#22c55e', POST: '#3b82f6', PUT: '#eab308', PATCH: '#f97316', DELETE: '#ef4444',
+  }
+
+  const selectedEp = selectedIdx !== null ? endpoints[selectedIdx] : null
+
+  return (
+    <div style={{ display: 'flex', gap: 12, maxHeight: 400 }}>
+      {/* Left: endpoint list */}
+      <div style={{ width: '50%', display: 'flex', flexDirection: 'column' }}>
+        <input
+          placeholder="Search endpoints..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          style={{ ...inputStyle, marginBottom: 6, fontSize: 12 }}
+        />
+        <div style={{ flex: 1, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+          {(filtered ? [{ tag: 'Results', items: filtered }] : Object.entries(groups).map(([tag, items]) => ({ tag, items }))).map(({ tag, items }) => (
+            <div key={tag}>
+              <div style={{ padding: '4px 8px', fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
+                {tag}
+              </div>
+              {items.map(ep => (
+                <div
+                  key={ep._idx}
+                  onClick={() => setSelectedIdx(ep._idx)}
+                  style={{
+                    padding: '6px 8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+                    borderBottom: '1px solid var(--border)',
+                    background: selectedIdx === ep._idx ? 'var(--accent)10' : 'transparent',
+                  }}
+                >
+                  <span style={{
+                    fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 3,
+                    color: METHOD_COLORS[ep.method] || '#999',
+                    border: `1px solid ${METHOD_COLORS[ep.method] || '#999'}30`,
+                    minWidth: 32, textAlign: 'center',
+                  }}>
+                    {ep.method}
+                  </span>
+                  <span style={{ fontSize: 11, fontFamily: 'var(--mono)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {ep.path}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Right: selected endpoint detail */}
+      <div style={{ width: '50%', overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+        {selectedEp ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div>
+              <span style={{ fontSize: 10, fontWeight: 700, color: METHOD_COLORS[selectedEp.method], marginRight: 6 }}>{selectedEp.method}</span>
+              <span style={{ fontSize: 12, fontFamily: 'var(--mono)', fontWeight: 600 }}>{selectedEp.path}</span>
+            </div>
+            {selectedEp.summary && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{selectedEp.summary}</div>}
+
+            {selectedEp.parameters?.length > 0 && (
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase' }}>Parameters</div>
+                <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                      <th style={{ textAlign: 'left', padding: 2, color: 'var(--text-muted)', fontSize: 10 }}>Name</th>
+                      <th style={{ textAlign: 'left', padding: 2, color: 'var(--text-muted)', fontSize: 10 }}>In</th>
+                      <th style={{ textAlign: 'left', padding: 2, color: 'var(--text-muted)', fontSize: 10 }}>Type</th>
+                      <th style={{ textAlign: 'left', padding: 2, color: 'var(--text-muted)', fontSize: 10 }}>Req</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedEp.parameters.map((p, i) => (
+                      <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                        <td style={{ padding: 2, fontFamily: 'var(--mono)' }}>{p.name}</td>
+                        <td style={{ padding: 2, color: 'var(--text-muted)' }}>{p.in}</td>
+                        <td style={{ padding: 2, color: 'var(--text-muted)' }}>{p.type}</td>
+                        <td style={{ padding: 2 }}>{p.required ? '✓' : ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {selectedEp.pagination_hints?.detected && (
+              <div style={{ fontSize: 11, padding: '4px 8px', background: '#3b82f608', borderRadius: 4, border: '1px solid #3b82f620' }}>
+                Pagination: <b>{selectedEp.pagination_hints.strategy}</b>
+                {selectedEp.pagination_hints.page_param && ` (${selectedEp.pagination_hints.page_param})`}
+              </div>
+            )}
+
+            <Button onClick={() => onSelect(selectedEp)} style={{ marginTop: 4, fontSize: 12 }}>
+              Use this endpoint <ArrowRight size={12} style={{ marginLeft: 4 }} />
+            </Button>
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 20, textAlign: 'center' }}>
+            Select an endpoint to see details
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function VendorLogo({ src, size = 24 }) {
+  if (!src || (!src.startsWith('/') && !src.startsWith('http'))) {
+    // Fallback: treat as emoji
+    return <span style={{ fontSize: size * 0.85, lineHeight: 1 }}>{src || '🔌'}</span>
+  }
+  return <img src={src} alt="" style={{ width: size, height: size, borderRadius: 4, objectFit: 'contain' }} />
+}
+
+function SecretToggle({ show, onToggle }) {
+  return (
+    <button
+      onClick={onToggle}
+      style={{
+        position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+        background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2,
+      }}
+    >
+      {show ? <EyeOff size={14} /> : <Eye size={14} />}
+    </button>
+  )
+}
+
+// ── Shared styles ──
+const inputStyle = {
+  width: '100%', padding: '8px 12px', background: 'var(--bg)', border: '1px solid var(--border)',
+  borderRadius: 8, color: 'var(--text)', fontSize: 13, boxSizing: 'border-box',
+}
+const selectStyle = { ...inputStyle, width: 'auto', minWidth: 80 }
+const labelStyle = { fontSize: 12, color: 'var(--text-muted)', marginBottom: 4, display: 'block' }
+const thStyle = { padding: '6px 8px', textAlign: 'left', fontSize: 11, color: 'var(--text-muted)', fontWeight: 600 }
+const tdStyle = { padding: '6px 8px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }
+const pillButtonStyle = { padding: '4px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer' }
+
+function Badge({ bg, text, label }) {
+  return <span style={{ background: bg, color: text, borderRadius: 4, padding: '2px 6px', fontSize: 10, fontWeight: 600 }}>{label}</span>
+}
+
+const DIRECTION_BADGE = {
+  pull: { bg: '#1e3a5f', text: '#7dd3fc' },
+  push: { bg: '#3b1f5e', text: '#d8b4fe' },
+}
+const ENTITY_BADGE = {
+  asset: { bg: '#1a2e05', text: '#86efac' },
+  finding: { bg: '#451a03', text: '#fcd34d' },
+  action: { bg: '#1e3a5f', text: '#7dd3fc' },
+}
+
+function getNestedValue(obj, path) {
+  if (!obj || !path) return null
+  return path.split('.').reduce((curr, key) => curr?.[key], obj)
+}

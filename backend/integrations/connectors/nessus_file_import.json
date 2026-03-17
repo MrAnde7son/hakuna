@@ -1,0 +1,81 @@
+{
+  "id": "nessus_file_import",
+  "name": "Nessus File Import",
+  "description": "Import findings from a .nessus scan file",
+  "logo": "/logos/vendors/nessus.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "file",
+  "transport_config": {
+    "source": "local",
+    "format": "nessus"
+  },
+  "records_path": null,
+  "credential_acquisition": null,
+  "default_field_map": [
+    {
+      "source": "plugin_id",
+      "target": "plugin_id"
+    },
+    {
+      "source": "plugin_name",
+      "target": "title"
+    },
+    {
+      "source": "host_name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "severity_label",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Critical": "critical",
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "None": "info",
+          "Info": "info"
+        }
+      }
+    },
+    {
+      "source": "cvss3_score",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "exploit_available",
+      "target": "exploit_available",
+      "transform": {
+        "type": "boolean",
+        "truthy": [
+          "true",
+          "True",
+          "1"
+        ]
+      }
+    },
+    {
+      "source": "solution",
+      "target": "solution"
+    },
+    {
+      "source": "synopsis",
+      "target": "description"
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "plugin_id",
+    "asset.ip_address"
+  ],
+  "params_schema": {}
+}

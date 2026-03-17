@@ -157,6 +157,11 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
     scan.raw_metadata = new_meta
     db.commit()
 
+    # Run full post-ingest pipeline when scan completes
+    if all_done:
+        from services.post_ingest import finalize_scan
+        finalize_scan(db, scan_id=scan.id, org_id=scan.org_id)
+
     return new_meta
 
 

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 
@@ -62,6 +63,30 @@ FINDING_UPDATE = """
 _router = TemplateRouter()
 
 
+def _parse_nuclei_stats(stderr_lines: list[str]) -> dict:
+    """Extract execution stats from Nuclei stderr output.
+
+    Nuclei prints lines like:
+      [INF] Templates: 12352 | ...
+      [INF] Total requests: 45210 | ...
+    """
+    stats: dict = {}
+    for line in stderr_lines:
+        # Templates loaded count
+        m = re.search(r"Templates:\s*(\d+)", line)
+        if m:
+            stats["templates_loaded"] = int(m.group(1))
+        # Total requests sent
+        m = re.search(r"Total requests:\s*(\d+)", line, re.IGNORECASE)
+        if m:
+            stats["requests_sent"] = int(m.group(1))
+        # Results found
+        m = re.search(r"Results found:\s*(\d+)", line, re.IGNORECASE)
+        if m:
+            stats["results_found"] = int(m.group(1))
+    return stats
+
+
 def _run_async(coro):
     loop = asyncio.new_event_loop()
     try:
@@ -80,7 +105,9 @@ def run_nuclei_scan(self, asset_id: str) -> dict:
         return {
             "asset_id": asset_id,
             "findings_emitted": 0,
-            "templates_run": 0,
+            "templates_matched": 0,
+            "templates_loaded": 0,
+            "requests_sent": 0,
             "duration_seconds": 0,
             "status": "error",
             "error": str(exc),
@@ -99,7 +126,9 @@ async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
             return {
                 "asset_id": asset_id,
                 "findings_emitted": 0,
-                "templates_run": 0,
+                "templates_matched": 0,
+                "templates_loaded": 0,
+                "requests_sent": 0,
                 "duration_seconds": time.monotonic() - start,
                 "status": "skipped",
                 "error": "Asset not found or not confirmed_alive",
@@ -125,8 +154,8 @@ async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
             "-jsonl",
             "-timeout", str(NUCLEI_TIMEOUT),
             "-rate-limit", str(NUCLEI_RATE_LIMIT),
-            "-silent",
             "-no-color",
+            "-stats",
         ]
 
         logger.info("nuclei cmd: %s", " ".join(cmd))
@@ -184,9 +213,17 @@ async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
             await stderr_task
 
             exit_code = proc.returncode
+            stderr_text = "\n".join(stderr_chunks)
+            nuclei_stats = _parse_nuclei_stats(stderr_chunks)
+            logger.info(
+                "nuclei finished for %s: exit=%d templates_loaded=%s requests=%s matched=%d",
+                asset_id, exit_code,
+                nuclei_stats.get("templates_loaded", "?"),
+                nuclei_stats.get("requests_sent", "?"),
+                len(templates_run),
+            )
             if exit_code != 0:
-                stderr_text = "\n".join(stderr_chunks)[:1000]
-                logger.warning("nuclei exited %d for %s: %s", exit_code, asset_id, stderr_text)
+                logger.warning("nuclei exited %d for %s: %s", exit_code, asset_id, stderr_text[:1000])
 
             status = "complete" if exit_code == 0 else "partial"
 
@@ -194,6 +231,7 @@ async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
             proc.kill()
             await proc.wait()
             logger.error("nuclei timed out for asset %s", asset_id)
+            nuclei_stats = _parse_nuclei_stats(stderr_chunks)
             status = "timeout"
 
             # Retry once on timeout
@@ -203,7 +241,9 @@ async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
         return {
             "asset_id": asset_id,
             "findings_emitted": findings_emitted,
-            "templates_run": len(templates_run),
+            "templates_matched": len(templates_run),
+            "templates_loaded": nuclei_stats.get("templates_loaded", 0),
+            "requests_sent": nuclei_stats.get("requests_sent", 0),
             "duration_seconds": round(time.monotonic() - start, 2),
             "status": status,
         }
@@ -319,7 +359,9 @@ def run_nuclei_adhoc(self, target: str, org_id: str | None = None) -> dict:
         return {
             "target": target,
             "findings_emitted": 0,
-            "templates_run": 0,
+            "templates_matched": 0,
+            "templates_loaded": 0,
+            "requests_sent": 0,
             "duration_seconds": 0,
             "status": "error",
             "error": str(exc),
@@ -331,14 +373,15 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict
     start = time.monotonic()
 
     # Build nuclei command — broad template selection for ad-hoc scans
+    # Note: -silent is omitted so stderr contains execution stats
     cmd = [
         NUCLEI_BIN,
         "-target", target,
         "-jsonl",
         "-timeout", str(NUCLEI_TIMEOUT),
         "-rate-limit", str(NUCLEI_RATE_LIMIT),
-        "-silent",
         "-no-color",
+        "-stats",
         "-severity", "info,low,medium,high,critical",
     ]
 
@@ -407,6 +450,14 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict
         await stderr_task
 
         exit_code = proc.returncode
+        nuclei_stats = _parse_nuclei_stats(stderr_chunks)
+        logger.info(
+            "nuclei adhoc finished for %s: exit=%d templates_loaded=%s requests=%s matched=%d",
+            target, exit_code,
+            nuclei_stats.get("templates_loaded", "?"),
+            nuclei_stats.get("requests_sent", "?"),
+            len(templates_run),
+        )
         if exit_code != 0:
             stderr_text = "\n".join(stderr_chunks)[:1000]
             logger.warning("nuclei adhoc exited %d for %s: %s", exit_code, target, stderr_text)
@@ -417,6 +468,7 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict
         proc.kill()
         await proc.wait()
         logger.error("nuclei adhoc timed out for target %s", target)
+        nuclei_stats = _parse_nuclei_stats(stderr_chunks)
         status = "timeout"
 
         if task.request.retries < task.max_retries:
@@ -425,7 +477,9 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict
     return {
         "target": target,
         "findings_emitted": findings_emitted,
-        "templates_run": len(templates_run),
+        "templates_matched": len(templates_run),
+        "templates_loaded": nuclei_stats.get("templates_loaded", 0),
+        "requests_sent": nuclei_stats.get("requests_sent", 0),
         "duration_seconds": round(time.monotonic() - start, 2),
         "status": status,
         "findings": findings,

@@ -23,7 +23,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import dagre from '@dagrejs/dagre'
 import {
-  Server, User, Users, Monitor, Database,
+  Server, User, Users, Monitor, Database, ShieldAlert,
   UserCheck, UserCog,
   ChevronDown, ChevronRight, Crosshair, Maximize2, Minimize2,
 } from 'lucide-react'
@@ -51,6 +51,7 @@ const EDGE_CFG = {
   writeable_share:     { color: '#2563eb', label: 'Writeable Share', dash: '4 3' },
   // Persistence & exploitation
   scheduled_task:      { color: '#e11d48', label: 'Scheduled Task' },
+  vulnerability:       { color: '#ef4444', label: 'Vulnerability', dash: '4 2' },
 }
 
 const SEV_COLOR = { critical: '#ef4444', high: '#f59e0b', medium: '#3b82f6', low: '#64748b' }
@@ -89,8 +90,8 @@ function layoutNodes(rawNodes, rawEdges) {
   g.setGraph({ rankdir, ranksep, nodesep, marginx: 24, marginy: 24, ranker: 'network-simplex' })
 
   rawNodes.forEach(n => {
-    const w = n.type === 'asset' ? 140 : 110
-    const h = n.type === 'asset' ? 110 : 90
+    const w = n.type === 'asset' ? 140 : n.type === 'vuln' ? 130 : 110
+    const h = n.type === 'asset' ? 110 : n.type === 'vuln' ? 100 : 90
     g.setNode(n.id, { width: w, height: h })
   })
 
@@ -215,6 +216,49 @@ function UserNode({ data }) {
   )
 }
 
+function VulnNode({ data }) {
+  const color = data.severity === 'critical' ? '#ef4444' : '#f59e0b'
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 80 }}>
+      <Handle type="target" position={Position.Left} style={{ ...handleStyle, top: CIRCLE_SIZE / 2 }} />
+      <Handle type="source" position={Position.Right} style={{ ...handleStyle, top: CIRCLE_SIZE / 2 }} />
+      {/* Circle */}
+      <div style={{
+        width: CIRCLE_SIZE, height: CIRCLE_SIZE, borderRadius: '50%',
+        background: color, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: `0 0 0 3px ${color}30, 0 2px 8px rgba(0,0,0,0.15)`,
+      }}>
+        <ShieldAlert size={20} color="#fff" strokeWidth={2} />
+      </div>
+      {/* Label */}
+      <div style={{ textAlign: 'center', lineHeight: 1.2 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-primary)', maxWidth: 130,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          title={data.label}>
+          {data.label}
+        </div>
+        {data.plugin_name && data.label !== data.plugin_name && (
+          <div style={{ fontSize: 9, color: 'var(--text-muted)', maxWidth: 130,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            title={data.plugin_name}>
+            {data.plugin_name}
+          </div>
+        )}
+      </div>
+      {/* Badges */}
+      <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'center' }}>
+        <NBadge bg={color + '18'} fg={color} border={color}>
+          {data.severity === 'critical' ? 'CRIT' : 'HIGH'}
+        </NBadge>
+        {data.is_kev && <NBadge bg="#7f1d1d18" fg="#b91c1c" border="#b91c1c">KEV</NBadge>}
+        {data.exploit_available && <NBadge bg="#dc262618" fg="#dc2626" border="#dc2626">Exploit</NBadge>}
+        {data.cvss != null && <NBadge bg="var(--bg-secondary)" fg="var(--text-secondary)" border="var(--border)">CVSS {data.cvss}</NBadge>}
+      </div>
+    </div>
+  )
+}
+
 function NBadge({ bg, fg, border, children }) {
   return (
     <span style={{ fontSize: 9, background: bg, color: fg,
@@ -225,7 +269,7 @@ function NBadge({ bg, fg, border, children }) {
   )
 }
 
-const nodeTypes = { asset: AssetNode, user: UserNode }
+const nodeTypes = { asset: AssetNode, user: UserNode, vuln: VulnNode }
 
 // Maps legend node entries to a predicate over node data
 const NODE_LEGEND = [
@@ -235,6 +279,7 @@ const NODE_LEGEND = [
   { Icon: UserCheck, color: 'var(--text-secondary)', bg: '#f8fafc', label: 'Local User',        match: n => n.type === 'user' && n.data.user_type === 'local_user' },
   { Icon: UserCog,   color: '#8b5cf6', bg: '#f5f3ff', label: 'Service Account',   match: n => n.type === 'user' && n.data.user_type === 'service_account' },
   { Icon: Monitor,   color: '#0ea5e9', bg: '#f0f9ff', label: 'Computer Account',  match: n => n.type === 'user' && n.data.user_type === 'computer_account' },
+  { Icon: ShieldAlert, color: '#ef4444', bg: '#fef2f2', label: 'Vulnerability',     match: n => n.type === 'vuln' },
 ]
 
 const EDGE_LEGEND = [
@@ -258,6 +303,8 @@ const EDGE_LEGEND = [
   { key: 'writeable_share',     color: '#2563eb', label: 'Writeable Share' },
   // Persistence
   { key: 'scheduled_task',      color: '#e11d48', label: 'Sched Task' },
+  // Vulnerabilities
+  { key: 'vulnerability',       color: '#ef4444', label: 'Vulnerability' },
 ]
 
 // ── Mini ReactFlow graph ──────────────────────────────────────────────────

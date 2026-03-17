@@ -1,0 +1,181 @@
+{
+  "id": "splunk_events",
+  "name": "Splunk \u2014 Search Results",
+  "description": "Pull security events and findings from Splunk search results",
+  "logo": "/logos/vendors/splunk.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "steps": [
+      {
+        "id": "create_search",
+        "method": "POST",
+        "path": "/services/search/jobs",
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Authorization": "Bearer {{credentials.token}}"
+        },
+        "body": {
+          "search": "{{params.search_query}}",
+          "output_mode": "json",
+          "earliest_time": "{{params.earliest_time}}",
+          "latest_time": "{{params.latest_time}}"
+        },
+        "extract": {
+          "sid": "sid"
+        }
+      },
+      {
+        "id": "poll_status",
+        "method": "GET",
+        "path": "/services/search/jobs/{{steps.create_search.sid}}",
+        "headers": {
+          "Authorization": "Bearer {{credentials.token}}"
+        },
+        "query_params": {
+          "output_mode": "json"
+        },
+        "poll": {
+          "interval_seconds": 3,
+          "timeout_seconds": 600,
+          "until": "response.entry[0].content.isDone == true"
+        }
+      },
+      {
+        "id": "get_results",
+        "method": "GET",
+        "path": "/services/search/jobs/{{steps.create_search.sid}}/results",
+        "headers": {
+          "Authorization": "Bearer {{credentials.token}}"
+        },
+        "query_params": {
+          "output_mode": "json",
+          "count": "1000",
+          "offset": "{{pagination.offset}}"
+        }
+      }
+    ],
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 1000,
+      "offset_param": "offset",
+      "total_field": "results_count"
+    }
+  },
+  "records_path": "results",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Splunk Management URL",
+      "placeholder": "https://splunk.yourcompany.com:8089"
+    },
+    "steps": [
+      {
+        "instruction": "Log into Splunk as an administrator"
+      },
+      {
+        "instruction": "Go to Settings \u2192 Tokens (or Settings \u2192 Users \u2192 your user \u2192 Edit Tokens)",
+        "deeplink_path": "/en-US/manager/launcher/authorization/tokens"
+      },
+      {
+        "instruction": "Click New Token, set an expiration, and click Create. Copy the token value.",
+        "capture": {
+          "field": "token",
+          "label": "Paste Bearer Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/services/authentication/current-context",
+      "headers": {
+        "Authorization": "Bearer {{token}}"
+      },
+      "query_params": {
+        "output_mode": "json"
+      },
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "connected_user": "entry[0].content.username"
+      },
+      "error_message": "Could not authenticate with Splunk. Check the token and management URL."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "source",
+      "target": "source_id"
+    },
+    {
+      "source": "search_name",
+      "target": "title"
+    },
+    {
+      "source": "dest",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "dest_ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low",
+          "informational": "info"
+        }
+      }
+    },
+    {
+      "source": "cve",
+      "target": "cve_id"
+    },
+    {
+      "source": "signature",
+      "target": "description"
+    },
+    {
+      "source": "vendor_product",
+      "target": "asset.product"
+    },
+    {
+      "source": "_time",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id",
+    "asset.ip_address"
+  ],
+  "params_schema": {
+    "search_query": {
+      "type": "string",
+      "required": true,
+      "description": "SPL search query (e.g. 'search index=vulnerabilities')"
+    },
+    "earliest_time": {
+      "type": "string",
+      "default": "-24h",
+      "description": "Earliest time for search window"
+    },
+    "latest_time": {
+      "type": "string",
+      "default": "now",
+      "description": "Latest time for search window"
+    }
+  }
+}

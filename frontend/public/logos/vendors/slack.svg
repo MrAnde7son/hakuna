@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <rect width="40" height="40" rx="8" fill="#2C1338"/>
+  <!-- Slack hashtag mark -->
+  <rect x="12" y="17" width="16" height="3" rx="1.5" fill="#E01E5A"/>
+  <rect x="12" y="22" width="16" height="3" rx="1.5" fill="#36C5F0"/>
+  <rect x="16" y="11" width="3" height="18" rx="1.5" fill="#2EB67D"/>
+  <rect x="22" y="11" width="3" height="18" rx="1.5" fill="#ECB22E"/>
+</svg>

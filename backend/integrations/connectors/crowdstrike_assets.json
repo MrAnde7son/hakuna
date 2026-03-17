@@ -1,0 +1,80 @@
+{
+  "id": "crowdstrike_assets",
+  "name": "CrowdStrike Falcon \u2014 Assets",
+  "description": "Pull device/asset inventory from CrowdStrike Falcon",
+  "logo": "/logos/vendors/crowdstrike.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.crowdstrike.com",
+    "method": "GET",
+    "path": "/devices/queries/devices/v1",
+    "headers": {},
+    "query_params": {
+      "limit": "100"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "total_field": "meta.pagination.total"
+    }
+  },
+  "records_path": "resources",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "authorization_url": "https://falcon.crowdstrike.com/oauth2/authorize",
+    "token_url": "https://api.crowdstrike.com/oauth2/token",
+    "client_id": "{{env.CROWDSTRIKE_CLIENT_ID}}",
+    "scopes": [
+      "devices:read"
+    ],
+    "pkce": false,
+    "popup": {
+      "width": 600,
+      "height": 700
+    },
+    "validation_request": {
+      "method": "GET",
+      "path": "/me/user-info/v1",
+      "success_extracts": {
+        "connected_user": "response.user.uid"
+      }
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "device_id",
+      "target": "source_id"
+    },
+    {
+      "source": "hostname",
+      "target": "hostname"
+    },
+    {
+      "source": "local_ip",
+      "target": "ip_address"
+    },
+    {
+      "source": "os_product_name",
+      "target": "os"
+    },
+    {
+      "source": "os_version",
+      "target": "os_version"
+    },
+    {
+      "source": "last_seen",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

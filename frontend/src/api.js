@@ -150,6 +150,11 @@ export const authUnassignCustomRole = (userId, roleId) =>
 // Scans
 export const getScans = () => request('/scans')
 export const deleteScan = (id) => request(`/scans/${id}`, { method: 'DELETE' })
+export const updateScanSchedule = (id, schedule) => request(`/scans/${id}/schedule`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ schedule }),
+})
 
 export const uploadScan = (file) => {
   const fd = new FormData()
@@ -787,3 +792,79 @@ export const rescanVmScan = (scanId) => request(`/vm/rescan/${scanId}`, { method
 export const getVmHealth = () => request('/vm/health').catch(() => null)
 
 export const getEasmAssets = () => request('/easm/assets')
+
+// ── Integration Builder API ──────────────────────────────
+
+const IB = '/integration-builder'
+
+export const getIntegrationSchema = (entity) => request(`${IB}/schema${entity ? '?entity=' + entity : ''}`)
+export const getConnectors = () => request(`${IB}/connectors`)
+export const getConnector = (id) => request(`${IB}/connectors/${id}`)
+export const getAcquisitionFlow = (id) => request(`${IB}/connectors/${id}/acquisition-flow`)
+export const validateCredentials = (connectorId, data) => request(`${IB}/connectors/${connectorId}/validate-credentials`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+export const createCredential = (data) => request(`${IB}/credentials`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+export const getCredentials = () => request(`${IB}/credentials`)
+export const deleteCredential = (id) => request(`${IB}/credentials/${id}`, { method: 'DELETE' })
+
+export const integrationConnect = (data) => request(`${IB}/connect`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+export const integrationPreview = (data) => request(`${IB}/preview`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+
+export const ibGetIntegrations = () => request(`${IB}/integrations`)
+export const ibCreateIntegration = (data) => request(`${IB}/integrations`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+export const ibGetIntegration = (id) => request(`${IB}/integrations/${id}`)
+export const ibUpdateIntegration = (id, data) => request(`${IB}/integrations/${id}`, {
+  method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+export const ibDeleteIntegration = (id) => request(`${IB}/integrations/${id}`, { method: 'DELETE' })
+export const ibEnableIntegration = (id) => request(`${IB}/integrations/${id}/enable`, { method: 'POST' })
+export const ibDisableIntegration = (id) => request(`${IB}/integrations/${id}/disable`, { method: 'POST' })
+export const ibRunIntegration = (id) => request(`${IB}/integrations/${id}/run`, { method: 'POST' })
+export const ibGetIntegrationRuns = (id) => request(`${IB}/integrations/${id}/runs`)
+export const ibGetIntegrationRun = (integrationId, runId) => request(`${IB}/integrations/${integrationId}/runs/${runId}`)
+
+// Discovery
+export const discoverApi = (url) => request(`${IB}/discovery/discover`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+})
+export const parseDocs = (data) => request(`${IB}/discovery/parse-docs`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+export const getCachedSpec = (hostname) => request(`${IB}/discovery/cache/${encodeURIComponent(hostname)}`)
+
+// OAuth
+export const oauthStart = (connectorId, data) => request(`${IB}/oauth/start/${connectorId}`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}),
+})
+export const refreshCredential = (id) => request(`${IB}/credentials/${id}/refresh`, { method: 'POST' })
+
+// Auto-provision
+export const provisionConnector = (connectorId, data) => request(`${IB}/connectors/${connectorId}/provision`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+
+// File upload
+export const uploadIntegrationFile = async (file) => {
+  const token = getStoredToken()
+  const orgContext = getOrgContext()
+  const formData = new FormData()
+  formData.append('file', file)
+  const headers = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  if (orgContext) headers['X-Org-Context'] = orgContext
+  const res = await fetch(`${BASE}${IB}/upload`, { method: 'POST', headers, body: formData })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'Upload failed')
+  }
+  return res.json()
+}

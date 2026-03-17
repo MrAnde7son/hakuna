@@ -1,0 +1,66 @@
+{
+  "id": "slack_alert",
+  "name": "Slack \u2014 Alert",
+  "description": "Push finding alerts to a Slack channel",
+  "logo": "/logos/vendors/slack.svg",
+  "direction": "push",
+  "entity": "action",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "",
+    "method": "POST",
+    "path": "{{credentials.webhook_url}}",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "text": "[{{finding.severity|upper}}] {{finding.title}} on {{asset.hostname}}",
+      "blocks": [
+        {
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": "*{{finding.title}}*\nSeverity: {{finding.severity|upper}} | CVSS: {{finding.cvss_score}}\nHost: {{asset.hostname}} ({{asset.ip_address}})\nCVE: {{finding.cve_id}}"
+          }
+        },
+        {
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": "*Solution:* {{finding.solution}}"
+          }
+        }
+      ]
+    }
+  },
+  "records_path": null,
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Go to your Slack workspace's Apps settings and create an Incoming Webhook"
+      },
+      {
+        "instruction": "Copy the Webhook URL",
+        "capture": {
+          "field": "webhook_url",
+          "label": "Paste Webhook URL",
+          "type": "password",
+          "auto_validate": false
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "POST",
+      "path": "{{webhook_url}}",
+      "body": {
+        "text": "Hakuna integration test \u2014 connection verified \u2713"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not reach Slack webhook. Check the URL."
+    }
+  },
+  "default_field_map": [],
+  "dedup_key": [],
+  "params_schema": {}
+}

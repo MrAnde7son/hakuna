@@ -152,7 +152,10 @@
       "Bash(open -a \"Docker Desktop\")",
       "Bash(open -a Docker)",
       "Bash(curl -s http://localhost:8001/api/v1/orgs)",
-      "Bash(python -c \"from services.easm import scan_domain, import_easm_assets_for_domain; from routes.easm_routes import router; print\\(''OK''\\)\")"
+      "Bash(python -c \"from services.easm import scan_domain, import_easm_assets_for_domain; from routes.easm_routes import router; print\\(''OK''\\)\")",
+      "Bash(ls /Users/itamar/Documents/Git/hakuna/frontend/src/components/*/)",
+      "Bash(grep -r \"os.environ\\\\|os.getenv\" /Users/itamar/Documents/Git/hakuna/backend/*.py /Users/itamar/Documents/Git/hakuna/backend/**/*.py)",
+      "Bash(docker exec:*)"
     ],
     "additionalDirectories": [
       "/Users/itamar/Documents/Git/hakuna"

@@ -1,0 +1,86 @@
+{
+  "id": "pagerduty_incident",
+  "name": "PagerDuty \u2014 Create Incident",
+  "description": "Push findings to PagerDuty as triggered incidents",
+  "logo": "/logos/vendors/pagerduty.svg",
+  "direction": "push",
+  "entity": "action",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "",
+    "method": "POST",
+    "path": "https://events.pagerduty.com/v2/enqueue",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "routing_key": "{{credentials.integration_key}}",
+      "event_action": "trigger",
+      "dedup_key": "hakuna-{{finding.source_id}}-{{asset.ip_address}}",
+      "payload": {
+        "summary": "[{{finding.severity|upper}}] {{finding.title}} on {{asset.hostname}}",
+        "source": "hakuna",
+        "severity": "{{finding.severity|pagerduty_severity}}",
+        "component": "{{asset.hostname}}",
+        "group": "{{asset.os}}",
+        "class": "vulnerability",
+        "custom_details": {
+          "cve_id": "{{finding.cve_id}}",
+          "cvss_score": "{{finding.cvss_score}}",
+          "ip_address": "{{asset.ip_address}}",
+          "solution": "{{finding.solution}}",
+          "description": "{{finding.description}}"
+        }
+      },
+      "links": [
+        {
+          "href": "{{params.hakuna_base_url}}/findings/{{finding.id}}",
+          "text": "View in Hakuna"
+        }
+      ]
+    }
+  },
+  "records_path": null,
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into PagerDuty and go to Services \u2192 select your service \u2192 Integrations tab"
+      },
+      {
+        "instruction": "Click Add Integration, select Events API v2, and click Add. Copy the Integration Key.",
+        "capture": {
+          "field": "integration_key",
+          "label": "Paste Integration Key here",
+          "type": "password",
+          "auto_validate": false
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "POST",
+      "path": "https://events.pagerduty.com/v2/enqueue",
+      "body": {
+        "routing_key": "{{integration_key}}",
+        "event_action": "trigger",
+        "dedup_key": "hakuna-test-validation",
+        "payload": {
+          "summary": "Hakuna integration test \u2014 connection verified",
+          "source": "hakuna",
+          "severity": "info"
+        }
+      },
+      "success_condition": "status == 202",
+      "error_message": "Could not send event to PagerDuty. Check the integration key."
+    }
+  },
+  "default_field_map": [],
+  "dedup_key": [],
+  "params_schema": {
+    "hakuna_base_url": {
+      "type": "string",
+      "required": false,
+      "description": "Base URL for Hakuna links in PagerDuty incidents"
+    }
+  }
+}

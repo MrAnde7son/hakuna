@@ -1,0 +1,173 @@
+{
+  "id": "tenable_sc_findings",
+  "name": "Tenable Security Center \u2014 Findings",
+  "description": "Pull vulnerability findings from Tenable Security Center",
+  "logo": "/logos/vendors/tenable.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "POST",
+    "path": "/rest/analysis",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-ApiKey": "accesskey={{credentials.access_key}};secretkey={{credentials.secret_key}}"
+    },
+    "body": {
+      "type": "vuln",
+      "query": {
+        "tool": "vulndetails",
+        "type": "vuln",
+        "startOffset": "{{params.start_offset}}",
+        "endOffset": "{{params.end_offset}}"
+      },
+      "sourceType": "cumulative",
+      "sortField": "severity",
+      "sortDir": "desc"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 1000,
+      "offset_param": "startOffset",
+      "total_field": "response.totalRecords"
+    }
+  },
+  "records_path": "response.results",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Your Tenable SC URL",
+      "placeholder": "https://sc.yourcompany.com"
+    },
+    "steps": [
+      {
+        "instruction": "Log into Tenable Security Center as an administrator",
+        "deeplink_path": null
+      },
+      {
+        "instruction": "Go to your username menu \u2192 API Keys",
+        "deeplink_path": "/users/edit#api-keys"
+      },
+      {
+        "instruction": "Click Generate. Copy the Access Key.",
+        "capture": {
+          "field": "access_key",
+          "label": "Paste Access Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the Secret Key.",
+        "capture": {
+          "field": "secret_key",
+          "label": "Paste Secret Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/rest/currentUser",
+      "auth_header": "X-ApiKey: accesskey={{access_key}};secretkey={{secret_key}}",
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "connected_user": "response.username"
+      },
+      "error_message": "Could not authenticate. Check both keys and try again."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "pluginID",
+      "target": "plugin_id"
+    },
+    {
+      "source": "pluginName",
+      "target": "title"
+    },
+    {
+      "source": "netbiosName",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "4": "critical",
+          "3": "high",
+          "2": "medium",
+          "1": "low",
+          "0": "info"
+        }
+      }
+    },
+    {
+      "source": "cve[0]",
+      "target": "cve_id"
+    },
+    {
+      "source": "baseScore",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "exploitAvailable",
+      "target": "exploit_available",
+      "transform": {
+        "type": "boolean",
+        "truthy": [
+          "Yes",
+          "yes",
+          "true",
+          "1"
+        ]
+      }
+    },
+    {
+      "source": "solution",
+      "target": "solution"
+    },
+    {
+      "source": "firstSeen",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "lastSeen",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id",
+    "asset.ip_address"
+  ],
+  "params_schema": {
+    "start_offset": {
+      "type": "integer",
+      "default": 0,
+      "description": "Starting record offset"
+    },
+    "end_offset": {
+      "type": "integer",
+      "default": 1000,
+      "description": "Ending record offset"
+    }
+  }
+}
