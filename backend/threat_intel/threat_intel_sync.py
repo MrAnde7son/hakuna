@@ -14,7 +14,7 @@ import re
 import xml.etree.ElementTree as ET
 from models.threat_intel_models import (
     ThreatCVE, ThreatGroup, TTP, ThreatGroupTTP, CisaAdvisory,
-    CWEEntry, ExploitReference, SSVCDecision, GreyNoiseTag, MSRCPatch,
+    CWEEntry, ExploitReference, SSVCDecision, MSRCPatch,
 )
 from models.models import Finding
 
@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 _MITRE_BUNDLE_CACHE = None  # module-level cache to avoid re-fetching the large STIX bundle
 _SSL_CONTEXT = None          # cached SSL context
+_USER_AGENT = "Mozilla/5.0 (compatible; Hakuna/1.0; +https://github.com/MrAnde7son/hakuna)"
 
 
 def _get_ssl_context() -> ssl.SSLContext:
@@ -1414,12 +1415,12 @@ _EXPLOITDB_CSV_URL = (
 )
 
 
-def _fetch_json(url: str) -> Optional[dict]:
+def _fetch_json(url: str, timeout: int = 180) -> Optional[dict]:
     """Fetch JSON from a URL, return None on failure."""
     ctx = _get_ssl_context()
-    req = urllib.request.Request(url, headers={"User-Agent": "nessus-remediation/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
-        with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
+        with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8", errors="replace"))
     except Exception as exc:
         logger.warning("Failed to fetch %s: %s", url, exc)
@@ -1429,7 +1430,7 @@ def _fetch_json(url: str) -> Optional[dict]:
 def _fetch_text(url: str) -> Optional[str]:
     """Fetch text content from a URL, return None on failure."""
     ctx = _get_ssl_context()
-    req = urllib.request.Request(url, headers={"User-Agent": "nessus-remediation/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=120) as resp:
             return resp.read().decode("utf-8", errors="replace")
@@ -1647,76 +1648,192 @@ def _update_exploit_counts(db):
 # CISA SSVC (Vulnrichment) sync
 # ─────────────────────────────────────────────────────────────────────────────
 
-_VULNRICHMENT_URL = (
-    "https://raw.githubusercontent.com/cisagov/vulnrichment/develop/data/cisa-ssvc-decisions.json"
+_VULNRICHMENT_ZIP_URL = (
+    "https://github.com/cisagov/vulnrichment/archive/refs/heads/develop.zip"
 )
+
+
+# CISA SSVC v2.0.3 decision tree lookup.
+# Maps (Exploitation, Automatable, Technical Impact) → decision.
+# See https://www.cisa.gov/ssvc
+_SSVC_DECISION_TREE = {
+    # Exploitation: active
+    ("active", "yes", "total"):   "Act",
+    ("active", "yes", "partial"): "Act",
+    ("active", "no",  "total"):   "Act",
+    ("active", "no",  "partial"): "Attend",
+    # Exploitation: poc
+    ("poc", "yes", "total"):   "Attend",
+    ("poc", "yes", "partial"): "Attend",
+    ("poc", "no",  "total"):   "Track*",
+    ("poc", "no",  "partial"): "Track*",
+    # Exploitation: none
+    ("none", "yes", "total"):   "Track*",
+    ("none", "yes", "partial"): "Track",
+    ("none", "no",  "total"):   "Track",
+    ("none", "no",  "partial"): "Track",
+}
+
+
+def _derive_ssvc_decision(exploitation: str, automatable: str, technical_impact: str) -> str:
+    """Derive the SSVC decision from the three decision point values."""
+    key = (exploitation.lower().strip(), automatable.lower().strip(), technical_impact.lower().strip())
+    return _SSVC_DECISION_TREE.get(key, "")
+
+
+def _parse_ssvc_from_cve_json(cve_data: dict) -> Optional[dict]:
+    """
+    Extract SSVC decision from a single vulnrichment CVE JSON file.
+    The content.options[] format is: [{"Exploitation": "none"}, {"Automatable": "yes"}, {"Technical Impact": "total"}]
+    The decision (Act/Attend/Track*/Track) is derived from the SSVC v2.0.3 decision tree.
+    """
+    # The CVE ID is in the top-level cveMetadata or at root
+    cve_metadata = cve_data.get("cveMetadata", {})
+    cve_id = cve_metadata.get("cveId", cve_data.get("cveId", ""))
+    if not cve_id or not cve_id.startswith("CVE-"):
+        return None
+
+    # SSVC data is in containers.adp[] entries from CISA
+    containers = cve_data.get("containers", {})
+    adp_list = containers.get("adp", [])
+    if not isinstance(adp_list, list):
+        adp_list = [adp_list]
+
+    for adp in adp_list:
+        if not isinstance(adp, dict):
+            continue
+        provider = adp.get("providerMetadata", {}).get("shortName", "")
+        if provider.upper() not in ("CISA-ADP", "CISA", ""):
+            continue
+
+        metrics = adp.get("metrics", [])
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            other = metric.get("other", {})
+            if not isinstance(other, dict):
+                continue
+            if other.get("type", "").lower() != "ssvc":
+                continue
+
+            content = other.get("content", {})
+            options = content.get("options", [])
+            exploitation_val = ""
+            automatable_val = ""
+            tech_impact_val = ""
+            timestamp = content.get("timestamp", adp.get("dateUpdated", ""))
+
+            # Parse options: each is a single-key dict like {"Exploitation": "none"}
+            for opt in options:
+                if not isinstance(opt, dict):
+                    continue
+                for key, value in opt.items():
+                    key_lower = key.lower().replace(" ", "").replace("_", "")
+                    if key_lower == "exploitation":
+                        exploitation_val = value
+                    elif key_lower == "automatable":
+                        automatable_val = value
+                    elif key_lower in ("technicalimpact", "impact"):
+                        tech_impact_val = value
+
+            if not exploitation_val or not automatable_val or not tech_impact_val:
+                continue
+
+            decision_val = _derive_ssvc_decision(exploitation_val, automatable_val, tech_impact_val)
+            if not decision_val:
+                continue
+
+            return {
+                "cve_id": cve_id,
+                "decision": decision_val,
+                "exploitation": exploitation_val,
+                "automatable": automatable_val,
+                "technical_impact": tech_impact_val,
+                "timestamp": timestamp,
+            }
+
+    return None
 
 
 def sync_ssvc_decisions_to_db(db) -> dict:
     """
-    Fetch CISA SSVC decisions from the vulnrichment repository and upsert into DB.
+    Download the CISA vulnrichment repository and extract SSVC decisions
+    from per-CVE JSON files.
     """
-    logger.info("SSVC sync: fetching CISA vulnrichment decisions...")
-    data = _fetch_json(_VULNRICHMENT_URL)
-    if not data:
-        # Try alternate path structure
-        alt_url = "https://raw.githubusercontent.com/cisagov/vulnrichment/develop/data/ssvc-decisions.json"
-        data = _fetch_json(alt_url)
-    if not data:
+    import zipfile
+    import io
+
+    logger.info("SSVC sync: downloading CISA vulnrichment repository...")
+    ctx = _get_ssl_context()
+    req = urllib.request.Request(_VULNRICHMENT_ZIP_URL, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=300) as resp:
+            zip_bytes = resp.read()
+    except Exception as exc:
+        logger.warning("SSVC sync: failed to download vulnrichment repo: %s", exc)
         return {"added": 0, "updated": 0}
 
-    decisions = data if isinstance(data, list) else data.get("decisions", data.get("data", []))
-    if not isinstance(decisions, list):
-        logger.warning("SSVC sync: unexpected data format")
+    logger.info("SSVC sync: downloaded %d bytes, extracting...", len(zip_bytes))
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except Exception as exc:
+        logger.warning("SSVC sync: failed to open zip: %s", exc)
         return {"added": 0, "updated": 0}
 
     added = 0
     updated = 0
+    parsed = 0
 
-    for entry in decisions:
-        cve_id = entry.get("cveId") or entry.get("cve_id") or entry.get("id", "")
-        if not cve_id.startswith("CVE-"):
+    for name in zf.namelist():
+        # Only process CVE JSON files (e.g. vulnrichment-develop/2024/0xxx/CVE-2024-0001.json)
+        if not name.endswith(".json") or "/CVE-" not in name:
             continue
 
-        # Parse SSVC decision tree values
-        ssvc = entry.get("ssvcDecision") or entry.get("decision") or {}
-        if isinstance(ssvc, str):
-            decision_val = ssvc
-            exploitation_val = entry.get("exploitation", "")
-            automatable_val = entry.get("automatable", "")
-            tech_impact_val = entry.get("technicalImpact", "")
-        else:
-            decision_val = ssvc.get("decision", ssvc.get("action", ""))
-            exploitation_val = ssvc.get("exploitation", "")
-            automatable_val = ssvc.get("automatable", "")
-            tech_impact_val = ssvc.get("technicalImpact", ssvc.get("technical_impact", ""))
-
-        if not decision_val:
+        try:
+            raw = zf.read(name)
+            cve_data = json.loads(raw.decode("utf-8", errors="replace"))
+        except Exception:
             continue
+
+        result = _parse_ssvc_from_cve_json(cve_data)
+        if not result:
+            continue
+
+        parsed += 1
+        cve_id = result["cve_id"]
 
         existing = db.query(SSVCDecision).filter(SSVCDecision.cve_id == cve_id).first()
         if existing:
-            existing.decision = decision_val
-            existing.exploitation = exploitation_val
-            existing.automatable = automatable_val
-            existing.technical_impact = tech_impact_val
-            existing.timestamp = entry.get("timestamp", entry.get("dateUpdated", ""))
-            existing.raw_data = entry
+            existing.decision = result["decision"]
+            existing.exploitation = result["exploitation"]
+            existing.automatable = result["automatable"]
+            existing.technical_impact = result["technical_impact"]
+            existing.timestamp = result["timestamp"]
             existing.updated_at = datetime.utcnow()
             updated += 1
         else:
             record = SSVCDecision(
                 cve_id=cve_id,
-                decision=decision_val,
-                exploitation=exploitation_val,
-                automatable=automatable_val,
-                technical_impact=tech_impact_val,
+                decision=result["decision"],
+                exploitation=result["exploitation"],
+                automatable=result["automatable"],
+                technical_impact=result["technical_impact"],
                 provider="CISA",
-                timestamp=entry.get("timestamp", entry.get("dateUpdated", "")),
-                raw_data=entry,
+                timestamp=result["timestamp"],
             )
             db.add(record)
             added += 1
+
+        # Commit in batches
+        if (added + updated) % 500 == 0:
+            try:
+                db.commit()
+            except Exception as exc:
+                logger.warning("SSVC batch commit failed: %s", exc)
+                db.rollback()
+
+    zf.close()
 
     try:
         db.commit()
@@ -1738,7 +1855,7 @@ def sync_ssvc_decisions_to_db(db) -> dict:
         logger.warning("SSVC → ThreatCVE update commit failed: %s", exc)
         db.rollback()
 
-    logger.info("SSVC sync: %d added, %d updated", added, updated)
+    logger.info("SSVC sync: %d parsed, %d added, %d updated", parsed, added, updated)
     return {"added": added, "updated": updated}
 
 
@@ -1778,7 +1895,7 @@ def sync_cwe_catalog_to_db(db) -> dict:
 
     logger.info("CWE sync: fetching catalog from MITRE...")
     ctx = _get_ssl_context()
-    req = urllib.request.Request(_CWE_URL, headers={"User-Agent": "nessus-remediation/1.0"})
+    req = urllib.request.Request(_CWE_URL, headers={"User-Agent": _USER_AGENT})
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=120) as resp:
             zip_bytes = resp.read()
@@ -1988,135 +2105,6 @@ def _resolve_cwe_names(db):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GreyNoise community API sync
-# ─────────────────────────────────────────────────────────────────────────────
-
-_GREYNOISE_COMMUNITY_URL = "https://api.greynoise.io/v3/community/"
-
-
-def sync_greynoise_cves_to_db(db, api_key: str = None) -> dict:
-    """
-    Query GreyNoise for CVEs found in scan findings to check for active exploitation.
-    Uses the community API (free tier) — queries by CVE ID.
-    If an API key is provided, it's passed as a header.
-    """
-    import time
-
-    logger.info("GreyNoise sync: checking CVEs for active exploitation...")
-
-    # Collect unique CVE IDs from findings
-    all_cve_ids = set()
-    for (cve_list,) in db.query(Finding.cves).filter(Finding.cves.isnot(None)).all():
-        if cve_list:
-            all_cve_ids.update(c.strip() for c in cve_list if c and c.strip().startswith("CVE-"))
-
-    if not all_cve_ids:
-        return {"checked": 0, "seen": 0}
-
-    # Also include CVEs from ThreatCVE that are in KEV or high EPSS (prioritize these)
-    high_priority_cves = set()
-    for (cid,) in db.query(ThreatCVE.cve_id).filter(
-        (ThreatCVE.in_kev == True) | (ThreatCVE.epss_score >= 0.3)
-    ).all():
-        high_priority_cves.add(cid)
-
-    # Prioritize: KEV/high-EPSS first, then the rest
-    cve_list = sorted(high_priority_cves & all_cve_ids) + sorted(all_cve_ids - high_priority_cves)
-
-    # GreyNoise community API: limited queries, so cap at 200
-    cve_list = cve_list[:200]
-
-    ctx = _get_ssl_context()
-    headers = {"User-Agent": "nessus-remediation/1.0", "Accept": "application/json"}
-    if api_key:
-        headers["key"] = api_key
-    elif os.environ.get("GREYNOISE_API_KEY"):
-        headers["key"] = os.environ["GREYNOISE_API_KEY"]
-
-    checked = 0
-    seen = 0
-
-    for cve_id in cve_list:
-        url = f"{_GREYNOISE_COMMUNITY_URL}{cve_id}"
-        req = urllib.request.Request(url, headers=headers)
-        try:
-            with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
-                result = json.loads(resp.read().decode("utf-8", errors="replace"))
-        except urllib.error.HTTPError as exc:
-            if exc.code == 429:
-                logger.info("GreyNoise rate limit hit, stopping after %d checks", checked)
-                break
-            if exc.code == 404:
-                # CVE not seen by GreyNoise — record it
-                result = {"noise": False, "riot": False, "seen": False}
-            else:
-                continue
-        except Exception:
-            continue
-
-        is_seen = result.get("noise", False) or result.get("seen", False)
-        classification = result.get("classification", "unknown")
-        name = result.get("name", "")
-        link = result.get("link", "")
-        last_seen_val = result.get("last_seen", "")
-
-        existing = db.query(GreyNoiseTag).filter(GreyNoiseTag.cve_id == cve_id).first()
-        if existing:
-            existing.seen = is_seen
-            existing.noise = result.get("noise", False)
-            existing.riot = result.get("riot", False)
-            existing.classification = classification
-            existing.name = name
-            existing.link = link
-            existing.last_seen = last_seen_val
-            existing.raw_data = result
-            existing.updated_at = datetime.utcnow()
-        else:
-            record = GreyNoiseTag(
-                cve_id=cve_id,
-                seen=is_seen,
-                noise=result.get("noise", False),
-                riot=result.get("riot", False),
-                classification=classification,
-                name=name,
-                link=link,
-                last_seen=last_seen_val,
-                raw_data=result,
-            )
-            db.add(record)
-
-        if is_seen:
-            seen += 1
-
-            # Update ThreatCVE
-            tc = db.query(ThreatCVE).filter(ThreatCVE.cve_id == cve_id).first()
-            if tc:
-                tc.greynoise_seen = True
-                tc.greynoise_classification = classification
-
-        checked += 1
-
-        # Rate limit: community API allows ~1 req/s
-        time.sleep(1.0)
-
-        if checked % 50 == 0:
-            try:
-                db.commit()
-            except Exception as exc:
-                logger.warning("GreyNoise batch commit failed: %s", exc)
-                db.rollback()
-
-    try:
-        db.commit()
-    except Exception as exc:
-        logger.warning("GreyNoise final commit failed: %s", exc)
-        db.rollback()
-
-    logger.info("GreyNoise sync: %d checked, %d seen in wild", checked, seen)
-    return {"checked": checked, "seen": seen}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # MSRC Patch Tuesday sync
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2128,7 +2116,7 @@ def _fetch_msrc_document(doc_id: str) -> Optional[dict]:
     url = f"https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/{doc_id}"
     ctx = _get_ssl_context()
     req = urllib.request.Request(url, headers={
-        "User-Agent": "nessus-remediation/1.0",
+        "User-Agent": _USER_AGENT,
         "Accept": "application/json",
     })
     try:
@@ -2149,7 +2137,7 @@ def sync_msrc_patches_to_db(db, months: int = 3) -> dict:
     logger.info("MSRC sync: fetching Patch Tuesday updates index...")
     ctx = _get_ssl_context()
     req = urllib.request.Request(_MSRC_UPDATES_URL, headers={
-        "User-Agent": "nessus-remediation/1.0",
+        "User-Agent": _USER_AGENT,
         "Accept": "application/json",
     })
     try:
@@ -2170,6 +2158,7 @@ def sync_msrc_patches_to_db(db, months: int = 3) -> dict:
 
     added = 0
     documents_processed = 0
+    seen_keys = set()  # Track (cve_id, kb_id, product_id) to avoid in-session duplicates
 
     for doc_meta in recent_docs:
         doc_id = doc_meta.get("ID", "")
@@ -2183,7 +2172,32 @@ def sync_msrc_patches_to_db(db, months: int = 3) -> dict:
         documents_processed += 1
         release_date = doc_meta.get("InitialReleaseDate", "")[:10]
 
-        # Parse Vulnerability entries
+        # Build product name lookup from ProductTree (recursive traversal)
+        product_name_map = {}
+        product_tree = cvrf.get("ProductTree", {})
+
+        def _walk_branches(branches):
+            for branch in branches:
+                if not isinstance(branch, dict):
+                    continue
+                # Leaf nodes with ProductID
+                pid = branch.get("ProductID")
+                if pid:
+                    product_name_map[pid] = branch.get("Value", "")
+                # Recurse into nested Items/Branch
+                for key in ("Items", "Branch"):
+                    children = branch.get(key, [])
+                    if isinstance(children, list):
+                        _walk_branches(children)
+
+        _walk_branches(product_tree.get("Branch", []))
+        # Also check FullProductName at top level
+        for fpn in product_tree.get("FullProductName", []):
+            if isinstance(fpn, dict) and fpn.get("ProductID"):
+                product_name_map[fpn["ProductID"]] = fpn.get("Value", "")
+
+        # Build per-product severity/impact lookup from Threats
+        # Threats can be scoped to specific ProductIDs
         vulns = cvrf.get("Vulnerability", [])
         for vuln in vulns:
             cve_id = vuln.get("CVE", "")
@@ -2191,6 +2205,30 @@ def sync_msrc_patches_to_db(db, months: int = 3) -> dict:
                 continue
 
             title = vuln.get("Title", {}).get("Value", "")
+
+            # Pre-build severity/impact maps: product_id -> value
+            severity_map = {}  # product_id -> severity
+            impact_map = {}    # product_id -> impact
+            default_severity = ""
+            default_impact = ""
+            for threat in vuln.get("Threats", []):
+                ttype = threat.get("Type")
+                desc_val = threat.get("Description", {}).get("Value", "")
+                threat_product_ids = threat.get("ProductID", [])
+                if isinstance(threat_product_ids, str):
+                    threat_product_ids = [threat_product_ids]
+                if ttype == 3:  # Severity
+                    if threat_product_ids:
+                        for tpid in threat_product_ids:
+                            severity_map[tpid] = desc_val
+                    else:
+                        default_severity = desc_val
+                elif ttype == 0:  # Impact
+                    if threat_product_ids:
+                        for tpid in threat_product_ids:
+                            impact_map[tpid] = desc_val
+                    else:
+                        default_impact = desc_val
 
             # Extract KB articles from Remediations
             remediations = vuln.get("Remediations", [])
@@ -2207,30 +2245,23 @@ def sync_msrc_patches_to_db(db, months: int = 3) -> dict:
                 if product_ids:
                     product_id = product_ids[0] if isinstance(product_ids, list) else str(product_ids)
 
-                # Resolve product name from ProductTree
-                product_name = ""
-                product_tree = cvrf.get("ProductTree", {})
-                for branch in product_tree.get("Branch", []):
-                    for item in branch.get("Items", []):
-                        if isinstance(item, dict) and item.get("ProductID") == product_id:
-                            product_name = item.get("Value", "")
-                            break
+                product_name = product_name_map.get(product_id, "")
 
                 url = rem.get("URL", "")
                 supercedence = rem.get("Supercedence", "")
                 restart = rem.get("RestartRequired", {}).get("Value", "")
 
-                # Determine severity and impact from Threats
-                severity = ""
-                impact = ""
-                for threat in vuln.get("Threats", []):
-                    if threat.get("Type") == 3:  # Severity
-                        severity = threat.get("Description", {}).get("Value", "")
-                    elif threat.get("Type") == 0:  # Impact
-                        impact = threat.get("Description", {}).get("Value", "")
+                # Use per-product severity/impact, falling back to defaults
+                severity = severity_map.get(product_id, default_severity)
+                impact = impact_map.get(product_id, default_impact)
 
                 if not kb_id:
                     continue
+
+                dedup_key = (cve_id, kb_id, product_id)
+                if dedup_key in seen_keys:
+                    continue
+                seen_keys.add(dedup_key)
 
                 existing = (
                     db.query(MSRCPatch)
@@ -2309,7 +2340,7 @@ def _update_msrc_kb_ids(db):
 def enrich_findings_extended(db, scan_id: int = None) -> dict:
     """
     Enrich findings with new intel data: exploit_count, exploit_maturity_level,
-    ssvc_decision, greynoise_seen. Called after the core enrichment.
+    ssvc_decision. Called after the core enrichment.
     """
     all_threat_cves = db.query(ThreatCVE).all()
     if not all_threat_cves:
@@ -2331,7 +2362,6 @@ def enrich_findings_extended(db, scan_id: int = None) -> dict:
         best_exploit_count = 0
         best_exploit_maturity = None
         best_ssvc = None
-        greynoise = False
 
         maturity_order = {"weaponized": 4, "functional": 3, "poc": 2, "none": 1}
         ssvc_order = {"Act": 4, "Attend": 3, "Track*": 2, "Track": 1}
@@ -2352,9 +2382,6 @@ def enrich_findings_extended(db, scan_id: int = None) -> dict:
                 if best_ssvc is None or ssvc_order.get(tc.ssvc_decision, 0) > ssvc_order.get(best_ssvc, 0):
                     best_ssvc = tc.ssvc_decision
 
-            if tc.greynoise_seen:
-                greynoise = True
-
         changed = False
         if best_exploit_count and f.exploit_count != best_exploit_count:
             f.exploit_count = best_exploit_count
@@ -2364,9 +2391,6 @@ def enrich_findings_extended(db, scan_id: int = None) -> dict:
             changed = True
         if best_ssvc and f.ssvc_decision != best_ssvc:
             f.ssvc_decision = best_ssvc
-            changed = True
-        if greynoise and not f.greynoise_seen:
-            f.greynoise_seen = True
             changed = True
 
         if changed:

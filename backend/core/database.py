@@ -47,7 +47,7 @@ def init_db():
         ThreatGroup, TTP, ThreatGroupTTP,
         ThreatCVE, ThreatCampaign, IntelRemediationCampaign, CisaAdvisory,
         ProductLifecycle,
-        CWEEntry, ExploitReference, SSVCDecision, GreyNoiseTag, MSRCPatch,
+        CWEEntry, ExploitReference, SSVCDecision, MSRCPatch,
     )
     Base.metadata.create_all(bind=engine)
     _migrate_add_columns()

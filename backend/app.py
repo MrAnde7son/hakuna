@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, or_
+from sqlalchemy import func, desc, distinct, or_
 
 from core.database import get_db, init_db
 from models.models import (
@@ -63,6 +63,7 @@ from routes.agent_routes import router as agent_router
 from routes.benchmark_routes import router as benchmark_router
 from routes.easm_routes import router as easm_router
 from routes.sbom_routes import router as sbom_router
+from routes.vm_routes import router as vm_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -266,6 +267,7 @@ app.include_router(agent_router)
 app.include_router(benchmark_router)
 app.include_router(easm_router)
 app.include_router(sbom_router)
+app.include_router(vm_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
@@ -1225,8 +1227,12 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
     scans = q.order_by(desc(Scan.created_at)).all()
     result = []
     for s in scans:
-        asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == s.id).scalar()
         finding_count = db.query(func.count(Finding.id)).filter(Finding.scan_id == s.id).scalar()
+        if s.source_type == "vm_scanner":
+            # VM scan findings reference assets from other scans; count distinct assets via findings
+            asset_count = db.query(func.count(distinct(Finding.asset_id))).filter(Finding.scan_id == s.id).scalar()
+        else:
+            asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == s.id).scalar()
         result.append({
             "id": s.id,
             "filename": s.filename,

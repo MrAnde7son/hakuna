@@ -17,6 +17,10 @@ def _load_routing_table() -> dict:
     if _routing_table is not None:
         return _routing_table
     path = os.path.join(TEMPLATES_DIR, "routing_table.json")
+    if not os.path.exists(path):
+        logger.warning("Routing table not found at %s — using empty defaults", path)
+        _routing_table = {"cpe_map": {}, "tech_map": {}, "port_gates": {}}
+        return _routing_table
     with open(path) as f:
         _routing_table = json.load(f)
     return _routing_table

@@ -715,10 +715,6 @@ export default function FindingExplorer() {
       }
     },
     {
-      key: 'greynoise_seen', label: 'GreyNoise',
-      render: (v) => v ? <Pill label="Active" color="#ea580c" /> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
-    },
-    {
       key: 'exploit_count', label: 'Exploits',
       render: (v) => v > 0 ? <span style={{ fontWeight: 700, color: '#ea580c', fontSize: 12 }}>{v}</span> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
     },
@@ -733,7 +729,7 @@ export default function FindingExplorer() {
   ]
 
   // Filter columns by visibility (all visible by default, KEV/EPSS/Ransomware/Trending hidden by default)
-  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen', 'vulnerability_state', 'vpr_score', 'risk_factor', 'port', 'workflow_status', 'workflow_assigned_to', 'exploit_maturity', 'ssvc_decision', 'greynoise_seen', 'exploit_count', 'exploit_maturity_level'])
+  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen', 'vulnerability_state', 'vpr_score', 'risk_factor', 'port', 'workflow_status', 'workflow_assigned_to', 'exploit_maturity', 'ssvc_decision', 'exploit_count', 'exploit_maturity_level'])
   const visibleColumns = allColumns.filter(c =>
     c.key === '_select' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
   )

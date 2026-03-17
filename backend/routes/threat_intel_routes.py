@@ -2,7 +2,6 @@
 Threat Intelligence Center — FastAPI routes
 Prefix: /api/threat-intel
 """
-import os
 import logging
 from datetime import datetime
 from typing import Optional, List
@@ -17,7 +16,7 @@ from models.models import Finding, Asset, Scan
 from models.threat_intel_models import (
     ThreatGroup, TTP, ThreatGroupTTP,
     ThreatCVE, ThreatCampaign, IntelRemediationCampaign, CisaAdvisory,
-    ProductLifecycle, CWEEntry, ExploitReference, SSVCDecision, GreyNoiseTag,
+    ProductLifecycle, CWEEntry, ExploitReference, SSVCDecision,
     MSRCPatch,
 )
 import threat_intel.threat_intel_sync as sync_engine
@@ -114,7 +113,6 @@ def get_stats(db: Session = Depends(get_db)):
     exploit_ref_count = db.query(func.count(func.distinct(ExploitReference.cve_id))).scalar() or 0
     ssvc_count = db.query(func.count(SSVCDecision.id)).scalar() or 0
     ssvc_act_count = db.query(func.count(SSVCDecision.id)).filter(SSVCDecision.decision == "Act").scalar() or 0
-    greynoise_seen_count = db.query(func.count(GreyNoiseTag.id)).filter(GreyNoiseTag.seen == True).scalar() or 0
     cwe_count = db.query(func.count(CWEEntry.id)).scalar() or 0
     msrc_patch_count = db.query(func.count(func.distinct(MSRCPatch.cve_id))).scalar() or 0
 
@@ -132,7 +130,6 @@ def get_stats(db: Session = Depends(get_db)):
         "exploit_ref_cves": exploit_ref_count,
         "ssvc_decisions": ssvc_count,
         "ssvc_act_count": ssvc_act_count,
-        "greynoise_seen": greynoise_seen_count,
         "cwe_entries": cwe_count,
         "msrc_patched_cves": msrc_patch_count,
     }
@@ -197,7 +194,6 @@ def get_cves(
     in_scan: Optional[str] = None,   # scan_id or "all" — only CVEs found in findings
     has_exploit: bool = False,       # Only CVEs with public exploits
     ssvc_act: bool = False,          # Only CVEs with SSVC decision "Act"
-    greynoise_seen: bool = False,    # Only CVEs seen by GreyNoise
     sort_by: Optional[str] = Query(None, regex="^(cve_id|cvss3_score|epss_score|in_kev|published_date|kev_date_added|in_scan_count)$"),
     sort_dir: Optional[str] = Query("desc", regex="^(asc|desc)$"),
     limit: int = Query(50, ge=1, le=200),
@@ -218,8 +214,6 @@ def get_cves(
         q = q.filter(ThreatCVE.has_public_exploit == True)
     if ssvc_act:
         q = q.filter(ThreatCVE.ssvc_decision == "Act")
-    if greynoise_seen:
-        q = q.filter(ThreatCVE.greynoise_seen == True)
 
     # Collect CVE IDs found in findings for a given scan (or all scans)
     scan_cve_ids: set = set()
@@ -320,8 +314,6 @@ def get_cves(
             "exploit_maturity_level": r.exploit_maturity_level,
             "ssvc_decision": r.ssvc_decision,
             "ssvc_exploitation": r.ssvc_exploitation,
-            "greynoise_seen": r.greynoise_seen or False,
-            "greynoise_classification": r.greynoise_classification,
             "cwe_names": r.cwe_names or [],
             "cwe_categories": r.cwe_categories or [],
             "msrc_kb_ids": r.msrc_kb_ids or [],
@@ -1041,11 +1033,6 @@ def _run_sync_in_background(db: Session):
         sync_engine.sync_msrc_patches_to_db(db)
     except Exception as exc:
         logger.warning("Background MSRC sync failed: %s", exc)
-    if os.environ.get("GREYNOISE_API_KEY"):
-        try:
-            sync_engine.sync_greynoise_cves_to_db(db)
-        except Exception as exc:
-            logger.warning("Background GreyNoise sync failed: %s", exc)
     try:
         sync_engine.enrich_findings_extended(db)
     except Exception as exc:
@@ -1102,9 +1089,6 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
     background_tasks.add_task(sync_engine.sync_metasploit_modules_to_db, db)
     background_tasks.add_task(sync_engine.sync_exploitdb_to_db, db)
     background_tasks.add_task(sync_engine.sync_msrc_patches_to_db, db)
-    # GreyNoise has strict rate limits — only run if API key is configured
-    if os.environ.get("GREYNOISE_API_KEY"):
-        background_tasks.add_task(sync_engine.sync_greynoise_cves_to_db, db)
     # Extended enrichment (runs after the new sources are synced)
     background_tasks.add_task(sync_engine.enrich_findings_extended, db)
 
@@ -1121,7 +1105,6 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
             f"Findings enriched: {enrich_result.get('enriched', 0)}. "
             f"NVD CVSS + MITRE ATT&CK + CISA advisories + endoflife.date + "
             f"SSVC + CWE + ExploitDB + Metasploit + MSRC"
-            f"{' + GreyNoise' if os.environ.get('GREYNOISE_API_KEY') else ''}"
             f": syncing in background."
         ),
     }
@@ -1573,45 +1556,6 @@ def get_ssvc_summary(db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────
-# GreyNoise Active Exploitation
-# ─────────────────────────────────────────────
-
-@router.get("/greynoise")
-def get_greynoise_tags(
-    seen_only: bool = True,
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
-):
-    """List CVEs with GreyNoise active exploitation data."""
-    q = db.query(GreyNoiseTag)
-    if seen_only:
-        q = q.filter(GreyNoiseTag.seen == True)
-
-    total = q.count()
-    records = q.order_by(desc(GreyNoiseTag.updated_at)).offset(offset).limit(limit).all()
-
-    return {
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-        "items": [
-            {
-                "cve_id": r.cve_id,
-                "seen": r.seen,
-                "noise": r.noise,
-                "riot": r.riot,
-                "classification": r.classification,
-                "name": r.name,
-                "last_seen": r.last_seen,
-                "link": r.link,
-            }
-            for r in records
-        ],
-    }
-
-
-# ─────────────────────────────────────────────
 # MSRC Patches
 # ─────────────────────────────────────────────
 
@@ -1688,15 +1632,6 @@ def sync_cwe(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Sync CWE full catalog from MITRE."""
     background_tasks.add_task(sync_engine.sync_cwe_catalog_to_db, db)
     return {"status": "ok", "message": "CWE catalog sync started in background"}
-
-
-@router.post("/sync-greynoise")
-def sync_greynoise(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """Sync GreyNoise active exploitation data."""
-    if not os.environ.get("GREYNOISE_API_KEY"):
-        return {"status": "warning", "message": "GREYNOISE_API_KEY not configured. Set the environment variable to enable GreyNoise sync."}
-    background_tasks.add_task(sync_engine.sync_greynoise_cves_to_db, db)
-    return {"status": "ok", "message": "GreyNoise sync started in background"}
 
 
 @router.post("/sync-msrc")
