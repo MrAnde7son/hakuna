@@ -70,6 +70,7 @@ class BaseRunner:
                     duration_seconds=time.monotonic() - start, retries=attempt,
                 )
                 logger.error("tool=%s org=%s timed out after %ds", self.tool_name, org_id, self._get_timeout())
+                break  # Don't retry on timeout — external tool is likely unreachable
 
             if attempt < self.max_retries:
                 wait = 2 ** (attempt + 1)

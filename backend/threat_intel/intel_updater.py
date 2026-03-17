@@ -29,7 +29,7 @@ NVD_PAGE   = 2000   # max results per page
 
 
 def _get_json(url: str, timeout: int = 30) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": "nessus-remediation/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "hakuna/1.0"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode())
 

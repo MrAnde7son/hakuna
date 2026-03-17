@@ -4,7 +4,7 @@ report templates, and campaign workflow templates.
 
 Envelope format:
 {
-    "format": "nessus-remediation",
+    "format": "hakuna",
     "version": 1,
     "type": "<config_type>",
     "exported_at": "<ISO timestamp>",
@@ -31,7 +31,7 @@ import services.dedup as dedup_engine
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["config-portability"])
 
-ENVELOPE_FORMAT = "nessus-remediation"
+ENVELOPE_FORMAT = "hakuna"
 ENVELOPE_VERSION = 1
 
 VALID_TYPES = {"risk_config", "auto_tag_rules", "report_template", "campaign_workflow", "dedup_config"}

@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     subfinder_sources: str = "all"
     uncover_sources: str = "shodan,censys,fofa"
     org_scan_stagger_seconds: int = 30
+    nmap_timeout_seconds: int = 300
+    nmap_max_rate: int = 100
+    nmap_concurrency: int = 5
+    puredns_wordlist: str = "/app/wordlists/subdomains.txt"
+    katana_depth: int = 2
+    katana_rate_limit: int = 50
 
     shodan_api_key: str = ""
     censys_api_id: str = ""

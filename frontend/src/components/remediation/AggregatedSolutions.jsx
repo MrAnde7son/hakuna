@@ -455,7 +455,7 @@ export default function AggregatedSolutions() {
           </Card>
           <Card style={{ padding: '14px 18px' }}>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>CVEs Resolved</div>
-            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text-primary)' }}>{totalCVEs}</div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text-primary)' }}>{totalCVEs.toLocaleString()}</div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>collapsed into {filtered.length} actions</div>
           </Card>
           <Card style={{ padding: '14px 18px' }}>

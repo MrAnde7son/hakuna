@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import ARRAY, INET, JSON, UUID
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import ARRAY, INET, JSON, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -35,8 +35,74 @@ class Asset(Base):
     source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     nessus_asset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Extension 2: Liveness validation
+    liveness_state: Mapped[str] = mapped_column(String(32), default="unconfirmed")
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Extension 4: Nmap fingerprinting
+    nmap_status: Mapped[str] = mapped_column(String(32), default="pending")
+    nmap_last_run: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    os_fingerprint: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     org: Mapped["Org"] = relationship(back_populates="assets")  # noqa: F821
     events: Mapped[list["AssetEvent"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
+    ports: Mapped[list["AssetPort"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
+    enrichments: Mapped[list["AssetEnrichment"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
+    endpoints: Mapped[list["AssetEndpoint"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
+    findings: Mapped[list["Finding"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
+
+
+class AssetPort(Base):
+    """Per open port on an asset — stores service fingerprint, CPE, TLS, nmap scripts."""
+    __tablename__ = "asset_ports"
+    __table_args__ = (UniqueConstraint("asset_id", "port", "protocol", name="uq_asset_port_proto"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    protocol: Mapped[str] = mapped_column(String(16), default="tcp")
+    service_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    service_version: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    banner: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cpe_list: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    tls_cert: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    nmap_scripts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    asset: Mapped["Asset"] = relationship(back_populates="ports")
+
+
+class AssetEnrichment(Base):
+    """Per enrichment run — stores full httpx/tlsx output."""
+    __tablename__ = "asset_enrichments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
+    httpx_full: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    final_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tech_stack: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    is_cdn: Mapped[bool] = mapped_column(Boolean, default=False)
+    tlsx_raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    asset: Mapped["Asset"] = relationship(back_populates="enrichments")
+
+
+class AssetEndpoint(Base):
+    """Katana-discovered endpoints."""
+    __tablename__ = "asset_endpoints"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    asset_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    method: Mapped[str] = mapped_column(String(16), default="GET")
+    discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    is_auth_page: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    asset: Mapped["Asset"] = relationship(back_populates="endpoints")
 
 
 class ScanRun(Base):
@@ -51,6 +117,13 @@ class ScanRun(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Progress tracking
+    current_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stage_index: Mapped[int] = mapped_column(Integer, default=0)
+    total_stages: Mapped[int] = mapped_column(Integer, default=0)
+    stage_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stage_log: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     org: Mapped["Org"] = relationship(back_populates="scan_runs")  # noqa: F821
 

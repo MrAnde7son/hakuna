@@ -492,6 +492,19 @@ def _build_tls_output(hostname: str, cert: dict, days_left: Optional[int]) -> st
     return "\n".join(lines)
 
 
+def _find_existing_easm_scan(db: Session, org: Organization, domain: str) -> Optional[Scan]:
+    """Find an existing EASM scan for this org+domain to reuse on rescan."""
+    scans = db.query(Scan).filter(
+        Scan.org_id == org.id,
+        Scan.source_type == "easm",
+    ).all()
+    for s in scans:
+        meta = s.raw_metadata or {}
+        if meta.get("domain") == domain:
+            return s
+    return None
+
+
 def _create_easm_scan(db: Session, org: Organization, domain: str, scan_type: str = "full") -> Scan:
     """Create a new EASM scan record for a specific domain."""
     now = datetime.utcnow()
@@ -617,7 +630,7 @@ async def scan_domain(
 ) -> Optional[dict]:
     """
     Full flow: add domain to hakuna (idempotent), trigger scan,
-    create a scan record marked as 'running'.
+    reuse existing scan record or create one marked as 'running'.
     Assets are imported later when the scan completes (via refresh_easm_scan).
     """
     if not org.easm_org_id:
@@ -629,13 +642,27 @@ async def scan_domain(
     # Trigger scan in hakuna
     run_id = await trigger_easm_scan(org.easm_org_id, scan_type)
 
-    # Create scan record marked as running
-    scan = _create_easm_scan(db, org, domain, scan_type)
-    scan.raw_metadata = {
-        **scan.raw_metadata,
-        "run_id": run_id,
-        "status": "running" if run_id else "failed",
-    }
+    # Reuse existing EASM scan for this domain, or create a new one
+    scan = _find_existing_easm_scan(db, org, domain)
+    if scan:
+        # Keep old assets/findings visible until the new scan completes
+        now = datetime.utcnow()
+        scan.scan_date = now.isoformat()
+        scan.created_at = now
+        scan.raw_metadata = {
+            "hakuna_org_id": org.easm_org_id,
+            "domain": domain,
+            "scan_type": scan_type,
+            "run_id": run_id,
+            "status": "running" if run_id else "failed",
+        }
+    else:
+        scan = _create_easm_scan(db, org, domain, scan_type)
+        scan.raw_metadata = {
+            **scan.raw_metadata,
+            "run_id": run_id,
+            "status": "running" if run_id else "failed",
+        }
     db.commit()
 
     return {
@@ -676,6 +703,12 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
 
     # Map hakuna statuses
     if hakuna_status in ("completed", "done"):
+        # Clear old assets/findings before importing fresh results
+        db.query(Finding).filter(Finding.asset_id.in_(
+            db.query(Asset.id).filter(Asset.scan_id == scan.id)
+        )).delete(synchronize_session=False)
+        db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
+
         # Import assets now that scan is done
         easm_assets = await get_easm_assets(org.easm_org_id) or []
         created, findings_created = _import_assets_for_domain(db, scan, easm_assets, domain)
@@ -708,11 +741,20 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
         return {"scan_id": scan.id, "status": "failed", "domain": domain}
 
     else:
-        # Still running/queued
+        # Still running/queued — relay progress info
         status = "running" if hakuna_status == "running" else hakuna_status
-        scan.raw_metadata = {**meta, "status": status}
+        progress = {}
+        if run_status:
+            progress = {
+                "current_stage": run_status.get("current_stage"),
+                "stage_index": run_status.get("stage_index", 0),
+                "total_stages": run_status.get("total_stages", 0),
+                "stage_started_at": run_status.get("stage_started_at"),
+                "stage_log": run_status.get("stage_log"),
+            }
+        scan.raw_metadata = {**meta, "status": status, **progress}
         db.commit()
-        return {"scan_id": scan.id, "status": status, "domain": domain}
+        return {"scan_id": scan.id, "status": status, "domain": domain, **progress}
 
 
 # ── EASM enrichment for Nessus assets ──────────────────────────────
