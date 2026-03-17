@@ -90,6 +90,17 @@ class ThreatCVE(Base):
     cwe_ids = Column(JSON, default=list)
     nvd_url = Column(String)
     trending_in_news = Column(Boolean, default=False)
+    # New enrichment fields from additional intel sources
+    exploit_count = Column(Integer, default=0)  # Total public exploits (ExploitDB + Metasploit + Nuclei)
+    exploit_sources = Column(JSON, default=list)  # ["exploitdb", "metasploit", "nuclei"]
+    exploit_maturity_level = Column(String)  # "none" | "poc" | "functional" | "weaponized"
+    ssvc_decision = Column(String)  # CISA SSVC: "Track" | "Track*" | "Attend" | "Act"
+    ssvc_exploitation = Column(String)  # "none" | "poc" | "active"
+    greynoise_seen = Column(Boolean, default=False)  # Actively being exploited per GreyNoise
+    greynoise_classification = Column(String)  # "benign" | "malicious" | "unknown"
+    cwe_names = Column(JSON, default=list)  # Resolved CWE names for display
+    cwe_categories = Column(JSON, default=list)  # Top-level CWE categories
+    msrc_kb_ids = Column(JSON, default=list)  # Microsoft KB IDs for patching
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -184,4 +195,114 @@ class ProductLifecycle(Base):
 
     __table_args__ = (
         UniqueConstraint("slug", "cycle", name="uq_product_lifecycle_slug_cycle"),
+    )
+
+
+class CWEEntry(Base):
+    """CWE (Common Weakness Enumeration) full catalog entry."""
+    __tablename__ = "cwe_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cwe_id = Column(String, unique=True, index=True, nullable=False)  # e.g. "CWE-79"
+    name = Column(String, nullable=False)  # e.g. "Improper Neutralization of Input During Web Page Generation"
+    description = Column(Text)
+    extended_description = Column(Text)
+    weakness_type = Column(String)  # "Class" | "Base" | "Variant" | "Compound"
+    status = Column(String)  # "Draft" | "Stable" | "Incomplete" | "Deprecated"
+    parent_cwe_ids = Column(JSON, default=list)  # Parent CWE IDs (ChildOf relationships)
+    child_cwe_ids = Column(JSON, default=list)  # Child CWE IDs
+    related_attack_patterns = Column(JSON, default=list)  # CAPEC IDs
+    applicable_platforms = Column(JSON, default=list)  # ["C", "Java", "PHP", ...]
+    common_consequences = Column(JSON, default=list)  # [{"scope": "...", "impact": "..."}]
+    detection_methods = Column(JSON, default=list)
+    mitigations = Column(JSON, default=list)  # [{"phase": "...", "description": "..."}]
+    category = Column(String)  # Top-level grouping: "injection", "auth", "crypto", etc.
+    owasp_top_ten = Column(JSON, default=list)  # e.g. ["A03:2021"]
+    url = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ExploitReference(Base):
+    """Public exploit references from ExploitDB, Metasploit, Nuclei templates, etc."""
+    __tablename__ = "exploit_references"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cve_id = Column(String, index=True, nullable=False)
+    source = Column(String, nullable=False, index=True)  # "exploitdb" | "metasploit" | "nuclei"
+    source_id = Column(String)  # ExploitDB ID, Metasploit module path, Nuclei template ID
+    title = Column(String)
+    description = Column(Text)
+    url = Column(String)
+    exploit_type = Column(String)  # "local" | "remote" | "webapps" | "dos" | "shellcode"
+    platform = Column(String)  # "linux" | "windows" | "multiple" etc.
+    verified = Column(Boolean, default=False)
+    maturity = Column(String)  # "poc" | "functional" | "weaponized"
+    published_date = Column(String)
+    raw_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("cve_id", "source", "source_id", name="uq_exploit_ref_cve_source"),
+        Index("ix_exploit_ref_source", "source"),
+    )
+
+
+class SSVCDecision(Base):
+    """CISA SSVC (Stakeholder-Specific Vulnerability Categorization) decisions from vulnrichment."""
+    __tablename__ = "ssvc_decisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cve_id = Column(String, unique=True, index=True, nullable=False)
+    decision = Column(String, nullable=False)  # "Track" | "Track*" | "Attend" | "Act"
+    exploitation = Column(String)  # "none" | "poc" | "active"
+    automatable = Column(String)  # "no" | "yes"
+    technical_impact = Column(String)  # "partial" | "total"
+    provider = Column(String, default="CISA")
+    timestamp = Column(String)
+    raw_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class GreyNoiseTag(Base):
+    """GreyNoise internet scan/exploit activity for CVEs."""
+    __tablename__ = "greynoise_tags"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cve_id = Column(String, unique=True, index=True, nullable=False)
+    seen = Column(Boolean, default=False)  # Whether GreyNoise has observed exploitation attempts
+    last_seen = Column(String)
+    noise = Column(Boolean, default=False)  # Mass scanning activity
+    riot = Column(Boolean, default=False)  # Common business service (benign)
+    classification = Column(String)  # "benign" | "malicious" | "unknown"
+    name = Column(String)  # Tag/actor name from GreyNoise
+    link = Column(String)  # GreyNoise URL
+    raw_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MSRCPatch(Base):
+    """Microsoft Security Response Center patch data (Patch Tuesday)."""
+    __tablename__ = "msrc_patches"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cve_id = Column(String, index=True, nullable=False)
+    kb_id = Column(String, index=True)  # e.g. "KB5034763"
+    product_name = Column(String)  # e.g. "Windows Server 2019"
+    product_id = Column(String)
+    article_url = Column(String)
+    download_url = Column(String)
+    severity = Column(String)  # "Critical" | "Important" | "Moderate" | "Low"
+    impact = Column(String)  # "Remote Code Execution" | "Elevation of Privilege" etc.
+    supercedence = Column(String)  # KB that this patch supersedes
+    restart_required = Column(String)  # "Yes" | "Maybe" | "No"
+    release_date = Column(String)
+    raw_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("cve_id", "kb_id", "product_id", name="uq_msrc_cve_kb_product"),
     )

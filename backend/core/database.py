@@ -47,6 +47,7 @@ def init_db():
         ThreatGroup, TTP, ThreatGroupTTP,
         ThreatCVE, ThreatCampaign, IntelRemediationCampaign, CisaAdvisory,
         ProductLifecycle,
+        CWEEntry, ExploitReference, SSVCDecision, MSRCPatch,
     )
     Base.metadata.create_all(bind=engine)
     _migrate_add_columns()
@@ -87,10 +88,24 @@ def _migrate_add_columns():
             ("source_type", 'VARCHAR DEFAULT "nessus"'),
             ("source_vuln_id", "VARCHAR"),
             ("normalized_id", "VARCHAR"),
+            ("exploit_count", "INTEGER DEFAULT 0"),
+            ("exploit_maturity_level", "VARCHAR"),
+            ("ssvc_decision", "VARCHAR"),
+            ("greynoise_seen", "BOOLEAN DEFAULT 0"),
         ],
         "threat_cves": [
             ("cvss4_score", "FLOAT"),
             ("cvss4_vector", "VARCHAR"),
+            ("exploit_count", "INTEGER DEFAULT 0"),
+            ("exploit_sources", "JSON"),
+            ("exploit_maturity_level", "VARCHAR"),
+            ("ssvc_decision", "VARCHAR"),
+            ("ssvc_exploitation", "VARCHAR"),
+            ("greynoise_seen", "BOOLEAN DEFAULT 0"),
+            ("greynoise_classification", "VARCHAR"),
+            ("cwe_names", "JSON"),
+            ("cwe_categories", "JSON"),
+            ("msrc_kb_ids", "JSON"),
         ],
         "finding_exceptions": [
             ("conditions", "JSON"),

@@ -4,12 +4,13 @@
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Shield, AlertTriangle, Zap, Globe, Users, Activity, RefreshCw,
   Search, Filter, ChevronDown, ChevronUp, ChevronRight, ExternalLink,
-  BookOpen, AlertCircle, CheckCircle, Clock, Plus, X,
+  AlertCircle, CheckCircle, Clock, Plus, X,
   FileText, TrendingUp, Flag, Database, Radio, Package,
+  Code, Crosshair, Wrench,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { Card, Button, Spinner, EmptyState, StatCard, SeverityBadge, ScoreBar } from '../shared/ui.jsx'
@@ -217,7 +218,7 @@ function Modal({ title, onClose, children, width = 520 }) {
 
 // ─── Stats Bar ────────────────────────────────────────────────────────────────
 
-function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
+function StatsBar({ stats, syncing, onSync, syncResult, onStatClick, activeFilter }) {
   const { t } = useTranslation()
   return (
     <div style={{ marginBottom: 24 }}>
@@ -244,6 +245,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           value={stats?.total_cves?.toLocaleString() ?? '—'}
           icon={Database}
           color="#6366f1"
+          active={activeFilter === 'all_cves'}
           onClick={() => onStatClick('all_cves')}
         />
         <StatCard
@@ -252,6 +254,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={AlertTriangle}
           color="#dc2626"
           sub="Known exploited"
+          active={activeFilter === 'kev'}
           onClick={() => onStatClick('kev')}
         />
         <StatCard
@@ -260,6 +263,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={TrendingUp}
           color="#ea580c"
           sub={stats?.avg_epss != null ? `Avg EPSS: ${(stats.avg_epss * 100).toFixed(1)}%` : undefined}
+          active={activeFilter === 'high_epss'}
           onClick={() => onStatClick('high_epss')}
         />
         <StatCard
@@ -268,6 +272,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={Users}
           color="#d97706"
           sub="≥50% TTP overlap"
+          active={activeFilter === 'exposed_groups'}
           onClick={() => onStatClick('exposed_groups')}
         />
         <StatCard
@@ -275,7 +280,47 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           value={stats?.affected_assets?.toLocaleString() ?? '—'}
           icon={Server}
           color="#0ea5e9"
+          active={activeFilter === 'affected_assets'}
           onClick={() => onStatClick('affected_assets')}
+        />
+      </div>
+      {/* Second row: enrichment sources */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 12 }}>
+        <StatCard
+          label="Public Exploits"
+          value={stats?.exploit_ref_cves?.toLocaleString() ?? '—'}
+          icon={Code}
+          color="#dc2626"
+          sub="CVEs with PoC/exploit"
+          active={activeFilter === 'has_exploit'}
+          onClick={() => onStatClick('has_exploit')}
+        />
+        <StatCard
+          label="SSVC: Act"
+          value={stats?.ssvc_act_count?.toLocaleString() ?? '—'}
+          icon={Crosshair}
+          color="#7c3aed"
+          sub={`${stats?.ssvc_decisions?.toLocaleString() ?? 0} total decisions`}
+          active={activeFilter === 'ssvc_act'}
+          onClick={() => onStatClick('ssvc_act')}
+        />
+        <StatCard
+          label="MSRC Patches"
+          value={stats?.msrc_patched_cves?.toLocaleString() ?? '—'}
+          icon={Wrench}
+          color="#16a34a"
+          sub="Microsoft CVEs patched"
+          active={activeFilter === 'msrc_patches'}
+          onClick={() => onStatClick('msrc_patches')}
+        />
+        <StatCard
+          label="Products Tracked"
+          value={stats?.total_products?.toLocaleString() ?? '—'}
+          icon={Package}
+          color="#0891b2"
+          sub={stats?.eol_products > 0 ? `${stats.eol_products} end-of-life` : 'Lifecycle tracking'}
+          active={activeFilter === 'products'}
+          onClick={() => onStatClick('products')}
         />
       </div>
     </div>
@@ -743,24 +788,33 @@ const SOURCE_DEFS = [
   { key: 'nvd',  label: 'NVD',  color: '#2563eb', test: cve => cve.cvss3_score != null || cve.description },
   { key: 'epss', label: 'EPSS', color: '#7c3aed', test: cve => cve.epss_score != null },
   { key: 'kev',  label: 'KEV',  color: '#dc2626', test: cve => cve.in_kev },
-  { key: 'exploit', label: 'ExploitDB', color: '#ea580c', test: cve => cve.has_public_exploit },
+  { key: 'exploit', label: 'Exploit', color: '#ea580c', test: cve => cve.has_public_exploit || cve.exploit_count > 0 },
+  { key: 'ssvc', label: cve => cve.ssvc_decision ? `SSVC:${cve.ssvc_decision}` : 'SSVC', color: cve => SSVC_COLORS[cve?.ssvc_decision] || '#7c3aed', test: cve => !!cve.ssvc_decision },
+  { key: 'msrc', label: 'MSRC', color: '#16a34a', test: cve => cve.msrc_kb_ids?.length > 0 },
 ]
+
+const SSVC_COLORS = { 'Act': '#dc2626', 'Attend': '#ea580c', 'Track*': '#d97706', 'Track': '#16a34a' }
+const MATURITY_COLORS = { weaponized: '#dc2626', functional: '#ea580c', poc: '#d97706', none: '#6b7280' }
 
 function CveSources({ cve }) {
   const active = SOURCE_DEFS.filter(s => s.test(cve))
   if (active.length === 0) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
   return (
     <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-      {active.map(s => (
-        <span key={s.key} style={{
-          display: 'inline-block', padding: '1px 5px', borderRadius: 3,
-          fontSize: 10, fontWeight: 700, letterSpacing: '0.02em',
-          background: `${s.color}18`, color: s.color, border: `1px solid ${s.color}30`,
-          whiteSpace: 'nowrap',
-        }}>
-          {s.label}
-        </span>
-      ))}
+      {active.map(s => {
+        const label = typeof s.label === 'function' ? s.label(cve) : s.label
+        const color = typeof s.color === 'function' ? s.color(cve) : s.color
+        return (
+          <span key={s.key} style={{
+            display: 'inline-block', padding: '1px 5px', borderRadius: 3,
+            fontSize: 10, fontWeight: 700, letterSpacing: '0.02em',
+            background: `${color}18`, color, border: `1px solid ${color}30`,
+            whiteSpace: 'nowrap',
+          }}>
+            {label}
+          </span>
+        )
+      })}
     </div>
   )
 }
@@ -820,14 +874,19 @@ function CveRow({ cve, expanded, onToggle }) {
           ) : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>}
         </td>
         <td style={{ padding: '9px 12px' }}>
-          {cve.has_public_exploit ? (
-            <span style={{
-              display: 'inline-flex', alignItems: 'center', gap: 3,
-              background: '#ea580c20', color: '#ea580c', border: '1px solid #ea580c40',
-              borderRadius: 4, padding: '2px 7px', fontSize: 11, fontWeight: 700,
-            }}>
-              <Zap size={10} />Exploit
-            </span>
+          {cve.has_public_exploit || cve.exploit_count > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: 3,
+                background: '#ea580c20', color: '#ea580c', border: '1px solid #ea580c40',
+                borderRadius: 4, padding: '2px 7px', fontSize: 11, fontWeight: 700,
+              }}>
+                <Zap size={10} />{cve.exploit_count > 0 ? `${cve.exploit_count} Exploits` : 'Exploit'}
+              </span>
+              {cve.exploit_maturity_level && cve.exploit_maturity_level !== 'none' && (
+                <Pill label={cve.exploit_maturity_level} color={MATURITY_COLORS[cve.exploit_maturity_level] || '#6b7280'} small />
+              )}
+            </div>
           ) : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>}
         </td>
         <td style={{ padding: '9px 12px' }}>
@@ -881,6 +940,46 @@ function CveRow({ cve, expanded, onToggle }) {
                     View on NVD
                   </a>
                 </div>
+                {/* New intel source details */}
+                {cve.ssvc_decision && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>CISA SSVC Decision</div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <Pill label={cve.ssvc_decision} color={SSVC_COLORS[cve.ssvc_decision] || '#6b7280'} />
+                      {cve.ssvc_exploitation && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Exploitation: {cve.ssvc_exploitation}</span>}
+                    </div>
+                  </div>
+                )}
+                {cve.exploit_sources?.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Exploit Sources</div>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      {cve.exploit_sources.map(s => <Pill key={s} label={s} color={s === 'metasploit' ? '#7c3aed' : '#2563eb'} small />)}
+                      {cve.exploit_count > 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{cve.exploit_count} total</span>}
+                    </div>
+                  </div>
+                )}
+                {cve.cwe_names?.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Weaknesses (CWE)</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                      {cve.cwe_names.slice(0, 3).join(' · ')}
+                    </div>
+                    {cve.cwe_categories?.length > 0 && (
+                      <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                        {cve.cwe_categories.map(c => <Pill key={c} label={c.replace('_', ' ')} color="#2563eb" small />)}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {cve.msrc_kb_ids?.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>Microsoft Patches</div>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      {cve.msrc_kb_ids.map(kb => <Pill key={kb} label={kb} color="#16a34a" small />)}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </td>
@@ -890,7 +989,7 @@ function CveRow({ cve, expanded, onToggle }) {
   )
 }
 
-function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEpss = 0, initialInScanOnly = false }) {
+function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEpss = 0, initialInScanOnly = false, initialHasExploit = false, initialSsvcAct = false }) {
   const { t } = useTranslation()
   const { activeScanId } = useScan()
   const [cves, setCves] = useState([])
@@ -907,6 +1006,8 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
   const [minEpss, setMinEpss] = useState(initialMinEpss)
   const [minCvss, setMinCvss] = useState(0)
   const [inScanOnly, setInScanOnly] = useState(initialInScanOnly)
+  const [hasExploit, setHasExploit] = useState(initialHasExploit)
+  const [ssvcAct, setSsvcAct] = useState(initialSsvcAct)
 
   // Sorting
   const [sortBy, setSortBy] = useState(null)
@@ -918,8 +1019,10 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
     setKevOnly(initialKevOnly)
     setMinEpss(initialMinEpss)
     setInScanOnly(initialInScanOnly)
+    setHasExploit(initialHasExploit)
+    setSsvcAct(initialSsvcAct)
     setPage(0)
-  }, [initialSearch, initialKevOnly, initialMinEpss, initialInScanOnly])
+  }, [initialSearch, initialKevOnly, initialMinEpss, initialInScanOnly, initialHasExploit, initialSsvcAct])
 
   const fetchCves = useCallback(async () => {
     setLoading(true)
@@ -934,6 +1037,8 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
       if (minEpss > 0) params.set('min_epss', minEpss)
       if (minCvss > 0) params.set('min_cvss', minCvss)
       if (inScanOnly) params.set('in_scan', activeScanId || 'all')
+      if (hasExploit) params.set('has_exploit', 'true')
+      if (ssvcAct) params.set('ssvc_act', 'true')
       if (sortBy) { params.set('sort_by', sortBy); params.set('sort_dir', sortDir) }
       const data = await getThreatCves(Object.fromEntries(params))
       const items = Array.isArray(data) ? data : (data.items || [])
@@ -944,7 +1049,7 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
     } finally {
       setLoading(false)
     }
-  }, [search, kevOnly, minEpss, minCvss, inScanOnly, activeScanId, page, sortBy, sortDir])
+  }, [search, kevOnly, minEpss, minCvss, inScanOnly, hasExploit, ssvcAct, activeScanId, page, sortBy, sortDir])
 
   useEffect(() => { fetchCves() }, [fetchCves])
 
@@ -975,6 +1080,14 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
         <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }} title={activeScanId ? t('threats.showScanMatches') : t('threats.showAllMatches')}>
           <input type="checkbox" checked={inScanOnly} onChange={e => { setInScanOnly(e.target.checked); setPage(0) }} />
           {t('threats.inScanOnly')}
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: hasExploit ? '#dc2626' : 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={hasExploit} onChange={e => { setHasExploit(e.target.checked); setPage(0) }} />
+          Has Exploit
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: ssvcAct ? '#7c3aed' : 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={ssvcAct} onChange={e => { setSsvcAct(e.target.checked); setPage(0) }} />
+          SSVC: Act
         </label>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Min EPSS</span>
@@ -1827,12 +1940,21 @@ function ProductsTab() {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
+const VALID_STAT_FILTERS = ['all_cves', 'kev', 'high_epss', 'exposed_groups', 'affected_assets', 'has_exploit', 'ssvc_act', 'msrc_patches', 'products']
+
 export default function ThreatIntelCenter() {
   const { tab: tabParam } = useParams()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const VALID_TABS = TAB_KEYS
   const tab = VALID_TABS.includes(tabParam) ? tabParam : 'newsroom'
-  const setTab = (t) => navigate(`/threat-intel/${t}`, { replace: true })
+  const setTab = (t) => {
+    navigate(`/threat-intel/${t}?${searchParams.toString()}`, { replace: true })
+  }
+
+  // Derive active stat filter from URL search params
+  const activeFilter = VALID_STAT_FILTERS.includes(searchParams.get('filter')) ? searchParams.get('filter') : null
+
   const [stats, setStats] = useState(null)
   const [cves, setCves] = useState([])
   const [loadingStats, setLoadingStats] = useState(false)
@@ -1846,6 +1968,8 @@ export default function ThreatIntelCenter() {
   const [cveInitialMinEpss, setCveInitialMinEpss] = useState(0)
   const [cveInitialInScanOnly, setCveInitialInScanOnly] = useState(false)
   const [groupsInitialInMyEnv, setGroupsInitialInMyEnv] = useState(false)
+  const [cveInitialHasExploit, setCveInitialHasExploit] = useState(false)
+  const [cveInitialSsvcAct, setCveInitialSsvcAct] = useState(false)
 
   // ── Fetch stats ──
   useEffect(() => {
@@ -1891,35 +2015,63 @@ export default function ThreatIntelCenter() {
     }
   }
 
-  const handleSearchCve = (cveId) => {
-    setCveInitialSearch(cveId)
-    setCveInitialKevOnly(false)
-    setCveInitialMinEpss(0)
-    setCveInitialInScanOnly(false)
-    setTab('cves')
-  }
-
-  const handleStatClick = (key) => {
+  const resetCveFilters = () => {
     setCveInitialSearch('')
     setCveInitialKevOnly(false)
     setCveInitialMinEpss(0)
     setCveInitialInScanOnly(false)
+    setCveInitialHasExploit(false)
+    setCveInitialSsvcAct(false)
     setGroupsInitialInMyEnv(false)
-    if (key === 'all_cves') {
-      setTab('cves')
-    } else if (key === 'kev') {
+  }
+
+  const handleSearchCve = (cveId) => {
+    resetCveFilters()
+    setCveInitialSearch(cveId)
+    setTab('cves')
+  }
+
+  const applyStatFilter = useCallback((key) => {
+    resetCveFilters()
+    if (key === 'kev') {
       setCveInitialKevOnly(true)
-      setTab('cves')
     } else if (key === 'high_epss') {
       setCveInitialMinEpss(0.5)
-      setTab('cves')
     } else if (key === 'exposed_groups') {
       setGroupsInitialInMyEnv(true)
-      setTab('groups')
     } else if (key === 'affected_assets') {
       setCveInitialInScanOnly(true)
-      setTab('cves')
+    } else if (key === 'has_exploit') {
+      setCveInitialHasExploit(true)
+    } else if (key === 'ssvc_act') {
+      setCveInitialSsvcAct(true)
     }
+  }, [])
+
+  // Apply filter from URL on mount / when filter param changes
+  useEffect(() => {
+    if (activeFilter) {
+      applyStatFilter(activeFilter)
+      // Navigate to the right tab for this filter
+      const targetTab = activeFilter === 'exposed_groups' ? 'groups' : activeFilter === 'products' ? 'products' : 'cves'
+      if (tab !== targetTab) {
+        navigate(`/threat-intel/${targetTab}?filter=${activeFilter}`, { replace: true })
+      }
+    }
+  }, [activeFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleStatClick = (key) => {
+    // Toggle: clicking the already-active filter clears it
+    if (activeFilter === key) {
+      resetCveFilters()
+      searchParams.delete('filter')
+      const targetTab = key === 'exposed_groups' ? 'groups' : key === 'products' ? 'products' : 'cves'
+      navigate(`/threat-intel/${targetTab}?${searchParams.toString()}`, { replace: true })
+      return
+    }
+    // Set filter in URL — this triggers the useEffect above
+    const targetTab = key === 'exposed_groups' ? 'groups' : key === 'products' ? 'products' : 'cves'
+    navigate(`/threat-intel/${targetTab}?filter=${key}`, { replace: true })
   }
 
   return (
@@ -1931,6 +2083,7 @@ export default function ThreatIntelCenter() {
         onSync={handleSync}
         syncResult={syncResult}
         onStatClick={handleStatClick}
+        activeFilter={activeFilter}
       />
 
       {statsError && (
@@ -1961,6 +2114,8 @@ export default function ThreatIntelCenter() {
           initialKevOnly={cveInitialKevOnly}
           initialMinEpss={cveInitialMinEpss}
           initialInScanOnly={cveInitialInScanOnly}
+          initialHasExploit={cveInitialHasExploit}
+          initialSsvcAct={cveInitialSsvcAct}
         />
       )}
 

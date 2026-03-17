@@ -122,7 +122,6 @@ async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
             NUCLEI_BIN,
             "-target", target,
             *template_args,
-            "-cluster",
             "-jsonl",
             "-timeout", str(NUCLEI_TIMEOUT),
             "-rate-limit", str(NUCLEI_RATE_LIMIT),
@@ -142,20 +141,27 @@ async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.DEVNULL,
+                limit=1024 * 1024,  # 1MB line limit
             )
 
             stderr_chunks: list[str] = []
 
             async def drain_stderr():
                 assert proc.stderr is not None
-                async for line in proc.stderr:
+                while True:
+                    line = await proc.stderr.readline()
+                    if not line:
+                        break
                     stderr_chunks.append(line.decode("utf-8", errors="replace").strip())
 
             stderr_task = asyncio.create_task(drain_stderr())
 
             # Stream stdout line by line
             assert proc.stdout is not None
-            async for raw_line in proc.stdout:
+            while True:
+                raw_line = await proc.stdout.readline()
+                if not raw_line:
+                    break
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
@@ -324,17 +330,16 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict
     """Execute Nuclei against a raw target with generic templates."""
     start = time.monotonic()
 
-    # Build nuclei command — generic templates (no CPE/tech routing)
+    # Build nuclei command — broad template selection for ad-hoc scans
     cmd = [
         NUCLEI_BIN,
         "-target", target,
-        "-tags", "generic,exposure,cve,misconfig",
-        "-cluster",
         "-jsonl",
         "-timeout", str(NUCLEI_TIMEOUT),
         "-rate-limit", str(NUCLEI_RATE_LIMIT),
         "-silent",
         "-no-color",
+        "-severity", "info,low,medium,high,critical",
     ]
 
     logger.info("nuclei adhoc cmd: %s", " ".join(cmd))
@@ -349,19 +354,26 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL,
+            limit=1024 * 1024,  # 1MB line limit (nuclei JSONL can be large)
         )
 
         stderr_chunks: list[str] = []
 
         async def drain_stderr():
             assert proc.stderr is not None
-            async for line in proc.stderr:
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    break
                 stderr_chunks.append(line.decode("utf-8", errors="replace").strip())
 
         stderr_task = asyncio.create_task(drain_stderr())
 
         assert proc.stdout is not None
-        async for raw_line in proc.stdout:
+        while True:
+            raw_line = await proc.stdout.readline()
+            if not raw_line:
+                break
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
@@ -377,10 +389,18 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict
             info = result.get("info", {})
             findings.append({
                 "template_id": template_id,
-                "severity": info.get("severity", "info"),
+                "severity": (info.get("severity") or "info").lower(),
                 "name": info.get("name", template_id),
+                "description": info.get("description", ""),
                 "matched_at": result.get("matched-at", ""),
                 "host": result.get("host", ""),
+                "port": result.get("port", ""),
+                "type": result.get("type", ""),
+                "tags": info.get("tags", []),
+                "reference": info.get("reference", []),
+                "classification": info.get("classification", {}),
+                "curl_command": result.get("curl-command", ""),
+                "matcher_name": result.get("matcher-name", ""),
             })
 
         await asyncio.wait_for(proc.wait(), timeout=SCAN_TIMEOUT_SECONDS)

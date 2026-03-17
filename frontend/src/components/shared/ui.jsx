@@ -41,26 +41,39 @@ export function ScoreBar({ score, max = 10, color }) {
   )
 }
 
-export function Card({ children, style = {}, onClick }) {
+export function Card({ children, style = {}, onClick, activeBorderColor, active, activeColor }) {
+  const borderColor = active ? (activeColor || 'var(--accent)') : 'var(--border)'
+  const bgTint = active && activeColor ? activeColor + '12' : undefined
   return (
     <div
       onClick={onClick}
       style={{
-        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        background: bgTint || 'var(--bg-card)', border: `2px solid ${borderColor}`,
         borderRadius: 10, padding: 20, ...style,
-        ...(onClick && { cursor: 'pointer', transition: 'border-color 0.15s' }),
+        ...(onClick && { cursor: 'pointer', transition: 'border-color 0.15s, background 0.15s, box-shadow 0.15s' }),
+        ...(active && { boxShadow: `0 0 0 1px ${activeColor || 'var(--accent)'}30` }),
       }}
-      onMouseEnter={onClick ? e => e.currentTarget.style.borderColor = 'var(--accent)' : undefined}
-      onMouseLeave={onClick ? e => e.currentTarget.style.borderColor = 'var(--border)' : undefined}
+      onMouseEnter={onClick ? e => {
+        e.currentTarget.style.borderColor = activeColor || 'var(--accent)'
+      } : undefined}
+      onMouseLeave={onClick ? e => {
+        e.currentTarget.style.borderColor = active ? (activeColor || 'var(--accent)') : (activeBorderColor || 'var(--border)')
+      } : undefined}
     >
       {children}
     </div>
   )
 }
 
-export function StatCard({ label, value, sub, color, icon: Icon, onClick }) {
+export function StatCard({ label, value, sub, color, icon: Icon, onClick, active }) {
   return (
-    <Card style={{ display: 'flex', flexDirection: 'column', gap: 8 }} onClick={onClick}>
+    <Card
+      style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+      onClick={onClick}
+      activeBorderColor={active ? (color || 'var(--accent)') : undefined}
+      active={active}
+      activeColor={color}
+    >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
         {Icon && <Icon size={16} color={color || 'var(--text-muted)'} />}

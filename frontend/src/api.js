@@ -521,6 +521,19 @@ export const updateIntelCampaign = (id, data) =>
 export const deleteIntelCampaign = (id) =>
   request(`/threat-intel/remediation-campaigns/${id}`, { method: 'DELETE' })
 
+// New intel data sources
+export const getCWEs = (params = {}) => _ti('cwes', params)
+export const getCWEDetail = (cweId) => _ti(`cwes/${cweId}`)
+export const getExploits = (params = {}) => _ti('exploits', params)
+export const getExploitSummary = () => _ti('exploits/summary')
+export const getSSVCDecisions = (params = {}) => _ti('ssvc', params)
+export const getSSVCSummary = () => _ti('ssvc/summary')
+export const getMSRCPatches = (params = {}) => _ti('msrc-patches', params)
+export const syncExploits = () => request('/threat-intel/sync-exploits', { method: 'POST' })
+export const syncSSVC = () => request('/threat-intel/sync-ssvc', { method: 'POST' })
+export const syncCWE = () => request('/threat-intel/sync-cwe', { method: 'POST' })
+export const syncMSRC = () => request('/threat-intel/sync-msrc', { method: 'POST' })
+
 // Workflows
 export const getNodeCatalog = () => request('/workflows/node-catalog')
 export const getWorkflowTemplates = () => request('/workflows/templates')
@@ -760,30 +773,17 @@ export const runAgentPipeline = (pipelineId, input, modelOverrides = {}) => requ
   body: JSON.stringify({ input, model_overrides: modelOverrides }),
 })
 
-// ── VM Scanner API (proxied to port 8002) ─────────────────
-const VM_BASE = '/vm'
-
-async function vmRequest(path, opts = {}) {
-  const res = await fetch(`${VM_BASE}${path}`, { ...opts })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || 'VM Scanner request failed')
-  }
-  return res.json()
-}
-
-export const startVmScan = ({ assetIds, targets, scanAll } = {}) => vmRequest('/scans/', {
+// ── VM Scanner API (via main backend) ─────────────────────
+export const startVmScan = (data) => request('/vm/scan', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    ...(assetIds ? { asset_ids: assetIds } : {}),
-    ...(targets ? { targets } : {}),
-    ...(scanAll ? { scan_all: true } : {}),
-  }),
+  body: JSON.stringify(data),
 })
 
-export const getVmScanStatus = (jobId) => vmRequest(`/scans/${jobId}`)
+export const refreshVmScan = (scanId) => request(`/vm/refresh/${scanId}`, { method: 'POST' })
 
-export const getVmHealth = () => vmRequest('/health').catch(() => null)
+export const rescanVmScan = (scanId) => request(`/vm/rescan/${scanId}`, { method: 'POST' })
+
+export const getVmHealth = () => request('/vm/health').catch(() => null)
 
 export const getEasmAssets = () => request('/easm/assets')

@@ -8,7 +8,7 @@ import {
 import { useScan } from '../../App.jsx'
 import {
   uploadScan, deleteScan, getEasmStatus, scanEasmDomain, refreshEasmScan, setupEasm,
-  getEasmScanRuns, startVmScan, getVmScanStatus, getVmHealth, getEasmAssets, getAssets,
+  getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner } from '../shared/ui.jsx'
 
@@ -21,7 +21,7 @@ const SOURCE_TYPES = {
   qualys: { label: 'Qualys', icon: Shield, color: '#8b5cf6', bg: '#8b5cf622' },
   rapid7: { label: 'Rapid7', icon: Shield, color: '#f97316', bg: '#f9731622' },
   openvas: { label: 'OpenVAS', icon: Shield, color: '#22c55e', bg: '#22c55e22' },
-  vm_scanner: { label: 'VM Scanner', icon: MonitorSmartphone, color: '#ec4899', bg: '#ec489922' },
+  vm_scanner: { label: 'VM', icon: MonitorSmartphone, color: '#ec4899', bg: '#ec489922' },
 }
 
 function getSourceMeta(type) {
@@ -391,17 +391,26 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
     setScanning(true)
     setError(null)
     try {
-      let res
+      let payload
       if (tab === 'manual') {
-        // Parse manual targets (comma, newline, or space separated)
         const targets = manualTarget.split(/[,\n]+/).map(t => t.trim()).filter(Boolean)
         if (targets.length === 0) return
-        res = await startVmScan({ targets })
+        payload = { targets }
       } else {
         if (selected.size === 0) return
-        const ids = [...selected].map(String)
-        res = await startVmScan({ assetIds: ids })
+        const selectedAssets = (assets || []).filter(a => selected.has(a.id))
+        // Send asset_ids + targets so backend can link findings to existing assets
+        const assetEntries = selectedAssets.map(a => ({
+          asset_id: a.id,
+          target: a.ip || a.hostname || a.fqdn,
+        })).filter(e => e.target)
+        if (assetEntries.length === 0) { setError('Selected assets have no IP or hostname'); return }
+        payload = {
+          targets: assetEntries.map(e => e.target),
+          asset_ids: assetEntries.map(e => e.asset_id),
+        }
       }
+      const res = await startVmScan(payload)
       setResult(res)
       if (onVmScan) onVmScan(res)
     } catch (err) {
@@ -636,14 +645,20 @@ function EasmStatusBadge({ status, metadata }) {
   if (!status || status === 'completed') return null
   const isRunning = status === 'running' || status === 'queued'
   const isFailed = status === 'failed' || status === 'error'
-  const color = isRunning ? '#0ea5e9' : isFailed ? '#dc2626' : '#a78bfa'
+  const isCompletedWithErrors = status === 'completed_with_errors'
+  const color = isRunning ? '#0ea5e9' : isFailed ? '#dc2626' : isCompletedWithErrors ? '#f59e0b' : '#a78bfa'
 
   const stage = metadata?.current_stage
   const stageIndex = metadata?.stage_index || 0
   const totalStages = metadata?.total_stages || 0
 
+  // VM scan progress
+  const completedJobs = metadata?.completed_jobs || 0
+  const totalJobs = metadata?.total_jobs || 0
+  const isVm = totalJobs > 0 && !stage
+
   const stageLabel = stage ? (STAGE_LABELS[stage] || stage) : null
-  const label = isFailed ? 'Failed' : !isRunning ? status : null
+  const label = isFailed ? 'Failed' : isCompletedWithErrors ? 'Partial' : !isRunning ? status : null
 
   return (
     <span style={{
@@ -653,9 +668,11 @@ function EasmStatusBadge({ status, metadata }) {
     }}>
       {isRunning && <Loader size={10} style={{ animation: 'spin 1.5s linear infinite' }} />}
       {isRunning ? (
-        stageLabel
-          ? <>{stageLabel} ({stageIndex}/{totalStages})</>
-          : 'Scanning...'
+        isVm
+          ? <>{completedJobs}/{totalJobs} targets</>
+          : stageLabel
+            ? <>{stageLabel} ({stageIndex}/{totalStages})</>
+            : 'Scanning...'
       ) : label}
       {isRunning && <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>}
     </span>
@@ -865,15 +882,121 @@ function ScanRunHistory({ expanded }) {
 }
 
 
+// ── VM scan progress (shown under running VM scans) ──────────────────
+
+function VmScanProgress({ metadata }) {
+  if (!metadata) return null
+  const { completed_jobs = 0, total_jobs = 0, findings_emitted = 0 } = metadata
+  const pct = total_jobs > 0 ? Math.round((completed_jobs / total_jobs) * 100) : 0
+  const remaining = total_jobs - completed_jobs
+
+  return (
+    <div style={{ padding: '0 16px 12px' }}>
+      <div style={{
+        height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden', marginBottom: 6,
+      }}>
+        <div style={{
+          height: '100%', borderRadius: 3, background: '#ec4899',
+          width: `${pct}%`, transition: 'width 0.5s ease',
+        }} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between' }}>
+        <span>{completed_jobs}/{total_jobs} targets scanned{findings_emitted > 0 ? ` — ${findings_emitted} findings` : ''}</span>
+        <span>{remaining > 0 ? 'Scanning...' : 'Finishing...'}</span>
+      </div>
+    </div>
+  )
+}
+
+
+// ── VM scan history (job-level detail from metadata) ─────────────────
+
+function VmScanHistory({ expanded, metadata }) {
+  if (!expanded || !metadata) return null
+
+  const targets = metadata.targets || []
+  const jobIds = metadata.job_ids || []
+  const completed = metadata.completed_jobs || 0
+  const total = metadata.total_jobs || 0
+  const findings = metadata.findings_emitted || 0
+  const status = metadata.status || 'unknown'
+
+  const statusColor = (s) => {
+    if (s === 'completed') return '#22c55e'
+    if (s === 'completed_with_errors') return '#f59e0b'
+    if (s === 'failed' || s === 'error') return '#dc2626'
+    if (s === 'running' || s === 'queued') return '#ec4899'
+    return '#71717a'
+  }
+
+  return (
+    <div style={{
+      borderTop: '1px solid var(--border)', padding: '10px 16px 6px',
+      background: 'var(--bg-secondary)',
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8 }}>
+        <History size={11} style={{ marginRight: 4, verticalAlign: -1 }} />
+        Scan Details
+      </div>
+
+      {/* Summary row */}
+      <div style={{
+        display: 'flex', gap: 10, alignItems: 'center', fontSize: 12,
+        padding: '5px 8px', borderRadius: 5, background: 'var(--bg)',
+        border: '1px solid var(--border)', marginBottom: 4,
+      }}>
+        <span style={{
+          width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+          background: statusColor(status),
+        }} />
+        <span style={{ fontWeight: 500 }}>
+          {status === 'running' ? 'Scanning' : status === 'completed' ? 'Completed' : status === 'completed_with_errors' ? 'Partial' : status}
+        </span>
+        <span style={{ color: 'var(--text-muted)', flex: 1 }}>
+          {completed}/{total} targets done
+        </span>
+        <span style={{ color: 'var(--text-muted)' }}>
+          {findings} finding{findings !== 1 ? 's' : ''}
+        </span>
+      </div>
+
+      {/* Target list */}
+      {targets.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 4 }}>
+          {targets.map((target, i) => (
+            <div key={i} style={{
+              display: 'flex', gap: 8, alignItems: 'center', fontSize: 11,
+              padding: '4px 8px', borderRadius: 4,
+              color: 'var(--text-muted)',
+            }}>
+              <span style={{ fontFamily: 'monospace', fontWeight: 500, color: 'var(--text-secondary)' }}>
+                {target}
+              </span>
+              {jobIds[i] && (
+                <span style={{ fontSize: 10, opacity: 0.6 }}>
+                  {jobIds[i].slice(0, 8)}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 // ── Scan card ────────────────────────────────────────────────────────
 
-function ScanCard({ scan, onDelete, deleting, onSelect, onRescan }) {
+function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
   const meta = getSourceMeta(scan.source_type)
   const isEasm = scan.source_type === 'easm'
+  const isVm = scan.source_type === 'vm_scanner'
   const age = scan.created_at ? formatAge(scan.created_at) : null
   const domain = isEasm ? scan.raw_metadata?.domain : null
-  const easmStatus = isEasm ? scan.raw_metadata?.status : null
-  const isRunning = easmStatus === 'running' || easmStatus === 'queued'
+  const scanStatus = (isEasm || isVm) ? scan.raw_metadata?.status : null
+  const easmStatus = scanStatus  // keep compat
+  const isRunning = scanStatus === 'running' || scanStatus === 'queued'
   const [showHistory, setShowHistory] = useState(false)
   const [rescanning, setRescanning] = useState(false)
 
@@ -904,7 +1027,7 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan }) {
                 {scan.scan_name || scan.filename}
               </span>
               <SourceBadge sourceType={scan.source_type} />
-              <EasmStatusBadge status={easmStatus} metadata={isEasm ? scan.raw_metadata : null} />
+              {(isEasm || isVm) && <EasmStatusBadge status={scanStatus} metadata={scan.raw_metadata} />}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               {age && <span><Clock size={11} style={{ marginRight: 3, verticalAlign: -1 }} />{age}</span>}
@@ -915,19 +1038,19 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan }) {
           </div>
 
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
-            {isEasm && (
+            {(isEasm || isVm) && (
               <button
                 onClick={() => setShowHistory(h => !h)}
                 title="Scan history"
                 style={{
                   background: 'none', border: '1px solid var(--border)',
                   borderRadius: 6, padding: '5px 8px', cursor: 'pointer',
-                  color: showHistory ? '#0ea5e9' : 'var(--text-muted)',
-                  borderColor: showHistory ? '#0ea5e9' : 'var(--border)',
+                  color: showHistory ? (isVm ? '#ec4899' : '#0ea5e9') : 'var(--text-muted)',
+                  borderColor: showHistory ? (isVm ? '#ec4899' : '#0ea5e9') : 'var(--border)',
                   display: 'flex', alignItems: 'center', gap: 3, fontSize: 12,
                   transition: 'all 0.15s',
                 }}
-                onMouseEnter={e => { if (!showHistory) { e.currentTarget.style.borderColor = '#0ea5e944'; e.currentTarget.style.color = '#0ea5e9' }}}
+                onMouseEnter={e => { if (!showHistory) { const c = isVm ? '#ec489944' : '#0ea5e944'; e.currentTarget.style.borderColor = c; e.currentTarget.style.color = isVm ? '#ec4899' : '#0ea5e9' }}}
                 onMouseLeave={e => { if (!showHistory) { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}}
               >
                 <History size={12} />
@@ -954,6 +1077,26 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan }) {
                 <RefreshCw size={12} style={rescanning ? { animation: 'spin 1s linear infinite' } : undefined} />
               </button>
             )}
+            {isVm && !isRunning && (
+              <button
+                disabled={rescanning}
+                onClick={async () => {
+                  setRescanning(true)
+                  try { await rescanVmScan(scan.id); if (onRefresh) await onRefresh() } finally { setRescanning(false) }
+                }}
+                title="Rescan targets"
+                style={{
+                  background: 'none', border: '1px solid var(--border)',
+                  borderRadius: 6, padding: '5px 8px', cursor: rescanning ? 'wait' : 'pointer',
+                  color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
+                  transition: 'all 0.15s', opacity: rescanning ? 0.5 : 1,
+                }}
+                onMouseEnter={e => { if (!rescanning) { e.currentTarget.style.borderColor = '#ec4899'; e.currentTarget.style.color = '#ec4899' }}}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}
+              >
+                <RefreshCw size={12} style={rescanning ? { animation: 'spin 1s linear infinite' } : undefined} />
+              </button>
+            )}
             <Button size="sm" onClick={() => onSelect(scan.id)}>View</Button>
             {deleting ? (
               <Spinner size={16} />
@@ -975,7 +1118,9 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan }) {
         </div>
       </div>
       {isEasm && isRunning && <ScanProgressBar metadata={scan.raw_metadata} />}
+      {isVm && isRunning && <VmScanProgress metadata={scan.raw_metadata} />}
       {isEasm && <ScanRunHistory expanded={showHistory} />}
+      {isVm && <VmScanHistory expanded={showHistory} metadata={scan.raw_metadata} />}
     </div>
   )
 }
@@ -1018,20 +1163,25 @@ export default function ScanManagement() {
       .catch(() => setEasmStatus(null))
   }, [])
 
-  // Poll running EASM scans — refresh their status and import assets when done
+  // Poll running EASM / VM scans — refresh their status
   useEffect(() => {
-    const runningScans = scans.filter(s =>
+    const runningEasm = scans.filter(s =>
       s.source_type === 'easm' &&
       s.raw_metadata?.status &&
       (s.raw_metadata.status === 'running' || s.raw_metadata.status === 'queued')
     )
-    if (runningScans.length === 0) return
+    const runningVm = scans.filter(s =>
+      s.source_type === 'vm_scanner' &&
+      s.raw_metadata?.status === 'running'
+    )
+    if (runningEasm.length === 0 && runningVm.length === 0) return
 
     const interval = setInterval(async () => {
-      for (const s of runningScans) {
-        try {
-          await refreshEasmScan(s.id)
-        } catch { /* ignore */ }
+      for (const s of runningEasm) {
+        try { await refreshEasmScan(s.id) } catch { /* ignore */ }
+      }
+      for (const s of runningVm) {
+        try { await refreshVmScan(s.id) } catch { /* ignore */ }
       }
       await refreshScans()
     }, 10000)
@@ -1216,6 +1366,7 @@ export default function ScanManagement() {
                 deleting={deletingId === scan.id}
                 onSelect={handleSelectScan}
                 onRescan={handleRescanDomain}
+                onRefresh={refreshScans}
               />
             ))}
           </div>

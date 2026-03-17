@@ -9,14 +9,15 @@ from typing import Optional, List
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, asc, or_, text
+from sqlalchemy import func, desc, asc, or_, text, case
 
 from core.database import get_db
 from models.models import Finding, Asset, Scan
 from models.threat_intel_models import (
     ThreatGroup, TTP, ThreatGroupTTP,
     ThreatCVE, ThreatCampaign, IntelRemediationCampaign, CisaAdvisory,
-    ProductLifecycle,
+    ProductLifecycle, CWEEntry, ExploitReference, SSVCDecision,
+    MSRCPatch,
 )
 import threat_intel.threat_intel_sync as sync_engine
 import threat_intel.ttp_matcher as ttp_matcher
@@ -108,6 +109,13 @@ def get_stats(db: Session = Depends(get_db)):
         .scalar() or 0
     )
 
+    # New intel source counts
+    exploit_ref_count = db.query(func.count(func.distinct(ExploitReference.cve_id))).scalar() or 0
+    ssvc_count = db.query(func.count(SSVCDecision.id)).scalar() or 0
+    ssvc_act_count = db.query(func.count(SSVCDecision.id)).filter(SSVCDecision.decision == "Act").scalar() or 0
+    cwe_count = db.query(func.count(CWEEntry.id)).scalar() or 0
+    msrc_patch_count = db.query(func.count(func.distinct(MSRCPatch.cve_id))).scalar() or 0
+
     return {
         "total_cves": total_cves,
         "kev_count": kev_count,
@@ -118,6 +126,12 @@ def get_stats(db: Session = Depends(get_db)):
         "avg_epss": avg_epss,
         "total_products": total_products,
         "eol_products": eol_products,
+        # New intel sources
+        "exploit_ref_cves": exploit_ref_count,
+        "ssvc_decisions": ssvc_count,
+        "ssvc_act_count": ssvc_act_count,
+        "cwe_entries": cwe_count,
+        "msrc_patched_cves": msrc_patch_count,
     }
 
 
@@ -178,6 +192,8 @@ def get_cves(
     min_epss: Optional[float] = None,
     min_cvss: Optional[float] = None,
     in_scan: Optional[str] = None,   # scan_id or "all" — only CVEs found in findings
+    has_exploit: bool = False,       # Only CVEs with public exploits
+    ssvc_act: bool = False,          # Only CVEs with SSVC decision "Act"
     sort_by: Optional[str] = Query(None, regex="^(cve_id|cvss3_score|epss_score|in_kev|published_date|kev_date_added|in_scan_count)$"),
     sort_dir: Optional[str] = Query("desc", regex="^(asc|desc)$"),
     limit: int = Query(50, ge=1, le=200),
@@ -194,6 +210,10 @@ def get_cves(
         q = q.filter(ThreatCVE.epss_score >= min_epss)
     if min_cvss is not None:
         q = q.filter(ThreatCVE.cvss3_score >= min_cvss)
+    if has_exploit:
+        q = q.filter(ThreatCVE.has_public_exploit == True)
+    if ssvc_act:
+        q = q.filter(ThreatCVE.ssvc_decision == "Act")
 
     # Collect CVE IDs found in findings for a given scan (or all scans)
     scan_cve_ids: set = set()
@@ -288,6 +308,15 @@ def get_cves(
             "published_date": r.published_date,
             "trending_in_news": r.trending_in_news or False,
             "in_scan_count": in_scan_counts.get(r.cve_id, 0),
+            # New intel source fields
+            "exploit_count": r.exploit_count or 0,
+            "exploit_sources": r.exploit_sources or [],
+            "exploit_maturity_level": r.exploit_maturity_level,
+            "ssvc_decision": r.ssvc_decision,
+            "ssvc_exploitation": r.ssvc_exploitation,
+            "cwe_names": r.cwe_names or [],
+            "cwe_categories": r.cwe_categories or [],
+            "msrc_kb_ids": r.msrc_kb_ids or [],
         })
 
     return {"total": total, "offset": offset, "limit": limit, "items": result}
@@ -983,6 +1012,31 @@ def _run_sync_in_background(db: Session):
             advisory_sync_fn(db)
         except Exception as exc:
             logger.warning("Background CISA advisory sync failed: %s", exc)
+    # New intel sources
+    try:
+        sync_engine.sync_ssvc_decisions_to_db(db)
+    except Exception as exc:
+        logger.warning("Background SSVC sync failed: %s", exc)
+    try:
+        sync_engine.sync_cwe_catalog_to_db(db)
+    except Exception as exc:
+        logger.warning("Background CWE sync failed: %s", exc)
+    try:
+        sync_engine.sync_metasploit_modules_to_db(db)
+    except Exception as exc:
+        logger.warning("Background Metasploit sync failed: %s", exc)
+    try:
+        sync_engine.sync_exploitdb_to_db(db)
+    except Exception as exc:
+        logger.warning("Background ExploitDB sync failed: %s", exc)
+    try:
+        sync_engine.sync_msrc_patches_to_db(db)
+    except Exception as exc:
+        logger.warning("Background MSRC sync failed: %s", exc)
+    try:
+        sync_engine.enrich_findings_extended(db)
+    except Exception as exc:
+        logger.warning("Background extended enrichment failed: %s", exc)
     logger.info("Background intel sync complete")
 
 
@@ -1029,6 +1083,15 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
     if eol_sync_fn:
         background_tasks.add_task(eol_sync_fn, db)
 
+    # New intel sources — all run in background (some are slow)
+    background_tasks.add_task(sync_engine.sync_ssvc_decisions_to_db, db)
+    background_tasks.add_task(sync_engine.sync_cwe_catalog_to_db, db)
+    background_tasks.add_task(sync_engine.sync_metasploit_modules_to_db, db)
+    background_tasks.add_task(sync_engine.sync_exploitdb_to_db, db)
+    background_tasks.add_task(sync_engine.sync_msrc_patches_to_db, db)
+    # Extended enrichment (runs after the new sources are synced)
+    background_tasks.add_task(sync_engine.enrich_findings_extended, db)
+
     return {
         "status": "ok",
         "kev_added": kev_result.get("added", 0),
@@ -1040,7 +1103,9 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
             f"KEV: +{kev_result.get('added', 0)} new, {kev_result.get('updated', 0)} updated. "
             f"EPSS: {epss_result.get('updated', 0)} refreshed. "
             f"Findings enriched: {enrich_result.get('enriched', 0)}. "
-            f"NVD CVSS + MITRE ATT&CK + CISA advisories + endoflife.date: syncing in background."
+            f"NVD CVSS + MITRE ATT&CK + CISA advisories + endoflife.date + "
+            f"SSVC + CWE + ExploitDB + Metasploit + MSRC"
+            f": syncing in background."
         ),
     }
 
@@ -1265,3 +1330,312 @@ def get_product(slug: str, db: Session = Depends(get_db)):
             for r in rows
         ],
     }
+
+
+# ─────────────────────────────────────────────
+# CWE Weakness Catalog
+# ─────────────────────────────────────────────
+
+@router.get("/cwes")
+def get_cwes(
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """List CWE entries with optional search and category filtering."""
+    q = db.query(CWEEntry)
+    if search:
+        q = q.filter(
+            or_(
+                CWEEntry.cwe_id.ilike(f"%{search}%"),
+                CWEEntry.name.ilike(f"%{search}%"),
+            )
+        )
+    if category:
+        q = q.filter(CWEEntry.category == category)
+
+    total = q.count()
+    records = q.order_by(CWEEntry.cwe_id).offset(offset).limit(limit).all()
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [
+            {
+                "cwe_id": r.cwe_id,
+                "name": r.name,
+                "description": (r.description or "")[:300],
+                "weakness_type": r.weakness_type,
+                "category": r.category,
+                "parent_cwe_ids": r.parent_cwe_ids or [],
+                "mitigations_count": len(r.mitigations or []),
+                "url": r.url,
+            }
+            for r in records
+        ],
+    }
+
+
+@router.get("/cwes/{cwe_id}")
+def get_cwe_detail(cwe_id: str, db: Session = Depends(get_db)):
+    """Detailed CWE entry with mitigations, consequences, and detection methods."""
+    record = db.query(CWEEntry).filter(CWEEntry.cwe_id == cwe_id.upper()).first()
+    if not record:
+        raise HTTPException(404, f"CWE {cwe_id} not found")
+
+    # Count CVEs in our intel that reference this CWE
+    cve_count = 0
+    for (cwe_ids,) in db.query(ThreatCVE.cwe_ids).filter(ThreatCVE.cwe_ids.isnot(None)).all():
+        if cwe_ids and cwe_id.upper() in cwe_ids:
+            cve_count += 1
+
+    return {
+        "cwe_id": record.cwe_id,
+        "name": record.name,
+        "description": record.description or "",
+        "extended_description": record.extended_description or "",
+        "weakness_type": record.weakness_type,
+        "status": record.status,
+        "category": record.category,
+        "parent_cwe_ids": record.parent_cwe_ids or [],
+        "child_cwe_ids": record.child_cwe_ids or [],
+        "related_attack_patterns": record.related_attack_patterns or [],
+        "applicable_platforms": record.applicable_platforms or [],
+        "common_consequences": record.common_consequences or [],
+        "detection_methods": record.detection_methods or [],
+        "mitigations": record.mitigations or [],
+        "owasp_top_ten": record.owasp_top_ten or [],
+        "url": record.url,
+        "cve_count": cve_count,
+    }
+
+
+# ─────────────────────────────────────────────
+# Exploit References (ExploitDB, Metasploit, Nuclei)
+# ─────────────────────────────────────────────
+
+@router.get("/exploits")
+def get_exploits(
+    cve_id: Optional[str] = None,
+    source: Optional[str] = Query(None, regex="^(exploitdb|metasploit|nuclei)$"),
+    search: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """List public exploit references."""
+    q = db.query(ExploitReference)
+    if cve_id:
+        q = q.filter(ExploitReference.cve_id == cve_id.upper())
+    if source:
+        q = q.filter(ExploitReference.source == source)
+    if search:
+        q = q.filter(
+            or_(
+                ExploitReference.cve_id.ilike(f"%{search}%"),
+                ExploitReference.title.ilike(f"%{search}%"),
+            )
+        )
+
+    total = q.count()
+    records = q.order_by(desc(ExploitReference.created_at)).offset(offset).limit(limit).all()
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [
+            {
+                "id": r.id,
+                "cve_id": r.cve_id,
+                "source": r.source,
+                "source_id": r.source_id,
+                "title": r.title or "",
+                "url": r.url,
+                "exploit_type": r.exploit_type,
+                "platform": r.platform,
+                "verified": r.verified,
+                "maturity": r.maturity,
+                "published_date": r.published_date,
+            }
+            for r in records
+        ],
+    }
+
+
+@router.get("/exploits/summary")
+def get_exploit_summary(db: Session = Depends(get_db)):
+    """Summary counts of public exploits by source and maturity."""
+    by_source = (
+        db.query(ExploitReference.source, func.count(ExploitReference.id))
+        .group_by(ExploitReference.source)
+        .all()
+    )
+    by_maturity = (
+        db.query(ExploitReference.maturity, func.count(ExploitReference.id))
+        .group_by(ExploitReference.maturity)
+        .all()
+    )
+    total_cves = db.query(func.count(func.distinct(ExploitReference.cve_id))).scalar() or 0
+
+    return {
+        "total_exploits": sum(c for _, c in by_source),
+        "total_cves_with_exploits": total_cves,
+        "by_source": {s: c for s, c in by_source},
+        "by_maturity": {m or "unknown": c for m, c in by_maturity},
+    }
+
+
+# ─────────────────────────────────────────────
+# SSVC Decisions
+# ─────────────────────────────────────────────
+
+@router.get("/ssvc")
+def get_ssvc_decisions(
+    decision: Optional[str] = Query(None, regex="^(Track|Track\\*|Attend|Act)$"),
+    search: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """List CISA SSVC vulnerability categorization decisions."""
+    q = db.query(SSVCDecision)
+    if decision:
+        q = q.filter(SSVCDecision.decision == decision)
+    if search:
+        q = q.filter(SSVCDecision.cve_id.ilike(f"%{search}%"))
+
+    total = q.count()
+
+    # Sort by severity of decision: Act > Attend > Track* > Track
+    records = q.order_by(
+        desc(
+            case(
+                (SSVCDecision.decision == "Act", 4),
+                (SSVCDecision.decision == "Attend", 3),
+                (SSVCDecision.decision == "Track*", 2),
+                else_=1,
+            )
+        )
+    ).offset(offset).limit(limit).all()
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [
+            {
+                "cve_id": r.cve_id,
+                "decision": r.decision,
+                "exploitation": r.exploitation,
+                "automatable": r.automatable,
+                "technical_impact": r.technical_impact,
+                "provider": r.provider,
+                "timestamp": r.timestamp,
+            }
+            for r in records
+        ],
+    }
+
+
+@router.get("/ssvc/summary")
+def get_ssvc_summary(db: Session = Depends(get_db)):
+    """SSVC decision distribution."""
+    by_decision = (
+        db.query(SSVCDecision.decision, func.count(SSVCDecision.id))
+        .group_by(SSVCDecision.decision)
+        .all()
+    )
+    return {
+        "total": sum(c for _, c in by_decision),
+        "by_decision": {d: c for d, c in by_decision},
+    }
+
+
+# ─────────────────────────────────────────────
+# MSRC Patches
+# ─────────────────────────────────────────────
+
+@router.get("/msrc-patches")
+def get_msrc_patches(
+    cve_id: Optional[str] = None,
+    kb_id: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """List MSRC Patch Tuesday entries."""
+    q = db.query(MSRCPatch)
+    if cve_id:
+        q = q.filter(MSRCPatch.cve_id == cve_id.upper())
+    if kb_id:
+        q = q.filter(MSRCPatch.kb_id.ilike(f"%{kb_id}%"))
+    if search:
+        q = q.filter(
+            or_(
+                MSRCPatch.cve_id.ilike(f"%{search}%"),
+                MSRCPatch.kb_id.ilike(f"%{search}%"),
+                MSRCPatch.product_name.ilike(f"%{search}%"),
+            )
+        )
+
+    total = q.count()
+    records = q.order_by(desc(MSRCPatch.release_date)).offset(offset).limit(limit).all()
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [
+            {
+                "id": r.id,
+                "cve_id": r.cve_id,
+                "kb_id": r.kb_id,
+                "product_name": r.product_name,
+                "article_url": r.article_url,
+                "severity": r.severity,
+                "impact": r.impact,
+                "supercedence": r.supercedence,
+                "restart_required": r.restart_required,
+                "release_date": r.release_date,
+            }
+            for r in records
+        ],
+    }
+
+
+# ─────────────────────────────────────────────
+# Individual source sync triggers
+# ─────────────────────────────────────────────
+
+@router.post("/sync-exploits")
+def sync_exploits(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Sync ExploitDB + Metasploit module data."""
+    background_tasks.add_task(sync_engine.sync_metasploit_modules_to_db, db)
+    background_tasks.add_task(sync_engine.sync_exploitdb_to_db, db)
+    return {"status": "ok", "message": "ExploitDB + Metasploit sync started in background"}
+
+
+@router.post("/sync-ssvc")
+def sync_ssvc(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Sync CISA SSVC vulnrichment decisions."""
+    background_tasks.add_task(sync_engine.sync_ssvc_decisions_to_db, db)
+    return {"status": "ok", "message": "SSVC sync started in background"}
+
+
+@router.post("/sync-cwe")
+def sync_cwe(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Sync CWE full catalog from MITRE."""
+    background_tasks.add_task(sync_engine.sync_cwe_catalog_to_db, db)
+    return {"status": "ok", "message": "CWE catalog sync started in background"}
+
+
+@router.post("/sync-msrc")
+def sync_msrc(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Sync MSRC Patch Tuesday data."""
+    background_tasks.add_task(sync_engine.sync_msrc_patches_to_db, db)
+    return {"status": "ok", "message": "MSRC Patch Tuesday sync started in background"}

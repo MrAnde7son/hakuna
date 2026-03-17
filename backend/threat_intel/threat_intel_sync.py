@@ -12,13 +12,17 @@ from typing import Optional, List, Dict
 import hashlib
 import re
 import xml.etree.ElementTree as ET
-from models.threat_intel_models import ThreatCVE, ThreatGroup, TTP, ThreatGroupTTP, CisaAdvisory
+from models.threat_intel_models import (
+    ThreatCVE, ThreatGroup, TTP, ThreatGroupTTP, CisaAdvisory,
+    CWEEntry, ExploitReference, SSVCDecision, MSRCPatch,
+)
 from models.models import Finding
 
 logger = logging.getLogger(__name__)
 
 _MITRE_BUNDLE_CACHE = None  # module-level cache to avoid re-fetching the large STIX bundle
 _SSL_CONTEXT = None          # cached SSL context
+_USER_AGENT = "Mozilla/5.0 (compatible; Hakuna/1.0; +https://github.com/MrAnde7son/hakuna)"
 
 
 def _get_ssl_context() -> ssl.SSLContext:
@@ -1397,3 +1401,1006 @@ def sync_product_lifecycles(db, scan_id=None):
 
     logger.info("endoflife.date sync: %d products, %d cycles upserted", products_synced, cycles_upserted)
     return {"products_synced": products_synced, "cycles_upserted": cycles_upserted}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ExploitDB + Metasploit module sync
+# ─────────────────────────────────────────────────────────────────────────────
+
+_METASPLOIT_MODULES_URL = (
+    "https://raw.githubusercontent.com/rapid7/metasploit-framework/master/db/modules_metadata_base.json"
+)
+_EXPLOITDB_CSV_URL = (
+    "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv"
+)
+
+
+def _fetch_json(url: str, timeout: int = 180) -> Optional[dict]:
+    """Fetch JSON from a URL, return None on failure."""
+    ctx = _get_ssl_context()
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        logger.warning("Failed to fetch %s: %s", url, exc)
+        return None
+
+
+def _fetch_text(url: str) -> Optional[str]:
+    """Fetch text content from a URL, return None on failure."""
+    ctx = _get_ssl_context()
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=120) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        logger.warning("Failed to fetch %s: %s", url, exc)
+        return None
+
+
+def sync_metasploit_modules_to_db(db) -> dict:
+    """
+    Fetch Metasploit module metadata and create ExploitReference records for CVE-mapped modules.
+    """
+    logger.info("Metasploit sync: fetching module metadata...")
+    data = _fetch_json(_METASPLOIT_MODULES_URL)
+    if not data:
+        return {"added": 0, "skipped": 0}
+
+    added = 0
+    skipped = 0
+
+    for module_key, meta in data.items():
+        if not isinstance(meta, dict):
+            continue
+        references = meta.get("references", [])
+        cve_ids = [r for r in references if r.startswith("CVE-")]
+        if not cve_ids:
+            skipped += 1
+            continue
+
+        mod_name = meta.get("name", module_key)
+        mod_type = meta.get("mod_type", "exploit")
+        mod_path = meta.get("fullname", module_key)
+        platform_list = meta.get("platform", "")
+        if isinstance(platform_list, list):
+            platform_str = ",".join(platform_list)
+        else:
+            platform_str = str(platform_list)
+
+        for cve_id in cve_ids:
+            existing = (
+                db.query(ExploitReference)
+                .filter(
+                    ExploitReference.cve_id == cve_id,
+                    ExploitReference.source == "metasploit",
+                    ExploitReference.source_id == mod_path,
+                )
+                .first()
+            )
+            if existing:
+                skipped += 1
+                continue
+
+            record = ExploitReference(
+                cve_id=cve_id,
+                source="metasploit",
+                source_id=mod_path,
+                title=mod_name,
+                description=meta.get("description", ""),
+                url=f"https://github.com/rapid7/metasploit-framework/tree/master/modules/{mod_path}.rb",
+                exploit_type=mod_type,
+                platform=platform_str,
+                verified=True,  # Metasploit modules are vetted
+                maturity="functional",
+                published_date=meta.get("disclosure_date", ""),
+                raw_data=meta,
+            )
+            db.add(record)
+            added += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("Metasploit sync commit failed: %s", exc)
+        db.rollback()
+
+    # Update ThreatCVE exploit counts
+    _update_exploit_counts(db)
+
+    logger.info("Metasploit sync: %d added, %d skipped", added, skipped)
+    return {"added": added, "skipped": skipped}
+
+
+def sync_exploitdb_to_db(db) -> dict:
+    """
+    Fetch ExploitDB CSV index and create ExploitReference records for CVE-mapped exploits.
+    """
+    logger.info("ExploitDB sync: fetching exploit index...")
+    csv_text = _fetch_text(_EXPLOITDB_CSV_URL)
+    if not csv_text:
+        return {"added": 0, "skipped": 0}
+
+    import csv
+    import io
+
+    reader = csv.DictReader(io.StringIO(csv_text))
+    added = 0
+    skipped = 0
+
+    for row in reader:
+        codes_raw = row.get("codes", "")
+        if not codes_raw:
+            skipped += 1
+            continue
+
+        cve_ids = [c.strip() for c in codes_raw.split(";") if c.strip().startswith("CVE-")]
+        if not cve_ids:
+            skipped += 1
+            continue
+
+        edb_id = row.get("id", "").strip()
+        if not edb_id:
+            skipped += 1
+            continue
+
+        title = row.get("description", "")
+        platform = row.get("platform", "")
+        exploit_type = row.get("type", "")
+        verified = row.get("verified", "0") == "1"
+        date_published = row.get("date_published", "")
+
+        for cve_id in cve_ids:
+            existing = (
+                db.query(ExploitReference)
+                .filter(
+                    ExploitReference.cve_id == cve_id,
+                    ExploitReference.source == "exploitdb",
+                    ExploitReference.source_id == edb_id,
+                )
+                .first()
+            )
+            if existing:
+                skipped += 1
+                continue
+
+            record = ExploitReference(
+                cve_id=cve_id,
+                source="exploitdb",
+                source_id=edb_id,
+                title=title,
+                url=f"https://www.exploit-db.com/exploits/{edb_id}",
+                exploit_type=exploit_type,
+                platform=platform,
+                verified=verified,
+                maturity="poc" if not verified else "functional",
+                published_date=date_published,
+            )
+            db.add(record)
+            added += 1
+
+        # Commit in batches of 500
+        if added > 0 and added % 500 == 0:
+            try:
+                db.commit()
+            except Exception as exc:
+                logger.warning("ExploitDB batch commit failed: %s", exc)
+                db.rollback()
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("ExploitDB final commit failed: %s", exc)
+        db.rollback()
+
+    _update_exploit_counts(db)
+
+    logger.info("ExploitDB sync: %d added, %d skipped", added, skipped)
+    return {"added": added, "skipped": skipped}
+
+
+def _update_exploit_counts(db):
+    """
+    Update ThreatCVE records with aggregated exploit counts and maturity from ExploitReference table.
+    """
+    from sqlalchemy import func as sa_func
+
+    # Aggregate per CVE: count, sources, best maturity
+    exploit_data = (
+        db.query(
+            ExploitReference.cve_id,
+            sa_func.count(ExploitReference.id),
+            sa_func.group_concat(ExploitReference.source.distinct()),
+        )
+        .group_by(ExploitReference.cve_id)
+        .all()
+    )
+
+    maturity_order = {"weaponized": 4, "functional": 3, "poc": 2, "none": 1}
+
+    for cve_id, count, sources_str in exploit_data:
+        tc = db.query(ThreatCVE).filter(ThreatCVE.cve_id == cve_id).first()
+        if not tc:
+            continue
+
+        sources = list(set(sources_str.split(","))) if sources_str else []
+        tc.exploit_count = count
+        tc.exploit_sources = sources
+        tc.has_public_exploit = True
+
+        # Determine best maturity across all exploits for this CVE
+        best_maturity = "poc"
+        exploit_records = db.query(ExploitReference.maturity).filter(ExploitReference.cve_id == cve_id).all()
+        for (mat,) in exploit_records:
+            if mat and maturity_order.get(mat, 0) > maturity_order.get(best_maturity, 0):
+                best_maturity = mat
+        tc.exploit_maturity_level = best_maturity
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("Exploit count update commit failed: %s", exc)
+        db.rollback()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CISA SSVC (Vulnrichment) sync
+# ─────────────────────────────────────────────────────────────────────────────
+
+_VULNRICHMENT_ZIP_URL = (
+    "https://github.com/cisagov/vulnrichment/archive/refs/heads/develop.zip"
+)
+
+
+# CISA SSVC v2.0.3 decision tree lookup.
+# Maps (Exploitation, Automatable, Technical Impact) → decision.
+# See https://www.cisa.gov/ssvc
+_SSVC_DECISION_TREE = {
+    # Exploitation: active
+    ("active", "yes", "total"):   "Act",
+    ("active", "yes", "partial"): "Act",
+    ("active", "no",  "total"):   "Act",
+    ("active", "no",  "partial"): "Attend",
+    # Exploitation: poc
+    ("poc", "yes", "total"):   "Attend",
+    ("poc", "yes", "partial"): "Attend",
+    ("poc", "no",  "total"):   "Track*",
+    ("poc", "no",  "partial"): "Track*",
+    # Exploitation: none
+    ("none", "yes", "total"):   "Track*",
+    ("none", "yes", "partial"): "Track",
+    ("none", "no",  "total"):   "Track",
+    ("none", "no",  "partial"): "Track",
+}
+
+
+def _derive_ssvc_decision(exploitation: str, automatable: str, technical_impact: str) -> str:
+    """Derive the SSVC decision from the three decision point values."""
+    key = (exploitation.lower().strip(), automatable.lower().strip(), technical_impact.lower().strip())
+    return _SSVC_DECISION_TREE.get(key, "")
+
+
+def _parse_ssvc_from_cve_json(cve_data: dict) -> Optional[dict]:
+    """
+    Extract SSVC decision from a single vulnrichment CVE JSON file.
+    The content.options[] format is: [{"Exploitation": "none"}, {"Automatable": "yes"}, {"Technical Impact": "total"}]
+    The decision (Act/Attend/Track*/Track) is derived from the SSVC v2.0.3 decision tree.
+    """
+    # The CVE ID is in the top-level cveMetadata or at root
+    cve_metadata = cve_data.get("cveMetadata", {})
+    cve_id = cve_metadata.get("cveId", cve_data.get("cveId", ""))
+    if not cve_id or not cve_id.startswith("CVE-"):
+        return None
+
+    # SSVC data is in containers.adp[] entries from CISA
+    containers = cve_data.get("containers", {})
+    adp_list = containers.get("adp", [])
+    if not isinstance(adp_list, list):
+        adp_list = [adp_list]
+
+    for adp in adp_list:
+        if not isinstance(adp, dict):
+            continue
+        provider = adp.get("providerMetadata", {}).get("shortName", "")
+        if provider.upper() not in ("CISA-ADP", "CISA", ""):
+            continue
+
+        metrics = adp.get("metrics", [])
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            other = metric.get("other", {})
+            if not isinstance(other, dict):
+                continue
+            if other.get("type", "").lower() != "ssvc":
+                continue
+
+            content = other.get("content", {})
+            options = content.get("options", [])
+            exploitation_val = ""
+            automatable_val = ""
+            tech_impact_val = ""
+            timestamp = content.get("timestamp", adp.get("dateUpdated", ""))
+
+            # Parse options: each is a single-key dict like {"Exploitation": "none"}
+            for opt in options:
+                if not isinstance(opt, dict):
+                    continue
+                for key, value in opt.items():
+                    key_lower = key.lower().replace(" ", "").replace("_", "")
+                    if key_lower == "exploitation":
+                        exploitation_val = value
+                    elif key_lower == "automatable":
+                        automatable_val = value
+                    elif key_lower in ("technicalimpact", "impact"):
+                        tech_impact_val = value
+
+            if not exploitation_val or not automatable_val or not tech_impact_val:
+                continue
+
+            decision_val = _derive_ssvc_decision(exploitation_val, automatable_val, tech_impact_val)
+            if not decision_val:
+                continue
+
+            return {
+                "cve_id": cve_id,
+                "decision": decision_val,
+                "exploitation": exploitation_val,
+                "automatable": automatable_val,
+                "technical_impact": tech_impact_val,
+                "timestamp": timestamp,
+            }
+
+    return None
+
+
+def sync_ssvc_decisions_to_db(db) -> dict:
+    """
+    Download the CISA vulnrichment repository and extract SSVC decisions
+    from per-CVE JSON files.
+    """
+    import zipfile
+    import io
+
+    logger.info("SSVC sync: downloading CISA vulnrichment repository...")
+    ctx = _get_ssl_context()
+    req = urllib.request.Request(_VULNRICHMENT_ZIP_URL, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=300) as resp:
+            zip_bytes = resp.read()
+    except Exception as exc:
+        logger.warning("SSVC sync: failed to download vulnrichment repo: %s", exc)
+        return {"added": 0, "updated": 0}
+
+    logger.info("SSVC sync: downloaded %d bytes, extracting...", len(zip_bytes))
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except Exception as exc:
+        logger.warning("SSVC sync: failed to open zip: %s", exc)
+        return {"added": 0, "updated": 0}
+
+    added = 0
+    updated = 0
+    parsed = 0
+
+    for name in zf.namelist():
+        # Only process CVE JSON files (e.g. vulnrichment-develop/2024/0xxx/CVE-2024-0001.json)
+        if not name.endswith(".json") or "/CVE-" not in name:
+            continue
+
+        try:
+            raw = zf.read(name)
+            cve_data = json.loads(raw.decode("utf-8", errors="replace"))
+        except Exception:
+            continue
+
+        result = _parse_ssvc_from_cve_json(cve_data)
+        if not result:
+            continue
+
+        parsed += 1
+        cve_id = result["cve_id"]
+
+        existing = db.query(SSVCDecision).filter(SSVCDecision.cve_id == cve_id).first()
+        if existing:
+            existing.decision = result["decision"]
+            existing.exploitation = result["exploitation"]
+            existing.automatable = result["automatable"]
+            existing.technical_impact = result["technical_impact"]
+            existing.timestamp = result["timestamp"]
+            existing.updated_at = datetime.utcnow()
+            updated += 1
+        else:
+            record = SSVCDecision(
+                cve_id=cve_id,
+                decision=result["decision"],
+                exploitation=result["exploitation"],
+                automatable=result["automatable"],
+                technical_impact=result["technical_impact"],
+                provider="CISA",
+                timestamp=result["timestamp"],
+            )
+            db.add(record)
+            added += 1
+
+        # Commit in batches
+        if (added + updated) % 500 == 0:
+            try:
+                db.commit()
+            except Exception as exc:
+                logger.warning("SSVC batch commit failed: %s", exc)
+                db.rollback()
+
+    zf.close()
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("SSVC sync commit failed: %s", exc)
+        db.rollback()
+
+    # Update ThreatCVE records with SSVC data
+    all_ssvc = db.query(SSVCDecision).all()
+    for s in all_ssvc:
+        tc = db.query(ThreatCVE).filter(ThreatCVE.cve_id == s.cve_id).first()
+        if tc:
+            tc.ssvc_decision = s.decision
+            tc.ssvc_exploitation = s.exploitation
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("SSVC → ThreatCVE update commit failed: %s", exc)
+        db.rollback()
+
+    logger.info("SSVC sync: %d parsed, %d added, %d updated", parsed, added, updated)
+    return {"added": added, "updated": updated}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CWE full catalog sync
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CWE_URL = "https://cwe.mitre.org/data/xml/cwec_latest.xml.zip"
+
+# Top-level CWE category mapping for common weakness families
+_CWE_CATEGORY_MAP = {
+    "injection": ["CWE-74", "CWE-77", "CWE-78", "CWE-79", "CWE-89", "CWE-90", "CWE-91", "CWE-94", "CWE-95", "CWE-96"],
+    "authentication": ["CWE-287", "CWE-288", "CWE-289", "CWE-290", "CWE-294", "CWE-295", "CWE-306", "CWE-307"],
+    "authorization": ["CWE-269", "CWE-276", "CWE-281", "CWE-284", "CWE-285", "CWE-732", "CWE-862", "CWE-863"],
+    "cryptography": ["CWE-310", "CWE-311", "CWE-312", "CWE-319", "CWE-320", "CWE-326", "CWE-327", "CWE-328", "CWE-330"],
+    "memory_safety": ["CWE-119", "CWE-120", "CWE-121", "CWE-122", "CWE-125", "CWE-126", "CWE-127", "CWE-131", "CWE-787"],
+    "input_validation": ["CWE-20", "CWE-22", "CWE-23", "CWE-35", "CWE-36", "CWE-73"],
+    "information_disclosure": ["CWE-200", "CWE-201", "CWE-203", "CWE-209", "CWE-532"],
+    "configuration": ["CWE-16", "CWE-250", "CWE-732"],
+    "race_condition": ["CWE-362", "CWE-364", "CWE-366", "CWE-367"],
+    "resource_management": ["CWE-400", "CWE-401", "CWE-404", "CWE-770", "CWE-771"],
+}
+
+# Build reverse map: CWE-ID → category
+_CWE_ID_TO_CATEGORY = {}
+for cat, cwe_ids in _CWE_CATEGORY_MAP.items():
+    for cid in cwe_ids:
+        _CWE_ID_TO_CATEGORY[cid] = cat
+
+
+def sync_cwe_catalog_to_db(db) -> dict:
+    """
+    Fetch the full CWE XML catalog and upsert CWEEntry records.
+    """
+    import zipfile
+    import io
+
+    logger.info("CWE sync: fetching catalog from MITRE...")
+    ctx = _get_ssl_context()
+    req = urllib.request.Request(_CWE_URL, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=120) as resp:
+            zip_bytes = resp.read()
+    except Exception as exc:
+        logger.warning("CWE sync: failed to download: %s", exc)
+        return {"added": 0, "updated": 0}
+
+    # Extract XML from zip
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            xml_names = [n for n in zf.namelist() if n.endswith(".xml")]
+            if not xml_names:
+                logger.warning("CWE sync: no XML file in zip")
+                return {"added": 0, "updated": 0}
+            xml_content = zf.read(xml_names[0])
+    except Exception as exc:
+        logger.warning("CWE sync: failed to extract zip: %s", exc)
+        return {"added": 0, "updated": 0}
+
+    # Parse XML
+    try:
+        root = ET.fromstring(xml_content)
+    except Exception as exc:
+        logger.warning("CWE sync: failed to parse XML: %s", exc)
+        return {"added": 0, "updated": 0}
+
+    # CWE XML uses namespaces
+    ns = ""
+    if root.tag.startswith("{"):
+        ns = root.tag.split("}")[0] + "}"
+
+    weaknesses = root.findall(f".//{ns}Weaknesses/{ns}Weakness") or root.findall(f".//{ns}Weakness")
+
+    added = 0
+    updated = 0
+
+    for w in weaknesses:
+        cwe_num = w.get("ID", "")
+        if not cwe_num:
+            continue
+        cwe_id = f"CWE-{cwe_num}"
+        name = w.get("Name", "")
+        weakness_type = w.get("Abstraction", "")
+        status = w.get("Status", "")
+
+        # Description
+        desc_el = w.find(f"{ns}Description")
+        description = desc_el.text.strip() if desc_el is not None and desc_el.text else ""
+
+        ext_desc_el = w.find(f"{ns}Extended_Description")
+        extended_desc = ""
+        if ext_desc_el is not None:
+            # May contain mixed content (p, ul, etc.) — extract all text
+            extended_desc = "".join(ext_desc_el.itertext()).strip()
+
+        # Parent CWE IDs (ChildOf relationships)
+        parent_ids = []
+        for rel in w.findall(f".//{ns}Related_Weakness"):
+            if rel.get("Nature") == "ChildOf":
+                parent_ids.append(f"CWE-{rel.get('CWE_ID', '')}")
+
+        # Child CWE IDs (ParentOf relationships)
+        child_ids = []
+        for rel in w.findall(f".//{ns}Related_Weakness"):
+            if rel.get("Nature") == "ParentOf":
+                child_ids.append(f"CWE-{rel.get('CWE_ID', '')}")
+
+        # Related attack patterns (CAPEC)
+        capec_ids = []
+        for rap in w.findall(f".//{ns}Related_Attack_Pattern"):
+            capec_id = rap.get("CAPEC_ID", "")
+            if capec_id:
+                capec_ids.append(f"CAPEC-{capec_id}")
+
+        # Applicable platforms
+        platforms = []
+        for lang in w.findall(f".//{ns}Applicable_Platforms/{ns}Language"):
+            pname = lang.get("Name") or lang.get("Class", "")
+            if pname:
+                platforms.append(pname)
+
+        # Common consequences
+        consequences = []
+        for conseq in w.findall(f".//{ns}Common_Consequences/{ns}Consequence"):
+            scope_el = conseq.find(f"{ns}Scope")
+            impact_el = conseq.find(f"{ns}Impact")
+            consequences.append({
+                "scope": scope_el.text.strip() if scope_el is not None and scope_el.text else "",
+                "impact": impact_el.text.strip() if impact_el is not None and impact_el.text else "",
+            })
+
+        # Mitigations
+        mitigations = []
+        for mit in w.findall(f".//{ns}Potential_Mitigations/{ns}Mitigation"):
+            phase_el = mit.find(f"{ns}Phase")
+            desc_mit_el = mit.find(f"{ns}Description")
+            mitigations.append({
+                "phase": phase_el.text.strip() if phase_el is not None and phase_el.text else "",
+                "description": "".join(desc_mit_el.itertext()).strip() if desc_mit_el is not None else "",
+            })
+
+        # Detection methods
+        detections = []
+        for det in w.findall(f".//{ns}Detection_Methods/{ns}Detection_Method"):
+            method_el = det.find(f"{ns}Method")
+            det_desc_el = det.find(f"{ns}Description")
+            detections.append({
+                "method": method_el.text.strip() if method_el is not None and method_el.text else "",
+                "description": "".join(det_desc_el.itertext()).strip() if det_desc_el is not None else "",
+            })
+
+        # Category from our mapping
+        category = _CWE_ID_TO_CATEGORY.get(cwe_id, "")
+        if not category and parent_ids:
+            for pid in parent_ids:
+                cat = _CWE_ID_TO_CATEGORY.get(pid, "")
+                if cat:
+                    category = cat
+                    break
+
+        existing = db.query(CWEEntry).filter(CWEEntry.cwe_id == cwe_id).first()
+        if existing:
+            existing.name = name
+            existing.description = description
+            existing.extended_description = extended_desc
+            existing.weakness_type = weakness_type
+            existing.status = status
+            existing.parent_cwe_ids = parent_ids
+            existing.child_cwe_ids = child_ids
+            existing.related_attack_patterns = capec_ids
+            existing.applicable_platforms = platforms
+            existing.common_consequences = consequences[:10]
+            existing.detection_methods = detections[:5]
+            existing.mitigations = mitigations[:10]
+            existing.category = category
+            existing.url = f"https://cwe.mitre.org/data/definitions/{cwe_num}.html"
+            existing.updated_at = datetime.utcnow()
+            updated += 1
+        else:
+            record = CWEEntry(
+                cwe_id=cwe_id,
+                name=name,
+                description=description,
+                extended_description=extended_desc,
+                weakness_type=weakness_type,
+                status=status,
+                parent_cwe_ids=parent_ids,
+                child_cwe_ids=child_ids,
+                related_attack_patterns=capec_ids,
+                applicable_platforms=platforms,
+                common_consequences=consequences[:10],
+                detection_methods=detections[:5],
+                mitigations=mitigations[:10],
+                category=category,
+                url=f"https://cwe.mitre.org/data/definitions/{cwe_num}.html",
+            )
+            db.add(record)
+            added += 1
+
+        # Commit in batches
+        if (added + updated) % 200 == 0:
+            try:
+                db.commit()
+            except Exception as exc:
+                logger.warning("CWE batch commit failed: %s", exc)
+                db.rollback()
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("CWE final commit failed: %s", exc)
+        db.rollback()
+
+    # Resolve CWE names on ThreatCVE records
+    _resolve_cwe_names(db)
+
+    logger.info("CWE sync: %d added, %d updated", added, updated)
+    return {"added": added, "updated": updated}
+
+
+def _resolve_cwe_names(db):
+    """Resolve CWE IDs on ThreatCVE records to names and categories from CWEEntry."""
+    cwe_lookup = {r.cwe_id: r for r in db.query(CWEEntry).all()}
+    if not cwe_lookup:
+        return
+
+    threat_cves = db.query(ThreatCVE).filter(ThreatCVE.cwe_ids.isnot(None)).all()
+    for tc in threat_cves:
+        if not tc.cwe_ids:
+            continue
+        names = []
+        categories = set()
+        for cid in tc.cwe_ids:
+            cwe = cwe_lookup.get(cid)
+            if cwe:
+                names.append(f"{cid}: {cwe.name}")
+                if cwe.category:
+                    categories.add(cwe.category)
+        tc.cwe_names = names
+        tc.cwe_categories = sorted(categories)
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("CWE name resolution commit failed: %s", exc)
+        db.rollback()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MSRC Patch Tuesday sync
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MSRC_UPDATES_URL = "https://api.msrc.microsoft.com/cvrf/v3.0/updates"
+
+
+def _fetch_msrc_document(doc_id: str) -> Optional[dict]:
+    """Fetch a single MSRC CVRF document as JSON."""
+    url = f"https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/{doc_id}"
+    ctx = _get_ssl_context()
+    req = urllib.request.Request(url, headers={
+        "User-Agent": _USER_AGENT,
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        logger.warning("MSRC fetch doc %s failed: %s", doc_id, exc)
+        return None
+
+
+def sync_msrc_patches_to_db(db, months: int = 3) -> dict:
+    """
+    Fetch recent MSRC Patch Tuesday releases and extract CVE-to-KB mappings.
+    Only fetches the last `months` documents to stay fast.
+    """
+    import time
+
+    logger.info("MSRC sync: fetching Patch Tuesday updates index...")
+    ctx = _get_ssl_context()
+    req = urllib.request.Request(_MSRC_UPDATES_URL, headers={
+        "User-Agent": _USER_AGENT,
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+            updates = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        logger.warning("MSRC sync: failed to fetch updates index: %s", exc)
+        return {"added": 0, "documents_processed": 0}
+
+    # Get document IDs (e.g. "2025-Mar", "2025-Feb")
+    docs = updates.get("value", [])
+    if not docs:
+        return {"added": 0, "documents_processed": 0}
+
+    # Sort by date descending and take last N months
+    docs.sort(key=lambda d: d.get("InitialReleaseDate", ""), reverse=True)
+    recent_docs = docs[:months]
+
+    added = 0
+    documents_processed = 0
+    seen_keys = set()  # Track (cve_id, kb_id, product_id) to avoid in-session duplicates
+
+    for doc_meta in recent_docs:
+        doc_id = doc_meta.get("ID", "")
+        if not doc_id:
+            continue
+
+        cvrf = _fetch_msrc_document(doc_id)
+        if not cvrf:
+            continue
+
+        documents_processed += 1
+        release_date = doc_meta.get("InitialReleaseDate", "")[:10]
+
+        # Build product name lookup from ProductTree (recursive traversal)
+        product_name_map = {}
+        product_tree = cvrf.get("ProductTree", {})
+
+        def _walk_branches(branches):
+            for branch in branches:
+                if not isinstance(branch, dict):
+                    continue
+                # Leaf nodes with ProductID
+                pid = branch.get("ProductID")
+                if pid:
+                    product_name_map[pid] = branch.get("Value", "")
+                # Recurse into nested Items/Branch
+                for key in ("Items", "Branch"):
+                    children = branch.get(key, [])
+                    if isinstance(children, list):
+                        _walk_branches(children)
+
+        _walk_branches(product_tree.get("Branch", []))
+        # Also check FullProductName at top level
+        for fpn in product_tree.get("FullProductName", []):
+            if isinstance(fpn, dict) and fpn.get("ProductID"):
+                product_name_map[fpn["ProductID"]] = fpn.get("Value", "")
+
+        # Build per-product severity/impact lookup from Threats
+        # Threats can be scoped to specific ProductIDs
+        vulns = cvrf.get("Vulnerability", [])
+        for vuln in vulns:
+            cve_id = vuln.get("CVE", "")
+            if not cve_id or not cve_id.startswith("CVE-"):
+                continue
+
+            title = vuln.get("Title", {}).get("Value", "")
+
+            # Pre-build severity/impact maps: product_id -> value
+            severity_map = {}  # product_id -> severity
+            impact_map = {}    # product_id -> impact
+            default_severity = ""
+            default_impact = ""
+            for threat in vuln.get("Threats", []):
+                ttype = threat.get("Type")
+                desc_val = threat.get("Description", {}).get("Value", "")
+                threat_product_ids = threat.get("ProductID", [])
+                if isinstance(threat_product_ids, str):
+                    threat_product_ids = [threat_product_ids]
+                if ttype == 3:  # Severity
+                    if threat_product_ids:
+                        for tpid in threat_product_ids:
+                            severity_map[tpid] = desc_val
+                    else:
+                        default_severity = desc_val
+                elif ttype == 0:  # Impact
+                    if threat_product_ids:
+                        for tpid in threat_product_ids:
+                            impact_map[tpid] = desc_val
+                    else:
+                        default_impact = desc_val
+
+            # Extract KB articles from Remediations
+            remediations = vuln.get("Remediations", [])
+            for rem in remediations:
+                if rem.get("Type") != 2:  # Type 2 = Vendor Fix
+                    continue
+
+                kb_raw = rem.get("Description", {}).get("Value", "")
+                # KB numbers are numeric strings
+                kb_id = f"KB{kb_raw}" if kb_raw and kb_raw.isdigit() else kb_raw
+
+                product_id = ""
+                product_ids = rem.get("ProductID", [])
+                if product_ids:
+                    product_id = product_ids[0] if isinstance(product_ids, list) else str(product_ids)
+
+                product_name = product_name_map.get(product_id, "")
+
+                url = rem.get("URL", "")
+                supercedence = rem.get("Supercedence", "")
+                restart = rem.get("RestartRequired", {}).get("Value", "")
+
+                # Use per-product severity/impact, falling back to defaults
+                severity = severity_map.get(product_id, default_severity)
+                impact = impact_map.get(product_id, default_impact)
+
+                if not kb_id:
+                    continue
+
+                dedup_key = (cve_id, kb_id, product_id)
+                if dedup_key in seen_keys:
+                    continue
+                seen_keys.add(dedup_key)
+
+                existing = (
+                    db.query(MSRCPatch)
+                    .filter(
+                        MSRCPatch.cve_id == cve_id,
+                        MSRCPatch.kb_id == kb_id,
+                        MSRCPatch.product_id == product_id,
+                    )
+                    .first()
+                )
+                if existing:
+                    existing.severity = severity
+                    existing.impact = impact
+                    existing.supercedence = supercedence
+                    existing.restart_required = restart
+                    existing.article_url = url
+                    existing.release_date = release_date
+                    existing.updated_at = datetime.utcnow()
+                else:
+                    record = MSRCPatch(
+                        cve_id=cve_id,
+                        kb_id=kb_id,
+                        product_name=product_name,
+                        product_id=product_id,
+                        article_url=url,
+                        severity=severity,
+                        impact=impact,
+                        supercedence=supercedence,
+                        restart_required=restart,
+                        release_date=release_date,
+                    )
+                    db.add(record)
+                    added += 1
+
+        try:
+            db.commit()
+        except Exception as exc:
+            logger.warning("MSRC commit failed for doc %s: %s", doc_id, exc)
+            db.rollback()
+
+        time.sleep(1.0)  # Be polite to MSRC API
+
+    # Update ThreatCVE with KB IDs
+    _update_msrc_kb_ids(db)
+
+    logger.info("MSRC sync: %d patches added from %d documents", added, documents_processed)
+    return {"added": added, "documents_processed": documents_processed}
+
+
+def _update_msrc_kb_ids(db):
+    """Aggregate KB IDs from MSRCPatch into ThreatCVE.msrc_kb_ids."""
+    from sqlalchemy import func as sa_func
+
+    kb_data = (
+        db.query(MSRCPatch.cve_id, sa_func.group_concat(MSRCPatch.kb_id.distinct()))
+        .group_by(MSRCPatch.cve_id)
+        .all()
+    )
+
+    for cve_id, kb_str in kb_data:
+        tc = db.query(ThreatCVE).filter(ThreatCVE.cve_id == cve_id).first()
+        if tc and kb_str:
+            tc.msrc_kb_ids = list(set(kb_str.split(",")))
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("MSRC KB ID update commit failed: %s", exc)
+        db.rollback()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Extended finding enrichment (adds new intel fields)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def enrich_findings_extended(db, scan_id: int = None) -> dict:
+    """
+    Enrich findings with new intel data: exploit_count, exploit_maturity_level,
+    ssvc_decision. Called after the core enrichment.
+    """
+    all_threat_cves = db.query(ThreatCVE).all()
+    if not all_threat_cves:
+        return {"enriched": 0}
+
+    cve_lookup: Dict[str, ThreatCVE] = {r.cve_id: r for r in all_threat_cves}
+
+    fq = db.query(Finding).filter(Finding.cves.isnot(None))
+    if scan_id is not None:
+        fq = fq.filter(Finding.scan_id == scan_id)
+    findings = fq.all()
+
+    enriched = 0
+
+    for f in findings:
+        if not f.cves:
+            continue
+
+        best_exploit_count = 0
+        best_exploit_maturity = None
+        best_ssvc = None
+
+        maturity_order = {"weaponized": 4, "functional": 3, "poc": 2, "none": 1}
+        ssvc_order = {"Act": 4, "Attend": 3, "Track*": 2, "Track": 1}
+
+        for cve_id in f.cves:
+            tc = cve_lookup.get(cve_id.strip() if cve_id else None)
+            if not tc:
+                continue
+
+            if tc.exploit_count and tc.exploit_count > best_exploit_count:
+                best_exploit_count = tc.exploit_count
+
+            if tc.exploit_maturity_level:
+                if best_exploit_maturity is None or maturity_order.get(tc.exploit_maturity_level, 0) > maturity_order.get(best_exploit_maturity, 0):
+                    best_exploit_maturity = tc.exploit_maturity_level
+
+            if tc.ssvc_decision:
+                if best_ssvc is None or ssvc_order.get(tc.ssvc_decision, 0) > ssvc_order.get(best_ssvc, 0):
+                    best_ssvc = tc.ssvc_decision
+
+        changed = False
+        if best_exploit_count and f.exploit_count != best_exploit_count:
+            f.exploit_count = best_exploit_count
+            changed = True
+        if best_exploit_maturity and f.exploit_maturity_level != best_exploit_maturity:
+            f.exploit_maturity_level = best_exploit_maturity
+            changed = True
+        if best_ssvc and f.ssvc_decision != best_ssvc:
+            f.ssvc_decision = best_ssvc
+            changed = True
+
+        if changed:
+            enriched += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("Extended enrichment commit failed: %s", exc)
+        db.rollback()
+
+    logger.info("Extended finding enrichment: %d enriched", enriched)
+    return {"enriched": enriched}

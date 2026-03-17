@@ -287,6 +287,12 @@ class Finding(Base):
     ransomware_linked = Column(Boolean, default=False)
     trending_in_news = Column(Boolean, default=False)
 
+    # Additional intel enrichment (from new data sources)
+    exploit_count = Column(Integer, default=0)  # Total public exploits across all sources
+    exploit_maturity_level = Column(String)  # "none" | "poc" | "functional" | "weaponized"
+    ssvc_decision = Column(String)  # CISA SSVC decision: "Track" | "Track*" | "Attend" | "Act"
+    greynoise_seen = Column(Boolean, default=False)  # Actively exploited per GreyNoise
+
     # ATT&CK TTP matching (populated by ttp_matcher)
     matched_ttps = Column(JSON, default=list)  # [{technique_id, name, tactic, mitre_url, match_reason, confidence}]
 

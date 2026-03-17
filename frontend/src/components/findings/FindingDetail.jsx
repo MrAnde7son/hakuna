@@ -238,6 +238,10 @@ export default function FindingDetail() {
               {finding.zero_day && <Pill label="0-DAY" color="#dc2626" />}
               {finding.exploit_available && <Pill label="Exploit Known" color="#ea580c" />}
               {finding.exploit_maturity && <Pill label={finding.exploit_maturity} color="#d97706" />}
+              {finding.is_kev && <Pill label="CISA KEV" color="#dc2626" />}
+              {finding.ssvc_decision && <Pill label={`SSVC: ${finding.ssvc_decision}`} color={finding.ssvc_decision === 'Act' ? '#dc2626' : finding.ssvc_decision === 'Attend' ? '#ea580c' : '#d97706'} />}
+              {finding.exploit_count > 0 && <Pill label={`${finding.exploit_count} Exploits`} color="#ea580c" />}
+              {finding.exploit_maturity_level && finding.exploit_maturity_level !== 'none' && <Pill label={finding.exploit_maturity_level} color={finding.exploit_maturity_level === 'weaponized' ? '#dc2626' : finding.exploit_maturity_level === 'functional' ? '#ea580c' : '#d97706'} />}
             </div>
             <h1 style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.3, marginBottom: 6 }}>{finding.plugin_name}</h1>
             <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
