@@ -10,8 +10,8 @@
 ### Option 1: Quick Start Script
 
 ```bash
-git clone https://github.com/MrAnde7son/nessus-remediation.git
-cd nessus-remediation
+git clone https://github.com/MrAnde7son/hakuna.git
+cd hakuna
 ./start.sh
 ```
 

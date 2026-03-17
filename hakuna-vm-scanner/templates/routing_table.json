@@ -1,0 +1,48 @@
+{
+  "cpe_map": {
+    "apache:http_server":     ["apache", "http"],
+    "apache:tomcat":          ["apache", "tomcat", "http"],
+    "nginx:nginx":            ["nginx", "http"],
+    "wordpress:wordpress":    ["wordpress", "cms", "php"],
+    "microsoft:iis":          ["iis", "windows", "http"],
+    "microsoft:exchange":     ["exchange", "windows"],
+    "openssh:openssh":        ["ssh", "openssh"],
+    "openssl:openssl":        ["ssl", "tls"],
+    "php:php":                ["php", "http"],
+    "oracle:mysql":           ["mysql", "db"],
+    "postgresql:postgresql":  ["postgres", "db"],
+    "redis:redis":            ["redis", "db"],
+    "mongodb:mongodb":        ["mongodb", "db"],
+    "elastic:elasticsearch":  ["elasticsearch"],
+    "jenkins:jenkins":        ["jenkins", "cicd"],
+    "grafana:grafana":        ["grafana", "http"],
+    "docker:docker":          ["docker"],
+    "hashicorp:consul":       ["consul"],
+    "hashicorp:vault":        ["vault"]
+  },
+  "tech_map": {
+    "apache":     ["apache", "http"],
+    "nginx":      ["nginx", "http"],
+    "wordpress":  ["wordpress", "cms", "php"],
+    "iis":        ["iis", "windows", "http"],
+    "php":        ["php", "http"],
+    "node.js":    ["nodejs", "http"],
+    "express":    ["nodejs", "http"],
+    "react":      ["http"],
+    "django":     ["python", "http"],
+    "flask":      ["python", "http"],
+    "spring":     ["java", "http"],
+    "tomcat":     ["apache", "tomcat", "http"],
+    "jenkins":    ["jenkins", "cicd"],
+    "grafana":    ["grafana", "http"],
+    "mysql":      ["mysql", "db"],
+    "postgresql": ["postgres", "db"],
+    "redis":      ["redis", "db"],
+    "mongodb":    ["mongodb", "db"]
+  },
+  "port_gates": {
+    "web": { "ports": [80, 443, 8080, 8443], "tags": ["http", "ssl"] },
+    "smb": { "ports": [445],                  "tags": ["smb"] },
+    "db":  { "ports": [3306, 5432, 6379, 27017], "tags": ["db"] }
+  }
+}

@@ -5,7 +5,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from app.database import Base
-from app.models import asset, org  # noqa: F401 — ensure models are imported
+from app.models import asset, org, finding  # noqa: F401 — ensure models are imported
 
 config = context.config
 

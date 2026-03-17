@@ -174,7 +174,7 @@ def export_agent(agent_id: int, db: Session = Depends(get_db), org_ids: Optional
     if not agent:
         raise HTTPException(404, "Agent not found")
     return {
-        "_format": "nessus-remediation-agent-v1",
+        "_format": "hakuna-agent-v1",
         "name": agent.name,
         "description": agent.description,
         "system_prompt": agent.system_prompt,
