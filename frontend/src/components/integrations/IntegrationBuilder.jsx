@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, Check, ChevronRight, ChevronDown, Zap, Database as DbIcon, FileText, Globe, Wand2, Eye, EyeOff, List } from 'lucide-react'
-import { Card, Button, Spinner } from '../shared/ui.jsx'
+import { Card, Button } from '../shared/ui.jsx'
 import {
   getConnectors, getConnector, getIntegrationSchema, getAcquisitionFlow,
   validateCredentials, createCredential, integrationConnect, integrationPreview,
@@ -366,7 +366,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
           {connectors.map(c => (
             <Card key={c.id} onClick={() => handleSelectConnector(c.id)} style={{ cursor: 'pointer', padding: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                <VendorLogo src={c.logo} size={28} />
+                <VendorLogo src={c.logo} size={32} />
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.description}</div>
@@ -394,7 +394,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
             style={{ ...inputStyle, flex: 1 }}
           />
           <Button onClick={handleDiscover} disabled={discovering || !discoverUrl}>
-            {discovering ? <><Spinner /> Discovering...</> : 'Discover API'}
+            {discovering ? <><InlineSpinner /> Discovering...</> : 'Discover API'}
           </Button>
         </div>
 
@@ -411,7 +411,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
               <Button onClick={() => handleLlmParse(document.getElementById('llm-docs-url').value)}
                 disabled={discovering}
                 style={{ fontSize: 12, padding: '6px 12px' }}>
-                {discovering ? <Spinner /> : 'Parse with AI'}
+                {discovering ? <InlineSpinner /> : 'Parse with AI'}
               </Button>
             </div>
           </div>
@@ -658,8 +658,9 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         </div>
       )}
 
-      <Button onClick={handleConnect} disabled={loading || !transportConfig.base_url}>
-        {loading ? <><Spinner /> Connecting...</> : <>Connect & Fetch Response <ArrowRight size={14} style={{ marginLeft: 6 }} /></>}
+      <Button onClick={handleConnect} disabled={loading || !transportConfig.base_url}
+        style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        {loading ? <><InlineSpinner /> Connecting...</> : <>Connect & Fetch Response <ArrowRight size={14} /></>}
       </Button>
     </div>
   )
@@ -720,7 +721,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       </div>
 
       <Button onClick={() => handlePickRecords(recordsPath)} disabled={loading || !recordsPath}>
-        {loading ? <><Spinner /> Fetching...</> : <>Use These Records <ArrowRight size={14} style={{ marginLeft: 6 }} /></>}
+        {loading ? <><InlineSpinner /> Fetching...</> : <>Use These Records <ArrowRight size={14} style={{ marginLeft: 6 }} /></>}
       </Button>
     </div>
   )
@@ -845,11 +846,11 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
 
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
         <Button onClick={() => handleSave(false)} disabled={loading || !integrationName}>
-          {loading ? <Spinner /> : 'Save'}
+          {loading ? <InlineSpinner /> : 'Save'}
         </Button>
         <Button onClick={() => handleSave(true)} disabled={loading || !integrationName}
           style={{ background: 'var(--accent)' }}>
-          {loading ? <Spinner /> : 'Save & Run Now'}
+          {loading ? <InlineSpinner /> : 'Save & Run Now'}
         </Button>
       </div>
     </div>
@@ -1126,6 +1127,19 @@ function EndpointExplorer({ endpoints, authSchemes, onSelect }) {
         )}
       </div>
     </div>
+  )
+}
+
+function InlineSpinner({ size = 14 }) {
+  return (
+    <>
+      <div style={{
+        width: size, height: size, border: '2px solid rgba(255,255,255,0.3)',
+        borderTop: '2px solid #fff', borderRadius: '50%',
+        animation: 'spin 0.8s linear infinite', flexShrink: 0,
+      }} />
+      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+    </>
   )
 }
 

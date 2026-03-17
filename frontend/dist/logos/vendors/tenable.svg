@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
-  <rect width="32" height="32" rx="6" fill="#062B3F"/>
-  <path d="M8 12h16v2H8zM8 16h12v2H8zM8 20h8v2H8z" fill="#06BCD0"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <rect width="40" height="40" rx="8" fill="#062B3F"/>
+  <!-- T letterform -->
+  <rect x="10" y="10" width="20" height="4" rx="1" fill="#00C4CC"/>
+  <rect x="18" y="10" width="4" height="20" rx="1" fill="#00C4CC"/>
 </svg>
