@@ -480,13 +480,15 @@ export default function AggregatedSolutions() {
           if (!data) return null
           const color = ROOT_CAUSE_COLORS[rc]
           const label = t(`aggregated.rootCauseLabels.${rc}`, rc)
+          const isActive = rootCauseFilter === rc
           return (
             <Card
               key={rc}
-              onClick={() => setRootCauseFilter(rootCauseFilter === rc ? '' : rc)}
+              onClick={() => setRootCauseFilter(isActive ? '' : rc)}
+              activeBorderColor={isActive ? color : null}
               style={{
                 padding: '12px 16px', cursor: 'pointer',
-                border: rootCauseFilter === rc ? `2px solid ${color}` : undefined,
+                border: isActive ? `2px solid ${color}` : undefined,
               }}
             >
               <div style={{ fontSize: 11, color, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>

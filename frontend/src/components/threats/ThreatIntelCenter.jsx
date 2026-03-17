@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Shield, AlertTriangle, Zap, Globe, Users, Activity, RefreshCw,
   Search, Filter, ChevronDown, ChevronUp, ChevronRight, ExternalLink,
@@ -218,7 +218,7 @@ function Modal({ title, onClose, children, width = 520 }) {
 
 // ─── Stats Bar ────────────────────────────────────────────────────────────────
 
-function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
+function StatsBar({ stats, syncing, onSync, syncResult, onStatClick, activeFilter }) {
   const { t } = useTranslation()
   return (
     <div style={{ marginBottom: 24 }}>
@@ -245,6 +245,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           value={stats?.total_cves?.toLocaleString() ?? '—'}
           icon={Database}
           color="#6366f1"
+          active={activeFilter === 'all_cves'}
           onClick={() => onStatClick('all_cves')}
         />
         <StatCard
@@ -253,6 +254,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={AlertTriangle}
           color="#dc2626"
           sub="Known exploited"
+          active={activeFilter === 'kev'}
           onClick={() => onStatClick('kev')}
         />
         <StatCard
@@ -261,6 +263,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={TrendingUp}
           color="#ea580c"
           sub={stats?.avg_epss != null ? `Avg EPSS: ${(stats.avg_epss * 100).toFixed(1)}%` : undefined}
+          active={activeFilter === 'high_epss'}
           onClick={() => onStatClick('high_epss')}
         />
         <StatCard
@@ -269,6 +272,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={Users}
           color="#d97706"
           sub="≥50% TTP overlap"
+          active={activeFilter === 'exposed_groups'}
           onClick={() => onStatClick('exposed_groups')}
         />
         <StatCard
@@ -276,6 +280,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           value={stats?.affected_assets?.toLocaleString() ?? '—'}
           icon={Server}
           color="#0ea5e9"
+          active={activeFilter === 'affected_assets'}
           onClick={() => onStatClick('affected_assets')}
         />
       </div>
@@ -287,6 +292,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={Code}
           color="#dc2626"
           sub="CVEs with PoC/exploit"
+          active={activeFilter === 'has_exploit'}
           onClick={() => onStatClick('has_exploit')}
         />
         <StatCard
@@ -295,6 +301,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={Crosshair}
           color="#7c3aed"
           sub={`${stats?.ssvc_decisions?.toLocaleString() ?? 0} total decisions`}
+          active={activeFilter === 'ssvc_act'}
           onClick={() => onStatClick('ssvc_act')}
         />
         <StatCard
@@ -303,6 +310,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={Eye}
           color="#ea580c"
           sub="Exploited in the wild"
+          active={activeFilter === 'greynoise_seen'}
           onClick={() => onStatClick('greynoise_seen')}
         />
         <StatCard
@@ -311,6 +319,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={BookOpen}
           color="#2563eb"
           sub="Weakness types"
+          active={activeFilter === 'cwe_catalog'}
           onClick={() => onStatClick('cwe_catalog')}
         />
         <StatCard
@@ -319,6 +328,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={Wrench}
           color="#16a34a"
           sub="Microsoft CVEs patched"
+          active={activeFilter === 'msrc_patches'}
           onClick={() => onStatClick('msrc_patches')}
         />
       </div>
@@ -1953,12 +1963,21 @@ function ProductsTab() {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
+const VALID_STAT_FILTERS = ['all_cves', 'kev', 'high_epss', 'exposed_groups', 'affected_assets', 'has_exploit', 'ssvc_act', 'greynoise_seen', 'cwe_catalog', 'msrc_patches']
+
 export default function ThreatIntelCenter() {
   const { tab: tabParam } = useParams()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const VALID_TABS = TAB_KEYS
   const tab = VALID_TABS.includes(tabParam) ? tabParam : 'newsroom'
-  const setTab = (t) => navigate(`/threat-intel/${t}`, { replace: true })
+  const setTab = (t) => {
+    navigate(`/threat-intel/${t}?${searchParams.toString()}`, { replace: true })
+  }
+
+  // Derive active stat filter from URL search params
+  const activeFilter = VALID_STAT_FILTERS.includes(searchParams.get('filter')) ? searchParams.get('filter') : null
+
   const [stats, setStats] = useState(null)
   const [cves, setCves] = useState([])
   const [loadingStats, setLoadingStats] = useState(false)
@@ -2037,36 +2056,49 @@ export default function ThreatIntelCenter() {
     setTab('cves')
   }
 
-  const handleStatClick = (key) => {
+  const applyStatFilter = useCallback((key) => {
     resetCveFilters()
-    if (key === 'all_cves') {
-      setTab('cves')
-    } else if (key === 'kev') {
+    if (key === 'kev') {
       setCveInitialKevOnly(true)
-      setTab('cves')
     } else if (key === 'high_epss') {
       setCveInitialMinEpss(0.5)
-      setTab('cves')
     } else if (key === 'exposed_groups') {
       setGroupsInitialInMyEnv(true)
-      setTab('groups')
     } else if (key === 'affected_assets') {
       setCveInitialInScanOnly(true)
-      setTab('cves')
     } else if (key === 'has_exploit') {
       setCveInitialHasExploit(true)
-      setTab('cves')
     } else if (key === 'ssvc_act') {
       setCveInitialSsvcAct(true)
-      setTab('cves')
     } else if (key === 'greynoise_seen') {
       setCveInitialGreynoiseSeen(true)
-      setTab('cves')
-    } else if (key === 'cwe_catalog') {
-      setTab('cves')
-    } else if (key === 'msrc_patches') {
-      setTab('cves')
     }
+  }, [])
+
+  // Apply filter from URL on mount / when filter param changes
+  useEffect(() => {
+    if (activeFilter) {
+      applyStatFilter(activeFilter)
+      // Navigate to the right tab for this filter
+      const targetTab = activeFilter === 'exposed_groups' ? 'groups' : 'cves'
+      if (tab !== targetTab) {
+        navigate(`/threat-intel/${targetTab}?filter=${activeFilter}`, { replace: true })
+      }
+    }
+  }, [activeFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleStatClick = (key) => {
+    // Toggle: clicking the already-active filter clears it
+    if (activeFilter === key) {
+      resetCveFilters()
+      searchParams.delete('filter')
+      const targetTab = key === 'exposed_groups' ? 'groups' : 'cves'
+      navigate(`/threat-intel/${targetTab}?${searchParams.toString()}`, { replace: true })
+      return
+    }
+    // Set filter in URL — this triggers the useEffect above
+    const targetTab = key === 'exposed_groups' ? 'groups' : 'cves'
+    navigate(`/threat-intel/${targetTab}?filter=${key}`, { replace: true })
   }
 
   return (
@@ -2078,6 +2110,7 @@ export default function ThreatIntelCenter() {
         onSync={handleSync}
         syncResult={syncResult}
         onStatClick={handleStatClick}
+        activeFilter={activeFilter}
       />
 
       {statsError && (
