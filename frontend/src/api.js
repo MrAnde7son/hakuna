@@ -759,3 +759,31 @@ export const runAgentPipeline = (pipelineId, input, modelOverrides = {}) => requ
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ input, model_overrides: modelOverrides }),
 })
+
+// ── VM Scanner API (proxied to port 8002) ─────────────────
+const VM_BASE = '/vm'
+
+async function vmRequest(path, opts = {}) {
+  const res = await fetch(`${VM_BASE}${path}`, { ...opts })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || 'VM Scanner request failed')
+  }
+  return res.json()
+}
+
+export const startVmScan = ({ assetIds, targets, scanAll } = {}) => vmRequest('/scans/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    ...(assetIds ? { asset_ids: assetIds } : {}),
+    ...(targets ? { targets } : {}),
+    ...(scanAll ? { scan_all: true } : {}),
+  }),
+})
+
+export const getVmScanStatus = (jobId) => vmRequest(`/scans/${jobId}`)
+
+export const getVmHealth = () => vmRequest('/health').catch(() => null)
+
+export const getEasmAssets = () => request('/easm/assets')

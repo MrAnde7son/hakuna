@@ -10,7 +10,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from scanner.vm.config import TEMPLATES_DIR
-from scanner.vm.nuclei_worker import fetch_alive_assets, run_nuclei_scan
+from scanner.vm.nuclei_worker import fetch_alive_assets, run_nuclei_adhoc, run_nuclei_scan
 from scanner.vm.template_validator import validate_custom_template
 
 router = APIRouter(prefix="/vm", tags=["vm-scanner"])
@@ -20,12 +20,15 @@ router = APIRouter(prefix="/vm", tags=["vm-scanner"])
 
 class ScanRequest(BaseModel):
     asset_ids: list[str] | None = None
+    targets: list[str] | None = None  # Raw IPs/hostnames/URLs for ad-hoc scans
     scan_all: bool = False
+    org_id: str | None = None
 
 
 class ScanResponse(BaseModel):
     job_ids: list[str]
     assets_queued: int
+    targets_queued: int = 0
 
 
 class JobStatusResponse(BaseModel):
@@ -52,32 +55,55 @@ class TemplateInfo(BaseModel):
 
 @router.post("/scans/", response_model=ScanResponse)
 async def create_scan(body: ScanRequest):
-    """Enqueue Nuclei scans for specified assets or all confirmed-alive assets."""
-    if not body.asset_ids and not body.scan_all:
-        raise HTTPException(status_code=400, detail="Provide asset_ids or set scan_all=true")
+    """Enqueue Nuclei scans for specified assets, raw targets, or all confirmed-alive assets."""
+    if not body.asset_ids and not body.targets and not body.scan_all:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide asset_ids, targets, or set scan_all=true",
+        )
 
+    job_ids: list[str] = []
+    offset = 0
+
+    # Queue asset-based scans
     if body.scan_all:
-        from scanner.vm.nuclei_worker import _run_async
-        assets = _run_async(fetch_alive_assets())
+        assets = await fetch_alive_assets()
         asset_ids = [str(a["id"]) for a in assets]
     else:
         asset_ids = body.asset_ids or []
 
-    job_ids = []
     for i, aid in enumerate(asset_ids):
         result = run_nuclei_scan.apply_async(
             args=[aid],
-            countdown=i * 5,  # Light stagger for on-demand scans
+            countdown=i * 5,
+        )
+        job_ids.append(result.id)
+    offset = len(asset_ids)
+
+    # Queue ad-hoc target scans
+    targets = body.targets or []
+    for i, target in enumerate(targets):
+        target = target.strip()
+        if not target:
+            continue
+        result = run_nuclei_adhoc.apply_async(
+            args=[target, body.org_id],
+            countdown=(offset + i) * 5,
         )
         job_ids.append(result.id)
 
-    return ScanResponse(job_ids=job_ids, assets_queued=len(asset_ids))
+    return ScanResponse(
+        job_ids=job_ids,
+        assets_queued=len(asset_ids),
+        targets_queued=len(targets),
+    )
 
 
 @router.get("/scans/{job_id}", response_model=JobStatusResponse)
 async def get_scan_status(job_id: str):
     """Get Celery task status and result for a scan job."""
-    result = run_nuclei_scan.AsyncResult(job_id)
+    from scanner.vm.celery_app import celery_app
+    result = celery_app.AsyncResult(job_id)
 
     status = result.status  # PENDING, STARTED, SUCCESS, FAILURE, RETRY
     result_data = None

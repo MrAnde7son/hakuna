@@ -16,7 +16,7 @@ services:
       - ./scanner:/app/scanner
       - ./templates:/app/templates
     networks:
-      - hakuna
+      - hakuna-scanner_default
     depends_on:
       - vm-worker
 
@@ -39,7 +39,7 @@ services:
       - ./scanner:/app/scanner
       - ./templates:/app/templates
     networks:
-      - hakuna
+      - hakuna-scanner_default
 
   vm-beat:
     build: .
@@ -57,8 +57,8 @@ services:
       - ./scanner:/app/scanner
       - ./templates:/app/templates
     networks:
-      - hakuna
+      - hakuna-scanner_default
 
 networks:
-  hakuna:
+  hakuna-scanner_default:
     external: true

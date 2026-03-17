@@ -33,7 +33,7 @@ HANDOFF_QUERY = """
         ae.httpx_full
     FROM assets a
     LEFT JOIN asset_ports ap
-        ON ap.asset_id = a.id AND ap.nmap_status = 'complete'
+        ON ap.asset_id = a.id AND a.nmap_status = 'complete'
     LEFT JOIN asset_enrichments ae
         ON ae.asset_id = a.id
     WHERE a.liveness_state = 'confirmed_alive'
@@ -42,27 +42,21 @@ HANDOFF_QUERY = """
 
 HANDOFF_QUERY_BY_ID = HANDOFF_QUERY + "\n    AND a.id = $1"
 
-FINDING_UPSERT = """
-    INSERT INTO findings (id, org_id, asset_id, finding_type, severity, title, description, metadata, status, created_at, updated_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open', NOW(), NOW())
-    ON CONFLICT ON CONSTRAINT uq_finding_dedup
-    DO UPDATE SET
-        metadata = $8,
-        updated_at = NOW()
-    RETURNING id
+FINDING_CHECK = """
+    SELECT id FROM findings
+    WHERE org_id = $1 AND asset_id = $2 AND finding_type = $3 AND title = $4
+    AND status = 'open'
+    LIMIT 1
 """
 
-# Migration creates this unique constraint for dedup
-ENSURE_DEDUP_INDEX = """
-    DO $$
-    BEGIN
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint WHERE conname = 'uq_finding_dedup'
-        ) THEN
-            ALTER TABLE findings
-            ADD CONSTRAINT uq_finding_dedup UNIQUE (org_id, asset_id, finding_type, title);
-        END IF;
-    END $$;
+FINDING_INSERT = """
+    INSERT INTO findings (id, org_id, asset_id, finding_type, severity, title, description, metadata, status, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open', NOW(), NOW())
+"""
+
+FINDING_UPDATE = """
+    UPDATE findings SET metadata = $2, updated_at = NOW()
+    WHERE id = $1
 """
 
 _router = TemplateRouter()
@@ -99,9 +93,6 @@ async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
     conn = await asyncpg.connect(dsn)
 
     try:
-        # Ensure dedup constraint exists
-        await conn.execute(ENSURE_DEDUP_INDEX)
-
         # 1. Fetch asset via handoff query
         asset = await conn.fetchrow(HANDOFF_QUERY_BY_ID, uuid.UUID(asset_id))
         if asset is None:
@@ -274,17 +265,24 @@ async def _emit_finding(conn: asyncpg.Connection, org_id, asset_id: uuid.UUID, r
     }
 
     try:
-        await conn.execute(
-            FINDING_UPSERT,
-            uuid.uuid4(),   # id
-            org_id,         # org_id
-            asset_id,       # asset_id
-            finding_type,   # finding_type
-            severity,       # severity
-            title,          # title
-            description,    # description
-            json.dumps(metadata),  # metadata
+        # Check-then-insert dedup (avoids needing a unique constraint)
+        existing = await conn.fetchrow(
+            FINDING_CHECK, org_id, asset_id, finding_type, title,
         )
+        if existing:
+            await conn.execute(FINDING_UPDATE, existing["id"], json.dumps(metadata))
+        else:
+            await conn.execute(
+                FINDING_INSERT,
+                uuid.uuid4(),   # id
+                org_id,         # org_id
+                asset_id,       # asset_id
+                finding_type,   # finding_type
+                severity,       # severity
+                title,          # title
+                description,    # description
+                json.dumps(metadata),  # metadata
+            )
         return True
     except Exception:
         logger.exception("Failed to emit finding for template %s on asset %s", template_id, asset_id)
@@ -300,3 +298,115 @@ async def fetch_alive_assets() -> list[dict]:
         return [dict(r) for r in rows]
     finally:
         await conn.close()
+
+
+# ── Ad-hoc scan (raw target, no asset record required) ──────────
+
+
+@celery_app.task(queue="vm_queue", bind=True, max_retries=2)
+def run_nuclei_adhoc(self, target: str, org_id: str | None = None) -> dict:
+    """Run Nuclei scan against a raw target (IP, hostname, or URL)."""
+    try:
+        return _run_async(_run_nuclei_adhoc_async(self, target, org_id))
+    except Exception as exc:
+        logger.exception("run_nuclei_adhoc failed for target %s", target)
+        return {
+            "target": target,
+            "findings_emitted": 0,
+            "templates_run": 0,
+            "duration_seconds": 0,
+            "status": "error",
+            "error": str(exc),
+        }
+
+
+async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict:
+    """Execute Nuclei against a raw target with generic templates."""
+    start = time.monotonic()
+
+    # Build nuclei command — generic templates (no CPE/tech routing)
+    cmd = [
+        NUCLEI_BIN,
+        "-target", target,
+        "-tags", "generic,exposure,cve,misconfig",
+        "-cluster",
+        "-jsonl",
+        "-timeout", str(NUCLEI_TIMEOUT),
+        "-rate-limit", str(NUCLEI_RATE_LIMIT),
+        "-silent",
+        "-no-color",
+    ]
+
+    logger.info("nuclei adhoc cmd: %s", " ".join(cmd))
+
+    findings_emitted = 0
+    templates_run: set[str] = set()
+    findings: list[dict] = []
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+        )
+
+        stderr_chunks: list[str] = []
+
+        async def drain_stderr():
+            assert proc.stderr is not None
+            async for line in proc.stderr:
+                stderr_chunks.append(line.decode("utf-8", errors="replace").strip())
+
+        stderr_task = asyncio.create_task(drain_stderr())
+
+        assert proc.stdout is not None
+        async for raw_line in proc.stdout:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                result = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            template_id = result.get("template-id", result.get("templateID", ""))
+            templates_run.add(template_id)
+            findings_emitted += 1
+
+            info = result.get("info", {})
+            findings.append({
+                "template_id": template_id,
+                "severity": info.get("severity", "info"),
+                "name": info.get("name", template_id),
+                "matched_at": result.get("matched-at", ""),
+                "host": result.get("host", ""),
+            })
+
+        await asyncio.wait_for(proc.wait(), timeout=SCAN_TIMEOUT_SECONDS)
+        await stderr_task
+
+        exit_code = proc.returncode
+        if exit_code != 0:
+            stderr_text = "\n".join(stderr_chunks)[:1000]
+            logger.warning("nuclei adhoc exited %d for %s: %s", exit_code, target, stderr_text)
+
+        status = "complete" if exit_code == 0 else "partial"
+
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        logger.error("nuclei adhoc timed out for target %s", target)
+        status = "timeout"
+
+        if task.request.retries < task.max_retries:
+            task.retry(countdown=60)
+
+    return {
+        "target": target,
+        "findings_emitted": findings_emitted,
+        "templates_run": len(templates_run),
+        "duration_seconds": round(time.monotonic() - start, 2),
+        "status": status,
+        "findings": findings,
+    }

@@ -84,6 +84,7 @@ class TestEmitFinding:
     async def test_emit_finding_parses_correctly(self, nuclei_result):
         """Verify finding metadata is correctly extracted from Nuclei output."""
         conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=None)  # No existing finding
         conn.execute = AsyncMock()
 
         org_id = uuid.uuid4()
@@ -92,7 +93,10 @@ class TestEmitFinding:
         result = await _emit_finding(conn, org_id, asset_id, nuclei_result)
         assert result is True
 
-        # Verify the INSERT was called
+        # Verify dedup check was called
+        conn.fetchrow.assert_called_once()
+
+        # Verify INSERT was called (not UPDATE, since no existing finding)
         conn.execute.assert_called_once()
         call_args = conn.execute.call_args
         args = call_args[0]
@@ -112,6 +116,7 @@ class TestEmitFinding:
     async def test_emit_finding_normalizes_severity(self):
         """Invalid severity values are normalized to 'info'."""
         conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=None)
         conn.execute = AsyncMock()
 
         result_data = {
@@ -127,7 +132,7 @@ class TestEmitFinding:
     async def test_emit_finding_handles_db_error(self):
         """DB errors are caught and False is returned."""
         conn = AsyncMock()
-        conn.execute = AsyncMock(side_effect=Exception("DB error"))
+        conn.fetchrow = AsyncMock(side_effect=Exception("DB error"))
 
         result = await _emit_finding(conn, uuid.uuid4(), uuid.uuid4(), {
             "template-id": "test",
@@ -139,6 +144,7 @@ class TestEmitFinding:
     async def test_emit_finding_high_severity(self, nuclei_result):
         """High severity findings are correctly classified."""
         conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=None)
         conn.execute = AsyncMock()
 
         nuclei_result["info"]["severity"] = "high"

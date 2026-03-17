@@ -8,7 +8,7 @@ import {
 import { useScan } from '../../App.jsx'
 import {
   uploadScan, deleteScan, getEasmStatus, scanEasmDomain, refreshEasmScan, setupEasm,
-  getEasmScanRuns,
+  getEasmScanRuns, startVmScan, getVmScanStatus, getVmHealth, getEasmAssets,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner } from '../shared/ui.jsx'
 
@@ -153,7 +153,7 @@ function UploadRow({ upload, onDismiss }) {
 
 // ── New scan modal ───────────────────────────────────────────────────
 
-function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, onSetupEasm }) {
+function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, onSetupEasm, onVmScan }) {
   const [mode, setMode] = useState(null)
   const [domain, setDomain] = useState('')
   const [scanType, setScanType] = useState('full')
@@ -207,7 +207,7 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
             <SourceOption icon={Upload} label="Import File" description="Upload Nessus, Qualys, CSV" color="#6366f1" onClick={() => setMode('upload')} />
             <SourceOption icon={Globe} label="EASM Scan" description={easmEnabled ? 'Scan a domain' : 'Set up EASM scanning'} color="#0ea5e9" onClick={() => setMode(easmEnabled ? 'easm' : 'easm-setup')} />
-            <SourceOption icon={MonitorSmartphone} label="VM Scanner" description="Coming soon" color="#ec4899" disabled disabledMessage="Coming soon" />
+            <SourceOption icon={MonitorSmartphone} label="VM Scanner" description="Nuclei vulnerability scan" color="#ec4899" onClick={() => setMode('vm')} />
           </div>
         )}
 
@@ -259,6 +259,14 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
               {scanning ? 'Setting up...' : 'Enable EASM & Start Discovery'}
             </Button>
           </div>
+        )}
+
+        {mode === 'vm' && (
+          <VmScannerPanel
+            onClose={onClose}
+            onBack={() => setMode(null)}
+            onVmScan={onVmScan}
+          />
         )}
 
         {mode === 'easm' && (
@@ -331,6 +339,165 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
   )
 }
 
+function VmScannerPanel({ onClose, onBack, onVmScan }) {
+  const [assets, setAssets] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [selected, setSelected] = useState(new Set())
+  const [scanning, setScanning] = useState(false)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    getEasmAssets()
+      .then(data => {
+        const list = Array.isArray(data) ? data : data?.assets || []
+        setAssets(list)
+        // Pre-select all confirmed_alive
+        const alive = list.filter(a => a.liveness_state === 'confirmed_alive')
+        setSelected(new Set(alive.map(a => a.id)))
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const aliveAssets = (assets || []).filter(a => a.liveness_state === 'confirmed_alive')
+  const allSelected = aliveAssets.length > 0 && selected.size === aliveAssets.length
+
+  const toggleAll = () => {
+    if (allSelected) setSelected(new Set())
+    else setSelected(new Set(aliveAssets.map(a => a.id)))
+  }
+
+  const toggle = (id) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const handleScan = async () => {
+    if (selected.size === 0) return
+    setScanning(true)
+    setError(null)
+    try {
+      const ids = [...selected]
+      const scanAll = ids.length === aliveAssets.length
+      const res = await startVmScan(scanAll ? null : ids)
+      setResult(res)
+      if (onVmScan) onVmScan(res)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  return (
+    <div>
+      <BackButton onClick={onBack} />
+
+      <div style={{
+        padding: '12px 14px', borderRadius: 8, marginBottom: 14,
+        background: '#ec489908', border: '1px solid #ec489922',
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 3 }}>Nuclei Vulnerability Scanner</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          Run Nuclei against confirmed-alive EASM assets. Templates are auto-selected based on tech stack and CPE data.
+        </div>
+      </div>
+
+      {loading && (
+        <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>
+          <Loader size={16} style={{ animation: 'spin 1.5s linear infinite', marginRight: 6, verticalAlign: -3 }} />
+          Loading assets...
+          <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+        </div>
+      )}
+
+      {!loading && aliveAssets.length === 0 && (
+        <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>
+          No confirmed-alive assets found. Run an EASM scan first to discover assets.
+        </div>
+      )}
+
+      {!loading && aliveAssets.length > 0 && !result && (
+        <>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8,
+            padding: '6px 0', borderBottom: '1px solid var(--border)',
+          }}>
+            <input type="checkbox" checked={allSelected} onChange={toggleAll}
+              style={{ accentColor: '#ec4899' }} />
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' }}>
+              {selected.size} of {aliveAssets.length} assets selected
+            </span>
+          </div>
+
+          <div style={{ maxHeight: 240, overflowY: 'auto', marginBottom: 14 }}>
+            {aliveAssets.map(asset => (
+              <label key={asset.id} style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '7px 4px', cursor: 'pointer', fontSize: 13,
+                borderRadius: 5,
+              }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-secondary)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >
+                <input type="checkbox" checked={selected.has(asset.id)} onChange={() => toggle(asset.id)}
+                  style={{ accentColor: '#ec4899' }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {asset.hostname || asset.ip}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 8 }}>
+                    {asset.ip && <span>{asset.ip}</span>}
+                    {asset.open_ports && asset.open_ports.length > 0 && (
+                      <span>ports: {asset.open_ports.slice(0, 5).join(', ')}{asset.open_ports.length > 5 ? '...' : ''}</span>
+                    )}
+                    {asset.tech_stack && (
+                      <span>{Object.keys(asset.tech_stack).slice(0, 3).join(', ')}</span>
+                    )}
+                  </div>
+                </div>
+              </label>
+            ))}
+          </div>
+
+          {error && (
+            <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 12, padding: '8px 10px', background: '#dc262611', borderRadius: 6 }}>
+              {error}
+            </div>
+          )}
+
+          <Button onClick={handleScan} disabled={scanning || selected.size === 0} style={{ width: '100%', background: '#ec4899' }}>
+            {scanning ? (
+              <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Scanning...</>
+            ) : (
+              <><Play size={13} /> Scan {selected.size} Asset{selected.size !== 1 ? 's' : ''}</>
+            )}
+          </Button>
+          <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+        </>
+      )}
+
+      {result && (
+        <div style={{ textAlign: 'center', padding: 20 }}>
+          <CheckCircle size={32} color="#22c55e" style={{ marginBottom: 10 }} />
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Scan Queued</div>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+            {result.assets_queued} asset{result.assets_queued !== 1 ? 's' : ''} queued for Nuclei scanning.
+            Results will appear in findings as they complete.
+          </div>
+          <Button onClick={onClose} style={{ background: '#ec4899' }}>Done</Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 function BackButton({ onClick }) {
   return (
     <button onClick={onClick} style={{
@@ -375,12 +542,34 @@ function SourceOption({ icon: Icon, label, description, color, disabled, disable
 
 // ── EASM scan status badge ────────────────────────────────────────────
 
-function EasmStatusBadge({ status }) {
+const STAGE_LABELS = {
+  subfinder: 'Subdomain Discovery',
+  wildcard_bruteforce: 'Wildcard Check',
+  asnmap: 'ASN Mapping',
+  uncover: 'Search Engines',
+  dnsx: 'DNS Resolution',
+  naabu: 'Port Scanning',
+  liveness_gate: 'Liveness Check',
+  tlsx: 'TLS Inspection',
+  httpx: 'HTTP Probing',
+  cdncheck: 'CDN Detection',
+  katana: 'Web Crawling',
+  nmap_dispatch: 'Fingerprinting',
+}
+
+function EasmStatusBadge({ status, metadata }) {
   if (!status || status === 'completed') return null
   const isRunning = status === 'running' || status === 'queued'
   const isFailed = status === 'failed' || status === 'error'
   const color = isRunning ? '#0ea5e9' : isFailed ? '#dc2626' : '#a78bfa'
-  const label = isRunning ? 'Scanning...' : isFailed ? 'Failed' : status
+
+  const stage = metadata?.current_stage
+  const stageIndex = metadata?.stage_index || 0
+  const totalStages = metadata?.total_stages || 0
+
+  const stageLabel = stage ? (STAGE_LABELS[stage] || stage) : null
+  const label = isFailed ? 'Failed' : !isRunning ? status : null
+
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -388,9 +577,126 @@ function EasmStatusBadge({ status }) {
       borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600,
     }}>
       {isRunning && <Loader size={10} style={{ animation: 'spin 1.5s linear infinite' }} />}
-      {label}
+      {isRunning ? (
+        stageLabel
+          ? <>{stageLabel} ({stageIndex}/{totalStages})</>
+          : 'Scanning...'
+      ) : label}
       {isRunning && <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>}
     </span>
+  )
+}
+
+
+// ── Scan progress bar (shown under running EASM scans) ───────────────
+
+function ScanProgressBar({ metadata }) {
+  if (!metadata) return null
+  const stage = metadata.current_stage
+  const stageIndex = metadata.stage_index || 0
+  const totalStages = metadata.total_stages || 0
+  const stageLog = metadata.stage_log || []
+
+  if (!stage && stageLog.length === 0) return null
+
+  // Build combined step list from scan type context
+  // Discovery has 7 steps, enrichment has 5
+  const discoverySteps = ['subfinder', 'wildcard_bruteforce', 'asnmap', 'uncover', 'dnsx', 'naabu', 'liveness_gate']
+  const enrichmentSteps = ['tlsx', 'httpx', 'cdncheck', 'katana', 'nmap_dispatch']
+
+  // Determine which pipeline we're in based on current stage or log
+  const allKnownStages = [...stageLog.map(s => s.stage), stage].filter(Boolean)
+  const isEnrichment = allKnownStages.some(s => enrichmentSteps.includes(s))
+  const isDiscovery = allKnownStages.some(s => discoverySteps.includes(s))
+
+  // For a "full" scan, show both pipelines
+  const steps = isDiscovery && !isEnrichment
+    ? discoverySteps
+    : !isDiscovery && isEnrichment
+    ? enrichmentSteps
+    : [...discoverySteps, ...enrichmentSteps]
+
+  const completedStages = new Set(stageLog.filter(s => s.status === 'done').map(s => s.stage))
+  const errorStages = new Set(stageLog.filter(s => s.status === 'error').map(s => s.stage))
+  const pct = totalStages > 0 ? Math.round(((stageIndex - 1) / totalStages) * 100) : 0
+
+  // Estimate time remaining from completed stage durations
+  const completedDurations = stageLog.filter(s => s.duration_s).map(s => s.duration_s)
+  const avgDuration = completedDurations.length > 0
+    ? completedDurations.reduce((a, b) => a + b, 0) / completedDurations.length
+    : 0
+  const remaining = totalStages > 0 ? Math.max(0, totalStages - stageIndex) : 0
+  const etaSeconds = Math.round(remaining * avgDuration)
+
+  return (
+    <div style={{
+      padding: '8px 16px 10px',
+      borderTop: '1px solid var(--border)',
+      background: 'rgba(14, 165, 233, 0.03)',
+    }}>
+      {/* Progress bar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <div style={{
+          flex: 1, height: 4, borderRadius: 2,
+          background: 'var(--border)', overflow: 'hidden',
+        }}>
+          <div style={{
+            height: '100%', borderRadius: 2,
+            background: '#0ea5e9',
+            width: `${Math.max(pct, 3)}%`,
+            transition: 'width 0.6s ease',
+          }} />
+        </div>
+        <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, minWidth: 28, textAlign: 'right' }}>
+          {pct}%
+        </span>
+      </div>
+
+      {/* Step dots */}
+      <div style={{ display: 'flex', gap: 3, alignItems: 'center', flexWrap: 'wrap' }}>
+        {steps.map((step, i) => {
+          const isDone = completedStages.has(step)
+          const isError = errorStages.has(step)
+          const isActive = step === stage
+          const color = isDone ? '#22c55e' : isError ? '#dc2626' : isActive ? '#0ea5e9' : 'var(--border)'
+
+          return (
+            <div
+              key={step}
+              title={`${STAGE_LABELS[step] || step}${isDone ? ' (done)' : isError ? ' (error)' : isActive ? ' (running)' : ''}`}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 3,
+              }}
+            >
+              <div style={{
+                width: isActive ? 8 : 6, height: isActive ? 8 : 6,
+                borderRadius: '50%', background: color,
+                boxShadow: isActive ? `0 0 6px ${color}` : 'none',
+                transition: 'all 0.3s',
+              }} />
+              {isActive && (
+                <span style={{ fontSize: 10, color: '#0ea5e9', fontWeight: 600 }}>
+                  {STAGE_LABELS[step] || step}
+                </span>
+              )}
+              {i < steps.length - 1 && (
+                <div style={{
+                  width: 8, height: 1,
+                  background: isDone ? '#22c55e44' : 'var(--border)',
+                }} />
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* ETA */}
+      {etaSeconds > 0 && completedDurations.length >= 2 && (
+        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+          ~{etaSeconds < 60 ? `${etaSeconds}s` : `${Math.round(etaSeconds / 60)}m`} remaining
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -403,13 +709,21 @@ function ScanRunHistory({ expanded }) {
 
   useEffect(() => {
     if (!expanded) return
-    if (runs) return // already loaded
-    setLoading(true)
-    getEasmScanRuns(20)
-      .then(setRuns)
-      .catch(() => setRuns([]))
-      .finally(() => setLoading(false))
-  }, [expanded])
+    const load = () => {
+      if (!runs) setLoading(true)
+      getEasmScanRuns(20)
+        .then(setRuns)
+        .catch(() => setRuns([]))
+        .finally(() => setLoading(false))
+    }
+    load()
+    // Refresh while any run is active
+    const hasRunning = runs?.some(r => r.status === 'running' || r.status === 'queued')
+    if (hasRunning || !runs) {
+      const interval = setInterval(load, 10000)
+      return () => clearInterval(interval)
+    }
+  }, [expanded, runs?.some?.(r => r.status === 'running' || r.status === 'queued')])
 
   if (!expanded) return null
 
@@ -457,7 +771,9 @@ function ScanRunHistory({ expanded }) {
                   fontSize: 10, fontWeight: 600, textTransform: 'uppercase',
                   color: statusColor(run.status),
                 }}>
-                  {run.status}
+                  {(run.status === 'running' && run.current_stage)
+                    ? `${STAGE_LABELS[run.current_stage] || run.current_stage} (${run.stage_index}/${run.total_stages})`
+                    : run.status}
                 </span>
               </div>
               {run.error && (
@@ -513,7 +829,7 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan }) {
                 {scan.scan_name || scan.filename}
               </span>
               <SourceBadge sourceType={scan.source_type} />
-              <EasmStatusBadge status={easmStatus} />
+              <EasmStatusBadge status={easmStatus} metadata={isEasm ? scan.raw_metadata : null} />
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               {age && <span><Clock size={11} style={{ marginRight: 3, verticalAlign: -1 }} />{age}</span>}
@@ -583,6 +899,7 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan }) {
           </div>
         </div>
       </div>
+      {isEasm && isRunning && <ScanProgressBar metadata={scan.raw_metadata} />}
       {isEasm && <ScanRunHistory expanded={showHistory} />}
     </div>
   )
@@ -839,6 +1156,7 @@ export default function ScanManagement() {
           easmEnabled={easmStatus?.enabled}
           onScanDomain={handleScanDomain}
           onSetupEasm={handleSetupEasm}
+          onVmScan={() => refreshScans()}
         />
       )}
     </div>

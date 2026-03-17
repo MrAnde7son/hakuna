@@ -68,7 +68,7 @@ async def trigger_scan(
     else:  # full
         run_discovery_chain.apply_async(
             args=[org_str, run_str],
-            link=run_enrichment_chain.si(org_str, None),
+            link=run_enrichment_chain.si(org_str, run_str),
         )
 
     return scan_run

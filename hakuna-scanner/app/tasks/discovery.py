@@ -436,6 +436,15 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                 duration = (datetime.now(timezone.utc) - step_start).total_seconds()
                 stage_log.append({"stage": step_name, "status": "error", "duration_s": round(duration, 1), "error": str(e)})
 
+            # Persist stage_log so frontend can show completed steps
+            if scan_run_id:
+                async with get_task_session()() as db:
+                    await db.execute(
+                        text("UPDATE scan_runs SET stage_log = :log WHERE id = :id"),
+                        {"id": scan_run_id, "log": json.dumps(stage_log)},
+                    )
+                    await db.commit()
+
         # Post-discovery: detect gone assets
         sf2 = get_task_session()
         async with sf2() as db:
@@ -445,22 +454,48 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
             if scan_run_id:
                 total_found = sum(r.get("upserted", 0) for r in results.values() if isinstance(r, dict))
                 total_new = sum(r.get("new", 0) for r in results.values() if isinstance(r, dict))
-                await db.execute(
-                    text("""
-                        UPDATE scan_runs SET
-                            status = 'done', finished_at = :now,
-                            assets_found = :found, assets_changed = :changed,
-                            current_stage = NULL, stage_log = :log
-                        WHERE id = :id
-                    """),
-                    {
-                        "id": scan_run_id,
-                        "now": datetime.now(timezone.utc),
-                        "found": total_found,
-                        "changed": total_new,
-                        "log": json.dumps(stage_log),
-                    },
+
+                # Check if enrichment follows (full scan) — don't mark done yet
+                row = await db.execute(
+                    text("SELECT scan_type FROM scan_runs WHERE id = :id"),
+                    {"id": scan_run_id},
                 )
+                scan_type_row = row.fetchone()
+                is_full = scan_type_row and scan_type_row.scan_type == "full"
+
+                if is_full:
+                    # Discovery phase done, enrichment will continue
+                    await db.execute(
+                        text("""
+                            UPDATE scan_runs SET
+                                assets_found = :found, assets_changed = :changed,
+                                stage_log = :log
+                            WHERE id = :id
+                        """),
+                        {
+                            "id": scan_run_id,
+                            "found": total_found,
+                            "changed": total_new,
+                            "log": json.dumps(stage_log),
+                        },
+                    )
+                else:
+                    await db.execute(
+                        text("""
+                            UPDATE scan_runs SET
+                                status = 'done', finished_at = :now,
+                                assets_found = :found, assets_changed = :changed,
+                                current_stage = NULL, stage_log = :log
+                            WHERE id = :id
+                        """),
+                        {
+                            "id": scan_run_id,
+                            "now": datetime.now(timezone.utc),
+                            "found": total_found,
+                            "changed": total_new,
+                            "log": json.dumps(stage_log),
+                        },
+                    )
                 await db.commit()
 
         return results

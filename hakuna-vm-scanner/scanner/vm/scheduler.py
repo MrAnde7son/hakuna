@@ -24,7 +24,7 @@ HANDOFF_QUERY = """
         ae.httpx_full
     FROM assets a
     LEFT JOIN asset_ports ap
-        ON ap.asset_id = a.id AND ap.nmap_status = 'complete'
+        ON ap.asset_id = a.id AND a.nmap_status = 'complete'
     LEFT JOIN asset_enrichments ae
         ON ae.asset_id = a.id
     WHERE a.liveness_state = 'confirmed_alive'

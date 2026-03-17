@@ -45,8 +45,9 @@ class TestCreateScan:
         assert len(data["job_ids"]) == 2
         assert mock_task.apply_async.call_count == 2
 
+    @patch("scanner.vm.api.fetch_alive_assets")
     @patch("scanner.vm.api.run_nuclei_scan")
-    def test_scan_all(self, mock_task, client):
+    def test_scan_all(self, mock_task, mock_fetch, client):
         import uuid
 
         assets = [
@@ -54,13 +55,12 @@ class TestCreateScan:
             {"id": uuid.uuid4()},
             {"id": uuid.uuid4()},
         ]
+        mock_fetch.return_value = assets
         mock_result = MagicMock()
         mock_result.id = "job-456"
         mock_task.apply_async.return_value = mock_result
 
-        # Mock the async fetch_alive_assets which is called via _run_async
-        with patch("scanner.vm.nuclei_worker._run_async", return_value=assets):
-            resp = client.post("/vm/scans/", json={"scan_all": True})
+        resp = client.post("/vm/scans/", json={"scan_all": True})
 
         assert resp.status_code == 200
         data = resp.json()

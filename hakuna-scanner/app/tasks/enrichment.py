@@ -318,16 +318,32 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
             ("nmap_dispatch", None),  # handled separately
         ]
 
+        # Check if continuing from a prior phase (e.g., discovery → enrichment in a full scan)
+        base_stage_index = 0
+        prior_log = []
         async with sf() as db:
             if scan_run_id:
+                row = await db.execute(
+                    text("SELECT stage_index, total_stages, stage_log FROM scan_runs WHERE id = :id"),
+                    {"id": scan_run_id},
+                )
+                existing = row.fetchone()
+                if existing and existing.total_stages > 0:
+                    # Continuing from discovery — extend totals
+                    base_stage_index = existing.total_stages
+                    if existing.stage_log:
+                        prior_log = existing.stage_log if isinstance(existing.stage_log, list) else json.loads(existing.stage_log)
+
+                new_total = base_stage_index + len(steps)
                 await db.execute(
                     text("""
                         UPDATE scan_runs SET
-                            status = 'running', started_at = :now,
-                            total_stages = :total, stage_index = 0
+                            status = 'running',
+                            started_at = COALESCE(started_at, :now),
+                            total_stages = :total
                         WHERE id = :id
                     """),
-                    {"id": scan_run_id, "now": datetime.now(timezone.utc), "total": len(steps)},
+                    {"id": scan_run_id, "now": datetime.now(timezone.utc), "total": new_total},
                 )
                 await db.commit()
 
@@ -335,10 +351,11 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
         snapshot = await _get_asset_snapshot(sf, org_id)
 
         results = {}
-        stage_log = []
+        stage_log = list(prior_log)
 
         for i, (step_name, step_fn) in enumerate(steps):
             step_start = datetime.now(timezone.utc)
+            absolute_idx = base_stage_index + i + 1
 
             # Update current stage
             if scan_run_id:
@@ -350,7 +367,7 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                                 stage_started_at = :now
                             WHERE id = :id
                         """),
-                        {"id": scan_run_id, "stage": step_name, "idx": i + 1, "now": step_start},
+                        {"id": scan_run_id, "stage": step_name, "idx": absolute_idx, "now": step_start},
                     )
                     await db.commit()
 
@@ -366,6 +383,15 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                 results[step_name] = {"error": str(e)}
                 duration = (datetime.now(timezone.utc) - step_start).total_seconds()
                 stage_log.append({"stage": step_name, "status": "error", "duration_s": round(duration, 1), "error": str(e)})
+
+            # Persist stage_log so frontend can show completed steps
+            if scan_run_id:
+                async with get_task_session()() as db:
+                    await db.execute(
+                        text("UPDATE scan_runs SET stage_log = :log WHERE id = :id"),
+                        {"id": scan_run_id, "log": json.dumps(stage_log)},
+                    )
+                    await db.commit()
 
         # Post-enrichment: auto-tag + delta detection
         sf2 = get_task_session()

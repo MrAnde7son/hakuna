@@ -1252,7 +1252,7 @@ def fetch_endoflife_cycles(slug):
         ctx = _get_ssl_context()
         req = urllib.request.Request(url, headers={
             "Accept": "application/json",
-            "User-Agent": "nessus-remediation/1.0",
+            "User-Agent": "hakuna/1.0",
         })
         with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
             import json
@@ -1269,7 +1269,7 @@ def _fetch_all_endoflife_products():
         ctx = _get_ssl_context()
         req = urllib.request.Request(url, headers={
             "Accept": "application/json",
-            "User-Agent": "nessus-remediation/1.0",
+            "User-Agent": "hakuna/1.0",
         })
         with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
             return json.loads(resp.read().decode())

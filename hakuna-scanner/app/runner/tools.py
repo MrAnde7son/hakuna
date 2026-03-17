@@ -168,6 +168,8 @@ class CdncheckRunner(BaseRunner):
 
 class AsnmapRunner(BaseRunner):
     tool_name = "asnmap"
+    timeout = 90
+    max_retries = 0
 
     def __init__(self, org_name: str):
         self.org_name = org_name
