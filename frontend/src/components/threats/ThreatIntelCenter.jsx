@@ -18,8 +18,6 @@ import {
   getThreatIntelStats, getThreatCves, getThreatGroups, getThreatTtps,
   syncThreatIntel, getGroupExposure, getCisaAdvisories,
   getProductLifecycles, getProductLifecycle,
-  getExploits, getExploitSummary, getSSVCDecisions, getSSVCSummary,
-  getGreyNoiseTags, getMSRCPatches, getCWEs, getCWEDetail,
 } from '../../api.js'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -83,8 +81,8 @@ const MOTIVATION_COLORS = {
   unknown: '#6b7280',
 }
 
-const TAB_KEYS = ['newsroom', 'cves', 'groups', 'products', 'sources']
-const TAB_ICONS = { newsroom: Radio, cves: Database, groups: Users, products: Package, sources: Zap }
+const TAB_KEYS = ['newsroom', 'cves', 'groups', 'products']
+const TAB_ICONS = { newsroom: Radio, cves: Database, groups: Users, products: Package }
 
 function getTabConfig(t) {
   return [
@@ -92,7 +90,6 @@ function getTabConfig(t) {
     { key: 'cves', label: t('threats.cve'), icon: Database },
     { key: 'groups', label: t('threats.threatGroups'), icon: Users },
     { key: 'products', label: 'Products', icon: Package },
-    { key: 'sources', label: 'Intel Sources', icon: Zap },
   ]
 }
 
@@ -290,7 +287,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={Code}
           color="#dc2626"
           sub="CVEs with PoC/exploit"
-          onClick={() => onStatClick('sources')}
+          onClick={() => onStatClick('has_exploit')}
         />
         <StatCard
           label="SSVC: Act"
@@ -298,7 +295,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={Crosshair}
           color="#7c3aed"
           sub={`${stats?.ssvc_decisions?.toLocaleString() ?? 0} total decisions`}
-          onClick={() => onStatClick('sources')}
+          onClick={() => onStatClick('ssvc_act')}
         />
         <StatCard
           label="GreyNoise Active"
@@ -306,7 +303,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={Eye}
           color="#ea580c"
           sub="Exploited in the wild"
-          onClick={() => onStatClick('sources')}
+          onClick={() => onStatClick('greynoise_seen')}
         />
         <StatCard
           label="CWE Catalog"
@@ -314,7 +311,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={BookOpen}
           color="#2563eb"
           sub="Weakness types"
-          onClick={() => onStatClick('sources')}
+          onClick={() => onStatClick('cwe_catalog')}
         />
         <StatCard
           label="MSRC Patches"
@@ -322,7 +319,7 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick }) {
           icon={Wrench}
           color="#16a34a"
           sub="Microsoft CVEs patched"
-          onClick={() => onStatClick('sources')}
+          onClick={() => onStatClick('msrc_patches')}
         />
       </div>
     </div>
@@ -998,7 +995,7 @@ function CveRow({ cve, expanded, onToggle }) {
   )
 }
 
-function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEpss = 0, initialInScanOnly = false }) {
+function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEpss = 0, initialInScanOnly = false, initialHasExploit = false, initialSsvcAct = false, initialGreynoiseSeen = false }) {
   const { t } = useTranslation()
   const { activeScanId } = useScan()
   const [cves, setCves] = useState([])
@@ -1015,6 +1012,9 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
   const [minEpss, setMinEpss] = useState(initialMinEpss)
   const [minCvss, setMinCvss] = useState(0)
   const [inScanOnly, setInScanOnly] = useState(initialInScanOnly)
+  const [hasExploit, setHasExploit] = useState(initialHasExploit)
+  const [ssvcAct, setSsvcAct] = useState(initialSsvcAct)
+  const [greynoiseSeen, setGreynoiseSeen] = useState(initialGreynoiseSeen)
 
   // Sorting
   const [sortBy, setSortBy] = useState(null)
@@ -1026,8 +1026,11 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
     setKevOnly(initialKevOnly)
     setMinEpss(initialMinEpss)
     setInScanOnly(initialInScanOnly)
+    setHasExploit(initialHasExploit)
+    setSsvcAct(initialSsvcAct)
+    setGreynoiseSeen(initialGreynoiseSeen)
     setPage(0)
-  }, [initialSearch, initialKevOnly, initialMinEpss, initialInScanOnly])
+  }, [initialSearch, initialKevOnly, initialMinEpss, initialInScanOnly, initialHasExploit, initialSsvcAct, initialGreynoiseSeen])
 
   const fetchCves = useCallback(async () => {
     setLoading(true)
@@ -1042,6 +1045,9 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
       if (minEpss > 0) params.set('min_epss', minEpss)
       if (minCvss > 0) params.set('min_cvss', minCvss)
       if (inScanOnly) params.set('in_scan', activeScanId || 'all')
+      if (hasExploit) params.set('has_exploit', 'true')
+      if (ssvcAct) params.set('ssvc_act', 'true')
+      if (greynoiseSeen) params.set('greynoise_seen', 'true')
       if (sortBy) { params.set('sort_by', sortBy); params.set('sort_dir', sortDir) }
       const data = await getThreatCves(Object.fromEntries(params))
       const items = Array.isArray(data) ? data : (data.items || [])
@@ -1052,7 +1058,7 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
     } finally {
       setLoading(false)
     }
-  }, [search, kevOnly, minEpss, minCvss, inScanOnly, activeScanId, page, sortBy, sortDir])
+  }, [search, kevOnly, minEpss, minCvss, inScanOnly, hasExploit, ssvcAct, greynoiseSeen, activeScanId, page, sortBy, sortDir])
 
   useEffect(() => { fetchCves() }, [fetchCves])
 
@@ -1083,6 +1089,18 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
         <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }} title={activeScanId ? t('threats.showScanMatches') : t('threats.showAllMatches')}>
           <input type="checkbox" checked={inScanOnly} onChange={e => { setInScanOnly(e.target.checked); setPage(0) }} />
           {t('threats.inScanOnly')}
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: hasExploit ? '#dc2626' : 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={hasExploit} onChange={e => { setHasExploit(e.target.checked); setPage(0) }} />
+          Has Exploit
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: ssvcAct ? '#7c3aed' : 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={ssvcAct} onChange={e => { setSsvcAct(e.target.checked); setPage(0) }} />
+          SSVC: Act
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: greynoiseSeen ? '#ea580c' : 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={greynoiseSeen} onChange={e => { setGreynoiseSeen(e.target.checked); setPage(0) }} />
+          GreyNoise Active
         </label>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Min EPSS</span>
@@ -1935,348 +1953,6 @@ function ProductsTab() {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-// ─── Intel Sources Tab ──────────────────────────────────────────────────────
-
-function IntelSourcesTab() {
-  const [activeSource, setActiveSource] = useState('exploits')
-  const [exploitSummary, setExploitSummary] = useState(null)
-  const [exploits, setExploits] = useState([])
-  const [ssvcSummary, setSsvcSummary] = useState(null)
-  const [ssvcDecisions, setSsvcDecisions] = useState([])
-  const [greynoiseData, setGreynoiseData] = useState([])
-  const [msrcData, setMsrcData] = useState([])
-  const [cweData, setCweData] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [search, setSearch] = useState('')
-  const [ssvcFilter, setSsvcFilter] = useState('')
-  const [exploitSource, setExploitSource] = useState('')
-
-  const loadSource = useCallback(async (source) => {
-    setLoading(true)
-    try {
-      if (source === 'exploits') {
-        const [summary, data] = await Promise.all([
-          getExploitSummary(),
-          getExploits({ search, source: exploitSource || undefined, limit: 50 }),
-        ])
-        setExploitSummary(summary)
-        setExploits(data?.items || [])
-      } else if (source === 'ssvc') {
-        const [summary, data] = await Promise.all([
-          getSSVCSummary(),
-          getSSVCDecisions({ search, decision: ssvcFilter || undefined, limit: 50 }),
-        ])
-        setSsvcSummary(summary)
-        setSsvcDecisions(data?.items || [])
-      } else if (source === 'greynoise') {
-        const data = await getGreyNoiseTags({ seen_only: true, limit: 50 })
-        setGreynoiseData(data?.items || [])
-      } else if (source === 'msrc') {
-        const data = await getMSRCPatches({ search, limit: 50 })
-        setMsrcData(data?.items || [])
-      } else if (source === 'cwe') {
-        const data = await getCWEs({ search, limit: 50 })
-        setCweData(data?.items || [])
-      }
-    } catch { /* ignore errors */ }
-    setLoading(false)
-  }, [search, ssvcFilter, exploitSource])
-
-  useEffect(() => { loadSource(activeSource) }, [activeSource, loadSource])
-
-  const sources = [
-    { key: 'exploits', label: 'Public Exploits', icon: Code, color: '#dc2626' },
-    { key: 'ssvc', label: 'SSVC Decisions', icon: Crosshair, color: '#7c3aed' },
-    { key: 'greynoise', label: 'GreyNoise', icon: Eye, color: '#ea580c' },
-    { key: 'msrc', label: 'MSRC Patches', icon: Wrench, color: '#16a34a' },
-    { key: 'cwe', label: 'CWE Catalog', icon: BookOpen, color: '#2563eb' },
-  ]
-
-  const cellStyle = { padding: '8px 12px', borderBottom: '1px solid var(--border)', fontSize: 12 }
-  const headStyle = { ...cellStyle, fontWeight: 700, color: 'var(--text-muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em', background: 'var(--bg-secondary)' }
-
-  return (
-    <div>
-      {/* Source selector pills */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        {sources.map(({ key, label, icon: Icon, color }) => (
-          <button
-            key={key}
-            onClick={() => { setActiveSource(key); setSearch('') }}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '6px 14px', borderRadius: 20,
-              border: activeSource === key ? `2px solid ${color}` : '1px solid var(--border)',
-              background: activeSource === key ? `${color}15` : 'var(--bg-primary)',
-              color: activeSource === key ? color : 'var(--text-secondary)',
-              fontWeight: activeSource === key ? 700 : 500,
-              fontSize: 12, cursor: 'pointer',
-            }}
-          >
-            <Icon size={13} />
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {/* Search bar */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
-        <div style={{ position: 'relative', flex: 1, maxWidth: 400 }}>
-          <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && loadSource(activeSource)}
-            placeholder={`Search ${sources.find(s => s.key === activeSource)?.label ?? ''}...`}
-            style={{
-              width: '100%', padding: '7px 12px 7px 32px',
-              border: '1px solid var(--border)', borderRadius: 6,
-              background: 'var(--bg-primary)', color: 'var(--text-primary)',
-              fontSize: 12, outline: 'none',
-            }}
-          />
-        </div>
-        {activeSource === 'ssvc' && (
-          <select
-            value={ssvcFilter}
-            onChange={e => setSsvcFilter(e.target.value)}
-            style={{ padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
-          >
-            <option value="">All decisions</option>
-            <option value="Act">Act</option>
-            <option value="Attend">Attend</option>
-            <option value="Track*">Track*</option>
-            <option value="Track">Track</option>
-          </select>
-        )}
-        {activeSource === 'exploits' && (
-          <select
-            value={exploitSource}
-            onChange={e => setExploitSource(e.target.value)}
-            style={{ padding: '7px 10px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12, background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
-          >
-            <option value="">All sources</option>
-            <option value="metasploit">Metasploit</option>
-            <option value="exploitdb">ExploitDB</option>
-            <option value="nuclei">Nuclei</option>
-          </select>
-        )}
-        <Button onClick={() => loadSource(activeSource)} variant="ghost" size="sm" disabled={loading}>
-          {loading ? <InlineSpinner size={14} /> : <RefreshCw size={14} />}
-          Refresh
-        </Button>
-      </div>
-
-      {loading && <div style={{ textAlign: 'center', padding: 40 }}><Spinner /></div>}
-
-      {/* ── Exploits panel ── */}
-      {!loading && activeSource === 'exploits' && (
-        <div>
-          {exploitSummary && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-              <StatCard label="Total Exploits" value={exploitSummary.total_exploits?.toLocaleString() ?? '0'} icon={Code} color="#dc2626" />
-              <StatCard label="CVEs with Exploits" value={exploitSummary.total_cves_with_exploits?.toLocaleString() ?? '0'} icon={Database} color="#ea580c" />
-              <StatCard label="Metasploit" value={exploitSummary.by_source?.metasploit?.toLocaleString() ?? '0'} icon={Zap} color="#7c3aed" />
-              <StatCard label="ExploitDB" value={exploitSummary.by_source?.exploitdb?.toLocaleString() ?? '0'} icon={FileText} color="#2563eb" />
-            </div>
-          )}
-          <Card style={{ overflow: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  <th style={headStyle}>CVE</th>
-                  <th style={headStyle}>Source</th>
-                  <th style={headStyle}>Title</th>
-                  <th style={headStyle}>Type</th>
-                  <th style={headStyle}>Platform</th>
-                  <th style={headStyle}>Maturity</th>
-                  <th style={headStyle}>Verified</th>
-                </tr>
-              </thead>
-              <tbody>
-                {exploits.map((e, i) => (
-                  <tr key={i}>
-                    <td style={{ ...cellStyle, fontFamily: 'monospace', fontWeight: 600 }}>{e.cve_id}</td>
-                    <td style={cellStyle}><Pill label={e.source} color={e.source === 'metasploit' ? '#7c3aed' : '#2563eb'} small /></td>
-                    <td style={{ ...cellStyle, maxWidth: 300 }}>
-                      {e.url ? <a href={e.url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', textDecoration: 'none' }}>{e.title || '—'}</a> : (e.title || '—')}
-                    </td>
-                    <td style={cellStyle}>{e.exploit_type || '—'}</td>
-                    <td style={cellStyle}>{e.platform || '—'}</td>
-                    <td style={cellStyle}><Pill label={e.maturity || 'unknown'} color={MATURITY_COLORS[e.maturity] || '#6b7280'} small /></td>
-                    <td style={cellStyle}>{e.verified ? <CheckCircle size={14} color="#16a34a" /> : '—'}</td>
-                  </tr>
-                ))}
-                {exploits.length === 0 && (
-                  <tr><td colSpan={7} style={{ ...cellStyle, textAlign: 'center', color: 'var(--text-muted)' }}>No exploit data — run Sync Intel to fetch ExploitDB + Metasploit modules</td></tr>
-                )}
-              </tbody>
-            </table>
-          </Card>
-        </div>
-      )}
-
-      {/* ── SSVC panel ── */}
-      {!loading && activeSource === 'ssvc' && (
-        <div>
-          {ssvcSummary && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-              {['Act', 'Attend', 'Track*', 'Track'].map(d => (
-                <StatCard
-                  key={d}
-                  label={`SSVC: ${d}`}
-                  value={ssvcSummary.by_decision?.[d]?.toLocaleString() ?? '0'}
-                  icon={d === 'Act' ? AlertTriangle : d === 'Attend' ? AlertCircle : CheckCircle}
-                  color={SSVC_COLORS[d]}
-                />
-              ))}
-            </div>
-          )}
-          <Card style={{ overflow: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  <th style={headStyle}>CVE</th>
-                  <th style={headStyle}>Decision</th>
-                  <th style={headStyle}>Exploitation</th>
-                  <th style={headStyle}>Automatable</th>
-                  <th style={headStyle}>Technical Impact</th>
-                  <th style={headStyle}>Provider</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ssvcDecisions.map((s, i) => (
-                  <tr key={i}>
-                    <td style={{ ...cellStyle, fontFamily: 'monospace', fontWeight: 600 }}>{s.cve_id}</td>
-                    <td style={cellStyle}><Pill label={s.decision} color={SSVC_COLORS[s.decision] || '#6b7280'} /></td>
-                    <td style={cellStyle}><Pill label={s.exploitation || '—'} color={s.exploitation === 'active' ? '#dc2626' : s.exploitation === 'poc' ? '#d97706' : '#6b7280'} small /></td>
-                    <td style={cellStyle}>{s.automatable === 'yes' ? <Pill label="Yes" color="#dc2626" small /> : s.automatable || '—'}</td>
-                    <td style={cellStyle}>{s.technical_impact === 'total' ? <Pill label="Total" color="#dc2626" small /> : s.technical_impact || '—'}</td>
-                    <td style={cellStyle}>{s.provider || '—'}</td>
-                  </tr>
-                ))}
-                {ssvcDecisions.length === 0 && (
-                  <tr><td colSpan={6} style={{ ...cellStyle, textAlign: 'center', color: 'var(--text-muted)' }}>No SSVC data — run Sync Intel to fetch CISA vulnrichment decisions</td></tr>
-                )}
-              </tbody>
-            </table>
-          </Card>
-        </div>
-      )}
-
-      {/* ── GreyNoise panel ── */}
-      {!loading && activeSource === 'greynoise' && (
-        <div>
-          <div style={{ padding: '10px 14px', background: '#ea580c15', border: '1px solid #ea580c30', borderRadius: 8, marginBottom: 16, fontSize: 12, color: '#ea580c', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Eye size={14} />
-            GreyNoise tracks CVEs being actively scanned or exploited across the internet. Set GREYNOISE_API_KEY to enable sync.
-          </div>
-          <Card style={{ overflow: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  <th style={headStyle}>CVE</th>
-                  <th style={headStyle}>Seen</th>
-                  <th style={headStyle}>Classification</th>
-                  <th style={headStyle}>Last Seen</th>
-                  <th style={headStyle}>Actor</th>
-                  <th style={headStyle}>Link</th>
-                </tr>
-              </thead>
-              <tbody>
-                {greynoiseData.map((g, i) => (
-                  <tr key={i}>
-                    <td style={{ ...cellStyle, fontFamily: 'monospace', fontWeight: 600 }}>{g.cve_id}</td>
-                    <td style={cellStyle}>{g.seen ? <Pill label="Active" color="#dc2626" small /> : '—'}</td>
-                    <td style={cellStyle}><Pill label={g.classification || 'unknown'} color={g.classification === 'malicious' ? '#dc2626' : g.classification === 'benign' ? '#16a34a' : '#6b7280'} small /></td>
-                    <td style={cellStyle}>{g.last_seen || '—'}</td>
-                    <td style={cellStyle}>{g.name || '—'}</td>
-                    <td style={cellStyle}>{g.link ? <a href={g.link} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}><ExternalLink size={12} /></a> : '—'}</td>
-                  </tr>
-                ))}
-                {greynoiseData.length === 0 && (
-                  <tr><td colSpan={6} style={{ ...cellStyle, textAlign: 'center', color: 'var(--text-muted)' }}>No GreyNoise data — set GREYNOISE_API_KEY and run Sync Intel</td></tr>
-                )}
-              </tbody>
-            </table>
-          </Card>
-        </div>
-      )}
-
-      {/* ── MSRC panel ── */}
-      {!loading && activeSource === 'msrc' && (
-        <Card style={{ overflow: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                <th style={headStyle}>CVE</th>
-                <th style={headStyle}>KB</th>
-                <th style={headStyle}>Product</th>
-                <th style={headStyle}>Severity</th>
-                <th style={headStyle}>Impact</th>
-                <th style={headStyle}>Restart</th>
-                <th style={headStyle}>Released</th>
-              </tr>
-            </thead>
-            <tbody>
-              {msrcData.map((m, i) => (
-                <tr key={i}>
-                  <td style={{ ...cellStyle, fontFamily: 'monospace', fontWeight: 600 }}>{m.cve_id}</td>
-                  <td style={cellStyle}>
-                    {m.article_url ? <a href={m.article_url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', fontWeight: 600 }}>{m.kb_id}</a> : m.kb_id}
-                  </td>
-                  <td style={{ ...cellStyle, maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.product_name || '—'}</td>
-                  <td style={cellStyle}><Pill label={m.severity || '—'} color={m.severity === 'Critical' ? '#dc2626' : m.severity === 'Important' ? '#ea580c' : '#6b7280'} small /></td>
-                  <td style={{ ...cellStyle, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.impact || '—'}</td>
-                  <td style={cellStyle}>{m.restart_required || '—'}</td>
-                  <td style={cellStyle}>{fmtDate(m.release_date)}</td>
-                </tr>
-              ))}
-              {msrcData.length === 0 && (
-                <tr><td colSpan={7} style={{ ...cellStyle, textAlign: 'center', color: 'var(--text-muted)' }}>No MSRC data — run Sync Intel to fetch Patch Tuesday updates</td></tr>
-              )}
-            </tbody>
-          </table>
-        </Card>
-      )}
-
-      {/* ── CWE panel ── */}
-      {!loading && activeSource === 'cwe' && (
-        <Card style={{ overflow: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                <th style={headStyle}>CWE ID</th>
-                <th style={headStyle}>Name</th>
-                <th style={headStyle}>Type</th>
-                <th style={headStyle}>Category</th>
-                <th style={headStyle}>Mitigations</th>
-                <th style={headStyle}>Link</th>
-              </tr>
-            </thead>
-            <tbody>
-              {cweData.map((c, i) => (
-                <tr key={i}>
-                  <td style={{ ...cellStyle, fontFamily: 'monospace', fontWeight: 600, color: '#2563eb' }}>{c.cwe_id}</td>
-                  <td style={{ ...cellStyle, maxWidth: 350 }}>{c.name}</td>
-                  <td style={cellStyle}><Pill label={c.weakness_type || '—'} color="#6b7280" small /></td>
-                  <td style={cellStyle}>{c.category ? <Pill label={c.category.replace('_', ' ')} color="#2563eb" small /> : '—'}</td>
-                  <td style={cellStyle}>{c.mitigations_count || 0}</td>
-                  <td style={cellStyle}>{c.url ? <a href={c.url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}><ExternalLink size={12} /></a> : '—'}</td>
-                </tr>
-              ))}
-              {cweData.length === 0 && (
-                <tr><td colSpan={6} style={{ ...cellStyle, textAlign: 'center', color: 'var(--text-muted)' }}>No CWE data — run Sync Intel to fetch MITRE CWE catalog</td></tr>
-              )}
-            </tbody>
-          </table>
-        </Card>
-      )}
-    </div>
-  )
-}
-
-
 export default function ThreatIntelCenter() {
   const { tab: tabParam } = useParams()
   const navigate = useNavigate()
@@ -2296,6 +1972,9 @@ export default function ThreatIntelCenter() {
   const [cveInitialMinEpss, setCveInitialMinEpss] = useState(0)
   const [cveInitialInScanOnly, setCveInitialInScanOnly] = useState(false)
   const [groupsInitialInMyEnv, setGroupsInitialInMyEnv] = useState(false)
+  const [cveInitialHasExploit, setCveInitialHasExploit] = useState(false)
+  const [cveInitialSsvcAct, setCveInitialSsvcAct] = useState(false)
+  const [cveInitialGreynoiseSeen, setCveInitialGreynoiseSeen] = useState(false)
 
   // ── Fetch stats ──
   useEffect(() => {
@@ -2341,20 +2020,25 @@ export default function ThreatIntelCenter() {
     }
   }
 
-  const handleSearchCve = (cveId) => {
-    setCveInitialSearch(cveId)
-    setCveInitialKevOnly(false)
-    setCveInitialMinEpss(0)
-    setCveInitialInScanOnly(false)
-    setTab('cves')
-  }
-
-  const handleStatClick = (key) => {
+  const resetCveFilters = () => {
     setCveInitialSearch('')
     setCveInitialKevOnly(false)
     setCveInitialMinEpss(0)
     setCveInitialInScanOnly(false)
+    setCveInitialHasExploit(false)
+    setCveInitialSsvcAct(false)
+    setCveInitialGreynoiseSeen(false)
     setGroupsInitialInMyEnv(false)
+  }
+
+  const handleSearchCve = (cveId) => {
+    resetCveFilters()
+    setCveInitialSearch(cveId)
+    setTab('cves')
+  }
+
+  const handleStatClick = (key) => {
+    resetCveFilters()
     if (key === 'all_cves') {
       setTab('cves')
     } else if (key === 'kev') {
@@ -2369,8 +2053,19 @@ export default function ThreatIntelCenter() {
     } else if (key === 'affected_assets') {
       setCveInitialInScanOnly(true)
       setTab('cves')
-    } else if (key === 'sources') {
-      setTab('sources')
+    } else if (key === 'has_exploit') {
+      setCveInitialHasExploit(true)
+      setTab('cves')
+    } else if (key === 'ssvc_act') {
+      setCveInitialSsvcAct(true)
+      setTab('cves')
+    } else if (key === 'greynoise_seen') {
+      setCveInitialGreynoiseSeen(true)
+      setTab('cves')
+    } else if (key === 'cwe_catalog') {
+      setTab('cves')
+    } else if (key === 'msrc_patches') {
+      setTab('cves')
     }
   }
 
@@ -2413,6 +2108,9 @@ export default function ThreatIntelCenter() {
           initialKevOnly={cveInitialKevOnly}
           initialMinEpss={cveInitialMinEpss}
           initialInScanOnly={cveInitialInScanOnly}
+          initialHasExploit={cveInitialHasExploit}
+          initialSsvcAct={cveInitialSsvcAct}
+          initialGreynoiseSeen={cveInitialGreynoiseSeen}
         />
       )}
 
@@ -2422,10 +2120,6 @@ export default function ThreatIntelCenter() {
 
       {tab === 'products' && (
         <ProductsTab />
-      )}
-
-      {tab === 'sources' && (
-        <IntelSourcesTab />
       )}
     </div>
   )

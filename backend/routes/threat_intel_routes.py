@@ -195,6 +195,9 @@ def get_cves(
     min_epss: Optional[float] = None,
     min_cvss: Optional[float] = None,
     in_scan: Optional[str] = None,   # scan_id or "all" — only CVEs found in findings
+    has_exploit: bool = False,       # Only CVEs with public exploits
+    ssvc_act: bool = False,          # Only CVEs with SSVC decision "Act"
+    greynoise_seen: bool = False,    # Only CVEs seen by GreyNoise
     sort_by: Optional[str] = Query(None, regex="^(cve_id|cvss3_score|epss_score|in_kev|published_date|kev_date_added|in_scan_count)$"),
     sort_dir: Optional[str] = Query("desc", regex="^(asc|desc)$"),
     limit: int = Query(50, ge=1, le=200),
@@ -211,6 +214,12 @@ def get_cves(
         q = q.filter(ThreatCVE.epss_score >= min_epss)
     if min_cvss is not None:
         q = q.filter(ThreatCVE.cvss3_score >= min_cvss)
+    if has_exploit:
+        q = q.filter(ThreatCVE.has_public_exploit == True)
+    if ssvc_act:
+        q = q.filter(ThreatCVE.ssvc_decision == "Act")
+    if greynoise_seen:
+        q = q.filter(ThreatCVE.greynoise_seen == True)
 
     # Collect CVE IDs found in findings for a given scan (or all scans)
     scan_cve_ids: set = set()
