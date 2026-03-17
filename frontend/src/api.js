@@ -521,6 +521,21 @@ export const updateIntelCampaign = (id, data) =>
 export const deleteIntelCampaign = (id) =>
   request(`/threat-intel/remediation-campaigns/${id}`, { method: 'DELETE' })
 
+// New intel data sources
+export const getCWEs = (params = {}) => _ti('cwes', params)
+export const getCWEDetail = (cweId) => _ti(`cwes/${cweId}`)
+export const getExploits = (params = {}) => _ti('exploits', params)
+export const getExploitSummary = () => _ti('exploits/summary')
+export const getSSVCDecisions = (params = {}) => _ti('ssvc', params)
+export const getSSVCSummary = () => _ti('ssvc/summary')
+export const getGreyNoiseTags = (params = {}) => _ti('greynoise', params)
+export const getMSRCPatches = (params = {}) => _ti('msrc-patches', params)
+export const syncExploits = () => request('/threat-intel/sync-exploits', { method: 'POST' })
+export const syncSSVC = () => request('/threat-intel/sync-ssvc', { method: 'POST' })
+export const syncCWE = () => request('/threat-intel/sync-cwe', { method: 'POST' })
+export const syncGreyNoise = () => request('/threat-intel/sync-greynoise', { method: 'POST' })
+export const syncMSRC = () => request('/threat-intel/sync-msrc', { method: 'POST' })
+
 // Workflows
 export const getNodeCatalog = () => request('/workflows/node-catalog')
 export const getWorkflowTemplates = () => request('/workflows/templates')
