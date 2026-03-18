@@ -295,6 +295,8 @@
       "10": "מקסימלי"
     },
     "envOptions": {
+      "internet": "אינטרנט",
+      "external": "חיצוני",
       "dmz": "DMZ",
       "internal": "פנימי",
       "cloud": "ענן",

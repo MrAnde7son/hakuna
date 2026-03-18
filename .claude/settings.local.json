@@ -157,7 +157,11 @@
       "Bash(grep -r \"os.environ\\\\|os.getenv\" /Users/itamar/Documents/Git/hakuna/backend/*.py /Users/itamar/Documents/Git/hakuna/backend/**/*.py)",
       "Bash(docker exec:*)",
       "Bash(.venv/bin/python -m pytest tests/ -q --tb=short)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(for lang:*)",
+      "Bash(do)",
+      "Bash(done)",
+      "Bash(grep -E ^s*-- /Users/itamar/Documents/Git/hakuna/frontend/src/index.css)"
     ],
     "additionalDirectories": [
       "/Users/itamar/Documents/Git/hakuna"

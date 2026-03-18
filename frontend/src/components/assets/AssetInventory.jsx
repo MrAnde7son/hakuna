@@ -819,6 +819,8 @@ export default function AssetInventory() {
           onChange={v => setFilters(f => ({ ...f, env: v }))}
           placeholder={t('assets.allEnvironments')}
           options={[
+            { value: 'internet', label: t('assets.envOptions.internet') },
+            { value: 'external', label: t('assets.envOptions.external') },
             { value: 'dmz', label: t('assets.envOptions.dmz') },
             { value: 'internal', label: t('assets.envOptions.internal') },
             { value: 'cloud', label: t('assets.envOptions.cloud') },

@@ -3015,7 +3015,7 @@ function GlobalTagFilterBar({ globalTags, setGlobalTags, globalTagLogic, setGlob
 
 function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
   const { t } = useTranslation()
-  const { activeScanId, scans } = useScan()
+  const { activeScanId, scans, scansLoaded } = useScan()
   const navigate = useNavigate()
   const [widgets, setWidgets] = useState(report.widgets || [])
   const [name, setName] = useState(report.name || t('reports.untitledReport'))
@@ -3168,7 +3168,7 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
             </div>
           )}
 
-          {preview && (!scans || scans.length === 0) && (
+          {preview && scansLoaded && (!scans || scans.length === 0) && (
             <div style={{
               maxWidth: 560, margin: '0 auto 28px', padding: '32px 28px',
               background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.06))',

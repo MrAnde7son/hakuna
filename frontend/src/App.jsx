@@ -569,11 +569,13 @@ function AppShell() {
   const [scans, setScans] = useState([])
   const [activeScanId, setActiveScanId] = useState(null)
   const [navCollapsed, setNavCollapsed] = useState(false)
+  const [scansLoaded, setScansLoaded] = useState(false)
 
   useEffect(() => {
     getScans().then(data => {
       setScans(data)
-    }).catch(() => {})
+      setScansLoaded(true)
+    }).catch(() => { setScansLoaded(true) })
   }, [])
 
   const refreshScans = () => {
@@ -583,7 +585,7 @@ function AppShell() {
   }
 
   return (
-    <ScanContext.Provider value={{ activeScanId, setActiveScanId, scans, refreshScans }}>
+    <ScanContext.Provider value={{ activeScanId, setActiveScanId, scans, scansLoaded, refreshScans }}>
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-muted)' }}>
         <Sidebar
           collapsed={navCollapsed}

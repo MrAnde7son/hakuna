@@ -62,7 +62,7 @@ const BASE_PERMISSIONS = PERMISSION_SECTIONS.flatMap(s => s.items)
 
 function TriStateToggle({ state, onChange }) {
   // state: "off" | "allow" | "deny"
-  const colors = { off: '#e4e4e7', allow: '#18181b', deny: '#dc2626' }
+  const colors = { off: 'var(--border)', allow: 'var(--text)', deny: 'var(--danger)' }
   const labels = { off: '', allow: '', deny: '' }
   const cycle = () => {
     const next = state === 'off' ? 'allow' : state === 'allow' ? 'deny' : 'off'
@@ -71,7 +71,7 @@ function TriStateToggle({ state, onChange }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
       {state === 'deny' && (
-        <span style={{ fontSize: 10, fontWeight: 700, color: '#dc2626', textTransform: 'uppercase' }}>Deny</span>
+        <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--danger)', textTransform: 'uppercase' }}>Deny</span>
       )}
       <button
         onClick={cycle}
@@ -100,9 +100,9 @@ function RoleCard({ role, selected, onClick }) {
       onClick={onClick}
       style={{
         padding: '10px 14px', borderRadius: 8, cursor: 'pointer', marginBottom: 4,
-        background: selected ? '#18181b' : '#fff',
-        color: selected ? '#fff' : 'inherit',
-        border: `1px solid ${selected ? '#18181b' : 'var(--border)'}`,
+        background: selected ? 'var(--text)' : 'var(--bg-card)',
+        color: selected ? 'var(--bg-card)' : 'inherit',
+        border: `1px solid ${selected ? 'var(--text)' : 'var(--border)'}`,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       }}
     >
@@ -115,13 +115,13 @@ function RoleCard({ role, selected, onClick }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{
           fontSize: 11, padding: '2px 7px', borderRadius: 999,
-          background: selected ? 'rgba(255,255,255,0.15)' : '#f4f4f5',
-          color: selected ? '#fff' : '#71717a',
+          background: selected ? 'rgba(255,255,255,0.15)' : 'var(--bg-muted)',
+          color: selected ? 'var(--bg-card)' : 'var(--text-muted)',
         }}>
           {role.member_count} {role.member_count === 1 ? 'user' : 'users'}
         </span>
         {!role.is_active && (
-          <span style={{ fontSize: 10, color: selected ? '#fca5a5' : '#dc2626', fontWeight: 600 }}>INACTIVE</span>
+          <span style={{ fontSize: 10, color: 'var(--danger)', fontWeight: 600 }}>INACTIVE</span>
         )}
         <ChevronRight size={14} style={{ opacity: 0.5 }} />
       </div>
@@ -135,13 +135,13 @@ function TagPermissionRow({ perm, onRemove, canEdit }) {
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
-      borderRadius: 6, background: isDeny ? '#fef2f2' : '#fafafa',
-      border: `1px solid ${isDeny ? '#fecaca' : 'var(--border)'}`, marginBottom: 4,
+      borderRadius: 6, background: isDeny ? 'var(--danger-subtle)' : 'var(--bg-muted)',
+      border: `1px solid ${isDeny ? 'var(--danger)' : 'var(--border)'}`, marginBottom: 4,
     }}>
       {isDeny && (
         <span style={{
           fontSize: 11, fontWeight: 600, padding: '2px 7px', borderRadius: 999,
-          background: '#fee2e2', color: '#991b1b',
+          background: 'var(--danger-subtle)', color: 'var(--danger)',
         }}>
           DENY
         </span>
@@ -157,7 +157,7 @@ function TagPermissionRow({ perm, onRemove, canEdit }) {
       {canEdit && (
         <button
           onClick={() => onRemove(perm.id)}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', padding: 2 }}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)', padding: 2 }}
         >
           <X size={12} />
         </button>
@@ -374,10 +374,10 @@ export default function RoleManager() {
   const inputStyle = {
     width: '100%', padding: '7px 10px', borderRadius: 8,
     border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box',
-    background: '#fff',
+    background: 'var(--bg-card)', color: 'var(--text-primary)',
   }
 
-  if (loading) return <div style={{ padding: 40, color: '#71717a', textAlign: 'center' }}>Loading roles...</div>
+  if (loading) return <div style={{ padding: 40, color: 'var(--text-muted)', textAlign: 'center' }}>Loading roles...</div>
 
   return (
     <div>
@@ -392,7 +392,7 @@ export default function RoleManager() {
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
               padding: '6px 14px', borderRadius: 8, border: 'none',
-              background: '#18181b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              background: 'var(--text)', color: 'var(--bg-card)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
             }}
           >
             <Plus size={14} /> New Role
@@ -401,7 +401,7 @@ export default function RoleManager() {
       </div>
 
       {error && (
-        <div style={{ background: '#fef2f2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 12, border: '1px solid #fecaca' }}>
+        <div style={{ background: 'var(--danger-subtle)', color: 'var(--danger)', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 12, border: '1px solid var(--danger)' }}>
           {error}
           <button onClick={() => setError('')} style={{ float: 'right', background: 'none', border: 'none', cursor: 'pointer' }}>x</button>
         </div>
@@ -410,7 +410,7 @@ export default function RoleManager() {
       {/* Create form */}
       {showCreate && (
         <form onSubmit={handleCreate} style={{
-          background: '#fafafa', border: '1px solid var(--border)', borderRadius: 10,
+          background: 'var(--bg-muted)', border: '1px solid var(--border)', borderRadius: 10,
           padding: 16, marginBottom: 16, display: 'flex', gap: 10, alignItems: 'flex-end',
         }}>
           <div style={{ flex: 1 }}>
@@ -430,11 +430,11 @@ export default function RoleManager() {
             />
           </div>
           <button type="submit" disabled={createLoading}
-            style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: '#18181b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: 'var(--text)', color: 'var(--bg-card)', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
             {createLoading ? 'Creating...' : 'Create'}
           </button>
           <button type="button" onClick={() => setShowCreate(false)}
-            style={{ padding: '7px 12px', borderRadius: 8, border: '1px solid var(--border)', background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+            style={{ padding: '7px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-primary)', fontSize: 13, cursor: 'pointer' }}>
             Cancel
           </button>
         </form>
@@ -442,12 +442,12 @@ export default function RoleManager() {
 
       <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 16, alignItems: 'start' }}>
         {/* Role list */}
-        <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: '#71717a', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, padding: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
             {roles.length} role{roles.length !== 1 ? 's' : ''}
           </div>
           {roles.length === 0 && (
-            <div style={{ fontSize: 13, color: '#a1a1aa', padding: '20px 0', textAlign: 'center' }}>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '20px 0', textAlign: 'center' }}>
               No custom roles yet.<br />Create one to get started.
             </div>
           )}
@@ -465,7 +465,7 @@ export default function RoleManager() {
         {selectedRole ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {/* Header */}
-            <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+            <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
               {editing ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <div>
@@ -480,11 +480,11 @@ export default function RoleManager() {
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={handleSaveEdit}
-                      style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: '#18181b', color: '#fff', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                      style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: 'var(--text)', color: 'var(--bg-card)', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
                       <Check size={13} /> Save
                     </button>
                     <button onClick={() => setEditing(false)}
-                      style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border)', background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+                      style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-primary)', fontSize: 13, cursor: 'pointer' }}>
                       Cancel
                     </button>
                   </div>
@@ -495,27 +495,27 @@ export default function RoleManager() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <div style={{ fontSize: 16, fontWeight: 700 }}>{selectedRole.name}</div>
                       {!selectedRole.is_active && (
-                        <span style={{ fontSize: 11, fontWeight: 600, color: '#dc2626', background: '#fef2f2', padding: '2px 7px', borderRadius: 999 }}>INACTIVE</span>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--danger)', background: 'var(--danger-subtle)', padding: '2px 7px', borderRadius: 999 }}>INACTIVE</span>
                       )}
                     </div>
                     {selectedRole.description && (
-                      <div style={{ fontSize: 13, color: '#71717a', marginTop: 4 }}>{selectedRole.description}</div>
+                      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 4 }}>{selectedRole.description}</div>
                     )}
                   </div>
                   {canEdit && (
                     <div style={{ display: 'flex', gap: 6 }}>
                       <button
                         onClick={() => { setEditForm({ name: selectedRole.name, description: selectedRole.description || '' }); setEditing(true) }}
-                        style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', background: '#fff', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-primary)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
                         <Pencil size={12} /> Edit
                       </button>
                       <button onClick={handleToggleActive}
-                        style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', background: '#fff', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-primary)', fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
                         {selectedRole.is_active ? <Lock size={12} /> : <Unlock size={12} />}
                         {selectedRole.is_active ? 'Deactivate' : 'Activate'}
                       </button>
                       <button onClick={handleDeleteRole}
-                        style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #fecaca', background: '#fff', fontSize: 12, cursor: 'pointer', color: '#dc2626', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--danger)', background: 'var(--bg-card)', fontSize: 12, cursor: 'pointer', color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 4 }}>
                         <Trash2 size={12} /> Delete
                       </button>
                     </div>
@@ -526,7 +526,7 @@ export default function RoleManager() {
 
             {/* Permissions */}
             {PERMISSION_SECTIONS.map(section => (
-            <div key={section.label} style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+            <div key={section.label} style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
                 <Shield size={14} /> {section.label}
               </div>
@@ -535,8 +535,8 @@ export default function RoleManager() {
                   <div key={key} style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                     padding: '6px 10px', borderRadius: 6,
-                    background: getPermState(key) === 'deny' ? '#fef2f2' : getPermState(key) === 'allow' ? '#f0fdf4' : '#fafafa',
-                    border: `1px solid ${getPermState(key) === 'deny' ? '#fecaca' : 'var(--border)'}`,
+                    background: getPermState(key) === 'deny' ? 'var(--danger-subtle)' : getPermState(key) === 'allow' ? 'var(--success-subtle, #f0fdf4)' : 'var(--bg-muted)',
+                    border: `1px solid ${getPermState(key) === 'deny' ? 'var(--danger)' : 'var(--border)'}`,
                   }}>
                     <span style={{ fontSize: 12 }}>{label}</span>
                     <TriStateToggle
@@ -550,14 +550,14 @@ export default function RoleManager() {
             ))}
 
             {/* Tag permissions */}
-            <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+            <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Tag size={14} /> Tag Permissions
                 </div>
                 {canEdit && (
                   <button onClick={() => setShowAddPerm(v => !v)}
-                    style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: '#fff', fontSize: 12, cursor: 'pointer' }}>
+                    style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-primary)', fontSize: 12, cursor: 'pointer' }}>
                     <Plus size={12} /> Add
                   </button>
                 )}
@@ -565,7 +565,7 @@ export default function RoleManager() {
 
               {showAddPerm && canEdit && (
                 <form onSubmit={handleAddTagPerm} style={{
-                  background: '#fafafa', border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 12,
+                  background: 'var(--bg-muted)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 12,
                   display: 'grid', gridTemplateColumns: 'auto 1fr auto auto', gap: 8, alignItems: 'end',
                 }}>
                   <div>
@@ -602,7 +602,7 @@ export default function RoleManager() {
                     <label style={{ fontSize: 12, fontWeight: 500 }}>Effect</label>
                     <select value={permForm.effect} onChange={e => setPermForm(p => ({ ...p, effect: e.target.value }))} style={{
                       ...inputStyle, width: 'auto',
-                      color: permForm.effect === 'deny' ? '#dc2626' : 'inherit',
+                      color: permForm.effect === 'deny' ? 'var(--danger)' : 'inherit',
                       fontWeight: permForm.effect === 'deny' ? 600 : 400,
                     }}>
                       <option value="allow">Allow</option>
@@ -611,14 +611,14 @@ export default function RoleManager() {
                   </div>
                   <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                     <button type="button" onClick={() => setShowAddPerm(false)}
-                      style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border)', background: '#fff', fontSize: 12, cursor: 'pointer' }}>
+                      style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-primary)', fontSize: 12, cursor: 'pointer' }}>
                       Cancel
                     </button>
                     <button type="submit"
                       style={{
                         padding: '5px 12px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                        background: permForm.effect === 'deny' ? '#dc2626' : '#18181b',
-                        color: '#fff',
+                        background: permForm.effect === 'deny' ? 'var(--danger)' : 'var(--text)',
+                        color: 'var(--bg-card)',
                       }}>
                       {permForm.effect === 'deny' ? 'Add Deny Rule' : 'Add Permission'}
                     </button>
@@ -627,7 +627,7 @@ export default function RoleManager() {
               )}
 
               {(selectedRole.tag_permissions || []).length === 0 ? (
-                <div style={{ fontSize: 12, color: '#a1a1aa', textAlign: 'center', padding: '12px 0' }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: '12px 0' }}>
                   No tag permissions — add one to restrict access to specific tags or categories.
                 </div>
               ) : (
@@ -639,13 +639,13 @@ export default function RoleManager() {
 
             {/* Members */}
             {isAdmin && (
-              <div style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
+              <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, padding: 16 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <Users size={14} /> Members ({selectedRole.member_count})
                   </div>
                   <button onClick={() => setShowAddMember(v => !v)}
-                    style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: '#fff', fontSize: 12, cursor: 'pointer' }}>
+                    style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-primary)', fontSize: 12, cursor: 'pointer' }}>
                     <Plus size={12} /> Assign Users
                   </button>
                 </div>
@@ -665,19 +665,19 @@ export default function RoleManager() {
                           <div key={u.id} style={{
                             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                             padding: '8px 12px', borderBottom: '1px solid var(--border)',
-                            background: has ? '#f0fdf4' : '#fff',
+                            background: has ? 'var(--success-subtle, #f0fdf4)' : 'var(--bg-card)',
                           }}>
                             <div>
                               <div style={{ fontSize: 13, fontWeight: 500 }}>{u.display_name}</div>
-                              <div style={{ fontSize: 11, color: '#71717a' }}>{u.email} · {u.role}</div>
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{u.email} · {u.role}</div>
                             </div>
                             <button
                               onClick={() => handleToggleMember(u)}
                               style={{
                                 padding: '4px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer', fontWeight: 600,
                                 border: has ? '1px solid #bbf7d0' : '1px solid var(--border)',
-                                background: has ? '#dcfce7' : '#fff',
-                                color: has ? '#166534' : '#18181b',
+                                background: has ? '#dcfce7' : 'var(--bg-card)',
+                                color: has ? '#166534' : 'var(--text-primary)',
                                 display: 'flex', alignItems: 'center', gap: 4,
                               }}
                             >
@@ -694,7 +694,7 @@ export default function RoleManager() {
                 {!showAddMember && (
                   <div>
                     {users.filter(u => memberRoles[u.id]?.includes(selectedRole.id)).length === 0 ? (
-                      <div style={{ fontSize: 12, color: '#a1a1aa', textAlign: 'center', padding: '12px 0' }}>No users assigned yet.</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', padding: '12px 0' }}>No users assigned yet.</div>
                     ) : (
                       users.filter(u => memberRoles[u.id]?.includes(selectedRole.id)).map(u => (
                         <div key={u.id} style={{
@@ -703,11 +703,11 @@ export default function RoleManager() {
                         }}>
                           <div>
                             <span style={{ fontSize: 13, fontWeight: 500 }}>{u.display_name}</span>
-                            <span style={{ fontSize: 11, color: '#71717a', marginLeft: 8 }}>{u.email}</span>
+                            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 8 }}>{u.email}</span>
                           </div>
                           {canEdit && (
                             <button onClick={() => handleToggleMember(u)}
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
                               <X size={12} /> Remove
                             </button>
                           )}
@@ -721,8 +721,8 @@ export default function RoleManager() {
           </div>
         ) : (
           <div style={{
-            background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: 40,
-            textAlign: 'center', color: '#a1a1aa',
+            background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, padding: 40,
+            textAlign: 'center', color: 'var(--text-muted)',
           }}>
             <Shield size={32} style={{ opacity: 0.3, marginBottom: 8 }} />
             <div style={{ fontSize: 13 }}>Select a role to view and edit its permissions</div>
