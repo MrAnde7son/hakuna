@@ -7507,7 +7507,34 @@ def list_aggregated_solutions(
         q = q.filter(AggregatedSolution.root_cause_type == category)
     q = q.order_by(desc(AggregatedSolution.efficiency_score))
     results = q.all()
-    return [_agg_solution_to_dict(a, db) for a in results]
+
+    # Collect all unique finding IDs referenced by these solutions so the
+    # frontend can compute a deduplicated risk-reduction (avoiding double-
+    # counting findings that appear in more than one solution group).
+    all_finding_ids = set()
+    for a in results:
+        for fid in (a.finding_ids or []):
+            all_finding_ids.add(fid)
+
+    finding_priority_map = {}
+    total_scan_risk = 0.0
+    if all_finding_ids:
+        result_scan_ids = list({a.scan_id for a in results})
+        scan_findings = db.query(Finding.id, Finding.priority_score).filter(
+            Finding.scan_id.in_(result_scan_ids)
+        ).all()
+        total_scan_risk = sum(f.priority_score or 0.0 for f in scan_findings)
+        finding_priority_map = {
+            f.id: round(f.priority_score or 0.0, 4)
+            for f in scan_findings
+            if f.id in all_finding_ids
+        }
+
+    return {
+        "solutions": [_agg_solution_to_dict(a, db) for a in results],
+        "total_scan_risk": round(total_scan_risk, 4),
+        "finding_priority_map": finding_priority_map,
+    }
 
 
 @app.get("/api/aggregated-solutions/{agg_id}")

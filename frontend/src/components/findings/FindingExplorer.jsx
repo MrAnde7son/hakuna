@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { getFindings, getPluginFamilies, getAssets, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership } from '../../api.js'
+import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership } from '../../api.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, Input,
   Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover
@@ -250,6 +250,26 @@ export default function FindingExplorer() {
     setColVis(next)
     localStorage.setItem('findingColumns', JSON.stringify(next))
   }
+
+  // Sync tag filter from URL params on first load (e.g. when navigating from Tag Manager)
+  const tagsSynced = useRef(false)
+  useEffect(() => {
+    if (tagsSynced.current) return
+    const urlTags = searchParams.get('tags')
+    if (!urlTags) return
+    tagsSynced.current = true
+    const tagStrings = urlTags.split(',').map(s => s.trim()).filter(Boolean)
+    if (!tagStrings.length) return
+    getTags().then(allTags => {
+      const matched = tagStrings.map(ts => {
+        const [cat, ...rest] = ts.split(':')
+        const val = rest.join(':')
+        return allTags.find(t => t.label === ts) ||
+               allTags.find(t => t.category === cat && t.value === val)
+      }).filter(Boolean).map(t => ({ tag_id: t.id, label: t.label || `${t.category}:${t.value}`, category: t.category, value: t.value, color: t.color }))
+      if (matched.length) setTagFilter(matched)
+    }).catch(() => {})
+  }, [searchParams])
 
   // Derive all filter state from URL params
   const search = searchParams.get('search') || ''

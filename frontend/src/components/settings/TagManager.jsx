@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Tag, Plus, ChevronRight, ChevronDown, Trash2, Edit2, Play, ToggleLeft, ToggleRight, X, Save, Zap, Settings2, ExternalLink, Monitor } from 'lucide-react'
+import { Tag, Plus, ChevronRight, ChevronDown, Trash2, Edit2, Play, ToggleLeft, ToggleRight, X, Save, Zap, Settings2, ExternalLink, Monitor, AlertTriangle } from 'lucide-react'
 import {
   getTags, createTag, updateTag, deleteTag,
   getAutoTagRules, createAutoTagRule, updateAutoTagRule, deleteAutoTagRule,
-  runAutoTagRule, runAllAutoTagRules, exportConfig, getAssets,
+  runAutoTagRule, runAllAutoTagRules, exportConfig, getAssets, getFindings,
 } from '../../api.js'
 import { Card, PageHeader, Button, Input, Select, Spinner, EmptyState, ExportImportButtons } from '../shared/ui.jsx'
 import { useNavigate } from 'react-router-dom'
@@ -332,27 +332,66 @@ function DeleteConfirm({ tag, onConfirm, onCancel }) {
 // ─── Tag assets panel ─────────────────────────────────────
 const PREVIEW_LIMIT = 5
 
+const SEV_COLORS = {
+  4: { bg: '#450a0a', text: '#fca5a5', border: '#991b1b', label: 'Critical' },
+  3: { bg: '#431407', text: '#fdba74', border: '#9a3412', label: 'High' },
+  2: { bg: '#451a03', text: '#fcd34d', border: '#92400e', label: 'Medium' },
+  1: { bg: '#1a2e05', text: '#86efac', border: '#166534', label: 'Low' },
+  0: { bg: '#0c1a2e', text: '#7dd3fc', border: '#0369a1', label: 'Info' },
+}
+
+function SeverityDot({ severity }) {
+  const c = SEV_COLORS[severity] ?? SEV_COLORS[0]
+  return (
+    <span style={{
+      display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
+      background: c.text, flexShrink: 0,
+    }} title={c.label} />
+  )
+}
+
 function TagAssetsPanel({ tag, onClose }) {
+  const [activeTab, setActiveTab] = useState('assets')
   const [assets, setAssets] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [total, setTotal] = useState(0)
+  const [assetsTotal, setAssetsTotal] = useState(0)
+  const [assetsLoading, setAssetsLoading] = useState(true)
+  const [findings, setFindings] = useState([])
+  const [findingsTotal, setFindingsTotal] = useState(0)
+  const [findingsLoading, setFindingsLoading] = useState(false)
   const navigate = useNavigate()
   const color = tag.color || '#6366f1'
   const tagQuery = `${tag.category}:${tag.value}`
+  const hasFindingCount = (tag.finding_count || 0) > 0
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
+    setAssetsLoading(true)
     getAssets({ tags: tagQuery, page_size: PREVIEW_LIMIT })
       .then(res => {
         if (cancelled) return
         setAssets(Array.isArray(res) ? res : res.assets || res.items || [])
-        setTotal(res.total ?? (Array.isArray(res) ? res.length : (res.assets || res.items || []).length))
+        setAssetsTotal(res.total ?? (Array.isArray(res) ? res.length : (res.assets || res.items || []).length))
       })
       .catch(() => { if (!cancelled) setAssets([]) })
-      .finally(() => { if (!cancelled) setLoading(false) })
+      .finally(() => { if (!cancelled) setAssetsLoading(false) })
     return () => { cancelled = true }
   }, [tag.id, tagQuery])
+
+  useEffect(() => {
+    if (activeTab !== 'findings') return
+    let cancelled = false
+    setFindingsLoading(true)
+    getFindings({ tags: tagQuery, page_size: PREVIEW_LIMIT })
+      .then(res => {
+        if (cancelled) return
+        const items = res.findings || res.items || (Array.isArray(res) ? res : [])
+        setFindings(items)
+        setFindingsTotal(res.total ?? items.length)
+      })
+      .catch(() => { if (!cancelled) setFindings([]) })
+      .finally(() => { if (!cancelled) setFindingsLoading(false) })
+    return () => { cancelled = true }
+  }, [activeTab, tag.id, tagQuery])
 
   const assetLabel = (a) => {
     if (a.ip && a.hostname) return a.ip
@@ -362,6 +401,13 @@ function TagAssetsPanel({ tag, onClose }) {
     if (a.ip && a.hostname) return a.hostname
     return null
   }
+
+  const tabStyle = (active) => ({
+    background: 'none', border: 'none', cursor: 'pointer',
+    padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+    color: active ? 'var(--text-primary)' : 'var(--text-muted)',
+    background: active ? 'var(--bg-hover)' : 'none',
+  })
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -389,76 +435,132 @@ function TagAssetsPanel({ tag, onClose }) {
       {/* Stats row */}
       <div style={{ display: 'flex', gap: 12, fontSize: 11 }}>
         <span style={{ color: 'var(--text-muted)' }}>
-          <strong style={{ color: 'var(--text-primary)', fontSize: 14 }}>{tag.asset_count || total}</strong> assets
+          <strong style={{ color: 'var(--text-primary)', fontSize: 14 }}>{tag.asset_count || assetsTotal}</strong> assets
         </span>
-        {(tag.finding_count || 0) > 0 && (
+        {hasFindingCount && (
           <span style={{ color: 'var(--text-muted)' }}>
             <strong style={{ color: 'var(--text-primary)', fontSize: 14 }}>{tag.finding_count}</strong> findings
           </span>
         )}
       </div>
 
-      {/* Asset list */}
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 20 }}><Spinner /></div>
-      ) : assets.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '20px 16px', color: 'var(--text-muted)', fontSize: 12 }}>
-          No assets tagged
+      {/* Tab switcher — only show if there are findings to explore */}
+      {hasFindingCount && (
+        <div style={{ display: 'flex', gap: 2, background: 'var(--bg-secondary)', borderRadius: 8, padding: 2 }}>
+          <button style={tabStyle(activeTab === 'assets')} onClick={() => setActiveTab('assets')}>
+            <Monitor size={10} style={{ marginRight: 4 }} />Assets
+          </button>
+          <button style={tabStyle(activeTab === 'findings')} onClick={() => setActiveTab('findings')}>
+            <AlertTriangle size={10} style={{ marginRight: 4 }} />Findings
+          </button>
         </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>
-            Tagged Assets
-          </div>
-          {assets.map(a => {
-            const sub = assetSub(a)
-            return (
-              <div
-                key={a.id}
-                onClick={() => navigate(`/assets?highlight=${a.id}`)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '6px 8px', borderRadius: 6, cursor: 'pointer',
-                  fontSize: 12, transition: 'background 0.15s',
-                }}
-                onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-              >
-                <Monitor size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-                <span style={{ fontWeight: 500, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
-                  {assetLabel(a)}
-                </span>
-                {sub && (
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
-                    {sub}
-                  </span>
-                )}
-                <ExternalLink size={10} style={{ color: 'var(--text-muted)', flexShrink: 0, marginLeft: 'auto' }} />
+      )}
+
+      {/* Assets tab */}
+      {activeTab === 'assets' && (
+        <>
+          {assetsLoading ? (
+            <div style={{ textAlign: 'center', padding: 20 }}><Spinner /></div>
+          ) : assets.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '20px 16px', color: 'var(--text-muted)', fontSize: 12 }}>
+              No assets tagged
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>
+                Tagged Assets
               </div>
-            )
-          })}
-        </div>
+              {assets.map(a => {
+                const sub = assetSub(a)
+                return (
+                  <div
+                    key={a.id}
+                    onClick={() => navigate(`/assets?highlight=${a.id}`)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      padding: '6px 8px', borderRadius: 6, cursor: 'pointer',
+                      fontSize: 12, transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                  >
+                    <Monitor size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                    <span style={{ fontWeight: 500, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
+                      {assetLabel(a)}
+                    </span>
+                    {sub && (
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
+                        {sub}
+                      </span>
+                    )}
+                    <ExternalLink size={10} style={{ color: 'var(--text-muted)', flexShrink: 0, marginLeft: 'auto' }} />
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {assetsTotal > PREVIEW_LIMIT && (
+            <Button size="sm" variant="ghost" onClick={() => navigate(`/assets?tags=${encodeURIComponent(tagQuery)}`)} style={{ alignSelf: 'center' }}>
+              View all {assetsTotal} assets <ExternalLink size={11} />
+            </Button>
+          )}
+          {assets.length > 0 && assetsTotal <= PREVIEW_LIMIT && (
+            <Button size="sm" variant="ghost" onClick={() => navigate(`/assets?tags=${encodeURIComponent(tagQuery)}`)} style={{ alignSelf: 'center' }}>
+              Open in Asset Inventory <ExternalLink size={11} />
+            </Button>
+          )}
+        </>
       )}
 
-      {/* View all CTA */}
-      {total > PREVIEW_LIMIT && (
-        <Button
-          size="sm" variant="ghost"
-          onClick={() => navigate(`/assets?tags=${encodeURIComponent(tagQuery)}`)}
-          style={{ alignSelf: 'center' }}
-        >
-          View all {total} assets <ExternalLink size={11} />
-        </Button>
-      )}
-
-      {assets.length > 0 && total <= PREVIEW_LIMIT && (
-        <Button
-          size="sm" variant="ghost"
-          onClick={() => navigate(`/assets?tags=${encodeURIComponent(tagQuery)}`)}
-          style={{ alignSelf: 'center' }}
-        >
-          Open in Asset Inventory <ExternalLink size={11} />
-        </Button>
+      {/* Findings tab */}
+      {activeTab === 'findings' && (
+        <>
+          {findingsLoading ? (
+            <div style={{ textAlign: 'center', padding: 20 }}><Spinner /></div>
+          ) : findings.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '20px 16px', color: 'var(--text-muted)', fontSize: 12 }}>
+              No findings for this tag
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>
+                Tagged Findings
+              </div>
+              {findings.map(f => (
+                <div
+                  key={f.id}
+                  onClick={() => navigate(`/findings?tags=${encodeURIComponent(tagQuery)}&highlight=${f.id}`)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '6px 8px', borderRadius: 6, cursor: 'pointer',
+                    fontSize: 12, transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  <SeverityDot severity={f.severity} />
+                  <span style={{ fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                    {f.plugin_name || `Finding #${f.id}`}
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0, marginLeft: 'auto' }}>
+                    {f.asset_ip || f.asset_hostname || ''}
+                  </span>
+                  <ExternalLink size={10} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                </div>
+              ))}
+            </div>
+          )}
+          {findingsTotal > PREVIEW_LIMIT && (
+            <Button size="sm" variant="ghost" onClick={() => navigate(`/findings?tags=${encodeURIComponent(tagQuery)}`)} style={{ alignSelf: 'center' }}>
+              View all {findingsTotal} findings <ExternalLink size={11} />
+            </Button>
+          )}
+          {findings.length > 0 && findingsTotal <= PREVIEW_LIMIT && (
+            <Button size="sm" variant="ghost" onClick={() => navigate(`/findings?tags=${encodeURIComponent(tagQuery)}`)} style={{ alignSelf: 'center' }}>
+              Open in Finding Explorer <ExternalLink size={11} />
+            </Button>
+          )}
+        </>
       )}
     </div>
   )

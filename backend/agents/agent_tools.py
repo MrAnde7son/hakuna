@@ -344,9 +344,12 @@ def tag_assets(db: Session, params: dict):
         return {"error": f"Tag {tag_id} not found"}
     created = 0
     for aid in asset_ids[:100]:  # cap at 100
-        exists = db.query(TagAssignment).filter_by(tag_id=tag_id, entity_type="asset", entity_id=aid).first()
+        exists = db.query(TagAssignment).filter(
+            TagAssignment.tag_id == tag_id,
+            TagAssignment.asset_id == aid,
+        ).first()
         if not exists:
-            db.add(TagAssignment(tag_id=tag_id, entity_type="asset", entity_id=aid))
+            db.add(TagAssignment(tag_id=tag_id, asset_id=aid, assigned_by="rule:agent"))
             created += 1
     db.commit()
     return {"tagged": created, "tag": f"{tag.category}:{tag.value}"}

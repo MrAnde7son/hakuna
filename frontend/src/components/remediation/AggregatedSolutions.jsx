@@ -371,6 +371,8 @@ export default function AggregatedSolutions() {
   const { t } = useTranslation()
   const { activeScanId } = useScan()
   const [solutions, setSolutions] = useState([])
+  const [findingPriorityMap, setFindingPriorityMap] = useState({})
+  const [totalScanRisk, setTotalScanRisk] = useState(0)
   const [loading, setLoading] = useState(true)
   const [rebuilding, setRebuilding] = useState(false)
   const [rootCauseFilter, setRootCauseFilter] = useState('')
@@ -381,7 +383,11 @@ export default function AggregatedSolutions() {
     const params = {}
     if (activeScanId) params.scan_id = activeScanId
     getAggregatedSolutions(params)
-      .then(setSolutions)
+      .then(data => {
+        setSolutions(data.solutions || [])
+        setFindingPriorityMap(data.finding_priority_map || {})
+        setTotalScanRisk(data.total_scan_risk || 0)
+      })
       .catch(console.error)
       .finally(() => setLoading(false))
   }
@@ -410,7 +416,18 @@ export default function AggregatedSolutions() {
 
   const totalFindings = filtered.reduce((sum, s) => sum + s.finding_count, 0)
   const totalCVEs = filtered.reduce((sum, s) => sum + (s.cve_count || 0), 0)
-  const totalRiskReduction = filtered.reduce((sum, s) => sum + (s.risk_reduction || 0), 0)
+
+  // Deduplicate finding IDs across all filtered solutions before summing
+  // priority scores — a finding may appear in multiple solution groups, and
+  // naively summing per-solution risk_reduction would double-count it.
+  const uniqueFindingIds = new Set(filtered.flatMap(s => s.finding_ids || []))
+  const deduplicatedRiskSum = [...uniqueFindingIds].reduce(
+    (sum, fid) => sum + (findingPriorityMap[fid] || 0), 0
+  )
+  const totalRiskReduction = totalScanRisk > 0 && deduplicatedRiskSum > 0
+    ? (deduplicatedRiskSum / totalScanRisk) * 100
+    // Fallback for old solution records without finding_ids stored: cap at 100%
+    : Math.min(filtered.reduce((sum, s) => sum + (s.risk_reduction || 0), 0), 100)
 
   // Summary stats by root cause
   const rootCauseSummary = {}
