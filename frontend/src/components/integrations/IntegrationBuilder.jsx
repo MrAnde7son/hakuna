@@ -6,7 +6,7 @@ import {
   getConnectors, getConnector, getIntegrationSchema, getAcquisitionFlow,
   validateCredentials, createCredential, integrationConnect, integrationPreview,
   ibCreateIntegration, ibUpdateIntegration, ibGetIntegration,
-  discoverApi, parseDocs, uploadIntegrationFile,
+  discoverApi, parseDocs, uploadIntegrationFile, discoverMcpTools, mcpOAuthStart,
 } from '../../api.js'
 import StepAuthenticate from './steps/StepAuthenticate.jsx'
 import StepFieldMapper from './steps/StepFieldMapper.jsx'
@@ -68,6 +68,11 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [inlineAuthValues, setInlineAuthValues] = useState({})
   const [showSecrets, setShowSecrets] = useState(false)
 
+  // MCP discovery
+  const [mcpTools, setMcpTools] = useState(null) // {tools: [...], server_info: {...}}
+  const [mcpAuthRequired, setMcpAuthRequired] = useState(false)
+  const [mcpOAuthMetadata, setMcpOAuthMetadata] = useState(null) // OAuth metadata from discovery
+
   // Discovery
   const [discoverUrl, setDiscoverUrl] = useState('')
   const [discovering, setDiscovering] = useState(false)
@@ -75,9 +80,14 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [discoveryError, setDiscoveryError] = useState(null)
   const [selectedEndpoint, setSelectedEndpoint] = useState(null)
 
+  const getPrevStep = () => {
+    if (step === 2 && !connectorDetail?.credential_acquisition) return 0
+    return step - 1
+  }
+
   useEffect(() => {
     getConnectors().then(setConnectors).catch(console.error)
-    getIntegrationSchema('finding').then(s => setSchema(Array.isArray(s) ? s : [])).catch(console.error)
+    getIntegrationSchema().then(s => setSchema(s)).catch(console.error)
   }, [])
 
   // If editing, load existing integration
@@ -116,8 +126,8 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       setRecordsPath(detail.records_path || '')
       setIntegrationName(detail.name)
 
-      const s = await getIntegrationSchema(detail.entity)
-      setSchema(Array.isArray(s) ? s : [])
+      const s = await getIntegrationSchema()
+      setSchema(s || {})
 
       // Go to auth if connector needs it, otherwise configure
       if (!detail.credential_acquisition) {
@@ -146,15 +156,20 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     setLoading(true)
     setConnectError(null)
     try {
-      // If inline auth was provided, save credentials first
+      // Save credentials if any auth values were provided
       let cId = credentialsId
-      if (inlineAuthType !== 'none' && !cId) {
+      const hasInlineAuth = (inlineAuthType !== 'none' && Object.keys(inlineAuthValues).length > 0)
+        || (transportType === 'sql' && inlineAuthValues.connection_string)
+        || (transportType === 'mcp' && inlineAuthValues.mcp_api_key)
+
+      if (hasInlineAuth && !cId) {
+        const authType = transportType === 'sql' ? 'basic' : transportType === 'mcp' ? 'api_key' : inlineAuthType
         const cred = await createCredential({
-          name: `${transportConfig.base_url || 'Custom'} credentials`,
+          name: `${transportConfig.base_url || transportConfig.server_url || 'Custom'} credentials`,
           connector_id: selectedConnector || 'custom',
-          auth_type: inlineAuthType,
+          auth_type: authType,
           values: inlineAuthValues,
-          instance_url: transportConfig.base_url || null,
+          instance_url: transportConfig.base_url || transportConfig.server_url || null,
         })
         cId = cred.id
         setCredentialsId(cId)
@@ -481,6 +496,44 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Connect to API</h3>
 
+      {/* Direction + Entity selector (only for custom builds, templates pre-set these) */}
+      {!selectedConnector && (
+        <div style={{ display: 'flex', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle}>Direction</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {['pull', 'push'].map(d => (
+                <button key={d} onClick={() => setDirection(d)} style={{
+                  flex: 1, padding: '6px 0', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                  cursor: 'pointer', textTransform: 'uppercase',
+                  background: direction === d ? 'var(--accent)' : 'transparent',
+                  color: direction === d ? '#fff' : 'var(--text-muted)',
+                  border: direction === d ? 'none' : '1px solid var(--border)',
+                }}>
+                  {d}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle}>Entity type</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {['asset', 'finding', 'action'].map(e => (
+                <button key={e} onClick={() => setEntity(e)} style={{
+                  flex: 1, padding: '6px 0', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                  cursor: 'pointer', textTransform: 'uppercase',
+                  background: entity === e ? 'var(--accent)' : 'transparent',
+                  color: entity === e ? '#fff' : 'var(--text-muted)',
+                  border: entity === e ? 'none' : '1px solid var(--border)',
+                }}>
+                  {e}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {transportType === 'api' && (
         <>
           {/* URL + method */}
@@ -588,6 +641,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         </>
       )}
 
+      {/* ── File transport ── */}
       {transportType === 'file' && (
         <div>
           <div
@@ -616,12 +670,12 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
               Drop a file here or click to browse
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-              Supports .nessus, .csv, .json, .xml
+              Supports .csv, .json, .xml, .yaml, .nessus — any structured data
             </div>
             <input
               id="file-upload-input"
               type="file"
-              accept=".nessus,.csv,.json,.xml,.html"
+              accept=".nessus,.csv,.json,.xml,.yaml,.yml,.html,.txt"
               style={{ display: 'none' }}
               onChange={async e => {
                 const file = e.target.files[0]
@@ -637,19 +691,279 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
           </div>
           {transportConfig.path && (
             <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>
-              File: {transportConfig.path.split('/').pop()} ({transportConfig.format})
+              File: {transportConfig.path.split('/').pop()} ({transportConfig.format || 'auto'})
             </div>
           )}
         </div>
       )}
 
+      {/* ── SQL transport ── */}
       {transportType === 'sql' && (
-        <textarea
-          placeholder="SQL query"
-          value={transportConfig.query || ''}
-          onChange={e => setTransportConfig({ ...transportConfig, query: e.target.value })}
-          style={{ ...inputStyle, fontFamily: 'var(--mono)', minHeight: 100 }}
-        />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ padding: 16, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Connection
+            </div>
+            <select
+              value={transportConfig.dialect || 'postgres'}
+              onChange={e => setTransportConfig({ ...transportConfig, dialect: e.target.value })}
+              style={{ ...inputStyle, marginBottom: 8 }}
+            >
+              <option value="postgres">PostgreSQL</option>
+              <option value="mysql">MySQL</option>
+              <option value="sqlite">SQLite</option>
+              <option value="mssql">SQL Server</option>
+            </select>
+            <div style={{ position: 'relative' }}>
+              <input
+                type={showSecrets ? 'text' : 'password'}
+                placeholder="Connection string (e.g. postgresql://user:pass@host:5432/db)"
+                value={inlineAuthValues.connection_string || ''}
+                onChange={e => setInlineAuthValues({ ...inlineAuthValues, connection_string: e.target.value })}
+                style={inputStyle}
+              />
+              <SecretToggle show={showSecrets} onToggle={() => setShowSecrets(!showSecrets)} />
+            </div>
+          </div>
+          <div>
+            <label style={labelStyle}>SQL Query</label>
+            <textarea
+              placeholder={"SELECT * FROM vulnerabilities\nWHERE severity >= {{params.min_severity}}"}
+              value={transportConfig.query || ''}
+              onChange={e => setTransportConfig({ ...transportConfig, query: e.target.value })}
+              style={{ ...inputStyle, fontFamily: 'var(--mono)', minHeight: 120, resize: 'vertical' }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ── MCP transport ── */}
+      {transportType === 'mcp' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Server URL + Discover */}
+          <div>
+            <label style={labelStyle}>MCP Server URL</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                placeholder="http://localhost:3001 or https://mcp.example.com"
+                value={transportConfig.server_url || ''}
+                onChange={e => { setTransportConfig({ ...transportConfig, server_url: e.target.value }); setMcpTools(null) }}
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <Button
+                onClick={async () => {
+                  setLoading(true); setMcpAuthRequired(false); setConnectError(null)
+                  try {
+                    // Save credentials first if provided
+                    let cId = credentialsId
+                    if (inlineAuthValues.access_token || inlineAuthValues.mcp_api_key) {
+                      const cred = await createCredential({
+                        name: `MCP — ${transportConfig.server_url}`,
+                        connector_id: 'mcp', auth_type: 'bearer',
+                        values: inlineAuthValues,
+                        instance_url: transportConfig.server_url,
+                      })
+                      cId = cred.id; setCredentialsId(cId)
+                    }
+                    const result = await discoverMcpTools(transportConfig.server_url, cId)
+                    if (result.auth_required) {
+                      setMcpAuthRequired(true)
+                      setConnectError(result.error)
+                      if (result.oauth_metadata?.authorization_endpoint) {
+                        setMcpOAuthMetadata(result.oauth_metadata)
+                      }
+                    } else {
+                      setMcpTools(result)
+                    }
+                  } catch (e) { setConnectError(e.message) }
+                  finally { setLoading(false) }
+                }}
+                disabled={loading || !transportConfig.server_url}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}
+              >
+                {loading ? <InlineSpinner /> : <Zap size={14} />} Discover Tools
+              </Button>
+            </div>
+          </div>
+
+          {/* Auth section */}
+          <div style={{ padding: 14, background: 'var(--bg-card)', border: `1px solid ${mcpAuthRequired ? '#ef444440' : 'var(--border)'}`, borderRadius: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Authentication {mcpAuthRequired && <span style={{ color: '#ef4444', fontWeight: 400, textTransform: 'none' }}>— required by this server</span>}
+            </div>
+
+            {/* OAuth button — shown when server exposes OAuth metadata */}
+            {mcpOAuthMetadata?.authorization_endpoint && (
+              <div style={{ marginBottom: 10 }}>
+                <Button
+                  onClick={async () => {
+                    setLoading(true)
+                    try {
+                      const { authorization_url, state } = await mcpOAuthStart(transportConfig.server_url, mcpOAuthMetadata)
+                      // Open popup
+                      const popup = window.open(authorization_url, 'mcp_oauth', 'width=600,height=700,popup=yes')
+                      // Listen for callback message
+                      const handler = async (event) => {
+                        if (!event.data?.credentials_id && !event.data?.success) return
+                        window.removeEventListener('message', handler)
+                        if (event.data.success && event.data.credentials_id) {
+                          setCredentialsId(event.data.credentials_id)
+                          setConnectedUser(event.data.connected_user)
+                          setMcpAuthRequired(false)
+                          setConnectError(null)
+                          // Auto-retry discovery with new credentials
+                          try {
+                            const result = await discoverMcpTools(transportConfig.server_url, event.data.credentials_id)
+                            if (!result.auth_required) {
+                              setMcpTools(result)
+                            }
+                          } catch {}
+                        } else {
+                          setConnectError(event.data.error || 'OAuth failed')
+                        }
+                        setLoading(false)
+                      }
+                      window.addEventListener('message', handler)
+                      // Fallback timeout
+                      setTimeout(() => { window.removeEventListener('message', handler); setLoading(false) }, 120000)
+                    } catch (e) {
+                      setConnectError(e.message)
+                      setLoading(false)
+                    }
+                  }}
+                  disabled={loading}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, width: '100%', justifyContent: 'center' }}
+                >
+                  {loading ? <InlineSpinner /> : <Globe size={14} />}
+                  {loading ? 'Waiting for authorization...' : `Authenticate with ${mcpOAuthMetadata.issuer || 'OAuth'}`}
+                </Button>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, textAlign: 'center' }}>
+                  Opens a popup to authorize Hakuna. No credentials are shared directly.
+                </div>
+              </div>
+            )}
+
+            {/* Divider if both OAuth and manual are available */}
+            {mcpOAuthMetadata?.authorization_endpoint && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0', color: 'var(--text-muted)', fontSize: 11 }}>
+                <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+                or use a token directly
+                <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+              </div>
+            )}
+
+            {/* Manual token input */}
+            {!mcpOAuthMetadata?.authorization_endpoint && (
+              <select
+                value={inlineAuthType}
+                onChange={e => { setInlineAuthType(e.target.value); setInlineAuthValues({}) }}
+                style={{ ...inputStyle, marginBottom: 8 }}
+              >
+                <option value="none">None</option>
+                <option value="bearer">Bearer Token</option>
+                <option value="api_key">API Key</option>
+              </select>
+            )}
+
+            {(inlineAuthType === 'bearer' || mcpAuthRequired) && (
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showSecrets ? 'text' : 'password'}
+                  placeholder="Paste a bearer / access token"
+                  value={inlineAuthValues.access_token || ''}
+                  onChange={e => setInlineAuthValues({ ...inlineAuthValues, access_token: e.target.value })}
+                  style={inputStyle}
+                />
+                <SecretToggle show={showSecrets} onToggle={() => setShowSecrets(!showSecrets)} />
+              </div>
+            )}
+            {inlineAuthType === 'api_key' && !mcpAuthRequired && (
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showSecrets ? 'text' : 'password'}
+                  placeholder="API key"
+                  value={inlineAuthValues.mcp_api_key || ''}
+                  onChange={e => setInlineAuthValues({ ...inlineAuthValues, mcp_api_key: e.target.value })}
+                  style={inputStyle}
+                />
+                <SecretToggle show={showSecrets} onToggle={() => setShowSecrets(!showSecrets)} />
+              </div>
+            )}
+
+            {/* Connected state */}
+            {credentialsId && !mcpAuthRequired && (
+              <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: 6, background: '#22c55e12', border: '1px solid #22c55e30', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Check size={14} color="#22c55e" />
+                <span style={{ fontSize: 12, color: '#22c55e' }}>Authenticated{connectedUser ? ` as ${connectedUser}` : ''}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Tool picker — shown after discovery */}
+          {mcpTools && mcpTools.tools?.length > 0 && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <Check size={14} color="#22c55e" />
+                <span style={{ fontSize: 12, color: '#22c55e' }}>
+                  Found {mcpTools.tool_count} tools
+                  {mcpTools.server_info?.name && ` on ${mcpTools.server_info.name}`}
+                </span>
+              </div>
+              <label style={labelStyle}>Select a tool</label>
+              <div style={{ maxHeight: 250, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+                {mcpTools.tools.map((tool, i) => (
+                  <div
+                    key={tool.name}
+                    onClick={() => setTransportConfig({ ...transportConfig, tool_name: tool.name, tool_arguments: {} })}
+                    style={{
+                      padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border)',
+                      background: transportConfig.tool_name === tool.name ? 'var(--accent)10' : 'transparent',
+                      border: transportConfig.tool_name === tool.name ? '1px solid var(--accent)30' : undefined,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 12, fontFamily: 'var(--mono)', fontWeight: 600, color: 'var(--accent)' }}>{tool.name}</span>
+                      {transportConfig.tool_name === tool.name && <Check size={12} color="var(--accent)" />}
+                    </div>
+                    {(tool.description || tool.title) && (
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                        {tool.description || tool.title}
+                      </div>
+                    )}
+                    {tool.inputSchema?.properties && (
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
+                        Params: {Object.keys(tool.inputSchema.properties).join(', ')}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Tool arguments — shown after tool is selected */}
+          {transportConfig.tool_name && (
+            <div>
+              <label style={labelStyle}>Tool Arguments (JSON) — {transportConfig.tool_name}</label>
+              {/* Pre-populate with schema hints */}
+              <textarea
+                placeholder={'{\n  "limit": 100\n}'}
+                value={transportConfig.tool_arguments ? (typeof transportConfig.tool_arguments === 'string' ? transportConfig.tool_arguments : JSON.stringify(transportConfig.tool_arguments, null, 2)) : '{}'}
+                onChange={e => {
+                  try { setTransportConfig({ ...transportConfig, tool_arguments: JSON.parse(e.target.value) }) }
+                  catch { setTransportConfig({ ...transportConfig, tool_arguments: e.target.value }) }
+                }}
+                style={{ ...inputStyle, fontFamily: 'var(--mono)', minHeight: 80, resize: 'vertical' }}
+              />
+            </div>
+          )}
+
+          {mcpTools && mcpTools.tools?.length === 0 && (
+            <div style={{ padding: 12, borderRadius: 8, background: '#eab30812', border: '1px solid #eab30830', fontSize: 12, color: '#eab308' }}>
+              Server responded but has no tools available.
+            </div>
+          )}
+        </div>
       )}
 
       {connectError && (
@@ -658,7 +972,8 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         </div>
       )}
 
-      <Button onClick={handleConnect} disabled={loading || !transportConfig.base_url}
+      <Button onClick={handleConnect}
+        disabled={loading || (transportType === 'api' && !transportConfig.base_url) || (transportType === 'file' && !transportConfig.path) || (transportType === 'sql' && !transportConfig.query) || (transportType === 'mcp' && !transportConfig.server_url)}
         style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
         {loading ? <><InlineSpinner /> Connecting...</> : <>Connect & Fetch Response <ArrowRight size={14} /></>}
       </Button>
@@ -727,11 +1042,28 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   )
 
   // ── Step 4: Field Mapper ──
+  // Derive the schema fields for the current entity
+  const entitySchema = (() => {
+    if (Array.isArray(schema)) return schema  // already flat (legacy)
+    if (schema && typeof schema === 'object') {
+      // Full schema: {asset: [...], finding: [...], action: [...]}
+      // Show current entity fields + allow cross-entity mapping
+      const primary = schema[entity] || []
+      // For pull: show entity fields. For push: show action fields
+      if (direction === 'push') return schema.action || primary
+      return primary
+    }
+    return []
+  })()
+
   const renderFieldMapper = () => (
     <StepFieldMapper
       detectedPaths={detectedPaths}
       sampleRecords={sampleRecords}
-      schema={schema}
+      schema={entitySchema}
+      entity={entity}
+      onEntityChange={(e) => setEntity(e)}
+      allSchema={schema}
       fieldMap={fieldMap}
       onFieldMapChange={setFieldMap}
       onAutoSuggest={handleAutoSuggest}
@@ -858,9 +1190,9 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
 
   return (
     <div style={{ padding: '24px 32px', maxWidth: 1100 }}>
-      <button onClick={goBack}
+      <button onClick={step > 0 ? () => setStep(getPrevStep()) : goBack}
         style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', marginBottom: 16, fontSize: 13 }}>
-        <ArrowLeft size={14} /> Back to Integrations
+        <ArrowLeft size={14} /> {step > 0 ? 'Back' : 'Back to Integrations'}
       </button>
 
       {/* Progress bar */}

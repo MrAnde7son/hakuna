@@ -164,6 +164,126 @@ def delete_cached_spec(hostname: str, db: Session = Depends(get_db),
 
 
 # ─────────────────────────────────────────────────────────
+# MCP Tool Discovery
+# ─────────────────────────────────────────────────────────
+
+class McpDiscoverRequest(BaseModel):
+    server_url: str
+    credentials_id: Optional[str] = None
+
+
+@router.post("/discovery/mcp-tools")
+async def discover_mcp_tools(body: McpDiscoverRequest, db: Session = Depends(get_db),
+                              user: User = Depends(require_auth)):
+    """Discover available tools on an MCP server via tools/list."""
+    from services.transports.mcp_transport import discover_tools, McpAuthRequired
+
+    credentials = {}
+    if body.credentials_id:
+        cred = db.query(IntegrationCredential).filter(
+            IntegrationCredential.id == body.credentials_id,
+            IntegrationCredential.org_id == user.org_id,
+        ).first()
+        if cred:
+            credentials = credential_vault.decrypt(cred.encrypted_values)
+            credentials["_auth_type"] = cred.auth_type
+
+    try:
+        result = await discover_tools(body.server_url, credentials)
+        return result
+    except McpAuthRequired as e:
+        return {
+            "auth_required": True,
+            "error": str(e),
+            "oauth_info": e.oauth_info,
+            "oauth_metadata": e.oauth_metadata,
+            "protected_resource_url": e.protected_resource_url,
+        }
+    except Exception as e:
+        raise HTTPException(400, f"MCP discovery failed: {e}")
+
+
+class McpOAuthStartRequest(BaseModel):
+    server_url: str
+    oauth_metadata: dict  # from the discovery response
+
+
+@router.post("/oauth/mcp-start")
+async def mcp_oauth_start(body: McpOAuthStartRequest, user: User = Depends(require_auth)):
+    """Start OAuth 2.1 flow for an MCP server using discovered metadata."""
+    import hashlib
+    import base64
+
+    auth_endpoint = body.oauth_metadata.get("authorization_endpoint")
+    token_endpoint = body.oauth_metadata.get("token_endpoint")
+    registration_endpoint = body.oauth_metadata.get("registration_endpoint")
+
+    if not auth_endpoint or not token_endpoint:
+        raise HTTPException(400, "OAuth metadata missing authorization_endpoint or token_endpoint")
+
+    scopes = body.oauth_metadata.get("scopes_supported", [])
+    redirect_uri = os.environ.get("OAUTH_REDIRECT_URI", "http://localhost:8000/api/integration-builder/oauth/callback")
+
+    # Dynamic client registration if supported and no static client_id configured
+    client_id = os.environ.get("MCP_OAUTH_CLIENT_ID", "")
+    if not client_id and registration_endpoint:
+        import httpx as _httpx
+        try:
+            async with _httpx.AsyncClient(timeout=10.0, verify=False) as client:
+                reg_resp = await client.post(registration_endpoint, json={
+                    "client_name": "Hakuna Integration Builder",
+                    "redirect_uris": [redirect_uri],
+                    "grant_types": ["authorization_code"],
+                    "response_types": ["code"],
+                    "token_endpoint_auth_method": "none",
+                })
+                if reg_resp.status_code < 400:
+                    reg_data = reg_resp.json()
+                    client_id = reg_data.get("client_id", "")
+        except Exception as e:
+            logger.warning("Dynamic client registration failed: %s", e)
+
+    if not client_id:
+        # Use the redirect_uri as client_id per MCP spec (Client ID Metadata Document)
+        client_id = redirect_uri
+
+    # PKCE
+    state = secrets.token_urlsafe(32)
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "scope": " ".join(scopes) if scopes else "",
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "resource": body.server_url,  # RFC 8707 resource indicator
+    }
+    query = "&".join(f"{k}={v}" for k, v in params.items() if v)
+    authorization_url = f"{auth_endpoint}?{query}"
+
+    # Store state for callback
+    _oauth_states[state] = {
+        "connector_id": "mcp",
+        "code_verifier": code_verifier,
+        "instance_url": body.server_url,
+        "user_id": user.id,
+        "org_id": user.org_id,
+        "redirect_uri": redirect_uri,
+        "token_url": token_endpoint,
+        "client_id": client_id,
+        "validation_request": None,  # MCP doesn't have a separate validation step
+    }
+
+    return {"authorization_url": authorization_url, "state": state}
+
+
+# ─────────────────────────────────────────────────────────
 # OAuth2 Server-Side Flow
 # ─────────────────────────────────────────────────────────
 
@@ -495,6 +615,8 @@ def _detect_format(filename: str) -> str:
         return "json"
     if fn.endswith(".xml"):
         return "xml"
+    if fn.endswith((".yaml", ".yml")):
+        return "yaml"
     return "auto"
 
 

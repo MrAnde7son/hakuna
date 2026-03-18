@@ -840,6 +840,14 @@ export const parseDocs = (data) => request(`${IB}/discovery/parse-docs`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
 })
 export const getCachedSpec = (hostname) => request(`${IB}/discovery/cache/${encodeURIComponent(hostname)}`)
+export const discoverMcpTools = (serverUrl, credentialsId) => request(`${IB}/discovery/mcp-tools`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ server_url: serverUrl, credentials_id: credentialsId }),
+})
+export const mcpOAuthStart = (serverUrl, oauthMetadata) => request(`${IB}/oauth/mcp-start`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ server_url: serverUrl, oauth_metadata: oauthMetadata }),
+})
 
 // OAuth
 export const oauthStart = (connectorId, data) => request(`${IB}/oauth/start/${connectorId}`, {

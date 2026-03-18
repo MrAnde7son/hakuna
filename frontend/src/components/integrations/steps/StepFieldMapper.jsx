@@ -13,7 +13,8 @@ const TRANSFORM_TYPES = [
 ]
 
 export default function StepFieldMapper({
-  detectedPaths, sampleRecords, schema, fieldMap, onFieldMapChange,
+  detectedPaths, sampleRecords, schema, entity, onEntityChange, allSchema,
+  fieldMap, onFieldMapChange,
   onAutoSuggest, suggestions, loading, onNext,
 }) {
   const [sourceFilter, setSourceFilter] = useState('')
@@ -99,6 +100,24 @@ export default function StepFieldMapper({
           </Button>
         </div>
       </div>
+
+      {/* Entity type selector */}
+      {onEntityChange && allSchema && !Array.isArray(allSchema) && (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Map to:</span>
+          {Object.keys(allSchema).map(e => (
+            <button key={e} onClick={() => onEntityChange(e)} style={{
+              padding: '4px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+              cursor: 'pointer', textTransform: 'uppercase',
+              background: entity === e ? 'var(--accent)' : 'transparent',
+              color: entity === e ? '#fff' : 'var(--text-muted)',
+              border: entity === e ? 'none' : '1px solid var(--border)',
+            }}>
+              {e}
+            </button>
+          ))}
+        </div>
+      )}
 
       {selectedSource && (
         <div style={{ padding: '6px 12px', background: 'var(--accent)15', borderRadius: 6, fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>

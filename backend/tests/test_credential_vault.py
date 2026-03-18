@@ -48,11 +48,14 @@ def test_nested_values():
     assert decrypt(encrypt(values)) == values
 
 
-def test_missing_key_raises(monkeypatch):
+def test_missing_key_auto_generates(monkeypatch):
     monkeypatch.delenv("INTEGRATION_SECRET_KEY")
-    from services.credential_vault import encrypt
-    with pytest.raises(RuntimeError, match="INTEGRATION_SECRET_KEY"):
-        encrypt({"key": "val"})
+    import services.credential_vault as vault
+    vault._dev_key = None  # reset cached dev key
+    from services.credential_vault import encrypt, decrypt
+    # Should auto-generate a key and work (dev mode)
+    encrypted = encrypt({"key": "val"})
+    assert decrypt(encrypted) == {"key": "val"}
 
 
 def test_bad_key_length_raises(monkeypatch):

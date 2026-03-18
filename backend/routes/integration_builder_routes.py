@@ -76,12 +76,16 @@ class CredentialCreate(BaseModel):
 @router.post("/credentials")
 def create_credential(body: CredentialCreate, db: Session = Depends(get_db),
                        user: User = Depends(require_auth)):
+    try:
+        encrypted = credential_vault.encrypt(body.values)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to encrypt credentials: {e}")
     cred = IntegrationCredential(
         org_id=user.org_id,
         name=body.name,
         connector_id=body.connector_id,
         auth_type=body.auth_type,
-        encrypted_values=credential_vault.encrypt(body.values),
+        encrypted_values=encrypted,
         instance_url=body.instance_url,
         connected_user=body.connected_user,
     )
