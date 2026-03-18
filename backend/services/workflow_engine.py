@@ -1018,7 +1018,26 @@ def _execute_node(db: Session, node: WorkflowNode, items: list, execution: Workf
     for attempt in range(retries + 1):
         try:
             if node.node_type == "trigger":
-                return {"status": "success", "items": items, "output": {"count": len(items)}}
+                severity_counts = {}
+                for item in items:
+                    label = item.get("severity_label") or str(item.get("severity", "?"))
+                    severity_counts[label] = severity_counts.get(label, 0) + 1
+                unique_assets = len({item.get("asset_id") for item in items if item.get("asset_id")})
+                output = {
+                    "count": len(items),
+                    "assets": unique_assets,
+                    "severity_breakdown": severity_counts,
+                    "sample": [
+                        {
+                            "plugin_name": i.get("plugin_name"),
+                            "severity_label": i.get("severity_label"),
+                            "asset_hostname": i.get("asset_hostname") or i.get("asset_ip"),
+                            "cvss3_score": i.get("cvss3_score"),
+                        }
+                        for i in items[:5]
+                    ],
+                }
+                return {"status": "success", "items": items, "output": output}
             elif node.node_type == "filter":
                 return _execute_filter(db, node, items)
             elif node.node_type == "action":

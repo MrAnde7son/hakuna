@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import React, { useState, useEffect, useRef } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Layers, ChevronDown, ChevronUp, ExternalLink, RefreshCw, ArrowRight, Monitor, Shield, Zap, AlertTriangle, Info, CheckCircle } from 'lucide-react'
 import { useScan } from '../../App.jsx'
@@ -181,13 +181,21 @@ function DownstreamImpactBanner({ impact }) {
   )
 }
 
-function RecommendationCard({ rec }) {
+function RecommendationCard({ rec, highlighted }) {
   const { t } = useTranslation()
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(highlighted || false)
   const navigate = useNavigate()
+  const cardRef = useRef(null)
+
+  useEffect(() => {
+    if (highlighted && cardRef.current) {
+      cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [highlighted])
 
   return (
-    <Card style={{ marginBottom: 12 }}>
+    <div ref={cardRef}>
+    <Card style={{ marginBottom: 12, ...(highlighted ? { outline: '2px solid #7c3aed', outlineOffset: 2 } : {}) }}>
       <div
         style={{ cursor: 'pointer', padding: '16px 20px' }}
         onClick={() => setExpanded(!expanded)}
@@ -364,12 +372,15 @@ function RecommendationCard({ rec }) {
         </div>
       )}
     </Card>
+    </div>
   )
 }
 
 export default function AggregatedSolutions() {
   const { t } = useTranslation()
   const { activeScanId } = useScan()
+  const [searchParams] = useSearchParams()
+  const highlightId = searchParams.get('highlight')
   const [solutions, setSolutions] = useState([])
   const [findingPriorityMap, setFindingPriorityMap] = useState({})
   const [totalScanRisk, setTotalScanRisk] = useState(0)
@@ -555,7 +566,7 @@ export default function AggregatedSolutions() {
             : 'Select a scan to view remediation actions'}
         />
       ) : (
-        sorted.map(s => <RecommendationCard key={s.id} rec={s} />)
+        sorted.map(s => <RecommendationCard key={s.id} rec={s} highlighted={highlightId === String(s.id)} />)
       )}
     </div>
   )

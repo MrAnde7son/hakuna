@@ -483,6 +483,7 @@ export default function Campaigns() {
   const [showCreateWf, setShowCreateWf] = useState(false)
   const [tab, setTab] = useState('campaigns')
   const [wfSearch, setWfSearch] = useState('')
+  const [campSearch, setCampSearch] = useState('')
 
   const load = () => {
     setLoading(true)
@@ -594,7 +595,24 @@ export default function Campaigns() {
           </EmptyState>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {ordered.map(c => (
+            <div style={{ position: 'relative', maxWidth: 320 }}>
+              <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+              <input
+                value={campSearch}
+                onChange={e => setCampSearch(e.target.value)}
+                placeholder="Search campaigns..."
+                style={{
+                  width: '100%', padding: '8px 12px 8px 32px', background: 'var(--bg-secondary)',
+                  border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
+                  color: 'var(--text-primary)', boxSizing: 'border-box',
+                }}
+              />
+            </div>
+            {ordered.filter(c => {
+              if (!campSearch.trim()) return true
+              const q = campSearch.toLowerCase()
+              return c.name?.toLowerCase().includes(q) || c.description?.toLowerCase().includes(q)
+            }).map(c => (
               <CampaignCard key={c.id} campaign={c} onDelete={handleDelete} onRun={handleRun} />
             ))}
           </div>

@@ -9,7 +9,7 @@ import {
 } from 'lucide-react'
 import {
   getWorkflow, updateWorkflow, executeWorkflow, getWorkflowExecutions,
-  getWorkflowExecution, getNodeCatalog,
+  getWorkflowExecution, getNodeCatalog, getIntegration,
 } from '../../api.js'
 import { Button, Spinner, EmptyState, Pill } from '../shared/ui.jsx'
 
@@ -57,6 +57,8 @@ export default function WorkflowBuilder() {
   const [lastExecResult, setLastExecResult] = useState(null)
   const [showExecPanel, setShowExecPanel] = useState(false)
   const [execDetail, setExecDetail] = useState(null)
+  const [smtpConfigured, setSmtpConfigured] = useState(null)
+  const [nodeOutputOpen, setNodeOutputOpen] = useState(false)
 
   useEffect(() => {
     Promise.all([getWorkflow(id), getNodeCatalog()])
@@ -80,6 +82,20 @@ export default function WorkflowBuilder() {
     }
     return map
   }, [catalog])
+
+  // Reset output panel when switching nodes
+  useEffect(() => { setNodeOutputOpen(false) }, [selectedNode])
+
+  // Fetch SMTP status when a send_email node is selected
+  useEffect(() => {
+    const node = nodes.find(n => n.node_id === selectedNode)
+    if (node?.node_subtype === 'send_email') {
+      setSmtpConfigured(null) // reset while loading
+      getIntegration('email')
+        .then(cfg => setSmtpConfigured(!!(cfg?.is_enabled)))
+        .catch(() => setSmtpConfigured(false))
+    }
+  }, [selectedNode])
 
   // ─── Save ────────────────────────────────
   const handleSave = useCallback(async () => {
@@ -331,17 +347,24 @@ export default function WorkflowBuilder() {
   const validationWarnings = useMemo(() => getValidationWarnings(), [getValidationWarnings])
   const hasErrors = validationWarnings.some(w => w.level === 'error')
 
-  // Map node_id → error from last execution detail for canvas indicators
-  const nodeErrors = useMemo(() => {
+  // Map node_id → full log entry from last execution
+  const nodeResults = useMemo(() => {
     const map = {}
     if (execDetail?.logs) {
-      for (const log of execDetail.logs) {
-        if (log.status === 'failed') map[log.node_id] = log.output_data?.error || log.error || 'Failed'
-        else if (log.status === 'success' && log.items_in === 0) map[log.node_id] = 'empty'
-      }
+      for (const log of execDetail.logs) map[log.node_id] = log
     }
     return map
   }, [execDetail])
+
+  // Keep backward-compat alias used for canvas border/shadow styling
+  const nodeErrors = useMemo(() => {
+    const map = {}
+    for (const [nid, log] of Object.entries(nodeResults)) {
+      if (log.status === 'failed') map[nid] = log.output_data?.error || log.error || 'Failed'
+      else if (log.status === 'success' && log.items_in === 0) map[nid] = 'empty'
+    }
+    return map
+  }, [nodeResults])
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner /> Loading workflow...</div>
   if (!workflow) return <EmptyState icon={AlertTriangle} title="Workflow not found" />
@@ -647,6 +670,32 @@ export default function WorkflowBuilder() {
                   )}
                 </div>
 
+                {/* Per-node execution status footer */}
+                {nodeResults[node.node_id] && (() => {
+                  const res = nodeResults[node.node_id]
+                  const isOk = res.status === 'success'
+                  const color = isOk ? '#22c55e' : '#ef4444'
+                  const bg = isOk ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)'
+                  return (
+                    <div style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      padding: '4px 10px', borderTop: `1px solid ${color}33`,
+                      background: bg, fontSize: 10, color: color, fontWeight: 600,
+                      gap: 4,
+                    }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                        {isOk
+                          ? <CheckCircle size={10} />
+                          : <X size={10} strokeWidth={3} />}
+                        {isOk ? 'OK' : 'FAILED'}
+                      </span>
+                      <span style={{ color: 'var(--muted)', fontWeight: 400 }}>
+                        {res.items_in} in → {res.items_out} out
+                      </span>
+                    </div>
+                  )
+                })()}
+
                 {/* Error/warning badge */}
                 {isFailed && (
                   <div title={nodeErr} style={{
@@ -772,6 +821,35 @@ export default function WorkflowBuilder() {
                 <Pill label={selectedNodeData.node_subtype} color="#64748b" />
               </div>
 
+              {/* SMTP not configured banner */}
+              {selectedNodeData.node_subtype === 'send_email' && smtpConfigured === false && (
+                <div style={{
+                  marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+                  background: '#431407', border: '1px solid #c2410c',
+                  fontSize: 12, color: '#fed7aa',
+                  display: 'flex', flexDirection: 'column', gap: 6,
+                }}>
+                  <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <AlertTriangle size={13} style={{ color: '#fb923c', flexShrink: 0 }} />
+                    Email (SMTP) not configured
+                  </div>
+                  <div style={{ lineHeight: 1.4 }}>
+                    This action requires an SMTP integration to send emails.
+                  </div>
+                  <button
+                    onClick={() => navigate('/settings?tab=integrations')}
+                    style={{
+                      alignSelf: 'flex-start', marginTop: 2,
+                      padding: '5px 10px', borderRadius: 6, border: 'none',
+                      background: '#ea580c', color: '#fff',
+                      fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                    }}
+                  >
+                    Configure SMTP →
+                  </button>
+                </div>
+              )}
+
               {/* Config fields from schema */}
               {selectedDef?.config_schema && Object.entries(selectedDef.config_schema).map(([key, schema]) => (
                 <div key={key} style={{ marginBottom: 12 }}>
@@ -808,6 +886,64 @@ export default function WorkflowBuilder() {
                   )}
                 </div>
               ))}
+
+              {/* Last run output */}
+              {nodeResults[selectedNode] && (() => {
+                const res = nodeResults[selectedNode]
+                const isOk = res.status === 'success'
+                return (
+                  <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', marginBottom: 8 }}>Last Run</div>
+                    <div style={{
+                      padding: '8px 10px', borderRadius: 8,
+                      background: isOk ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
+                      border: `1px solid ${isOk ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
+                      fontSize: 12,
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                        {isOk
+                          ? <CheckCircle size={12} color="#22c55e" />
+                          : <X size={12} color="#ef4444" strokeWidth={3} />}
+                        <span style={{ fontWeight: 600, color: isOk ? '#22c55e' : '#ef4444' }}>
+                          {isOk ? 'Success' : 'Failed'}
+                        </span>
+                        <span style={{ color: 'var(--muted)', marginLeft: 'auto' }}>
+                          {res.items_in} in → {res.items_out} out
+                        </span>
+                      </div>
+                      {res.error && (
+                        <div style={{ color: '#ef4444', fontSize: 11, marginTop: 4, wordBreak: 'break-word' }}>
+                          {res.error}
+                        </div>
+                      )}
+                      {res.output_data && Object.keys(res.output_data).length > 0 && (
+                        <div>
+                          <button
+                            onClick={() => setNodeOutputOpen(o => !o)}
+                            style={{
+                              marginTop: 6, background: 'none', border: 'none', cursor: 'pointer',
+                              fontSize: 11, color: 'var(--muted)', padding: 0, display: 'flex', alignItems: 'center', gap: 3,
+                            }}
+                          >
+                            <ChevronRight size={10} style={{ transform: nodeOutputOpen ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }} />
+                            Output data
+                          </button>
+                          {nodeOutputOpen && (
+                            <pre style={{
+                              marginTop: 6, padding: '6px 8px', borderRadius: 6,
+                              background: 'var(--secondary)', fontSize: 10,
+                              color: 'var(--text)', overflowX: 'auto', whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word', maxHeight: 200, overflow: 'auto',
+                            }}>
+                              {JSON.stringify(res.output_data, null, 2)}
+                            </pre>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })()}
 
               {/* Connections */}
               <div style={{ marginTop: 20, paddingTop: 14, borderTop: '1px solid var(--border)' }}>

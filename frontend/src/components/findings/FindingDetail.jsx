@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight, Layers } from 'lucide-react'
 import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input } from '../shared/ui.jsx'
 import BlastRadiusPanel from '../campaigns/BlastRadiusPanel.jsx'
@@ -716,6 +716,14 @@ export default function FindingDetail() {
             </div>
             <div style={{ marginTop: 10, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7, whiteSpace: 'pre-wrap', background: 'var(--bg-secondary)', padding: '12px 14px', borderRadius: 8 }}>
               {finding.aggregated_solution.description}
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <Button
+                onClick={() => navigate(`/aggregated-solutions?highlight=${finding.aggregated_solution.id}`)}
+                style={{ background: '#7c3aed', color: '#fff', border: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', fontSize: 13 }}
+              >
+                <Layers size={14} /> View Aggregated Remediation
+              </Button>
             </div>
           </div>
         </Card>
