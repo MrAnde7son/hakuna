@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <rect width="40" height="40" rx="8" fill="#062B3F"/>
+  <!-- N letterform -->
+  <rect x="11" y="10" width="4" height="20" rx="1" fill="#00C4CC"/>
+  <rect x="25" y="10" width="4" height="20" rx="1" fill="#00C4CC"/>
+  <path d="M13 10h2l12 20h-2z" fill="#00C4CC"/>
+</svg>

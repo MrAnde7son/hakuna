@@ -64,6 +64,8 @@ from routes.benchmark_routes import router as benchmark_router
 from routes.easm_routes import router as easm_router
 from routes.sbom_routes import router as sbom_router
 from routes.vm_routes import router as vm_router
+from routes.integration_builder_routes import router as integration_builder_router
+from routes.discovery_routes import router as discovery_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -268,6 +270,8 @@ app.include_router(benchmark_router)
 app.include_router(easm_router)
 app.include_router(sbom_router)
 app.include_router(vm_router)
+app.include_router(integration_builder_router)
+app.include_router(discovery_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
@@ -294,6 +298,14 @@ def _deferred_startup():
     from agents.agent_scheduler import start_scheduler as start_agent_scheduler
     start_agent_scheduler()
     logger.info("Agent scheduler started")
+    # Start integration scheduler for cron-based integration runs
+    from services.integration_scheduler import start_scheduler as start_integration_scheduler
+    start_integration_scheduler()
+    logger.info("Integration scheduler started")
+    # Start EASM scan scheduler for cron-based EASM scans
+    from services.easm_scheduler import start_scheduler as start_easm_scheduler
+    start_easm_scheduler()
+    logger.info("EASM scan scheduler started")
     # Schedule threat intel auto-update every 24 hours
     from threat_intel.intel_updater import update_intel
     from apscheduler.schedulers.background import BackgroundScheduler as _BGScheduler
@@ -754,6 +766,11 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         # Internet-facing = public IP scanned by an external/cloud scanner
         is_ext_scanner = scan_data.get("scanner_type") in ("cloud", "external")
         is_facing = _is_public_ip(asset_data.get("ip")) and is_ext_scanner
+        # Criticality cascade: auto-rules → business-context baseline → default 5
+        effective_crit = (
+            auto_crit if auto_crit is not None
+            else ctx.get("context_criticality") or 5
+        )
         asset = Asset(
             scan_id=scan.id,
             ip=asset_data.get("ip"),
@@ -768,7 +785,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             last_auth_run=asset_data.get("last_auth_run"),
             system_type=asset_data.get("system_type"),
             is_internet_facing=is_facing,
-            criticality=auto_crit if auto_crit is not None else 5,
+            criticality=effective_crit,
             critical_count=asset_data.get("critical_count", 0),
             high_count=asset_data.get("high_count", 0),
             medium_count=asset_data.get("medium_count", 0),
@@ -1085,99 +1102,9 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         db.rollback()
         logger.warning(f"SBOM pipeline failed (non-fatal): {e}")
 
-    # ── Apply auto-tag rules to newly imported scan ──
-    tag_results = tag_engine.run_all_auto_tag_rules(db, scan_id=scan.id)
-    if tag_results:
-        logger.info(f"Auto-tag results: { {k: v for k, v in tag_results.items() if v} }")
-
-    # ── Apply ownership rules to newly imported scan ──
-    ownership_results = tag_engine.run_all_ownership_rules(db, scan_id=scan.id)
-    if ownership_results:
-        logger.info(f"Ownership rule results: { {k: v for k, v in ownership_results.items() if v} }")
-
-    # ── Infer asset ownership from inventory data ──
-    own_stats = ownership_inference.infer_asset_ownership(db, scan.id)
-    if own_stats["updated"]:
-        logger.info(f"Ownership inference: {own_stats}")
-
-    # ── Apply global exceptions to new scan findings ──
-    try:
-        active_exceptions = db.query(FindingException).filter(FindingException.is_active == True).all()
-        exc_applied = 0
-        now = datetime.utcnow()
-        for exc in active_exceptions:
-            if exc.expires_at and exc.expires_at < now:
-                exc.is_active = False
-                continue
-            exc_applied += _apply_exception_to_findings(db, exc, scan_id=scan.id)
-        if exc_applied:
-            logger.info(f"Applied {exc_applied} global exceptions to new scan")
-            db.flush()
-    except Exception as e:
-        db.rollback()
-        logger.warning(f"Exception application failed (non-fatal): {e}")
-
-    # ── Aggregate solutions by root cause ──
-    try:
-        agg_result = solution_aggregator.aggregate_solutions(db, scan_id=scan.id)
-        if agg_result["created"]:
-            logger.info(f"Aggregated solutions: {agg_result['created']} groups, {agg_result['findings_linked']} findings linked")
-    except Exception as e:
-        db.rollback()
-        logger.warning(f"Solution aggregation failed (non-fatal): {e}")
-
-    # ── Enrich findings with threat intel (KEV, EPSS, ransomware, trending) ──
-    try:
-        import threat_intel.threat_intel_sync as _ti_sync
-        enrich_result = _ti_sync.enrich_findings_from_threat_intel(db, scan_id=scan.id)
-        if enrich_result["enriched"]:
-            logger.info(f"Threat intel enrichment: {enrich_result['enriched']} findings enriched")
-    except Exception as e:
-        db.rollback()
-        logger.warning(f"Threat intel enrichment failed (non-fatal): {e}")
-
-    # ── Match findings to MITRE ATT&CK TTPs (keyword + plugin ID + family) ──
-    try:
-        import threat_intel.ttp_matcher as _ttp_matcher
-        ttp_result = _ttp_matcher.match_findings_to_ttps(db, scan_id=scan.id)
-        logger.info(f"TTP matching: {ttp_result['matched']} findings matched to ATT&CK techniques")
-    except Exception as e:
-        db.rollback()
-        logger.warning(f"TTP matching failed (non-fatal): {e}")
-
-    # ── Compute SLA due dates for all findings in this scan ──
-    try:
-        _ensure_sla_defaults(db)
-        sla_configs = db.query(SLAConfig).all()
-        sla_updated = _recalculate_sla_for_scan(db, scan.id, sla_configs)
-        if sla_updated:
-            logger.info(f"SLA computed for {sla_updated} findings")
-    except Exception as e:
-        db.rollback()
-        logger.warning(f"SLA computation failed (non-fatal): {e}")
-
-    # ── Cross-scan asset dedup: merge duplicate hosts from prior scans in same org ──
-    if dedup_cfg.get("enabled") and dedup_cfg.get("apply_on_upload"):
-        asset_dcfg = dedup_cfg.get("assets", {})
-        if asset_dcfg.get("enabled") and asset_dcfg.get("scope", "cross_scan") == "cross_scan":
-            try:
-                cs_result = dedup_engine.run_cross_scan_asset_dedup(
-                    db, effective_org_id, dedup_cfg, ENTITY_MODEL_MAP
-                )
-                if cs_result.get("removed"):
-                    logger.info(f"Cross-scan asset dedup: merged {cs_result['removed']} duplicate asset(s)")
-            except Exception as e:
-                db.rollback()
-                logger.warning(f"Cross-scan asset dedup failed (non-fatal): {e}")
-
-    # ── EASM enrichment: match Nessus assets against external discovery data ──
-    if effective_org_id:
-        try:
-            easm_org = db.query(Organization).filter(Organization.id == effective_org_id).first()
-            if easm_org and easm_org.easm_org_id:
-                await enrich_assets_from_easm(db, easm_org, scan.id)
-        except Exception as e:
-            logger.warning(f"EASM enrichment failed (non-fatal): {e}")
+    # ── Post-ingest pipeline: auto-tag, ownership, exceptions, SLA, dedup, etc. ──
+    from services.post_ingest import finalize_scan
+    finalize_scan(db, scan_id=scan.id, org_id=effective_org_id)
 
     total_findings = len(parsed["findings"])
     total_assets = len(asset_map)
@@ -1246,6 +1173,11 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "asset_count": asset_count,
             "finding_count": finding_count,
+            "schedule": s.schedule,
+            "status": s.status or "completed",
+            "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
+            "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+            "run_count": s.run_count or 0,
         })
     return result
 
@@ -1262,6 +1194,51 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[L
     log_audit(db, "delete", "scan", scan_id, entity_name=_scan_name, org_id=_scan_org)
     db.commit()
     return {"message": "Scan deleted"}
+
+
+@app.patch("/api/scans/{scan_id}/schedule")
+def update_scan_schedule(
+    scan_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Update the schedule (cron expression) for a scan."""
+    q = apply_org_filter(db.query(Scan), Scan, org_ids)
+    scan = q.filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+
+    schedule = body.get("schedule")  # None or "" to remove, cron string to set
+
+    # Validate cron expression if provided
+    if schedule:
+        try:
+            from apscheduler.triggers.cron import CronTrigger
+            trigger = CronTrigger.from_crontab(schedule)
+            scan.schedule = schedule
+            scan.next_run_at = trigger.get_next_fire_time(None, __import__("datetime").datetime.utcnow())
+        except Exception:
+            raise HTTPException(400, f"Invalid cron expression: {schedule}")
+    else:
+        scan.schedule = None
+        scan.next_run_at = None
+
+    db.commit()
+
+    # Update the EASM scheduler
+    if scan.source_type == "easm":
+        from services.easm_scheduler import register_scan, deregister_scan
+        if schedule:
+            register_scan(scan.id, schedule)
+        else:
+            deregister_scan(scan.id)
+
+    return {
+        "id": scan.id,
+        "schedule": scan.schedule,
+        "next_run_at": scan.next_run_at.isoformat() if scan.next_run_at else None,
+    }
 
 
 # ─────────────────────────────────────────────
@@ -5240,13 +5217,38 @@ def get_blast_radius(
                 "weak_credential", f"{cred.credential_type or 'Weak'} ({proto}:{cred.port or '?'})",
             )
 
-    # ── 9. Exploitable findings / CVEs on the focal asset ──
+    # ── 9. Exploitable findings / CVEs on ALL visited assets ──
+    visited_asset_ids = [int(n["id"].split("-")[1]) for n in nodes.values() if n["type"] == "asset"]
     exploit_findings = db.query(Finding).filter(
-        Finding.asset_id == asset_id,
+        Finding.asset_id.in_(visited_asset_ids),
         Finding.scan_id == scan_id,
         Finding.severity >= 3,  # High + Critical
         Finding.exploit_available == True,
-    ).limit(10).all()
+    ).limit(20).all()
+
+    # Add exploitable findings as vuln nodes connected to their assets
+    for f in exploit_findings:
+        cve_list = (f.cves or [])[:3]
+        cve_str = ", ".join(cve_list) if cve_list else f.plugin_name or f"Plugin {f.plugin_id}"
+        sev_label = "Critical" if f.severity >= 4 else "High"
+        vnid = f"vuln-{f.id}"
+        add_node(vnid, "vuln", {
+            "label": cve_str,
+            "severity": sev_label.lower(),
+            "severity_num": f.severity,
+            "plugin_name": f.plugin_name,
+            "plugin_id": f.plugin_id,
+            "cves": f.cves or [],
+            "is_kev": bool(f.is_kev),
+            "cvss": f.cvss3_score or f.cvss2_score,
+            "exploit_available": True,
+            "finding_id": f.id,
+        })
+        add_edge(
+            f"e-vuln-{f.id}-{f.asset_id}",
+            vnid, f"asset-{f.asset_id}",
+            "vulnerability", cve_str,
+        )
 
     # ── 10. Listening risky services on visited assets ──
     _RISKY_PORTS = {
@@ -5806,6 +5808,20 @@ def delete_auto_tag_rule(rule_id: int, db: Session = Depends(get_db)):
     db.delete(rule)
     db.commit()
     return {"message": "Rule deleted"}
+
+
+@app.post("/api/scans/{scan_id}/finalize")
+def finalize_scan_endpoint(
+    scan_id: int,
+    db: Session = Depends(get_db),
+):
+    """Re-run the full post-ingest pipeline on an existing scan."""
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+    from services.post_ingest import finalize_scan
+    results = finalize_scan(db, scan_id=scan.id, org_id=scan.org_id)
+    return {"scan_id": scan_id, "results": {k: v for k, v in results.items() if v is not None}}
 
 
 @app.post("/api/auto-tag-rules/run-all")

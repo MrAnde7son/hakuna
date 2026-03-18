@@ -48,7 +48,7 @@ const UserManagement = React.lazy(() => import('./components/settings/UserManage
 const UserDocs = React.lazy(() => import('./components/docs/UserDocs.jsx'))
 
 // Global scan context
-export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {} })
+export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
 export const useScan = () => useContext(ScanContext)
 
 const NAV_GROUPS = [

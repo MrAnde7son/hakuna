@@ -16,9 +16,20 @@ import httpx
 from sqlalchemy.orm import Session
 from models.models import Organization, Scan, Asset, Finding
 
+from apscheduler.triggers.cron import CronTrigger
+
 logger = logging.getLogger(__name__)
 
 HAKUNA_BASE_URL = os.getenv("HAKUNA_SCANNER_URL", "http://localhost:8001")
+
+
+def _compute_next_run(cron_expr: str) -> Optional[datetime]:
+    """Compute the next run time from a cron expression."""
+    try:
+        trigger = CronTrigger.from_crontab(cron_expr)
+        return trigger.get_next_fire_time(None, datetime.utcnow())
+    except Exception:
+        return None
 HAKUNA_API = f"{HAKUNA_BASE_URL}/api/v1"
 
 # ── Free email domains (skip EASM for these) ────────────────────────
@@ -584,25 +595,41 @@ async def import_easm_assets_for_domain(
     db: Session, org: Organization, domain: str, scan_type: str = "full",
 ) -> Optional[dict]:
     """
-    Import EASM-discovered assets for a single domain into a new scan record.
-    Each domain scan is its own row in the scan list.
+    Import EASM-discovered assets for a domain.
+    Reuses the existing scan record for this org+domain instead of creating a new one.
     """
     if not org.easm_org_id:
         return None
 
     easm_assets = await get_easm_assets(org.easm_org_id) or []
 
-    scan = _create_easm_scan(db, org, domain, scan_type)
+    # Reuse existing scan for this domain, or create one if first time
+    scan = _find_existing_easm_scan(db, org, domain)
+    if scan:
+        # Clear old assets/findings before reimporting
+        db.query(Finding).filter(Finding.asset_id.in_(
+            db.query(Asset.id).filter(Asset.scan_id == scan.id)
+        )).delete(synchronize_session=False)
+        db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
+        db.flush()
+    else:
+        scan = _create_easm_scan(db, org, domain, scan_type)
+
     created, findings_created = _import_assets_for_domain(db, scan, easm_assets, domain)
 
     # Update scan metadata
     now = datetime.utcnow()
+    scan.scan_date = now.isoformat()
+    scan.status = "completed"
+    scan.last_run_at = now
+    scan.run_count = (scan.run_count or 0) + 1
     scan.raw_metadata = {
         "hakuna_org_id": org.easm_org_id,
         "domain": domain,
         "scan_type": scan_type,
         "asset_count": created,
         "last_sync": now.isoformat(),
+        "status": "completed",
     }
 
     # Update asset severity counts
@@ -615,6 +642,11 @@ async def import_easm_assets_for_domain(
             setattr(a, k, v)
 
     db.commit()
+
+    # Run full post-ingest pipeline (auto-tag, ownership, SLA, dedup, etc.)
+    from services.post_ingest import finalize_scan
+    finalize_scan(db, scan_id=scan.id, org_id=org.id)
+
     logger.info(f"EASM scan for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
 
     return {
@@ -644,11 +676,10 @@ async def scan_domain(
 
     # Reuse existing EASM scan for this domain, or create a new one
     scan = _find_existing_easm_scan(db, org, domain)
+    now = datetime.utcnow()
     if scan:
         # Keep old assets/findings visible until the new scan completes
-        now = datetime.utcnow()
         scan.scan_date = now.isoformat()
-        scan.created_at = now
         scan.raw_metadata = {
             "hakuna_org_id": org.easm_org_id,
             "domain": domain,
@@ -663,6 +694,7 @@ async def scan_domain(
             "run_id": run_id,
             "status": "running" if run_id else "failed",
         }
+    scan.status = "running" if run_id else "failed"
     db.commit()
 
     return {
@@ -720,6 +752,13 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             "asset_count": created,
             "last_sync": now.isoformat(),
         }
+        scan.status = "completed"
+        scan.last_run_at = now
+        scan.run_count = (scan.run_count or 0) + 1
+
+        # Compute next_run_at if scan has a schedule
+        if scan.schedule:
+            scan.next_run_at = _compute_next_run(scan.schedule)
 
         # Update asset severity counts
         for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
@@ -731,12 +770,18 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 setattr(a, k, v)
 
         db.commit()
+
+        # Run full post-ingest pipeline (auto-tag, ownership, SLA, dedup, etc.)
+        from services.post_ingest import finalize_scan
+        finalize_scan(db, scan_id=scan.id, org_id=org.id)
+
         logger.info(f"EASM scan completed for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
 
         return {"scan_id": scan.id, "status": "completed", "created": created, "findings_created": findings_created, "domain": domain}
 
     elif hakuna_status in ("failed", "error"):
         scan.raw_metadata = {**meta, "status": "failed"}
+        scan.status = "failed"
         db.commit()
         return {"scan_id": scan.id, "status": "failed", "domain": domain}
 
@@ -753,6 +798,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 "stage_log": run_status.get("stage_log"),
             }
         scan.raw_metadata = {**meta, "status": status, **progress}
+        scan.status = status
         db.commit()
         return {"scan_id": scan.id, "status": status, "domain": domain, **progress}
 

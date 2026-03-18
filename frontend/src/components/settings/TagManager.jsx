@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Tag, Plus, ChevronRight, ChevronDown, Trash2, Edit2, Play, ToggleLeft, ToggleRight, X, Save, Zap, Settings2 } from 'lucide-react'
+import { Tag, Plus, ChevronRight, ChevronDown, Trash2, Edit2, Play, ToggleLeft, ToggleRight, X, Save, Zap, Settings2, ExternalLink, Monitor } from 'lucide-react'
 import {
   getTags, createTag, updateTag, deleteTag,
   getAutoTagRules, createAutoTagRule, updateAutoTagRule, deleteAutoTagRule,
-  runAutoTagRule, runAllAutoTagRules, exportConfig,
+  runAutoTagRule, runAllAutoTagRules, exportConfig, getAssets,
 } from '../../api.js'
 import { Card, PageHeader, Button, Input, Select, Spinner, EmptyState, ExportImportButtons } from '../shared/ui.jsx'
+import { useNavigate } from 'react-router-dom'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import TagMappings from './TagMappings.jsx'
 
@@ -328,6 +329,141 @@ function DeleteConfirm({ tag, onConfirm, onCancel }) {
   )
 }
 
+// ─── Tag assets panel ─────────────────────────────────────
+const PREVIEW_LIMIT = 5
+
+function TagAssetsPanel({ tag, onClose }) {
+  const [assets, setAssets] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [total, setTotal] = useState(0)
+  const navigate = useNavigate()
+  const color = tag.color || '#6366f1'
+  const tagQuery = `${tag.category}:${tag.value}`
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    getAssets({ tags: tagQuery, page_size: PREVIEW_LIMIT })
+      .then(res => {
+        if (cancelled) return
+        setAssets(Array.isArray(res) ? res : res.assets || res.items || [])
+        setTotal(res.total ?? (Array.isArray(res) ? res.length : (res.assets || res.items || []).length))
+      })
+      .catch(() => { if (!cancelled) setAssets([]) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [tag.id, tagQuery])
+
+  const assetLabel = (a) => {
+    if (a.ip && a.hostname) return a.ip
+    return a.ip || a.hostname || `Asset #${a.id}`
+  }
+  const assetSub = (a) => {
+    if (a.ip && a.hostname) return a.hostname
+    return null
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            background: `${color}18`, color, border: `1px solid ${color}44`,
+            borderRadius: 999, padding: '2px 8px', fontSize: 11, fontWeight: 600,
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
+            {tagQuery}
+          </span>
+        </div>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex' }}>
+          <X size={14} />
+        </button>
+      </div>
+
+      {tag.description && (
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>{tag.description}</div>
+      )}
+
+      {/* Stats row */}
+      <div style={{ display: 'flex', gap: 12, fontSize: 11 }}>
+        <span style={{ color: 'var(--text-muted)' }}>
+          <strong style={{ color: 'var(--text-primary)', fontSize: 14 }}>{tag.asset_count || total}</strong> assets
+        </span>
+        {(tag.finding_count || 0) > 0 && (
+          <span style={{ color: 'var(--text-muted)' }}>
+            <strong style={{ color: 'var(--text-primary)', fontSize: 14 }}>{tag.finding_count}</strong> findings
+          </span>
+        )}
+      </div>
+
+      {/* Asset list */}
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 20 }}><Spinner /></div>
+      ) : assets.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '20px 16px', color: 'var(--text-muted)', fontSize: 12 }}>
+          No assets tagged
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>
+            Tagged Assets
+          </div>
+          {assets.map(a => {
+            const sub = assetSub(a)
+            return (
+              <div
+                key={a.id}
+                onClick={() => navigate(`/assets?highlight=${a.id}`)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '6px 8px', borderRadius: 6, cursor: 'pointer',
+                  fontSize: 12, transition: 'background 0.15s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >
+                <Monitor size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                <span style={{ fontWeight: 500, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
+                  {assetLabel(a)}
+                </span>
+                {sub && (
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
+                    {sub}
+                  </span>
+                )}
+                <ExternalLink size={10} style={{ color: 'var(--text-muted)', flexShrink: 0, marginLeft: 'auto' }} />
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* View all CTA */}
+      {total > PREVIEW_LIMIT && (
+        <Button
+          size="sm" variant="ghost"
+          onClick={() => navigate(`/assets?tags=${encodeURIComponent(tagQuery)}`)}
+          style={{ alignSelf: 'center' }}
+        >
+          View all {total} assets <ExternalLink size={11} />
+        </Button>
+      )}
+
+      {assets.length > 0 && total <= PREVIEW_LIMIT && (
+        <Button
+          size="sm" variant="ghost"
+          onClick={() => navigate(`/assets?tags=${encodeURIComponent(tagQuery)}`)}
+          style={{ alignSelf: 'center' }}
+        >
+          Open in Asset Inventory <ExternalLink size={11} />
+        </Button>
+      )}
+    </div>
+  )
+}
+
 // ─── Main TagManager page ──────────────────────────────────
 export default function TagManager() {
   const [tags, setTags] = useState([])
@@ -406,7 +542,7 @@ export default function TagManager() {
 
   if (loading) return <Spinner />
 
-  const panelOpen = editingTag !== null || deletingTag !== null
+  const panelOpen = editingTag !== null || deletingTag !== null || selectedTag !== null
 
   return (
     <div>
@@ -505,6 +641,8 @@ export default function TagManager() {
                   onSave={() => { setEditingTag(null); load() }}
                   onCancel={() => setEditingTag(null)}
                 />
+              ) : selectedTag ? (
+                <TagAssetsPanel tag={selectedTag} onClose={() => setSelectedTag(null)} />
               ) : null}
             </Card>
           )}

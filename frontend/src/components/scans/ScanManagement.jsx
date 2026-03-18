@@ -8,7 +8,7 @@ import {
 import { useScan } from '../../App.jsx'
 import {
   uploadScan, deleteScan, getEasmStatus, scanEasmDomain, refreshEasmScan, setupEasm,
-  getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets,
+  getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner } from '../shared/ui.jsx'
 
@@ -986,6 +986,177 @@ function VmScanHistory({ expanded, metadata }) {
 }
 
 
+// ── Schedule presets ──────────────────────────────────────────────────
+
+const SCHEDULE_PRESETS = [
+  { label: 'No schedule', value: '' },
+  { label: 'Every 6 hours', value: '0 */6 * * *' },
+  { label: 'Every 12 hours', value: '0 */12 * * *' },
+  { label: 'Daily', value: '0 8 * * *' },
+  { label: 'Weekly', value: '0 8 * * 1' },
+  { label: 'Monthly', value: '0 8 1 * *' },
+]
+
+function getScheduleLabel(cron) {
+  if (!cron) return null
+  const preset = SCHEDULE_PRESETS.find(p => p.value === cron)
+  return preset ? preset.label : cron
+}
+
+function ScheduleDropdown({ scan, onUpdate }) {
+  const [open, setOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [showCustom, setShowCustom] = useState(false)
+  const [customCron, setCustomCron] = useState('')
+  const [customError, setCustomError] = useState(null)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const handleSelect = async (value) => {
+    setSaving(true)
+    setCustomError(null)
+    try {
+      await updateScanSchedule(scan.id, value || null)
+      if (onUpdate) await onUpdate()
+      setShowCustom(false)
+      setOpen(false)
+    } catch (err) {
+      setCustomError(err.message || 'Invalid cron expression')
+      setSaving(false)
+      return
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const isCustom = scan.schedule && !SCHEDULE_PRESETS.some(p => p.value === scan.schedule)
+  const color = scan.source_type === 'vm_scanner' ? '#ec4899' : '#0ea5e9'
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        onClick={() => { setOpen(o => !o); setShowCustom(false); setCustomError(null) }}
+        title={scan.schedule ? `Schedule: ${scan.schedule}` : 'Set schedule'}
+        style={{
+          background: 'none', border: '1px solid var(--border)',
+          borderRadius: 6, padding: '5px 8px', cursor: 'pointer',
+          color: scan.schedule ? color : 'var(--text-muted)',
+          borderColor: scan.schedule ? `${color}66` : 'var(--border)',
+          display: 'flex', alignItems: 'center', gap: 3, fontSize: 12,
+          transition: 'all 0.15s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.borderColor = color; e.currentTarget.style.color = color }}
+        onMouseLeave={e => { if (!scan.schedule) { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' } else { e.currentTarget.style.borderColor = `${color}66`; e.currentTarget.style.color = color }}}
+      >
+        <Clock size={12} />
+        {saving ? <Loader size={10} style={{ animation: 'spin 1s linear infinite' }} /> : <ChevronDown size={10} />}
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 100,
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+          minWidth: 220, overflow: 'hidden',
+        }}>
+          <div style={{ padding: '8px 12px', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', borderBottom: '1px solid var(--border)' }}>
+            Schedule
+          </div>
+          {SCHEDULE_PRESETS.map(preset => (
+            <button
+              key={preset.value}
+              onClick={() => handleSelect(preset.value)}
+              style={{
+                display: 'block', width: '100%', textAlign: 'left',
+                padding: '8px 12px', border: 'none', cursor: 'pointer',
+                background: (scan.schedule || '') === preset.value ? `${color}18` : 'transparent',
+                color: (scan.schedule || '') === preset.value ? color : 'var(--text-primary)',
+                fontSize: 13, fontWeight: (scan.schedule || '') === preset.value ? 600 : 400,
+                transition: 'background 0.1s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = `${color}11`}
+              onMouseLeave={e => e.currentTarget.style.background = (scan.schedule || '') === preset.value ? `${color}18` : 'transparent'}
+            >
+              {preset.label}
+              {preset.value && <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 6 }}>{preset.value}</span>}
+            </button>
+          ))}
+
+          {/* Custom cron option */}
+          <div style={{ borderTop: '1px solid var(--border)' }}>
+            {!showCustom ? (
+              <button
+                onClick={() => { setShowCustom(true); setCustomCron(isCustom ? scan.schedule : ''); setCustomError(null) }}
+                style={{
+                  display: 'block', width: '100%', textAlign: 'left',
+                  padding: '8px 12px', border: 'none', cursor: 'pointer',
+                  background: isCustom ? `${color}18` : 'transparent',
+                  color: isCustom ? color : 'var(--text-primary)',
+                  fontSize: 13, fontWeight: isCustom ? 600 : 400,
+                  transition: 'background 0.1s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = `${color}11`}
+                onMouseLeave={e => e.currentTarget.style.background = isCustom ? `${color}18` : 'transparent'}
+              >
+                Custom...
+                {isCustom && <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 6 }}>{scan.schedule}</span>}
+              </button>
+            ) : (
+              <div style={{ padding: '10px 12px' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+                  Cron expression (min hour day month weekday)
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input
+                    value={customCron}
+                    onChange={e => { setCustomCron(e.target.value); setCustomError(null) }}
+                    placeholder="*/30 * * * *"
+                    autoFocus
+                    onKeyDown={e => { if (e.key === 'Enter' && customCron.trim()) handleSelect(customCron.trim()) }}
+                    style={{
+                      flex: 1, padding: '6px 8px', borderRadius: 5,
+                      border: `1px solid ${customError ? '#dc2626' : 'var(--border)'}`,
+                      background: 'var(--bg)', color: 'var(--text-primary)',
+                      fontSize: 12, fontFamily: 'monospace', outline: 'none',
+                      minWidth: 0,
+                    }}
+                  />
+                  <button
+                    onClick={() => customCron.trim() && handleSelect(customCron.trim())}
+                    disabled={!customCron.trim() || saving}
+                    style={{
+                      padding: '6px 10px', borderRadius: 5, border: 'none',
+                      background: color, color: '#fff', fontSize: 12, fontWeight: 600,
+                      cursor: !customCron.trim() || saving ? 'not-allowed' : 'pointer',
+                      opacity: !customCron.trim() || saving ? 0.5 : 1,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {saving ? '...' : 'Set'}
+                  </button>
+                </div>
+                {customError && (
+                  <div style={{ fontSize: 11, color: '#dc2626', marginTop: 4 }}>{customError}</div>
+                )}
+                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.4 }}>
+                  Examples: <code style={{ background: 'var(--bg-secondary)', padding: '1px 3px', borderRadius: 3 }}>*/30 * * * *</code> every 30m,{' '}
+                  <code style={{ background: 'var(--bg-secondary)', padding: '1px 3px', borderRadius: 3 }}>0 9,18 * * *</code> 9am & 6pm
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 // ── Scan card ────────────────────────────────────────────────────────
 
 function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
@@ -1034,10 +1205,23 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
               <span><Server size={11} style={{ marginRight: 3, verticalAlign: -1 }} />{scan.asset_count || 0} assets</span>
               <span><Shield size={11} style={{ marginRight: 3, verticalAlign: -1 }} />{(scan.finding_count || 0).toLocaleString()} findings</span>
               {scan.source_version && <span>{scan.source_version}</span>}
+              {scan.schedule && (
+                <span style={{ color: '#0ea5e9' }}>
+                  <RefreshCw size={11} style={{ marginRight: 3, verticalAlign: -1 }} />
+                  {getScheduleLabel(scan.schedule)}
+                  {scan.run_count > 0 && ` (${scan.run_count} runs)`}
+                </span>
+              )}
+              {scan.next_run_at && (
+                <span>Next: {formatAge(scan.next_run_at)}</span>
+              )}
             </div>
           </div>
 
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+            {(isEasm || isVm) && (
+              <ScheduleDropdown scan={scan} onUpdate={onRefresh} />
+            )}
             {(isEasm || isVm) && (
               <button
                 onClick={() => setShowHistory(h => !h)}
@@ -1133,6 +1317,17 @@ function formatAge(isoDate) {
   const d = new Date(isoDate.endsWith('Z') ? isoDate : isoDate + 'Z')
   const now = new Date()
   const diffMs = now - d
+  if (diffMs < 0) {
+    // Future date — show "in X"
+    const mins = Math.floor(-diffMs / 60000)
+    if (mins < 1) return 'in <1m'
+    if (mins < 60) return `in ${mins}m`
+    const hrs = Math.floor(mins / 60)
+    if (hrs < 24) return `in ${hrs}h`
+    const days = Math.floor(hrs / 24)
+    if (days < 30) return `in ${days}d`
+    return d.toLocaleDateString()
+  }
   const mins = Math.floor(diffMs / 60000)
   if (mins < 1) return 'Just now'
   if (mins < 60) return `${mins}m ago`

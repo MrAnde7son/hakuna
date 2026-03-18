@@ -42,6 +42,8 @@ def init_db():
         FindingException, ScanComparison,
         AggregatedSolution,
         AuditLog,
+        # Integration Builder
+        IntegrationCredential, DiscoveredSpec, Integration, IntegrationRun,
     )
     from models.threat_intel_models import (  # noqa: F401
         ThreatGroup, TTP, ThreatGroupTTP,
@@ -72,6 +74,9 @@ def _migrate_add_columns():
             ("easm_data", "JSON"),
             ("internet_facing_confidence", "VARCHAR"),
             ("internet_facing_methods", "JSON"),
+            ("source_id", "VARCHAR"),
+            ("source_system", "VARCHAR"),
+            ("user_edited_fields", "JSON"),
         ],
         "findings": [
             ("first_seen", "DATETIME"),
@@ -92,6 +97,9 @@ def _migrate_add_columns():
             ("exploit_maturity_level", "VARCHAR"),
             ("ssvc_decision", "VARCHAR"),
             ("greynoise_seen", "BOOLEAN DEFAULT 0"),
+            ("source_id", "VARCHAR"),
+            ("source_system", "VARCHAR"),
+            ("user_edited_fields", "JSON"),
         ],
         "threat_cves": [
             ("cvss4_score", "FLOAT"),
@@ -125,6 +133,11 @@ def _migrate_add_columns():
             ("source_type", 'VARCHAR DEFAULT "nessus"'),
             ("source_version", "VARCHAR"),
             ("raw_metadata", "JSON"),
+            ("schedule", "VARCHAR"),
+            ("status", 'VARCHAR DEFAULT "completed"'),
+            ("last_run_at", "DATETIME"),
+            ("next_run_at", "DATETIME"),
+            ("run_count", "INTEGER DEFAULT 0"),
         ],
         "tags": [("org_id", "INTEGER")],
         "auto_tag_rules": [("org_id", "INTEGER")],

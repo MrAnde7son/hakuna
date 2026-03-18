@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <rect width="40" height="40" rx="8" fill="#1A1A1A"/>
+  <!-- P letterform -->
+  <rect x="13" y="8" width="4" height="24" rx="1" fill="#06AC38"/>
+  <path d="M13 8 h8 a7 7 0 0 1 0 14 h-8 v-4 h8 a3 3 0 0 0 0-6 h-8 Z" fill="#06AC38"/>
+</svg>

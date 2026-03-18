@@ -1,0 +1,149 @@
+{
+  "id": "wiz_issues",
+  "name": "Wiz \u2014 Security Issues",
+  "description": "Pull security issues from Wiz via GraphQL API",
+  "logo": "/logos/vendors/wiz.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "POST",
+    "path": "/api/v1/graphql",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "query": "query IssuesTable($first: Int, $after: String, $filterBy: IssueFilters) { issues(first: $first, after: $after, filterBy: $filterBy) { nodes { id sourceRule { name } severity status entity { name type ... on CloudResource { nativeType region cloudPlatform } } note createdAt updatedAt } pageInfo { hasNextPage endCursor } totalCount } }",
+      "variables": {
+        "first": 100,
+        "after": "{{pagination.cursor}}",
+        "filterBy": {
+          "status": [
+            "OPEN",
+            "IN_PROGRESS"
+          ]
+        }
+      }
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 100,
+      "cursor_field": "data.issues.pageInfo.endCursor",
+      "has_next_field": "data.issues.pageInfo.hasNextPage"
+    }
+  },
+  "records_path": "data.issues.nodes",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "instance_url_field": {
+      "label": "Wiz API Endpoint URL",
+      "placeholder": "https://api.us1.app.wiz.io"
+    },
+    "token_url": "https://auth.app.wiz.io/oauth/token",
+    "grant_type": "client_credentials",
+    "client_id_field": {
+      "label": "Wiz Service Account Client ID",
+      "type": "text"
+    },
+    "client_secret_field": {
+      "label": "Wiz Service Account Client Secret",
+      "type": "password"
+    },
+    "scopes": [
+      "read:issues"
+    ],
+    "audience": "wiz-api",
+    "validation_request": {
+      "method": "POST",
+      "path": "/api/v1/graphql",
+      "body": {
+        "query": "{ systemHealth { status } }"
+      },
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "connected_status": "data.systemHealth.status"
+      },
+      "error_message": "Could not authenticate with Wiz. Check your service account credentials."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "sourceRule.name",
+      "target": "title"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "CRITICAL": "critical",
+          "HIGH": "high",
+          "MEDIUM": "medium",
+          "LOW": "low",
+          "INFORMATIONAL": "info"
+        }
+      }
+    },
+    {
+      "source": "status",
+      "target": "status"
+    },
+    {
+      "source": "entity.name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "entity.type",
+      "target": "asset.type"
+    },
+    {
+      "source": "entity.cloudPlatform",
+      "target": "asset.cloud_provider"
+    },
+    {
+      "source": "entity.region",
+      "target": "asset.region"
+    },
+    {
+      "source": "note",
+      "target": "description"
+    },
+    {
+      "source": "createdAt",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "updatedAt",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "status_filter": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [
+        "OPEN",
+        "IN_PROGRESS"
+      ],
+      "description": "Wiz issue statuses to pull (OPEN, IN_PROGRESS, RESOLVED, REJECTED)"
+    }
+  }
+}

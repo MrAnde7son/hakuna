@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Float, Boolean, Text, DateTime, ForeignKey, JSON, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
@@ -163,6 +164,13 @@ class Scan(Base):
     source_version = Column(String)                       # scanner version (generalizes nessus_version)
     raw_metadata = Column(JSON, default=dict)             # full original scan-level metadata from parser
 
+    # Scheduling support
+    schedule = Column(String, nullable=True)              # cron expression (e.g. "0 */6 * * *")
+    status = Column(String, default="completed")          # idle | running | completed | failed
+    last_run_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    run_count = Column(Integer, default=0)
+
     organization = relationship("Organization")
     assets = relationship("Asset", back_populates="scan", cascade="all, delete-orphan")
     findings = relationship("Finding", back_populates="scan", cascade="all, delete-orphan", foreign_keys="[Finding.scan_id]")
@@ -221,6 +229,11 @@ class Asset(Base):
     times_seen = Column(Integer, default=1)             # Number of scans this IP appeared in
     asset_status = Column(String, default="active")     # active / stale
     stale_since = Column(DateTime, nullable=True)       # When asset was first not seen in a rescan
+
+    # Integration Builder provenance
+    source_id = Column(String, nullable=True)           # Original ID in the source tool
+    source_system = Column(String, nullable=True)       # "tenable_sc" | "crowdstrike" | …
+    user_edited_fields = Column(JSON, default=list)     # Fields manually changed by user (protected from overwrite)
 
     scan = relationship("Scan", back_populates="assets")
     findings = relationship("Finding", back_populates="asset", cascade="all, delete-orphan")
@@ -335,6 +348,11 @@ class Finding(Base):
 
     # Aggregated solution link (set when findings are grouped by root cause)
     aggregated_solution_id = Column(Integer, ForeignKey("aggregated_solutions.id"), nullable=True)
+
+    # Integration Builder provenance
+    source_id = Column(String, nullable=True)           # Original ID in the source tool
+    source_system = Column(String, nullable=True)       # Source system identifier
+    user_edited_fields = Column(JSON, default=list)     # Fields manually changed by user (protected from overwrite)
 
     scan = relationship("Scan", back_populates="findings", foreign_keys="[Finding.scan_id]")
     asset = relationship("Asset", back_populates="findings")
@@ -1439,3 +1457,93 @@ class AuditLog(Base):
     # Context
     ip_address = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+# ─────────────────────────────────────────────────────────
+# Integration Builder Models
+# ─────────────────────────────────────────────────────────
+
+def _gen_uuid():
+    return str(uuid.uuid4())
+
+
+class IntegrationCredential(Base):
+    """Encrypted credential sets for external tool connections."""
+    __tablename__ = "integration_credentials"
+
+    id = Column(String, primary_key=True, default=_gen_uuid)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
+    connector_id = Column(String, nullable=False, index=True)
+    auth_type = Column(String, nullable=False)  # api_key | oauth2 | basic | bearer | pat
+    encrypted_values = Column(Text, nullable=False)  # AES-256-GCM encrypted JSON
+    instance_url = Column(String, nullable=True)
+    connected_user = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)  # OAuth access token expiry
+    encrypted_refresh_token = Column(Text, nullable=True)  # AES-256-GCM encrypted
+
+    integrations = relationship("Integration", back_populates="credential")
+
+
+class DiscoveredSpec(Base):
+    """Cached discovered API specs from external tools."""
+    __tablename__ = "discovered_specs"
+
+    id = Column(String, primary_key=True, default=_gen_uuid)
+    hostname = Column(String, nullable=False, unique=True, index=True)
+    spec_source = Column(String, nullable=False)  # openapi | graphql | llm | registry | upload
+    raw_spec = Column(JSON, nullable=True)
+    parsed_spec = Column(JSON, nullable=False)
+    discovered_at = Column(DateTime, default=datetime.utcnow)
+    refreshed_at = Column(DateTime, nullable=True)
+
+
+class Integration(Base):
+    """Saved integration definitions — a configured connection to an external tool."""
+    __tablename__ = "integrations"
+
+    id = Column(String, primary_key=True, default=_gen_uuid)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
+    direction = Column(String, nullable=False)  # pull | push
+    entity = Column(String, nullable=False)  # asset | finding | action
+    transport_type = Column(String, nullable=False)  # api | sql | file | mcp
+    transport_config = Column(JSON, nullable=False, default=dict)
+    credentials_id = Column(String, ForeignKey("integration_credentials.id"), nullable=True)
+    records_path = Column(String, nullable=True)  # dot-path to records array in response
+    field_map = Column(JSON, nullable=False, default=list)
+    dedup_key = Column(JSON, nullable=False, default=list)  # stored as JSON array (SQLite has no array type)
+    params = Column(JSON, nullable=False, default=dict)
+    schedule = Column(String, nullable=True)  # cron expression
+    enabled = Column(Boolean, nullable=False, default=False)
+    template_id = Column(String, nullable=True)  # OOTB template used
+    spec_cache_id = Column(String, ForeignKey("discovered_specs.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_run_at = Column(DateTime, nullable=True)
+    last_run_status = Column(String, default="never")  # success | error | running | never
+    last_run_records = Column(Integer, default=0)
+
+    credential = relationship("IntegrationCredential", back_populates="integrations")
+    spec_cache = relationship("DiscoveredSpec")
+    runs = relationship("IntegrationRun", back_populates="integration", cascade="all, delete-orphan")
+
+
+class IntegrationRun(Base):
+    """Run history for integration executions."""
+    __tablename__ = "integration_runs"
+
+    id = Column(String, primary_key=True, default=_gen_uuid)
+    integration_id = Column(String, ForeignKey("integrations.id", ondelete="CASCADE"), nullable=False, index=True)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+    status = Column(String, default="running")  # success | error | partial | running
+    records_fetched = Column(Integer, default=0)
+    records_inserted = Column(Integer, default=0)
+    records_updated = Column(Integer, default=0)
+    records_skipped = Column(Integer, default=0)
+    errors = Column(JSON, nullable=False, default=list)
+    step_log = Column(JSON, nullable=False, default=list)
+
+    integration = relationship("Integration", back_populates="runs")

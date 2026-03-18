@@ -1,0 +1,76 @@
+{
+  "id": "servicenow_incident",
+  "name": "ServiceNow \u2014 Create Incident",
+  "description": "Push findings to ServiceNow as new incidents",
+  "logo": "/logos/vendors/servicenow.svg",
+  "direction": "push",
+  "entity": "action",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "POST",
+    "path": "/api/now/table/incident",
+    "headers": {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    "body": {
+      "short_description": "[{{finding.severity|upper}}] {{finding.title}} on {{asset.hostname}}",
+      "description": "Vulnerability: {{finding.title}}\nCVE: {{finding.cve_id}}\nCVSS Score: {{finding.cvss_score}}\nSeverity: {{finding.severity|upper}}\n\nAffected Asset:\n  Hostname: {{asset.hostname}}\n  IP Address: {{asset.ip_address}}\n  OS: {{asset.os}}\n\nSolution:\n{{finding.solution}}\n\n---\nCreated by Hakuna",
+      "category": "Security",
+      "subcategory": "Vulnerability",
+      "impact": "{{finding.severity|servicenow_impact}}",
+      "urgency": "{{finding.severity|servicenow_urgency}}",
+      "assignment_group": "{{params.assignment_group}}",
+      "cmdb_ci": "{{asset.hostname}}"
+    }
+  },
+  "records_path": null,
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "instance_url_field": {
+      "label": "ServiceNow Instance URL",
+      "placeholder": "https://yourcompany.service-now.com"
+    },
+    "authorization_url": "{{instance_url}}/oauth_auth.do",
+    "token_url": "{{instance_url}}/oauth_token.do",
+    "client_id": "{{env.SERVICENOW_CLIENT_ID}}",
+    "scopes": [
+      "useraccount"
+    ],
+    "pkce": false,
+    "popup": {
+      "width": 600,
+      "height": 700
+    },
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/now/table/sys_user?sysparm_query=user_name={{connected_user}}&sysparm_limit=1",
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "connected_user": "result[0].user_name",
+        "connected_email": "result[0].email"
+      },
+      "error_message": "Could not authenticate with ServiceNow. Check your OAuth configuration."
+    }
+  },
+  "default_field_map": [],
+  "dedup_key": [],
+  "params_schema": {
+    "assignment_group": {
+      "type": "string",
+      "required": false,
+      "description": "ServiceNow assignment group for the incident"
+    },
+    "category": {
+      "type": "string",
+      "default": "Security",
+      "description": "Incident category"
+    },
+    "subcategory": {
+      "type": "string",
+      "default": "Vulnerability",
+      "description": "Incident subcategory"
+    }
+  }
+}

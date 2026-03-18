@@ -1,0 +1,254 @@
+"""Run engine — orchestrates integration execution: transport → field mapper → upsert."""
+
+import logging
+import asyncio
+from datetime import datetime
+
+from sqlalchemy.orm import Session
+
+from models.models import Integration, IntegrationRun
+from services.field_mapper import map_record, render_template
+from services.upsert_handler import upsert, upsert_batch
+from services import credential_vault
+from services.transports.api_transport import ApiTransport
+from services.transports.file_transport import FileTransport
+from services.transports.sql_transport import SqlTransport
+from services.transports.mcp_transport import McpTransport
+
+logger = logging.getLogger(__name__)
+
+# Transport registry
+TRANSPORTS = {
+    "api": ApiTransport,
+    "file": FileTransport,
+    "sql": SqlTransport,
+    "mcp": McpTransport,
+}
+
+
+class RunProgress:
+    """Tracks progress for SSE streaming."""
+    def __init__(self):
+        self.events = []
+
+    def emit(self, event_type: str, **kwargs):
+        event = {"type": event_type, **kwargs}
+        self.events.append(event)
+        logger.info("Run event: %s", event)
+
+
+async def execute(db: Session, integration_id: str, triggered_by: str = "manual") -> str:
+    """Execute an integration run. Returns run_id."""
+    integration = db.query(Integration).filter(Integration.id == integration_id).first()
+    if not integration:
+        raise ValueError(f"Integration {integration_id} not found")
+
+    # Create run record
+    run = IntegrationRun(integration_id=integration.id, status="running")
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+
+    progress = RunProgress()
+
+    try:
+        # Load + decrypt credentials
+        credentials = {}
+        if integration.credentials_id:
+            from models.models import IntegrationCredential
+            cred = db.query(IntegrationCredential).filter(
+                IntegrationCredential.id == integration.credentials_id
+            ).first()
+            if cred:
+                credentials = credential_vault.decrypt(cred.encrypted_values)
+                credentials["_auth_type"] = cred.auth_type
+                credentials["instance_url"] = cred.instance_url or ""
+
+        # Get transport
+        transport_cls = TRANSPORTS.get(integration.transport_type)
+        if not transport_cls:
+            raise ValueError(f"Unknown transport type: {integration.transport_type}")
+        transport = transport_cls()
+
+        config = integration.transport_config or {}
+        config["records_path"] = integration.records_path
+
+        if integration.direction == "pull":
+            await _execute_pull(
+                db, transport, config, credentials, integration, run, progress
+            )
+        elif integration.direction == "push":
+            await _execute_push(
+                db, transport, config, credentials, integration, run, progress
+            )
+
+        # Run full post-ingest pipeline on pulled data
+        if integration.direction == "pull":
+            from services.post_ingest import finalize_scan
+            finalize_scan(db, scan_id=None, org_id=integration.org_id)
+
+        # Mark success
+        run.status = "success" if not run.errors else "partial"
+        run.finished_at = datetime.utcnow()
+        integration.last_run_at = datetime.utcnow()
+        integration.last_run_status = run.status
+        integration.last_run_records = run.records_fetched
+        db.commit()
+
+        progress.emit("complete", status=run.status,
+                      records_fetched=run.records_fetched,
+                      records_inserted=run.records_inserted,
+                      records_updated=run.records_updated,
+                      records_skipped=run.records_skipped,
+                      error_count=len(run.errors or []))
+
+    except Exception as e:
+        logger.exception("Run %s failed", run.id)
+        run.status = "error"
+        run.finished_at = datetime.utcnow()
+        run.errors = (run.errors or []) + [{"message": str(e)}]
+        integration.last_run_at = datetime.utcnow()
+        integration.last_run_status = "error"
+        db.commit()
+        progress.emit("error", message=str(e))
+
+    return run.id
+
+
+async def _execute_pull(db, transport, config, credentials, integration, run, progress):
+    """Execute a pull integration: fetch → map → upsert."""
+    progress.emit("step", message="Connecting and validating credentials...")
+
+    # Validate connection
+    result = await transport.connect(config, credentials)
+    if not result.success:
+        raise RuntimeError(f"Connection failed: {result.error}")
+
+    progress.emit("step", message="Fetching records...")
+
+    field_map = integration.field_map or []
+    dedup_key = integration.dedup_key or []
+    entity = integration.entity
+    source_system = integration.template_id or "custom"
+
+    batch = []
+    batch_size = 500
+    total_fetched = 0
+    total_inserted = 0
+    total_updated = 0
+    total_skipped = 0
+    errors = []
+
+    async for raw_record in transport.fetch_all(config, credentials, integration.params):
+        total_fetched += 1
+
+        # Apply field mapper
+        result = map_record(raw_record, field_map)
+        mapped = result["mapped"]
+
+        # Inject source_system if not mapped
+        if "source_system" not in mapped or not mapped.get("source_system"):
+            mapped["source_system"] = source_system
+        if "source_id" not in mapped or not mapped.get("source_id"):
+            mapped["source_id"] = str(total_fetched)
+
+        # Collect mapping errors
+        for err in result["errors"]:
+            if err["level"] == "error":
+                errors.append({"record_index": total_fetched, **err})
+
+        batch.append(mapped)
+
+        if len(batch) >= batch_size:
+            counts = upsert_batch(db, entity, batch, dedup_key, integration.id)
+            total_inserted += counts["inserted"]
+            total_updated += counts["updated"]
+            total_skipped += counts["skipped"]
+            errors.extend(counts["errors"])
+            batch = []
+
+            progress.emit("progress", records_fetched=total_fetched,
+                          records_processed=total_inserted + total_updated + total_skipped)
+
+        # Periodic progress
+        if total_fetched % 100 == 0:
+            progress.emit("progress", records_fetched=total_fetched,
+                          records_processed=total_inserted + total_updated + total_skipped)
+
+    # Final batch
+    if batch:
+        counts = upsert_batch(db, entity, batch, dedup_key, integration.id)
+        total_inserted += counts["inserted"]
+        total_updated += counts["updated"]
+        total_skipped += counts["skipped"]
+        errors.extend(counts["errors"])
+
+    # Update run record
+    run.records_fetched = total_fetched
+    run.records_inserted = total_inserted
+    run.records_updated = total_updated
+    run.records_skipped = total_skipped
+    run.errors = errors[:100]  # cap stored errors
+    run.step_log = progress.events
+
+
+async def _execute_push(db, transport, config, credentials, integration, run, progress):
+    """Execute a push integration: load findings → render template → push."""
+    from models.models import Finding, Asset
+
+    progress.emit("step", message="Loading findings to push...")
+
+    # Load findings matching params
+    query = db.query(Finding).join(Asset, Finding.asset_id == Asset.id)
+
+    params = integration.params or {}
+    if params.get("severity"):
+        sev_map = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+        query = query.filter(Finding.severity >= sev_map.get(params["severity"], 0))
+    if params.get("status"):
+        query = query.filter(Finding.workflow_status == params["status"])
+
+    findings = query.limit(params.get("limit", 100)).all()
+
+    progress.emit("step", message=f"Pushing {len(findings)} findings...")
+
+    total_fetched = len(findings)
+    total_inserted = 0
+    errors = []
+
+    template = config.get("body", {})
+
+    for i, finding in enumerate(findings):
+        asset = db.query(Asset).filter(Asset.id == finding.asset_id).first()
+
+        finding_data = {
+            "cve_id": (finding.cves[0] if finding.cves else "") if finding.cves else "",
+            "title": finding.plugin_name or "",
+            "severity": finding.severity_label or "info",
+            "solution": finding.solution or "",
+            "cvss_score": finding.cvss3_score or 0,
+            "description": finding.description or "",
+        }
+        asset_data = {
+            "hostname": asset.hostname if asset else "",
+            "ip_address": asset.ip if asset else "",
+            "environment": asset.environment_tag if asset else "",
+        }
+
+        payload = render_template(template, finding_data, asset_data)
+
+        result = await transport.push(config, credentials, payload)
+        if result.success:
+            total_inserted += 1
+        else:
+            errors.append({"record_index": i, "message": result.error})
+
+        if (i + 1) % 10 == 0:
+            progress.emit("progress", records_fetched=total_fetched, records_processed=i + 1)
+
+    run.records_fetched = total_fetched
+    run.records_inserted = total_inserted
+    run.records_skipped = 0
+    run.records_updated = 0
+    run.errors = errors[:100]
+    run.step_log = progress.events

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <rect width="40" height="40" rx="8" fill="#0A1B35"/>
+  <!-- W zigzag mark -->
+  <path d="M8 14 L14 26 L20 14 L26 26 L32 14" stroke="#4BE2C0" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

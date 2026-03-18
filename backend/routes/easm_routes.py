@@ -185,20 +185,39 @@ async def list_easm_assets(
 @router.post("/import")
 @router.post("/sync")
 async def sync_assets(
-    domain: str = Query(..., min_length=3),
+    domain: Optional[str] = Query(None, min_length=3),
     scan_type: str = Query("full", regex="^(full|discovery|enrichment)$"),
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
 ):
-    """Import EASM-discovered assets for a domain as a new scan."""
+    """Import EASM-discovered assets. If domain is omitted, sync all configured domains."""
     org = _get_org(db, user)
     if not org.easm_org_id:
         raise HTTPException(400, "EASM not configured")
 
-    result = await import_easm_assets_for_domain(db, org, domain, scan_type=scan_type)
-    if result is None:
-        raise HTTPException(502, "Failed to sync EASM assets")
-    return result
+    if domain:
+        domains_to_sync = [domain]
+    else:
+        # Sync all known domains for this org
+        remote_domains = await get_easm_domains(org.easm_org_id) or []
+        domains_to_sync = [d["domain"] if isinstance(d, dict) else d for d in remote_domains]
+        # Always include the primary domain
+        if org.easm_domain and org.easm_domain not in domains_to_sync:
+            domains_to_sync.append(org.easm_domain)
+
+    if not domains_to_sync:
+        return {"synced": 0, "results": [], "message": "No domains configured"}
+
+    results = []
+    for d in domains_to_sync:
+        result = await import_easm_assets_for_domain(db, org, d, scan_type=scan_type)
+        if result:
+            results.append(result)
+
+    return {
+        "synced": len(results),
+        "results": results,
+    }
 
 
 @router.get("/events")
