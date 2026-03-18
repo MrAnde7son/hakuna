@@ -213,6 +213,37 @@ def _truncate_user_input(user_input: str, provider: str) -> str:
     return user_input
 
 
+def _compress_openai_messages(messages: list, provider: str) -> list:
+    """Rolling context compression for OpenAI-compat message history.
+
+    Keeps system message + initial user message + last N exchanges to prevent
+    unbounded token growth. For Groq, aggressive compression (3 exchanges) is
+    applied because the on-demand tier has strict per-request token limits;
+    exceeding them causes llama-3.3-70b to fall back to its native
+    <function=name(args)> format, which Groq's validator rejects with a 400.
+
+    An exchange = one assistant turn + its tool result messages.
+    We always start at an assistant message to avoid splitting mid-exchange.
+    """
+    keep = 3 if provider == "groq" else 5  # exchanges to keep verbatim
+    keep_msgs = keep * 2  # rough estimate: 1 assistant + 1 tool per exchange
+
+    if len(messages) <= keep_msgs + 2:  # +2 for system + initial user
+        return messages
+
+    system_and_user = messages[:2]  # [system, user]
+    recent = messages[-keep_msgs:]
+
+    # Ensure we start at an assistant message (never mid-exchange)
+    while recent and recent[0].get("role") != "assistant":
+        recent = recent[1:]
+
+    if not recent:
+        return messages
+
+    return system_and_user + recent
+
+
 def _sanitize_messages(messages: list) -> list:
     """Deep-clean messages to strip SDK-injected properties like 'annotations' or 'citations'.
 
@@ -491,10 +522,15 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
     ]
 
     for step in range(max_steps):
+        # Apply rolling context compression to prevent unbounded token growth.
+        # For Groq, this also prevents llama from falling back to its native
+        # <function=name(args)> format (which causes tool_use_failed 400 errors).
+        compressed_messages = _compress_openai_messages(messages, provider)
+
         create_kwargs = {
             "model": model,
             "max_tokens": 4096,
-            "messages": messages,
+            "messages": compressed_messages,
         }
         if tools:
             create_kwargs["tools"] = tools
@@ -822,7 +858,8 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider):
     for step in range(max_steps):
         yield {"type": "thinking", "step": step}
 
-        create_kwargs = {"model": model, "max_tokens": 4096, "messages": messages}
+        compressed_messages = _compress_openai_messages(messages, provider)
+        create_kwargs = {"model": model, "max_tokens": 4096, "messages": compressed_messages}
         if tools:
             create_kwargs["tools"] = tools
         response = cl.chat.completions.create(**create_kwargs)
