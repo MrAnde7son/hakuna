@@ -1988,11 +1988,11 @@ export default function ThreatIntelCenter() {
     fetchStats()
   }, [])
 
-  // ── Fetch CVEs (for newsroom panels) ──
+  // ── Fetch CVEs (for newsroom panels) — fetch KEV-only so the newsroom is always populated ──
   useEffect(() => {
     const fetchCves = async () => {
       try {
-        const data = await getThreatCves({ limit: 100 })
+        const data = await getThreatCves({ kev_only: true, limit: 200, sort_by: 'kev_date_added', sort_dir: 'desc' })
         setCves(Array.isArray(data) ? data : (data.items || []))
       } catch { setCves([]) }
     }

@@ -574,7 +574,7 @@ export default function FindingExplorer() {
       render: (_, row) => {
         const isOpen = ownershipEdit?.findingId === row.id
         const ro = row.resolved_owner
-        const manualOwn = ro?.source?.startsWith('manual') ? { owner_name: ro.owner_name, owner_email: ro.owner_email, owner_role: ro.owner_role, team: ro.owner_team || ro.team, notes: ro.notes } : null
+        const manualOwn = ro ? { owner_name: ro.owner_name, owner_email: ro.owner_email, owner_role: ro.owner_role, team: ro.owner_team || ro.team, notes: ro.notes } : null
         return (
           <div style={{ position: 'relative' }}>
             <button

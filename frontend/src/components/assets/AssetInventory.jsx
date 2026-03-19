@@ -568,10 +568,14 @@ export default function AssetInventory() {
       key: 'inferred_team', label: t('findings.owner'), width: '140px',
       render: (_, row) => {
         const own = row.ownership
+        const inferredOwn = !own && (row.inferred_team || row.inferred_primary_user)
+          ? { owner_role: row.inferred_team, owner_name: row.inferred_primary_user }
+          : null
+        const currentOwn = own || inferredOwn
         const isOpen = ownershipEdit?.assetId === row.id
         const trigger = (
           <button
-            onClick={e => { e.stopPropagation(); setOwnershipEdit(isOpen ? null : { assetId: row.id, current: own }) }}
+            onClick={e => { e.stopPropagation(); setOwnershipEdit(isOpen ? null : { assetId: row.id, current: currentOwn }) }}
             style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', width: '100%' }}
             title="Click to edit ownership"
           >
@@ -604,7 +608,7 @@ export default function AssetInventory() {
             {trigger}
             {isOpen && (
               <OwnershipEditPopover
-                current={own}
+                current={currentOwn}
                 onClose={() => setOwnershipEdit(null)}
                 onSave={async (data) => {
                   await setAssetOwnership(row.id, data)

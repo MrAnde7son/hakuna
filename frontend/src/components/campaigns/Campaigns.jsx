@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   Target, Plus, Play, Trash2, Clock, AlertTriangle, CheckCircle, PauseCircle,
   ChevronRight, GitBranch, Zap, Settings, Download, Search,
+  Flame, Shield, Timer, Wrench, Globe, Sparkles, FileText, CalendarClock, Siren,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig } from '../../api.js'
@@ -33,78 +34,368 @@ function StatusBadge({ status }) {
   )
 }
 
+// ─── Campaign Templates ──────────────────────────────────────────────────────
+const CAMPAIGN_TEMPLATES = [
+  {
+    id: 'exploitable_now',
+    icon: Flame,
+    color: '#ef4444',
+    bg: 'rgba(239,68,68,0.10)',
+    border: 'rgba(239,68,68,0.25)',
+    badge: 'Immediate Action',
+    badgeColor: '#ef4444',
+    name: 'Exploitable Now',
+    description: 'Critical & High findings with a known weaponized or functional exploit — the highest-risk items demanding immediate remediation.',
+    query: [
+      { field: 'finding.severity', op: 'gte', value: 3 },
+      { field: 'finding.exploit', op: 'is_true', value: true },
+      { field: 'finding.exploit_maturity', op: 'eq', value: 'weaponized' },
+    ],
+    query_logic: 'AND',
+  },
+  {
+    id: 'patch_tuesday',
+    icon: CalendarClock,
+    color: '#6366f1',
+    bg: 'rgba(99,102,241,0.10)',
+    border: 'rgba(99,102,241,0.25)',
+    badge: 'Monthly Routine',
+    badgeColor: '#6366f1',
+    name: `Patch Tuesday — ${new Date().toLocaleString('default', { month: 'long', year: 'numeric' })}`,
+    description: 'Critical and High severity findings with missing patches. Run this every Patch Tuesday to scope your monthly patching effort.',
+    query: [
+      { field: 'finding.severity', op: 'gte', value: 3 },
+      { field: 'finding.missing_patches', op: 'is_true', value: true },
+    ],
+    query_logic: 'AND',
+  },
+  {
+    id: 'sla_breached',
+    icon: Siren,
+    color: '#f59e0b',
+    bg: 'rgba(245,158,11,0.10)',
+    border: 'rgba(245,158,11,0.25)',
+    badge: 'SLA Compliance',
+    badgeColor: '#f59e0b',
+    name: 'SLA Breached Findings',
+    description: 'All findings that have already breached their SLA deadline. Prioritize these for escalation or remediation.',
+    query: [
+      { field: 'finding.sla_status', op: 'eq', value: 'breached' },
+    ],
+    query_logic: 'AND',
+  },
+  {
+    id: 'internet_facing',
+    icon: Globe,
+    color: '#0ea5e9',
+    bg: 'rgba(14,165,233,0.10)',
+    border: 'rgba(14,165,233,0.25)',
+    badge: 'Attack Surface',
+    badgeColor: '#0ea5e9',
+    name: 'Internet-Facing Critical Risk',
+    description: 'High and Critical findings on internet-facing assets. These represent your most exposed attack surface.',
+    query: [
+      { field: 'inventory.is_internet_facing', op: 'is_true', value: true },
+      { field: 'finding.severity', op: 'gte', value: 3 },
+    ],
+    query_logic: 'AND',
+  },
+  {
+    id: 'quick_wins',
+    icon: Wrench,
+    color: '#22c55e',
+    bg: 'rgba(34,197,94,0.10)',
+    border: 'rgba(34,197,94,0.25)',
+    badge: 'Easy Impact',
+    badgeColor: '#22c55e',
+    name: 'Quick Wins',
+    description: 'High/Critical findings where the estimated remediation effort is low — maximum security impact with minimal engineering effort.',
+    query: [
+      { field: 'finding.severity', op: 'gte', value: 3 },
+      { field: 'finding.effort', op: 'eq', value: 'quick_win' },
+    ],
+    query_logic: 'AND',
+  },
+  {
+    id: 'new_this_scan',
+    icon: Sparkles,
+    color: '#a855f7',
+    bg: 'rgba(168,85,247,0.10)',
+    border: 'rgba(168,85,247,0.25)',
+    badge: 'New Exposure',
+    badgeColor: '#a855f7',
+    name: 'New Vulnerabilities',
+    description: 'Findings first seen in the latest scan — helps the team focus on newly introduced risk before it spreads.',
+    query: [
+      { field: 'finding.vulnerability_state', op: 'eq', value: 'New' },
+    ],
+    query_logic: 'AND',
+  },
+  {
+    id: 'resurfaced',
+    icon: Timer,
+    color: '#f97316',
+    bg: 'rgba(249,115,22,0.10)',
+    border: 'rgba(249,115,22,0.25)',
+    badge: 'Regression',
+    badgeColor: '#f97316',
+    name: 'Resurfaced & Regressions',
+    description: 'Previously resolved findings that have come back. These often indicate incomplete fixes or re-introduced code.',
+    query: [
+      { field: 'finding.vulnerability_state', op: 'eq', value: 'Resurfaced' },
+    ],
+    query_logic: 'OR',
+  },
+  {
+    id: 'zero_days',
+    icon: Shield,
+    color: '#dc2626',
+    bg: 'rgba(220,38,38,0.10)',
+    border: 'rgba(220,38,38,0.25)',
+    badge: 'Critical Threat',
+    badgeColor: '#dc2626',
+    name: 'Zero-Day Exposure',
+    description: 'Assets affected by zero-day vulnerabilities with no vendor patch available yet. Requires compensating controls.',
+    query: [
+      { field: 'finding.zero_day', op: 'is_true', value: true },
+    ],
+    query_logic: 'AND',
+  },
+  {
+    id: 'ransomware',
+    icon: Flame,
+    color: '#b91c1c',
+    bg: 'rgba(185,28,28,0.10)',
+    border: 'rgba(185,28,28,0.30)',
+    badge: 'Ransomware Risk',
+    badgeColor: '#b91c1c',
+    name: 'Ransomware Exposure',
+    description: 'High/Critical findings with a known exploit and high EPSS probability — the vulnerabilities ransomware operators actively target for initial access.',
+    query: [
+      { field: 'finding.severity', op: 'gte', value: 3 },
+      { field: 'finding.exploit', op: 'is_true', value: true },
+      { field: 'finding.epss_score', op: 'gte', value: 0.5 },
+    ],
+    query_logic: 'AND',
+  },
+  {
+    id: 'blank',
+    icon: FileText,
+    color: 'var(--text-muted)',
+    bg: 'var(--bg-secondary)',
+    border: 'var(--border)',
+    badge: null,
+    name: '',
+    description: 'Start with an empty campaign and build your own conditions from scratch.',
+    query: [],
+    query_logic: 'AND',
+  },
+]
+
+function TemplateBadge({ label, color }) {
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+      padding: '2px 6px', borderRadius: 4,
+      background: color + '22', color, border: `1px solid ${color}44`,
+    }}>{label}</span>
+  )
+}
+
 function CreateCampaignModal({ scanId, onClose, onCreate }) {
   const { t } = useTranslation()
+  const [step, setStep] = useState('templates') // 'templates' | 'details'
+  const [selectedTemplate, setSelectedTemplate] = useState(null)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
+
+  const handleSelectTemplate = (tpl) => {
+    setSelectedTemplate(tpl)
+    setName(tpl.name)
+    setDescription(tpl.description)
+    setStep('details')
+  }
+
+  const handleBack = () => {
+    setStep('templates')
+    setSelectedTemplate(null)
+    setName('')
+    setDescription('')
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     if (!name.trim()) return
     setSaving(true)
     try {
-      const c = await createCampaign({ name: name.trim(), description, scan_id: scanId, query: [], query_logic: 'AND' })
+      const tpl = selectedTemplate || CAMPAIGN_TEMPLATES.find(t => t.id === 'blank')
+      const c = await createCampaign({
+        name: name.trim(),
+        description,
+        scan_id: scanId,
+        query: tpl.query || [],
+        query_logic: tpl.query_logic || 'AND',
+      })
       onCreate(c)
     } finally {
       setSaving(false)
     }
   }
 
+  const TplIcon = selectedTemplate?.icon || FileText
+
   return (
     <div style={{
-      position: 'fixed', inset: 0, background: '#000a', zIndex: 200,
+      position: 'fixed', inset: 0, background: '#000b', zIndex: 200,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
     }} onClick={onClose}>
       <div style={{
         background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14,
-        padding: 28, minWidth: 440, maxWidth: 540,
+        width: step === 'templates' ? 740 : 520,
+        maxHeight: '85vh', overflow: 'hidden',
+        display: 'flex', flexDirection: 'column',
+        transition: 'width 0.2s',
       }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 20 }}>{t('campaigns.newRemediationCampaign')}</div>
 
-        <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-              {t('campaigns.campaignName')}
-            </label>
-            <input
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder={t('campaigns.campaignNamePlaceholder')}
-              autoFocus
-              style={{
-                width: '100%', padding: '8px 12px', background: 'var(--bg-secondary)',
-                border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
-                color: 'var(--text-primary)', boxSizing: 'border-box',
-              }}
-            />
+        {/* Header */}
+        <div style={{ padding: '22px 24px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 16 }}>
+            {step === 'templates' ? 'New Remediation Campaign' : 'Configure Campaign'}
           </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+            {step === 'templates'
+              ? 'Choose a template to get started quickly, or build from scratch.'
+              : selectedTemplate?.id !== 'blank'
+                ? `Based on: ${selectedTemplate?.name}`
+                : 'Blank campaign — add conditions after creation.'}
+          </div>
+        </div>
 
-          <div style={{ marginBottom: 24 }}>
-            <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
-              {t('campaigns.descriptionLabel')}
-            </label>
-            <textarea
-              value={description}
-              onChange={e => setDescription(e.target.value)}
-              placeholder={t('campaigns.descriptionPlaceholder')}
-              rows={3}
-              style={{
-                width: '100%', padding: '8px 12px', background: 'var(--bg-secondary)',
-                border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
-                color: 'var(--text-primary)', resize: 'vertical', boxSizing: 'border-box',
-                fontFamily: 'inherit',
-              }}
-            />
-          </div>
+        {step === 'templates' ? (
+          /* ── Template grid ── */
+          <div style={{ overflowY: 'auto', padding: 20 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+              {CAMPAIGN_TEMPLATES.map(tpl => {
+                const Icon = tpl.icon
+                return (
+                  <button
+                    key={tpl.id}
+                    onClick={() => handleSelectTemplate(tpl)}
+                    style={{
+                      background: 'var(--bg-secondary)', border: `1px solid var(--border)`,
+                      borderRadius: 10, padding: '14px 14px 12px',
+                      textAlign: 'left', cursor: 'pointer',
+                      display: 'flex', flexDirection: 'column', gap: 8,
+                      transition: 'border-color 0.15s, background 0.15s',
+                    }}
+                    onMouseEnter={e => {
+                      e.currentTarget.style.borderColor = tpl.color
+                      e.currentTarget.style.background = tpl.bg
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.borderColor = 'var(--border)'
+                      e.currentTarget.style.background = 'var(--bg-secondary)'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div style={{
+                        width: 34, height: 34, borderRadius: 8,
+                        background: tpl.bg, border: `1px solid ${tpl.border}`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                      }}>
+                        <Icon size={16} color={tpl.color} />
+                      </div>
+                      {tpl.badge && <TemplateBadge label={tpl.badge} color={tpl.badgeColor} />}
+                    </div>
 
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <Button variant='ghost' onClick={onClose} type='button'>{t('common.cancel')}</Button>
-            <Button type='submit' disabled={!name.trim() || saving}>
-              {saving ? t('campaigns.creating') : t('campaigns.create')}
-            </Button>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)', marginBottom: 4 }}>
+                        {tpl.id === 'blank' ? 'Blank Campaign' : tpl.name}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                        {tpl.description}
+                      </div>
+                    </div>
+
+                    {tpl.query.length > 0 && (
+                      <div style={{ fontSize: 10, color: tpl.color, fontWeight: 600 }}>
+                        {tpl.query.length} pre-built condition{tpl.query.length > 1 ? 's' : ''}
+                      </div>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
           </div>
-        </form>
+        ) : (
+          /* ── Details form ── */
+          <div style={{ padding: '20px 24px 24px', overflowY: 'auto' }}>
+            {/* Template preview chip */}
+            {selectedTemplate?.id !== 'blank' && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20,
+                padding: '10px 12px', borderRadius: 8,
+                background: selectedTemplate.bg, border: `1px solid ${selectedTemplate.border}`,
+              }}>
+                <TplIcon size={14} color={selectedTemplate.color} />
+                <span style={{ fontSize: 12, color: selectedTemplate.color, fontWeight: 600 }}>
+                  {selectedTemplate.query.length} pre-built conditions
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  · You can customize them after creation
+                </span>
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit}>
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                  Campaign Name <span style={{ color: 'var(--accent)' }}>*</span>
+                </label>
+                <input
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  placeholder={t('campaigns.campaignNamePlaceholder')}
+                  autoFocus
+                  style={{
+                    width: '100%', padding: '8px 12px', background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
+                    color: 'var(--text-primary)', boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+
+              <div style={{ marginBottom: 24 }}>
+                <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                  {t('campaigns.descriptionLabel')}
+                </label>
+                <textarea
+                  value={description}
+                  onChange={e => setDescription(e.target.value)}
+                  placeholder={t('campaigns.descriptionPlaceholder')}
+                  rows={3}
+                  style={{
+                    width: '100%', padding: '8px 12px', background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
+                    color: 'var(--text-primary)', resize: 'vertical', boxSizing: 'border-box',
+                    fontFamily: 'inherit',
+                  }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
+                <Button variant='ghost' onClick={handleBack} type='button'>← Back</Button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button variant='ghost' onClick={onClose} type='button'>{t('common.cancel')}</Button>
+                  <Button type='submit' disabled={!name.trim() || saving}>
+                    {saving ? t('campaigns.creating') : t('campaigns.create')}
+                  </Button>
+                </div>
+              </div>
+            </form>
+          </div>
+        )}
       </div>
     </div>
   )
