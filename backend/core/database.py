@@ -119,6 +119,7 @@ def _migrate_add_columns():
             ("cwe_names", "JSON"),
             ("cwe_categories", "JSON"),
             ("msrc_kb_ids", "JSON"),
+            ("affected_products", "JSON"),
         ],
         "finding_exceptions": [
             ("conditions", "JSON"),

@@ -428,13 +428,16 @@ def _query_threat_intel_cves(
     exclude_set = set(exclude_cve_ids or [])
 
     try:
+        sp = db.begin_nested()
         candidates = (
             db.query(ThreatCVE)
             .filter(ThreatCVE.affected_products.isnot(None))
             .filter(ThreatCVE.affected_products.like("%" + comp_lower + "%"))
             .all()
         )
+        sp.commit()
     except Exception:
+        sp.rollback()
         return []
 
     matched = []
