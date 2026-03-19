@@ -4,7 +4,7 @@
 import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
-import { getTags, createCampaign, createAutoTagRule } from '../../api.js'
+import { getTags, createCampaign, createAutoTagRule, getSources } from '../../api.js'
 
 export function SeverityBadge({ severity, label }) {
   const { t } = useTranslation()
@@ -567,6 +567,19 @@ export function Spinner() {
       }} />
       <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
     </div>
+  )
+}
+
+export function InlineSpinner({ size = 14 }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', minHeight: '1.2em' }}>
+      <div style={{
+        width: size, height: size, border: '2px solid rgba(255,255,255,0.3)',
+        borderTop: '2px solid #fff', borderRadius: '50%',
+        animation: 'spin 0.8s linear infinite', flexShrink: 0,
+      }} />
+      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+    </span>
   )
 }
 
@@ -1164,4 +1177,124 @@ export function SaveAsRuleModal({ conditions = [], scanId, onClose, onCreated })
       </div>
     </div>
   )
+}
+
+
+// ── Source / Data-source helpers ──────────────────────────────────────
+
+export const SOURCE_TYPES = {
+  nessus:     { label: 'Nessus',   color: '#6366f1', bg: '#6366f122' },
+  easm:       { label: 'EASM',     color: '#0ea5e9', bg: '#0ea5e922' },
+  qualys:     { label: 'Qualys',   color: '#8b5cf6', bg: '#8b5cf622' },
+  rapid7:     { label: 'Rapid7',   color: '#f97316', bg: '#f9731622' },
+  openvas:    { label: 'OpenVAS',  color: '#22c55e', bg: '#22c55e22' },
+  vm_scanner: { label: 'VM',       color: '#ec4899', bg: '#ec489922' },
+}
+
+export function getSourceMeta(type) {
+  return SOURCE_TYPES[type] || { label: type || 'Unknown', color: '#71717a', bg: '#71717a22' }
+}
+
+export function SourceBadge({ source }) {
+  const meta = getSourceMeta(source)
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      background: meta.bg, color: meta.color, border: `1px solid ${meta.color}44`,
+      borderRadius: 5, padding: '1px 7px', fontSize: 11, fontWeight: 600,
+      whiteSpace: 'nowrap',
+    }}>
+      {meta.label}
+    </span>
+  )
+}
+
+export function SourceDots({ sources = [] }) {
+  const [hover, setHover] = useState(false)
+  if (!sources.length) return null
+
+  // Single source — show a compact labeled dot
+  if (sources.length === 1) {
+    const meta = getSourceMeta(sources[0])
+    return (
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        fontSize: 10, fontWeight: 600, color: meta.color, whiteSpace: 'nowrap',
+      }}>
+        <span style={{
+          width: 8, height: 8, borderRadius: '50%', background: meta.color, flexShrink: 0,
+        }} />
+        {meta.label}
+      </span>
+    )
+  }
+
+  // Multi-source — overlapping colored dots with hover tooltip
+  return (
+    <span
+      style={{ display: 'inline-flex', alignItems: 'center', position: 'relative', cursor: 'default' }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      {/* Overlapping dots */}
+      <span style={{ display: 'inline-flex' }}>
+        {sources.map((s, i) => {
+          const meta = getSourceMeta(s)
+          return (
+            <span key={s} style={{
+              width: 10, height: 10, borderRadius: '50%',
+              background: meta.color, border: '1.5px solid var(--bg-card)',
+              marginLeft: i > 0 ? -4 : 0, zIndex: sources.length - i,
+              position: 'relative',
+            }} />
+          )
+        })}
+      </span>
+      <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 4, fontWeight: 600 }}>
+        {sources.length}
+      </span>
+
+      {/* Tooltip on hover */}
+      {hover && (
+        <span style={{
+          position: 'absolute', bottom: '100%', left: 0,
+          marginBottom: 6, padding: '6px 10px', borderRadius: 6,
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          boxShadow: '0 4px 12px rgba(0,0,0,.25)',
+          zIndex: 999, whiteSpace: 'nowrap',
+          display: 'flex', flexDirection: 'column', gap: 4,
+        }}>
+          {sources.map(s => {
+            const meta = getSourceMeta(s)
+            return (
+              <span key={s} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                <span style={{
+                  width: 8, height: 8, borderRadius: '50%', background: meta.color, flexShrink: 0,
+                }} />
+                <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{meta.label}</span>
+              </span>
+            )
+          })}
+        </span>
+      )}
+    </span>
+  )
+}
+
+/** @deprecated Use SourceDots for compact display */
+export function SourceBadges({ sources = [] }) {
+  return <SourceDots sources={sources} />
+}
+
+export function SourceFilter({ value, onChange }) {
+  const [sources, setSources] = useState([])
+  useEffect(() => {
+    getSources().then(d => setSources(d.sources || [])).catch(() => {})
+  }, [])
+  if (!sources.length) return null
+  const options = sources.map(s => {
+    const meta = getSourceMeta(s)
+    return { value: s, label: meta.label }
+  })
+  return <Select value={value} onChange={onChange} placeholder="All Sources" options={options} />
 }

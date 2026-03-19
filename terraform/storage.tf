@@ -10,13 +10,12 @@ resource "google_storage_bucket" "scan_files" {
 
   uniform_bucket_level_access = true
 
-  # Phase 3: add CORS for presigned URL direct-from-browser uploads
-  # cors {
-  #   origin          = ["https://${var.app_domain}"]
-  #   method          = ["PUT", "GET", "HEAD"]
-  #   response_header = ["Content-Type", "Content-MD5"]
-  #   max_age_seconds = 3600
-  # }
+  cors {
+    origin          = ["https://${var.app_domain}"]
+    method          = ["PUT", "GET", "HEAD"]
+    response_header = ["Content-Type", "Content-Length", "Content-MD5"]
+    max_age_seconds = 3600
+  }
 
   lifecycle_rule {
     condition { age = 30 }

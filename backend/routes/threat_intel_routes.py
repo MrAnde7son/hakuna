@@ -26,6 +26,49 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threat-intel", tags=["threat-intel"])
 
 
+def _fire_threat_intel_triggers(db, kev_result=None, epss_result=None, enrich_result=None):
+    """Fire on_new_threat_intel workflow triggers after a sync."""
+    try:
+        import services.workflow_engine as workflow_engine
+        from models.models import Finding
+
+        kev_result = kev_result or {}
+        enrich_result = enrich_result or {}
+
+        new_kev = kev_result.get("added", 0)
+        enriched = enrich_result.get("enriched", 0)
+
+        # Only fire if there's actually new intel
+        if not new_kev and not enriched:
+            return
+
+        # Gather new CVE IDs from KEV additions if available
+        new_cve_ids = kev_result.get("new_cve_ids", [])
+
+        # Check if the new intel affects the environment
+        affects_environment = enriched > 0
+
+        # Get max CVSS score from newly added KEV CVEs for severity threshold matching
+        max_cvss = 0.0
+        if new_cve_ids:
+            from models.threat_intel_models import ThreatCVE
+            max_row = db.query(func.max(ThreatCVE.cvss3_score)).filter(
+                ThreatCVE.cve_id.in_(new_cve_ids)
+            ).scalar()
+            max_cvss = float(max_row) if max_row else 0.0
+
+        workflow_engine.fire_event_workflows(db, "on_new_threat_intel", {
+            "intel_type": "cve",
+            "new_cve_ids": new_cve_ids,
+            "new_kev_count": new_kev,
+            "enriched_count": enriched,
+            "max_cvss": max_cvss,
+            "affects_environment": affects_environment,
+        })
+    except Exception as e:
+        logger.warning("Failed to fire threat intel workflow triggers: %s", e)
+
+
 def _run_with_fresh_db(sync_fn, *args, **kwargs):
     """Run a sync function with a fresh DB session.
 
@@ -214,6 +257,7 @@ def get_cves(
     in_scan: Optional[str] = None,   # scan_id or "all" — only CVEs found in findings
     has_exploit: bool = False,       # Only CVEs with public exploits
     ssvc_act: bool = False,          # Only CVEs with SSVC decision "Act"
+    has_msrc: bool = False,          # Only CVEs with MSRC patches
     sort_by: Optional[str] = Query(None, regex="^(cve_id|cvss3_score|epss_score|in_kev|published_date|kev_date_added|in_scan_count)$"),
     sort_dir: Optional[str] = Query("desc", regex="^(asc|desc)$"),
     limit: int = Query(50, ge=1, le=200),
@@ -234,6 +278,8 @@ def get_cves(
         q = q.filter(ThreatCVE.has_public_exploit == True)
     if ssvc_act:
         q = q.filter(ThreatCVE.ssvc_decision == "Act")
+    if has_msrc:
+        q = q.filter(ThreatCVE.msrc_kb_ids.isnot(None), func.json_array_length(ThreatCVE.msrc_kb_ids) > 0)
 
     # Collect CVE IDs found in findings for a given scan (or all scans)
     scan_cve_ids: set = set()
@@ -1086,6 +1132,12 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
     except Exception as exc:
         logger.warning("Finding enrichment failed: %s", exc)
         enrich_result = {"enriched": 0}
+
+    # Fire workflow triggers for new threat intel
+    _fire_threat_intel_triggers(
+        db, kev_result=kev_result, epss_result=epss_result,
+        enrich_result=enrich_result,
+    )
 
     # NVD CVSS backfill — moderate speed (~3 req/s), run in background
     background_tasks.add_task(sync_engine.sync_nvd_scores, db)

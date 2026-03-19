@@ -113,6 +113,12 @@ CONDITION_CATALOG = [
                 "ops": ["gte", "lte", "gt", "lt", "eq"],
                 "value_type": "float", "placeholder": "7.0",
             },
+            {
+                "field": "source", "label": "Data Source",
+                "ops": ["contains", "not_contains"],
+                "value_type": "enum",
+                "options": "__dynamic:sources__",
+            },
         ],
     },
     {
@@ -303,6 +309,38 @@ CONDITION_CATALOG = [
     },
 ]
 
+# Well-known source types with friendly labels
+_SOURCE_LABELS = {
+    "nessus": "Nessus", "easm": "EASM", "vm_scanner": "VM Scanner",
+    "qualys": "Qualys", "rapid7": "Rapid7", "openvas": "OpenVAS",
+}
+
+
+def get_condition_catalog(db: Session = None, org_ids=None) -> list:
+    """Return the condition catalog with dynamic options hydrated from the DB."""
+    import copy
+    catalog = copy.deepcopy(CONDITION_CATALOG)
+    for group in catalog:
+        for cond in group.get("conditions", []):
+            if cond.get("options") == "__dynamic:sources__":
+                cond["options"] = _resolve_source_options(db, org_ids)
+    return catalog
+
+
+def _resolve_source_options(db, org_ids=None):
+    """Build source options from scans + integration source_systems in the DB."""
+    if db is None:
+        return [{"label": v, "value": k} for k, v in _SOURCE_LABELS.items()]
+    from models.models import Scan
+    q = db.query(Scan.source_type).distinct()
+    if org_ids:
+        from sqlalchemy import or_
+        q = q.filter(or_(Scan.org_id.in_(org_ids), Scan.org_id.is_(None)))
+    rows = q.all()
+    sources = sorted(set(r[0] for r in rows if r[0]))
+    return [{"label": _SOURCE_LABELS.get(s, s), "value": s} for s in sources]
+
+
 # ─────────────────────────────────────────────────────────
 # Backward-compat migration
 # ─────────────────────────────────────────────────────────
@@ -444,6 +482,13 @@ def _eval_asset(cond: dict, asset: dict) -> bool:
     field = cond["field"]
     op    = cond.get("op", "eq")
     value = cond.get("value")
+
+    # source_systems is a JSON list — check membership
+    if field == "source":
+        sources = asset.get("source_systems") or []
+        val = str(value or "").lower()
+        has = any(val == s.lower() for s in sources)
+        return has if op == "contains" else not has
 
     if field in _NUMERIC_ASSET_FIELDS:
         return _num_op(float(asset.get(field) or 0), op, value)

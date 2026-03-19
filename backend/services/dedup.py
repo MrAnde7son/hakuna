@@ -432,6 +432,18 @@ def _merge_model_row(existing, incoming, strategy: str, list_fields: set[str], b
                     setattr(existing, attr, new_val)
 
 
+def _merge_source_systems(survivor, donor) -> None:
+    """Merge source_systems lists from donor into survivor (union, preserving order)."""
+    current = survivor.source_systems or []
+    donor_sources = donor.source_systems or []
+    merged = list(current)
+    for src in donor_sources:
+        if src and src not in merged:
+            merged.append(src)
+    if merged != current:
+        survivor.source_systems = merged
+
+
 def _reassign_asset_children(db, old_asset_id: int, new_asset_id: int, ENTITY_MODEL_MAP: dict) -> None:
     """
     Before deleting a duplicate asset, reassign all its child records
@@ -624,6 +636,8 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
     removed = len(to_delete)
     survivor_ids = set()
     for old_asset, survivor in to_delete:
+        # Merge source_systems from the deleted asset into the survivor
+        _merge_source_systems(survivor, old_asset)
         _reassign_asset_children(db, old_asset.id, survivor.id, ENTITY_MODEL_MAP)
         survivor_ids.add(survivor.id)
         db.expire(old_asset)

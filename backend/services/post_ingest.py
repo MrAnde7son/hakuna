@@ -21,11 +21,16 @@ def finalize_scan(
     db: Session,
     scan_id: int,
     org_id: Optional[int] = None,
+    new_asset_ids: Optional[list] = None,
+    new_finding_ids: Optional[list] = None,
 ):
     """Run the full post-ingest pipeline for a scan.
 
     Called from every ingestion path after assets/findings are committed.
     Each step is non-fatal — a failure in one step won't block the rest.
+
+    new_asset_ids / new_finding_ids: IDs of newly *inserted* records (not updates).
+    When provided, event-driven workflow triggers fire at the end of the pipeline.
     """
     results = {}
 
@@ -80,6 +85,12 @@ def finalize_scan(
         results["easm"] = _step(
             db, "EASM enrichment", lambda: _easm_enrich(db, org_id, scan_id)
         )
+
+    # 11. Fire event-driven workflow triggers for new data
+    results["workflows"] = _step(
+        db, "Workflow triggers",
+        lambda: _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids),
+    )
 
     return results
 
@@ -217,3 +228,49 @@ def _easm_enrich(db, org_id, scan_id):
         # No running loop — run directly
         asyncio.run(enrich_assets_from_easm(db, org, scan_id))
     return True
+
+
+def _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids):
+    """Fire workflow triggers for newly ingested data."""
+    import services.workflow_engine as workflow_engine
+
+    fired = 0
+
+    # on_upload — always fire for the scan
+    fired += workflow_engine.fire_event_workflows(
+        db, "on_upload", {"scan_id": scan_id}
+    )
+
+    # on_new_asset — fire if any assets were newly inserted
+    if new_asset_ids:
+        from models.models import Asset
+        assets = db.query(Asset).filter(Asset.id.in_(new_asset_ids)).all()
+        asset_dicts = [
+            {
+                "id": a.id,
+                "is_internet_facing": getattr(a, "is_internet_facing", False),
+                "criticality": a.criticality,
+            }
+            for a in assets
+        ]
+        fired += workflow_engine.fire_event_workflows(
+            db, "on_new_asset", {"asset_ids": new_asset_ids, "assets": asset_dicts}
+        )
+
+    # on_new_finding — fire if any findings were newly inserted
+    if new_finding_ids:
+        from models.models import Finding
+        findings = db.query(Finding).filter(Finding.id.in_(new_finding_ids)).all()
+        finding_dicts = [
+            {
+                "id": f.id,
+                "severity": f.severity,
+                "exploit_available": f.exploit_available,
+            }
+            for f in findings
+        ]
+        fired += workflow_engine.fire_event_workflows(
+            db, "on_new_finding", {"finding_ids": new_finding_ids, "findings": finding_dicts}
+        )
+
+    return {"workflows_fired": fired}

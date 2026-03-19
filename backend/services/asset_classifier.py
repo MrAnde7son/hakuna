@@ -192,3 +192,162 @@ def classify_asset(asset_data: dict) -> dict:
         "business_context": biz_ctx,
         "context_criticality": CONTEXT_CRITICALITY.get(biz_ctx) if biz_ctx else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# OS / CPE enrichment (plugins 11936, 45590)
+# ---------------------------------------------------------------------------
+
+# CPE vendor:product → device_type mapping
+_CPE_DEVICE_MAP = [
+    # Firewalls
+    (r"cisco:(adaptive_security_appliance|asa|firepower)", "firewall"),
+    (r"paloaltonetworks:pan-os", "firewall"),
+    (r"fortinet:fortios", "firewall"),
+    (r"checkpoint:(gaia|splat)", "firewall"),
+    (r"sonicwall:", "firewall"),
+    (r"watchguard:", "firewall"),
+    (r"sophos:(sfos|xg)", "firewall"),
+    # Routers
+    (r"cisco:ios($|:)", "router"),
+    (r"cisco:ios_xe", "router"),
+    (r"cisco:nx-os", "switch"),
+    (r"juniper:junos", "router"),
+    (r"mikrotik:routeros", "router"),
+    (r"arista:eos", "switch"),
+    # Switches
+    (r"cisco:catalyst", "switch"),
+    (r"hp:(procurve|comware)", "switch"),
+    (r"aruba:arubaos", "switch"),
+    # Wireless access points
+    (r"cisco:wireless_lan_controller", "wap"),
+    (r"aruba:instant", "wap"),
+    (r"ubiquiti:unifi", "wap"),
+    # Hypervisors
+    (r"vmware:esxi", "hypervisor"),
+    (r"microsoft:hyper-v", "hypervisor"),
+    (r"citrix:xenserver", "hypervisor"),
+    (r"linux:linux_kernel.*xen", "hypervisor"),
+    # Printers
+    (r"(hp|canon|xerox|brother|lexmark|ricoh|kyocera):.*(print|laser|mfp|imagerunner)", "printer"),
+    # Storage
+    (r"netapp:", "storage"),
+    (r"emc:", "storage"),
+    (r"synology:diskstation", "storage"),
+    (r"qnap:", "storage"),
+    # VoIP
+    (r"cisco:unified_communications", "voip"),
+    (r"avaya:", "voip"),
+    (r"polycom:", "voip"),
+]
+
+# OS string → device_type fallback (when CPE doesn't match)
+_OS_DEVICE_MAP = [
+    (r"\bcisco\s+ios\b", "router"),
+    (r"\bnx-os\b|\bnexus\b", "switch"),
+    (r"\bpan-os\b|\bpalo\s*alto\b", "firewall"),
+    (r"\bfortios\b|\bfortigate\b", "firewall"),
+    (r"\bjunos\b", "router"),
+    (r"\basa\b.*\bcisco\b|\bcisco\b.*\basa\b", "firewall"),
+    (r"\besxi\b|\bvmware\b.*\bhypervisor\b", "hypervisor"),
+    (r"\bprinter\b|\bjetdirect\b|\bcups\b", "printer"),
+    (r"\bwindows\s+(10|11)\b|\bmacos\b|\bmac\s*os\b|\bos\s*x\b", "workstation"),
+    (r"\bwindows\s+server\b", "server"),
+    (r"\blinux\b|\bubuntu\b|\bdebian\b|\bcentos\b|\bred\s*hat\b|\brhel\b|\bsuse\b", "server"),
+    (r"\bfreebsd\b|\bopenbsd\b", "server"),
+]
+
+
+def parse_os_identification(plugin_output: str) -> dict:
+    """Parse plugin 11936 (OS Identification) output.
+
+    Returns {"os": str|None, "confidence": int|None, "method": str|None}.
+    """
+    result = {"os": None, "confidence": None, "method": None}
+    if not plugin_output:
+        return result
+
+    m = re.search(r"Remote operating system\s*:\s*(.+)", plugin_output)
+    if m:
+        result["os"] = m.group(1).strip()
+
+    m = re.search(r"Confidence [Ll]evel\s*:\s*(\d+)", plugin_output)
+    if m:
+        result["confidence"] = int(m.group(1))
+
+    m = re.search(r"Method\s*:\s*(.+)", plugin_output)
+    if m:
+        result["method"] = m.group(1).strip()
+
+    return result
+
+
+def parse_cpe(plugin_output: str) -> list[str]:
+    """Parse plugin 45590 (CPE) output. Returns list of CPE URIs."""
+    if not plugin_output:
+        return []
+    return re.findall(r"(cpe:/[^\s]+)", plugin_output)
+
+
+def classify_device_type(cpe_list: list[str], os_string: str = "") -> Optional[str]:
+    """Infer device_type from CPE URIs and OS string.
+
+    Returns one of: server, workstation, router, switch, firewall,
+    printer, hypervisor, wap, voip, storage, or None.
+    """
+    # Try CPE-based classification first (more reliable)
+    for cpe_uri in cpe_list:
+        cpe_lower = cpe_uri.lower()
+        # Hardware CPEs are very reliable
+        if ":h:" in cpe_lower or cpe_lower.startswith("cpe:/h:"):
+            for pattern, dtype in _CPE_DEVICE_MAP:
+                if re.search(pattern, cpe_lower):
+                    return dtype
+        # OS CPEs
+        if ":o:" in cpe_lower or cpe_lower.startswith("cpe:/o:"):
+            for pattern, dtype in _CPE_DEVICE_MAP:
+                if re.search(pattern, cpe_lower):
+                    return dtype
+
+    # Fallback to OS string matching
+    os_lower = (os_string or "").lower()
+    if os_lower:
+        for pattern, dtype in _OS_DEVICE_MAP:
+            if re.search(pattern, os_lower):
+                return dtype
+
+    return None
+
+
+def enrich_asset_from_os_plugins(
+    asset,
+    plugin_11936_output: Optional[str] = None,
+    plugin_45590_output: Optional[str] = None,
+) -> None:
+    """Enrich an Asset ORM object in-place with OS identification and CPE data.
+
+    Called during scan upload after findings are created.
+    """
+    # Parse CPE first (used for device_type)
+    cpe_list = []
+    if plugin_45590_output:
+        cpe_list = parse_cpe(plugin_45590_output)
+        if cpe_list:
+            asset.cpe = cpe_list
+
+    # Parse OS identification
+    if plugin_11936_output:
+        os_info = parse_os_identification(plugin_11936_output)
+        # Only overwrite OS if higher confidence or if currently empty
+        if os_info["os"]:
+            current_conf = asset.os_confidence or 0
+            new_conf = os_info["confidence"] or 0
+            if not asset.os or new_conf >= current_conf:
+                asset.os = os_info["os"]
+                asset.os_confidence = os_info["confidence"]
+
+    # Classify device type from CPE + OS
+    effective_os = asset.os or ""
+    device_type = classify_device_type(cpe_list, effective_os)
+    if device_type:
+        asset.device_type = device_type

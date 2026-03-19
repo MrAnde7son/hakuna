@@ -2,8 +2,17 @@ from datetime import datetime
 from sqlalchemy import Column, Integer, String, Float, Boolean, Text, DateTime, ForeignKey, JSON, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from core.database import Base
+from integrations.model_registry import importable
 
 
+@importable(
+    slug="threat_group",
+    display_name="Threat Group",
+    category="threat_intel",
+    dedup_keys=["mitre_id"],
+    required_fields=["name"],
+    description="Threat actor groups — APTs, ransomware gangs, nation-state actors",
+)
 class ThreatGroup(Base):
     __tablename__ = "threat_groups"
 
@@ -29,6 +38,14 @@ class ThreatGroup(Base):
     campaigns = relationship("ThreatCampaign", back_populates="threat_group")
 
 
+@importable(
+    slug="ttp",
+    display_name="TTP / ATT&CK Technique",
+    category="threat_intel",
+    dedup_keys=["technique_id"],
+    required_fields=["technique_id", "name"],
+    description="MITRE ATT&CK techniques and sub-techniques",
+)
 class TTP(Base):
     __tablename__ = "ttps"
 
@@ -63,6 +80,14 @@ class ThreatGroupTTP(Base):
     ttp = relationship("TTP", back_populates="group_ttps")
 
 
+@importable(
+    slug="threat_cve",
+    display_name="Threat CVE",
+    category="threat_intel",
+    dedup_keys=["cve_id"],
+    required_fields=["cve_id"],
+    description="CVE vulnerability intelligence — CVSS, EPSS, KEV, exploit maturity",
+)
 class ThreatCVE(Base):
     __tablename__ = "threat_cves"
 
@@ -105,6 +130,15 @@ class ThreatCVE(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+@importable(
+    slug="threat_campaign",
+    display_name="Threat Campaign",
+    category="threat_intel",
+    dedup_keys=["name"],
+    required_fields=["name"],
+    parent_hint={"field": "threat_group_id", "parent_slug": "threat_group", "resolve_by": ["mitre_id", "name"]},
+    description="Attack campaigns linking threat groups, CVEs, TTPs, and malware",
+)
 class ThreatCampaign(Base):
     __tablename__ = "threat_campaigns"
 
@@ -130,6 +164,14 @@ class ThreatCampaign(Base):
     remediation_campaigns = relationship("IntelRemediationCampaign", back_populates="threat_campaign")
 
 
+@importable(
+    slug="cisa_advisory",
+    display_name="CISA Advisory",
+    category="threat_intel",
+    dedup_keys=["advisory_id"],
+    required_fields=["advisory_id", "title"],
+    description="CISA cybersecurity advisories, alerts, and ICS advisories",
+)
 class CisaAdvisory(Base):
     """CISA Cybersecurity Advisory — fetched from the CISA RSS feed."""
     __tablename__ = "cisa_advisories"
@@ -173,6 +215,14 @@ class IntelRemediationCampaign(Base):
     threat_campaign = relationship("ThreatCampaign", back_populates="remediation_campaigns")
 
 
+@importable(
+    slug="product_lifecycle",
+    display_name="Product Lifecycle",
+    category="threat_intel",
+    dedup_keys=["slug", "cycle"],
+    required_fields=["product_name", "slug", "cycle"],
+    description="Product lifecycle and EOL tracking from endoflife.date or custom sources",
+)
 class ProductLifecycle(Base):
     """Product lifecycle data from endoflife.date — tracks latest versions and EOL status."""
     __tablename__ = "product_lifecycles"
@@ -223,6 +273,14 @@ class CWEEntry(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+@importable(
+    slug="exploit_reference",
+    display_name="Exploit Reference",
+    category="threat_intel",
+    dedup_keys=["cve_id", "source", "source_id"],
+    required_fields=["cve_id", "source"],
+    description="Public exploit references — ExploitDB, Metasploit, Nuclei, PoCs",
+)
 class ExploitReference(Base):
     """Public exploit references from ExploitDB, Metasploit, Nuclei templates, etc."""
     __tablename__ = "exploit_references"

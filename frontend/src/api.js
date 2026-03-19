@@ -156,7 +156,32 @@ export const updateScanSchedule = (id, schedule) => request(`/scans/${id}/schedu
   body: JSON.stringify({ schedule }),
 })
 
-export const uploadScan = (file) => {
+// Upload threshold: files larger than 30MB use GCS signed URL to bypass Cloud Run limits
+const GCS_UPLOAD_THRESHOLD = 30 * 1024 * 1024
+
+export const uploadScan = async (file) => {
+  if (file.size > GCS_UPLOAD_THRESHOLD) {
+    // Step 1: Get a signed URL from the backend
+    const { url, blob_name } = await request('/upload/signed-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: file.name, content_type: file.type || 'application/octet-stream' }),
+    })
+    // Step 2: Upload directly to GCS (no auth header — signed URL has its own auth)
+    const putRes = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+    })
+    if (!putRes.ok) throw new Error(`Upload to storage failed: ${putRes.statusText}`)
+    // Step 3: Tell backend to ingest from GCS
+    return request('/upload/gcs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ blob_name, filename: file.name }),
+    })
+  }
+  // Small files: direct upload (original flow)
   const fd = new FormData()
   fd.append('file', file)
   return request('/upload', { method: 'POST', body: fd })
@@ -177,6 +202,9 @@ export const nlpReportQuery = (query, scan_id = null) =>
   })
 
 // Assets
+// Data sources
+export const getSources = () => request('/sources')
+
 export const getAssets = (params = {}) => {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
   return request(`/assets?${q}`)
@@ -798,6 +826,8 @@ export const getEasmAssets = () => request('/easm/assets')
 const IB = '/integration-builder'
 
 export const getIntegrationSchema = (entity) => request(`${IB}/schema${entity ? '?entity=' + entity : ''}`)
+export const getTargetModels = () => request(`${IB}/targets`)
+export const getTargetSchema = (slug) => request(`${IB}/targets/${slug}/schema`)
 export const getConnectors = () => request(`${IB}/connectors`)
 export const getConnector = (id) => request(`${IB}/connectors/${id}`)
 export const getAcquisitionFlow = (id) => request(`${IB}/connectors/${id}/acquisition-flow`)
@@ -831,6 +861,9 @@ export const ibDisableIntegration = (id) => request(`${IB}/integrations/${id}/di
 export const ibRunIntegration = (id) => request(`${IB}/integrations/${id}/run`, { method: 'POST' })
 export const ibGetIntegrationRuns = (id) => request(`${IB}/integrations/${id}/runs`)
 export const ibGetIntegrationRun = (integrationId, runId) => request(`${IB}/integrations/${integrationId}/runs/${runId}`)
+export const ibUpdateLogo = (id, data) => request(`${IB}/integrations/${id}/logo`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
 
 // Discovery
 export const discoverApi = (url) => request(`${IB}/discovery/discover`, {

@@ -491,6 +491,8 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 first_seen=now, last_seen=now,
             ))
 
+    for f in findings_to_add:
+        f.source_systems = ["easm"]
     db.add_all(findings_to_add)
     return len(findings_to_add)
 
@@ -593,6 +595,7 @@ def _import_assets_for_domain(
             first_seen=now,
             last_seen=now,
             easm_data=easm_data,
+            source_systems=["easm"],
         )
         db.add(asset)
         db.flush()

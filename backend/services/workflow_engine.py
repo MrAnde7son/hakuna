@@ -33,12 +33,22 @@ NODE_CATALOG = {
         {
             "subtype": "schedule",
             "label": "Schedule",
-            "description": "Run on a time schedule",
+            "description": "Run on a time schedule (preset or custom cron expression)",
             "icon": "Clock",
             "config_schema": {
+                "schedule_mode": {"type": "enum", "label": "Mode",
+                                  "options": [
+                                      {"value": "simple", "label": "Simple"},
+                                      {"value": "cron", "label": "Custom (Cron)"},
+                                  ]},
                 "interval": {"type": "enum", "label": "Interval",
-                             "options": ["hourly", "daily", "weekly", "monthly"]},
-                "time": {"type": "string", "label": "Time (HH:MM)", "placeholder": "09:00"},
+                             "options": ["hourly", "daily", "weekly", "monthly"],
+                             "visible_when": {"schedule_mode": "simple"}},
+                "time": {"type": "string", "label": "Time (HH:MM)", "placeholder": "09:00",
+                         "visible_when": {"schedule_mode": "simple"}},
+                "cron_expr": {"type": "string", "label": "Cron Expression",
+                              "placeholder": "0 8 * * *",
+                              "visible_when": {"schedule_mode": "cron"}},
             },
         },
         {
@@ -56,13 +66,80 @@ NODE_CATALOG = {
             "config_schema": {},
         },
         {
-            "subtype": "cron",
-            "label": "Cron Schedule",
-            "description": "Run on a cron expression (e.g. '0 8 * * *' for daily at 8 AM)",
-            "icon": "Clock",
+            "subtype": "on_integration_execution",
+            "label": "On Integration Execution",
+            "description": "Triggers when an integration finishes — filter by outcome",
+            "icon": "Plug",
             "config_schema": {
-                "cron_expr": {"type": "string", "label": "Cron Expression",
-                              "placeholder": "0 8 * * *"},
+                "integration_id": {"type": "string", "label": "Integration (leave blank for all)",
+                                   "placeholder": "Any integration"},
+                "status_filter": {"type": "multi_enum", "label": "Trigger on status",
+                                  "options": [
+                                      {"value": "success", "label": "Success"},
+                                      {"value": "partial", "label": "Partial"},
+                                      {"value": "error", "label": "Error"},
+                                  ],
+                                  "default": ["success", "partial", "error"]},
+            },
+        },
+        {
+            "subtype": "on_new_threat_intel",
+            "label": "On New Threat Intel",
+            "description": "Triggers when new CVEs, threat groups, or campaigns are synced",
+            "icon": "Shield",
+            "config_schema": {
+                "intel_type": {"type": "enum", "label": "Intel Type",
+                               "options": [
+                                   {"value": "any", "label": "Any type"},
+                                   {"value": "cve", "label": "New CVEs"},
+                                   {"value": "threat_group", "label": "New Threat Groups"},
+                                   {"value": "threat_campaign", "label": "New Threat Campaigns"},
+                                   {"value": "kev", "label": "New KEV Entries"},
+                                   {"value": "exploit", "label": "New Exploits"},
+                               ]},
+                "severity_threshold": {"type": "enum", "label": "Min CVSS Severity",
+                                       "options": [
+                                           {"value": "", "label": "Any"},
+                                           {"value": "7.0", "label": "High (7.0+)"},
+                                           {"value": "9.0", "label": "Critical (9.0+)"},
+                                       ]},
+                "only_affecting_environment": {"type": "boolean",
+                                               "label": "Only if affecting my environment",
+                                               "default": True},
+            },
+        },
+        {
+            "subtype": "on_new_asset",
+            "label": "On New Asset",
+            "description": "Triggers when a previously unseen asset is discovered",
+            "icon": "Monitor",
+            "config_schema": {
+                "asset_filter": {"type": "enum", "label": "Asset Filter",
+                                 "options": [
+                                     {"value": "any", "label": "Any new asset"},
+                                     {"value": "internet_facing", "label": "Internet-facing only"},
+                                     {"value": "high_criticality", "label": "High criticality (1-3) only"},
+                                 ]},
+            },
+        },
+        {
+            "subtype": "on_new_finding",
+            "label": "On New Finding",
+            "description": "Triggers when a new vulnerability is discovered",
+            "icon": "AlertCircle",
+            "config_schema": {
+                "min_severity": {"type": "enum", "label": "Minimum Severity",
+                                 "options": [
+                                     {"value": "0", "label": "Any (including Info)"},
+                                     {"value": "1", "label": "Low and above"},
+                                     {"value": "2", "label": "Medium and above"},
+                                     {"value": "3", "label": "High and above"},
+                                     {"value": "4", "label": "Critical only"},
+                                 ],
+                                 "default": "2"},
+                "only_exploitable": {"type": "boolean",
+                                     "label": "Only with known exploits",
+                                     "default": False},
             },
         },
     ],
@@ -410,8 +487,8 @@ WORKFLOW_TEMPLATES = [
         "description": "Runs daily, finds all breached or at-risk findings, and emails a summary to the security team",
         "category": "sla",
         "nodes": [
-            {"node_id": "t1", "node_type": "trigger", "node_subtype": "cron",
-             "label": "Daily at 8 AM", "config": {"cron_expr": "0 8 * * *"}, "position_x": 60, "position_y": 260},
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "schedule",
+             "label": "Daily at 8 AM", "config": {"schedule_mode": "cron", "cron_expr": "0 8 * * *"}, "position_x": 60, "position_y": 260},
             {"node_id": "f1", "node_type": "filter", "node_subtype": "condition_filter",
              "label": "Breached SLA", "config": {
                  "conditions": [{"field": "finding.sla_status", "op": "eq", "value": "breached"}],
@@ -507,8 +584,8 @@ WORKFLOW_TEMPLATES = [
         "description": "Weekly check for expiring risk exceptions — email owners for recertification and tag findings as review-due",
         "category": "compliance",
         "nodes": [
-            {"node_id": "t1", "node_type": "trigger", "node_subtype": "cron",
-             "label": "Weekly Monday 9 AM", "config": {"cron_expr": "0 9 * * 1"}, "position_x": 60, "position_y": 260},
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "schedule",
+             "label": "Weekly Monday 9 AM", "config": {"schedule_mode": "cron", "cron_expr": "0 9 * * 1"}, "position_x": 60, "position_y": 260},
             {"node_id": "f1", "node_type": "filter", "node_subtype": "condition_filter",
              "label": "Expiring Soon", "config": {
                  "conditions": [{"field": "exception.expires_within_days", "op": "lte", "value": "14"}],
@@ -653,8 +730,8 @@ WORKFLOW_TEMPLATES = [
         "description": "Weekly audit of uncredentialed scans — tag affected assets and notify scan operations team to fix coverage gaps",
         "category": "compliance",
         "nodes": [
-            {"node_id": "t1", "node_type": "trigger", "node_subtype": "cron",
-             "label": "Weekly Friday 6 AM", "config": {"cron_expr": "0 6 * * 5"}, "position_x": 60, "position_y": 200},
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "schedule",
+             "label": "Weekly Friday 6 AM", "config": {"schedule_mode": "cron", "cron_expr": "0 6 * * 5"}, "position_x": 60, "position_y": 200},
             {"node_id": "f1", "node_type": "filter", "node_subtype": "condition_filter",
              "label": "Uncredentialed?", "config": {
                  "conditions": [{"field": "asset.credentialed_scan", "op": "is_false", "value": ""}],
@@ -720,8 +797,8 @@ WORKFLOW_TEMPLATES = [
         "description": "Scheduled weekly/monthly digest per client org — summarizes new findings, SLA status, trending, and sends branded email report",
         "category": "notification",
         "nodes": [
-            {"node_id": "t1", "node_type": "trigger", "node_subtype": "cron",
-             "label": "Weekly Monday 7 AM", "config": {"cron_expr": "0 7 * * 1"}, "position_x": 60, "position_y": 260},
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "schedule",
+             "label": "Weekly Monday 7 AM", "config": {"schedule_mode": "cron", "cron_expr": "0 7 * * 1"}, "position_x": 60, "position_y": 260},
             {"node_id": "a1", "node_type": "action", "node_subtype": "generate_report",
              "label": "Generate Client Report", "config": {
                  "report_type": "client_digest",
@@ -744,6 +821,130 @@ WORKFLOW_TEMPLATES = [
             {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
             {"edge_id": "e2", "source_node_id": "a1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
             {"edge_id": "e3", "source_node_id": "a1", "target_node_id": "a3", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
+    {
+        "id": "integration_error_alert",
+        "name": "Integration Error Alert",
+        "description": "Alert when any integration run fails — send Slack notification and email the admin",
+        "category": "integration",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_integration_execution",
+             "label": "Integration Failed", "config": {"status_filter": ["error"]}, "position_x": 60, "position_y": 200},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "slack_notify",
+             "label": "Slack Alert", "config": {
+                 "message_template": ":x: *Integration Failed*\n\nIntegration `{{integration_name}}` failed.\n:clipboard: Error: {{error_message}}\n:arrow_right: Triggered by: {{triggered_by}}"
+             }, "position_x": 360, "position_y": 120},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "send_email",
+             "label": "Email Admin", "config": {
+                 "subject": "Integration Failed: {{integration_name}}",
+                 "body_template": "The integration '{{integration_name}}' failed during its {{triggered_by}} run.\n\nError: {{error_message}}\n\nPlease check the integration run history for details.",
+                 "include_findings_table": False
+             }, "position_x": 360, "position_y": 320},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "t1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
+    {
+        "id": "integration_complete_campaign",
+        "name": "Post-Integration Campaign",
+        "description": "After an integration pulls new data, run a campaign to triage new findings and notify the team",
+        "category": "integration",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_integration_execution",
+             "label": "Integration Completed", "config": {"status_filter": ["success"]}, "position_x": 60, "position_y": 200},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "severity_filter",
+             "label": "High & Critical", "config": {"operator": "gte", "value": "3"}, "position_x": 360, "position_y": 200},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "assign_owner",
+             "label": "Assign SecOps", "config": {"owner_role": "SecOps", "team": "Security Operations"}, "position_x": 660, "position_y": 120},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "slack_notify",
+             "label": "Notify Slack", "config": {
+                 "message_template": ":white_check_mark: Integration `{{integration_name}}` completed — {{records_inserted}} new, {{records_updated}} updated. {{count}} high/critical findings assigned to SecOps."
+             }, "position_x": 660, "position_y": 320},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "f1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "a1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
+    # ── Threat Intel & Data-Driven Templates ─────────────────────────────
+    {
+        "id": "threat_intel_response",
+        "name": "Threat Intel Auto-Response",
+        "description": "When new high-severity CVEs are synced and affect your environment, auto-tag affected findings and notify via Slack",
+        "category": "incident",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_new_threat_intel",
+             "label": "New Threat Intel", "config": {
+                 "intel_type": "cve", "severity_threshold": "7.0",
+                 "only_affecting_environment": True
+             }, "position_x": 60, "position_y": 200},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "exploit_filter",
+             "label": "Has Exploit?", "config": {"has_exploit": "true"}, "position_x": 360, "position_y": 200},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "add_tag",
+             "label": "Tag Emerging Threat", "config": {"tag_category": "threat_intel", "tag_value": "emerging_threat", "target": "both"}, "position_x": 660, "position_y": 120},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "slack_notify",
+             "label": "Alert Team", "config": {
+                 "message_template": ":rotating_light: *New Threat Intel Alert*\n{{count}} findings in your environment are affected by newly discovered high-severity CVEs with known exploits. Immediate review recommended."
+             }, "position_x": 660, "position_y": 320},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "f1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "a1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
+    {
+        "id": "new_asset_onboard",
+        "name": "New Asset Onboarding",
+        "description": "When a new internet-facing asset is discovered, auto-tag, assign to SecOps, and create a review ticket",
+        "category": "triage",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_new_asset",
+             "label": "New Asset", "config": {"asset_filter": "internet_facing"}, "position_x": 60, "position_y": 200},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "add_tag",
+             "label": "Tag New Asset", "config": {"tag_category": "lifecycle", "tag_value": "new_discovery", "target": "asset"}, "position_x": 360, "position_y": 120},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "assign_owner",
+             "label": "Assign SecOps", "config": {"owner_role": "SecOps", "team": "Security Operations"}, "position_x": 360, "position_y": 320},
+            {"node_id": "a3", "node_type": "action", "node_subtype": "slack_notify",
+             "label": "Notify Team", "config": {
+                 "message_template": ":new: *New Internet-Facing Asset Discovered*\n{{count}} new asset(s) detected. Auto-assigned to SecOps for review."
+             }, "position_x": 660, "position_y": 200},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "t1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "a1", "target_node_id": "a3", "source_handle": "output", "target_handle": "input"},
+        ],
+    },
+    {
+        "id": "critical_finding_alert",
+        "name": "Critical Finding Instant Alert",
+        "description": "Immediately alert when new critical or exploitable findings are discovered — no waiting for campaign runs",
+        "category": "incident",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_new_finding",
+             "label": "New Finding", "config": {"min_severity": "3", "only_exploitable": False}, "position_x": 60, "position_y": 200},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "severity_filter",
+             "label": "Critical Only", "config": {"operator": "gte", "value": "4"}, "position_x": 360, "position_y": 200},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "create_ticket",
+             "label": "Create Urgent Ticket", "config": {
+                 "integration": "jira", "issue_type": "bug",
+                 "title_template": "[CRITICAL] {{plugin_name}} on {{asset_ip}}",
+                 "priority": "highest"
+             }, "position_x": 660, "position_y": 120},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "slack_notify",
+             "label": "Alert Channel", "config": {
+                 "message_template": ":fire: *Critical Finding Detected*\n`{{plugin_name}}` on `{{asset_hostname}}` ({{asset_ip}}) — CVSS {{cvss3_score}}. Jira ticket created."
+             }, "position_x": 660, "position_y": 320},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "f1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e3", "source_node_id": "a1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
         ],
     },
 ]
@@ -952,6 +1153,18 @@ def _gather_trigger_data(db: Session, workflow: Workflow, trigger_node: Workflow
     if scan_id:
         return _load_scan_findings(db, scan_id)
 
+    # For new-asset triggers, convert asset data into items
+    if trigger_node.node_subtype == "on_new_asset":
+        return _load_asset_items(db, trigger_data or {})
+
+    # For new-finding triggers, load the finding items directly
+    if trigger_node.node_subtype == "on_new_finding":
+        return _load_new_finding_items(db, trigger_data or {})
+
+    # For threat intel triggers, find affected findings in the environment
+    if trigger_node.node_subtype == "on_new_threat_intel":
+        return _load_threat_intel_affected_findings(db, trigger_data or {})
+
     return []
 
 
@@ -978,6 +1191,65 @@ def _load_scan_findings(db: Session, scan_id: int) -> list:
         .all()
     )
     return [_finding_to_item(f, asset) for f, asset in rows]
+
+
+def _load_asset_items(db: Session, trigger_data: dict) -> list:
+    """Convert new asset IDs from trigger data into workflow items."""
+    asset_ids = trigger_data.get("asset_ids", [])
+    if not asset_ids:
+        return []
+    assets = db.query(Asset).filter(Asset.id.in_(asset_ids)).limit(5000).all()
+    items = []
+    for asset in assets:
+        items.append({
+            "finding_id": None,
+            "asset_id": asset.id,
+            "asset_ip": asset.ip,
+            "asset_hostname": asset.hostname,
+            "asset_os": asset.os,
+            "asset_criticality": asset.criticality,
+            "asset_environment": asset.environment_tag,
+            "asset_risk_score": getattr(asset, "risk_score", 0),
+            "is_internet_facing": getattr(asset, "is_internet_facing", False),
+            "severity": 0,
+        })
+    return items
+
+
+def _load_new_finding_items(db: Session, trigger_data: dict) -> list:
+    """Load newly inserted findings from trigger data."""
+    finding_ids = trigger_data.get("finding_ids", [])
+    if not finding_ids:
+        return []
+    rows = (
+        db.query(Finding, Asset)
+        .outerjoin(Asset, Asset.id == Finding.asset_id)
+        .filter(Finding.id.in_(finding_ids))
+        .limit(5000)
+        .all()
+    )
+    return [_finding_to_item(f, asset) for f, asset in rows]
+
+
+def _load_threat_intel_affected_findings(db: Session, trigger_data: dict) -> list:
+    """Find findings in the environment affected by newly synced threat intel."""
+    new_cve_ids = trigger_data.get("new_cve_ids", [])
+    if not new_cve_ids:
+        return []
+    # Find findings whose cves overlap with the new intel
+    rows = (
+        db.query(Finding, Asset)
+        .outerjoin(Asset, Asset.id == Finding.asset_id)
+        .filter(Finding.cves.isnot(None))
+        .limit(10000)
+        .all()
+    )
+    new_cve_set = set(new_cve_ids)
+    items = []
+    for finding, asset in rows:
+        if finding.cves and any(c in new_cve_set for c in finding.cves):
+            items.append(_finding_to_item(finding, asset))
+    return items
 
 
 def _finding_to_item(finding: Finding, asset: Asset, campaign_finding_id: int = None) -> dict:
@@ -1458,7 +1730,7 @@ def stop_scheduler():
 
 
 def _check_scheduled_workflows(session_factory):
-    """Check for workflows with schedule/cron triggers that are due to run."""
+    """Check for workflows with schedule triggers that are due to run."""
     db = session_factory()
     try:
         workflows = db.query(Workflow).filter(
@@ -1469,7 +1741,8 @@ def _check_scheduled_workflows(session_factory):
         now = datetime.utcnow()
 
         for wf in workflows:
-            # Find schedule or cron trigger
+            # Find schedule trigger (unified: supports both simple and cron modes)
+            # Also match legacy "cron" subtype for backward compat
             trigger = next(
                 (n for n in wf.nodes
                  if n.node_type == "trigger" and n.node_subtype in ("schedule", "cron")),
@@ -1479,15 +1752,18 @@ def _check_scheduled_workflows(session_factory):
                 continue
 
             should_run = False
+            config = trigger.config or {}
+            schedule_mode = config.get("schedule_mode", "")
 
-            if trigger.node_subtype == "cron":
-                cron_expr = (trigger.config or {}).get("cron_expr", "")
+            # Legacy "cron" subtype or schedule_mode == "cron"
+            if trigger.node_subtype == "cron" or schedule_mode == "cron":
+                cron_expr = config.get("cron_expr", "")
                 if _cron_matches(cron_expr, now):
                     # Prevent double-run: skip if already ran this minute
                     if wf.last_run_at and (now - wf.last_run_at).total_seconds() < 60:
                         continue
                     should_run = True
-            else:  # schedule
+            else:  # simple schedule mode
                 should_run = _schedule_is_due(trigger, wf, now)
 
             if not should_run:
@@ -1500,3 +1776,118 @@ def _check_scheduled_workflows(session_factory):
                 logger.error(f"Scheduler: workflow {wf.id} failed: {e}")
     finally:
         db.close()
+
+
+# ─────────────────────────────────────────────
+# Event-driven trigger dispatcher
+# ─────────────────────────────────────────────
+
+def fire_event_workflows(db: Session, event_type: str, event_data: dict = None):
+    """Fire all active workflows that have a trigger matching the given event.
+
+    event_type: one of 'on_upload', 'on_integration_execution', 'on_new_threat_intel',
+                'on_new_asset', 'on_new_finding'
+    event_data: dict with event-specific context (scan_id, integration details, new items, etc.)
+    """
+    event_data = event_data or {}
+
+    # Also match legacy subtypes for backward compat
+    legacy_map = {
+        "on_integration_execution": ["on_integration_execution", "on_integration_complete", "on_integration_error"],
+    }
+    match_subtypes = legacy_map.get(event_type, [event_type])
+
+    try:
+        trigger_nodes = db.query(WorkflowNode).join(Workflow).filter(
+            Workflow.is_enabled == True,
+            Workflow.status == "active",
+            WorkflowNode.node_type == "trigger",
+            WorkflowNode.node_subtype.in_(match_subtypes),
+        ).all()
+
+        fired = 0
+        for node in trigger_nodes:
+            if _trigger_matches_event(node, event_type, event_data):
+                try:
+                    execute_workflow(db, node.workflow_id, trigger_data=event_data)
+                    fired += 1
+                except Exception as wf_err:
+                    logger.warning("Failed to fire workflow %s for event %s: %s",
+                                   node.workflow_id, event_type, wf_err)
+
+        if fired:
+            logger.info("Fired %d workflow(s) for event %s", fired, event_type)
+        return fired
+    except Exception as e:
+        logger.warning("Failed to fire event workflows for %s: %s", event_type, e)
+        return 0
+
+
+def _trigger_matches_event(node: WorkflowNode, event_type: str, event_data: dict) -> bool:
+    """Check if a trigger node's config matches the incoming event data."""
+    config = node.config or {}
+
+    if event_type == "on_upload":
+        return True  # on_upload triggers always match
+
+    if event_type == "on_integration_execution":
+        # Check integration_id filter
+        if config.get("integration_id") and config["integration_id"] != event_data.get("integration_id"):
+            return False
+        # Check status filter
+        status = event_data.get("status", "")
+        status_filter = config.get("status_filter")
+
+        # Legacy: on_integration_error only fires on error
+        if node.node_subtype == "on_integration_error":
+            return status == "error"
+        # Legacy: on_integration_complete fires on any (or specific status)
+        if node.node_subtype == "on_integration_complete":
+            single_filter = config.get("status_filter", "")
+            return not single_filter or single_filter == status
+
+        # New unified: status_filter is a list
+        if isinstance(status_filter, list) and status_filter:
+            return status in status_filter
+        return True  # no filter = any status
+
+    if event_type == "on_new_threat_intel":
+        intel_type = config.get("intel_type", "any")
+        event_intel_type = event_data.get("intel_type", "any")
+        if intel_type != "any" and intel_type != event_intel_type:
+            return False
+
+        # Severity threshold — only for CVE events
+        severity_threshold = config.get("severity_threshold", "")
+        if severity_threshold and event_intel_type == "cve":
+            max_cvss = event_data.get("max_cvss", 0)
+            if max_cvss < float(severity_threshold):
+                return False
+
+        # Only affecting environment — check if any findings exist for new CVEs
+        if config.get("only_affecting_environment", False):
+            return event_data.get("affects_environment", False)
+
+        return True
+
+    if event_type == "on_new_asset":
+        asset_filter = config.get("asset_filter", "any")
+        if asset_filter == "any":
+            return True
+        if asset_filter == "internet_facing":
+            return any(a.get("is_internet_facing") for a in event_data.get("assets", []))
+        if asset_filter == "high_criticality":
+            return any((a.get("criticality") or 5) <= 3 for a in event_data.get("assets", []))
+        return True
+
+    if event_type == "on_new_finding":
+        min_severity = int(config.get("min_severity", "0"))
+        only_exploitable = config.get("only_exploitable", False)
+        findings = event_data.get("findings", [])
+        if min_severity:
+            findings = [f for f in findings if (f.get("severity") or 0) >= min_severity]
+        if only_exploitable:
+            findings = [f for f in findings if f.get("exploit_available")]
+        return len(findings) > 0
+
+    return True

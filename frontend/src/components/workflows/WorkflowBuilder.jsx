@@ -5,7 +5,7 @@ import {
   GitBranch, Zap, Target, Clock, Upload, Server,
   UserPlus, Tag, CheckCircle, AlertTriangle, Globe, Bell,
   BarChart2, ChevronRight, Filter, Mail, MessageSquare,
-  Terminal, Ticket, History, Shield,
+  Terminal, Ticket, History, Shield, Monitor, AlertCircle, Plug,
 } from 'lucide-react'
 import {
   getWorkflow, updateWorkflow, executeWorkflow, getWorkflowExecutions,
@@ -17,7 +17,7 @@ import { Button, Spinner, EmptyState, Pill } from '../shared/ui.jsx'
 const ICON_MAP = {
   Play, Target, Clock, Upload, GitBranch, BarChart2, Tag, Zap, Server,
   UserPlus, CheckCircle, AlertTriangle, Globe, Bell, Filter, Mail,
-  MessageSquare, Terminal, Ticket, Shield,
+  MessageSquare, Terminal, Ticket, Shield, Monitor, AlertCircle, Plug,
 }
 
 const TYPE_COLORS = {
@@ -157,7 +157,9 @@ export default function WorkflowBuilder() {
     // Check if workflow has data source
     if (triggers.length > 0 && !workflow?.campaign_id) {
       const triggerSubtypes = triggers.map(t => t.node_subtype)
-      if (triggerSubtypes.includes('manual') || triggerSubtypes.includes('on_campaign_run'))
+      const dataDrivenTriggers = ['on_upload', 'on_new_finding', 'on_new_asset', 'on_new_threat_intel', 'on_integration_execution']
+      const hasDataTrigger = triggerSubtypes.some(s => dataDrivenTriggers.includes(s))
+      if (!hasDataTrigger && (triggerSubtypes.includes('manual') || triggerSubtypes.includes('on_campaign_run')))
         warnings.push({ level: 'info', message: 'Workflow is not linked to a campaign — it will run with 0 findings unless triggered with data' })
     }
     return warnings
@@ -851,7 +853,13 @@ export default function WorkflowBuilder() {
               )}
 
               {/* Config fields from schema */}
-              {selectedDef?.config_schema && Object.entries(selectedDef.config_schema).map(([key, schema]) => (
+              {selectedDef?.config_schema && Object.entries(selectedDef.config_schema).map(([key, schema]) => {
+                // Conditional visibility: hide fields whose visible_when condition isn't met
+                if (schema.visible_when) {
+                  const ok = Object.entries(schema.visible_when).every(([k, v]) => (selectedNodeData.config?.[k] || '') === v)
+                  if (!ok) return null
+                }
+                return (
                 <div key={key} style={{ marginBottom: 12 }}>
                   <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>
                     {schema.label || key}
@@ -869,9 +877,33 @@ export default function WorkflowBuilder() {
                         return <option key={val} value={val}>{label}</option>
                       })}
                     </select>
+                  ) : schema.type === 'multi_enum' ? (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {(schema.options || []).map(opt => {
+                        const val = typeof opt === 'object' ? opt.value : opt
+                        const label = typeof opt === 'object' ? opt.label : opt
+                        const selected = (selectedNodeData.config?.[key] || schema.default || [])
+                        const isSelected = Array.isArray(selected) && selected.includes(val)
+                        return (
+                          <button key={val} type="button"
+                            onClick={() => {
+                              const cur = Array.isArray(selectedNodeData.config?.[key]) ? [...selectedNodeData.config[key]] : [...(schema.default || [])]
+                              const next = isSelected ? cur.filter(v => v !== val) : [...cur, val]
+                              updateNodeConfig(selectedNode, key, next)
+                            }}
+                            style={{
+                              padding: '4px 10px', borderRadius: 6, fontSize: 12, fontWeight: 500, cursor: 'pointer',
+                              border: isSelected ? '1px solid var(--accent)' : '1px solid var(--border)',
+                              background: isSelected ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'transparent',
+                              color: isSelected ? 'var(--accent)' : 'var(--text-muted)',
+                            }}
+                          >{label}</button>
+                        )
+                      })}
+                    </div>
                   ) : schema.type === 'boolean' ? (
                     <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-                      <input type="checkbox" checked={!!selectedNodeData.config?.[key]}
+                      <input type="checkbox" checked={selectedNodeData.config?.[key] ?? schema.default ?? false}
                         onChange={e => updateNodeConfig(selectedNode, key, e.target.checked)} />
                       {schema.label}
                     </label>
@@ -885,7 +917,8 @@ export default function WorkflowBuilder() {
                     />
                   )}
                 </div>
-              ))}
+                )
+              })}
 
               {/* Last run output */}
               {nodeResults[selectedNode] && (() => {

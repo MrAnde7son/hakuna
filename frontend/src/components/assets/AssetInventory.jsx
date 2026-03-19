@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags } from '../../api.js'
-import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover } from '../shared/ui.jsx'
+import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover, SourceDots, SourceFilter } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
 import BlastRadiusPanel, { BlastRadiusScore } from '../campaigns/BlastRadiusPanel.jsx'
@@ -294,7 +294,7 @@ export default function AssetInventory() {
   })
   const updateColVis = (next) => { setColVis(next); localStorage.setItem('assetColumns', JSON.stringify(next)) }
   const [filters, setFilters] = useState({
-    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '',
+    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '', source: '',
   })
 
   const sortBy = searchParams.get('sort') || 'risk_score'
@@ -314,7 +314,7 @@ export default function AssetInventory() {
   }
 
   const clearFilters = () => setFilters({
-    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '',
+    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '', source: '',
   })
 
   const activeFilterCount = Object.values(filters).filter(Boolean).length
@@ -331,6 +331,7 @@ export default function AssetInventory() {
       min_critical: filters.minCritical || undefined,
       min_high: filters.minHigh || undefined,
       server_role: filters.serverRole || undefined,
+      source: filters.source || undefined,
       sort_by: sortBy,
       order: sortOrder,
       page,
@@ -461,13 +462,6 @@ export default function AssetInventory() {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 13 }}>{row.hostname || row.ip}</span>
-            {row.easm_data && (
-              <span style={{
-                display: 'inline-block', padding: '1px 5px', borderRadius: 4,
-                background: '#6366f122', color: '#6366f1', border: '1px solid #6366f144',
-                fontSize: 10, fontWeight: 700, lineHeight: '16px',
-              }} title="Discovered via External Attack Surface Management">EASM</span>
-            )}
             {row.is_domain_controller && (
               <span style={{
                 display: 'inline-block', padding: '1px 5px', borderRadius: 4,
@@ -512,6 +506,10 @@ export default function AssetInventory() {
     {
       key: 'os', label: t('assets.os'), width: '15%', sortable: true,
       render: (_, row) => <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{row.os || '—'}</span>
+    },
+    {
+      key: 'source_systems', label: 'Source', width: '90px',
+      render: (v) => <SourceDots sources={v} />
     },
     {
       key: 'environment_tag', label: t('assets.env'), sortable: true,
@@ -728,7 +726,7 @@ export default function AssetInventory() {
     },
   ]
 
-  const defaultHidden = new Set(['is_internet_facing', 'scan_start', 'biz_revenue_impact', 'sbom_risk'])
+  const defaultHidden = new Set(['is_internet_facing', 'scan_start', 'biz_revenue_impact', 'sbom_risk', 'source_systems'])
   const visibleColumns = allColumns.filter(c =>
     c.key === '_select' || c.key === '_actions' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
   )
@@ -840,18 +838,10 @@ export default function AssetInventory() {
           ]}
         />
 
-        <select
-          value={filters.serverRole}
-          onChange={e => setFilters(f => ({ ...f, serverRole: e.target.value }))}
-          style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: filters.serverRole ? 'var(--text-primary)' : 'var(--text-muted)', borderRadius: 6, padding: '5px 8px', fontSize: 12 }}
-        >
-          <option value="">{t('assets.allRoles')}</option>
-          <option value="web_server">{t('assets.roleOptions.web_server')}</option>
-          <option value="dns_server">{t('assets.roleOptions.dns_server')}</option>
-          <option value="database">{t('assets.roleOptions.database')}</option>
-          <option value="mail_server">{t('assets.roleOptions.mail_server')}</option>
-          <option value="ftp_server">{t('assets.roleOptions.ftp_server')}</option>
-        </select>
+        <SourceFilter
+          value={filters.source}
+          onChange={v => setFilters(f => ({ ...f, source: v }))}
+        />
 
         <Select
           value={filters.criticality}
@@ -885,33 +875,6 @@ export default function AssetInventory() {
           />
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 12, color: '#dc2626', whiteSpace: 'nowrap' }}>{t('assets.minCritical')}</span>
-          <input
-            type="number" min={0}
-            value={filters.minCritical}
-            onChange={e => setFilters(f => ({ ...f, minCritical: e.target.value }))}
-            placeholder="0"
-            style={{
-              width: 56, background: 'var(--bg-card)', border: '1px solid var(--border)',
-              color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
-            }}
-          />
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 12, color: '#ea580c', whiteSpace: 'nowrap' }}>{t('assets.minHigh')}</span>
-          <input
-            type="number" min={0}
-            value={filters.minHigh}
-            onChange={e => setFilters(f => ({ ...f, minHigh: e.target.value }))}
-            placeholder="0"
-            style={{
-              width: 56, background: 'var(--bg-card)', border: '1px solid var(--border)',
-              color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
-            }}
-          />
-        </div>
 
         <TagFilterBar
           tags={tagFilter}

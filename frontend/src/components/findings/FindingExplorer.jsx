@@ -6,7 +6,7 @@ import { useScan } from '../../App.jsx'
 import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership } from '../../api.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, Input,
-  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover
+  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, SourceDots, SourceFilter
 } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
@@ -294,6 +294,7 @@ export default function FindingExplorer() {
   const threatGroupId = searchParams.get('threat_group_id') ? Number(searchParams.get('threat_group_id')) : null
   const workflowStatus = searchParams.get('workflow_status') || null
   const hasException = searchParams.has('has_exception') ? searchParams.get('has_exception') === 'true' : null
+  const sourceFilter = searchParams.get('source') || null
 
   const setFilter = useCallback((key, value) => {
     setSearchParams(prev => {
@@ -386,6 +387,7 @@ export default function FindingExplorer() {
       workflow_status: workflowStatus,
       has_exception: hasException,
       search: search || null,
+      source: sourceFilter || null,
       sort_by: sortBy,
       order: sortOrder,
       page,
@@ -401,7 +403,7 @@ export default function FindingExplorer() {
         setTotal(data.total)
       })
       .finally(() => setLoading(false))
-  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException])
+  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException])
 
   useEffect(() => { if (!advancedMode) load() }, [load, advancedMode])
 
@@ -539,6 +541,10 @@ export default function FindingExplorer() {
           {row.asset_ip && row.asset_ip !== v && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.asset_ip}</div>}
         </div>
       )
+    },
+    {
+      key: 'source_systems', label: 'Source', width: '90px',
+      render: (v) => <SourceDots sources={v} />
     },
     {
       key: 'cvss3_score', label: t('findings.cvss3'), width: '70px', sortable: true,
@@ -749,7 +755,7 @@ export default function FindingExplorer() {
   ]
 
   // Filter columns by visibility (all visible by default, KEV/EPSS/Ransomware/Trending hidden by default)
-  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen', 'vulnerability_state', 'vpr_score', 'risk_factor', 'port', 'workflow_status', 'workflow_assigned_to', 'exploit_maturity', 'ssvc_decision', 'exploit_count', 'exploit_maturity_level'])
+  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen', 'vulnerability_state', 'vpr_score', 'risk_factor', 'port', 'workflow_status', 'workflow_assigned_to', 'exploit_maturity', 'ssvc_decision', 'exploit_count', 'exploit_maturity_level', 'source_systems'])
   const visibleColumns = allColumns.filter(c =>
     c.key === '_select' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
   )
@@ -851,6 +857,11 @@ export default function FindingExplorer() {
             onChange={v => setFilter('asset_id', v)}
             placeholder={t('findings.allAssets')}
             options={assets.map(a => ({ value: String(a.id), label: a.hostname || a.ip }))}
+          />
+
+          <SourceFilter
+            value={sourceFilter}
+            onChange={v => setFilter('source', v)}
           />
 
           <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />

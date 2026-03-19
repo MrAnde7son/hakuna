@@ -44,7 +44,7 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
         raise ValueError(f"Integration {integration_id} not found")
 
     # Create run record
-    run = IntegrationRun(integration_id=integration.id, status="running")
+    run = IntegrationRun(integration_id=integration.id, status="running", triggered_by=triggered_by)
     db.add(run)
     db.commit()
     db.refresh(run)
@@ -90,6 +90,7 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
         # Mark success
         run.status = "success" if not run.errors else "partial"
         run.finished_at = datetime.utcnow()
+        run.duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000) if run.started_at else None
         integration.last_run_at = datetime.utcnow()
         integration.last_run_status = run.status
         integration.last_run_records = run.records_fetched
@@ -102,17 +103,44 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
                       records_skipped=run.records_skipped,
                       error_count=len(run.errors or []))
 
+        # Fire workflow triggers for integration completion
+        _fire_integration_workflows(db, integration, run)
+
     except Exception as e:
         logger.exception("Run %s failed", run.id)
         run.status = "error"
         run.finished_at = datetime.utcnow()
+        run.duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000) if run.started_at else None
+        run.error_message = str(e)
         run.errors = (run.errors or []) + [{"message": str(e)}]
         integration.last_run_at = datetime.utcnow()
         integration.last_run_status = "error"
         db.commit()
         progress.emit("error", message=str(e))
 
+        # Fire workflow triggers for integration failure
+        _fire_integration_workflows(db, integration, run)
+
     return run.id
+
+
+def _fire_integration_workflows(db: Session, integration: Integration, run: IntegrationRun):
+    """Fire workflows with on_integration_execution (or legacy) triggers."""
+    try:
+        import services.workflow_engine as workflow_engine
+        workflow_engine.fire_event_workflows(db, "on_integration_execution", {
+            "integration_id": integration.id,
+            "integration_name": integration.name,
+            "run_id": run.id,
+            "status": run.status,
+            "records_fetched": run.records_fetched,
+            "records_inserted": run.records_inserted,
+            "records_updated": run.records_updated,
+            "error_message": run.error_message,
+            "triggered_by": run.triggered_by,
+        })
+    except Exception as e:
+        logger.warning("Failed to fire integration workflows: %s", e)
 
 
 async def _execute_pull(db, transport, config, credentials, integration, run, progress):

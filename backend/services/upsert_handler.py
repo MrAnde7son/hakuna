@@ -1,4 +1,8 @@
-"""Upsert engine — insert or update assets/findings from mapped integration records."""
+"""Upsert engine — insert or update records from mapped integration data.
+
+Supports the original hardcoded asset/finding paths for backward compatibility,
+plus a generic model-driven upsert for any model registered in the model registry.
+"""
 
 import logging
 from datetime import datetime
@@ -9,6 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
 from models.models import Asset, Finding
+from integrations.model_registry import get_model_meta
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +31,19 @@ class UpsertResult:
 def upsert(db: Session, entity_type: str, mapped_record: dict, dedup_key: list,
            integration_id: str, scan_id: int = None) -> UpsertResult:
     """Upsert a single mapped record into the database."""
+    # Hardcoded paths for backward compatibility (asset/finding have special logic)
     if entity_type == "asset":
         return _upsert_asset(db, mapped_record, dedup_key, integration_id, scan_id)
     elif entity_type == "finding":
         return _upsert_finding(db, mapped_record, dedup_key, integration_id, scan_id)
     elif entity_type == "action":
-        # Actions are always inserts (run records are append-only)
         return UpsertResult(action="skipped", errors=["Action entity push not implemented in upsert"])
-    else:
+
+    # Generic model-driven upsert for any registered model
+    meta = get_model_meta(entity_type)
+    if meta is None:
         return UpsertResult(action="skipped", errors=[f"Unknown entity type: {entity_type}"])
+    return _generic_upsert(db, meta, mapped_record, dedup_key)
 
 
 def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: str,
@@ -66,6 +75,9 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
         if source_id:
             existing.source_id = source_id
 
+        # Accumulate source provenance
+        _accumulate_source(existing, source_system)
+
         return UpsertResult(action="updated" if updated else "skipped", id=existing.id)
     else:
         # Insert new asset
@@ -79,6 +91,7 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
             criticality=record.get("criticality", 5),
             source_id=source_id,
             source_system=source_system,
+            source_systems=[source_system] if source_system else [],
             first_seen=datetime.utcnow(),
             last_seen=datetime.utcnow(),
         )
@@ -144,6 +157,8 @@ def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: 
         existing.source_system = source_system
         if source_id:
             existing.source_id = source_id
+        # Accumulate source provenance
+        _accumulate_source(existing, source_system)
         # Do NOT change workflow_status if user has set it
 
         return UpsertResult(action="updated" if updated else "skipped", id=existing.id)
@@ -155,6 +170,7 @@ def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: 
             source_type=source_system or "integration",
             source_id=source_id,
             source_system=source_system,
+            source_systems=[source_system] if source_system else [],
             plugin_id=record.get("plugin_id", ""),
             plugin_name=record.get("title", ""),
             severity=severity_int,
@@ -175,14 +191,93 @@ def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: 
         return UpsertResult(action="inserted", id=finding.id)
 
 
+def _generic_upsert(db: Session, meta, record: dict, dedup_key: list) -> UpsertResult:
+    """Generic upsert for any registered model — uses introspected columns and dedup keys."""
+    model_cls = meta.model_class
+    dedup_key = dedup_key or meta.dedup_keys
+
+    # Resolve parent FK if parent_hint exists
+    if meta.parent_hint:
+        _resolve_parent_fk(db, meta, record)
+
+    # Build dedup filter
+    filters = []
+    for key in dedup_key:
+        if hasattr(model_cls, key) and record.get(key) is not None:
+            filters.append(getattr(model_cls, key) == record[key])
+
+    if not filters:
+        # No dedup possible — always insert
+        return _generic_insert(db, meta, record)
+
+    existing = db.query(model_cls).filter(and_(*filters)).first()
+    if existing:
+        updated = False
+        for col in meta.writable_columns:
+            col_name = col["name"]
+            if col_name in dedup_key:
+                continue
+            value = record.get(col_name)
+            if value is not None:
+                setattr(existing, col_name, value)
+                updated = True
+        return UpsertResult(action="updated" if updated else "skipped", id=existing.id)
+    else:
+        return _generic_insert(db, meta, record)
+
+
+def _generic_insert(db: Session, meta, record: dict) -> UpsertResult:
+    """Insert a new record for a registered model."""
+    obj = meta.model_class()
+    for col in meta.writable_columns:
+        col_name = col["name"]
+        value = record.get(col_name)
+        if value is not None:
+            setattr(obj, col_name, value)
+    db.add(obj)
+    db.flush()
+    return UpsertResult(action="inserted", id=obj.id)
+
+
+def _resolve_parent_fk(db: Session, meta, record: dict):
+    """Resolve a parent FK from mapped record data using the parent_hint."""
+    hint = meta.parent_hint
+    parent_meta = get_model_meta(hint.parent_slug)
+    if parent_meta is None:
+        return
+    parent_cls = parent_meta.model_class
+    fk_field = hint.field  # e.g. "asset_id"
+
+    # If the FK is already set directly, skip resolution
+    if record.get(fk_field):
+        return
+
+    # Try to resolve by each resolve_by field
+    for resolve_field in hint.resolve_by:
+        value = record.get(resolve_field)
+        if value and hasattr(parent_cls, resolve_field):
+            parent = db.query(parent_cls).filter(
+                getattr(parent_cls, resolve_field) == value
+            ).first()
+            if parent:
+                record[fk_field] = parent.id
+                return
+
+
 def upsert_batch(db: Session, entity_type: str, mapped_records: list, dedup_key: list,
                   integration_id: str, scan_id: int = None) -> dict:
-    """Process a batch of records. Returns aggregate counts."""
-    counts = {"inserted": 0, "updated": 0, "skipped": 0, "errors": []}
+    """Process a batch of records. Returns aggregate counts and new IDs."""
+    counts = {"inserted": 0, "updated": 0, "skipped": 0, "errors": [],
+              "new_asset_ids": [], "new_finding_ids": []}
     for record in mapped_records:
         try:
             result = upsert(db, entity_type, record, dedup_key, integration_id, scan_id)
             counts[result.action] = counts.get(result.action, 0) + 1
+            if result.action == "inserted" and result.id:
+                if entity_type == "asset":
+                    counts["new_asset_ids"].append(result.id)
+                elif entity_type == "finding":
+                    counts["new_finding_ids"].append(result.id)
             if result.errors:
                 counts["errors"].extend(result.errors)
         except Exception as e:
@@ -258,6 +353,7 @@ def _resolve_asset(db: Session, ip: str, hostname: str, source_system: str, scan
             ip=ip,
             hostname=hostname,
             source_system=source_system,
+            source_systems=[source_system] if source_system else [],
             source_id=f"auto:{ip or hostname}",
             first_seen=datetime.utcnow(),
             last_seen=datetime.utcnow(),
@@ -265,6 +361,15 @@ def _resolve_asset(db: Session, ip: str, hostname: str, source_system: str, scan
         db.add(asset)
         db.flush()
     return asset
+
+
+def _accumulate_source(record, source_system: str):
+    """Append source_system to the record's source_systems list if not already present."""
+    if not source_system:
+        return
+    current = record.source_systems or []
+    if source_system not in current:
+        record.source_systems = current + [source_system]
 
 
 def _to_float(value):

@@ -989,7 +989,7 @@ function CveRow({ cve, expanded, onToggle }) {
   )
 }
 
-function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEpss = 0, initialInScanOnly = false, initialHasExploit = false, initialSsvcAct = false }) {
+function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEpss = 0, initialInScanOnly = false, initialHasExploit = false, initialSsvcAct = false, initialHasMsrc = false }) {
   const { t } = useTranslation()
   const { activeScanId } = useScan()
   const [cves, setCves] = useState([])
@@ -1008,6 +1008,7 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
   const [inScanOnly, setInScanOnly] = useState(initialInScanOnly)
   const [hasExploit, setHasExploit] = useState(initialHasExploit)
   const [ssvcAct, setSsvcAct] = useState(initialSsvcAct)
+  const [hasMsrc, setHasMsrc] = useState(initialHasMsrc)
 
   // Sorting
   const [sortBy, setSortBy] = useState(null)
@@ -1021,8 +1022,9 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
     setInScanOnly(initialInScanOnly)
     setHasExploit(initialHasExploit)
     setSsvcAct(initialSsvcAct)
+    setHasMsrc(initialHasMsrc)
     setPage(0)
-  }, [initialSearch, initialKevOnly, initialMinEpss, initialInScanOnly, initialHasExploit, initialSsvcAct])
+  }, [initialSearch, initialKevOnly, initialMinEpss, initialInScanOnly, initialHasExploit, initialSsvcAct, initialHasMsrc])
 
   const fetchCves = useCallback(async () => {
     setLoading(true)
@@ -1039,6 +1041,7 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
       if (inScanOnly) params.set('in_scan', activeScanId || 'all')
       if (hasExploit) params.set('has_exploit', 'true')
       if (ssvcAct) params.set('ssvc_act', 'true')
+      if (hasMsrc) params.set('has_msrc', 'true')
       if (sortBy) { params.set('sort_by', sortBy); params.set('sort_dir', sortDir) }
       const data = await getThreatCves(Object.fromEntries(params))
       const items = Array.isArray(data) ? data : (data.items || [])
@@ -1049,7 +1052,7 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
     } finally {
       setLoading(false)
     }
-  }, [search, kevOnly, minEpss, minCvss, inScanOnly, hasExploit, ssvcAct, activeScanId, page, sortBy, sortDir])
+  }, [search, kevOnly, minEpss, minCvss, inScanOnly, hasExploit, ssvcAct, hasMsrc, activeScanId, page, sortBy, sortDir])
 
   useEffect(() => { fetchCves() }, [fetchCves])
 
@@ -1088,6 +1091,10 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
         <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: ssvcAct ? '#7c3aed' : 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
           <input type="checkbox" checked={ssvcAct} onChange={e => { setSsvcAct(e.target.checked); setPage(0) }} />
           SSVC: Act
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: hasMsrc ? '#16a34a' : 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={hasMsrc} onChange={e => { setHasMsrc(e.target.checked); setPage(0) }} />
+          MSRC
         </label>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Min EPSS</span>
@@ -1970,6 +1977,7 @@ export default function ThreatIntelCenter() {
   const [groupsInitialInMyEnv, setGroupsInitialInMyEnv] = useState(false)
   const [cveInitialHasExploit, setCveInitialHasExploit] = useState(false)
   const [cveInitialSsvcAct, setCveInitialSsvcAct] = useState(false)
+  const [cveInitialHasMsrc, setCveInitialHasMsrc] = useState(false)
 
   // ── Fetch stats ──
   useEffect(() => {
@@ -2022,6 +2030,7 @@ export default function ThreatIntelCenter() {
     setCveInitialInScanOnly(false)
     setCveInitialHasExploit(false)
     setCveInitialSsvcAct(false)
+    setCveInitialHasMsrc(false)
     setGroupsInitialInMyEnv(false)
   }
 
@@ -2045,6 +2054,8 @@ export default function ThreatIntelCenter() {
       setCveInitialHasExploit(true)
     } else if (key === 'ssvc_act') {
       setCveInitialSsvcAct(true)
+    } else if (key === 'msrc_patches') {
+      setCveInitialHasMsrc(true)
     }
   }, [])
 
@@ -2116,6 +2127,7 @@ export default function ThreatIntelCenter() {
           initialInScanOnly={cveInitialInScanOnly}
           initialHasExploit={cveInitialHasExploit}
           initialSsvcAct={cveInitialSsvcAct}
+          initialHasMsrc={cveInitialHasMsrc}
         />
       )}
 

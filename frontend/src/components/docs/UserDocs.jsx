@@ -605,7 +605,7 @@ function DocContent() {
         <SubHeading>Workflow Nodes</SubHeading>
         <P>Build workflows by connecting nodes from these categories:</P>
         <Ul>
-          <li><strong>Triggers</strong> — Manual, Schedule (cron), On Upload, On Campaign Run.</li>
+          <li><strong>Triggers</strong> — Manual, Schedule (simple or cron), On Scan Upload, On Campaign Run, On Integration Execution, On New Threat Intel, On New Asset, On New Finding.</li>
           <li><strong>Filters</strong> — Filter findings by severity, status, or attributes. Filter assets by environment or properties. Filter inventory data.</li>
           <li><strong>Actions</strong>:
             <Ul>
@@ -628,7 +628,7 @@ function DocContent() {
         <P>Start from pre-built workflow templates for common patterns like "critical findings to Jira" or "daily email digest."</P>
         <SubHeading>Execution</SubHeading>
         <P>
-          Workflows can be executed manually, triggered by events (scan upload, campaign run), or scheduled via cron.
+          Workflows can be executed manually, triggered by events (scan upload, campaign run, integration execution, new threat intel, new assets/findings), or scheduled via simple intervals or cron expressions.
           View execution history with detailed logs showing which nodes fired and what actions were taken.
         </P>
         <SubHeading>Version History</SubHeading>

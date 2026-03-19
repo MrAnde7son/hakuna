@@ -1519,7 +1519,7 @@ export default function ScanManagement() {
       </Card>
 
       {/* Scan list */}
-      <Card style={{ padding: 0, overflow: 'hidden' }}>
+      <Card style={{ padding: 0 }}>
         {filteredScans.length === 0 && uploads.length === 0 ? (
           <div style={{ padding: 40, textAlign: 'center' }}>
             <Radar size={40} color="var(--text-muted)" style={{ marginBottom: 12, opacity: 0.5 }} />

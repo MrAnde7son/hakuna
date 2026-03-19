@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import Column, Integer, String, Float, Boolean, Text, DateTime, ForeignKey, JSON, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from core.database import Base
+from integrations.model_registry import importable
 
 
 # ─────────────────────────────────────────────────────────
@@ -176,6 +177,14 @@ class Scan(Base):
     findings = relationship("Finding", back_populates="scan", cascade="all, delete-orphan", foreign_keys="[Finding.scan_id]")
 
 
+@importable(
+    slug="asset",
+    display_name="Asset",
+    category="core",
+    dedup_keys=["source_system", "source_id"],
+    required_fields=["ip", "hostname"],
+    description="Network assets — hosts, servers, endpoints, cloud instances",
+)
 class Asset(Base):
     __tablename__ = "assets"
 
@@ -212,6 +221,11 @@ class Asset(Base):
     last_auth_run = Column(String)                     # LastAuthenticatedResults timestamp
     system_type = Column(String)                        # e.g. "web_application" for WAS scans
 
+    # OS / device enrichment (from plugins 11936, 45590)
+    device_type = Column(String)                        # server, workstation, router, switch, firewall, printer, hypervisor, wap, voip, storage, unknown
+    cpe = Column(JSON, default=list)                    # CPE URIs from plugin 45590, e.g. ["cpe:/o:cisco:ios:15.1"]
+    os_confidence = Column(Integer)                     # 0-100 confidence from plugin 11936
+
     # Computed
     risk_score = Column(Float, default=0.0)
     critical_count = Column(Integer, default=0)
@@ -233,12 +247,22 @@ class Asset(Base):
     # Integration Builder provenance
     source_id = Column(String, nullable=True)           # Original ID in the source tool
     source_system = Column(String, nullable=True)       # "tenable_sc" | "crowdstrike" | …
+    source_systems = Column(JSON, default=list)         # All sources that contributed data: ["nessus", "easm", "crowdstrike"]
     user_edited_fields = Column(JSON, default=list)     # Fields manually changed by user (protected from overwrite)
 
     scan = relationship("Scan", back_populates="assets")
     findings = relationship("Finding", back_populates="asset", cascade="all, delete-orphan")
 
 
+@importable(
+    slug="finding",
+    display_name="Finding / Vulnerability",
+    category="core",
+    dedup_keys=["source_system", "source_id"],
+    required_fields=["plugin_name", "severity"],
+    parent_hint={"field": "asset_id", "parent_slug": "asset", "resolve_by": ["ip", "hostname"]},
+    description="Vulnerability findings from scanners and security tools",
+)
 class Finding(Base):
     __tablename__ = "findings"
 
@@ -352,6 +376,7 @@ class Finding(Base):
     # Integration Builder provenance
     source_id = Column(String, nullable=True)           # Original ID in the source tool
     source_system = Column(String, nullable=True)       # Source system identifier
+    source_systems = Column(JSON, default=list)         # All sources that contributed data: ["nessus", "easm", "qualys"]
     user_edited_fields = Column(JSON, default=list)     # Fields manually changed by user (protected from overwrite)
 
     scan = relationship("Scan", back_populates="findings", foreign_keys="[Finding.scan_id]")
@@ -571,6 +596,15 @@ class InventoryShare(Base):
     source_plugin = Column(String)
 
 
+@importable(
+    slug="inventory_software",
+    display_name="Installed Software",
+    category="inventory",
+    dedup_keys=["asset_id", "name", "version"],
+    required_fields=["name"],
+    parent_hint={"field": "asset_id", "parent_slug": "asset", "resolve_by": ["ip", "hostname"]},
+    description="Installed software packages per host from CMDB or scans",
+)
 class InventorySoftware(Base):
     """Installed software packages per host."""
     __tablename__ = "inventory_software"
@@ -777,6 +811,15 @@ class InventoryCredential(Base):
 # SBOM Models
 # ─────────────────────────────────────────────────────────
 
+@importable(
+    slug="sbom_component",
+    display_name="SBOM Component",
+    category="sbom",
+    dedup_keys=["asset_id", "name", "version"],
+    required_fields=["name"],
+    parent_hint={"field": "asset_id", "parent_slug": "asset", "resolve_by": ["ip", "hostname"]},
+    description="Software bill of materials — components with EOL and lifecycle tracking",
+)
 class SBOMComponent(Base):
     """Software component with EOL & running status, linked from InventorySoftware."""
     __tablename__ = "sbom_components"
@@ -1518,6 +1561,7 @@ class Integration(Base):
     schedule = Column(String, nullable=True)  # cron expression
     enabled = Column(Boolean, nullable=False, default=False)
     template_id = Column(String, nullable=True)  # OOTB template used
+    logo_url = Column(String, nullable=True)  # custom logo URL or auto-fetched favicon
     spec_cache_id = Column(String, ForeignKey("discovered_specs.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1536,13 +1580,16 @@ class IntegrationRun(Base):
 
     id = Column(String, primary_key=True, default=_gen_uuid)
     integration_id = Column(String, ForeignKey("integrations.id", ondelete="CASCADE"), nullable=False, index=True)
+    triggered_by = Column(String, default="manual")  # manual | schedule
     started_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)  # execution duration in milliseconds
     status = Column(String, default="running")  # success | error | partial | running
     records_fetched = Column(Integer, default=0)
     records_inserted = Column(Integer, default=0)
     records_updated = Column(Integer, default=0)
     records_skipped = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)  # top-level error message for quick display
     errors = Column(JSON, nullable=False, default=list)
     step_log = Column(JSON, nullable=False, default=list)
 

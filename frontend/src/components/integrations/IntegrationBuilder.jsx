@@ -7,6 +7,7 @@ import {
   validateCredentials, createCredential, integrationConnect, integrationPreview,
   ibCreateIntegration, ibUpdateIntegration, ibGetIntegration,
   discoverApi, parseDocs, uploadIntegrationFile, discoverMcpTools, mcpOAuthStart,
+  getTargetModels, getTargetSchema,
 } from '../../api.js'
 import StepAuthenticate from './steps/StepAuthenticate.jsx'
 import StepFieldMapper from './steps/StepFieldMapper.jsx'
@@ -16,6 +17,7 @@ const STEPS = [
   { key: 'auth', label: 'Authenticate' },
   { key: 'configure', label: 'Connect' },
   { key: 'records', label: 'Pick Records' },
+  { key: 'target', label: 'Pick Target' },
   { key: 'map', label: 'Map Fields' },
   { key: 'preview', label: 'Preview' },
   { key: 'save', label: 'Save' },
@@ -73,6 +75,9 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [mcpAuthRequired, setMcpAuthRequired] = useState(false)
   const [mcpOAuthMetadata, setMcpOAuthMetadata] = useState(null) // OAuth metadata from discovery
 
+  // Target models (from model registry)
+  const [targetModels, setTargetModels] = useState([])
+
   // Discovery
   const [discoverUrl, setDiscoverUrl] = useState('')
   const [discovering, setDiscovering] = useState(false)
@@ -88,12 +93,13 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   useEffect(() => {
     getConnectors().then(setConnectors).catch(console.error)
     getIntegrationSchema().then(s => setSchema(s)).catch(console.error)
+    getTargetModels().then(setTargetModels).catch(console.error)
   }, [])
 
   // If editing, load existing integration
   useEffect(() => {
     if (!editId) return
-    ibGetIntegration(editId).then(i => {
+    ibGetIntegration(editId).then(async i => {
       setIntegrationName(i.name)
       setDirection(i.direction)
       setEntity(i.entity)
@@ -106,7 +112,26 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       setEnabled(i.enabled)
       setCredentialsId(i.credentials_id)
       if (i.template_id) setSelectedConnector(i.template_id)
-      setStep(4) // jump to field mapper for edits
+      // Load target schema for the entity
+      try {
+        const targetSchema = await getTargetSchema(i.entity)
+        setSchema(targetSchema || [])
+      } catch { /* fall back to full schema already loaded */ }
+      // Fetch live data so source fields, records picker, etc. are populated
+      try {
+        const result = await integrationConnect({
+          transport_type: i.transport_type,
+          transport_config: i.transport_config || {},
+          credentials_id: i.credentials_id,
+          records_path: i.records_path || undefined,
+        })
+        setRawResponse(result.raw_response)
+        setSampleRecords(result.sample_records || [])
+        setDetectedPaths(result.detected_paths || [])
+      } catch (e) {
+        console.warn('Could not fetch live data for edit:', e.message)
+      }
+      setStep(5) // jump to field mapper for edits
     }).catch(console.error)
   }, [editId])
 
@@ -126,8 +151,14 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       setRecordsPath(detail.records_path || '')
       setIntegrationName(detail.name)
 
-      const s = await getIntegrationSchema()
-      setSchema(s || {})
+      // Load schema for the connector's target entity
+      try {
+        const targetSchema = await getTargetSchema(detail.entity)
+        setSchema(targetSchema || [])
+      } catch {
+        const s = await getIntegrationSchema()
+        setSchema(s || {})
+      }
 
       // Go to auth if connector needs it, otherwise configure
       if (!detail.credential_acquisition) {
@@ -211,7 +242,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       })
       setSampleRecords(result.sample_records || [])
       setDetectedPaths(result.detected_paths || [])
-      setStep(4) // advance to field mapper
+      setStep(4) // advance to Pick Target
     } catch (e) {
       alert('Failed to fetch records at path: ' + e.message)
     } finally {
@@ -232,7 +263,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         auto_suggest_flag: false,
       })
       setPreviewRecords(result.records || [])
-      setStep(5)
+      setStep(6)
     } catch (e) {
       alert('Preview failed: ' + e.message)
     } finally {
@@ -251,6 +282,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         records_path: recordsPath || undefined,
         field_map: [],
         auto_suggest_flag: true,
+        entity,
       })
       if (result.suggestions) {
         setSuggestions(result.suggestions)
@@ -307,9 +339,10 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       case 1: return renderAuth()
       case 2: return renderConfigure()
       case 3: return renderRecordsPicker()
-      case 4: return renderFieldMapper()
-      case 5: return renderPreview()
-      case 6: return renderSave()
+      case 4: return renderPickTarget()
+      case 5: return renderFieldMapper()
+      case 6: return renderPreview()
+      case 7: return renderSave()
       default: return null
     }
   }
@@ -389,7 +422,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
               </div>
               <div style={{ display: 'flex', gap: 4 }}>
                 <Badge bg={DIRECTION_BADGE[c.direction]?.bg} text={DIRECTION_BADGE[c.direction]?.text} label={c.direction.toUpperCase()} />
-                <Badge bg={ENTITY_BADGE[c.entity]?.bg} text={ENTITY_BADGE[c.entity]?.text} label={c.entity.toUpperCase()} />
+                <Badge bg={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).bg} text={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).text} label={c.entity.toUpperCase()} />
                 <Badge bg="var(--border)" text="var(--text-muted)" label={c.transport_type.toUpperCase()} />
               </div>
             </Card>
@@ -496,40 +529,22 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Connect to API</h3>
 
-      {/* Direction + Entity selector (only for custom builds, templates pre-set these) */}
+      {/* Direction selector (only for custom builds, templates pre-set this) */}
       {!selectedConnector && (
-        <div style={{ display: 'flex', gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>Direction</label>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {['pull', 'push'].map(d => (
-                <button key={d} onClick={() => setDirection(d)} style={{
-                  flex: 1, padding: '6px 0', borderRadius: 6, fontSize: 12, fontWeight: 600,
-                  cursor: 'pointer', textTransform: 'uppercase',
-                  background: direction === d ? 'var(--accent)' : 'transparent',
-                  color: direction === d ? '#fff' : 'var(--text-muted)',
-                  border: direction === d ? 'none' : '1px solid var(--border)',
-                }}>
-                  {d}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>Entity type</label>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {['asset', 'finding', 'action'].map(e => (
-                <button key={e} onClick={() => setEntity(e)} style={{
-                  flex: 1, padding: '6px 0', borderRadius: 6, fontSize: 12, fontWeight: 600,
-                  cursor: 'pointer', textTransform: 'uppercase',
-                  background: entity === e ? 'var(--accent)' : 'transparent',
-                  color: entity === e ? '#fff' : 'var(--text-muted)',
-                  border: entity === e ? 'none' : '1px solid var(--border)',
-                }}>
-                  {e}
-                </button>
-              ))}
-            </div>
+        <div style={{ maxWidth: 300 }}>
+          <label style={labelStyle}>Direction</label>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {['pull', 'push'].map(d => (
+              <button key={d} onClick={() => setDirection(d)} style={{
+                flex: 1, padding: '6px 0', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                cursor: 'pointer', textTransform: 'uppercase',
+                background: direction === d ? 'var(--accent)' : 'transparent',
+                color: direction === d ? '#fff' : 'var(--text-muted)',
+                border: direction === d ? 'none' : '1px solid var(--border)',
+              }}>
+                {d}
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -1041,15 +1056,109 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     </div>
   )
 
-  // ── Step 4: Field Mapper ──
+  // ── Step 4: Pick Target ──
+  const handleSelectTarget = async (slug) => {
+    setEntity(slug)
+    setLoading(true)
+    try {
+      const targetSchema = await getTargetSchema(slug)
+      setSchema(targetSchema) // Now schema is a flat array for the selected target
+      setFieldMap([]) // Reset field map when target changes
+      setSuggestions(null)
+      setStep(5) // advance to field mapper
+    } catch (e) {
+      console.error('Failed to load target schema:', e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const CATEGORY_LABELS = {
+    core: 'Core',
+    threat_intel: 'Threat Intelligence',
+    inventory: 'Inventory',
+    sbom: 'Software Bill of Materials',
+  }
+  const CATEGORY_COLORS = {
+    core: { bg: '#1a2e05', text: '#86efac' },
+    threat_intel: { bg: '#451a03', text: '#fcd34d' },
+    inventory: { bg: '#1e3a5f', text: '#7dd3fc' },
+    sbom: { bg: '#3b1f5e', text: '#d8b4fe' },
+  }
+
+  const renderPickTarget = () => {
+    // Group targets by category
+    const groups = {}
+    targetModels.forEach(t => {
+      const cat = t.category || 'other'
+      if (!groups[cat]) groups[cat] = []
+      groups[cat].push(t)
+    })
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+        <div>
+          <h3 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 600 }}>Where should this data go?</h3>
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
+            Choose the destination model for your imported data. This determines which fields are available for mapping.
+          </p>
+        </div>
+
+        {Object.entries(groups).map(([category, targets]) => (
+          <div key={category}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+              {CATEGORY_LABELS[category] || category}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 10 }}>
+              {targets.map(t => {
+                const isSelected = entity === t.slug
+                const colors = CATEGORY_COLORS[category] || { bg: 'var(--border)', text: 'var(--text-muted)' }
+                return (
+                  <Card
+                    key={t.slug}
+                    onClick={() => handleSelectTarget(t.slug)}
+                    style={{
+                      cursor: 'pointer', padding: 16,
+                      border: isSelected ? '2px solid var(--accent)' : '1px solid var(--border)',
+                      background: isSelected ? 'var(--accent)08' : undefined,
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{t.display_name}</div>
+                      <Badge bg={colors.bg} text={colors.text} label={category.toUpperCase().replace('_', ' ')} />
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4, marginBottom: 8 }}>
+                      {t.description}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {t.dedup_keys.map(k => (
+                        <span key={k} style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, background: 'var(--border)', color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>
+                          {k}
+                        </span>
+                      ))}
+                      {t.has_parent && (
+                        <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, background: '#3b82f615', color: '#3b82f6', border: '1px solid #3b82f630' }}>
+                          parent: {t.parent_slug}
+                        </span>
+                      )}
+                    </div>
+                  </Card>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  // ── Step 5: Field Mapper ──
   // Derive the schema fields for the current entity
   const entitySchema = (() => {
-    if (Array.isArray(schema)) return schema  // already flat (legacy)
+    if (Array.isArray(schema)) return schema  // flat array from getTargetSchema or legacy
     if (schema && typeof schema === 'object') {
-      // Full schema: {asset: [...], finding: [...], action: [...]}
-      // Show current entity fields + allow cross-entity mapping
+      // Full schema dict: {asset: [...], finding: [...], action: [...]}
       const primary = schema[entity] || []
-      // For pull: show entity fields. For push: show action fields
       if (direction === 'push') return schema.action || primary
       return primary
     }
@@ -1062,8 +1171,8 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       sampleRecords={sampleRecords}
       schema={entitySchema}
       entity={entity}
-      onEntityChange={(e) => setEntity(e)}
-      allSchema={schema}
+      entityDisplayName={targetModels.find(t => t.slug === entity)?.display_name || entity}
+      onChangeTarget={() => setStep(4)}
       fieldMap={fieldMap}
       onFieldMapChange={setFieldMap}
       onAutoSuggest={handleAutoSuggest}
@@ -1115,10 +1224,10 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       </div>
 
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => setStep(4)} style={{ background: 'transparent', color: 'var(--text)', border: '1px solid var(--border)' }}>
+        <Button onClick={() => setStep(5)} style={{ background: 'transparent', color: 'var(--text)', border: '1px solid var(--border)' }}>
           <ArrowLeft size={14} /> Fix Mappings
         </Button>
-        <Button onClick={() => setStep(6)}>Looks Good <ArrowRight size={14} style={{ marginLeft: 4 }} /></Button>
+        <Button onClick={() => setStep(7)}>Looks Good <ArrowRight size={14} style={{ marginLeft: 4 }} /></Button>
       </div>
     </div>
   )
@@ -1134,19 +1243,17 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       </div>
 
       <div>
-        <label style={labelStyle}>Entity</label>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {['asset', 'finding', 'action'].map(e => (
-            <button key={e} onClick={() => setEntity(e)} style={{
-              ...pillButtonStyle,
-              background: entity === e ? 'var(--accent)' : 'transparent',
-              color: entity === e ? '#fff' : 'var(--text)',
-              border: entity === e ? 'none' : '1px solid var(--border)',
-            }}>
-              {e.toUpperCase()}
-            </button>
-          ))}
+        <label style={labelStyle}>Target</label>
+        <div style={{
+          padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+          background: 'var(--accent)12', border: '1px solid var(--accent)30', color: 'var(--accent)',
+          display: 'inline-block',
+        }}>
+          {targetModels.find(t => t.slug === entity)?.display_name || entity.toUpperCase()}
         </div>
+        <button onClick={() => setStep(4)} style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11, textDecoration: 'underline' }}>
+          change
+        </button>
       </div>
 
       <div>
@@ -1154,21 +1261,41 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {[
             { label: 'On demand', value: '' },
-            { label: 'Every 15m', value: '*/15 * * * *' },
-            { label: 'Hourly', value: '0 * * * *' },
             { label: 'Every 6h', value: '0 */6 * * *' },
             { label: 'Daily', value: '0 0 * * *' },
-          ].map(s => (
-            <button key={s.value} onClick={() => setSchedule(s.value)} style={{
-              ...pillButtonStyle,
-              background: schedule === s.value ? 'var(--accent)' : 'transparent',
-              color: schedule === s.value ? '#fff' : 'var(--text)',
-              border: schedule === s.value ? 'none' : '1px solid var(--border)',
-            }}>
-              {s.label}
-            </button>
-          ))}
+            { label: 'Weekly', value: '0 0 * * 1' },
+            { label: 'Custom', value: '__custom__' },
+          ].map(s => {
+            const isCustomPreset = s.value === '__custom__'
+            const presetValues = ['', '0 */6 * * *', '0 0 * * *', '0 0 * * 1']
+            const isCustomActive = isCustomPreset && schedule && !presetValues.includes(schedule)
+            const isActive = isCustomPreset ? isCustomActive : schedule === s.value
+            return (
+              <button key={s.value} onClick={() => {
+                if (isCustomPreset) {
+                  if (!isCustomActive) setSchedule('0 0 1 * *') // default custom to monthly
+                }  else {
+                  setSchedule(s.value)
+                }
+              }} style={{
+                ...pillButtonStyle,
+                background: isActive ? 'var(--accent)' : 'transparent',
+                color: isActive ? '#fff' : 'var(--text)',
+                border: isActive ? 'none' : '1px solid var(--border)',
+              }}>
+                {s.label}
+              </button>
+            )
+          })}
         </div>
+        {schedule && !['', '0 */6 * * *', '0 0 * * *', '0 0 * * 1'].includes(schedule) && (
+          <input
+            value={schedule}
+            onChange={e => setSchedule(e.target.value)}
+            placeholder="Cron expression, e.g. 0 0 1 * *"
+            style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 13, width: 280, fontFamily: 'monospace' }}
+          />
+        )}
       </div>
 
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
@@ -1464,14 +1591,14 @@ function EndpointExplorer({ endpoints, authSchemes, onSelect }) {
 
 function InlineSpinner({ size = 14 }) {
   return (
-    <>
+    <span style={{ display: 'inline-flex', alignItems: 'center', minHeight: '1.2em' }}>
       <div style={{
         width: size, height: size, border: '2px solid rgba(255,255,255,0.3)',
         borderTop: '2px solid #fff', borderRadius: '50%',
         animation: 'spin 0.8s linear infinite', flexShrink: 0,
       }} />
       <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
-    </>
+    </span>
   )
 }
 
@@ -1520,7 +1647,17 @@ const ENTITY_BADGE = {
   asset: { bg: '#1a2e05', text: '#86efac' },
   finding: { bg: '#451a03', text: '#fcd34d' },
   action: { bg: '#1e3a5f', text: '#7dd3fc' },
+  threat_cve: { bg: '#451a03', text: '#fcd34d' },
+  threat_group: { bg: '#451a03', text: '#fcd34d' },
+  threat_campaign: { bg: '#451a03', text: '#fcd34d' },
+  exploit_reference: { bg: '#451a03', text: '#fcd34d' },
+  cisa_advisory: { bg: '#451a03', text: '#fcd34d' },
+  ttp: { bg: '#451a03', text: '#fcd34d' },
+  product_lifecycle: { bg: '#451a03', text: '#fcd34d' },
+  inventory_software: { bg: '#1e3a5f', text: '#7dd3fc' },
+  sbom_component: { bg: '#3b1f5e', text: '#d8b4fe' },
 }
+const DEFAULT_ENTITY_BADGE = { bg: 'var(--border)', text: 'var(--text-muted)' }
 
 function getNestedValue(obj, path) {
   if (!obj || !path) return null

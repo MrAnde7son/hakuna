@@ -16,6 +16,9 @@ from models.models import (
 )
 from integrations.schema import get_schema
 from integrations.connector_loader import get_all_connectors, get_connector
+from integrations.model_registry import (
+    get_registry, get_model_meta, get_target_schema, list_targets as list_registry_targets,
+)
 from services import credential_vault
 from services.field_mapper import detect_paths, map_record, auto_suggest
 
@@ -29,8 +32,38 @@ router = APIRouter(prefix="/api/integration-builder", tags=["integration-builder
 
 @router.get("/schema")
 def integration_schema(entity: Optional[str] = Query(None)):
-    """Return the Hakuna normalized schema for field mapping."""
-    return get_schema(entity)
+    """Return the Hakuna normalized schema for field mapping.
+
+    Falls back to the static schema for legacy entities (asset/finding/action)
+    but dynamically returns introspected fields for registered model targets.
+    """
+    if entity:
+        dynamic = get_target_schema(entity)
+        if dynamic:
+            return dynamic
+        return get_schema(entity)
+    # Return all: merge registry targets with static action schema
+    result = {}
+    for slug in get_registry():
+        result[slug] = get_target_schema(slug)
+    # Keep 'action' from static schema (it has no DB model)
+    result["action"] = get_schema("action")
+    return result
+
+
+@router.get("/targets")
+def list_targets():
+    """Return all importable model targets grouped by category."""
+    return list_registry_targets()
+
+
+@router.get("/targets/{slug}/schema")
+def get_target_fields(slug: str):
+    """Return introspected field schema for a target model."""
+    schema = get_target_schema(slug)
+    if schema is None:
+        raise HTTPException(404, f"Target model '{slug}' not found")
+    return schema
 
 
 @router.get("/connectors")
@@ -209,6 +242,22 @@ class ConnectRequest(BaseModel):
     records_path: Optional[str] = None
 
 
+def _trim_raw_response(raw, max_items=20):
+    """Trim large arrays in a raw API response to keep it under size limits."""
+    if isinstance(raw, list):
+        return raw[:max_items]
+    if isinstance(raw, dict):
+        trimmed = {}
+        for k, v in raw.items():
+            if isinstance(v, list) and len(v) > max_items:
+                trimmed[k] = v[:max_items]
+                trimmed[f"_{k}_total"] = len(v)
+            else:
+                trimmed[k] = v
+        return trimmed
+    return raw
+
+
 @router.post("/connect")
 async def live_connect(body: ConnectRequest, db: Session = Depends(get_db),
                         user: User = Depends(require_auth)):
@@ -223,37 +272,54 @@ async def live_connect(body: ConnectRequest, db: Session = Depends(get_db),
     if not transport_cls:
         raise HTTPException(400, f"Unsupported transport: {body.transport_type}")
 
-    credentials = {}
-    if body.credentials_id:
-        cred = db.query(IntegrationCredential).filter(
-            IntegrationCredential.id == body.credentials_id,
-            IntegrationCredential.org_id == user.org_id,
-        ).first()
-        if cred:
-            credentials = credential_vault.decrypt(cred.encrypted_values)
-            credentials["_auth_type"] = cred.auth_type
-            credentials["instance_url"] = cred.instance_url or ""
+    try:
+        credentials = {}
+        if body.credentials_id:
+            cred = db.query(IntegrationCredential).filter(
+                IntegrationCredential.id == body.credentials_id,
+                IntegrationCredential.org_id == user.org_id,
+            ).first()
+            if cred:
+                credentials = credential_vault.decrypt(cred.encrypted_values)
+                credentials["_auth_type"] = cred.auth_type
+                credentials["instance_url"] = cred.instance_url or ""
 
-    config = body.transport_config
-    if body.records_path:
-        config["records_path"] = body.records_path
+        config = body.transport_config
+        if body.records_path:
+            config["records_path"] = body.records_path
 
-    transport = transport_cls()
-    result = await transport.connect(config, credentials)
+        transport = transport_cls()
+        result = await transport.connect(config, credentials)
 
-    if not result.success:
-        raise HTTPException(400, result.error)
+        if not result.success:
+            raise HTTPException(400, result.error)
 
-    detected = []
-    if result.sample_records:
-        detected = detect_paths(result.sample_records[0])
+        detected = []
+        if result.sample_records:
+            detected = detect_paths(result.sample_records[0])
 
-    return {
-        "raw_response": result.raw_response,
-        "sample_records": result.sample_records,
-        "detected_paths": detected,
-        "detected_records_path": result.detected_records_path,
-    }
+        # Limit raw_response size to avoid serialization/timeout issues with large APIs
+        raw = result.raw_response
+        if isinstance(raw, (dict, list)):
+            import json
+            try:
+                raw_str = json.dumps(raw, default=str)
+                if len(raw_str) > 2_000_000:  # >2MB — trim large arrays
+                    raw = _trim_raw_response(raw)
+            except (TypeError, ValueError):
+                raw = {"_error": "Response could not be serialized for preview"}
+
+        return {
+            "raw_response": raw,
+            "sample_records": result.sample_records[:20],
+            "detected_paths": detected,
+            "detected_records_path": result.detected_records_path,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("live_connect failed")
+        raise HTTPException(500, f"Connect failed: {e}")
 
 
 class PreviewRequest(BaseModel):
@@ -263,6 +329,7 @@ class PreviewRequest(BaseModel):
     records_path: Optional[str] = None
     field_map: list = []
     auto_suggest_flag: bool = False
+    entity: Optional[str] = None  # target model slug for auto-suggest
 
 
 @router.post("/preview")
@@ -280,50 +347,57 @@ async def preview_mapping(body: PreviewRequest, db: Session = Depends(get_db),
     if not transport_cls:
         raise HTTPException(400, f"Unsupported transport: {body.transport_type}")
 
-    credentials = {}
-    if body.credentials_id:
-        cred = db.query(IntegrationCredential).filter(
-            IntegrationCredential.id == body.credentials_id,
-            IntegrationCredential.org_id == user.org_id,
-        ).first()
-        if cred:
-            credentials = credential_vault.decrypt(cred.encrypted_values)
-            credentials["_auth_type"] = cred.auth_type
-            credentials["instance_url"] = cred.instance_url or ""
+    try:
+        credentials = {}
+        if body.credentials_id:
+            cred = db.query(IntegrationCredential).filter(
+                IntegrationCredential.id == body.credentials_id,
+                IntegrationCredential.org_id == user.org_id,
+            ).first()
+            if cred:
+                credentials = credential_vault.decrypt(cred.encrypted_values)
+                credentials["_auth_type"] = cred.auth_type
+                credentials["instance_url"] = cred.instance_url or ""
 
-    config = body.transport_config
-    if body.records_path:
-        config["records_path"] = body.records_path
+        config = body.transport_config
+        if body.records_path:
+            config["records_path"] = body.records_path
 
-    transport = transport_cls()
-    result = await transport.connect(config, credentials)
-    if not result.success:
-        raise HTTPException(400, result.error)
+        transport = transport_cls()
+        result = await transport.connect(config, credentials)
+        if not result.success:
+            raise HTTPException(400, result.error)
 
-    # If auto-suggest requested, generate suggestions
-    suggestions = None
-    if body.auto_suggest_flag and result.sample_records:
-        paths = detect_paths(result.sample_records[0])
-        schema = get_schema("finding")  # default to finding
-        suggestions = auto_suggest(paths, schema)
+        # If auto-suggest requested, generate suggestions
+        suggestions = None
+        if body.auto_suggest_flag and result.sample_records:
+            paths = detect_paths(result.sample_records[0])
+            target_slug = body.entity or "finding"
+            schema = get_target_schema(target_slug) or get_schema("finding")
+            suggestions = auto_suggest(paths, schema)
 
-    field_map = body.field_map or (suggestions if suggestions else [])
+        field_map = body.field_map or (suggestions if suggestions else [])
 
-    # Map up to 5 sample records
-    preview_records = []
-    for raw in result.sample_records[:5]:
-        mapped_result = map_record(raw, field_map)
-        preview_records.append({
-            "raw": raw,
-            "mapped": mapped_result["mapped"],
-            "errors": mapped_result["errors"],
-        })
+        # Map up to 5 sample records
+        preview_records = []
+        for raw in result.sample_records[:5]:
+            mapped_result = map_record(raw, field_map)
+            preview_records.append({
+                "raw": raw,
+                "mapped": mapped_result["mapped"],
+                "errors": mapped_result["errors"],
+            })
 
-    return {
-        "records": preview_records,
-        "suggestions": suggestions,
-        "total_sample": len(result.sample_records),
-    }
+        return {
+            "records": preview_records,
+            "suggestions": suggestions,
+            "total_sample": len(result.sample_records),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("preview_mapping failed")
+        raise HTTPException(500, f"Preview failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────
@@ -344,6 +418,7 @@ class IntegrationCreate(BaseModel):
     schedule: Optional[str] = None
     enabled: bool = False
     template_id: Optional[str] = None
+    logo_url: Optional[str] = None
 
 
 class IntegrationUpdate(BaseModel):
@@ -356,6 +431,7 @@ class IntegrationUpdate(BaseModel):
     params: Optional[dict] = None
     schedule: Optional[str] = None
     enabled: Optional[bool] = None
+    logo_url: Optional[str] = None
 
 
 @router.get("/integrations")
@@ -371,10 +447,31 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
                         user: User = Depends(require_auth)):
     if body.direction not in ("pull", "push"):
         raise HTTPException(400, "direction must be 'pull' or 'push'")
-    if body.entity not in ("asset", "finding", "action"):
-        raise HTTPException(400, "entity must be 'asset', 'finding', or 'action'")
+    valid_entities = set(get_registry().keys()) | {"action"}
+    if body.entity not in valid_entities:
+        raise HTTPException(400, f"entity must be one of: {sorted(valid_entities)}")
     if body.transport_type not in ("api", "sql", "file", "mcp"):
         raise HTTPException(400, "transport_type must be 'api', 'sql', 'file', or 'mcp'")
+
+    # Auto-resolve logo from connector template if not provided
+    logo_url = body.logo_url
+    if not logo_url and body.template_id:
+        try:
+            tpl = get_connector(body.template_id)
+            if tpl:
+                logo_url = tpl.get("logo")
+        except Exception:
+            pass
+    # Auto-fetch favicon if we have an instance URL and no logo
+    if not logo_url and body.credentials_id:
+        try:
+            cred = db.query(IntegrationCredential).filter(
+                IntegrationCredential.id == body.credentials_id
+            ).first()
+            if cred and cred.instance_url:
+                logo_url = _favicon_url(cred.instance_url)
+        except Exception:
+            pass
 
     integration = Integration(
         org_id=user.org_id,
@@ -391,6 +488,7 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
         schedule=body.schedule,
         enabled=body.enabled,
         template_id=body.template_id,
+        logo_url=logo_url,
     )
     db.add(integration)
     db.commit()
@@ -414,7 +512,7 @@ def update_integration(integration_id: str, body: IntegrationUpdate,
                         db: Session = Depends(get_db), user: User = Depends(require_auth)):
     i = _get_integration_or_404(db, integration_id, user.org_id)
     for field in ["name", "transport_config", "credentials_id", "records_path",
-                   "field_map", "dedup_key", "params", "schedule", "enabled"]:
+                   "field_map", "dedup_key", "params", "schedule", "enabled", "logo_url"]:
         val = getattr(body, field)
         if val is not None:
             setattr(i, field, val)
@@ -518,10 +616,20 @@ def _get_integration_or_404(db, integration_id, org_id):
 
 
 def _integration_summary(i):
+    # Resolve logo: use custom logo_url, or fall back to connector template logo
+    logo = getattr(i, "logo_url", None)
+    if not logo and i.template_id:
+        try:
+            tpl = get_connector(i.template_id)
+            if tpl:
+                logo = tpl.get("logo")
+        except Exception:
+            pass
     return {
         "id": i.id, "name": i.name, "direction": i.direction, "entity": i.entity,
         "transport_type": i.transport_type, "enabled": i.enabled,
         "template_id": i.template_id, "schedule": i.schedule,
+        "logo_url": logo,
         "last_run_at": i.last_run_at, "last_run_status": i.last_run_status,
         "last_run_records": i.last_run_records, "created_at": i.created_at,
     }
@@ -543,11 +651,57 @@ def _integration_detail(i):
 def _run_summary(r):
     return {
         "id": r.id, "started_at": r.started_at, "finished_at": r.finished_at,
-        "status": r.status, "records_fetched": r.records_fetched,
+        "status": r.status, "triggered_by": getattr(r, "triggered_by", "manual"),
+        "duration_ms": getattr(r, "duration_ms", None),
+        "error_message": getattr(r, "error_message", None),
+        "records_fetched": r.records_fetched,
         "records_inserted": r.records_inserted, "records_updated": r.records_updated,
         "records_skipped": r.records_skipped,
+        "error_count": len(r.errors) if r.errors else 0,
     }
 
 
 def _run_detail(r):
     return {**_run_summary(r), "errors": r.errors, "step_log": r.step_log}
+
+
+def _favicon_url(instance_url: str) -> str | None:
+    """Derive a favicon URL from an instance URL using Google's favicon service."""
+    if not instance_url:
+        return None
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(instance_url if "://" in instance_url else f"https://{instance_url}")
+        hostname = parsed.hostname
+        if not hostname:
+            return None
+        return f"https://www.google.com/s2/favicons?domain={hostname}&sz=64"
+    except Exception:
+        return None
+
+
+@router.post("/integrations/{integration_id}/logo")
+def update_integration_logo(integration_id: str, body: dict,
+                            db: Session = Depends(get_db), user: User = Depends(require_auth)):
+    """Update the logo URL for an integration. Pass {"logo_url": "..."} or {"auto": true}."""
+    i = _get_integration_or_404(db, integration_id, user.org_id)
+    if body.get("auto"):
+        # Auto-fetch from instance URL
+        if i.credentials_id:
+            cred = db.query(IntegrationCredential).filter(
+                IntegrationCredential.id == i.credentials_id
+            ).first()
+            if cred and cred.instance_url:
+                i.logo_url = _favicon_url(cred.instance_url)
+        # Or from connector template
+        if not i.logo_url and i.template_id:
+            try:
+                tpl = get_connector(i.template_id)
+                if tpl:
+                    i.logo_url = tpl.get("logo")
+            except Exception:
+                pass
+    else:
+        i.logo_url = body.get("logo_url")
+    db.commit()
+    return {"logo_url": i.logo_url}

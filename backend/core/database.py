@@ -82,6 +82,9 @@ def _migrate_add_columns():
             ("source_id", "VARCHAR"),
             ("source_system", "VARCHAR"),
             ("user_edited_fields", "JSON"),
+            ("device_type", "VARCHAR"),
+            ("cpe", "JSON"),
+            ("os_confidence", "INTEGER"),
         ],
         "findings": [
             ("first_seen", "TIMESTAMP"),
@@ -168,6 +171,14 @@ def _migrate_add_columns():
             ("effect", "VARCHAR DEFAULT 'allow'"),
         ],
         "agent_schedules": [("next_run_at", "DATETIME")],
+        "integrations": [
+            ("logo_url", "VARCHAR"),
+        ],
+        "integration_runs": [
+            ("triggered_by", "VARCHAR DEFAULT 'manual'"),
+            ("duration_ms", "INTEGER"),
+            ("error_message", "TEXT"),
+        ],
         "aggregated_solutions": [
             ("affected_component", "VARCHAR"),
             ("current_version", "VARCHAR"),

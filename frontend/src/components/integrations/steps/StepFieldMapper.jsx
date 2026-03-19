@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ArrowRight, Wand2, X, ChevronDown, ChevronRight } from 'lucide-react'
-import { Button, Spinner } from '../../shared/ui.jsx'
+import { Button, Spinner, InlineSpinner } from '../../shared/ui.jsx'
 
 const TRANSFORM_TYPES = [
   { value: '', label: 'None' },
@@ -13,7 +13,9 @@ const TRANSFORM_TYPES = [
 ]
 
 export default function StepFieldMapper({
-  detectedPaths, sampleRecords, schema, entity, onEntityChange, allSchema,
+  detectedPaths, sampleRecords, schema, entity, entityDisplayName, onChangeTarget,
+  // Legacy props (still accepted for backward compat)
+  onEntityChange, allSchema,
   fieldMap, onFieldMapChange,
   onAutoSuggest, suggestions, loading, onNext,
 }) {
@@ -101,23 +103,24 @@ export default function StepFieldMapper({
         </div>
       </div>
 
-      {/* Entity type selector */}
-      {onEntityChange && allSchema && !Array.isArray(allSchema) && (
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Map to:</span>
-          {Object.keys(allSchema).map(e => (
-            <button key={e} onClick={() => onEntityChange(e)} style={{
-              padding: '4px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600,
-              cursor: 'pointer', textTransform: 'uppercase',
-              background: entity === e ? 'var(--accent)' : 'transparent',
-              color: entity === e ? '#fff' : 'var(--text-muted)',
-              border: entity === e ? 'none' : '1px solid var(--border)',
-            }}>
-              {e}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Target indicator */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Mapping to:</span>
+        <span style={{
+          padding: '3px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+          background: 'var(--accent)12', border: '1px solid var(--accent)30', color: 'var(--accent)',
+        }}>
+          {entityDisplayName || entity}
+        </span>
+        {onChangeTarget && (
+          <button onClick={onChangeTarget} style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: 'var(--text-muted)', fontSize: 11, textDecoration: 'underline',
+          }}>
+            change target
+          </button>
+        )}
+      </div>
 
       {selectedSource && (
         <div style={{ padding: '6px 12px', background: 'var(--accent)15', borderRadius: 6, fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -261,7 +264,7 @@ export default function StepFieldMapper({
       )}
 
       <Button onClick={onNext} disabled={loading || requiredUnmapped.length > 0}>
-        {loading ? <Spinner /> : 'Preview Mapping'}
+        {loading ? <InlineSpinner /> : 'Preview Mapping'}
         <ArrowRight size={14} style={{ marginLeft: 4 }} />
       </Button>
     </div>

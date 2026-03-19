@@ -222,6 +222,7 @@ def _import_adhoc_findings(db: Session, scan: Scan, job_result: dict) -> int:
             scan_id=scan.id,
             asset_id=asset.id,
             source_type="vm_scanner",
+            source_systems=["vm_scanner"],
             plugin_id=f.get("template_id", ""),
             plugin_name=f.get("name", ""),
             severity=severity_map.get(severity_str, 0),

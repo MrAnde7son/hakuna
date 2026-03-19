@@ -6,9 +6,10 @@ import re
 import json
 import logging
 import ipaddress
+import uuid
 from pathlib import Path
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Query, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,7 +39,7 @@ from parsers.registry import detect_parser, list_parsers, init_parsers
 from services.normalizer import compute_normalized_id
 from services.prioritizer import compute_priority_score
 from parsers.inventory_extractor import extract_inventory_from_findings, _cn_from_dn
-from services.asset_classifier import classify_asset, _is_private_ip
+from services.asset_classifier import classify_asset, _is_private_ip, enrich_asset_from_os_plugins
 import services.dedup as dedup_engine
 import core.risk_config as risk_engine
 import services.campaign_query as cq
@@ -363,8 +364,8 @@ def startup():
     logger.info("Database initialized, parsers registered")
     # Build ENTITY_MODEL_MAP after models are loaded
     ENTITY_MODEL_MAP.update({
-        "assets":            (Asset,                    ["inferred_admin_contacts"],  ["is_internet_facing", "is_credentialed"]),
-        "findings":          (Finding,                  ["cves"],              []),
+        "assets":            (Asset,                    ["inferred_admin_contacts", "source_systems"],  ["is_internet_facing", "is_credentialed"]),
+        "findings":          (Finding,                  ["cves", "source_systems"],              []),
         "users":             (InventoryUser,            ["spns", "member_of"], ["is_local_admin", "is_domain_admin", "is_privileged", "is_disabled", "password_never_expires", "never_logged_in", "never_changed_password"]),
         "groups":            (InventoryGroup,           ["members"],           ["is_privileged"]),
         "computers":         (InventoryComputer,        [],                    ["is_domain_controller", "is_disabled"]),
@@ -806,6 +807,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             info_count=asset_data.get("info_count", 0),
             environment_tag=ctx["environment_tag"],
             business_context=ctx["business_context"],
+            source_systems=[source_parser.source_type],
         )
         db.add(asset)
         db.flush()
@@ -885,6 +887,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             effort_level=priority_data["effort_level"],
             owner_suggestion=priority_data["owner_suggestion"],
             remediation_steps=priority_data["remediation_steps"],
+            source_systems=[source_parser.source_type],
         )
         db.add(finding)
 
@@ -946,6 +949,25 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
             cred_m = re.search(r"Credentialed checks\s*:\s*(yes|no)", output, re.IGNORECASE)
             if cred_m and cred_m.group(1).lower() == "yes":
                 asset.is_credentialed = True
+
+    # ── Enrich assets with OS identification (11936) and CPE (45590) ──
+    os_plugin_findings = db.query(Finding).filter(
+        Finding.scan_id == scan.id,
+        Finding.plugin_id.in_(["11936", "45590"]),
+    ).all()
+    # Group by asset_id
+    _os_enrich: dict[int, dict[str, str]] = {}
+    for f_os in os_plugin_findings:
+        bucket = _os_enrich.setdefault(f_os.asset_id, {})
+        bucket[f_os.plugin_id] = f_os.plugin_output or ""
+    for aid, plugins in _os_enrich.items():
+        asset = db.query(Asset).filter(Asset.id == aid).first()
+        if asset:
+            enrich_asset_from_os_plugins(
+                asset,
+                plugin_11936_output=plugins.get("11936"),
+                plugin_45590_output=plugins.get("45590"),
+            )
 
     db.commit()
 
@@ -1136,6 +1158,78 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
         "delta": delta_stats,
         "message": "Scan uploaded and processed successfully",
     }
+
+
+# ─────────────────────────────────────────────
+# Large file upload via GCS signed URL
+# ─────────────────────────────────────────────
+
+GCS_SCAN_BUCKET = os.environ.get("GCS_BUCKET")
+
+
+def _get_gcs_client():
+    from google.cloud import storage as gcs
+    return gcs.Client()
+
+
+class SignedUrlRequest(BaseModel):
+    filename: str
+    content_type: str = "application/octet-stream"
+
+
+@app.post("/api/upload/signed-url")
+async def get_upload_signed_url(body: SignedUrlRequest, user: Optional[User] = Depends(get_current_user)):
+    """Generate a GCS signed URL for direct browser upload (bypasses Cloud Run 32MB limit)."""
+    if not GCS_SCAN_BUCKET:
+        raise HTTPException(501, "GCS upload not configured (GCS_BUCKET env var missing)")
+
+    import uuid as _uuid
+    blob_name = f"uploads/{_uuid.uuid4().hex}/{body.filename}"
+
+    client = _get_gcs_client()
+    bucket = client.bucket(GCS_SCAN_BUCKET)
+    blob = bucket.blob(blob_name)
+
+    url = blob.generate_signed_url(
+        version="v4",
+        expiration=datetime.utcnow() + timedelta(minutes=30),
+        method="PUT",
+        content_type=body.content_type,
+    )
+
+    return {"url": url, "blob_name": blob_name}
+
+
+class GcsIngestRequest(BaseModel):
+    blob_name: str
+    filename: str
+
+
+@app.post("/api/upload/gcs")
+async def ingest_from_gcs(body: GcsIngestRequest, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
+    """Process a scan file already uploaded to GCS via signed URL."""
+    if not GCS_SCAN_BUCKET:
+        raise HTTPException(501, "GCS upload not configured")
+
+    client = _get_gcs_client()
+    bucket = client.bucket(GCS_SCAN_BUCKET)
+    blob = bucket.blob(body.blob_name)
+
+    if not blob.exists():
+        raise HTTPException(404, "Uploaded file not found in storage")
+
+    content = blob.download_as_bytes()
+
+    # Build a minimal file-like object and delegate to the existing upload handler
+    class _GcsFile:
+        def __init__(self, filename, data):
+            self.filename = filename
+            self._data = data
+        async def read(self):
+            return self._data
+
+    fake_file = _GcsFile(body.filename, content)
+    return await upload_scan(file=fake_file, db=db, user=user, x_org_context=x_org_context)
 
 
 # ─────────────────────────────────────────────
@@ -1348,6 +1442,23 @@ def nlp_search(
 
 
 # ─────────────────────────────────────────────
+# Data Sources
+# ─────────────────────────────────────────────
+
+@app.get("/api/sources")
+def list_sources(
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return distinct source types present in the current org's scans."""
+    q = db.query(Scan.source_type).distinct()
+    q = apply_scan_org_filter(q, org_ids)
+    rows = q.all()
+    sources = sorted(set(r[0] for r in rows if r[0]))
+    return {"sources": sources}
+
+
+# ─────────────────────────────────────────────
 # Assets
 # ─────────────────────────────────────────────
 
@@ -1364,6 +1475,7 @@ def list_assets(
     has_findings: Optional[bool] = None,
     server_role: Optional[str] = None,
     asset_status: Optional[str] = None,
+    source: Optional[str] = None,
     tags: Optional[str] = None,
     tag_logic: str = "AND",
     expand_children: bool = False,
@@ -1409,6 +1521,8 @@ def list_assets(
         q = q.filter((Asset.critical_count + Asset.high_count + Asset.medium_count + Asset.low_count) > 0)
     if asset_status:
         q = q.filter(Asset.asset_status == asset_status)
+    if source:
+        q = q.filter(Asset.source_systems.ilike(f'%"{source}"%'))
     if tags:
         pairs = tag_engine.parse_tag_filter(tags)
         id_sets = tag_engine.resolve_tag_ids(pairs, expand_children, db)
@@ -1543,6 +1657,8 @@ def _asset_to_dict(a: Asset) -> dict:
         } if own else None,
         # EASM enrichment data
         "easm_data": a.easm_data,
+        # Multi-source provenance
+        "source_systems": a.source_systems or [],
     }
 
 
@@ -1567,6 +1683,7 @@ def list_findings(
     auto_resolved: Optional[bool] = None,
     cve: Optional[str] = None,
     search: Optional[str] = None,
+    source: Optional[str] = None,
     tags: Optional[str] = None,
     tag_logic: str = "AND",
     expand_children: bool = False,
@@ -1631,6 +1748,8 @@ def list_findings(
             Finding.synopsis.ilike(f"%{search}%") |
             Finding.plugin_id.ilike(f"%{search}%")
         )
+    if source:
+        q = q.filter(Finding.source_systems.ilike(f'%"{source}"%'))
     if tags:
         pairs = tag_engine.parse_tag_filter(tags)
         id_sets = tag_engine.resolve_tag_ids(pairs, expand_children, db)
@@ -1812,6 +1931,7 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dic
         "plugin_family": f.plugin_family,
         # Multi-source provenance
         "source_type": f.source_type or "nessus",
+        "source_systems": f.source_systems or [],
         "source_vuln_id": f.source_vuln_id,
         "normalized_id": f.normalized_id,
         "severity": f.severity,
@@ -4359,15 +4479,15 @@ def _group_findings_by_owner(campaign_findings: list) -> list:
 
 
 @app.get("/api/rule-engine/catalog")
-def get_rule_engine_catalog():
+def get_rule_engine_catalog(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return the unified condition catalog used by all rule systems."""
-    return rule_engine.CONDITION_CATALOG
+    return rule_engine.get_condition_catalog(db, org_ids)
 
 
 @app.get("/api/campaigns/condition-catalog")
-def get_condition_catalog():
+def get_condition_catalog(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return condition catalog for campaign queries (proxies to unified catalog)."""
-    return rule_engine.CONDITION_CATALOG
+    return rule_engine.get_condition_catalog(db, org_ids)
 
 
 @app.post("/api/campaigns/preview")
@@ -5763,9 +5883,9 @@ def unassign_tags(body: TagAssignBody, db: Session = Depends(get_db), user: Opti
 # ─────────────────────────────────────────────
 
 @app.get("/api/auto-tag-rules/condition-catalog")
-def get_tag_condition_catalog():
+def get_tag_condition_catalog(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return condition catalog for auto-tag rules (proxies to unified catalog)."""
-    return rule_engine.CONDITION_CATALOG
+    return rule_engine.get_condition_catalog(db, org_ids)
 
 
 @app.get("/api/auto-tag-rules")
@@ -7248,9 +7368,9 @@ def list_exceptions(
 
 
 @app.get("/api/exceptions/condition-catalog")
-def get_exception_condition_catalog():
+def get_exception_condition_catalog(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return the condition catalog for exception rules."""
-    return rule_engine.CONDITION_CATALOG
+    return rule_engine.get_condition_catalog(db, org_ids)
 
 
 @app.post("/api/exceptions")
@@ -8677,6 +8797,24 @@ def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
             "port": f.port,
             "protocol": f.protocol,
         })
+
+    # ── Re-enrich assets with OS identification (11936) and CPE (45590) ──
+    os_plugin_findings = db.query(Finding).filter(
+        Finding.scan_id == scan_id,
+        Finding.plugin_id.in_(["11936", "45590"]),
+    ).all()
+    _os_enrich_re: dict[int, dict[str, str]] = {}
+    for f_os in os_plugin_findings:
+        bucket = _os_enrich_re.setdefault(f_os.asset_id, {})
+        bucket[f_os.plugin_id] = f_os.plugin_output or ""
+    for aid, plugins in _os_enrich_re.items():
+        asset = db.query(Asset).filter(Asset.id == aid).first()
+        if asset:
+            enrich_asset_from_os_plugins(
+                asset,
+                plugin_11936_output=plugins.get("11936"),
+                plugin_45590_output=plugins.get("45590"),
+            )
 
     # Use the scan's source_type to get the right inventory dispatch
     from parsers.registry import get_parser_by_source

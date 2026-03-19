@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { CheckCircle2, ExternalLink, Eye, EyeOff } from 'lucide-react'
-import { Button, Spinner } from '../../shared/ui.jsx'
+import { Button, Spinner, InlineSpinner } from '../../shared/ui.jsx'
 import { getAcquisitionFlow, validateCredentials, createCredential } from '../../../api.js'
 
 export default function StepAuthenticate({ connectorId, connectorDetail, onComplete, onSkip }) {
@@ -202,7 +202,7 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
         <div style={{ display: 'flex', gap: 8 }}>
           {!validated && (
             <Button onClick={handleValidate} disabled={validating || Object.keys(values).length === 0}>
-              {validating ? <Spinner /> : 'Validate & Connect'}
+              {validating ? <InlineSpinner /> : 'Validate & Connect'}
             </Button>
           )}
           {validated && (
@@ -272,7 +272,7 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
         ))}
 
         <Button onClick={handleValidate} disabled={validating}>
-          {validating ? <Spinner /> : 'Provision Hakuna Account'}
+          {validating ? <InlineSpinner /> : 'Provision Hakuna Account'}
         </Button>
       </div>
     )
