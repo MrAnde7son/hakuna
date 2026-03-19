@@ -3,8 +3,8 @@ Add a new query parameter filter to an existing API endpoint.
 User description: $ARGUMENTS
 
 Steps:
-1. Read `backend/app.py` to find the target endpoint and understand its current query parameters
-2. Read `backend/models/models.py` (or `backend/models.py`) to understand the model fields available for filtering
+1. Locate the target endpoint in `backend/app.py` or the appropriate `backend/routes/*.py` file
+2. Read `backend/models/models.py` to understand the model fields available for filtering
 3. Add the new query parameter to the endpoint function signature with a default of `None`
 4. Add the filter logic to the SQLAlchemy query, following existing patterns:
    - Exact match: `query = query.filter(Model.field == value)`

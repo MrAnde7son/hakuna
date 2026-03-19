@@ -1,15 +1,27 @@
-Deploy the application to Render or check deployment status.
+Deploy the application to GCP or check deployment status.
 
 User description: $ARGUMENTS
 
 Steps:
-1. Read `render.yaml` to understand the current deployment configuration
+1. Read `deploy.sh` to understand the deployment configuration and available flags
 2. Run `git status` and `git log --oneline -5` to check what will be deployed
-3. If there are uncommitted changes, warn the user before proceeding
-4. Push the current branch to the remote: `git push origin main`
-5. After push, check the Render deploy status if `render-cli` is available, otherwise remind the user to check the Render dashboard
-6. Verify the health endpoint is responding: `curl -s https://hakuna-backend.onrender.com/api/health`
-7. Remind about free-tier caveats:
-   - First request after idle takes ~30s (cold start)
-   - SQLite data is ephemeral — lost on every deploy/restart
-   - Env vars (VITE_API_URL, CORS_ORIGINS) must be set in the Render dashboard after first deploy
+3. If there are uncommitted changes, commit them or warn the user before proceeding
+4. Determine what to deploy based on the user's request:
+   - Frontend only (React changes): `./deploy.sh --frontend`
+   - Backend API only (Python/Docker changes): `./deploy.sh --api`
+   - Both frontend and backend: `./deploy.sh --api --frontend`
+   - Scanner images: `./deploy.sh --scanners`
+   - Infrastructure changes: `./deploy.sh --infra`
+   - DB migrations: `./deploy.sh --migrate`
+   - Everything: `./deploy.sh` (no flags)
+5. Run the appropriate deploy command and monitor output for errors
+6. Verify the health endpoint is responding: `curl -s https://app.hakunahq.com/api/health`
+
+Notes:
+- Project: `hakuna-prod-2026`, Region: `me-west1` (GCP)
+- Frontend → GCS bucket + Cloud CDN (CDN cache is auto-invalidated on deploy)
+- Backend API → Cloud Run service `hakuna-api`
+- Scanner VMs → Artifact Registry (must be pulled manually on the VM after push)
+- DB migrations require Cloud SQL Auth Proxy (`./deploy.sh --migrate`)
+- Requires: `docker`, `gcloud`, `gsutil` authenticated to the project
+- Sentry error tracking: set `SENTRY_DSN` env var in Cloud Run to enable. Check GCP Secret Manager for the DSN value.

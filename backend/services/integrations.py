@@ -274,7 +274,7 @@ def send_email(db: Session, config: dict, items: list) -> dict:
     if not to_addrs:
         raise ValueError("No recipient email addresses specified")
 
-    subject = _render(config.get("subject", "Nessus Remediation Alert"), items[0] if items else {}, count=len(items))
+    subject = _render(config.get("subject", "Hakuna Remediation Alert"), items[0] if items else {}, count=len(items))
     body = _render(config.get("body_template", "Found {count} findings requiring attention."),
                    items[0] if items else {}, count=len(items))
 
@@ -379,7 +379,7 @@ def _test_slack(cfg: dict) -> dict:
     webhook_url = cfg.get("webhook_url")
     if not webhook_url:
         return {"status": "error", "detail": "No webhook URL"}
-    r = requests.post(webhook_url, json={"text": "Nessus Remediation Platform — connection test"}, timeout=10)
+    r = requests.post(webhook_url, json={"text": "Hakuna Remediation Platform — connection test"}, timeout=10)
     r.raise_for_status()
     return {"status": "ok"}
 
@@ -409,7 +409,7 @@ def send_teams_notification(db: Session, config: dict, items: list) -> dict:
         "themeColor": "dc2626",
         "summary": message[:100],
         "sections": [{
-            "activityTitle": "Nessus Remediation Alert",
+            "activityTitle": "Hakuna Remediation Alert",
             "text": message,
         }],
     }
@@ -439,7 +439,7 @@ def _test_teams(cfg: dict) -> dict:
         "@type": "MessageCard",
         "@context": "http://schema.org/extensions",
         "summary": "Connection test",
-        "sections": [{"text": "Nessus Remediation Platform — connection test"}],
+        "sections": [{"text": "Hakuna Remediation Platform — connection test"}],
     }
     r = requests.post(webhook_url, json=card, timeout=10)
     r.raise_for_status()

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, createContext, useContext, Suspense } from 'react'
+import logoSymbol from './assets/logo-symbol.svg'
 import { BrowserRouter, Routes, Route, NavLink, Navigate, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
@@ -338,7 +339,7 @@ function Sidebar({ collapsed, onToggle }) {
         {!collapsed ? (
           <>
             <img
-              src="/logo-symbol.svg"
+              src={logoSymbol}
               alt="Hakuna"
               style={{ width: 28, height: 28, display: 'block', flexShrink: 0 }}
             />
@@ -386,7 +387,7 @@ function Sidebar({ collapsed, onToggle }) {
             }}
           >
             <img
-              src="/logo-symbol.svg"
+              src={logoSymbol}
               alt="Hakuna"
               style={{ width: 18, height: 18, display: 'block' }}
             />

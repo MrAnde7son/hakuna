@@ -817,6 +817,7 @@
     "sections": {
       "gettingStarted": "はじめに",
       "onboarding": "オンボーディング",
+      "scans": "Scans & Discovery",
       "dashboard": "レポートとダッシュボード",
       "assets": "資産",
       "findings": "検出結果",

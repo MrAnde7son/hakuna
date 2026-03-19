@@ -1,5 +1,5 @@
 """
-Nessus Remediation Platform — FastAPI backend
+Hakuna Remediation Platform — FastAPI backend
 """
 import os
 import re
@@ -262,7 +262,7 @@ if _sentry_dsn:
         profile_lifecycle="trace",
     )
 
-app = FastAPI(title="Nessus Remediation Platform", version="1.0.0")
+app = FastAPI(title="Hakuna Remediation Platform", version="1.0.0", docs_url="/api/docs", redoc_url="/api/redoc", openapi_url="/openapi.json")
 
 _cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 

@@ -166,7 +166,7 @@ async def get_easm_scan_runs(hakuna_org_id: str, limit: int = 20) -> Optional[li
 async def trigger_easm_for_new_org(db: Session, org: Organization, email: str):
     """
     Called after registration. Extracts corporate domain from email,
-    creates hakuna org + domain, triggers full scan.
+    creates hakuna org + domain, triggers full scan with weekly schedule.
     Non-blocking — failures are logged but don't break registration.
     """
     domain = extract_corporate_domain(email)
@@ -185,16 +185,28 @@ async def trigger_easm_for_new_org(db: Session, org: Organization, email: str):
         logger.warning(f"Failed to add domain '{domain}' to EASM org {hakuna_org_id}")
         return
 
-    scan_id = await trigger_easm_scan(hakuna_org_id)
-    if scan_id:
-        logger.info(f"EASM scan triggered: org={hakuna_org_id}, scan={scan_id}")
-    else:
-        logger.warning(f"Failed to trigger EASM scan for org {hakuna_org_id}")
-
-    # Persist hakuna references on the org
+    # Persist hakuna references so scan_domain() can use them
     org.easm_org_id = hakuna_org_id
     org.easm_domain = domain
     db.commit()
+
+    # Create local Scan record, trigger scan, and set weekly schedule
+    result = await scan_domain(db, org, domain, scan_type="full")
+    if not result:
+        logger.warning(f"Failed to trigger EASM scan for org {hakuna_org_id}")
+        return
+
+    logger.info(f"EASM scan triggered: org={hakuna_org_id}, scan={result.get('scan_id')}, run={result.get('run_id')}")
+
+    # Apply weekly schedule (every Monday at 02:00 UTC)
+    scan = db.query(Scan).filter(Scan.id == result["scan_id"]).first()
+    if scan:
+        schedule = "0 2 * * 1"
+        scan.schedule = schedule
+        db.commit()
+        from services.easm_scheduler import register_scan
+        register_scan(scan.id, schedule)
+        logger.info(f"Weekly EASM schedule registered for scan {scan.id}")
 
 
 # ── Asset import (EASM → main platform) ────────────────────────────

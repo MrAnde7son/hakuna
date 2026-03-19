@@ -5,7 +5,7 @@ User description: $ARGUMENTS
 Steps:
 1. Identify the target from user arguments (endpoint path or frontend page)
 2. For backend endpoints:
-   - Read the endpoint code in `backend/app.py`
+   - Locate the endpoint in `backend/app.py` or the appropriate `backend/routes/*.py` file
    - Check for N+1 queries, missing indexes, large unbounded queries
    - Read the relevant models in `backend/models/models.py` for index definitions
    - Look for missing eager loading (joinedload/subqueryload) on relationships

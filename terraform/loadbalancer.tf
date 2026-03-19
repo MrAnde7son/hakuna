@@ -134,14 +134,6 @@ resource "google_compute_url_map" "main" {
       service = google_compute_backend_bucket.frontend.id
     }
 
-    # Root-level static files (SVGs, favicon, manifest, etc.) → GCS directly.
-    # Without this they fall through to the SPA catch-all and get rewritten to index.html.
-    route_rules {
-      priority = 13
-      match_rules { regex_match = "/[^/]+\\.[^/]+" }
-      service = google_compute_backend_bucket.frontend.id
-    }
-
     # SPA catch-all: rewrite all other paths to /index.html with 200 status.
     # This is the fix for the /threat-intel 404 — GCS served the HTML but with
     # 404 status; the regex+template rewrite here lets GCS serve index.html as

@@ -1,5 +1,5 @@
 """
-LLM-as-judge evaluation harness for the Nessus Remediation agent system.
+LLM-as-judge evaluation harness for the Hakuna Remediation agent system.
 
 Provides deterministic compliance checks (tool usage, output content, step limits)
 and a pluggable LLM judge for qualitative output scoring.
@@ -342,7 +342,7 @@ def results_to_json(results: List[EvalResult]) -> str:
 
 if __name__ == "__main__":
     print("""
-Agent Evaluation Harness — Nessus Remediation Platform
+Agent Evaluation Harness — Hakuna Remediation Platform
 =======================================================
 
 Usage:

@@ -817,6 +817,7 @@
     "sections": {
       "gettingStarted": "Primeros pasos",
       "onboarding": "Incorporación",
+      "scans": "Scans & Discovery",
       "dashboard": "Informes y panel",
       "assets": "Activos",
       "findings": "Hallazgos",

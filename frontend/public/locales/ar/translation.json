@@ -817,6 +817,7 @@
     "sections": {
       "gettingStarted": "البدء",
       "onboarding": "الإعداد",
+      "scans": "Scans & Discovery",
       "dashboard": "التقارير ولوحة المعلومات",
       "assets": "الأصول",
       "findings": "النتائج",

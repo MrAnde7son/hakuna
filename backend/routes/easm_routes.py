@@ -85,6 +85,17 @@ async def setup_easm(
     # Scan the domain (adds domain + triggers scan + creates scan record)
     result = await scan_domain(db, org, domain)
 
+    # Apply weekly schedule
+    if result and result.get("scan_id"):
+        from models.models import Scan
+        from services.easm_scheduler import register_scan
+        scan = db.query(Scan).filter(Scan.id == result["scan_id"]).first()
+        if scan:
+            schedule = "0 2 * * 1"
+            scan.schedule = schedule
+            db.commit()
+            register_scan(scan.id, schedule)
+
     return {
         "enabled": True,
         "domain": domain,

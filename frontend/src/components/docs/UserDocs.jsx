@@ -10,6 +10,7 @@ import {
 const SECTIONS = [
   { id: 'getting-started', labelKey: 'docs.sections.gettingStarted', icon: BookOpen },
   { id: 'onboarding', labelKey: 'docs.sections.onboarding', icon: Upload },
+  { id: 'scans', labelKey: 'docs.sections.scans', icon: Globe },
   { id: 'dashboard', labelKey: 'docs.sections.dashboard', icon: BarChart3 },
   { id: 'assets', labelKey: 'docs.sections.assets', icon: Server },
   { id: 'findings', labelKey: 'docs.sections.findings', icon: Bug },
@@ -155,31 +156,30 @@ function DocContent() {
       <Section id="getting-started">
         <Heading id="getting-started"><BookOpen size={22} /> Getting Started</Heading>
         <P>
-          Hakuna Exposure Center is an open-source vulnerability management platform that imports Nessus scan results,
-          prioritizes vulnerabilities, and helps security teams plan and track remediation from a single dashboard.
+          Hakuna Exposure Center is a vulnerability management platform that consolidates scan results from multiple sources,
+          prioritizes vulnerabilities with AI-powered analysis, and helps security teams plan, track, and automate remediation
+          — all from a single dashboard.
         </P>
         <SubHeading>What You Can Do</SubHeading>
         <Ul>
-          <li><strong>Import scans</strong> — Upload <Code>.nessus</Code> (XML), <Code>.html</Code>, or <Code>.csv</Code> exports from Tenable Nessus. Format is auto-detected.</li>
-          <li><strong>Prioritize findings</strong> — Findings are scored 0-10 using CVSS, VPR, exploit availability, asset criticality, and plugin family.</li>
+          <li><strong>Import scans</strong> — Upload <Code>.nessus</Code>, <Code>.html</Code>, or <Code>.csv</Code> exports from Tenable Nessus, Qualys, Rapid7, or OpenVAS. Format is auto-detected.</li>
+          <li><strong>Run active scans</strong> — Discover external-facing assets with the built-in EASM scanner, or run authenticated vulnerability scans with the VM scanner (powered by Nuclei).</li>
+          <li><strong>Prioritize findings</strong> — Findings are scored 0–10 using CVSS, VPR, exploit availability, SSVC decision, asset criticality, and plugin family.</li>
           <li><strong>Manage assets</strong> — Browse all assets with risk scores, ownership, environment tags, and blast-radius analysis.</li>
-          <li><strong>Track remediation</strong> — Create campaigns, assign owners, attach workflows, and monitor progress.</li>
+          <li><strong>Track remediation</strong> — Create campaigns from templates, assign owners, attach workflows, and monitor progress.</li>
           <li><strong>Automate</strong> — Build workflows that create tickets, send notifications, and tag findings automatically.</li>
           <li><strong>Report</strong> — Generate visual reports with 50+ widget types, export to PDF, PowerPoint, CSV, or JSON.</li>
-          <li><strong>Threat intelligence</strong> — Map findings to MITRE ATT&CK, track threat groups, and monitor CVE intelligence.</li>
+          <li><strong>Threat intelligence</strong> — Map findings to MITRE ATT&CK, enrich CVEs with SSVC/MSRC/GreyNoise/ExploitDB data, and track threat groups.</li>
         </Ul>
-        <SubHeading>System Requirements</SubHeading>
+        <SubHeading>Navigation</SubHeading>
+        <P>Use the sidebar to navigate between the platform's main areas:</P>
         <Ul>
-          <li>Python 3.8+ and Node.js 18+, <strong>or</strong> Docker with Docker Compose</li>
-          <li>Modern browser (Chrome, Firefox, Safari, Edge)</li>
+          <li><strong>Intelligence</strong> — Reports dashboard and Threat Intel Center.</li>
+          <li><strong>Exposure</strong> — Assets, Findings, and Inventory Explorer. Switch between scans using the <strong>Active Scan</strong> selector.</li>
+          <li><strong>Response</strong> — Remediation Campaigns, Aggregated Solutions, and AI Agents.</li>
+          <li><strong>Settings</strong> — Integrations, users, roles, SLA, risk config, tags, workflows, and more.</li>
         </Ul>
-        <SubHeading>Quick Start</SubHeading>
-        <P>The fastest way to launch the platform:</P>
-        <CodeBlock>./start.sh</CodeBlock>
-        <P>This creates a Python virtualenv, installs all dependencies, and starts the backend (port 8000) and frontend (port 3000).</P>
-        <P>Alternatively, use Docker:</P>
-        <CodeBlock>docker compose up --build</CodeBlock>
-        <Tip type="info">SQLite is used by default. Data is persisted in a Docker volume when using Docker Compose.</Tip>
+        <Tip type="info">Use the <strong>Active Scan</strong> dropdown in the sidebar to scope all views to a specific scan, or select "All Scans" for an organization-wide view.</Tip>
       </Section>
 
       {/* Onboarding */}
@@ -190,28 +190,26 @@ function DocContent() {
           Navigate to <Code>/register</Code> and create your first account. This registers a new organization
           and creates an admin user. You will need to provide an organization name, your email, display name, and password.
         </P>
-        <SubHeading>2. Upload Your First Scan</SubHeading>
+        <SubHeading>2. Bring in Your First Data</SubHeading>
         <P>
-          Click <strong>Upload</strong> in the sidebar (or navigate to <Code>/upload</Code>). Drag and drop a Nessus export file
-          or click to browse. Supported formats:
+          Click <strong>Upload</strong> in the sidebar (or navigate to <Code>/scans</Code>). Choose how to add data:
         </P>
         <Ul>
-          <li><Code>.nessus</Code> — Nessus XML export (recommended, richest data)</li>
-          <li><Code>.html</Code> — Nessus HTML export</li>
-          <li><Code>.csv</Code> — Nessus CSV export</li>
+          <li><strong>Upload a scan file</strong> — Drag and drop a Nessus, Qualys, Rapid7, or OpenVAS export. Supported formats: <Code>.nessus</Code> (XML, richest data), <Code>.html</Code>, <Code>.csv</Code>. Format is auto-detected.</li>
+          <li><strong>EASM scan</strong> — Enter a domain to run an external attack surface discovery scan. Discovers subdomains, open ports, technologies, and TLS certificates without uploading a file.</li>
+          <li><strong>VM scan</strong> — Run an authenticated Nuclei-powered vulnerability scan against targets in your environment.</li>
         </Ul>
         <P>
-          The parser auto-detects the format, extracts findings, assets, and inventory data, then enriches with
-          CVSS/VPR scores, MITRE ATT&CK mapping, and threat intelligence.
+          After import, findings are parsed, scored, enriched with CVSS/VPR/SSVC data, and deduplicated automatically.
         </P>
         <SubHeading>3. Explore the Dashboard</SubHeading>
         <P>
-          After upload, go to <strong>Reports</strong> (the default landing page) to see a summary of your security posture.
+          After your first scan, go to <strong>Reports</strong> (the default landing page) to see a summary of your security posture.
           Use the <strong>Active Scan</strong> selector in the sidebar to filter data by scan.
         </P>
         <SubHeading>4. Invite Your Team</SubHeading>
         <P>
-          Go to <strong>Settings</strong> and open the <strong>Users</strong> panel. Click <strong>Invite User</strong> to add
+          Go to <strong>Settings &gt; Users</strong> and click <strong>Invite User</strong> to add
           team members with appropriate roles (Admin, Analyst, or Viewer). Custom roles with granular permissions are also available.
         </P>
         <SubHeading>5. Configure Integrations</SubHeading>
@@ -219,7 +217,66 @@ function DocContent() {
           In <strong>Settings &gt; Integrations</strong>, connect your ticketing system (Jira, ServiceNow), notification channels
           (Slack, Microsoft Teams, Email), and optionally AI providers (Claude, OpenAI, Gemini) for AI agent features.
         </P>
-        <Tip type="success">Once your first scan is uploaded and integrations are configured, you are ready to create campaigns, build workflows, and start remediating.</Tip>
+        <Tip type="success">Once your first scan is in and integrations are configured, you are ready to create campaigns, build workflows, and start remediating.</Tip>
+      </Section>
+
+      {/* Scans & Discovery */}
+      <Section id="scans">
+        <Heading id="scans"><Globe size={22} /> Scans & Discovery</Heading>
+        <P>
+          The Scans page (<Code>/scans</Code>) is your hub for all scan data — imported files, EASM discoveries, and VM scan results.
+          All scan types appear in the same list and can be selected in the <strong>Active Scan</strong> sidebar filter.
+        </P>
+
+        <SubHeading>Scan Import (File Upload)</SubHeading>
+        <P>Upload exported scan files from any supported scanner. The parser auto-detects the format and extracts findings, assets, and inventory data.</P>
+        <Ul>
+          <li><strong>Nessus</strong> — <Code>.nessus</Code> XML (recommended), <Code>.html</Code>, or <Code>.csv</Code></li>
+          <li><strong>Qualys</strong> — XML report export</li>
+          <li><strong>Rapid7 InsightVM</strong> — XML export</li>
+          <li><strong>OpenVAS / Greenbone</strong> — XML export</li>
+        </Ul>
+        <Tip type="info">Use <Code>.nessus</Code> XML exports for the richest data — these include full plugin output, inventory extraction, VPR scores, and CVSS details.</Tip>
+
+        <SubHeading>EASM — External Attack Surface Management</SubHeading>
+        <P>
+          The EASM scanner discovers your internet-facing exposure without requiring any credentials or file uploads.
+          It auto-infers your domain from your registration email on first setup.
+        </P>
+        <Ul>
+          <li><strong>Subdomain discovery</strong> — Enumerates subdomains via passive and active DNS techniques.</li>
+          <li><strong>Port scanning</strong> — Identifies open ports and running services on discovered hosts.</li>
+          <li><strong>Technology detection</strong> — Fingerprints web technologies, frameworks, and server software.</li>
+          <li><strong>TLS / certificate analysis</strong> — Detects expiring or misconfigured certificates.</li>
+          <li><strong>Continuous monitoring</strong> — Re-run scans at any time to detect new exposure.</li>
+        </Ul>
+        <P>
+          To start an EASM scan, click <strong>New Scan → EASM Scan</strong> on the Scans page, enter your target domain, and click <strong>Start Discovery</strong>.
+          Results are imported automatically as a new scan entry with source type <em>EASM</em>.
+        </P>
+
+        <SubHeading>VM Scanner — Active Vulnerability Scanning</SubHeading>
+        <P>
+          The VM scanner runs authenticated vulnerability checks against your internal or external assets using Nuclei templates.
+          It is designed for assets that are confirmed alive (validated via liveness checks) and have been enriched with port/service data.
+        </P>
+        <Ul>
+          <li><strong>Nuclei-powered</strong> — Runs a curated set of Nuclei templates matched to each asset's detected tech stack and open services.</li>
+          <li><strong>Template routing</strong> — Templates are automatically selected based on CPE data, detected technologies, and service fingerprints.</li>
+          <li><strong>Custom templates</strong> — Upload your own Nuclei YAML templates for organization-specific checks.</li>
+          <li><strong>Deduplication</strong> — Findings are deduplicated on <Code>(org, asset, finding_type, title)</Code> — re-scanning updates existing open findings rather than creating duplicates.</li>
+          <li><strong>Celery scheduling</strong> — VM scan jobs run as background tasks and can be scheduled for continuous coverage.</li>
+        </Ul>
+        <P>
+          To start a VM scan, click <strong>New Scan → VM Scan</strong> and select the target scope.
+          Results appear as a new scan entry with source type <em>VM</em>.
+        </P>
+
+        <SubHeading>Scan Comparison</SubHeading>
+        <P>
+          Compare any two scans side-by-side to see what changed: new findings introduced, findings that were resolved, regressions, and remediation velocity.
+          Access via the scan list using the <strong>Compare</strong> action.
+        </P>
       </Section>
 
       {/* Dashboard & Reports */}
@@ -375,10 +432,24 @@ function DocContent() {
         <P>
           Campaigns (<Code>/campaigns</Code>) are targeted remediation programs that group related findings and track their resolution.
         </P>
+        <SubHeading>Campaign Templates</SubHeading>
+        <P>When creating a new campaign, choose from pre-built templates to get started immediately:</P>
+        <Ul>
+          <li><strong>Exploitable Now</strong> — Critical & High findings with a known weaponized or functional exploit. Highest-risk items demanding immediate remediation.</li>
+          <li><strong>Patch Tuesday</strong> — Critical and High severity findings with missing patches. Run this every Patch Tuesday to scope your monthly patching effort.</li>
+          <li><strong>SLA Breached</strong> — All findings that have already exceeded their SLA deadline. Prioritize for escalation.</li>
+          <li><strong>Internet-Facing Critical Risk</strong> — High and Critical findings on internet-facing assets.</li>
+          <li><strong>Quick Wins</strong> — High/Critical findings with low estimated remediation effort — maximum impact, minimal engineering work.</li>
+          <li><strong>New Vulnerabilities</strong> — Findings first seen in the latest scan. Focus on newly introduced risk before it spreads.</li>
+          <li><strong>Resurfaced & Regressions</strong> — Previously resolved findings that came back. Often indicates incomplete fixes.</li>
+          <li><strong>Zero-Day Exposure</strong> — Assets affected by zero-days with no vendor patch yet. Requires compensating controls.</li>
+          <li><strong>Ransomware Exposure</strong> — High/Critical findings with known exploits and high EPSS probability — targets ransomware operators actively use for initial access.</li>
+          <li><strong>Blank</strong> — Start from scratch with a custom condition builder.</li>
+        </Ul>
         <SubHeading>Creating a Campaign</SubHeading>
         <Ul>
           <li><strong>Name and description</strong> — Give the campaign a clear purpose.</li>
-          <li><strong>Query builder</strong> — Define which findings to include using conditions (severity, plugin family, asset environment, tags, CVSS range, etc.).</li>
+          <li><strong>Query builder</strong> — Define which findings to include using conditions (severity, plugin family, asset environment, tags, CVSS range, EPSS, etc.).</li>
           <li><strong>Preview</strong> — See the blast radius before launching: how many findings and assets will be affected.</li>
           <li><strong>Owner</strong> — Assign a responsible person or team.</li>
           <li><strong>Workflow</strong> — Attach an automation workflow to execute when the campaign runs.</li>
@@ -393,7 +464,7 @@ function DocContent() {
         <SubHeading>Condition Catalog</SubHeading>
         <P>
           The campaign query builder offers a full catalog of conditions, including severity ranges, plugin families,
-          exploit availability, KEV status, SLA compliance, asset environment, hostname patterns, OS type, tag membership, and more.
+          exploit availability, KEV status, EPSS probability, SSVC decision, SLA compliance, asset environment, hostname patterns, OS type, tag membership, and more.
         </P>
       </Section>
 
@@ -462,11 +533,18 @@ function DocContent() {
         <SubHeading>Newsroom</SubHeading>
         <P>A real-time feed of security advisories, CISA KEV updates, and relevant threat news.</P>
         <SubHeading>CVE Intelligence</SubHeading>
+        <P>Search and browse CVEs affecting your environment, enriched from multiple intel sources:</P>
         <Ul>
-          <li><strong>CVE database</strong> — Search and browse CVEs affecting your environment.</li>
-          <li><strong>EPSS scoring</strong> — Exploit Prediction Scoring System probabilities showing how likely a CVE is to be exploited.</li>
-          <li><strong>Exploitation status</strong> — Whether a CVE has known public exploits or is in the CISA KEV catalog.</li>
+          <li><strong>NVD / CVSS</strong> — Base scores and vector strings from the National Vulnerability Database, auto-updated every 24 hours.</li>
+          <li><strong>CISA KEV</strong> — Flags CVEs in the Known Exploited Vulnerabilities catalog with CISA's required remediation deadlines.</li>
+          <li><strong>EPSS</strong> — Exploit Prediction Scoring System probability showing likelihood of exploitation in the next 30 days.</li>
+          <li><strong>SSVC</strong> — CISA's Stakeholder-Specific Vulnerability Categorization decision (Act / Attend / Track* / Track). Displayed as a colored badge on findings and CVE detail.</li>
+          <li><strong>ExploitDB</strong> — Links to public proof-of-concept exploits when available.</li>
+          <li><strong>GreyNoise</strong> — Indicates whether a CVE is being actively mass-exploited on the internet (GreyNoise scanner observations).</li>
+          <li><strong>MSRC</strong> — Microsoft Security Response Center patch information and KB article IDs for Microsoft CVEs.</li>
+          <li><strong>CWE</strong> — Common Weakness Enumeration classifications surfaced in CVE detail views.</li>
         </Ul>
+        <Tip type="info">Intel data is auto-updated every 24 hours. You can force a refresh from Settings → Threat Intel → Sync.</Tip>
         <SubHeading>Threat Groups</SubHeading>
         <P>
           Browse threat actors with motivation (financial, espionage, destruction), country attribution, and known TTPs.
@@ -585,7 +663,21 @@ function DocContent() {
           <li><strong>Google Gemini</strong> — Alternative AI provider. Requires API key.</li>
           <li><strong>Groq (Llama)</strong> — Open-source model provider. Requires API key.</li>
         </Ul>
-        <Tip type="info">Use the <strong>Test</strong> button on each integration to verify connectivity before using it in workflows or agents.</Tip>
+        <SubHeading>Integration Builder</SubHeading>
+        <P>
+          The Integration Builder is a guided wizard for connecting any external data source to the platform — beyond the built-in connectors above.
+          Access it from <strong>Settings &gt; Integrations &gt; New Integration</strong>.
+        </P>
+        <Ul>
+          <li><strong>Choose Source</strong> — Select a connector type: REST API, SQL database, file upload, or MCP server.</li>
+          <li><strong>Authenticate</strong> — Configure credentials: Bearer token, API key, Basic Auth, or OAuth. Credentials are validated before saving.</li>
+          <li><strong>Connect</strong> — Discover available endpoints or tables from the source automatically.</li>
+          <li><strong>Pick Records</strong> — Choose which data records or tables to pull from the source.</li>
+          <li><strong>Map Fields</strong> — Map source fields to platform fields (assets, findings, tags) using the visual field mapper.</li>
+          <li><strong>Preview</strong> — Preview the data import before committing.</li>
+          <li><strong>Save</strong> — Save the integration for on-demand or scheduled sync.</li>
+        </Ul>
+        <Tip type="info">Use the <strong>Test</strong> button on each built-in integration to verify connectivity before using it in workflows or agents.</Tip>
       </Section>
 
       {/* Exceptions */}
@@ -749,7 +841,7 @@ function DocContent() {
       <Section id="api-reference">
         <Heading id="api-reference"><Globe size={22} /> API Reference</Heading>
         <P>
-          The platform exposes a comprehensive REST API. Interactive Swagger documentation is available at <Code>/docs</Code> on your backend (typically <Code>http://localhost:8000/docs</Code>).
+          The platform exposes a comprehensive REST API. Interactive Swagger documentation is available at <Code>/api/docs</Code>.
         </P>
         <SubHeading>Authentication</SubHeading>
         <P>
@@ -771,9 +863,14 @@ Headers: Authorization: Bearer eyJ...`}</CodeBlock>
           ['POST', '/api/auth/register', 'Register new organization and admin user'],
           ['POST', '/api/auth/login', 'Authenticate and receive JWT token'],
           ['GET', '/api/auth/me', 'Get current user info and permissions'],
-          ['POST', '/api/upload', 'Upload a Nessus scan file'],
-          ['GET', '/api/scans', 'List all imported scans'],
+          ['POST', '/api/upload', 'Upload a scan file (Nessus, Qualys, Rapid7, OpenVAS)'],
+          ['GET', '/api/scans', 'List all scans (imported, EASM, VM)'],
           ['DELETE', '/api/scans/:id', 'Delete a scan and its data'],
+          ['POST', '/api/easm/setup', 'Configure EASM and start domain discovery'],
+          ['POST', '/api/easm/scan', 'Trigger an EASM scan for a domain'],
+          ['GET', '/api/easm/status/:id', 'Get EASM scan status'],
+          ['POST', '/api/vm/scan', 'Trigger a VM (Nuclei) scan'],
+          ['GET', '/api/vm/scan/:id/status', 'Get VM scan status'],
         ]} />
 
         <SubHeading>Assets & Findings</SubHeading>

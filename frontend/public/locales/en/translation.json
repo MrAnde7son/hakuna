@@ -823,6 +823,7 @@
     "sections": {
       "gettingStarted": "Getting Started",
       "onboarding": "Onboarding",
+      "scans": "Scans & Discovery",
       "dashboard": "Reports & Dashboard",
       "assets": "Assets",
       "findings": "Findings",

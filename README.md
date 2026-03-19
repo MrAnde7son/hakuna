@@ -1,4 +1,4 @@
-# Nessus Remediation Platform
+# Hakuna Remediation Platform
 
 An open-source vulnerability management platform that imports scan results from multiple scanners, prioritizes vulnerabilities with AI-powered analysis, and helps security teams plan, track, and automate remediation — all from a single dashboard.
 

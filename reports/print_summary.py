@@ -18,7 +18,7 @@ def main():
 
     bar = "=" * 72
     print(bar)
-    print("  HAKUNA TOKEN OPTIMIZATION REPORT — Nessus Remediation Pipeline")
+    print("  HAKUNA TOKEN OPTIMIZATION REPORT — Hakuna Remediation Pipeline")
     print(bar)
     print()
     print(f"  Generated: {final['generated_at']}")

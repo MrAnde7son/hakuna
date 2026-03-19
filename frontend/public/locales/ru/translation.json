@@ -817,6 +817,7 @@
     "sections": {
       "gettingStarted": "Начало работы",
       "onboarding": "Введение",
+      "scans": "Scans & Discovery",
       "dashboard": "Отчёты и панель мониторинга",
       "assets": "Активы",
       "findings": "Находки",

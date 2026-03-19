@@ -2,18 +2,58 @@ Detect model changes and manage database migrations.
 
 User description: $ARGUMENTS
 
-Steps:
-1. Read `backend/models/models.py` (or `backend/models.py`) to understand current SQLAlchemy models
-2. Read `backend/core/database.py` (or `backend/database.py`) for the engine/session setup and `Base.metadata.create_all` usage
-3. Check if Alembic is set up: look for `alembic.ini` and `alembic/` directory in `backend/`
-4. If Alembic is NOT set up:
-   - Install alembic: `pip install alembic`
-   - Initialize: `cd backend && alembic init alembic`
-   - Configure `alembic/env.py` to import the project's Base and models
-   - Update `alembic.ini` with the correct database URL
-5. If Alembic IS set up:
-   - Auto-generate a migration: `cd backend && alembic revision --autogenerate -m "<description>"`
-   - Review the generated migration file for correctness
-   - Apply: `cd backend && alembic upgrade head`
-6. If the user just wants a quick schema reset (dev only): `Base.metadata.create_all(bind=engine)` handles new tables but not column changes
-7. Warn about Render's ephemeral SQLite — migrations run on every deploy or data is lost on restart
+## Setup
+
+- **ORM**: SQLAlchemy 2.0, models in `backend/models/models.py` (and `backend/models/threat_intel_models.py`)
+- **Migrations**: Alembic, configured in `backend/alembic.ini` and `backend/alembic/`
+- **DB**: PostgreSQL in production (GCP Cloud SQL, project `hakuna-prod-2026`); SQLite for local dev if no `DATABASE_URL` set
+- **Session**: `backend/core/database.py` — `get_db()`, `init_db()`
+
+## Steps
+
+1. Read `backend/models/models.py` to understand current SQLAlchemy models
+2. Read `backend/core/database.py` to confirm the engine/session setup
+3. Check Alembic is configured: `ls backend/alembic/` and `cat backend/alembic.ini`
+
+### Generate and apply a migration
+
+```bash
+cd backend && source .venv/bin/activate
+
+# Auto-detect changes and generate migration
+alembic revision --autogenerate -m "<short description>"
+
+# Review the generated file in backend/alembic/versions/ for correctness
+# (check for missed renames, dropped columns, or type changes)
+
+# Apply to local DB
+alembic upgrade head
+```
+
+### Apply to production (GCP Cloud SQL)
+
+Migrations run automatically on deploy via `./deploy.sh --migrate`, which starts the Cloud SQL Auth Proxy and runs `alembic upgrade head` against the production database.
+
+To run manually:
+```bash
+./deploy.sh --migrate
+```
+
+### Savepoints / transaction safety
+
+If a migration step fails mid-transaction and poisons the connection, use savepoints:
+```python
+op.execute("SAVEPOINT sp1")
+# ... risky operation ...
+op.execute("RELEASE SAVEPOINT sp1")
+```
+See recent migrations in `backend/alembic/versions/` for examples.
+
+### Dev-only schema reset
+
+For quick local iteration (adds new tables/columns but does NOT handle column changes or drops):
+```bash
+python -c "from core.database import engine; from models.models import Base; Base.metadata.create_all(bind=engine)"
+```
+
+Only use this for local dev — always use Alembic for any change that needs to reach production.
