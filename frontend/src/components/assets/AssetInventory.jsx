@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getTags } from '../../api.js'
+import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags } from '../../api.js'
 import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
@@ -391,12 +391,17 @@ export default function AssetInventory() {
     return () => clearTimeout(debounceRef.current)
   }, [activeScanId, sortBy, sortOrder, tagFilter, tagLogic, filters, advancedMode, page])
 
-  // Auto-sync EASM assets on mount (background, non-blocking)
+  // Auto-sync EASM assets on mount (background, non-blocking) — only if EASM is configured
   const easmSynced = useRef(false)
   useEffect(() => {
     if (easmSynced.current) return
     easmSynced.current = true
-    syncEasmAssets().then(() => { if (!advancedMode) load() }).catch(() => {})
+    getEasmStatus()
+      .then(status => {
+        if (!status.enabled) return
+        return syncEasmAssets().then(() => { if (!advancedMode) load() })
+      })
+      .catch(() => {})
   }, [])
 
   const runAdvancedSearch = () => {

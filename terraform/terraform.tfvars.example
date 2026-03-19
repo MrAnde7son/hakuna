@@ -1,0 +1,26 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — never commit it.
+
+project_id = "hakuna-prod"
+region     = "me-west1"
+zone       = "me-west1-b"
+
+# Your app domain — must have DNS pointing to the load balancer IP after first apply
+app_domain = "app.yourdomain.com"
+
+# Docker image — push this before running terraform apply
+# docker build -t me-west1-docker.pkg.dev/hakuna-prod/hakuna/api:latest ./backend
+# docker push me-west1-docker.pkg.dev/hakuna-prod/hakuna/api:latest
+api_image = "me-west1-docker.pkg.dev/hakuna-prod/hakuna/api:latest"
+
+# Generate with: openssl rand -hex 32
+jwt_secret = "replace-with-your-secret"
+
+# Optional — leave empty to disable Sentry
+sentry_dsn = ""
+
+# Optional OSINT API keys for EASM scanner
+# Scanner degrades gracefully without these — uses only passive/free sources
+shodan_api_key    = ""
+censys_api_id     = ""
+censys_api_secret = ""

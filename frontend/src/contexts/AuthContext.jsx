@@ -38,8 +38,11 @@ export function AuthProvider({ children }) {
           i18n.changeLanguage(data.locale)
         }
       })
-      .catch(() => {
-        clearStoredToken()
+      .catch((err) => {
+        // Only clear the token when the server explicitly rejects it (401/403).
+        // Network errors or 5xx during startup should not log the user out.
+        const isAuthError = err?.message === 'Authentication required' || err?.message === 'Authentication failed'
+        if (isAuthError) clearStoredToken()
       })
       .finally(() => setIsLoading(false))
   }, [])

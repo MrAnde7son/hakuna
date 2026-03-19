@@ -57,6 +57,11 @@ async def refresh_scan(
     user: User = Depends(require_auth),
 ):
     """Poll VM scan job statuses and update the Scan record."""
+    scan = db.query(Scan).filter(Scan.id == scan_id, Scan.source_type == "vm_scanner").first()
+    if not scan:
+        raise HTTPException(404, "VM scan not found")
+    if user.role != "superadmin" and scan.org_id != user.org_id:
+        raise HTTPException(403, "Access denied")
     result = await refresh_vm_scan(db, scan_id)
     if result is None:
         raise HTTPException(404, "VM scan not found")
@@ -74,6 +79,8 @@ async def rescan(
     scan = db.query(Scan).filter(Scan.id == scan_id, Scan.source_type == "vm_scanner").first()
     if not scan:
         raise HTTPException(404, "VM scan not found")
+    if user.role != "superadmin" and scan.org_id != user.org_id:
+        raise HTTPException(403, "Access denied")
 
     targets = (scan.raw_metadata or {}).get("targets", [])
     if not targets:

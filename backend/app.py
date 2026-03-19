@@ -249,6 +249,19 @@ def _resolve_role_asset_ids(db, role: str, scan_id: Optional[int] = None,
     return matched
 
 
+_sentry_dsn = os.getenv("SENTRY_DSN")
+if _sentry_dsn:
+    import sentry_sdk
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        environment=os.getenv("ENVIRONMENT", "production"),
+        send_default_pii=True,
+        enable_logs=True,
+        traces_sample_rate=0.2,
+        profile_session_sample_rate=0.2,
+        profile_lifecycle="trace",
+    )
+
 app = FastAPI(title="Nessus Remediation Platform", version="1.0.0")
 
 _cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
@@ -7551,20 +7564,29 @@ def get_aggregated_solution(agg_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/aggregated-solutions/rebuild")
-def rebuild_aggregated_solutions(scan_id: int = Query(None), db: Session = Depends(get_db)):
+def rebuild_aggregated_solutions(
+    scan_id: int = Query(None),
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
     """Re-run solution aggregation on existing scans."""
-    if scan_id:
-        scans = db.query(Scan).filter(Scan.id == scan_id).all()
-    else:
-        scans = db.query(Scan).all()
-    total_created = 0
-    total_linked = 0
-    for scan in scans:
-        result = solution_aggregator.aggregate_solutions(db, scan_id=scan.id)
-        total_created += result["created"]
-        total_linked += result["findings_linked"]
-    db.commit()
-    return {"scans_processed": len(scans), "created": total_created, "findings_linked": total_linked}
+    try:
+        q = db.query(Scan)
+        q = apply_scan_org_filter(q, org_ids)
+        if scan_id:
+            q = q.filter(Scan.id == scan_id)
+        scans = q.all()
+        total_created = 0
+        total_linked = 0
+        for scan in scans:
+            result = solution_aggregator.aggregate_solutions(db, scan_id=scan.id)
+            total_created += result["created"]
+            total_linked += result["findings_linked"]
+        db.commit()
+        return {"scans_processed": len(scans), "created": total_created, "findings_linked": total_linked}
+    except Exception as e:
+        logging.error("Error rebuilding aggregated solutions: %s", e, exc_info=True)
+        raise HTTPException(500, "Failed to rebuild aggregated solutions")
 
 
 def _agg_solution_to_dict(a: AggregatedSolution, db: Session) -> dict:

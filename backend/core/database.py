@@ -5,7 +5,12 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./nessus_remediation.db")
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+_pool_kwargs = {} if DATABASE_URL.startswith("sqlite") else {
+    "pool_pre_ping": True,   # detect stale connections (important for Cloud Run cold starts)
+    "pool_recycle": 300,     # recycle connections every 5 min to avoid Cloud SQL idle timeouts
+}
+engine = create_engine(DATABASE_URL, connect_args=_connect_args, **_pool_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -62,14 +67,14 @@ def _migrate_add_columns():
             ("inferred_primary_user", "VARCHAR"),
             ("inferred_admin_contacts", "JSON"),
             ("inferred_team", "VARCHAR"),
-            ("owner_confidence", 'VARCHAR DEFAULT "low"'),
-            ("environment_confirmed", "BOOLEAN DEFAULT 0"),
-            ("business_context_confirmed", "BOOLEAN DEFAULT 0"),
-            ("first_seen", "DATETIME"),
-            ("last_seen", "DATETIME"),
+            ("owner_confidence", "VARCHAR DEFAULT 'low'"),
+            ("environment_confirmed", "BOOLEAN DEFAULT FALSE"),
+            ("business_context_confirmed", "BOOLEAN DEFAULT FALSE"),
+            ("first_seen", "TIMESTAMP"),
+            ("last_seen", "TIMESTAMP"),
             ("times_seen", "INTEGER DEFAULT 1"),
-            ("asset_status", 'VARCHAR DEFAULT "active"'),
-            ("stale_since", "DATETIME"),
+            ("asset_status", "VARCHAR DEFAULT 'active'"),
+            ("stale_since", "TIMESTAMP"),
             ("system_type", "VARCHAR"),
             ("easm_data", "JSON"),
             ("internet_facing_confidence", "VARCHAR"),
@@ -79,24 +84,24 @@ def _migrate_add_columns():
             ("user_edited_fields", "JSON"),
         ],
         "findings": [
-            ("first_seen", "DATETIME"),
-            ("last_seen", "DATETIME"),
+            ("first_seen", "TIMESTAMP"),
+            ("last_seen", "TIMESTAMP"),
             ("times_seen", "INTEGER DEFAULT 1"),
-            ("is_regression", "BOOLEAN DEFAULT 0"),
-            ("auto_resolved", "BOOLEAN DEFAULT 0"),
-            ("auto_resolved_at", "DATETIME"),
+            ("is_regression", "BOOLEAN DEFAULT FALSE"),
+            ("auto_resolved", "BOOLEAN DEFAULT FALSE"),
+            ("auto_resolved_at", "TIMESTAMP"),
             ("auto_resolved_by_scan_id", "INTEGER"),
             ("cvss4_score", "FLOAT"),
             ("cvss4_vector", "VARCHAR"),
             ("matched_ttps", "JSON"),
             ("aggregated_solution_id", "INTEGER"),
-            ("source_type", 'VARCHAR DEFAULT "nessus"'),
+            ("source_type", "VARCHAR DEFAULT 'nessus'"),
             ("source_vuln_id", "VARCHAR"),
             ("normalized_id", "VARCHAR"),
             ("exploit_count", "INTEGER DEFAULT 0"),
             ("exploit_maturity_level", "VARCHAR"),
             ("ssvc_decision", "VARCHAR"),
-            ("greynoise_seen", "BOOLEAN DEFAULT 0"),
+            ("greynoise_seen", "BOOLEAN DEFAULT FALSE"),
             ("source_id", "VARCHAR"),
             ("source_system", "VARCHAR"),
             ("user_edited_fields", "JSON"),
@@ -117,12 +122,12 @@ def _migrate_add_columns():
         ],
         "finding_exceptions": [
             ("conditions", "JSON"),
-            ("condition_logic", 'VARCHAR DEFAULT "AND"'),
+            ("condition_logic", "VARCHAR DEFAULT 'AND'"),
             ("override_severity", "INTEGER"),
             ("scope_tags", "JSON"),
             ("compensating_control_detail", "TEXT"),
-            ("exclude_from_reports", "BOOLEAN DEFAULT 1"),
-            ("review_by", "DATETIME"),
+            ("exclude_from_reports", "BOOLEAN DEFAULT TRUE"),
+            ("review_by", "TIMESTAMP"),
             ("org_id", "INTEGER"),
             ("debt_category", "VARCHAR"),
             ("mitigation_plan", "TEXT"),
@@ -130,11 +135,11 @@ def _migrate_add_columns():
         # Multi-tenancy: add org_id to all tenant-scoped tables
         "scans": [
             ("org_id", "INTEGER"),
-            ("source_type", 'VARCHAR DEFAULT "nessus"'),
+            ("source_type", "VARCHAR DEFAULT 'nessus'"),
             ("source_version", "VARCHAR"),
             ("raw_metadata", "JSON"),
             ("schedule", "VARCHAR"),
-            ("status", 'VARCHAR DEFAULT "completed"'),
+            ("status", "VARCHAR DEFAULT 'completed'"),
             ("last_run_at", "DATETIME"),
             ("next_run_at", "DATETIME"),
             ("run_count", "INTEGER DEFAULT 0"),
@@ -147,7 +152,7 @@ def _migrate_add_columns():
         "integration_configs": [("org_id", "INTEGER")],
         "report_templates": [("org_id", "INTEGER")],
         "inventory_users": [
-            ("identity_type", 'VARCHAR DEFAULT "unknown"'),
+            ("identity_type", "VARCHAR DEFAULT 'unknown'"),
             ("identity_subtype", "VARCHAR"),
             ("source_systems", "JSON"),
             ("department", "VARCHAR"),
@@ -159,7 +164,7 @@ def _migrate_add_columns():
             ("deny_permissions", "JSON"),
         ],
         "tag_permissions": [
-            ("effect", 'VARCHAR DEFAULT "allow"'),
+            ("effect", "VARCHAR DEFAULT 'allow'"),
         ],
         "agent_schedules": [("next_run_at", "DATETIME")],
         "aggregated_solutions": [

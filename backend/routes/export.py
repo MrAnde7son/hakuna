@@ -13,8 +13,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_
 
 from core.database import get_db
+from core.auth import require_auth, get_accessible_org_ids
 from models.models import (
-    Asset, Finding, Scan,
+    Asset, Finding, Scan, User,
     InventoryUser, InventoryGroup, InventoryService,
     InventoryNetConn, InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
     InventoryShare, InventorySoftware, InventorySecurityControl,
@@ -98,8 +99,12 @@ def export_assets(
     search: Optional[str] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(Asset)
+    q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
+    if org_ids is not None:
+        q = q.filter(Scan.org_id.in_(org_ids))
     if scan_id:
         q = q.filter(Asset.scan_id == scan_id)
     if environment:
@@ -151,8 +156,12 @@ def export_findings(
     search: Optional[str] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(Finding)
+    q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+    if org_ids is not None:
+        q = q.filter(Scan.org_id.in_(org_ids))
     if scan_id:
         q = q.filter(Finding.scan_id == scan_id)
     if asset_id:
@@ -227,8 +236,11 @@ def _inv_export(
     row_fn,
     name: str,
     fmt: str,
+    org_ids: Optional[List[int]] = None,
 ):
-    q = db.query(model)
+    q = db.query(model).join(Scan, model.scan_id == Scan.id)
+    if org_ids is not None:
+        q = q.filter(Scan.org_id.in_(org_ids))
     if scan_id:
         q = q.filter(model.scan_id == scan_id)
     if asset_id:
@@ -252,6 +264,8 @@ def export_inv_users(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(u, amap):
         info = amap.get(u.asset_id)
@@ -270,7 +284,7 @@ def export_inv_users(
             "SPNs": ", ".join(u.spns or []),
             "Member Of": ", ".join(u.member_of or []),
         }
-    return _inv_export(db, InventoryUser, scan_id, asset_id, row, "inventory_users", fmt)
+    return _inv_export(db, InventoryUser, scan_id, asset_id, row, "inventory_users", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/groups")
@@ -279,6 +293,8 @@ def export_inv_groups(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(g, amap):
         info = amap.get(g.asset_id)
@@ -292,7 +308,7 @@ def export_inv_groups(
             "Members": ", ".join(g.members or []),
             "Description": g.description,
         }
-    return _inv_export(db, InventoryGroup, scan_id, asset_id, row, "inventory_groups", fmt)
+    return _inv_export(db, InventoryGroup, scan_id, asset_id, row, "inventory_groups", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/services")
@@ -301,6 +317,8 @@ def export_inv_services(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(s, amap):
         info = amap.get(s.asset_id)
@@ -311,7 +329,7 @@ def export_inv_services(
             "Asset IP": (info or {}).get("ip"),
             "Running": s.is_running,
         }
-    return _inv_export(db, InventoryService, scan_id, asset_id, row, "inventory_services", fmt)
+    return _inv_export(db, InventoryService, scan_id, asset_id, row, "inventory_services", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/netconns")
@@ -320,6 +338,8 @@ def export_inv_netconns(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(n, amap):
         info = amap.get(n.asset_id)
@@ -334,7 +354,7 @@ def export_inv_netconns(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventoryNetConn, scan_id, asset_id, row, "inventory_netconns", fmt)
+    return _inv_export(db, InventoryNetConn, scan_id, asset_id, row, "inventory_netconns", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/scheduled-tasks")
@@ -343,6 +363,8 @@ def export_inv_scheduled_tasks(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(t, amap):
         info = amap.get(t.asset_id)
@@ -357,7 +379,7 @@ def export_inv_scheduled_tasks(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventoryScheduledTask, scan_id, asset_id, row, "inventory_scheduled_tasks", fmt)
+    return _inv_export(db, InventoryScheduledTask, scan_id, asset_id, row, "inventory_scheduled_tasks", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/patches")
@@ -366,6 +388,8 @@ def export_inv_patches(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(p, amap):
         info = amap.get(p.asset_id)
@@ -377,7 +401,7 @@ def export_inv_patches(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventoryPatch, scan_id, asset_id, row, "inventory_patches", fmt)
+    return _inv_export(db, InventoryPatch, scan_id, asset_id, row, "inventory_patches", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/logged-on")
@@ -386,6 +410,8 @@ def export_inv_logged_on(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(l, amap):
         info = amap.get(l.asset_id)
@@ -396,7 +422,7 @@ def export_inv_logged_on(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventoryLoggedOn, scan_id, asset_id, row, "inventory_logged_on", fmt)
+    return _inv_export(db, InventoryLoggedOn, scan_id, asset_id, row, "inventory_logged_on", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/shares")
@@ -405,6 +431,8 @@ def export_inv_shares(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(s, amap):
         info = amap.get(s.asset_id)
@@ -419,7 +447,7 @@ def export_inv_shares(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventoryShare, scan_id, asset_id, row, "inventory_shares", fmt)
+    return _inv_export(db, InventoryShare, scan_id, asset_id, row, "inventory_shares", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/software")
@@ -428,6 +456,8 @@ def export_inv_software(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(s, amap):
         info = amap.get(s.asset_id)
@@ -439,7 +469,7 @@ def export_inv_software(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventorySoftware, scan_id, asset_id, row, "inventory_software", fmt)
+    return _inv_export(db, InventorySoftware, scan_id, asset_id, row, "inventory_software", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/security-controls")
@@ -448,6 +478,8 @@ def export_inv_security_controls(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(c, amap):
         info = amap.get(c.asset_id)
@@ -461,7 +493,7 @@ def export_inv_security_controls(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventorySecurityControl, scan_id, asset_id, row, "inventory_security_controls", fmt)
+    return _inv_export(db, InventorySecurityControl, scan_id, asset_id, row, "inventory_security_controls", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/computers")
@@ -470,6 +502,8 @@ def export_inv_computers(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(c, amap):
         info = amap.get(c.asset_id)
@@ -483,7 +517,7 @@ def export_inv_computers(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventoryComputer, scan_id, asset_id, row, "inventory_computers", fmt)
+    return _inv_export(db, InventoryComputer, scan_id, asset_id, row, "inventory_computers", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/password-policies")
@@ -492,6 +526,8 @@ def export_inv_password_policies(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(p, amap):
         info = amap.get(p.asset_id)
@@ -507,7 +543,7 @@ def export_inv_password_policies(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventoryPasswordPolicy, scan_id, asset_id, row, "inventory_password_policies", fmt)
+    return _inv_export(db, InventoryPasswordPolicy, scan_id, asset_id, row, "inventory_password_policies", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/certificates")
@@ -516,6 +552,8 @@ def export_inv_certificates(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(c, amap):
         info = amap.get(c.asset_id)
@@ -536,7 +574,7 @@ def export_inv_certificates(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventoryCertificate, scan_id, asset_id, row, "inventory_certificates", fmt)
+    return _inv_export(db, InventoryCertificate, scan_id, asset_id, row, "inventory_certificates", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/env-vars")
@@ -545,6 +583,8 @@ def export_inv_env_vars(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(e, amap):
         info = amap.get(e.asset_id)
@@ -555,7 +595,7 @@ def export_inv_env_vars(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventoryEnvVar, scan_id, asset_id, row, "inventory_env_vars", fmt)
+    return _inv_export(db, InventoryEnvVar, scan_id, asset_id, row, "inventory_env_vars", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/ai-tools")
@@ -564,6 +604,8 @@ def export_inv_ai_tools(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(a, amap):
         info = amap.get(a.asset_id)
@@ -573,7 +615,7 @@ def export_inv_ai_tools(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventoryAITool, scan_id, asset_id, row, "inventory_ai_tools", fmt)
+    return _inv_export(db, InventoryAITool, scan_id, asset_id, row, "inventory_ai_tools", fmt, org_ids=org_ids)
 
 
 @router.get("/inventory/processes")
@@ -582,6 +624,8 @@ def export_inv_processes(
     asset_id: Optional[int] = None,
     fmt: str = Query("csv", regex="^(csv|json)$"),
     db: Session = Depends(get_db),
+    _user: User = Depends(require_auth),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     def row(p, amap):
         info = amap.get(p.asset_id)
@@ -592,4 +636,4 @@ def export_inv_processes(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
-    return _inv_export(db, InventoryProcess, scan_id, asset_id, row, "inventory_processes", fmt)
+    return _inv_export(db, InventoryProcess, scan_id, asset_id, row, "inventory_processes", fmt, org_ids=org_ids)

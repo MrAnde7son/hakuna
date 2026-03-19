@@ -70,7 +70,13 @@ BUILTIN_ROLE_DEFAULTS = {
 
 # ── Config ────────────────────────────────────────────────
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "change-me-in-production-use-a-real-secret")
+_DEFAULT_JWT_SECRET = "change-me-in-production-use-a-real-secret"
+JWT_SECRET = os.environ.get("JWT_SECRET", _DEFAULT_JWT_SECRET)
+if JWT_SECRET == _DEFAULT_JWT_SECRET and not os.environ.get("DATABASE_URL", "sqlite://").startswith("sqlite"):
+    raise RuntimeError(
+        "JWT_SECRET must be set to a strong random value in production. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))  # 8 hours
 
