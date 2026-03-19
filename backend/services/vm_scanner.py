@@ -8,6 +8,8 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
+import os
+
 import httpx
 from sqlalchemy.orm import Session
 
@@ -15,7 +17,7 @@ from models.models import Asset, Finding, Scan, Organization
 
 logger = logging.getLogger(__name__)
 
-VM_SCANNER_URL = "http://localhost:8002"
+VM_SCANNER_URL = os.getenv("VM_SCANNER_URL", "http://localhost:8002")
 
 
 async def _vm_request(method: str, path: str, **kwargs) -> Optional[dict]:
