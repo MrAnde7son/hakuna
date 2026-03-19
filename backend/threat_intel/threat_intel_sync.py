@@ -1857,13 +1857,18 @@ def sync_ssvc_decisions_to_db(db) -> dict:
         logger.warning("SSVC sync commit failed: %s", exc)
         db.rollback()
 
-    # Update ThreatCVE records with SSVC data
+    # Update ThreatCVE records with SSVC data — bulk fetch to avoid N individual queries
     all_ssvc = db.query(SSVCDecision).all()
-    for s in all_ssvc:
-        tc = db.query(ThreatCVE).filter(ThreatCVE.cve_id == s.cve_id).first()
-        if tc:
-            tc.ssvc_decision = s.decision
-            tc.ssvc_exploitation = s.exploitation
+    ssvc_by_cve = {s.cve_id: s for s in all_ssvc}
+    threat_cves = (
+        db.query(ThreatCVE)
+        .filter(ThreatCVE.cve_id.in_(ssvc_by_cve.keys()))
+        .all()
+    )
+    for tc in threat_cves:
+        s = ssvc_by_cve[tc.cve_id]
+        tc.ssvc_decision = s.decision
+        tc.ssvc_exploitation = s.exploitation
 
     try:
         db.commit()

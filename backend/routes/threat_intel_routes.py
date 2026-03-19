@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, asc, or_, text, case
 
-from core.database import get_db
+from core.database import get_db, SessionLocal
 from models.models import Finding, Asset, Scan
 from models.threat_intel_models import (
     ThreatGroup, TTP, ThreatGroupTTP,
@@ -24,6 +24,26 @@ import threat_intel.ttp_matcher as ttp_matcher
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threat-intel", tags=["threat-intel"])
+
+
+def _run_with_fresh_db(sync_fn, *args, **kwargs):
+    """Run a sync function with a fresh DB session.
+
+    Background tasks share the request's DB session, which may become stale
+    after a long-running sync (SSVC takes 10+ min). Each slow sync gets its
+    own connection so they don't depend on the original request session.
+    """
+    db = SessionLocal()
+    try:
+        sync_fn(db, *args, **kwargs)
+    except Exception as exc:
+        logger.warning("Sync %s failed: %s", getattr(sync_fn, "__name__", str(sync_fn)), exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    finally:
+        db.close()
 
 
 # ─────────────────────────────────────────────
@@ -1083,14 +1103,15 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
     if eol_sync_fn:
         background_tasks.add_task(eol_sync_fn, db)
 
-    # New intel sources — all run in background (some are slow)
-    background_tasks.add_task(sync_engine.sync_ssvc_decisions_to_db, db)
-    background_tasks.add_task(sync_engine.sync_cwe_catalog_to_db, db)
-    background_tasks.add_task(sync_engine.sync_metasploit_modules_to_db, db)
-    background_tasks.add_task(sync_engine.sync_exploitdb_to_db, db)
-    background_tasks.add_task(sync_engine.sync_msrc_patches_to_db, db)
+    # New intel sources — each gets its own fresh DB session so a stale connection
+    # from a previous long-running sync (e.g. SSVC) doesn't block the rest.
+    background_tasks.add_task(_run_with_fresh_db, sync_engine.sync_ssvc_decisions_to_db)
+    background_tasks.add_task(_run_with_fresh_db, sync_engine.sync_cwe_catalog_to_db)
+    background_tasks.add_task(_run_with_fresh_db, sync_engine.sync_metasploit_modules_to_db)
+    background_tasks.add_task(_run_with_fresh_db, sync_engine.sync_exploitdb_to_db)
+    background_tasks.add_task(_run_with_fresh_db, sync_engine.sync_msrc_patches_to_db)
     # Extended enrichment (runs after the new sources are synced)
-    background_tasks.add_task(sync_engine.enrich_findings_extended, db)
+    background_tasks.add_task(_run_with_fresh_db, sync_engine.enrich_findings_extended)
 
     return {
         "status": "ok",

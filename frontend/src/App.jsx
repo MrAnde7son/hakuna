@@ -1,5 +1,21 @@
 import React, { useState, useEffect, createContext, useContext, Suspense } from 'react'
-import logoSymbol from './assets/logo-symbol.svg'
+
+function HakunaLogo({ size = 28, style }) {
+  const scale = size / 65
+  return (
+    <svg
+      width={size}
+      height={Math.round(44 * scale)}
+      viewBox="0 0 65 44"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      style={style}
+      aria-label="Hakuna"
+    >
+      <path d="M30.7181 4.27637L26.7728 19H30.4495V25H25.1653L22.4788 35.0273C21.1397 40.0248 16.6106 43.5 11.4368 43.5C3.92067 43.4999 -1.54952 36.3704 0.395817 29.1104L0.671208 28.0791C2.10629 22.7237 6.95988 19 12.5042 19H20.5618L24.9232 2.72363L30.7181 4.27637ZM53.4612 0C60.9775 0 66.4486 7.1295 64.5032 14.3896L64.2269 15.4209C62.7918 20.7761 57.939 24.4998 52.3948 24.5H44.3372L39.9759 40.7764L34.18 39.2236L38.1253 24.5H34.4495V18.5H39.7327L42.4202 8.47266C43.7593 3.47531 48.2876 0.000201552 53.4612 0ZM12.5042 25C9.67544 25 7.19925 26.9004 6.46711 29.6328L6.19074 30.6631C5.26649 34.1124 7.86583 37.4999 11.4368 37.5C13.895 37.5 16.0467 35.849 16.6829 33.4746L18.9544 25H12.5042ZM53.4612 6C51.0033 6.0002 48.8524 7.65123 48.2161 10.0254L45.9446 18.5H52.3948C55.2235 18.4998 57.6998 16.5995 58.4319 13.8672L58.7073 12.8369C59.6316 9.38749 57.0324 6 53.4612 6Z" fill="#590202" />
+    </svg>
+  )
+}
 import { BrowserRouter, Routes, Route, NavLink, Navigate, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
@@ -338,11 +354,7 @@ function Sidebar({ collapsed, onToggle }) {
       >
         {!collapsed ? (
           <>
-            <img
-              src={logoSymbol}
-              alt="Hakuna"
-              style={{ width: 28, height: 28, display: 'block', flexShrink: 0 }}
-            />
+            <HakunaLogo size={28} style={{ display: 'block', flexShrink: 0 }} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, fontWeight: 800 }}>{t('app.name')}</div>
               <div style={{ fontSize: 11, color: 'var(--muted)' }}>{t('app.tagline')}</div>
@@ -386,11 +398,7 @@ function Sidebar({ collapsed, onToggle }) {
               padding: 0,
             }}
           >
-            <img
-              src={logoSymbol}
-              alt="Hakuna"
-              style={{ width: 18, height: 18, display: 'block' }}
-            />
+            <HakunaLogo size={18} style={{ display: 'block' }} />
           </button>
         )}
       </div>
