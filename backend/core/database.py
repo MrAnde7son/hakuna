@@ -85,6 +85,7 @@ def _migrate_add_columns():
             ("device_type", "VARCHAR"),
             ("cpe", "JSON"),
             ("os_confidence", "INTEGER"),
+            ("source_systems", "JSON"),
         ],
         "findings": [
             ("first_seen", "TIMESTAMP"),
@@ -108,6 +109,7 @@ def _migrate_add_columns():
             ("source_id", "VARCHAR"),
             ("source_system", "VARCHAR"),
             ("user_edited_fields", "JSON"),
+            ("source_systems", "JSON"),
         ],
         "threat_cves": [
             ("cvss4_score", "FLOAT"),
