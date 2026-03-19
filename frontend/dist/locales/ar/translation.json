@@ -295,6 +295,8 @@
       "10": "أقصى"
     },
     "envOptions": {
+      "internet": "إنترنت",
+      "external": "خارجي",
       "dmz": "DMZ",
       "internal": "داخلي",
       "cloud": "سحابي",

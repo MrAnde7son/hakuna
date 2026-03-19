@@ -12,3 +12,9 @@ __pycache__/
 *.nessus
 *.csv
 nessus *.html
+
+# Terraform — never commit provider binaries or local state
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/terraform.tfvars

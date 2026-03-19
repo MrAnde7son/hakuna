@@ -295,6 +295,8 @@
       "10": "Maximum"
     },
     "envOptions": {
+      "internet": "Internet",
+      "external": "Extern",
       "dmz": "DMZ",
       "internal": "Intern",
       "cloud": "Cloud",

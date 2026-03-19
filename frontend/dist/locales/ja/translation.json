@@ -295,6 +295,8 @@
       "10": "最大"
     },
     "envOptions": {
+      "internet": "インターネット",
+      "external": "外部",
       "dmz": "DMZ",
       "internal": "内部",
       "cloud": "クラウド",

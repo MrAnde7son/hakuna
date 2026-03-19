@@ -3255,8 +3255,39 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
 
 function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingId, onSetLanding, onRefresh }) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
+  const { scans, scansLoaded } = useScan()
   return (
     <div>
+      {scansLoaded && scans.length === 0 && (
+        <div style={{
+          maxWidth: '100%', marginBottom: 24, padding: '20px 28px',
+          background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.06))',
+          border: '1px solid rgba(99,102,241,0.25)', borderRadius: 14,
+          display: 'flex', alignItems: 'center', gap: 20,
+        }}>
+          <div style={{
+            width: 48, height: 48, borderRadius: 12, flexShrink: 0,
+            background: 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <Upload size={22} color="#818cf8" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 3 }}>{t('reports.uploadFirstScan')}</div>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>{t('reports.uploadFirstScanDesc')}</div>
+          </div>
+          <button
+            onClick={() => navigate('/settings?tab=upload')}
+            style={{
+              flexShrink: 0, padding: '9px 20px', background: 'var(--accent)', border: 'none',
+              color: '#fff', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14,
+              display: 'flex', alignItems: 'center', gap: 8,
+            }}
+          >
+            <Upload size={15} /> {t('reports.uploadScan')}
+          </button>
+        </div>
+      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <div>
           <h2 style={{ fontSize: 18, fontWeight: 700 }}>{t('reports.title')}</h2>
@@ -3459,7 +3490,9 @@ export default function ReportBuilder() {
           if (found) setActiveReport(found)
         } else if (initialLoadRef.current) {
           const targetId = loadLandingId()
-          const found = targetId ? mapped.find(r => String(r.id) === String(targetId)) : null
+          const found = targetId
+            ? (mapped.find(r => String(r.id) === String(targetId)) || mapped.find(r => r.name === 'Executive Overview'))
+            : mapped.find(r => r.name === 'Executive Overview')
           if (found) setActiveReport(found)
         }
       }
