@@ -2255,6 +2255,18 @@ def get_risk_grade(
             "assessment_coverage": 0.15,
             "exploit_exposure": 0.15,
         },
+        "context": {
+            "critical_count": critical,
+            "high_count": high,
+            "total_non_info": non_info,
+            "exploit_count": exploit_count,
+            "credentialed_assets": credentialed,
+            "total_assets": total_assets,
+            "coverage_pct": round(coverage_pct, 1),
+            "sla_breached": sla_counts.get("breached", 0),
+            "sla_at_risk": sla_counts.get("at_risk", 0),
+            "avg_mttr_days": round(avg_mttr, 1) if mttr_vals else None,
+        },
     }
 
 

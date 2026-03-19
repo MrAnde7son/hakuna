@@ -39,6 +39,7 @@ import {
   getInventoryCredentials,
   getFunnel,
   getRiskGrade,
+  getAggregatedSolutions,
 } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons } from '../shared/ui.jsx'
 
@@ -128,7 +129,8 @@ const DATA_SOURCES = {
   inv_ai_tools:       (scanId, f) => getInventoryAITools({ scan_id: scanId, category: f?.category, page_size: 0 }),
   inv_processes:      (scanId, f) => getInventoryProcesses({ scan_id: scanId, search: f?.search, page_size: 0 }),
   inv_credentials:    (scanId, f) => getInventoryCredentials({ scan_id: scanId, credential_type: f?.credential_type, protocol: f?.protocol, severity: f?.severity, search: f?.search, page_size: 0 }),
-  risk_grade:         (scanId, f) => getRiskGrade(scanId, f?.tags, f?.tag_logic),
+  risk_grade:              (scanId, f) => getRiskGrade(scanId, f?.tags, f?.tag_logic),
+  aggregated_solutions:    (scanId, f) => getAggregatedSolutions({ scan_id: scanId }),
 }
 
 // Filter definitions per source — drives ConfigPanel filter UI
@@ -622,6 +624,7 @@ const DATA_PRESETS = {
   top_assets: {
     label: 'Top Risky Assets', group: 'Assets & Findings', source: 'summary', type: 'table',
     extract: d => (d?.top_risky_assets || []),
+    rowDrillDown: row => row?.id ? `/assets/${row.id}` : null,
     columns: [
       { key: 'hostname', label: 'Asset' },
       { key: 'os', label: 'OS' },
@@ -648,6 +651,7 @@ const DATA_PRESETS = {
   quick_wins_table: {
     label: 'Quick Wins', group: 'Assets & Findings', source: 'summary', type: 'table',
     extract: d => (d?.quick_wins || []),
+    rowDrillDown: row => row?.id ? `/findings/${row.id}` : null,
     columns: [
       { key: 'plugin_name', label: 'Finding' },
       { key: 'host', label: 'Asset' },
@@ -658,6 +662,7 @@ const DATA_PRESETS = {
   remediation_queue_data: {
     label: 'Remediation Queue', group: 'Assets & Findings', source: 'remediation_queue', type: 'table',
     extract: d => Array.isArray(d) ? d : [],
+    rowDrillDown: row => row?.id ? `/findings/${row.id}` : null,
     columns: [
       { key: 'plugin_name', label: 'Finding' },
       { key: 'severity_label', label: 'Sev' },
@@ -666,9 +671,24 @@ const DATA_PRESETS = {
       { key: 'priority_score', label: 'Priority', render: v => v?.toFixed?.(1) },
     ],
   },
+  aggregated_solutions_table: {
+    label: 'Top Remediation Actions', group: 'Risk', source: 'aggregated_solutions', type: 'table',
+    extract: d => [...(d?.solutions ?? (Array.isArray(d) ? d : []))].sort((a, b) => (b.risk_reduction ?? 0) - (a.risk_reduction ?? 0)),
+    rowDrillDown: row => row?.id ? `/aggregated-solutions?highlight=${row.id}` : null,
+    columns: [
+      { key: 'title', label: 'Action' },
+      { key: 'affected_component', label: 'Component' },
+      { key: 'asset_count', label: 'Assets' },
+      { key: 'finding_count', label: 'Findings' },
+      { key: 'risk_reduction', label: 'Risk Reduction', render: v => v != null ? `${(v * 100).toFixed(1)}%` : '—' },
+      { key: 'effort_level', label: 'Effort' },
+      { key: 'owner_suggestion', label: 'Owner' },
+    ],
+  },
   findings_list: {
     label: 'Findings List', group: 'Assets & Findings', source: 'findings', type: 'table',
     extract: d => d?.findings || [],
+    rowDrillDown: row => row?.id ? `/findings/${row.id}` : null,
     columns: [
       { key: 'severity_label', label: 'Sev' },
       { key: 'plugin_name', label: 'Plugin' },
@@ -701,6 +721,7 @@ const DATA_PRESETS = {
   asset_list: {
     label: 'Asset List', group: 'Assets & Findings', source: 'assets', type: 'table',
     extract: d => d?.assets ?? (Array.isArray(d) ? d : []),
+    rowDrillDown: row => row?.id ? `/assets/${row.id}` : null,
     columns: [
       { key: 'hostname', label: 'Hostname', fallback: 'ip' },
       { key: 'os', label: 'OS' },
@@ -1155,6 +1176,8 @@ const DEFAULT_DASHBOARD = {
     { id: 'dw14',type: 'card',      title: 'Zombie Vulns',          width: 'quarter', config: { preset: 'zombie_count' } },
     { id: 'dw15',type: 'card',      title: 'Regressions',           width: 'quarter', config: { preset: 'regression_count' } },
     { id: 'dw16',type: 'bar_chart', title: 'Finding Age',           width: 'half',    config: { preset: 'age_distribution' } },
+    { id: 'dw17',type: 'risk_grade', title: 'How to Improve Risk Score', width: 'full', config: { preset: 'risk_grade', show_tips: true } },
+    { id: 'dw18',type: 'table',      title: 'Top Remediation Actions',   width: 'full', config: { preset: 'aggregated_solutions_table', limit: 10 } },
   ],
 }
 
@@ -1701,6 +1724,91 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
               populationSize={bm.platform_benchmark?.population_size}
             />
           )}
+          {cfg.show_tips && (() => {
+            const ctx = extracted?.context || {}
+            const buildTip = (key) => {
+              switch (key) {
+                case 'severity_mix': {
+                  const c = ctx.critical_count ?? 0, h = ctx.high_count ?? 0, total = ctx.total_non_info ?? 0
+                  const ratio = total > 0 ? Math.round((c + h) / total * 100) : 0
+                  return {
+                    label: 'Severity Mix', color: '#dc2626',
+                    action: `${c} critical, ${h} high out of ${total} findings (${ratio}%) — remediate to reduce ratio`,
+                    drillUrl: '/findings?severity=4',
+                  }
+                }
+                case 'exploit_exposure': {
+                  const e = ctx.exploit_count ?? 0, total = ctx.total_non_info ?? 0
+                  return {
+                    label: 'Exploit Exposure', color: '#ea580c',
+                    action: `${e} of ${total} findings have known exploits — patch these first`,
+                    drillUrl: '/findings?has_exploit=true',
+                  }
+                }
+                case 'remediation_velocity': {
+                  const mttr = ctx.avg_mttr_days
+                  return {
+                    label: 'Remediation Speed', color: '#f59e0b',
+                    action: mttr != null
+                      ? `Avg MTTR is ${mttr}d (target <7d) — use Quick Wins to reduce it`
+                      : 'No resolved findings yet — start closing Quick Wins',
+                    drillUrl: '/findings?effort_level=quick_win',
+                  }
+                }
+                case 'sla_compliance': {
+                  const breached = ctx.sla_breached ?? 0, atRisk = ctx.sla_at_risk ?? 0
+                  return {
+                    label: 'SLA Compliance', color: '#d97706',
+                    action: `${breached} findings SLA-breached, ${atRisk} at risk — resolve immediately`,
+                    drillUrl: '/findings?sla_status=breached',
+                  }
+                }
+                case 'assessment_coverage': {
+                  const cred = ctx.credentialed_assets ?? 0, total = ctx.total_assets ?? 0
+                  const uncred = total - cred
+                  return {
+                    label: 'Coverage', color: '#6366f1',
+                    action: `${cred}/${total} assets credentialed — run credentialed scans on ${uncred} more`,
+                    drillUrl: '/assets',
+                  }
+                }
+                default: return null
+              }
+            }
+            const tipsOrder = ['severity_mix', 'exploit_exposure', 'remediation_velocity', 'sla_compliance', 'assessment_coverage']
+            const weakest = [...tipsOrder].sort((a, b) => (components[a] ?? 0) - (components[b] ?? 0)).filter(k => (components[k] ?? 0) < 80).slice(0, 3)
+            if (weakest.length === 0) return null
+            return (
+              <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>Top improvements</div>
+                {weakest.map((key, rank) => {
+                  const val = Math.round(components[key] ?? 0)
+                  const tip = buildTip(key)
+                  if (!tip) return null
+                  const valColor = val >= 60 ? '#d97706' : '#dc2626'
+                  return (
+                    <div
+                      key={key}
+                      onClick={() => navigate(tip.drillUrl)}
+                      style={{ display: 'grid', gridTemplateColumns: '10px 1fr auto auto', alignItems: 'center', gap: 8, padding: '5px 6px', borderRadius: 5, cursor: 'pointer', transition: 'background 0.1s' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+                    >
+                      <div style={{ width: 10, height: 10, borderRadius: '50%', background: tip.color, opacity: 1 - rank * 0.2, flexShrink: 0 }} />
+                      <span style={{ fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontWeight: 700, color: 'var(--text-primary)', marginRight: 4 }}>{tip.label}:</span>
+                        {tip.action}
+                      </span>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: valColor, flexShrink: 0, background: `${tip.color}18`, borderRadius: 4, padding: '1px 5px' }}>{val}/100</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: '#16a34a', flexShrink: 0, background: '#16a34a18', borderRadius: 4, padding: '1px 5px', whiteSpace: 'nowrap' }}>
+                        +{Math.round((80 - val) * (weights[key] ?? 0))} pts
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          })()}
         </div>
       )
     }
@@ -1816,6 +1924,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
       const limit = parseInt(cfg.limit || 10)
       const display = rows.slice(0, limit)
       const cols = preset.columns || []
+      const rowDrill = preset.rowDrillDown
       if (display.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.noData')}</div>
       return (
         <div style={{ overflowX: 'auto' }}>
@@ -1828,17 +1937,26 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
               </tr>
             </thead>
             <tbody>
-              {display.map((row, i) => (
-                <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                  {cols.map(c => {
-                    const raw = row[c.key] ?? (c.fallback ? row[c.fallback] : null) ?? ''
-                    const val = c.render ? c.render(raw) : raw
-                    return (
-                      <td key={c.key} style={{ padding: '6px 8px', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{val}</td>
-                    )
-                  })}
-                </tr>
-              ))}
+              {display.map((row, i) => {
+                const drillUrl = rowDrill ? rowDrill(row) : null
+                return (
+                  <tr
+                    key={i}
+                    style={{ borderBottom: '1px solid var(--border)', cursor: drillUrl ? 'pointer' : 'default', transition: 'background 0.1s' }}
+                    onClick={drillUrl ? () => navigate(drillUrl) : undefined}
+                    onMouseEnter={drillUrl ? e => { e.currentTarget.style.background = 'var(--bg-hover)' } : undefined}
+                    onMouseLeave={drillUrl ? e => { e.currentTarget.style.background = 'transparent' } : undefined}
+                  >
+                    {cols.map(c => {
+                      const raw = row[c.key] ?? (c.fallback ? row[c.fallback] : null) ?? ''
+                      const val = c.render ? c.render(raw) : raw
+                      return (
+                        <td key={c.key} style={{ padding: '6px 8px', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{val}</td>
+                      )
+                    })}
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -2480,6 +2598,16 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
       )}
 
       {widget.type === 'funnel' && <FunnelConfigPanel cfg={cfg} set={set} Field={Field} Select={Select} TextInput={TextInput} />}
+
+      {/* Improvement tips toggle — only for risk_grade widgets */}
+      {widget.type === 'risk_grade' && (
+        <>
+          <div style={{ height: 1, background: 'var(--border)', margin: '10px 0 14px' }} />
+          <Field label="Improvement Tips">
+            <Toggle checked={cfg.show_tips} onChange={v => set('show_tips', v)} label="Show how to improve each component" />
+          </Field>
+        </>
+      )}
 
       {/* Benchmark overlay toggle — available when a benchmark mapping exists for this preset */}
       {PRESET_TO_BENCHMARK[cfg.preset] && ['card', 'gauge', 'risk_grade'].includes(widget.type) && (
