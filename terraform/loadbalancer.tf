@@ -43,7 +43,7 @@ resource "google_compute_backend_service" "api" {
   name                  = "hakuna-api-backend"
   protocol              = "HTTPS"
   load_balancing_scheme = "EXTERNAL_MANAGED"
-  timeout_sec           = 300 # 5 min — allows large Nessus scan uploads to fully process
+  # timeout_sec is not supported for Serverless NEG backends (Cloud Run)
 
   backend {
     group = google_compute_region_network_endpoint_group.api_neg.id
@@ -88,22 +88,63 @@ resource "google_compute_url_map" "main" {
 
   path_matcher {
     name            = "paths"
-    default_service = google_compute_backend_bucket.frontend.id # SPA fallback
+    default_service = google_compute_backend_bucket.frontend.id
 
-    # SPA routing: GCS returns 404 for unknown paths with index.html content,
-    # but the status code is still 404. Convert those to 200 so React Router works.
-    default_custom_error_response_policy {
-      error_response_rule {
-        match_response_codes   = ["404"]
-        path                   = "/index.html"
-        override_response_code = 200
-      }
-      error_service = google_compute_backend_bucket.frontend.id
+    # API traffic → Cloud Run
+    route_rules {
+      priority = 1
+      match_rules { prefix_match = "/api/" }
+      service = google_compute_backend_service.api.id
+    }
+    route_rules {
+      priority = 2
+      match_rules { full_path_match = "/api" }
+      service = google_compute_backend_service.api.id
+    }
+    route_rules {
+      priority = 3
+      match_rules { full_path_match = "/docs" }
+      service = google_compute_backend_service.api.id
+    }
+    route_rules {
+      priority = 4
+      match_rules { full_path_match = "/openapi.json" }
+      service = google_compute_backend_service.api.id
+    }
+    route_rules {
+      priority = 5
+      match_rules { full_path_match = "/redoc" }
+      service = google_compute_backend_service.api.id
     }
 
-    path_rule {
-      paths   = ["/api/*", "/api", "/docs", "/openapi.json", "/redoc"]
-      service = google_compute_backend_service.api.id
+    # Static asset directories → GCS directly (no rewrite)
+    route_rules {
+      priority = 10
+      match_rules { prefix_match = "/assets/" }
+      service = google_compute_backend_bucket.frontend.id
+    }
+    route_rules {
+      priority = 11
+      match_rules { prefix_match = "/locales/" }
+      service = google_compute_backend_bucket.frontend.id
+    }
+    route_rules {
+      priority = 12
+      match_rules { prefix_match = "/logos/" }
+      service = google_compute_backend_bucket.frontend.id
+    }
+
+    # SPA catch-all: rewrite all other paths to /index.html with 200 status.
+    # This is the fix for the /threat-intel 404 — GCS served the HTML but with
+    # 404 status; the regex+template rewrite here lets GCS serve index.html as
+    # a normal 200 for all React Router routes.
+    route_rules {
+      priority = 999
+      match_rules { path_template_match = "/**" }
+      service = google_compute_backend_bucket.frontend.id
+      route_action {
+        url_rewrite { path_template_rewrite = "/index.html" }
+      }
     }
   }
 }
