@@ -692,6 +692,14 @@ def _delete_scan_cascade(db: Session, scan: Scan):
     db.query(AssetOwnership).filter(AssetOwnership.asset_id.in_(asset_subq)).delete(synchronize_session=False)
     db.query(FindingOwnership).filter(FindingOwnership.finding_id.in_(finding_subq)).delete(synchronize_session=False)
     db.query(CampaignFinding).filter(CampaignFinding.finding_id.in_(finding_subq)).delete(synchronize_session=False)
+    # Clear auto_resolved_by_scan_id references from findings in OTHER scans
+    db.query(Finding).filter(Finding.auto_resolved_by_scan_id == scan_id).update(
+        {"auto_resolved_by_scan_id": None}, synchronize_session=False
+    )
+    # Clear campaign.scan_id references
+    db.query(Campaign).filter(Campaign.scan_id == scan_id).update(
+        {"scan_id": None}, synchronize_session=False
+    )
     db.delete(scan)  # ORM cascade handles Asset → Finding → AutomateClick
     db.flush()
 
