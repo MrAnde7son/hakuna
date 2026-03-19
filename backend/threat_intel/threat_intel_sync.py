@@ -1762,23 +1762,35 @@ def sync_ssvc_decisions_to_db(db) -> dict:
     """
     import zipfile
     import io
+    import tempfile
 
     logger.info("SSVC sync: downloading CISA vulnrichment repository...")
     ctx = _get_ssl_context()
     req = urllib.request.Request(_VULNRICHMENT_ZIP_URL, headers={"User-Agent": _USER_AGENT})
+    # Stream to a temp file to avoid loading 240MB into RAM all at once
     try:
+        tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
         with urllib.request.urlopen(req, context=ctx, timeout=300) as resp:
-            zip_bytes = resp.read()
+            total = 0
+            while True:
+                chunk = resp.read(1 << 20)  # 1 MiB at a time
+                if not chunk:
+                    break
+                tmp.write(chunk)
+                total += len(chunk)
+        tmp.flush()
+        tmp.close()
     except Exception as exc:
         logger.warning("SSVC sync: failed to download vulnrichment repo: %s", exc)
         return {"added": 0, "updated": 0}
 
-    logger.info("SSVC sync: downloaded %d bytes, extracting...", len(zip_bytes))
+    logger.info("SSVC sync: downloaded %d bytes, extracting...", total)
 
     try:
-        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+        zf = zipfile.ZipFile(tmp.name)
     except Exception as exc:
         logger.warning("SSVC sync: failed to open zip: %s", exc)
+        os.unlink(tmp.name)
         return {"added": 0, "updated": 0}
 
     added = 0
@@ -1834,6 +1846,10 @@ def sync_ssvc_decisions_to_db(db) -> dict:
                 db.rollback()
 
     zf.close()
+    try:
+        os.unlink(tmp.name)
+    except Exception:
+        pass
 
     try:
         db.commit()

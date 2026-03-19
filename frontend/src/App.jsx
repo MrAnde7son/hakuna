@@ -20,6 +20,7 @@ import {
   Globe,
   BookOpen,
   HelpCircle,
+  Menu,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -334,36 +335,62 @@ function Sidebar({ collapsed, onToggle }) {
           marginBottom: 20
         }}
       >
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-label={collapsed ? t('nav.expandNav') : t('nav.collapseNav')}
-          style={{
-            width: 32,
-            height: 32,
-            borderRadius: 8,
-            border: '1px solid var(--border)',
-            background: 'var(--bg)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            padding: 0
-          }}
-        >
-          <img
-            src="/logo-symbol.svg"
-            alt="Toggle navigation"
-            style={{ width: 18, height: 18, display: 'block' }}
-          />
-        </button>
-        {!collapsed && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div>
+        {!collapsed ? (
+          <>
+            <img
+              src="/logo-symbol.svg"
+              alt="Hakuna"
+              style={{ width: 28, height: 28, display: 'block', flexShrink: 0 }}
+            />
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, fontWeight: 800 }}>{t('app.name')}</div>
               <div style={{ fontSize: 11, color: 'var(--muted)' }}>{t('app.tagline')}</div>
             </div>
-          </div>
+            <button
+              type="button"
+              onClick={onToggle}
+              aria-label={t('nav.collapseNav')}
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: 'transparent',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                padding: 0,
+                flexShrink: 0,
+              }}
+            >
+              <Menu size={15} color="var(--text-muted)" />
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label={t('nav.expandNav')}
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              border: '1px solid var(--border)',
+              background: 'var(--bg)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              padding: 0,
+            }}
+          >
+            <img
+              src="/logo-symbol.svg"
+              alt="Hakuna"
+              style={{ width: 18, height: 18, display: 'block' }}
+            />
+          </button>
         )}
       </div>
 

@@ -41,8 +41,8 @@ resource "google_cloud_run_v2_service" "api" {
 
       resources {
         limits = {
-          cpu    = "1"
-          memory = "1Gi" # bumped from 512Mi — large Nessus scans need headroom for parsing + inventory
+          cpu    = "2"
+          memory = "2Gi" # 2Gi required: SSVC sync loads a 240MB zip into memory for extraction
         }
         # CPU must stay allocated after response so FastAPI background tasks (threat intel syncs,
         # SSVC/ExploitDB/MSRC downloads) run at full speed. With cpu_idle=true, CPU is throttled
