@@ -680,7 +680,7 @@ const DATA_PRESETS = {
       { key: 'affected_component', label: 'Component' },
       { key: 'asset_count', label: 'Assets' },
       { key: 'finding_count', label: 'Findings' },
-      { key: 'risk_reduction', label: 'Risk Reduction', render: v => v != null ? `${(v * 100).toFixed(1)}%` : '—' },
+      { key: 'risk_reduction', label: 'Risk Reduction', render: v => v != null ? `${v.toFixed(1)}%` : '—' },
       { key: 'effort_level', label: 'Effort' },
       { key: 'owner_suggestion', label: 'Owner' },
     ],
