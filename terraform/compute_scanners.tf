@@ -122,7 +122,7 @@ resource "google_compute_instance" "scanners" {
       # ── hakuna-scanner (EASM) — Redis DB 2, hakuna_easm database ─────────
       easm-api:
         image: $${AR_BASE}/hakuna-scanner:latest
-        command: uvicorn app.main:app --host 0.0.0.0 --port 8001
+        command: sh -c "PYTHONPATH=/app alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8001"
         ports:
           - "8001:8001"
         environment:
