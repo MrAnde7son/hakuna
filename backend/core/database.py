@@ -180,6 +180,7 @@ def _migrate_add_columns():
             ("cve_ids", "JSON"),
             ("risk_reduction", "FLOAT DEFAULT 0"),
             ("efficiency_score", "FLOAT DEFAULT 0"),
+            ("downstream_impact", "JSON"),
         ],
     }
     insp = inspect(engine)
