@@ -44,9 +44,10 @@ resource "google_cloud_run_v2_service" "api" {
           cpu    = "1"
           memory = "1Gi" # bumped from 512Mi — large Nessus scans need headroom for parsing + inventory
         }
-        # Request-based billing — CPU only allocated during requests.
-        # Significantly cheaper than instance-based for an API that's mostly idle.
-        cpu_idle = true
+        # CPU must stay allocated after response so FastAPI background tasks (threat intel syncs,
+        # SSVC/ExploitDB/MSRC downloads) run at full speed. With cpu_idle=true, CPU is throttled
+        # after the HTTP response is sent, causing multi-minute background syncs to stall.
+        cpu_idle = false
         startup_cpu_boost = true
       }
 

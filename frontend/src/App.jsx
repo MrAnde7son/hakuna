@@ -359,11 +359,6 @@ function Sidebar({ collapsed, onToggle }) {
         </button>
         {!collapsed && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <img
-              src="/logo-symbol.svg"
-              alt="Hakuna logo"
-              style={{ width: 22, height: 22, display: 'block', flexShrink: 0 }}
-            />
             <div>
               <div style={{ fontSize: 13, fontWeight: 800 }}>{t('app.name')}</div>
               <div style={{ fontSize: 11, color: 'var(--muted)' }}>{t('app.tagline')}</div>
