@@ -110,11 +110,13 @@ resource "google_compute_instance" "scanners" {
         command:
           - "--structured-logs"
           - "--port=5432"
+          - "--address=0.0.0.0"
           - "--private-ip"
+          - "--health-check"
           - "$${SQL_CONN}"
         restart: always
         healthcheck:
-          test: ["CMD", "nc", "-z", "localhost", "5432"]
+          test: ["CMD", "/cloud-sql-proxy", "wait", "--max", "5s"]
           interval: 10s
           timeout: 5s
           retries: 10
