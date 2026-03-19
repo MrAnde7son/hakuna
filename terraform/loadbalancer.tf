@@ -1,6 +1,6 @@
 # ── Global HTTPS Load Balancer ────────────────────────────────────────────────
 # Routes traffic:
-#   /api/* and /docs /openapi.json → Cloud Run API
+#   /api/* and /openapi.json       → Cloud Run API
 #   /*               → GCS frontend bucket (React SPA)
 #
 # Cloud CDN is enabled on the frontend backend to cache static assets globally.
@@ -103,17 +103,7 @@ resource "google_compute_url_map" "main" {
     }
     route_rules {
       priority = 3
-      match_rules { full_path_match = "/docs" }
-      service = google_compute_backend_service.api.id
-    }
-    route_rules {
-      priority = 4
       match_rules { full_path_match = "/openapi.json" }
-      service = google_compute_backend_service.api.id
-    }
-    route_rules {
-      priority = 5
-      match_rules { full_path_match = "/redoc" }
       service = google_compute_backend_service.api.id
     }
 
