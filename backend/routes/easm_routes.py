@@ -138,6 +138,38 @@ async def scan_domain_endpoint(
     return result
 
 
+@router.post("/rescan/{scan_id}")
+async def rescan_by_scan_id(
+    scan_id: int,
+    scan_type: str = Query("full", regex="^(full|discovery|enrichment)$"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Re-trigger an existing EASM scan using the scan's org context.
+
+    Superadmins can rescan any scan; org members can only rescan their own.
+    """
+    scan = db.query(Scan).filter(Scan.id == scan_id, Scan.source_type == "easm").first()
+    if not scan:
+        raise HTTPException(404, "EASM scan not found")
+    if user.role != "superadmin" and scan.org_id != user.org_id:
+        raise HTTPException(403, "Access denied")
+
+    org = db.query(Organization).filter(Organization.id == scan.org_id).first()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+
+    easm_org_id = _require_easm_org_id(db, org)
+    domain = (scan.raw_metadata or {}).get("domain") or org.easm_domain
+    if not domain:
+        raise HTTPException(400, "No domain associated with this scan")
+
+    result = await scan_domain(db, org, domain, scan_type)
+    if result is None:
+        raise HTTPException(502, "Failed to trigger scan — hakuna-scanner may be unavailable")
+    return result
+
+
 @router.post("/refresh/{scan_id}")
 async def refresh_scan(
     scan_id: int,

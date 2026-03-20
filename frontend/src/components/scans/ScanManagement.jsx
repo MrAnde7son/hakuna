@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import {
-  uploadScan, deleteScan, getEasmStatus, scanEasmDomain, refreshEasmScan, setupEasm,
+  uploadScan, deleteScan, getEasmStatus, scanEasmDomain, rescanEasmScan, refreshEasmScan, setupEasm,
   getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner } from '../shared/ui.jsx'
@@ -1246,7 +1246,7 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
                 disabled={rescanning}
                 onClick={async () => {
                   setRescanning(true)
-                  try { await onRescan(domain) } finally { setRescanning(false) }
+                  try { await onRescan(scan.id) } finally { setRescanning(false) }
                 }}
                 title={`Rescan ${domain}`}
                 style={{
@@ -1424,9 +1424,9 @@ export default function ScanManagement() {
     getEasmStatus().then(setEasmStatus).catch(() => {})
   }
 
-  const handleRescanDomain = async (domain) => {
+  const handleRescanDomain = async (scanId) => {
     try {
-      await scanEasmDomain(domain, 'full')
+      await rescanEasmScan(scanId, 'full')
     } catch (err) {
       console.error('Rescan failed:', err)
     }

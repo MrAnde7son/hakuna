@@ -7084,7 +7084,7 @@ def get_integration(provider: str, db: Session = Depends(get_db)):
             else:
                 safe_config[k] = v
 
-    return {
+    response = {
         "provider": provider,
         "display_name": schema["display_name"],
         "is_enabled": cfg.is_enabled if cfg else False,
@@ -7094,6 +7094,11 @@ def get_integration(provider: str, db: Session = Depends(get_db)):
         "last_test_at": cfg.last_test_at.isoformat() if cfg and cfg.last_test_at else None,
         "last_test_detail": cfg.last_test_detail if cfg else None,
     }
+    # For email, indicate whether Brevo fallback is available
+    if provider == "email":
+        from services.brevo import is_configured as brevo_configured
+        response["brevo_available"] = brevo_configured()
+    return response
 
 
 class IntegrationUpdate(BaseModel):

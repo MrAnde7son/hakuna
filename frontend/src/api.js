@@ -789,6 +789,7 @@ export const rebuildAggregatedSolutions = (scanId) => request(`/aggregated-solut
 // EASM (External Attack Surface)
 export const getEasmStatus = () => request('/easm/status')
 export const scanEasmDomain = (domain, scanType = 'full') => request(`/easm/scan-domain?domain=${encodeURIComponent(domain)}&scan_type=${scanType}`, { method: 'POST' })
+export const rescanEasmScan = (scanId, scanType = 'full') => request(`/easm/rescan/${scanId}?scan_type=${scanType}`, { method: 'POST' })
 export const refreshEasmScan = (scanId) => request(`/easm/refresh/${scanId}`, { method: 'POST' })
 export const triggerEasmScan = (scanType = 'full') => request(`/easm/scan?scan_type=${scanType}`, { method: 'POST' })
 export const getEasmEvents = (since, limit = 100) => request(`/easm/events?limit=${limit}${since ? '&since=' + since : ''}`)
