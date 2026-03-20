@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon } from 'lucide-react'
+import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon, Zap } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership } from '../../api.js'
+import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign } from '../../api.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, Input,
   Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, SourceDots, SourceFilter
@@ -214,6 +214,83 @@ function BulkTagModal({ findingIds, onClose, onDone }) {
   )
 }
 
+function BulkFindingCampaignModal({ selectedFindings, scanId, onClose, onCreated }) {
+  const [name, setName] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+
+  const handleCreate = async () => {
+    if (!name.trim()) { setError('Name is required'); return }
+    setSaving(true); setError(null)
+    try {
+      // Deduplicate plugin IDs and build valid rule-engine conditions
+      const uniquePluginIds = [...new Set(selectedFindings.map(f => f.plugin_id).filter(Boolean))]
+      const pluginConditions = uniquePluginIds.map(pid => ({ field: 'finding.plugin_id', op: 'eq', value: String(pid) }))
+      // Also scope to the specific asset IPs/hostnames
+      const assetConditions = selectedFindings.reduce((acc, f) => {
+        const key = f.asset_ip || f.asset_hostname
+        if (key && !acc.find(c => c.value === key)) {
+          acc.push({ field: f.asset_ip ? 'ip' : 'hostname', op: 'eq', value: key })
+        }
+        return acc
+      }, [])
+      const conditions = pluginConditions.length > 0 ? pluginConditions : assetConditions
+      if (conditions.length === 0) { setError('Could not build query from selected findings'); setSaving(false); return }
+      const result = await createCampaign({
+        name: name.trim(),
+        scan_id: scanId || null,
+        query: conditions,
+        query_logic: 'OR',
+        status: 'planned',
+      })
+      onCreated(result)
+    } catch (e) {
+      setError(e.message || 'Failed to create campaign')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12,
+        padding: 24, width: 420, display: 'flex', flexDirection: 'column', gap: 14,
+        boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>
+          <Zap size={15} style={{ verticalAlign: 'middle', marginRight: 6, color: 'var(--accent)' }} />
+          Create Campaign from {selectedFindings.length} finding{selectedFindings.length !== 1 ? 's' : ''}
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Campaign name</label>
+          <input
+            autoFocus
+            value={name}
+            onChange={e => setName(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleCreate()}
+            placeholder="e.g. Q2 Remediation"
+            style={{
+              width: '100%', background: 'var(--bg)', border: '1px solid var(--border)',
+              color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px',
+              fontSize: 13, outline: 'none', boxSizing: 'border-box',
+            }}
+          />
+        </div>
+        {error && <div style={{ fontSize: 12, color: 'var(--critical)' }}>{error}</div>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button onClick={handleCreate} disabled={saving || !name.trim()}>
+            <Zap size={14} /> {saving ? 'Creating…' : 'Create Campaign'}
+          </Button>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function FindingExplorer() {
   const { t } = useTranslation()
   const { activeScanId } = useScan()
@@ -229,6 +306,7 @@ export default function FindingExplorer() {
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [showBulkTag, setShowBulkTag] = useState(false)
   const [showSaveAs, setShowSaveAs] = useState(false)
+  const [showBulkCampaign, setShowBulkCampaign] = useState(false)
   const [tagFilter, setTagFilter] = useState([])
   const [tagLogic, setTagLogic] = useState('AND')
   const [ownershipEdit, setOwnershipEdit] = useState(null) // { findingId, current }
@@ -768,9 +846,14 @@ export default function FindingExplorer() {
         action={
           <div style={{ display: 'flex', gap: 8 }}>
             {selectedIds.size > 0 && (
-              <Button size="sm" variant="ghost" onClick={() => setShowBulkTag(true)}>
-                <Tag size={14} /> {t('findings.tagSelected', { count: selectedIds.size })}
-              </Button>
+              <>
+                <Button size="sm" variant="ghost" onClick={() => setShowBulkTag(true)}>
+                  <Tag size={14} /> {t('findings.tagSelected', { count: selectedIds.size })}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setShowBulkCampaign(true)}>
+                  <Zap size={14} /> Campaign
+                </Button>
+              </>
             )}
             <Button variant="ghost" size="sm" onClick={() => exportDownload('findings', { scan_id: activeScanId, severity, plugin_family: family, has_exploit: hasExploit, is_kev: isKev, effort_level: effortLevel, search })}>
               <Download size={14} /> {t('findings.exportCsv')}
@@ -977,6 +1060,15 @@ export default function FindingExplorer() {
           findingIds={[...selectedIds]}
           onClose={() => setShowBulkTag(false)}
           onDone={() => { setShowBulkTag(false); setSelectedIds(new Set()); load() }}
+        />
+      )}
+
+      {showBulkCampaign && (
+        <BulkFindingCampaignModal
+          selectedFindings={findings.filter(f => selectedIds.has(f.id))}
+          scanId={activeScanId}
+          onClose={() => setShowBulkCampaign(false)}
+          onCreated={(campaign) => { setShowBulkCampaign(false); setSelectedIds(new Set()); navigate(`/campaigns/${campaign.id}`) }}
         />
       )}
 

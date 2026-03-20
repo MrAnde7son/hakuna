@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight, Zap, Radar } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags } from '../../api.js'
+import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags, createCampaign, startVmScan } from '../../api.js'
 import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover, SourceDots, SourceFilter } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
@@ -241,6 +241,78 @@ function BulkTagModal({ assetIds, onClose, onDone }) {
   )
 }
 
+// Bulk campaign modal
+function BulkCampaignModal({ selectedAssets, scanId, onClose, onCreated }) {
+  const [name, setName] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+
+  const handleCreate = async () => {
+    if (!name.trim()) { setError('Name is required'); return }
+    setSaving(true); setError(null)
+    try {
+      // Build valid rule-engine conditions using ip (preferred) or hostname
+      const conditions = selectedAssets.map(a => {
+        if (a.ip) return { field: 'ip', op: 'eq', value: a.ip }
+        if (a.hostname) return { field: 'hostname', op: 'eq', value: a.hostname }
+        return { field: 'fqdn', op: 'eq', value: a.fqdn }
+      }).filter(c => c.value)
+      if (conditions.length === 0) { setError('Selected assets have no IP, hostname, or FQDN'); setSaving(false); return }
+      const result = await createCampaign({
+        name: name.trim(),
+        scan_id: scanId || null,
+        query: conditions,
+        query_logic: 'OR',
+        status: 'planned',
+      })
+      onCreated(result)
+    } catch (e) {
+      setError(e.message || 'Failed to create campaign')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12,
+        padding: 24, width: 420, display: 'flex', flexDirection: 'column', gap: 14,
+        boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>
+          <Zap size={15} style={{ verticalAlign: 'middle', marginRight: 6, color: 'var(--accent)' }} />
+          Create Campaign from {selectedAssets.length} asset{selectedAssets.length !== 1 ? 's' : ''}
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Campaign name</label>
+          <input
+            autoFocus
+            value={name}
+            onChange={e => setName(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleCreate()}
+            placeholder="e.g. Q2 Remediation"
+            style={{
+              width: '100%', background: 'var(--bg)', border: '1px solid var(--border)',
+              color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px',
+              fontSize: 13, outline: 'none', boxSizing: 'border-box',
+            }}
+          />
+        </div>
+        {error && <div style={{ fontSize: 12, color: 'var(--critical)' }}>{error}</div>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button onClick={handleCreate} disabled={saving || !name.trim()}>
+            <Zap size={14} /> {saving ? 'Creating…' : 'Create Campaign'}
+          </Button>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function AssetInventory() {
   const { t } = useTranslation()
   const ASSET_PAGE_SIZE = 50
@@ -256,6 +328,9 @@ export default function AssetInventory() {
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [showBulkTag, setShowBulkTag] = useState(false)
   const [showSaveAs, setShowSaveAs] = useState(false)
+  const [showBulkCampaign, setShowBulkCampaign] = useState(false)
+  const [bulkScanState, setBulkScanState] = useState(null) // null | 'scanning' | 'done' | 'error'
+  const [bulkScanError, setBulkScanError] = useState(null)
   const [tagFilter, setTagFilter] = useState([])
   const [tagLogic, setTagLogic] = useState('AND')
   const [ownershipEdit, setOwnershipEdit] = useState(null) // { assetId, current, anchorRef }
@@ -445,6 +520,32 @@ export default function AssetInventory() {
   const handleUntagAsset = async (assetId, tag) => {
     await unassignTags({ tag_ids: [tag.tag_id], asset_ids: [assetId] })
     load()
+  }
+
+  const handleBulkScan = async () => {
+    const selectedAssets = assets.filter(a => selectedIds.has(a.id))
+    const assetEntries = selectedAssets.map(a => ({
+      asset_id: a.id,
+      target: a.ip || a.hostname || a.fqdn,
+    })).filter(e => e.target)
+    if (assetEntries.length === 0) {
+      setBulkScanError('Selected assets have no IP or hostname')
+      setBulkScanState('error')
+      return
+    }
+    setBulkScanState('scanning')
+    setBulkScanError(null)
+    try {
+      await startVmScan({
+        targets: assetEntries.map(e => e.target),
+        asset_ids: assetEntries.map(e => e.asset_id),
+      })
+      setBulkScanState('done')
+      setTimeout(() => { setBulkScanState(null); setSelectedIds(new Set()) }, 3000)
+    } catch (err) {
+      setBulkScanError(err.message)
+      setBulkScanState('error')
+    }
   }
 
   const allColumns = [
@@ -739,9 +840,24 @@ export default function AssetInventory() {
         action={
           <div style={{ display: 'flex', gap: 8 }}>
             {selectedIds.size > 0 && (
-              <Button size="sm" variant="ghost" onClick={() => setShowBulkTag(true)}>
-                <Tag size={14} /> {t('assets.tagSelected', { count: selectedIds.size })}
-              </Button>
+              <>
+                <Button size="sm" variant="ghost" onClick={() => setShowBulkTag(true)}>
+                  <Tag size={14} /> {t('assets.tagSelected', { count: selectedIds.size })}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setShowBulkCampaign(true)}>
+                  <Zap size={14} /> Campaign
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleBulkScan}
+                  disabled={bulkScanState === 'scanning'}
+                  style={bulkScanState === 'done' ? { color: 'var(--success)' } : bulkScanState === 'error' ? { color: 'var(--critical)' } : {}}
+                >
+                  <Radar size={14} />
+                  {bulkScanState === 'scanning' ? 'Scanning…' : bulkScanState === 'done' ? 'Queued!' : bulkScanState === 'error' ? 'Failed' : 'Scan'}
+                </Button>
+              </>
             )}
             <Button variant="ghost" size="sm" onClick={() => exportDownload('assets', { scan_id: activeScanId, environment: filters.environment, search: filters.search })}>
               <Download size={14} /> {t('assets.exportCsv')}
@@ -949,6 +1065,15 @@ export default function AssetInventory() {
           assetIds={[...selectedIds]}
           onClose={() => setShowBulkTag(false)}
           onDone={() => { setShowBulkTag(false); setSelectedIds(new Set()); load() }}
+        />
+      )}
+
+      {showBulkCampaign && (
+        <BulkCampaignModal
+          selectedAssets={assets.filter(a => selectedIds.has(a.id))}
+          scanId={activeScanId}
+          onClose={() => setShowBulkCampaign(false)}
+          onCreated={(campaign) => { setShowBulkCampaign(false); setSelectedIds(new Set()); navigate(`/campaigns/${campaign.id}`) }}
         />
       )}
 

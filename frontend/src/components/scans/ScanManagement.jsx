@@ -339,50 +339,80 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
   )
 }
 
+const PAGE_SIZE = 50
+
 function VmScannerPanel({ onClose, onBack, onVmScan }) {
   const [tab, setTab] = useState('manual') // 'manual' | 'assets'
-  const [assets, setAssets] = useState(null)
+  const [assets, setAssets] = useState([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
-  const [selected, setSelected] = useState(new Set())
+  const [loadingMore, setLoadingMore] = useState(false)
+  // selectedAssets: Map<id, assetObj> — persists selection across pages/searches
+  const [selectedAssets, setSelectedAssets] = useState(new Map())
   const [assetSearch, setAssetSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [scanning, setScanning] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [manualTarget, setManualTarget] = useState('')
 
-  // Load assets when switching to "assets" tab
+  // Debounce search input
   useEffect(() => {
-    if (tab !== 'assets' || assets !== null) return
+    const t = setTimeout(() => setDebouncedSearch(assetSearch), 300)
+    return () => clearTimeout(t)
+  }, [assetSearch])
+
+  // Fetch first page when tab opens or search changes
+  useEffect(() => {
+    if (tab !== 'assets') return
     setLoading(true)
-    getAssets({ page_size: 500 })
+    setPage(1)
+    getAssets({ page: 1, page_size: PAGE_SIZE, search: debouncedSearch || undefined })
       .then(data => {
         const list = Array.isArray(data) ? data : data?.assets || []
+        const tot = data?.total ?? list.length
         setAssets(list)
+        setTotal(tot)
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
-  }, [tab, assets])
+  }, [tab, debouncedSearch])
 
-  const filteredAssets = (assets || []).filter(a => {
-    if (!assetSearch) return true
-    const q = assetSearch.toLowerCase()
-    return (a.hostname || '').toLowerCase().includes(q)
-      || (a.ip || '').toLowerCase().includes(q)
-      || (a.fqdn || '').toLowerCase().includes(q)
-  })
-
-  const allSelected = filteredAssets.length > 0 && filteredAssets.every(a => selected.has(a.id))
-
-  const toggleAll = () => {
-    if (allSelected) setSelected(new Set())
-    else setSelected(new Set(filteredAssets.map(a => a.id)))
+  const loadMore = () => {
+    const nextPage = page + 1
+    setLoadingMore(true)
+    getAssets({ page: nextPage, page_size: PAGE_SIZE, search: debouncedSearch || undefined })
+      .then(data => {
+        const list = Array.isArray(data) ? data : data?.assets || []
+        setAssets(prev => [...prev, ...list])
+        setPage(nextPage)
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoadingMore(false))
   }
 
-  const toggle = (id) => {
-    setSelected(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
+  const hasMore = assets.length < total
+
+  const allSelected = assets.length > 0 && assets.every(a => selectedAssets.has(a.id))
+
+  const toggleAll = () => {
+    setSelectedAssets(prev => {
+      const next = new Map(prev)
+      if (allSelected) {
+        assets.forEach(a => next.delete(a.id))
+      } else {
+        assets.forEach(a => next.set(a.id, a))
+      }
+      return next
+    })
+  }
+
+  const toggle = (asset) => {
+    setSelectedAssets(prev => {
+      const next = new Map(prev)
+      if (next.has(asset.id)) next.delete(asset.id)
+      else next.set(asset.id, asset)
       return next
     })
   }
@@ -397,10 +427,9 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
         if (targets.length === 0) return
         payload = { targets }
       } else {
-        if (selected.size === 0) return
-        const selectedAssets = (assets || []).filter(a => selected.has(a.id))
+        if (selectedAssets.size === 0) return
         // Send asset_ids + targets so backend can link findings to existing assets
-        const assetEntries = selectedAssets.map(a => ({
+        const assetEntries = [...selectedAssets.values()].map(a => ({
           asset_id: a.id,
           target: a.ip || a.hostname || a.fqdn,
         })).filter(e => e.target)
@@ -421,7 +450,7 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
   }
 
   const manualTargets = manualTarget.split(/[,\n]+/).map(t => t.trim()).filter(Boolean)
-  const canScan = tab === 'manual' ? manualTargets.length > 0 : selected.size > 0
+  const canScan = tab === 'manual' ? manualTargets.length > 0 : selectedAssets.size > 0
 
   const tabStyle = (active) => ({
     flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 600,
@@ -496,6 +525,18 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
       {/* Asset selection */}
       {tab === 'assets' && (
         <div>
+          <input
+            value={assetSearch}
+            onChange={e => setAssetSearch(e.target.value)}
+            placeholder="Search assets..."
+            style={{
+              width: '100%', padding: '8px 10px', borderRadius: 6,
+              border: '1px solid var(--border)', background: 'var(--bg)',
+              color: 'var(--text-primary)', fontSize: 12, marginBottom: 8,
+              boxSizing: 'border-box',
+            }}
+          />
+
           {loading && (
             <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>
               <Loader size={16} style={{ animation: 'spin 1.5s linear infinite', marginRight: 6, verticalAlign: -3 }} />
@@ -504,25 +545,14 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
             </div>
           )}
 
-          {!loading && (assets || []).length === 0 && (
+          {!loading && assets.length === 0 && (
             <div style={{ textAlign: 'center', padding: 20, color: 'var(--text-muted)', fontSize: 13 }}>
-              No assets found. Upload a scan or run an EASM scan first, or use "Enter Target" to scan directly.
+              {debouncedSearch ? 'No assets match your search.' : 'No assets found. Upload a scan or run an EASM scan first, or use "Enter Target" to scan directly.'}
             </div>
           )}
 
-          {!loading && (assets || []).length > 0 && (
+          {!loading && assets.length > 0 && (
             <>
-              <input
-                value={assetSearch}
-                onChange={e => setAssetSearch(e.target.value)}
-                placeholder="Filter assets..."
-                style={{
-                  width: '100%', padding: '8px 10px', borderRadius: 6,
-                  border: '1px solid var(--border)', background: 'var(--bg)',
-                  color: 'var(--text-primary)', fontSize: 12, marginBottom: 8,
-                  boxSizing: 'border-box',
-                }}
-              />
               <div style={{
                 display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8,
                 padding: '6px 0', borderBottom: '1px solid var(--border)',
@@ -530,12 +560,12 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
                 <input type="checkbox" checked={allSelected} onChange={toggleAll}
                   style={{ accentColor: '#ec4899' }} />
                 <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' }}>
-                  {selected.size} of {filteredAssets.length} selected
+                  {selectedAssets.size} of {total} selected
                 </span>
               </div>
 
-              <div style={{ maxHeight: 220, overflowY: 'auto', marginBottom: 14 }}>
-                {filteredAssets.map(asset => (
+              <div style={{ maxHeight: 220, overflowY: 'auto', marginBottom: 8 }}>
+                {assets.map(asset => (
                   <label key={asset.id} style={{
                     display: 'flex', alignItems: 'center', gap: 10,
                     padding: '7px 4px', cursor: 'pointer', fontSize: 13,
@@ -544,7 +574,7 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
                     onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-secondary)'}
                     onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                   >
-                    <input type="checkbox" checked={selected.has(asset.id)} onChange={() => toggle(asset.id)}
+                    <input type="checkbox" checked={selectedAssets.has(asset.id)} onChange={() => toggle(asset)}
                       style={{ accentColor: '#ec4899' }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -557,6 +587,23 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
                     </div>
                   </label>
                 ))}
+
+                {hasMore && (
+                  <button
+                    onClick={loadMore}
+                    disabled={loadingMore}
+                    style={{
+                      width: '100%', padding: '7px 0', marginTop: 4,
+                      background: 'none', border: '1px dashed var(--border)',
+                      borderRadius: 5, cursor: loadingMore ? 'default' : 'pointer',
+                      fontSize: 12, color: 'var(--text-muted)',
+                    }}
+                  >
+                    {loadingMore
+                      ? 'Loading...'
+                      : `Load more (${total - assets.length} remaining)`}
+                  </button>
+                )}
               </div>
             </>
           )}
@@ -573,7 +620,7 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
         {scanning ? (
           <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Scanning...</>
         ) : (
-          <><Play size={13} /> Scan {tab === 'manual' ? `${manualTargets.length} Target${manualTargets.length !== 1 ? 's' : ''}` : `${selected.size} Asset${selected.size !== 1 ? 's' : ''}`}</>
+          <><Play size={13} /> Scan {tab === 'manual' ? `${manualTargets.length} Target${manualTargets.length !== 1 ? 's' : ''}` : `${selectedAssets.size} Asset${selectedAssets.size !== 1 ? 's' : ''}`}</>
         )}
       </Button>
       <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
