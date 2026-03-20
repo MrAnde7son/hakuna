@@ -43,6 +43,8 @@ import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
 import Login from './components/auth/Login.jsx'
 import Register from './components/auth/Register.jsx'
+import ForgotPassword from './components/auth/ForgotPassword.jsx'
+import ResetPassword from './components/auth/ResetPassword.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
 import { getScans, setOrgContext, authUpdateLocale } from './api.js'
@@ -686,6 +688,8 @@ export default function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/*" element={
               <ProtectedRoute>
                 <AppShell />

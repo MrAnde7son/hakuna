@@ -1270,7 +1270,14 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
     result = []
     for s in scans:
         finding_count = db.query(func.count(Finding.id)).filter(Finding.scan_id == s.id).scalar()
-        asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == s.id).scalar()
+        # VM scans may link findings to existing assets (different scan_id), so union both
+        if s.source_type == "vm_scanner":
+            asset_count = db.query(func.count(distinct(Asset.id))).filter(
+                or_(Asset.scan_id == s.id,
+                    Asset.id.in_(db.query(Finding.asset_id).filter(Finding.scan_id == s.id)))
+            ).scalar()
+        else:
+            asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == s.id).scalar()
         result.append({
             "id": s.id,
             "filename": s.filename,

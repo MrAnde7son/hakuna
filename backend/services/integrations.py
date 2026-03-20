@@ -259,16 +259,28 @@ def send_email(db: Session, config: dict, items: list) -> dict:
     config keys:
       to, subject, body_template, include_findings_table
     """
+    from services import brevo as brevo_service
+
     int_cfg = get_integration_config(db, "email")
     if not int_cfg:
-        raise ConnectionError("Email (SMTP) integration not configured")
-
-    smtp_host = int_cfg["smtp_host"]
-    smtp_port = int(int_cfg.get("smtp_port", 587))
-    smtp_user = int_cfg.get("smtp_user", "")
-    smtp_pass = int_cfg.get("smtp_pass", "")
-    from_addr = int_cfg.get("from_address", smtp_user)
-    use_tls = int_cfg.get("use_tls", True)
+        # Fall back to Brevo system email when no custom SMTP is configured
+        if not brevo_service.is_configured():
+            raise ConnectionError(
+                "Email not configured — add an Email (SMTP) integration or set BREVO_SMTP_PASS"
+            )
+        smtp_host = brevo_service.BREVO_SMTP_HOST
+        smtp_port = brevo_service.BREVO_SMTP_PORT
+        smtp_user = brevo_service.BREVO_SMTP_USER
+        smtp_pass = brevo_service.BREVO_SMTP_PASS
+        from_addr = brevo_service.BREVO_FROM_ADDRESS
+        use_tls = True
+    else:
+        smtp_host = int_cfg["smtp_host"]
+        smtp_port = int(int_cfg.get("smtp_port", 587))
+        smtp_user = int_cfg.get("smtp_user", "")
+        smtp_pass = int_cfg.get("smtp_pass", "")
+        from_addr = int_cfg.get("from_address", smtp_user)
+        use_tls = int_cfg.get("use_tls", True)
 
     to_addrs = [a.strip() for a in config.get("to", "").split(",") if a.strip()]
     if not to_addrs:

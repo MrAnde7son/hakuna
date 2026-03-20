@@ -11,6 +11,7 @@ from typing import List, Optional
 import os
 
 import httpx
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from models.models import Asset, Finding, Scan, Organization
@@ -187,7 +188,27 @@ def _import_adhoc_findings(db: Session, scan: Scan, job_result: dict) -> int:
         asset = db.query(Asset).filter(Asset.id == existing_asset_id).first()
 
     if not asset:
-        # No linked asset — create one under this scan (always, even with 0 findings)
+        # Try to find an existing asset in this org by IP or hostname (dedup)
+        if _is_ip(target):
+            asset = (
+                db.query(Asset)
+                .join(Scan, Asset.scan_id == Scan.id)
+                .filter(Scan.org_id == scan.org_id, Asset.ip == target)
+                .first()
+            )
+        else:
+            asset = (
+                db.query(Asset)
+                .join(Scan, Asset.scan_id == Scan.id)
+                .filter(
+                    Scan.org_id == scan.org_id,
+                    or_(Asset.hostname == target, Asset.fqdn == target),
+                )
+                .first()
+            )
+
+    if not asset:
+        # No existing asset found — create one under this scan
         asset = Asset(
             scan_id=scan.id,
             ip=target if _is_ip(target) else "",

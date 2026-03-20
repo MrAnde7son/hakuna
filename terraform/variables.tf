@@ -92,3 +92,11 @@ variable "censys_api_secret" {
   default     = ""
   sensitive   = true
 }
+
+# ── Brevo (email) ──────────────────────────────────────────────────────────────
+
+variable "brevo_smtp_pass" {
+  type        = string
+  description = "Brevo SMTP API key — used for password reset emails and workflow alert emails."
+  sensitive   = true
+}

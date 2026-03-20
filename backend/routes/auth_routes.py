@@ -4,7 +4,8 @@ Prefix: /api/auth
 """
 import re
 import logging
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -66,6 +67,13 @@ class UpdateOrgRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
+    new_password: str
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
     new_password: str
 
 
@@ -194,6 +202,44 @@ async def login(body: LoginRequest, request: Request, db: Session = Depends(get_
         "token_type": "bearer",
         "user": _user_response(user, org),
     }
+
+
+# ── Password reset (public) ───────────────────────────────
+
+@router.post("/forgot-password")
+async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Request a password reset email. Always returns 200 to prevent email enumeration."""
+    from services.brevo import send_password_reset, is_configured as brevo_configured
+    user = db.query(User).filter(User.email == body.email).first()
+    if user and user.is_active and brevo_configured():
+        token = secrets.token_urlsafe(32)
+        user.password_reset_token = token
+        user.password_reset_expires = datetime.utcnow() + timedelta(hours=1)
+        db.commit()
+        try:
+            send_password_reset(user.email, user.display_name or user.email, token)
+        except Exception as e:
+            logger.error(f"Failed to send password reset email to {body.email}: {e}")
+    return {"status": "ok", "message": "If that email is registered, a reset link has been sent."}
+
+
+@router.post("/reset-password")
+async def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Reset password using a valid token from a reset email."""
+    if len(body.new_password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+
+    user = db.query(User).filter(User.password_reset_token == body.token).first()
+    if not user or not user.password_reset_expires or user.password_reset_expires < datetime.utcnow():
+        raise HTTPException(400, "Invalid or expired reset token")
+
+    user.hashed_password = hash_password(body.new_password)
+    user.password_reset_token = None
+    user.password_reset_expires = None
+    log_audit(db, "update", "user", user.id, entity_name=user.email,
+              changes={"password": "reset via email"})
+    db.commit()
+    return {"status": "ok", "message": "Password reset successfully. You can now log in."}
 
 
 # ── Authenticated routes ─────────────────────────────────

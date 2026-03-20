@@ -141,6 +141,32 @@ resource "google_cloud_run_v2_service" "api" {
         value = "https://${var.app_domain}"
       }
 
+      # Brevo — transactional email (password resets + workflow alert fallback)
+      env {
+        name = "BREVO_SMTP_PASS"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.brevo_smtp_pass.secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name  = "BREVO_SMTP_USER"
+        value = "a58580001@smtp-brevo.com"
+      }
+
+      env {
+        name  = "BREVO_FROM_ADDRESS"
+        value = "itamar@hakunahq.com"
+      }
+
+      env {
+        name  = "APP_URL"
+        value = "https://${var.app_domain}"
+      }
+
       # Scanner services — reachable via private VPC IP (no public internet)
       env {
         name  = "HAKUNA_SCANNER_URL"
@@ -220,6 +246,7 @@ resource "google_cloud_run_v2_service" "api" {
     google_secret_manager_secret_version.redis_url,
     google_secret_manager_secret_version.jwt_secret,
     google_secret_manager_secret_version.sentry_dsn,
+    google_secret_manager_secret_version.brevo_smtp_pass,
     google_project_iam_member.api_roles,
   ]
 }

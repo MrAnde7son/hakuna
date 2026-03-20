@@ -68,3 +68,16 @@ resource "google_secret_manager_secret_version" "sentry_dsn" {
   secret      = google_secret_manager_secret.sentry_dsn.id
   secret_data = var.sentry_dsn != "" ? var.sentry_dsn : "disabled"
 }
+
+# Brevo SMTP API key — used for password reset emails and workflow alert fallback
+resource "google_secret_manager_secret" "brevo_smtp_pass" {
+  secret_id = "hakuna-brevo-smtp-pass"
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "brevo_smtp_pass" {
+  secret      = google_secret_manager_secret.brevo_smtp_pass.id
+  secret_data = var.brevo_smtp_pass
+}

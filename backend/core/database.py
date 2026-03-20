@@ -173,6 +173,10 @@ def _migrate_add_columns():
             ("effect", "VARCHAR DEFAULT 'allow'"),
         ],
         "agent_schedules": [("next_run_at", "DATETIME")],
+        "users": [
+            ("password_reset_token", "VARCHAR"),
+            ("password_reset_expires", "TIMESTAMP"),
+        ],
         "integrations": [
             ("logo_url", "VARCHAR"),
         ],

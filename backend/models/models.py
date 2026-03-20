@@ -45,6 +45,8 @@ class User(Base):
     locale = Column(String, default="en")  # User's preferred language: en, ja, fr, de, he, ru, zh
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login_at = Column(DateTime, nullable=True)
+    password_reset_token = Column(String, nullable=True, index=True)
+    password_reset_expires = Column(DateTime, nullable=True)
 
     organization = relationship("Organization", back_populates="users")
 
