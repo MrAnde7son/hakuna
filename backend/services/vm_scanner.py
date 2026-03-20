@@ -177,9 +177,6 @@ def _import_adhoc_findings(db: Session, scan: Scan, job_result: dict) -> int:
     target = job_result.get("target", "")
     findings_data = job_result.get("findings", [])
 
-    if not findings_data:
-        return 0
-
     meta = scan.raw_metadata or {}
     target_asset_map = meta.get("target_asset_map", {})
 
@@ -190,7 +187,7 @@ def _import_adhoc_findings(db: Session, scan: Scan, job_result: dict) -> int:
         asset = db.query(Asset).filter(Asset.id == existing_asset_id).first()
 
     if not asset:
-        # No linked asset — create one under this scan
+        # No linked asset — create one under this scan (always, even with 0 findings)
         asset = Asset(
             scan_id=scan.id,
             ip=target if _is_ip(target) else "",
@@ -198,6 +195,9 @@ def _import_adhoc_findings(db: Session, scan: Scan, job_result: dict) -> int:
         )
         db.add(asset)
         db.flush()
+
+    if not findings_data:
+        return 0
 
     # Insert findings
     created = 0

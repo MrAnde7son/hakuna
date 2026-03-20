@@ -13,6 +13,7 @@ from scanner.vm.celery_app import celery_app
 from scanner.vm.config import (
     DATABASE_URL,
     NUCLEI_BIN,
+    NUCLEI_COMMUNITY_TEMPLATES,
     NUCLEI_RATE_LIMIT,
     NUCLEI_TIMEOUT,
     SCAN_TIMEOUT_SECONDS,
@@ -377,6 +378,7 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict
     cmd = [
         NUCLEI_BIN,
         "-target", target,
+        "-t", NUCLEI_COMMUNITY_TEMPLATES,
         "-jsonl",
         "-timeout", str(NUCLEI_TIMEOUT),
         "-rate-limit", str(NUCLEI_RATE_LIMIT),

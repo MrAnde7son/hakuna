@@ -14,6 +14,7 @@ CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://redis:6
 NUCLEI_BIN = os.environ.get("NUCLEI_BIN", "/root/go/bin/nuclei")
 NUCLEI_TIMEOUT = int(os.environ.get("NUCLEI_TIMEOUT", "30"))
 NUCLEI_RATE_LIMIT = int(os.environ.get("NUCLEI_RATE_LIMIT", "150"))
+NUCLEI_COMMUNITY_TEMPLATES = os.environ.get("NUCLEI_COMMUNITY_TEMPLATES", "/root/nuclei-templates")
 
 TEMPLATES_DIR = os.environ.get(
     "TEMPLATES_DIR",

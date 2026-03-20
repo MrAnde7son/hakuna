@@ -273,10 +273,25 @@ async def list_scan_runs(
 ):
     """List recent EASM scan runs with status."""
     org = _get_org(db, user)
-    if not org.easm_org_id:
-        raise HTTPException(400, "EASM not configured")
 
-    runs = await get_easm_scan_runs(org.easm_org_id, limit=limit)
+    easm_org_id = org.easm_org_id
+    if not easm_org_id:
+        # Try to recover easm_org_id from an existing EASM scan's metadata
+        from models.models import Scan
+        easm_scan = db.query(Scan).filter(
+            Scan.org_id == org.id,
+            Scan.source_type == "easm",
+        ).first()
+        recovered = (easm_scan.raw_metadata or {}).get("hakuna_org_id") if easm_scan else None
+        if recovered:
+            org.easm_org_id = recovered
+            db.commit()
+            easm_org_id = recovered
+            logger.info("Recovered easm_org_id %s for org %s from scan metadata", recovered, org.id)
+        else:
+            return []
+
+    runs = await get_easm_scan_runs(easm_org_id, limit=limit)
     if runs is None:
         raise HTTPException(502, "Failed to fetch scan runs")
     return runs

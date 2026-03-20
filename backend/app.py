@@ -1270,11 +1270,7 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
     result = []
     for s in scans:
         finding_count = db.query(func.count(Finding.id)).filter(Finding.scan_id == s.id).scalar()
-        if s.source_type == "vm_scanner":
-            # VM scan findings reference assets from other scans; count distinct assets via findings
-            asset_count = db.query(func.count(distinct(Finding.asset_id))).filter(Finding.scan_id == s.id).scalar()
-        else:
-            asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == s.id).scalar()
+        asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == s.id).scalar()
         result.append({
             "id": s.id,
             "filename": s.filename,
@@ -1377,12 +1373,7 @@ def nlp_search(
     aq = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
     aq = apply_scan_org_filter(aq, org_ids)
     if scan_id:
-        scan_obj = db.query(Scan).filter(Scan.id == scan_id).first()
-        if scan_obj and scan_obj.source_type == "vm_scanner":
-            vm_aids = db.query(Finding.asset_id).filter(Finding.scan_id == scan_id).distinct().subquery()
-            aq = aq.filter(Asset.id.in_(db.query(vm_aids)))
-        else:
-            aq = aq.filter(Asset.scan_id == scan_id)
+        aq = aq.filter(Asset.scan_id == scan_id)
     if af.get("min_critical") is not None:
         aq = aq.filter(Asset.critical_count >= af["min_critical"])
     if af.get("min_high") is not None:
@@ -1497,13 +1488,7 @@ def list_assets(
     q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
     q = apply_scan_org_filter(q, org_ids)
     if scan_id:
-        # VM scans link findings to assets from other scans; find assets via findings
-        scan_obj = db.query(Scan).filter(Scan.id == scan_id).first()
-        if scan_obj and scan_obj.source_type == "vm_scanner":
-            vm_asset_ids = db.query(Finding.asset_id).filter(Finding.scan_id == scan_id).distinct().subquery()
-            q = q.filter(Asset.id.in_(db.query(vm_asset_ids)))
-        else:
-            q = q.filter(Asset.scan_id == scan_id)
+        q = q.filter(Asset.scan_id == scan_id)
     if min_risk is not None:
         q = q.filter(Asset.risk_score >= min_risk)
     if max_risk is not None:
