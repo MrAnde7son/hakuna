@@ -57,7 +57,7 @@ export default function WorkflowBuilder() {
   const [lastExecResult, setLastExecResult] = useState(null)
   const [showExecPanel, setShowExecPanel] = useState(false)
   const [execDetail, setExecDetail] = useState(null)
-  const [smtpConfigured, setSmtpConfigured] = useState(null)
+  const [smtpConfigured, setSmtpConfigured] = useState(null)   // true | false | 'brevo'
   const [nodeOutputOpen, setNodeOutputOpen] = useState(false)
 
   useEffect(() => {
@@ -92,7 +92,11 @@ export default function WorkflowBuilder() {
     if (node?.node_subtype === 'send_email') {
       setSmtpConfigured(null) // reset while loading
       getIntegration('email')
-        .then(cfg => setSmtpConfigured(!!(cfg?.is_enabled)))
+        .then(cfg => {
+          if (cfg?.is_enabled) setSmtpConfigured(true)
+          else if (cfg?.brevo_available) setSmtpConfigured('brevo')
+          else setSmtpConfigured(false)
+        })
         .catch(() => setSmtpConfigured(false))
     }
   }, [selectedNode])
@@ -823,7 +827,7 @@ export default function WorkflowBuilder() {
                 <Pill label={selectedNodeData.node_subtype} color="#64748b" />
               </div>
 
-              {/* SMTP not configured banner */}
+              {/* Email sender status banner */}
               {selectedNodeData.node_subtype === 'send_email' && smtpConfigured === false && (
                 <div style={{
                   marginBottom: 14, padding: '10px 12px', borderRadius: 8,
@@ -849,6 +853,22 @@ export default function WorkflowBuilder() {
                   >
                     Configure SMTP →
                   </button>
+                </div>
+              )}
+              {selectedNodeData.node_subtype === 'send_email' && smtpConfigured === 'brevo' && (
+                <div style={{
+                  marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+                  background: 'var(--bg-subtle, #f0fdf4)', border: '1px solid #16a34a',
+                  fontSize: 12, color: '#15803d',
+                  display: 'flex', flexDirection: 'column', gap: 4,
+                }}>
+                  <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 13 }}>✓</span>
+                    Sending via Brevo
+                  </div>
+                  <div style={{ lineHeight: 1.4, color: '#166534' }}>
+                    Using the system email provider. <button onClick={() => navigate('/settings?tab=integrations')} style={{ background: 'none', border: 'none', padding: 0, color: '#15803d', fontWeight: 600, cursor: 'pointer', fontSize: 12, textDecoration: 'underline' }}>Add custom SMTP</button> to override.
+                  </div>
                 </div>
               )}
 
