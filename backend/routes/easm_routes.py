@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import get_current_user, require_auth
-from models.models import Organization, User
+from models.models import Organization, Scan, User
 from services.easm import (
     extract_corporate_domain,
     trigger_easm_for_new_org,
@@ -37,6 +37,23 @@ def _get_org(db: Session, user: User) -> Organization:
     if not org:
         raise HTTPException(404, "Organization not found")
     return org
+
+
+def _require_easm_org_id(db: Session, org: Organization) -> str:
+    """Return easm_org_id, recovering it from scan metadata if missing from the org record."""
+    if org.easm_org_id:
+        return org.easm_org_id
+    easm_scan = db.query(Scan).filter(
+        Scan.org_id == org.id,
+        Scan.source_type == "easm",
+    ).first()
+    recovered = (easm_scan.raw_metadata or {}).get("hakuna_org_id") if easm_scan else None
+    if recovered:
+        org.easm_org_id = recovered
+        db.commit()
+        logger.info("Recovered easm_org_id %s for org %s from scan metadata", recovered, org.id)
+        return recovered
+    raise HTTPException(400, "EASM not configured for this organization")
 
 
 @router.get("/status")
@@ -113,8 +130,7 @@ async def scan_domain_endpoint(
 ):
     """Add a domain (if new), trigger scan, and create a per-domain scan record."""
     org = _get_org(db, user)
-    if not org.easm_org_id:
-        raise HTTPException(400, "EASM not configured for this organization")
+    _require_easm_org_id(db, org)
 
     result = await scan_domain(db, org, domain, scan_type)
     if result is None:
@@ -130,8 +146,7 @@ async def refresh_scan(
 ):
     """Check hakuna scan status and import assets if completed."""
     org = _get_org(db, user)
-    if not org.easm_org_id:
-        raise HTTPException(400, "EASM not configured")
+    _require_easm_org_id(db, org)
 
     result = await refresh_easm_scan(db, org, scan_id)
     if result is None:
@@ -147,11 +162,9 @@ async def trigger_scan(
 ):
     """Manually trigger an EASM scan (all domains)."""
     org = _get_org(db, user)
+    easm_org_id = _require_easm_org_id(db, org)
 
-    if not org.easm_org_id:
-        raise HTTPException(400, "EASM not configured for this organization")
-
-    scan_id = await trigger_easm_scan(org.easm_org_id, scan_type)
+    scan_id = await trigger_easm_scan(easm_org_id, scan_type)
     if not scan_id:
         raise HTTPException(502, "Failed to trigger EASM scan — hakuna-scanner may be unavailable")
 
@@ -166,10 +179,9 @@ async def scan_status(
 ):
     """Get status of a specific EASM scan."""
     org = _get_org(db, user)
-    if not org.easm_org_id:
-        raise HTTPException(400, "EASM not configured")
+    easm_org_id = _require_easm_org_id(db, org)
 
-    status = await get_easm_scan_status(org.easm_org_id, scan_id)
+    status = await get_easm_scan_status(easm_org_id, scan_id)
     if not status:
         raise HTTPException(404, "Scan not found")
     return status
@@ -184,10 +196,9 @@ async def list_easm_assets(
 ):
     """List EASM-discovered assets (from hakuna-scanner, not yet imported)."""
     org = _get_org(db, user)
-    if not org.easm_org_id:
-        raise HTTPException(400, "EASM not configured")
+    easm_org_id = _require_easm_org_id(db, org)
 
-    assets = await get_easm_assets(org.easm_org_id, limit=limit, offset=offset)
+    assets = await get_easm_assets(easm_org_id, limit=limit, offset=offset)
     if assets is None:
         raise HTTPException(502, "Failed to fetch EASM assets")
     return assets
@@ -203,14 +214,13 @@ async def sync_assets(
 ):
     """Import EASM-discovered assets. If domain is omitted, sync all configured domains."""
     org = _get_org(db, user)
-    if not org.easm_org_id:
-        raise HTTPException(400, "EASM not configured")
+    easm_org_id = _require_easm_org_id(db, org)
 
     if domain:
         domains_to_sync = [domain]
     else:
         # Sync all known domains for this org
-        remote_domains = await get_easm_domains(org.easm_org_id) or []
+        remote_domains = await get_easm_domains(easm_org_id) or []
         domains_to_sync = [d["domain"] if isinstance(d, dict) else d for d in remote_domains]
         # Always include the primary domain
         if org.easm_domain and org.easm_domain not in domains_to_sync:
@@ -240,10 +250,9 @@ async def list_events(
 ):
     """Get recent EASM change events (new assets, IP changes, cert expirations, etc.)."""
     org = _get_org(db, user)
-    if not org.easm_org_id:
-        raise HTTPException(400, "EASM not configured")
+    easm_org_id = _require_easm_org_id(db, org)
 
-    events = await get_easm_events(org.easm_org_id, since=since, limit=limit)
+    events = await get_easm_events(easm_org_id, since=since, limit=limit)
     if events is None:
         raise HTTPException(502, "Failed to fetch EASM events")
     return events
@@ -256,10 +265,9 @@ async def list_domains(
 ):
     """List all target domains for the current org."""
     org = _get_org(db, user)
-    if not org.easm_org_id:
-        raise HTTPException(400, "EASM not configured")
+    easm_org_id = _require_easm_org_id(db, org)
 
-    domains = await get_easm_domains(org.easm_org_id)
+    domains = await get_easm_domains(easm_org_id)
     if domains is None:
         raise HTTPException(502, "Failed to fetch domains")
     return domains
@@ -273,23 +281,10 @@ async def list_scan_runs(
 ):
     """List recent EASM scan runs with status."""
     org = _get_org(db, user)
-
-    easm_org_id = org.easm_org_id
-    if not easm_org_id:
-        # Try to recover easm_org_id from an existing EASM scan's metadata
-        from models.models import Scan
-        easm_scan = db.query(Scan).filter(
-            Scan.org_id == org.id,
-            Scan.source_type == "easm",
-        ).first()
-        recovered = (easm_scan.raw_metadata or {}).get("hakuna_org_id") if easm_scan else None
-        if recovered:
-            org.easm_org_id = recovered
-            db.commit()
-            easm_org_id = recovered
-            logger.info("Recovered easm_org_id %s for org %s from scan metadata", recovered, org.id)
-        else:
-            return []
+    try:
+        easm_org_id = _require_easm_org_id(db, org)
+    except HTTPException:
+        return []
 
     runs = await get_easm_scan_runs(easm_org_id, limit=limit)
     if runs is None:
@@ -305,10 +300,9 @@ async def add_domain(
 ):
     """Add an additional target domain for EASM scanning."""
     org = _get_org(db, user)
-    if not org.easm_org_id:
-        raise HTTPException(400, "EASM not configured")
+    easm_org_id = _require_easm_org_id(db, org)
 
-    success = await add_easm_domain(org.easm_org_id, domain)
+    success = await add_easm_domain(easm_org_id, domain)
     if not success:
         raise HTTPException(502, "Failed to add domain")
     return {"domain": domain, "status": "added"}
