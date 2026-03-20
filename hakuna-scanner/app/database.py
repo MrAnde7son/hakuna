@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 from app.config import settings
 
@@ -18,12 +19,13 @@ async def get_db() -> AsyncSession:
 
 
 def get_task_session() -> async_sessionmaker[AsyncSession]:
-    """Create a fresh engine + session factory for Celery tasks.
+    """Create a session factory for Celery tasks using NullPool.
 
-    Each Celery task runs in a new event loop, so we need a fresh
-    engine that isn't bound to a previous loop's connection pool.
+    NullPool disables connection pooling so connections are returned to
+    PostgreSQL immediately after use. This prevents connection accumulation
+    when get_task_session() is called many times across concurrent tasks.
     """
     task_engine = create_async_engine(
-        settings.database_url, pool_size=5, max_overflow=5
+        settings.database_url, poolclass=NullPool
     )
     return async_sessionmaker(task_engine, class_=AsyncSession, expire_on_commit=False)
