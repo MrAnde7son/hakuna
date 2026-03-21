@@ -13,7 +13,7 @@ from core.database import get_db
 from core.auth import require_auth
 from models.models import Organization, User
 from models.models import Scan
-from services.vm_scanner import start_vm_scan, refresh_vm_scan, get_vm_health
+from services.vm_scanner import start_vm_scan, rescan_vm_scan, refresh_vm_scan, get_vm_health
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/vm", tags=["vm-scanner"])
@@ -75,20 +75,15 @@ async def rescan(
     user: User = Depends(require_auth),
 ):
     """Re-run a VM scan with the same targets."""
-    org = _get_org(db, user)
     scan = db.query(Scan).filter(Scan.id == scan_id, Scan.source_type == "vm_scanner").first()
     if not scan:
         raise HTTPException(404, "VM scan not found")
     if user.role != "superadmin" and scan.org_id != user.org_id:
         raise HTTPException(403, "Access denied")
 
-    targets = (scan.raw_metadata or {}).get("targets", [])
-    if not targets:
-        raise HTTPException(400, "No targets found in original scan")
-
-    result = await start_vm_scan(db, org, targets)
+    result = await rescan_vm_scan(db, scan)
     if not result:
-        raise HTTPException(502, "Failed to start VM scan — scanner may be unavailable")
+        raise HTTPException(502, "Failed to start VM scan — scanner may be unavailable or scan has no targets")
     return result
 
 

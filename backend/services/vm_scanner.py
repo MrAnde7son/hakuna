@@ -98,6 +98,57 @@ async def start_vm_scan(
     }
 
 
+async def rescan_vm_scan(db: Session, scan: Scan) -> Optional[dict]:
+    """
+    Re-run an existing VM scan in-place: clear old results and re-dispatch the same targets.
+    """
+    targets = (scan.raw_metadata or {}).get("targets", [])
+    if not targets:
+        return None
+
+    now = datetime.utcnow()
+
+    # Delete findings and assets from the previous run that belong to this scan
+    finding_ids = [r[0] for r in db.query(Finding.id).filter(Finding.scan_id == scan.id).all()]
+    if finding_ids:
+        db.query(Finding).filter(Finding.id.in_(finding_ids)).delete(synchronize_session=False)
+    db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
+
+    # Reset scan state
+    scan.scan_date = now.isoformat()
+    scan.raw_metadata = {
+        **scan.raw_metadata,
+        "status": "running",
+        "job_ids": [],
+        "completed_jobs": 0,
+        "total_jobs": len(targets),
+        "findings_emitted": 0,
+        "imported_job_ids": [],
+    }
+    db.flush()
+
+    # Re-dispatch to VM scanner container
+    result = await _vm_request("POST", "/vm/scans/", json={"targets": targets})
+
+    if result and result.get("job_ids"):
+        scan.raw_metadata = {
+            **scan.raw_metadata,
+            "job_ids": result["job_ids"],
+            "total_jobs": len(result["job_ids"]),
+        }
+    else:
+        scan.raw_metadata = {**scan.raw_metadata, "status": "failed"}
+
+    db.commit()
+
+    return {
+        "scan_id": scan.id,
+        "job_ids": result.get("job_ids", []) if result else [],
+        "targets_queued": result.get("targets_queued", 0) if result else 0,
+        "status": scan.raw_metadata["status"],
+    }
+
+
 async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
     """
     Poll job statuses from the VM scanner and update the Scan record.
