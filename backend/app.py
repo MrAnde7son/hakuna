@@ -1385,7 +1385,12 @@ def nlp_search(
     aq = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
     aq = apply_scan_org_filter(aq, org_ids)
     if scan_id:
-        aq = aq.filter(Asset.scan_id == scan_id)
+        target_scan = db.query(Scan).filter(Scan.id == scan_id).first()
+        if target_scan and target_scan.source_type == "vm_scanner":
+            _vm_asset_ids = db.query(Finding.asset_id).filter(Finding.scan_id == scan_id).distinct()
+            aq = aq.filter(or_(Asset.scan_id == scan_id, Asset.id.in_(_vm_asset_ids)))
+        else:
+            aq = aq.filter(Asset.scan_id == scan_id)
     if af.get("min_critical") is not None:
         aq = aq.filter(Asset.critical_count >= af["min_critical"])
     if af.get("min_high") is not None:
@@ -1401,6 +1406,10 @@ def nlp_search(
             Asset.hostname.ilike(pat), Asset.ip.ilike(pat),
             Asset.fqdn.ilike(pat), Asset.os.ilike(pat),
         ))
+    if af.get("source"):
+        aq = aq.filter(cast(Asset.source_systems, Text).ilike(f'%"{af["source"]}"%'))
+    if af.get("exclude_source"):
+        aq = aq.filter(~cast(Asset.source_systems, Text).ilike(f'%"{af["exclude_source"]}"%'))
     asset_count = aq.count()
 
     # ── Count matching findings ────────────────────────────────────────────────
@@ -1443,6 +1452,10 @@ def nlp_search(
             Finding.synopsis.ilike(f"%{ff['search']}%") |
             Finding.plugin_id.ilike(f"%{ff['search']}%")
         )
+    if ff.get("source"):
+        fq = fq.filter(cast(Finding.source_systems, Text).ilike(f'%"{ff["source"]}"%'))
+    if ff.get("exclude_source"):
+        fq = fq.filter(~cast(Finding.source_systems, Text).ilike(f'%"{ff["exclude_source"]}"%'))
     finding_count = fq.count()
 
     return {

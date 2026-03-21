@@ -221,7 +221,7 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 total_findings += new_findings
                 imported_job_ids.add(job_id)
 
-            job_statuses[job_id] = {
+            job_status = {
                 "target": target,
                 "status": "SUCCESS",
                 "findings_count": len(findings_data),
@@ -230,7 +230,11 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 "requests_sent": job_result.get("requests_sent", 0),
                 "duration_seconds": job_result.get("duration_seconds"),
                 "nuclei_status": job_result.get("status"),
+                "routing_info": job_result.get("routing_info"),
             }
+            if job_result.get("nuclei_stderr"):
+                job_status["nuclei_stderr"] = job_result["nuclei_stderr"]
+            job_statuses[job_id] = job_status
 
         elif status == "FAILURE":
             completed += 1
@@ -318,9 +322,15 @@ def _import_adhoc_findings(db: Session, scan: Scan, job_result: dict) -> int:
             scan_id=scan.id,
             ip=target if _is_ip(target) else "",
             hostname=target if not _is_ip(target) else "",
+            source_systems=["vm_scanner"],
         )
         db.add(asset)
         db.flush()
+    else:
+        # Extend the existing asset's source_systems to include vm_scanner
+        existing_sources = list(asset.source_systems or [])
+        if "vm_scanner" not in existing_sources:
+            asset.source_systems = existing_sources + ["vm_scanner"]
 
     if not findings_data:
         return 0
