@@ -70,6 +70,11 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [inlineAuthValues, setInlineAuthValues] = useState({})
   const [showSecrets, setShowSecrets] = useState(false)
 
+  // Custom request headers (key-value pairs)
+  const [customHeaders, setCustomHeaders] = useState([]) // [{key, value}]
+  // Custom request body params (key-value pairs, for POST/PUT/PATCH)
+  const [customBodyParams, setCustomBodyParams] = useState([]) // [{key, value}]
+
   // MCP discovery
   const [mcpTools, setMcpTools] = useState(null) // {tools: [...], server_info: {...}}
   const [mcpAuthRequired, setMcpAuthRequired] = useState(false)
@@ -105,6 +110,8 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       setEntity(i.entity)
       setTransportType(i.transport_type)
       setTransportConfig(i.transport_config || {})
+      setCustomHeaders(Object.entries(i.transport_config?.headers || {}).map(([key, value]) => ({ key, value })))
+      setCustomBodyParams(Object.entries(i.transport_config?.body || {}).map(([key, value]) => ({ key, value: typeof value === 'object' ? JSON.stringify(value) : String(value) })))
       setRecordsPath(i.records_path || '')
       setFieldMap(i.field_map || [])
       setDedupKey(i.dedup_key || [])
@@ -135,6 +142,24 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     }).catch(console.error)
   }, [editId])
 
+  // Sync customHeaders array → transportConfig.headers object
+  useEffect(() => {
+    const headerObj = {}
+    customHeaders.forEach(({ key, value }) => { if (key.trim()) headerObj[key.trim()] = value })
+    setTransportConfig(tc => ({ ...tc, headers: headerObj }))
+  }, [customHeaders]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync customBodyParams array → transportConfig.body object
+  useEffect(() => {
+    const bodyObj = {}
+    customBodyParams.forEach(({ key, value }) => {
+      if (key.trim()) {
+        try { bodyObj[key.trim()] = JSON.parse(value) } catch { bodyObj[key.trim()] = value }
+      }
+    })
+    setTransportConfig(tc => ({ ...tc, body: bodyObj }))
+  }, [customBodyParams]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Auto-run auto-suggest when reaching Map Fields step with no existing mappings
   useEffect(() => {
     if (step === 5 && fieldMap.length === 0 && detectedPaths.length > 0 && schema.length > 0) {
@@ -153,6 +178,8 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       setEntity(detail.entity)
       setTransportType(detail.transport_type)
       setTransportConfig(detail.transport_config || {})
+      setCustomHeaders(Object.entries(detail.transport_config?.headers || {}).map(([key, value]) => ({ key, value })))
+      setCustomBodyParams(Object.entries(detail.transport_config?.body || {}).map(([key, value]) => ({ key, value: typeof value === 'object' ? JSON.stringify(value) : String(value) })))
       setFieldMap(detail.default_field_map || [])
       setDedupKey(detail.dedup_key || [])
       setRecordsPath(detail.records_path || '')
@@ -658,6 +685,92 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
               fontSize: 12, color: '#22c55e', display: 'flex', alignItems: 'center', gap: 6,
             }}>
               <Check size={14} /> Credentials saved{connectedUser ? ` — connected as ${connectedUser}` : ''}
+            </div>
+          )}
+
+          {/* Custom request headers */}
+          <div style={{ padding: 16, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Request Headers
+            </div>
+            {customHeaders.map((h, idx) => (
+              <div key={idx} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+                <input
+                  placeholder="Header name (e.g. X-Api-Key)"
+                  value={h.key}
+                  onChange={e => {
+                    const next = [...customHeaders]
+                    next[idx] = { ...next[idx], key: e.target.value }
+                    setCustomHeaders(next)
+                  }}
+                  style={{ ...inputStyle, flex: 1 }}
+                />
+                <input
+                  placeholder="Value"
+                  value={h.value}
+                  onChange={e => {
+                    const next = [...customHeaders]
+                    next[idx] = { ...next[idx], value: e.target.value }
+                    setCustomHeaders(next)
+                  }}
+                  style={{ ...inputStyle, flex: 2 }}
+                />
+                <button
+                  onClick={() => setCustomHeaders(customHeaders.filter((_, i) => i !== idx))}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 16, padding: '0 4px' }}
+                  title="Remove header"
+                >×</button>
+              </div>
+            ))}
+            <button
+              onClick={() => setCustomHeaders([...customHeaders, { key: '', value: '' }])}
+              style={{ fontSize: 12, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: 4 }}
+            >
+              + Add header
+            </button>
+          </div>
+
+          {/* Request body — shown for POST/PUT/PATCH */}
+          {['POST', 'PUT', 'PATCH'].includes(transportConfig.method || 'GET') && (
+            <div style={{ padding: 16, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Request Body
+              </div>
+              {customBodyParams.map((p, idx) => (
+                <div key={idx} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+                  <input
+                    placeholder="Key (e.g. query)"
+                    value={p.key}
+                    onChange={e => {
+                      const next = [...customBodyParams]
+                      next[idx] = { ...next[idx], key: e.target.value }
+                      setCustomBodyParams(next)
+                    }}
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <input
+                    placeholder='Value (e.g. "Fortinet AND RCE" or 10)'
+                    value={p.value}
+                    onChange={e => {
+                      const next = [...customBodyParams]
+                      next[idx] = { ...next[idx], value: e.target.value }
+                      setCustomBodyParams(next)
+                    }}
+                    style={{ ...inputStyle, flex: 2 }}
+                  />
+                  <button
+                    onClick={() => setCustomBodyParams(customBodyParams.filter((_, i) => i !== idx))}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 16, padding: '0 4px' }}
+                    title="Remove param"
+                  >×</button>
+                </div>
+              ))}
+              <button
+                onClick={() => setCustomBodyParams([...customBodyParams, { key: '', value: '' }])}
+                style={{ fontSize: 12, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: 4 }}
+              >
+                + Add param
+              </button>
             </div>
           )}
         </>
