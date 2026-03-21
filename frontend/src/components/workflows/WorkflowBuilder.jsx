@@ -11,7 +11,7 @@ import {
   getWorkflow, updateWorkflow, executeWorkflow, getWorkflowExecutions,
   getWorkflowExecution, getNodeCatalog, getIntegration,
 } from '../../api.js'
-import { Button, Spinner, EmptyState, Pill } from '../shared/ui.jsx'
+import { Button, Spinner, EmptyState, Pill, ErrorBanner } from '../shared/ui.jsx'
 
 // ─── Icon map ─────────────────────────────
 const ICON_MAP = {
@@ -59,8 +59,11 @@ export default function WorkflowBuilder() {
   const [execDetail, setExecDetail] = useState(null)
   const [smtpConfigured, setSmtpConfigured] = useState(null)   // true | false | 'brevo'
   const [nodeOutputOpen, setNodeOutputOpen] = useState(false)
+  const [fetchError, setFetchError] = useState(null)
 
-  useEffect(() => {
+  const loadWorkflow = () => {
+    setLoading(true)
+    setFetchError(null)
     Promise.all([getWorkflow(id), getNodeCatalog()])
       .then(([wf, cat]) => {
         setWorkflow(wf)
@@ -69,8 +72,10 @@ export default function WorkflowBuilder() {
         setCatalog(cat)
         setLoading(false)
       })
-      .catch(() => setLoading(false))
-  }, [id])
+      .catch(() => { setFetchError('Failed to load workflow.'); setLoading(false) })
+  }
+
+  useEffect(() => { loadWorkflow() }, [id])
 
   const allNodeDefs = useMemo(() => {
     if (!catalog) return {}
@@ -373,6 +378,7 @@ export default function WorkflowBuilder() {
   }, [nodeResults])
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner /> Loading workflow...</div>
+  if (fetchError) return <div style={{ padding: 40 }}><ErrorBanner error={fetchError} onRetry={loadWorkflow} onDismiss={() => setFetchError(null)} /></div>
   if (!workflow) return <EmptyState icon={AlertTriangle} title="Workflow not found" />
 
   const selectedNodeData = nodes.find(n => n.node_id === selectedNode)

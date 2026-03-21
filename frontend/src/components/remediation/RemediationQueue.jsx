@@ -6,7 +6,7 @@ import { useScan } from '../../App.jsx'
 import { getRemediationQueue, createCampaign, runCampaign } from '../../api.js'
 import {
   Card, SeverityBadge, ScoreBar, PageHeader, Select, Spinner,
-  EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill
+  EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, ErrorBanner, SkeletonCard
 } from '../shared/ui.jsx'
 
 const SEV_COLORS = ['var(--info)', 'var(--low)', 'var(--medium)', 'var(--high)', 'var(--critical)']
@@ -130,15 +130,21 @@ export default function RemediationQueue() {
   const { activeScanId } = useScan()
   const [findings, setFindings] = useState([])
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(null)
   const [effort, setEffort] = useState(null)
   const [owner, setOwner] = useState(null)
   const [minSev, setMinSev] = useState(2)
-  useEffect(() => {
+
+  const load = () => {
     setLoading(true)
+    setFetchError(null)
     getRemediationQueue({ scan_id: activeScanId, effort, owner, min_severity: minSev, limit: 100 })
       .then(setFindings)
+      .catch(() => setFetchError('Failed to load remediation queue.'))
       .finally(() => setLoading(false))
-  }, [activeScanId, effort, owner, minSev])
+  }
+
+  useEffect(() => { load() }, [activeScanId, effort, owner, minSev])
 
   const quickWins = findings.filter(f => f.effort_level === 'quick_win')
   const critical = findings.filter(f => f.severity >= 4)
@@ -197,7 +203,8 @@ export default function RemediationQueue() {
         />
       </div>
 
-      {loading ? <Spinner /> : (
+      <ErrorBanner error={fetchError} onRetry={load} onDismiss={() => setFetchError(null)} />
+      {loading ? <><SkeletonCard /><SkeletonCard /><SkeletonCard /></> : (
         findings.length === 0 ? (
           <EmptyState icon={Wrench} title={t('remediation.noFindings')} sub={t('remediation.noFindingsDesc')} />
         ) : (

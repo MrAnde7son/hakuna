@@ -41,7 +41,7 @@ import {
   getRiskGrade,
   getAggregatedSolutions,
 } from '../../api.js'
-import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons } from '../shared/ui.jsx'
+import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons, ErrorBanner, SkeletonCard } from '../shared/ui.jsx'
 
 // ─── Storage helpers ─────────────────────────────────────────────────────────
 
@@ -3562,6 +3562,7 @@ export default function ReportBuilder() {
   const [landingId, setLandingId] = useState(loadLandingId)
   const [activeReport, setActiveReport] = useState(null)
   const [activeTab, setActiveTab] = useState('reports')
+  const [fetchError, setFetchError] = useState(null)
   const { reportId: urlReportId } = useParams()
   const navigate = useNavigate()
   const initialLoadRef = useRef(true)
@@ -3579,6 +3580,7 @@ export default function ReportBuilder() {
   }, [activeReport])
 
   const loadFromApi = useCallback(async () => {
+    setFetchError(null)
     try {
       await migrateLocalStorageReports()
       let templates = await getReportTemplates()
@@ -3627,6 +3629,7 @@ export default function ReportBuilder() {
       initialLoadRef.current = false
     } catch (e) {
       console.error('Failed to load report templates', e)
+      setFetchError('Failed to load report data.')
     } finally {
       setLoading(false)
     }
@@ -3708,7 +3711,7 @@ export default function ReportBuilder() {
     }
   }
 
-  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner /> {t('reports.loading')}</div>
+  if (loading) return <div style={{ padding: 40 }}><SkeletonCard lines={4} /></div>
 
   if (activeReport) {
     return (
@@ -3726,6 +3729,7 @@ export default function ReportBuilder() {
 
   return (
     <div style={{ margin: '-18px', display: 'flex', flexDirection: 'column', minHeight: 'calc(100vh - 32px)' }}>
+      <ErrorBanner error={fetchError} onRetry={loadFromApi} onDismiss={() => setFetchError(null)} />
       <TabBar active={activeTab} onChange={setActiveTab} />
       <div style={{ flex: 1, padding: 18, overflowY: 'auto' }}>
         {activeTab === 'ai-query' ? (

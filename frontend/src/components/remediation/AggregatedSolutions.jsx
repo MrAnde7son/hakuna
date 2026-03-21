@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { Layers, ChevronDown, ChevronUp, ExternalLink, RefreshCw, ArrowRight, Monitor, Shield, Zap, AlertTriangle, Info, CheckCircle } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getAggregatedSolutions, rebuildAggregatedSolutions } from '../../api.js'
-import { Card, PageHeader, Spinner, EmptyState, SeverityBadge, EffortBadge, Select, FilterBar } from '../shared/ui.jsx'
+import { Card, PageHeader, Spinner, EmptyState, SeverityBadge, EffortBadge, Select, FilterBar, ErrorBanner, SkeletonCard } from '../shared/ui.jsx'
 
 const ROOT_CAUSE_KEYS = ['eol_software', 'deprecated_protocol', 'outdated_version', 'misconfiguration', 'missing_patch']
 
@@ -385,12 +385,14 @@ export default function AggregatedSolutions() {
   const [findingPriorityMap, setFindingPriorityMap] = useState({})
   const [totalScanRisk, setTotalScanRisk] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(null)
   const [rebuilding, setRebuilding] = useState(false)
   const [rootCauseFilter, setRootCauseFilter] = useState('')
   const [sortBy, setSortBy] = useState('efficiency')
 
   const loadSolutions = () => {
     setLoading(true)
+    setFetchError(null)
     const params = {}
     if (activeScanId) params.scan_id = activeScanId
     getAggregatedSolutions(params)
@@ -399,7 +401,7 @@ export default function AggregatedSolutions() {
         setFindingPriorityMap(data.finding_priority_map || {})
         setTotalScanRisk(data.total_scan_risk || 0)
       })
-      .catch(console.error)
+      .catch(() => setFetchError('Failed to load aggregated solutions.'))
       .finally(() => setLoading(false))
   }
 
@@ -472,6 +474,8 @@ export default function AggregatedSolutions() {
           {rebuilding ? t('aggregated.rebuilding') : t('aggregated.rebuild')}
         </button>
       </div>
+
+      <ErrorBanner error={fetchError} onRetry={loadSolutions} onDismiss={() => setFetchError(null)} />
 
       {/* Top-level KPIs */}
       {solutions.length > 0 && (
@@ -556,7 +560,7 @@ export default function AggregatedSolutions() {
       </FilterBar>
 
       {loading ? (
-        <Spinner />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>{[1,2,3].map(i => <SkeletonCard key={i} lines={4} />)}</div>
       ) : solutions.length === 0 ? (
         <EmptyState
           icon={Layers}

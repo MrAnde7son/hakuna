@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight, Layers } from 'lucide-react'
 import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign } from '../../api.js'
-import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input } from '../shared/ui.jsx'
+import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail } from '../shared/ui.jsx'
 import BlastRadiusPanel from '../campaigns/BlastRadiusPanel.jsx'
 
 function Section({ title, icon: Icon, children, defaultOpen = true }) {
@@ -131,12 +131,18 @@ export default function FindingDetail() {
   const [showAllControls, setShowAllControls] = useState(false)
   const [exceptionReason, setExceptionReason] = useState('')
   const [ctxSaving, setCtxSaving] = useState(false)
+  const [fetchError, setFetchError] = useState(null)
 
-  useEffect(() => {
+  const loadFinding = () => {
+    setLoading(true)
+    setFetchError(null)
     getFinding(id)
       .then(setFinding)
+      .catch(() => setFetchError('Failed to load finding details.'))
       .finally(() => setLoading(false))
-  }, [id])
+  }
+
+  useEffect(() => { loadFinding() }, [id])
 
   const handleCreateCampaign = async () => {
     if (!finding) return
@@ -214,7 +220,8 @@ export default function FindingDetail() {
     }
   }
 
-  if (loading) return <Spinner />
+  if (loading) return <SkeletonDetail />
+  if (fetchError) return <ErrorBanner error={fetchError} onRetry={loadFinding} />
   if (!finding) return <div style={{ color: 'var(--text-muted)', padding: 32 }}>Finding not found.</div>
 
   const bestScore = finding.cvss3_score || finding.cvss2_score

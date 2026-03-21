@@ -48,6 +48,7 @@ import ResetPassword from './components/auth/ResetPassword.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
 import { getScans, setOrgContext, authUpdateLocale } from './api.js'
+import { ErrorBoundary } from './components/shared/ui.jsx'
 
 // Lazy-loaded route components (code-split per page)
 const AssetInventory = React.lazy(() => import('./components/assets/AssetInventory.jsx'))
@@ -650,6 +651,7 @@ function AppShell() {
               overflowX: 'hidden',
             }}
           >
+            <ErrorBoundary fullPage title="Page failed to load">
             <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#71717a' }}>Loading...</div>}>
               <Routes>
                 <Route path="/" element={<Reports />} />
@@ -672,6 +674,7 @@ function AppShell() {
                 <Route path="/docs" element={<UserDocs />} />
               </Routes>
             </Suspense>
+            </ErrorBoundary>
           </main>
         </div>
         <HelpButton />
