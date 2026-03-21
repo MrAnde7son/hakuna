@@ -315,7 +315,7 @@ function BulkCampaignModal({ selectedAssets, scanId, onClose, onCreated }) {
 
 export default function AssetInventory() {
   const { t } = useTranslation()
-  const ASSET_PAGE_SIZE = 50
+  const ASSET_PAGE_SIZE = 25
   const { activeScanId } = useScan()
   const CRITICALITY_LABELS = Object.fromEntries([1,2,3,4,5,6,7,8,9,10].map(n => [n, t(`assets.critLabels.${n}`)]))
   const [assets, setAssets] = useState([])
@@ -467,18 +467,9 @@ export default function AssetInventory() {
     return () => clearTimeout(debounceRef.current)
   }, [activeScanId, sortBy, sortOrder, tagFilter, tagLogic, filters, advancedMode, page])
 
-  // Auto-sync EASM assets on mount (background, non-blocking) — only if EASM is configured
-  const easmSynced = useRef(false)
-  useEffect(() => {
-    if (easmSynced.current) return
-    easmSynced.current = true
-    getEasmStatus()
-      .then(status => {
-        if (!status.enabled) return
-        return syncEasmAssets().then(() => { if (!advancedMode) load() })
-      })
-      .catch(() => {})
-  }, [])
+  // EASM sync is intentionally NOT auto-triggered on mount — it runs the full import
+  // pipeline (N+1 queries + finalize_scan) and caused 20s+ page loads. Sync is
+  // triggered manually or via scheduled tasks instead.
 
   const runAdvancedSearch = () => {
     if (!advancedConditions.length) return

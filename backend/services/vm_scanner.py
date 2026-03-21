@@ -107,6 +107,17 @@ async def rescan_vm_scan(db: Session, scan: Scan) -> Optional[dict]:
         return None
 
     now = datetime.utcnow()
+    meta = dict(scan.raw_metadata or {})
+
+    # Snapshot previous run before wiping state
+    previous_run = {
+        "status": meta.get("status", "unknown"),
+        "completed_jobs": meta.get("completed_jobs", 0),
+        "total_jobs": meta.get("total_jobs", 0),
+        "findings_emitted": meta.get("findings_emitted", 0),
+        "job_statuses": meta.get("job_statuses", {}),
+        "scan_date": scan.scan_date,
+    }
 
     # Delete findings and assets from the previous run that belong to this scan
     finding_ids = [r[0] for r in db.query(Finding.id).filter(Finding.scan_id == scan.id).all()]
@@ -114,16 +125,18 @@ async def rescan_vm_scan(db: Session, scan: Scan) -> Optional[dict]:
         db.query(Finding).filter(Finding.id.in_(finding_ids)).delete(synchronize_session=False)
     db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
 
-    # Reset scan state
+    # Reset scan state, preserving previous_run history
     scan.scan_date = now.isoformat()
     scan.raw_metadata = {
-        **scan.raw_metadata,
+        **meta,
         "status": "running",
         "job_ids": [],
         "completed_jobs": 0,
         "total_jobs": len(targets),
         "findings_emitted": 0,
         "imported_job_ids": [],
+        "job_statuses": {},
+        "previous_run": previous_run,
     }
     db.flush()
 
@@ -166,22 +179,41 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
     if not job_ids:
         return meta
 
+    # Auto-fail scans that have been running for more than 3 hours (Celery results expire)
+    try:
+        scan_started = datetime.fromisoformat(scan.scan_date)
+        if (datetime.utcnow() - scan_started).total_seconds() > 3 * 3600:
+            logger.warning("VM scan %d has been running >3h — marking as failed (stale)", scan_id)
+            stale_meta = {**meta, "status": "failed", "error": "Scan timed out — job results may have expired"}
+            scan.raw_metadata = stale_meta
+            db.commit()
+            return stale_meta
+    except Exception:
+        pass
+
     imported_job_ids = set(meta.get("imported_job_ids", []))
     completed = 0
     total_findings = meta.get("findings_emitted", 0)
     all_done = True
     any_failed = False
 
+    # Per-job status log: {job_id: {target, status, findings_count, error}}
+    job_statuses = dict(meta.get("job_statuses", {}))
+
     for job_id in job_ids:
         result = await _vm_request("GET", f"/vm/scans/{job_id}")
         if not result:
             all_done = False
+            job_statuses[job_id] = {**job_statuses.get(job_id, {}), "status": "PENDING"}
             continue
 
         status = result.get("status", "PENDING")
-        if status in ("SUCCESS",):
+        job_result = result.get("result") or {}
+        target = job_result.get("target", "")
+
+        if status == "SUCCESS":
             completed += 1
-            job_result = result.get("result")
+            findings_data = job_result.get("findings", [])
 
             # Import findings from this job if not already imported
             if job_result and job_id not in imported_job_ids:
@@ -189,11 +221,32 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 total_findings += new_findings
                 imported_job_ids.add(job_id)
 
+            job_statuses[job_id] = {
+                "target": target,
+                "status": "SUCCESS",
+                "findings_count": len(findings_data),
+                "templates_matched": job_result.get("templates_matched", 0),
+                "templates_loaded": job_result.get("templates_loaded", 0),
+                "requests_sent": job_result.get("requests_sent", 0),
+                "duration_seconds": job_result.get("duration_seconds"),
+                "nuclei_status": job_result.get("status"),
+            }
+
         elif status == "FAILURE":
             completed += 1
             any_failed = True
+            error_msg = job_result.get("error") or job_result.get("traceback") or "Job failed"
+            # Truncate long tracebacks to keep metadata lean
+            if len(error_msg) > 300:
+                error_msg = error_msg[:300] + "…"
+            job_statuses[job_id] = {
+                "target": target or job_statuses.get(job_id, {}).get("target", ""),
+                "status": "FAILURE",
+                "error": error_msg,
+            }
         else:
             all_done = False
+            job_statuses[job_id] = {**job_statuses.get(job_id, {}), "status": "PENDING"}
 
     # Update metadata
     new_meta = {
@@ -201,6 +254,7 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
         "completed_jobs": completed,
         "findings_emitted": total_findings,
         "imported_job_ids": list(imported_job_ids),
+        "job_statuses": job_statuses,
     }
 
     if all_done:

@@ -13,6 +13,7 @@ from typing import Optional, Tuple
 
 import httpx
 
+from sqlalchemy import func as sqlfunc
 from sqlalchemy.orm import Session
 from models.models import Organization, Scan, Asset, Finding
 
@@ -21,6 +22,34 @@ from apscheduler.triggers.cron import CronTrigger
 logger = logging.getLogger(__name__)
 
 HAKUNA_BASE_URL = os.getenv("HAKUNA_SCANNER_URL", "http://localhost:8001")
+
+
+_SEVERITY_KEY = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}
+
+
+def _update_asset_severity_counts(db: Session, scan_id: int) -> None:
+    """Update critical/high/medium/low/info counts for all assets in a scan.
+
+    Uses a single GROUP BY query instead of N+1 per-asset queries.
+    """
+    rows = (
+        db.query(Finding.asset_id, Finding.severity, sqlfunc.count())
+        .join(Asset, Finding.asset_id == Asset.id)
+        .filter(Asset.scan_id == scan_id)
+        .group_by(Finding.asset_id, Finding.severity)
+        .all()
+    )
+    counts_by_asset: dict = {}
+    for asset_id, severity, cnt in rows:
+        bucket = counts_by_asset.setdefault(
+            asset_id,
+            {"critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0, "info_count": 0},
+        )
+        bucket[_SEVERITY_KEY.get(severity, "info_count")] = cnt
+
+    for a in db.query(Asset).filter(Asset.scan_id == scan_id).all():
+        for k, v in counts_by_asset.get(a.id, {}).items():
+            setattr(a, k, v)
 
 
 def _compute_next_run(cron_expr: str) -> Optional[datetime]:
@@ -647,14 +676,8 @@ async def import_easm_assets_for_domain(
         "status": "completed",
     }
 
-    # Update asset severity counts
-    for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
-        counts = {"critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0, "info_count": 0}
-        for f in db.query(Finding.severity).filter(Finding.asset_id == a.id).all():
-            key = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}.get(f.severity, "info_count")
-            counts[key] += 1
-        for k, v in counts.items():
-            setattr(a, k, v)
+    # Update asset severity counts (single GROUP BY query, not N+1)
+    _update_asset_severity_counts(db, scan.id)
 
     db.commit()
 
@@ -775,14 +798,8 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
         if scan.schedule:
             scan.next_run_at = _compute_next_run(scan.schedule)
 
-        # Update asset severity counts
-        for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
-            counts = {"critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0, "info_count": 0}
-            for f in db.query(Finding.severity).filter(Finding.asset_id == a.id).all():
-                key = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}.get(f.severity, "info_count")
-                counts[key] += 1
-            for k, v in counts.items():
-                setattr(a, k, v)
+        # Update asset severity counts (single GROUP BY query, not N+1)
+        _update_asset_severity_counts(db, scan.id)
 
         db.commit()
 

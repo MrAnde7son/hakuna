@@ -967,6 +967,7 @@ function VmScanHistory({ expanded, metadata }) {
   const total = metadata.total_jobs || 0
   const findings = metadata.findings_emitted || 0
   const status = metadata.status || 'unknown'
+  const jobStatuses = metadata.job_statuses || {}
 
   const statusColor = (s) => {
     if (s === 'completed') return '#22c55e'
@@ -974,6 +975,18 @@ function VmScanHistory({ expanded, metadata }) {
     if (s === 'failed' || s === 'error') return '#dc2626'
     if (s === 'running' || s === 'queued') return '#ec4899'
     return '#71717a'
+  }
+
+  const jobStatusDot = (jobStatus) => {
+    if (jobStatus === 'SUCCESS') return '#22c55e'
+    if (jobStatus === 'FAILURE') return '#dc2626'
+    return '#71717a'  // PENDING / unknown
+  }
+
+  const jobStatusLabel = (jobStatus) => {
+    if (jobStatus === 'SUCCESS') return 'ok'
+    if (jobStatus === 'FAILURE') return 'failed'
+    return 'pending'
   }
 
   return (
@@ -1007,27 +1020,127 @@ function VmScanHistory({ expanded, metadata }) {
         </span>
       </div>
 
-      {/* Target list */}
+      {/* Target list with per-job verbose status */}
       {targets.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 4 }}>
-          {targets.map((target, i) => (
-            <div key={i} style={{
-              display: 'flex', gap: 8, alignItems: 'center', fontSize: 11,
-              padding: '4px 8px', borderRadius: 4,
-              color: 'var(--text-muted)',
-            }}>
-              <span style={{ fontFamily: 'monospace', fontWeight: 500, color: 'var(--text-secondary)' }}>
-                {target}
-              </span>
-              {jobIds[i] && (
-                <span style={{ fontSize: 10, opacity: 0.6 }}>
-                  {jobIds[i].slice(0, 8)}
-                </span>
-              )}
-            </div>
-          ))}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 4 }}>
+          {targets.map((target, i) => {
+            const jobId = jobIds[i]
+            const jobInfo = jobId ? jobStatuses[jobId] : null
+            const jobStatus = jobInfo?.status
+            const findingsCount = jobInfo?.findings_count
+            const errorMsg = jobInfo?.error
+
+            return (
+              <div key={i} style={{ display: 'flex', flexDirection: 'column' }}>
+                <div style={{
+                  display: 'flex', gap: 8, alignItems: 'center', fontSize: 11,
+                  padding: '4px 8px', borderRadius: 4,
+                  color: 'var(--text-muted)',
+                }}>
+                  {/* per-target status dot */}
+                  <span style={{
+                    width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                    background: jobStatus ? jobStatusDot(jobStatus) : 'var(--border)',
+                  }} />
+                  <span style={{ fontFamily: 'monospace', fontWeight: 500, color: 'var(--text-secondary)', flex: 1 }}>
+                    {target}
+                  </span>
+                  {jobStatus && (
+                    <span style={{ fontSize: 10, color: jobStatusDot(jobStatus), fontWeight: 500 }}>
+                      {jobStatusLabel(jobStatus)}
+                    </span>
+                  )}
+                  {jobStatus === 'SUCCESS' && (() => {
+                    const ns = jobInfo?.nuclei_status
+                    const nsLabel = ns && ns !== 'complete' ? ns : null
+                    return (
+                      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                        {findingsCount != null ? `${findingsCount} finding${findingsCount !== 1 ? 's' : ''}` : '0 findings'}
+                        {jobInfo?.templates_matched != null && ` · ${jobInfo.templates_matched}/${jobInfo.templates_loaded ?? '?'} templates`}
+                        {jobInfo?.requests_sent > 0 && ` · ${jobInfo.requests_sent} reqs`}
+                        {jobInfo?.duration_seconds != null && ` · ${jobInfo.duration_seconds}s`}
+                        {nsLabel && (
+                          <span style={{ marginLeft: 4, color: '#f59e0b', fontWeight: 500 }}>[{nsLabel}]</span>
+                        )}
+                      </span>
+                    )
+                  })()}
+                  {jobId && (
+                    <span style={{ fontSize: 10, opacity: 0.45, fontFamily: 'monospace' }}>
+                      {jobId.slice(0, 8)}
+                    </span>
+                  )}
+                </div>
+                {/* Error detail for failed jobs */}
+                {errorMsg && (
+                  <div style={{
+                    margin: '0 8px 2px 22px', padding: '4px 8px',
+                    borderRadius: 4, background: '#fef2f2',
+                    border: '1px solid #fecaca', fontSize: 10,
+                    color: '#991b1b', fontFamily: 'monospace',
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                  }}>
+                    {errorMsg}
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
+
+      {/* Previous run history */}
+      {metadata.previous_run && (() => {
+        const pr = metadata.previous_run
+        const prStatuses = pr.job_statuses || {}
+        const prStatus = pr.status || 'unknown'
+        const prDate = pr.scan_date ? new Date(pr.scan_date + 'Z') : null
+        const prLabel = prStatus === 'completed' ? 'Completed' : prStatus === 'completed_with_errors' ? 'Partial' : prStatus
+
+        return (
+          <div style={{ marginTop: 6, borderTop: '1px dashed var(--border)', paddingTop: 6 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4, fontWeight: 500 }}>
+              Previous run {prDate ? `· ${prDate.toLocaleString()}` : ''}
+            </div>
+            <div style={{
+              display: 'flex', gap: 10, alignItems: 'center', fontSize: 11,
+              padding: '4px 8px', borderRadius: 4, background: 'var(--bg)',
+              border: '1px solid var(--border)', marginBottom: 3, opacity: 0.75,
+            }}>
+              <span style={{
+                width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                background: statusColor(prStatus),
+              }} />
+              <span style={{ fontWeight: 500, color: 'var(--text-secondary)' }}>{prLabel}</span>
+              <span style={{ color: 'var(--text-muted)', flex: 1 }}>
+                {pr.completed_jobs ?? 0}/{pr.total_jobs ?? 0} targets done
+              </span>
+              <span style={{ color: 'var(--text-muted)' }}>
+                {pr.findings_emitted ?? 0} finding{(pr.findings_emitted ?? 0) !== 1 ? 's' : ''}
+              </span>
+            </div>
+            {Object.entries(prStatuses).map(([jobId, info]) => (
+              <div key={jobId} style={{
+                display: 'flex', gap: 8, alignItems: 'center', fontSize: 10,
+                padding: '3px 8px', color: 'var(--text-muted)', opacity: 0.7,
+              }}>
+                <span style={{
+                  width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
+                  background: jobStatusDot(info.status),
+                }} />
+                <span style={{ fontFamily: 'monospace', flex: 1 }}>{info.target || jobId.slice(0, 8)}</span>
+                <span style={{ color: jobStatusDot(info.status) }}>{jobStatusLabel(info.status)}</span>
+                {info.status === 'SUCCESS' && (
+                  <span>{info.findings_count ?? 0} findings</span>
+                )}
+                {info.error && (
+                  <span style={{ color: '#dc2626' }} title={info.error}>error</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )
+      })()}
     </div>
   )
 }

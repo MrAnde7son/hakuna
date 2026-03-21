@@ -15,8 +15,8 @@ from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Query, Re
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, distinct, or_
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, desc, distinct, or_, cast, Text
 
 from core.database import get_db, init_db
 from models.models import (
@@ -138,11 +138,13 @@ def _resolve_dc_asset_ids(db, scan_id=None, restrict_to_asset_ids=None) -> set:
     if not dc_computers:
         return set()
 
-    result = set()
+    # Build one query per scan_id (grouping all DCs in the same scan together)
+    # to avoid N+1 (one query per DC computer).
+    from collections import defaultdict
+    scan_conditions: dict = defaultdict(list)
     comp_field_map = {"dns_hostname": lambda row: row[2], "computer_name": lambda row: row[1]}
     for dc_row in dc_computers:
         dc_scan_id = dc_row[0]
-        conditions = []
         for comp_field, asset_fields in match_pairs:
             val = comp_field_map.get(comp_field, lambda r: None)(dc_row)
             if not val:
@@ -151,7 +153,10 @@ def _resolve_dc_asset_ids(db, scan_id=None, restrict_to_asset_ids=None) -> set:
             for af in asset_fields:
                 col = getattr(Asset, af, None)
                 if col is not None:
-                    conditions.append(func.lower(col) == vl)
+                    scan_conditions[dc_scan_id].append(func.lower(col) == vl)
+
+    result = set()
+    for dc_scan_id, conditions in scan_conditions.items():
         if not conditions:
             continue
         aq = db.query(Asset.id).filter(Asset.scan_id == dc_scan_id, or_(*conditions))
@@ -1529,7 +1534,7 @@ def list_assets(
     if asset_status:
         q = q.filter(Asset.asset_status == asset_status)
     if source:
-        q = q.filter(Asset.source_systems.ilike(f'%"{source}"%'))
+        q = q.filter(cast(Asset.source_systems, Text).ilike(f'%"{source}"%'))
     if tags:
         pairs = tag_engine.parse_tag_filter(tags)
         id_sets = tag_engine.resolve_tag_ids(pairs, expand_children, db)
@@ -1756,7 +1761,7 @@ def list_findings(
             Finding.plugin_id.ilike(f"%{search}%")
         )
     if source:
-        q = q.filter(Finding.source_systems.ilike(f'%"{source}"%'))
+        q = q.filter(cast(Finding.source_systems, Text).ilike(f'%"{source}"%'))
     if tags:
         pairs = tag_engine.parse_tag_filter(tags)
         id_sets = tag_engine.resolve_tag_ids(pairs, expand_children, db)
@@ -1794,13 +1799,21 @@ def list_findings(
         q = q.order_by(sort_col)
 
     total = q.count()
-    findings = q.offset((page - 1) * page_size).limit(page_size).all()
+    findings = q.options(joinedload(Finding.ownership)).offset((page - 1) * page_size).limit(page_size).all()
 
     finding_ids = [f.id for f in findings]
     tag_map = tag_engine.get_finding_tags(finding_ids, db)
+
+    # Batch-fetch assets for all findings on this page (avoids N+1 per-finding query)
+    asset_ids_needed = {f.asset_id for f in findings if f.asset_id}
+    asset_map = {}
+    if asset_ids_needed:
+        fetched = db.query(Asset).options(joinedload(Asset.ownership)).filter(Asset.id.in_(asset_ids_needed)).all()
+        asset_map = {a.id: a for a in fetched}
+
     result = []
     for f in findings:
-        d = _finding_to_dict(f, db)
+        d = _finding_to_dict(f, db, asset=asset_map.get(f.asset_id))
         d["tags"] = tag_map.get(f.id, [])
         result.append(d)
 
@@ -1922,8 +1935,9 @@ def _infer_finding_context(f: Finding, asset: Optional[Asset], db: Session) -> d
     return inferred
 
 
-def _finding_to_dict(f: Finding, db: Session, include_full: bool = False) -> dict:
-    asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
+def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset: Asset = None) -> dict:
+    if asset is None and f.asset_id:
+        asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
     # Resolve effective owner through the full chain
     resolved = ownership_inference.resolve_finding_owner(f, asset, db)
     base = {
