@@ -1766,15 +1766,16 @@ def list_findings(
         pairs = tag_engine.parse_tag_filter(tags)
         id_sets = tag_engine.resolve_tag_ids(pairs, expand_children, db)
         q = tag_engine.apply_finding_tag_filter(q, id_sets, tag_logic, db)
-    # ATT&CK / threat-intel filters (JSON text search on matched_ttps column)
+    # ATT&CK / threat-intel filters — matched_ttps is a JSON column; cast to Text for string ops
+    _ttps_as_text = cast(Finding.matched_ttps, Text)
     if has_ttps is True:
-        q = q.filter(Finding.matched_ttps.isnot(None), Finding.matched_ttps != "[]", Finding.matched_ttps != "null")
+        q = q.filter(Finding.matched_ttps.isnot(None), _ttps_as_text != "[]", _ttps_as_text != "null")
     elif has_ttps is False:
-        q = q.filter(or_(Finding.matched_ttps == None, Finding.matched_ttps == "[]", Finding.matched_ttps == "null"))
+        q = q.filter(or_(Finding.matched_ttps == None, _ttps_as_text == "[]", _ttps_as_text == "null"))
     if tactic:
-        q = q.filter(Finding.matched_ttps.ilike(f'%"tactic": "{tactic}"%'))
+        q = q.filter(_ttps_as_text.ilike(f'%"tactic": "{tactic}"%'))
     if technique_id:
-        q = q.filter(Finding.matched_ttps.ilike(f'%"{technique_id}"%'))
+        q = q.filter(_ttps_as_text.ilike(f'%"{technique_id}"%'))
     if threat_group_id:
         # Resolve TTPs linked to this group, then filter findings with any of those technique_ids
         from models.threat_intel_models import ThreatGroupTTP as _TGTTP, TTP as _TTP
@@ -1786,7 +1787,7 @@ def list_findings(
         )
         group_technique_ids = [row.technique_id for row in group_ttps]
         if group_technique_ids:
-            q = q.filter(or_(*[Finding.matched_ttps.ilike(f'%"{tid}"%') for tid in group_technique_ids]))
+            q = q.filter(or_(*[_ttps_as_text.ilike(f'%"{tid}"%') for tid in group_technique_ids]))
         else:
             # Group has no TTPs — return empty
             q = q.filter(False)
@@ -8324,13 +8325,13 @@ def compute_funnel(
                 q = q.filter(Finding.zero_day == True)
             if f.get("exploit_maturity"):
                 q = q.filter(Finding.exploit_maturity == f["exploit_maturity"])
-            # ATT&CK
+            # ATT&CK (matched_ttps is JSON — cast to Text for string comparisons)
             if _is_true(f.get("has_ttps")):
-                q = q.filter(Finding.matched_ttps.isnot(None), Finding.matched_ttps != "[]")
+                q = q.filter(Finding.matched_ttps.isnot(None), cast(Finding.matched_ttps, Text) != "[]")
             if f.get("tactic"):
-                q = q.filter(Finding.matched_ttps.ilike(f'%"tactic": "{f["tactic"]}"%'))
+                q = q.filter(cast(Finding.matched_ttps, Text).ilike(f'%"tactic": "{f["tactic"]}"%'))
             if f.get("technique_id"):
-                q = q.filter(Finding.matched_ttps.ilike(f'%"technique_id": "{f["technique_id"]}%'))
+                q = q.filter(cast(Finding.matched_ttps, Text).ilike(f'%"technique_id": "{f["technique_id"]}%'))
             # Workflow & state
             if f.get("workflow_status"):
                 q = q.filter(Finding.workflow_status == f["workflow_status"])
@@ -8612,15 +8613,15 @@ def nlp_report_query(
     if ff.get("plugin_family"):
         fq = fq.filter(Finding.plugin_family.ilike(f"%{ff['plugin_family']}%"))
     if ff.get("cve"):
-        fq = fq.filter(Finding.cves.ilike(f"%{ff['cve']}%"))
+        fq = fq.filter(cast(Finding.cves, Text).ilike(f"%{ff['cve']}%"))
     if ff.get("port"):
         fq = fq.filter(Finding.port == ff["port"])
     if ff.get("has_ttps"):
-        fq = fq.filter(Finding.matched_ttps.isnot(None), Finding.matched_ttps != "[]")
+        fq = fq.filter(Finding.matched_ttps.isnot(None), cast(Finding.matched_ttps, Text) != "[]")
     if ff.get("tactic"):
-        fq = fq.filter(Finding.matched_ttps.ilike(f"%{ff['tactic']}%"))
+        fq = fq.filter(cast(Finding.matched_ttps, Text).ilike(f"%{ff['tactic']}%"))
     if ff.get("technique_id"):
-        fq = fq.filter(Finding.matched_ttps.ilike(f"%{ff['technique_id']}%"))
+        fq = fq.filter(cast(Finding.matched_ttps, Text).ilike(f"%{ff['technique_id']}%"))
     if ff.get("tags"):
         tag_list = [t.strip() for t in ff["tags"].split(",")]
         from models.models import TagAssignment, Tag
