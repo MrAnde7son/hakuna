@@ -357,7 +357,7 @@ export default function FindingExplorer() {
   const groupBy = searchParams.get('group') || null
   const assetId = searchParams.get('asset_id') || null
   const page = searchParams.has('page') ? Number(searchParams.get('page')) : 1
-  const pageSize = groupBy ? 500 : 50
+  const pageSize = groupBy ? 500 : 25
   const sortBy = searchParams.get('sort') || 'priority_score'
   const sortOrder = searchParams.get('order') || 'desc'
   const slaStatus = searchParams.get('sla_status') || null
