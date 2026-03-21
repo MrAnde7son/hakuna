@@ -398,6 +398,11 @@ export const getTags = (params = {}) => {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
   return request(`/tags?${q}`)
 }
+export const getOsSoftwareSummary = (scanId) => {
+  const p = new URLSearchParams()
+  if (scanId) p.set('scan_id', scanId)
+  return request(`/tags/os-software-summary?${p}`)
+}
 export const getTag = (id) => request(`/tags/${id}`)
 export const createTag = (data) => request('/tags', {
   method: 'POST',

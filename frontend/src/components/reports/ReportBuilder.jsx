@@ -31,7 +31,7 @@ import {
   getTemporalSummary, getRemediationVelocity,
   getReportTemplates, createReportTemplate, updateReportTemplate, deleteReportTemplate as apiDeleteTemplate,
   exportConfig,
-  getRiskByTags, getTags, getBenchmarks,
+  getRiskByTags, getTags, getBenchmarks, getOsSoftwareSummary,
   getInventorySummary, getInventoryUsers, getInventoryGroups, getInventoryServices,
   getInventoryNetconns, getInventoryTasks, getInventoryPatches, getInventoryLoggedOn,
   getInventoryShares, getInventorySoftware, getInventorySecurityControls, getInventoryComputers,
@@ -131,6 +131,7 @@ const DATA_SOURCES = {
   inv_credentials:    (scanId, f) => getInventoryCredentials({ scan_id: scanId, credential_type: f?.credential_type, protocol: f?.protocol, severity: f?.severity, search: f?.search, page_size: 0 }),
   risk_grade:              (scanId, f) => getRiskGrade(scanId, f?.tags, f?.tag_logic),
   aggregated_solutions:    (scanId, f) => getAggregatedSolutions({ scan_id: scanId }),
+  os_sw_summary:           (scanId, f) => getOsSoftwareSummary(scanId),
 }
 
 // Filter definitions per source — drives ConfigPanel filter UI
@@ -514,6 +515,58 @@ const DATA_PRESETS = {
         name, value, color: ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#0ea5e9', '#22c55e', '#ef4444', '#14b8a6'][i % 8],
       }))
     },
+  },
+
+  // ── OS & Software (from /api/tags/os-software-summary) ──
+  os_family_breakdown: {
+    label: 'OS Families', group: 'OS & Software', source: 'os_sw_summary', type: 'categories',
+    extract: d => {
+      const colors = { 'Windows Server': '#0078d4', 'Windows Desktop': '#00a4ef', 'Windows': '#0078d4', 'Ubuntu': '#e95420', 'Debian': '#a80030', 'CentOS': '#932279', 'Red Hat': '#ee0000', 'SUSE': '#73ba25', 'Linux': '#fcc624', 'macOS': '#a2aaad', 'FreeBSD': '#ab2b28', 'VMware ESXi': '#696566', 'Other': '#94a3b8' }
+      return (d?.os_families || []).map((r, i) => ({ name: r.name, value: r.count, color: colors[r.name] || PALETTE[i % PALETTE.length] }))
+    },
+  },
+  os_detail_breakdown: {
+    label: 'OS Versions (detailed)', group: 'OS & Software', source: 'os_sw_summary', type: 'categories',
+    extract: d => (d?.os_detail || []).slice(0, 15).map((r, i) => ({ name: r.os, value: r.count, color: PALETTE[i % PALETTE.length] })),
+  },
+  device_type_breakdown: {
+    label: 'Device Types', group: 'OS & Software', source: 'os_sw_summary', type: 'categories',
+    extract: d => {
+      const colors = { server: '#6366f1', workstation: '#0ea5e9', router: '#14b8a6', switch: '#22c55e', firewall: '#f59e0b', printer: '#94a3b8', hypervisor: '#8b5cf6' }
+      return (d?.device_types || []).map((r, i) => ({ name: r.name, value: r.count, color: colors[r.name] || PALETTE[i % PALETTE.length] }))
+    },
+  },
+  top_software_products: {
+    label: 'Top Software Products', group: 'OS & Software', source: 'os_sw_summary', type: 'categories',
+    extract: d => (d?.software || []).slice(0, 15).map((r, i) => ({ name: r.name, value: r.asset_count, color: PALETTE[i % PALETTE.length] })),
+  },
+  software_category_breakdown: {
+    label: 'Software Categories', group: 'OS & Software', source: 'os_sw_summary', type: 'categories',
+    extract: d => (d?.software_categories || []).map((r, i) => ({ name: r.name, value: r.count, color: PALETTE[i % PALETTE.length] })),
+  },
+  inv_total_os_families: { label: 'OS Families Count', group: 'OS & Software', source: 'os_sw_summary', type: 'metric', extract: d => d?.os_families?.length ?? 0, color: '#0078d4' },
+  inv_total_device_types: { label: 'Device Types Count', group: 'OS & Software', source: 'os_sw_summary', type: 'metric', extract: d => d?.device_types?.length ?? 0, color: '#6366f1' },
+  inv_total_sw_products: { label: 'Unique Software Products', group: 'OS & Software', source: 'os_sw_summary', type: 'metric', extract: d => d?.software?.length ?? 0, color: '#14b8a6' },
+
+  // ── OS & Software tables ──
+  os_detail_table: {
+    label: 'OS Versions', group: 'OS & Software', source: 'os_sw_summary', type: 'table',
+    extract: d => (d?.os_detail || []).map(r => ({ ...r, name: r.os })),
+    columns: [
+      { key: 'os', label: 'Operating System' },
+      { key: 'family', label: 'Family' },
+      { key: 'count', label: 'Assets' },
+    ],
+  },
+  top_software_table: {
+    label: 'Top Software', group: 'OS & Software', source: 'os_sw_summary', type: 'table',
+    extract: d => d?.software || [],
+    columns: [
+      { key: 'name', label: 'Software' },
+      { key: 'vendor', label: 'Vendor' },
+      { key: 'asset_count', label: 'Assets' },
+      { key: 'install_count', label: 'Installs' },
+    ],
   },
 
   // ── Series (line/area/bar-over-time) ──
@@ -1293,6 +1346,41 @@ const AI_ML_ATTACK_SURFACE_DASHBOARD = {
     { id: 'ai8', type: 'table', title: 'AI/ML Vulnerability Findings', width: 'full', config: { preset: 'findings_list', limit: 20, filters: { plugin_family: 'Artificial Intelligence', sort_by: 'priority_score', order: 'desc' } } },
     // Inventory detail
     { id: 'ai9', type: 'table', title: 'Detected AI Tools & Extensions', width: 'full', config: { preset: 'inv_ai_tools_table', limit: 50 } },
+  ],
+}
+
+const OS_DISTRIBUTION_DASHBOARD = {
+  id: 'default-os-distribution',
+  name: 'OS Distribution',
+  createdAt: new Date(0).toISOString(),
+  widgets: [
+    { id: 'os1', type: 'header', title: 'Operating System Distribution', width: 'full', config: { title: 'Operating System Distribution', subtitle: 'Asset inventory breakdown by OS family, version, and device type' } },
+    { id: 'os2', type: 'card',      title: 'Total Assets',     width: 'quarter', config: { preset: 'total_assets' } },
+    { id: 'os3', type: 'card',      title: 'OS Families',      width: 'quarter', config: { preset: 'inv_total_os_families' } },
+    { id: 'os4', type: 'card',      title: 'Device Types',     width: 'quarter', config: { preset: 'inv_total_device_types' } },
+    { id: 'os5', type: 'card',      title: 'Unique Software',  width: 'quarter', config: { preset: 'inv_total_sw_products' } },
+    { id: 'os6', type: 'pie_chart', title: 'OS Family Distribution', width: 'half', config: { preset: 'os_family_breakdown', donut: true } },
+    { id: 'os7', type: 'pie_chart', title: 'Device Types',          width: 'half', config: { preset: 'device_type_breakdown', donut: true } },
+    { id: 'os8', type: 'bar_chart', title: 'OS Versions',           width: 'full', config: { preset: 'os_detail_breakdown' } },
+    { id: 'os9', type: 'table',     title: 'OS Version Details',    width: 'full', config: { preset: 'os_detail_table' } },
+  ],
+}
+
+const SOFTWARE_INVENTORY_DASHBOARD = {
+  id: 'default-software-inventory',
+  name: 'Software Inventory',
+  createdAt: new Date(0).toISOString(),
+  widgets: [
+    { id: 'sw1', type: 'header', title: 'Software Inventory Report', width: 'full', config: { title: 'Software Inventory Report', subtitle: 'Installed software across the environment — products, vendors, and categories' } },
+    { id: 'sw2', type: 'card',      title: 'Total Software',     width: 'quarter', config: { preset: 'inv_total_software' } },
+    { id: 'sw3', type: 'card',      title: 'Unique Products',    width: 'quarter', config: { preset: 'inv_total_sw_products' } },
+    { id: 'sw4', type: 'card',      title: 'Total Assets',       width: 'quarter', config: { preset: 'total_assets' } },
+    { id: 'sw5', type: 'card',      title: 'OS Families',        width: 'quarter', config: { preset: 'inv_total_os_families' } },
+    { id: 'sw6', type: 'pie_chart', title: 'Software Categories',     width: 'half', config: { preset: 'software_category_breakdown', donut: true } },
+    { id: 'sw7', type: 'bar_chart', title: 'Top Software by Vendor',  width: 'half', config: { preset: 'inv_software_vendors' } },
+    { id: 'sw8', type: 'bar_chart', title: 'Most Installed Software', width: 'full', config: { preset: 'top_software_products' } },
+    { id: 'sw9', type: 'table',     title: 'Software Details',        width: 'full', config: { preset: 'top_software_table' } },
+    { id: 'sw10',type: 'table',     title: 'All Installed Software',  width: 'full', config: { preset: 'inv_software_table' } },
   ],
 }
 
@@ -3585,7 +3673,7 @@ export default function ReportBuilder() {
       let needsReload = false
 
       // Ensure default dashboards exist and stay up-to-date
-      const ootb = [EXECUTIVE_DASHBOARD, DEFAULT_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD]
+      const ootb = [EXECUTIVE_DASHBOARD, DEFAULT_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD]
       for (const dash of ootb) {
         const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}:${w.config?.show_benchmark ? 'bm' : ''}`).join('|')
         const existing = templates.find(t => t.name === dash.name)

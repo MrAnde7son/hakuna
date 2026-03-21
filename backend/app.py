@@ -5793,6 +5793,97 @@ def list_tags(
     return [tag_engine._tag_to_dict(t, db=db, include_counts=True) for t in tags]
 
 
+@app.get("/api/tags/os-software-summary")
+def get_os_software_summary(
+    scan_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return OS distribution and top software products with asset counts."""
+    from sqlalchemy import func as sqla_func
+
+    # OS distribution from assets
+    os_q = db.query(Asset.os, sqla_func.count(Asset.id).label("count")).join(
+        Scan, Asset.scan_id == Scan.id
+    )
+    os_q = apply_scan_org_filter(os_q, org_ids)
+    if scan_id:
+        os_q = os_q.filter(Asset.scan_id == scan_id)
+    os_q = os_q.filter(Asset.os.isnot(None), Asset.os != "").group_by(Asset.os).order_by(sqla_func.count(Asset.id).desc())
+    os_rows = os_q.all()
+
+    # Classify into families
+    from services.os_software_tags import classify_os_family
+    family_counts: dict[str, int] = {}
+    os_detail = []
+    for os_str, count in os_rows:
+        family = classify_os_family(os_str) or "Other"
+        family_counts[family] = family_counts.get(family, 0) + count
+        os_detail.append({"os": os_str, "family": family, "count": count})
+
+    os_families = sorted(
+        [{"name": k, "count": v} for k, v in family_counts.items()],
+        key=lambda x: x["count"], reverse=True,
+    )
+
+    # Software distribution from InventorySoftware
+    sw_q = db.query(
+        InventorySoftware.name,
+        InventorySoftware.vendor,
+        sqla_func.count(sqla_func.distinct(InventorySoftware.asset_id)).label("asset_count"),
+        sqla_func.count(InventorySoftware.id).label("install_count"),
+    ).join(Scan, InventorySoftware.scan_id == Scan.id)
+    sw_q = apply_scan_org_filter(sw_q, org_ids)
+    if scan_id:
+        sw_q = sw_q.filter(InventorySoftware.scan_id == scan_id)
+    sw_q = (
+        sw_q.filter(InventorySoftware.name.isnot(None))
+        .group_by(InventorySoftware.name, InventorySoftware.vendor)
+        .order_by(sqla_func.count(sqla_func.distinct(InventorySoftware.asset_id)).desc())
+        .limit(100)
+    )
+    sw_rows = sw_q.all()
+    software = [
+        {"name": r.name, "vendor": r.vendor, "asset_count": r.asset_count, "install_count": r.install_count}
+        for r in sw_rows
+    ]
+
+    # Software category breakdown
+    cat_q = db.query(
+        InventorySoftware.category,
+        sqla_func.count(sqla_func.distinct(InventorySoftware.asset_id)).label("asset_count"),
+    ).join(Scan, InventorySoftware.scan_id == Scan.id)
+    cat_q = apply_scan_org_filter(cat_q, org_ids)
+    if scan_id:
+        cat_q = cat_q.filter(InventorySoftware.scan_id == scan_id)
+    cat_q = cat_q.group_by(InventorySoftware.category).order_by(
+        sqla_func.count(sqla_func.distinct(InventorySoftware.asset_id)).desc()
+    )
+    cat_rows = cat_q.all()
+    software_categories = [
+        {"name": r.category or "Uncategorized", "count": r.asset_count}
+        for r in cat_rows
+    ]
+
+    # Device type breakdown
+    dt_q = db.query(Asset.device_type, sqla_func.count(Asset.id).label("count")).join(
+        Scan, Asset.scan_id == Scan.id
+    )
+    dt_q = apply_scan_org_filter(dt_q, org_ids)
+    if scan_id:
+        dt_q = dt_q.filter(Asset.scan_id == scan_id)
+    dt_q = dt_q.filter(Asset.device_type.isnot(None)).group_by(Asset.device_type).order_by(sqla_func.count(Asset.id).desc())
+    device_types = [{"name": r.device_type, "count": r.count} for r in dt_q.all()]
+
+    return {
+        "os_families": os_families,
+        "os_detail": os_detail[:50],
+        "software": software,
+        "software_categories": software_categories,
+        "device_types": device_types,
+    }
+
+
 @app.get("/api/tags/{tag_id}")
 def get_tag(tag_id: int, db: Session = Depends(get_db)):
     tag = db.query(Tag).filter(Tag.id == tag_id).first()

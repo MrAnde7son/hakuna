@@ -34,7 +34,12 @@ def finalize_scan(
     """
     results = {}
 
-    # 1. Auto-tag rules
+    # 1a. OS & Software auto-tags (built-in)
+    results["os_software_tags"] = _step(
+        db, "OS/Software auto-tags", lambda: _run_os_software_tags(db, scan_id)
+    )
+
+    # 1b. Auto-tag rules (user-defined)
     results["auto_tag"] = _step(
         db, "Auto-tag rules", lambda: _run_auto_tag_rules(db, scan_id)
     )
@@ -106,6 +111,11 @@ def _step(db: Session, name: str, fn):
 
 
 # ── Individual pipeline steps ──────────────────────────────────────────
+
+
+def _run_os_software_tags(db, scan_id):
+    import services.os_software_tags as os_sw_tags
+    return os_sw_tags.run_os_software_auto_tags(db, scan_id)
 
 
 def _run_auto_tag_rules(db, scan_id):
