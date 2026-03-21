@@ -28,7 +28,7 @@ lsof -ti:8000 | xargs kill -9 2>/dev/null || true
 sleep 0.5
 
 echo "  Starting backend on http://localhost:8000 ..."
-uvicorn app:app --host 0.0.0.0 --port 8000 --reload > /tmp/nessus-backend.log 2>&1 &
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload --env-file .env > /tmp/nessus-backend.log 2>&1 &
 BACKEND_PID=$!
 echo "  Backend PID: $BACKEND_PID"
 
