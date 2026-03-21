@@ -650,10 +650,10 @@ async def import_easm_assets_for_domain(
     # Reuse existing scan for this domain, or create one if first time
     scan = _find_existing_easm_scan(db, org, domain)
     if scan:
-        # Clear old assets/findings before reimporting
-        db.query(Finding).filter(Finding.asset_id.in_(
-            db.query(Asset.id).filter(Asset.scan_id == scan.id)
-        )).delete(synchronize_session=False)
+        # Clear old assets/findings before reimporting.
+        # Scope by scan_id (not asset_id) to avoid deleting findings from other scans
+        # that may share the same assets (e.g. VM scan findings linked to EASM assets via dedup).
+        db.query(Finding).filter(Finding.scan_id == scan.id).delete(synchronize_session=False)
         db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
         db.flush()
     else:
@@ -773,10 +773,10 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
 
     # Map hakuna statuses
     if hakuna_status in ("completed", "done"):
-        # Clear old assets/findings before importing fresh results
-        db.query(Finding).filter(Finding.asset_id.in_(
-            db.query(Asset.id).filter(Asset.scan_id == scan.id)
-        )).delete(synchronize_session=False)
+        # Clear old assets/findings before importing fresh results.
+        # Scope by scan_id (not asset_id) to avoid deleting findings from other scans
+        # that may share the same assets (e.g. VM scan findings linked to EASM assets via dedup).
+        db.query(Finding).filter(Finding.scan_id == scan.id).delete(synchronize_session=False)
         db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
 
         # Import assets now that scan is done
