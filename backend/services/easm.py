@@ -584,10 +584,26 @@ def _create_easm_scan(db: Session, org: Organization, domain: str, scan_type: st
 def _import_assets_for_domain(
     db: Session, scan: Scan, easm_assets: list, domain: str,
 ) -> Tuple[int, int]:
-    """Import assets belonging to a specific domain into a scan. Returns (created, findings_created)."""
+    """Upsert assets belonging to a specific domain into a scan. Returns (upserted_count, findings_created).
+
+    Uses upsert logic (update existing asset by IP/hostname if it already exists in this scan)
+    to preserve stable asset IDs. This is critical for cross-source dedup: VM scan findings
+    may reference EASM asset IDs, and deleting/recreating those assets would orphan the findings.
+    """
     created = 0
     findings_created = 0
     now = datetime.utcnow()
+
+    # Build lookup of existing assets in this scan by IP and by hostname
+    existing_by_ip: dict[str, Asset] = {}
+    existing_by_hostname: dict[str, Asset] = {}
+    for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
+        if a.ip:
+            existing_by_ip[a.ip] = a
+        if a.fqdn:
+            existing_by_hostname[a.fqdn] = a
+        elif a.hostname:
+            existing_by_hostname[a.hostname] = a
 
     for ea in easm_assets:
         hostname = ea.get("hostname", "")
@@ -612,22 +628,37 @@ def _import_assets_for_domain(
                     os_hint = t
                     break
 
-        asset = Asset(
-            scan_id=scan.id,
-            ip=ip or None,
-            hostname=hostname.split(".")[0] if hostname else None,
-            fqdn=fqdn,
-            os=os_hint,
-            is_internet_facing=True,
-            environment_tag="external",
-            criticality=5,
-            first_seen=now,
-            last_seen=now,
-            easm_data=easm_data,
-            source_systems=["easm"],
+        # Upsert: reuse existing asset if IP or hostname matches — keeps IDs stable
+        asset = (
+            (ip and existing_by_ip.get(ip))
+            or (fqdn and existing_by_hostname.get(fqdn))
+            or (hostname and existing_by_hostname.get(hostname.split(".")[0]))
         )
-        db.add(asset)
-        db.flush()
+        if asset:
+            # Update in-place to preserve asset.id (cross-scan findings may reference it)
+            asset.ip = ip or asset.ip
+            asset.hostname = hostname.split(".")[0] if hostname else asset.hostname
+            asset.fqdn = fqdn or asset.fqdn
+            asset.os = os_hint or asset.os
+            asset.easm_data = easm_data
+            asset.last_seen = now
+        else:
+            asset = Asset(
+                scan_id=scan.id,
+                ip=ip or None,
+                hostname=hostname.split(".")[0] if hostname else None,
+                fqdn=fqdn,
+                os=os_hint,
+                is_internet_facing=True,
+                environment_tag="external",
+                criticality=5,
+                first_seen=now,
+                last_seen=now,
+                easm_data=easm_data,
+                source_systems=["easm"],
+            )
+            db.add(asset)
+            db.flush()
         created += 1
 
         findings_created += _generate_easm_findings(db, scan.id, asset, ea)
@@ -650,11 +681,21 @@ async def import_easm_assets_for_domain(
     # Reuse existing scan for this domain, or create one if first time
     scan = _find_existing_easm_scan(db, org, domain)
     if scan:
-        # Clear old assets/findings before reimporting.
-        # Scope by scan_id (not asset_id) to avoid deleting findings from other scans
-        # that may share the same assets (e.g. VM scan findings linked to EASM assets via dedup).
+        # Clear EASM's own findings before reimporting.
         db.query(Finding).filter(Finding.scan_id == scan.id).delete(synchronize_session=False)
-        db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
+        # Delete only EASM assets that are NOT referenced by findings from other scans.
+        # Assets shared with VM/Nessus scans (via cross-scan dedup) must keep their IDs;
+        # they will be updated in-place by _import_assets_for_domain (upsert logic).
+        cross_scan_asset_ids = {
+            r[0] for r in db.query(Finding.asset_id).filter(
+                Finding.asset_id.in_(db.query(Asset.id).filter(Asset.scan_id == scan.id)),
+                Finding.scan_id != scan.id,
+            ).all()
+        }
+        q_del = db.query(Asset).filter(Asset.scan_id == scan.id)
+        if cross_scan_asset_ids:
+            q_del = q_del.filter(~Asset.id.in_(cross_scan_asset_ids))
+        q_del.delete(synchronize_session=False)
         db.flush()
     else:
         scan = _create_easm_scan(db, org, domain, scan_type)
@@ -773,11 +814,19 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
 
     # Map hakuna statuses
     if hakuna_status in ("completed", "done"):
-        # Clear old assets/findings before importing fresh results.
-        # Scope by scan_id (not asset_id) to avoid deleting findings from other scans
-        # that may share the same assets (e.g. VM scan findings linked to EASM assets via dedup).
+        # Clear EASM's own findings before importing fresh results.
         db.query(Finding).filter(Finding.scan_id == scan.id).delete(synchronize_session=False)
-        db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
+        # Delete only EASM assets that are NOT referenced by findings from other scans.
+        cross_scan_asset_ids = {
+            r[0] for r in db.query(Finding.asset_id).filter(
+                Finding.asset_id.in_(db.query(Asset.id).filter(Asset.scan_id == scan.id)),
+                Finding.scan_id != scan.id,
+            ).all()
+        }
+        q_del = db.query(Asset).filter(Asset.scan_id == scan.id)
+        if cross_scan_asset_ids:
+            q_del = q_del.filter(~Asset.id.in_(cross_scan_asset_ids))
+        q_del.delete(synchronize_session=False)
 
         # Import assets now that scan is done
         easm_assets = await get_easm_assets(org.easm_org_id) or []
