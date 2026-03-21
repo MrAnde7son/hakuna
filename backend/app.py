@@ -1387,7 +1387,10 @@ def nlp_search(
     if scan_id:
         target_scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if target_scan and target_scan.source_type == "vm_scanner":
-            _vm_asset_ids = db.query(Finding.asset_id).filter(Finding.scan_id == scan_id).distinct()
+            _vm_asset_ids = [
+                r[0] for r in db.query(Finding.asset_id)
+                .filter(Finding.scan_id == scan_id).distinct().all()
+            ]
             aq = aq.filter(or_(Asset.scan_id == scan_id, Asset.id.in_(_vm_asset_ids)))
         else:
             aq = aq.filter(Asset.scan_id == scan_id)
@@ -1500,6 +1503,7 @@ def list_assets(
     server_role: Optional[str] = None,
     asset_status: Optional[str] = None,
     source: Optional[str] = None,
+    min_sources: Optional[int] = None,
     tags: Optional[str] = None,
     tag_logic: str = "AND",
     expand_children: bool = False,
@@ -1517,7 +1521,13 @@ def list_assets(
         # Use the same union approach as the scan list endpoint so all relevant assets appear.
         target_scan = db.query(Scan).filter(Scan.id == scan_id).first()
         if target_scan and target_scan.source_type == "vm_scanner":
-            finding_asset_ids = db.query(Finding.asset_id).filter(Finding.scan_id == scan_id).distinct()
+            # Materialize to a list first to avoid accidental subquery correlation
+            # when the outer query has a JOIN to Scan (SQLAlchemy may correlate the
+            # Finding.scan_id subquery against the joined scans table).
+            finding_asset_ids = [
+                r[0] for r in db.query(Finding.asset_id)
+                .filter(Finding.scan_id == scan_id).distinct().all()
+            ]
             q = q.filter(or_(Asset.scan_id == scan_id, Asset.id.in_(finding_asset_ids)))
         else:
             q = q.filter(Asset.scan_id == scan_id)
@@ -1548,6 +1558,8 @@ def list_assets(
         q = q.filter(Asset.asset_status == asset_status)
     if source:
         q = q.filter(cast(Asset.source_systems, Text).ilike(f'%"{source}"%'))
+    if min_sources is not None:
+        q = q.filter(func.json_array_length(Asset.source_systems) >= min_sources)
     if tags:
         pairs = tag_engine.parse_tag_filter(tags)
         id_sets = tag_engine.resolve_tag_ids(pairs, expand_children, db)

@@ -1083,6 +1083,48 @@ function VmScanHistory({ expanded, metadata }) {
                     {errorMsg}
                   </div>
                 )}
+                {/* Diagnostic panel for 0-template scans */}
+                {jobStatus === 'SUCCESS' && jobInfo?.templates_loaded === 0 && (jobInfo?.routing_info || jobInfo?.nuclei_stderr) && (
+                  <div style={{
+                    margin: '2px 8px 2px 22px', padding: '6px 8px',
+                    borderRadius: 4, background: '#fffbeb',
+                    border: '1px solid #fde68a', fontSize: 10,
+                  }}>
+                    <div style={{ fontWeight: 600, color: '#92400e', marginBottom: 4 }}>
+                      Why 0 templates?
+                    </div>
+                    {jobInfo?.routing_info && (
+                      <div style={{ color: '#78350f', marginBottom: jobInfo?.nuclei_stderr ? 6 : 0 }}>
+                        <div><b>Routing:</b> {jobInfo.routing_info.reason}</div>
+                        {jobInfo.routing_info.cpe_list?.length > 0 && (
+                          <div>CPE: {jobInfo.routing_info.cpe_list.join(', ')}</div>
+                        )}
+                        {jobInfo.routing_info.tech_stack_keys?.length > 0 && (
+                          <div>Tech stack: {jobInfo.routing_info.tech_stack_keys.join(', ')}</div>
+                        )}
+                        {jobInfo.routing_info.open_ports?.length > 0 && (
+                          <div>Open ports: {jobInfo.routing_info.open_ports.join(', ')}</div>
+                        )}
+                      </div>
+                    )}
+                    {jobInfo?.nuclei_stderr && (
+                      <details style={{ marginTop: 4 }}>
+                        <summary style={{ cursor: 'pointer', color: '#92400e', fontWeight: 500 }}>
+                          Nuclei output
+                        </summary>
+                        <pre style={{
+                          margin: '4px 0 0', padding: '4px 6px',
+                          background: '#fef3c7', borderRadius: 3,
+                          fontSize: 9, whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-all', maxHeight: 200,
+                          overflowY: 'auto', color: '#451a03',
+                        }}>
+                          {jobInfo.nuclei_stderr}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
+                )}
               </div>
             )
           })}

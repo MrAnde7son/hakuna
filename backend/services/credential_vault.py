@@ -51,7 +51,13 @@ def decrypt(encrypted: str) -> dict:
     raw = base64.b64decode(encrypted)
     nonce = raw[:12]
     ciphertext = raw[12:]
-    plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+    try:
+        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+    except Exception:
+        raise RuntimeError(
+            "Failed to decrypt credentials — the encryption key has changed. "
+            "Set a stable INTEGRATION_SECRET_KEY env var and re-enter your credentials."
+        )
     return json.loads(plaintext.decode("utf-8"))
 
 

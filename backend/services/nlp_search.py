@@ -90,6 +90,31 @@ SLA_PATTERNS = [
     (r"\bresolved\b|\bfixed\b|\bclosed\b", "resolved"),
 ]
 
+# ── Source / scanner type ──────────────────────────────────────────────────────
+
+# Known aliases: input keyword → normalized source_systems value
+SOURCE_ALIASES: dict[str, str] = {
+    "nessus": "nessus",
+    "tenable": "nessus",
+    "tenable io": "nessus",
+    "vm": "vm_scanner",
+    "vm scan": "vm_scanner",
+    "vm scanner": "vm_scanner",
+    "vm_scanner": "vm_scanner",
+    "qualys": "qualys",
+    "rapid7": "rapid7",
+    "openvas": "openvas",
+    "nexpose": "nexpose",
+    "easm": "easm",
+    "external attack surface": "easm",
+    "attack surface management": "easm",
+}
+
+# Context words that introduce a source reference (positive)
+_SOURCE_CTX = r"(?:found|discovered?|seen|reported?)\s+by|source(?:\s+is)?|scanned?\s+by|from|via"
+# Context words that introduce a source exclusion (negative)
+_EXCLUDE_SOURCE_CTX = r"not\s+(?:scanned?\s+by|found\s+by|discovered?\s+by|from|via)"
+
 # ── Sort / ordering ────────────────────────────────────────────────────────────
 
 SORT_PATTERNS = [
@@ -260,8 +285,110 @@ def parse_nlp_query(query: str) -> dict:
         asset_filters["criticality"] = 8
         chip("High-Value Assets", "Criticality >= 8", "#f97316")
 
+    # ── Source / scanner type ──────────────────────────────────────────────────
+    # Works with any source value (integration builder sources, custom parsers, etc.)
+    # Known aliases (e.g. "vm" → "vm_scanner", "tenable" → "nessus") are applied.
+    # Handles both positive ("found by X") and negative ("not scanned by X") forms.
+
+    def _resolve_source(raw: str) -> str:
+        """Normalize a raw source keyword to its stored source_systems value."""
+        key = raw.strip().lower()
+        return SOURCE_ALIASES.get(key, key)
+
+    def _extract_source_from_context(text: str, context_pattern: str) -> Optional[str]:
+        """Extract the source name following a context phrase."""
+        m = re.search(
+            rf"(?:{context_pattern})\s+([a-z][a-z0-9_\s-]{{0,30}}?)(?:\s+(?:assets?|hosts?|scan(?:ner)?s?|findings?|but\b|and\b|,|$))",
+            text, re.IGNORECASE
+        )
+        if m:
+            return m.group(1).strip()
+        # Also try end-of-string match
+        m = re.search(rf"(?:{context_pattern})\s+([a-z][a-z0-9_-]{{1,30}})$", text, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+        return None
+
+    _exclude_raw = _extract_source_from_context(ql, _EXCLUDE_SOURCE_CTX)
+    _include_raw = _extract_source_from_context(ql, _SOURCE_CTX)
+
+    # Also detect bare known source names used as primary filter (e.g. "easm assets", "nessus findings")
+    if not _include_raw:
+        for alias in sorted(SOURCE_ALIASES, key=len, reverse=True):  # longest first
+            if re.search(rf"\b{re.escape(alias)}\b", ql, re.IGNORECASE):
+                # Don't use it if it's already the exclude source
+                resolved = SOURCE_ALIASES[alias]
+                if not _exclude_raw or _resolve_source(_exclude_raw) != resolved:
+                    _include_raw = alias
+                    break
+
+    if _include_raw:
+        src_val = _resolve_source(_include_raw)
+        asset_filters["source"] = src_val
+        finding_filters["source"] = src_val
+        chip("Source", src_val, "#0ea5e9")
+    if _exclude_raw:
+        excl_val = _resolve_source(_exclude_raw)
+        asset_filters["exclude_source"] = excl_val
+        finding_filters["exclude_source"] = excl_val
+        chip("Not from", excl_val, "#6b7280")
+
+    # ── Multi-source assets ───────────────────────────────────────────────────
+    # Handles: "two sources", "more than one source", "multiple sources", etc.
+    _NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+
+    # "more than N/word sources", "over N sources", "at least N sources"
+    _multi_src_gt = re.search(
+        r"(?:more\s+than|over|greater\s+than|>)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+sources?",
+        ql, re.IGNORECASE
+    )
+    # "at least N sources", "N or more sources"
+    _multi_src_gte = re.search(
+        r"(?:at\s+least|>=)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+sources?|"
+        r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+or\s+more\s+sources?",
+        ql, re.IGNORECASE
+    )
+    # "N sources" (exact or bare: "two sources", "3 sources")
+    _multi_src_exact = re.search(
+        r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+sources?\b",
+        ql, re.IGNORECASE
+    )
+    # "multiple sources", "multi-source", "more than one source"
+    _multi_src_generic = re.search(
+        r"\bmulti(?:ple)?[\s-]sources?\b|\bmore\s+than\s+one\s+source\b|\bseveral\s+sources?\b",
+        ql, re.IGNORECASE
+    )
+
+    _min_sources = None
+    if _multi_src_gt:
+        raw = _multi_src_gt.group(1).lower()
+        n = _NUMBER_WORDS.get(raw, int(raw) if raw.isdigit() else None)
+        if n is not None:
+            _min_sources = n + 1
+    elif _multi_src_gte:
+        raw = (_multi_src_gte.group(1) or _multi_src_gte.group(2) or "").lower()
+        n = _NUMBER_WORDS.get(raw, int(raw) if raw.isdigit() else None)
+        if n is not None:
+            _min_sources = n
+    elif _multi_src_generic:
+        _min_sources = 2
+    elif _multi_src_exact:
+        raw = _multi_src_exact.group(1).lower()
+        n = _NUMBER_WORDS.get(raw, int(raw) if raw.isdigit() else None)
+        if n is not None and n >= 2:
+            _min_sources = n
+
+    if _min_sources is not None:
+        asset_filters["min_sources"] = _min_sources
+        chip("Min Sources", str(_min_sources), "#0ea5e9")
+
     # ── Stale assets ──────────────────────────────────────────────────────────
-    if re.search(r"\bstale\b|\binactive\b|\bnot\s*scanned\b", ql):
+    # "not scanned by X" is a source filter above; bare "not scanned" = stale
+    _not_scanned_by = re.search(r"\bnot\s+scanned\s+by\b", ql)
+    if re.search(r"\bstale\b|\binactive\b", ql) or (
+        re.search(r"\bnot\s*scanned\b", ql) and not _not_scanned_by
+    ):
         asset_filters["asset_status"] = "stale"
         chip("Status", "Stale", "#6b7280")
 
@@ -385,7 +512,7 @@ def parse_nlp_query(query: str) -> dict:
     # ── Bare-word text search (if nothing else caught it) ─────────────────────
     # Strip known keywords, what remains is a text search term
     residual = re.sub(
-        r"\b(show|find|list|get|give\s*me|with|that\s*have|having|where|are|is|all|my|the|a|an|on|in|for|of|and|or|more|than|at|least|over|above|linked)\b",
+        r"\b(show|find|list|get|give\s*me|with|that\s*have|having|where|are|is|all|my|the|a|an|on|in|for|of|and|or|more|than|at|least|over|above|linked|one|two|three|four|five|six|seven|eight|nine|ten|several|multiple)\b",
         " ", ql, flags=re.IGNORECASE
     )
     # Remove already-parsed tokens (including their numeric args)
@@ -405,10 +532,13 @@ def parse_nlp_query(query: str) -> dict:
         r"internet.?facing|public.?facing|exposed|externally\s*accessible|"
         r"stale|inactive|not\s*scanned|criticality|high.?value|hva|"
         r"tagged?|"
-        r"assets?|servers?|hosts?|findings?|vulnerabilit(?:y|ies)|vulns?|"
+        r"assets?|servers?|hosts?|findings?|vulnerabilit(?:y|ies)|vulns?|sources?|multi(?:ple)?[\s-]sources?|several|"
         r"plugin\s*(?:id)?|nid|port|priority|greater|vpr|"
         r"most|newest|latest|recent|oldest|earliest|worst|quickest|highest|likely|affected|"
-        r"epss|cvss|cve-\d{4}-\d{4,7}|t\d{4}(?:\.\d{3})?)\b",
+        r"epss|cvss|cve-\d{4}-\d{4,7}|t\d{4}(?:\.\d{3})?|"
+        r"nessus|tenable(?:\s*io)?|vm\s*scan(?:ner)?|qualys|rapid\s*7|openvas|nexpose|"
+        r"easm|external\s+attack\s+surface|attack\s+surface\s+management|"
+        r"source(?:\s+is)?|scanned?\s+by|found\s+by|discovered?\s+by)\b",
         " ", residual, flags=re.IGNORECASE
     )
     # Remove standalone numbers (args to parsed patterns) but keep numbers

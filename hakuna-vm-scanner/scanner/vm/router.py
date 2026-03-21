@@ -35,6 +35,62 @@ def reload_routing_table() -> None:
 class TemplateRouter:
     """Selects Nuclei CLI args for an asset based on CPE, tech stack, and ports."""
 
+    def get_routing_debug(
+        self,
+        cpe_list: list[str] | None,
+        tech_stack: dict | None,
+        open_ports: list[int],
+    ) -> dict:
+        """Return a human-readable explanation of how templates were selected.
+
+        Returns a dict with:
+          - cpe_tags: tags matched from CPE data
+          - tech_tags: tags matched from tech stack
+          - gated_tags: tags removed by port gating
+          - final_tags: tags used in the nuclei command
+          - fallback: whether the generic fallback was used
+          - reason: one-line summary
+        """
+        rt = _load_routing_table()
+
+        cpe_tags = self._route_from_cpe(cpe_list, rt)
+        if cpe_tags:
+            tech_tags: set[str] = set()
+        else:
+            tech_tags = self._route_from_tech(tech_stack, rt)
+
+        pre_gate_tags = cpe_tags | tech_tags
+        final_tags = self._apply_port_gates(set(pre_gate_tags), open_ports, rt)
+        gated_tags = pre_gate_tags - final_tags
+
+        custom_paths = self._get_custom_templates(final_tags)
+        fallback = not final_tags and not custom_paths
+
+        if fallback:
+            if not cpe_list and not tech_stack:
+                reason = "No CPE or tech stack data — fell back to generic,exposure tags"
+            elif gated_tags:
+                reason = f"All tags removed by port gating (missing ports) — fell back to generic,exposure. Gated: {', '.join(sorted(gated_tags))}"
+            else:
+                reason = "No matching CPE/tech entries in routing table — fell back to generic,exposure tags"
+        elif gated_tags:
+            reason = f"Tags selected: {', '.join(sorted(final_tags))} (gated out: {', '.join(sorted(gated_tags))})"
+        else:
+            reason = f"Tags selected: {', '.join(sorted(final_tags))}"
+
+        return {
+            "cpe_list": cpe_list or [],
+            "tech_stack_keys": list(tech_stack.keys()) if isinstance(tech_stack, dict) else (tech_stack or []),
+            "open_ports": list(open_ports or []),
+            "cpe_tags": sorted(cpe_tags),
+            "tech_tags": sorted(tech_tags),
+            "gated_tags": sorted(gated_tags),
+            "final_tags": sorted(final_tags),
+            "custom_templates": custom_paths,
+            "fallback": fallback,
+            "reason": reason,
+        }
+
     def get_templates_for_asset(
         self,
         cpe_list: list[str] | None,

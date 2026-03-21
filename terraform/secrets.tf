@@ -69,6 +69,20 @@ resource "google_secret_manager_secret_version" "sentry_dsn" {
   secret_data = var.sentry_dsn != "" ? var.sentry_dsn : "disabled"
 }
 
+# AES-256 key for encrypting integration credentials (e.g. VulnCheck tokens)
+# MUST be stable — changing it invalidates all stored credentials and requires re-entering them.
+resource "google_secret_manager_secret" "integration_secret_key" {
+  secret_id = "hakuna-integration-secret-key"
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "integration_secret_key" {
+  secret      = google_secret_manager_secret.integration_secret_key.id
+  secret_data = var.integration_secret_key
+}
+
 # Brevo SMTP API key — used for password reset emails and workflow alert fallback
 resource "google_secret_manager_secret" "brevo_smtp_pass" {
   secret_id = "hakuna-brevo-smtp-pass"

@@ -135,6 +135,13 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     }).catch(console.error)
   }, [editId])
 
+  // Auto-run auto-suggest when reaching Map Fields step with no existing mappings
+  useEffect(() => {
+    if (step === 5 && fieldMap.length === 0 && detectedPaths.length > 0 && schema.length > 0) {
+      handleAutoSuggest()
+    }
+  }, [step]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Step 0: Choose Source ──
   const handleSelectConnector = async (connectorId) => {
     setLoading(true)
@@ -193,7 +200,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         || (transportType === 'sql' && inlineAuthValues.connection_string)
         || (transportType === 'mcp' && inlineAuthValues.mcp_api_key)
 
-      if (hasInlineAuth && !cId) {
+      if (hasInlineAuth && (!cId || editId)) {
         const authType = transportType === 'sql' ? 'basic' : transportType === 'mcp' ? 'api_key' : inlineAuthType
         const cred = await createCredential({
           name: `${transportConfig.base_url || transportConfig.server_url || 'Custom'} credentials`,
@@ -574,11 +581,11 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
             style={inputStyle}
           />
 
-          {/* Inline auth — only for custom builds (no saved credentials yet) */}
-          {!credentialsId && (
+          {/* Inline auth — shown when no credentials yet, or when editing (to allow updating) */}
+          {(!credentialsId || editId) && (
             <div style={{ padding: 16, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                Authentication
+                Authentication {editId && credentialsId && <span style={{ fontWeight: 400, textTransform: 'none', color: 'var(--text-muted)' }}>— leave blank to keep existing</span>}
               </div>
               <select
                 value={inlineAuthType}
@@ -645,7 +652,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
             </div>
           )}
 
-          {credentialsId && (
+          {credentialsId && !editId && (
             <div style={{
               padding: '8px 14px', borderRadius: 8, background: '#22c55e12', border: '1px solid #22c55e30',
               fontSize: 12, color: '#22c55e', display: 'flex', alignItems: 'center', gap: 6,

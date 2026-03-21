@@ -379,7 +379,9 @@ function RunDetailPanel({ run, detail }) {
                   </span>
                 )}
                 <span style={{ color: '#ef4444' }}>
-                  {err.message || err.target || JSON.stringify(err)}
+                  {err.message !== undefined && err.message !== ''
+                    ? err.message
+                    : err.target || JSON.stringify(err)}
                 </span>
               </div>
             ))}
