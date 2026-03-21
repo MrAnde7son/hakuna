@@ -1495,7 +1495,14 @@ def list_assets(
     q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
     q = apply_scan_org_filter(q, org_ids)
     if scan_id:
-        q = q.filter(Asset.scan_id == scan_id)
+        # VM scans may attach findings to existing assets (different scan_id) via dedup.
+        # Use the same union approach as the scan list endpoint so all relevant assets appear.
+        target_scan = db.query(Scan).filter(Scan.id == scan_id).first()
+        if target_scan and target_scan.source_type == "vm_scanner":
+            finding_asset_ids = db.query(Finding.asset_id).filter(Finding.scan_id == scan_id).distinct()
+            q = q.filter(or_(Asset.scan_id == scan_id, Asset.id.in_(finding_asset_ids)))
+        else:
+            q = q.filter(Asset.scan_id == scan_id)
     if min_risk is not None:
         q = q.filter(Asset.risk_score >= min_risk)
     if max_risk is not None:
