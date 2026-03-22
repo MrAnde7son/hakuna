@@ -569,6 +569,67 @@ const DATA_PRESETS = {
     ],
   },
 
+  // ── OS & Software risk tables ──
+  os_risk_table: {
+    label: 'Riskiest OS Families', group: 'OS & Software', source: 'os_sw_summary', type: 'table',
+    extract: d => d?.os_risk || [],
+    columns: [
+      { key: 'name', label: 'OS Family' },
+      { key: 'asset_count', label: 'Assets' },
+      { key: 'vuln_count', label: 'Vulns' },
+      { key: 'critical', label: 'Critical' },
+      { key: 'high', label: 'High' },
+      { key: 'medium', label: 'Medium' },
+    ],
+    rowDrillDown: row => row?.name ? `/findings?search=${encodeURIComponent(row.name)}` : null,
+  },
+  os_risk_chart: {
+    label: 'OS Risk by Severity', group: 'OS & Software', source: 'os_sw_summary', type: 'categories',
+    extract: d => (d?.os_risk || []).slice(0, 10).map((r, i) => ({ name: r.name, value: r.vuln_count, color: r.critical > 0 ? '#dc2626' : r.high > 0 ? '#ea580c' : '#d97706' })),
+  },
+  software_risk_table: {
+    label: 'Riskiest Software', group: 'OS & Software', source: 'os_sw_summary', type: 'table',
+    extract: d => d?.software_risk || [],
+    columns: [
+      { key: 'name', label: 'Software' },
+      { key: 'vendor', label: 'Vendor' },
+      { key: 'asset_count', label: 'Assets' },
+      { key: 'vuln_count', label: 'CVEs' },
+      { key: 'max_severity', label: 'Max Sev', render: v => ['Info', 'Low', 'Medium', 'High', 'Critical'][v] || '—' },
+      { key: 'max_cvss', label: 'Max CVSS', render: v => v != null ? v.toFixed(1) : '—' },
+    ],
+    rowDrillDown: row => row?.name ? `/findings?product=${encodeURIComponent(row.name)}` : null,
+  },
+  software_risk_chart: {
+    label: 'Riskiest Software (CVE count)', group: 'OS & Software', source: 'os_sw_summary', type: 'categories',
+    extract: d => (d?.software_risk || []).slice(0, 10).map((r, i) => {
+      const colors = ['#0ea5e9', '#65a30d', '#d97706', '#ea580c', '#dc2626']
+      return { name: r.name, value: r.vuln_count, color: colors[r.max_severity] || '#94a3b8' }
+    }),
+  },
+  os_risk_vuln_count: { label: 'OS-Related Vulns', group: 'OS & Software', source: 'os_sw_summary', type: 'metric', extract: d => (d?.os_risk || []).reduce((s, r) => s + r.vuln_count, 0), color: '#dc2626' },
+  sw_risk_vuln_count: { label: 'Software-Related CVEs', group: 'OS & Software', source: 'os_sw_summary', type: 'metric', extract: d => (d?.software_risk || []).reduce((s, r) => s + r.vuln_count, 0), color: '#ea580c' },
+  family_risk_chart: {
+    label: 'Vulns by Plugin Family', group: 'OS & Software', source: 'os_sw_summary', type: 'categories',
+    extract: d => (d?.family_risk || []).slice(0, 10).map((r, i) => ({
+      name: r.name, value: r.vuln_count,
+      color: r.critical > 0 ? '#dc2626' : r.high > 0 ? '#ea580c' : '#d97706',
+    })),
+  },
+  family_risk_table: {
+    label: 'Risk by Plugin Family', group: 'OS & Software', source: 'os_sw_summary', type: 'table',
+    extract: d => d?.family_risk || [],
+    columns: [
+      { key: 'name', label: 'Plugin Family' },
+      { key: 'asset_count', label: 'Assets' },
+      { key: 'vuln_count', label: 'Vulns' },
+      { key: 'critical', label: 'Critical' },
+      { key: 'high', label: 'High' },
+      { key: 'medium', label: 'Medium' },
+    ],
+    rowDrillDown: row => row?.name ? `/findings?family=${encodeURIComponent(row.name)}` : null,
+  },
+
   // ── Series (line/area/bar-over-time) ──
   severity_trend: {
     label: 'Severity Trend', group: 'Severity', source: 'trending', type: 'series',
@@ -1363,6 +1424,12 @@ const OS_DISTRIBUTION_DASHBOARD = {
     { id: 'os7', type: 'pie_chart', title: 'Device Types',          width: 'half', config: { preset: 'device_type_breakdown', donut: true } },
     { id: 'os8', type: 'bar_chart', title: 'OS Versions',           width: 'full', config: { preset: 'os_detail_breakdown' } },
     { id: 'os9', type: 'table',     title: 'OS Version Details',    width: 'full', config: { preset: 'os_detail_table' } },
+    { id: 'os10', type: 'header', title: 'OS Risk Analysis', width: 'full', config: { title: 'OS Risk Analysis', subtitle: 'Vulnerability exposure by operating system family and plugin family' } },
+    { id: 'os11', type: 'card',      title: 'OS-Related Vulns',   width: 'quarter', config: { preset: 'os_risk_vuln_count' } },
+    { id: 'os12', type: 'bar_chart', title: 'OS Risk by Severity', width: 'two-thirds', config: { preset: 'os_risk_chart', horizontal: true } },
+    { id: 'os13', type: 'table',     title: 'Riskiest OS Families', width: 'full', config: { preset: 'os_risk_table' } },
+    { id: 'os14', type: 'bar_chart', title: 'Vulnerabilities by Plugin Family', width: 'full', config: { preset: 'family_risk_chart', horizontal: true } },
+    { id: 'os15', type: 'table',     title: 'Risk by Plugin Family', width: 'full', config: { preset: 'family_risk_table' } },
   ],
 }
 
@@ -1381,6 +1448,12 @@ const SOFTWARE_INVENTORY_DASHBOARD = {
     { id: 'sw8', type: 'bar_chart', title: 'Most Installed Software', width: 'full', config: { preset: 'top_software_products' } },
     { id: 'sw9', type: 'table',     title: 'Software Details',        width: 'full', config: { preset: 'top_software_table' } },
     { id: 'sw10',type: 'table',     title: 'All Installed Software',  width: 'full', config: { preset: 'inv_software_table' } },
+    { id: 'sw11', type: 'header', title: 'Software Risk Analysis', width: 'full', config: { title: 'Software Risk Analysis', subtitle: 'Vulnerability exposure by plugin family and detected software' } },
+    { id: 'sw12', type: 'bar_chart', title: 'Vulnerabilities by Plugin Family', width: 'full', config: { preset: 'family_risk_chart', horizontal: true } },
+    { id: 'sw13', type: 'table',     title: 'Risk by Plugin Family', width: 'full', config: { preset: 'family_risk_table' } },
+    { id: 'sw14', type: 'card',      title: 'Software CVEs',          width: 'quarter', config: { preset: 'sw_risk_vuln_count' } },
+    { id: 'sw15', type: 'bar_chart', title: 'Riskiest Software (SBOM)', width: 'two-thirds', config: { preset: 'software_risk_chart', horizontal: true } },
+    { id: 'sw16', type: 'table',     title: 'Software Vulnerability Details', width: 'full', config: { preset: 'software_risk_table' } },
   ],
 }
 
@@ -1462,6 +1535,11 @@ const DRILL_DOWN = {
   inv_sensitive_env_vars: '/inventory?tab=env-vars',
   // AI / ML
   inv_total_ai_tools:  '/inventory?tab=ai-tools',
+  // OS & Software risk
+  os_risk_vuln_count:  '/findings',
+  sw_risk_vuln_count:  '/findings',
+  os_risk_chart: name => `/findings?search=${encodeURIComponent(name)}`,
+  software_risk_chart: name => `/findings?product=${encodeURIComponent(name)}`,
 
   // Categories (pie/bar) → function(name) => url
   severity_breakdown: name => {
