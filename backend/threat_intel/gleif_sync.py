@@ -269,21 +269,25 @@ def _upsert_entity(db, entity_data: dict, org_id: int | None = None, parent_org_
 def get_subsidiaries_for_org(db, org_id: int) -> list[dict]:
     """Get all known subsidiaries for an organization.
 
-    Returns list of entity dicts for display.
+    Returns all entities linked to this org that have a parent (i.e., not root entities).
+    Includes the parent entity's EASM domain for grouping.
     """
-    # Find the root entity for this org
-    root = db.query(CorporateEntity).filter(
-        CorporateEntity.org_id == org_id,
-    ).first()
-
-    if not root:
-        return []
-
-    # Find all entities that have this entity as direct or ultimate parent
     children = db.query(CorporateEntity).filter(
-        (CorporateEntity.direct_parent_lei == root.lei) |
-        (CorporateEntity.ultimate_parent_lei == root.lei)
+        CorporateEntity.org_id == org_id,
+        CorporateEntity.direct_parent_lei.isnot(None),
     ).all()
+
+    # Build parent LEI → domain lookup
+    parent_leis = {c.direct_parent_lei for c in children if c.direct_parent_lei}
+    parent_domains = {}
+    if parent_leis:
+        parents = db.query(CorporateEntity).filter(
+            CorporateEntity.lei.in_(parent_leis),
+        ).all()
+        for p in parents:
+            # Use parent's associated domains, or derive from name
+            domains = p.associated_domains or []
+            parent_domains[p.lei] = domains[0] if domains else (p.legal_name or "")
 
     return [
         {
@@ -293,7 +297,10 @@ def get_subsidiaries_for_org(db, org_id: int) -> list[dict]:
             "country": c.headquarters_country or c.legal_address_country,
             "city": c.headquarters_city or c.legal_address_city,
             "status": c.entity_status,
+            "jurisdiction": c.legal_jurisdiction,
             "associated_domains": c.associated_domains or [],
+            "parent_name": c.direct_parent_name,
+            "parent_domain": parent_domains.get(c.direct_parent_lei, ""),
         }
         for c in children
     ]

@@ -28,8 +28,10 @@ RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest \
     && go install github.com/projectdiscovery/tlsx/cmd/tlsx@latest \
     && go install github.com/projectdiscovery/cdncheck/cmd/cdncheck@latest \
     && go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest \
-    && go install github.com/projectdiscovery/uncover/cmd/uncover@latest \
-    && go install github.com/projectdiscovery/katana/cmd/katana@latest
+    && go install github.com/projectdiscovery/uncover/cmd/uncover@latest
+
+# Katana (separate layer — heavier build with chromium deps)
+RUN go install github.com/projectdiscovery/katana/cmd/katana@latest || true
 
 # Naabu needs CGO for libpcap — clone and build
 RUN git clone --depth 1 https://github.com/projectdiscovery/naabu.git /tmp/naabu \

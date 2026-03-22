@@ -405,7 +405,7 @@ def list_domain_breaches(
     return results
 
 
-# --- Corporate Structure (GLEIF) ---
+# --- Corporate Structure (Wikidata) ---
 
 
 @router.post("/corporate/sync")
@@ -414,10 +414,22 @@ def sync_corporate_structure(
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
 ):
-    """Search GLEIF for a company and import its corporate tree (parent + subsidiaries)."""
-    from threat_intel.gleif_sync import sync_entity_tree_to_db
+    """Search Wikidata + SEC EDGAR for a company and import its corporate tree."""
+    from threat_intel.wikidata_sync import sync_corporate_tree_to_db
     org = _get_org(db, user)
-    result = sync_entity_tree_to_db(db, company_name, org_id=org.id)
+    result = sync_corporate_tree_to_db(db, company_name, org_id=org.id)
+
+    # Fallback: SEC EDGAR for US public companies
+    if result.get("subsidiaries", 0) == 0:
+        from threat_intel.edgar_sync import sync_subsidiaries_to_db
+        edgar_result = sync_subsidiaries_to_db(db, company_name, org_id=org.id)
+        if edgar_result.get("subsidiaries", 0) > 0:
+            result = {**result, "edgar": edgar_result, "subsidiaries": edgar_result["subsidiaries"]}
+
+    # Associate domains with subsidiaries
+    from services.easm import _associate_subsidiary_domains
+    _associate_subsidiary_domains(db, org.id)
+
     return result
 
 
@@ -426,7 +438,7 @@ def list_subsidiaries(
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
 ):
-    """List known subsidiaries for the current org from GLEIF data."""
+    """List known subsidiaries for the current org."""
     from threat_intel.gleif_sync import get_subsidiaries_for_org
     org = _get_org(db, user)
     return get_subsidiaries_for_org(db, org.id)
@@ -435,12 +447,12 @@ def list_subsidiaries(
 @router.get("/corporate/search")
 def search_corporate_entities(
     q: str = Query(..., min_length=2),
-    limit: int = Query(10, le=50),
     user: User = Depends(require_auth),
 ):
-    """Search GLEIF for entities matching a company name (live search, not cached)."""
-    from threat_intel.gleif_sync import search_entities
-    return search_entities(q, limit=limit)
+    """Search Wikidata for entities matching a company name (live search)."""
+    from threat_intel.wikidata_sync import find_company
+    result = find_company(q)
+    return [result] if result else []
 
 
 @router.get("/corporate/entity/{lei}")

@@ -48,6 +48,7 @@ class AssetResponse(BaseModel):
     last_enriched: datetime | None = None
     source: str | None = None
     nessus_asset_id: str | None = None
+    liveness_state: str = "unconfirmed"
 
     model_config = {"from_attributes": True}
 

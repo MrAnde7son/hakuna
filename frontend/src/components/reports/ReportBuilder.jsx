@@ -345,6 +345,7 @@ const DATA_PRESETS = {
       { key: 'open_ports', label: 'Ports', render: v => (v || []).join(', ') },
     ],
     extract: d => (Array.isArray(d) ? d : (d?.assets ?? [])).slice(0, 50),
+    rowDrillDown: row => row?.hostname ? `/inventory?tab=easm_assets&search=${encodeURIComponent(row.hostname)}` : '/inventory?tab=easm_assets',
   },
   easm_events_table: {
     label: 'Recent Changes', group: 'EASM', source: 'easm_events', type: 'table',
@@ -354,6 +355,7 @@ const DATA_PRESETS = {
       { key: 'payload', label: 'Details', render: v => typeof v === 'object' ? JSON.stringify(v).slice(0, 80) : '' },
     ],
     extract: d => (Array.isArray(d) ? d : (d?.events ?? [])).slice(0, 30),
+    rowDrillDown: row => row?.hostname ? `/inventory?tab=easm_assets&search=${encodeURIComponent(row.hostname)}` : '/inventory?tab=easm_assets',
   },
   easm_breaches_table: {
     label: 'Breach Exposure', group: 'EASM', source: 'easm_breaches', type: 'table',
@@ -364,6 +366,7 @@ const DATA_PRESETS = {
       { key: 'data_classes', label: 'Data Types', render: v => (v || []).slice(0, 3).join(', ') },
     ],
     extract: d => (Array.isArray(d) ? d : []).filter(b => b.is_verified !== false).slice(0, 20),
+    rowDrillDown: row => row?.title ? `/inventory?tab=easm_breaches&search=${encodeURIComponent(row.title)}` : '/inventory?tab=easm_breaches',
   },
 
   // ── Categories (pie/donut/bar) ──
@@ -1645,12 +1648,12 @@ const DRILL_DOWN = {
   inv_local_admins:    '/inventory?tab=users&is_admin=true',
   inv_kerberoastable:  '/inventory?tab=users',
   inv_writeable_shares:'/inventory?tab=shares&is_writeable=true',
-  inv_expired_certs:   '/inventory?tab=certificates&expired_only=true',
+  inv_expired_certs:   '/inventory?tab=certs&expired_only=true',
   inv_total_users:     '/inventory?tab=users',
   inv_total_services:  '/inventory?tab=services',
   inv_total_software:  '/inventory?tab=software',
   inv_total_computers: '/inventory?tab=computers',
-  inv_total_certificates: '/inventory?tab=certificates',
+  inv_total_certificates: '/inventory?tab=certs',
   inv_logged_on_count: '/inventory?tab=logged-on',
   inv_pw_never_expires: '/inventory?tab=users',
   inv_pw_never_changed: '/inventory?tab=users',
@@ -1659,9 +1662,22 @@ const DRILL_DOWN = {
   inv_established_conns: '/inventory?tab=netconns&state=ESTABLISHED',
   inv_weak_pw_policies: '/inventory?tab=password-policies',
   inv_hosts_with_av:   '/inventory?tab=security-controls',
-  inv_expiring_certs:  '/inventory?tab=certificates',
-  inv_self_signed_certs: '/inventory?tab=certificates',
+  inv_expiring_certs:  '/inventory?tab=certs',
+  inv_self_signed_certs: '/inventory?tab=certs',
   inv_sensitive_env_vars: '/inventory?tab=env-vars',
+  // EASM cards
+  easm_total_assets:   '/inventory?tab=easm_assets',
+  easm_with_open_ports:'/inventory?tab=easm_assets',
+  easm_with_http:      '/inventory?tab=easm_assets',
+  easm_with_cdn:       '/inventory?tab=easm_assets',
+  easm_expired_certs:  '/inventory?tab=certs&source=easm',
+  easm_breach_count:   '/inventory?tab=easm_breaches',
+  // EASM categories
+  easm_asset_liveness: name => `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}`,
+  easm_tech_stack:     name => `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}`,
+  easm_open_ports:     name => `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}`,
+  easm_cdn_providers:  name => `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}`,
+  easm_event_types:    name => `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}`,
   // AI / ML
   inv_total_ai_tools:  '/inventory?tab=ai-tools',
   // OS & Software risk

@@ -3444,13 +3444,14 @@ function EasmCorporateTab() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [search, setSearch] = useState('')
+  const [groupBy, setGroupBy] = useState('all')
 
   useEffect(() => {
     setLoading(true)
     setError(null)
     getEasmSubsidiaries()
       .then(data => setSubsidiaries(Array.isArray(data) ? data : []))
-      .catch(() => setError('Failed to load corporate structure. Run GLEIF sync first.'))
+      .catch(() => setError('Failed to load corporate structure.'))
       .finally(() => setLoading(false))
   }, [])
 
@@ -3460,15 +3461,36 @@ function EasmCorporateTab() {
     return subsidiaries.filter(s =>
       (s.legal_name || '').toLowerCase().includes(q) ||
       (s.trading_name || '').toLowerCase().includes(q) ||
-      (s.headquarters_country || '').toLowerCase().includes(q) ||
+      (s.country || '').toLowerCase().includes(q) ||
+      (s.jurisdiction || '').toLowerCase().includes(q) ||
       (s.lei || '').toLowerCase().includes(q) ||
       (s.associated_domains || []).some(d => d.toLowerCase().includes(q))
     )
   }, [subsidiaries, search])
 
-  const activeCount = subsidiaries.filter(s => s.entity_status === 'ACTIVE').length
-  const countries = new Set(subsidiaries.map(s => s.headquarters_country).filter(Boolean)).size
+  const grouped = useMemo(() => {
+    const groups = {}
+    for (const entity of filtered) {
+      let groupKey
+      if (groupBy === 'asset') {
+        // Group by parent EASM domain (the scanned domain that owns this subsidiary)
+        groupKey = entity.parent_domain || 'Unlinked'
+      } else if (groupBy === 'country') {
+        groupKey = entity.country || 'Unknown'
+      } else {
+        // Default: flat list, single group
+        groupKey = 'all'
+      }
+      if (!groups[groupKey]) groups[groupKey] = []
+      groups[groupKey].push(entity)
+    }
+    return groups
+  }, [filtered, groupBy])
+
+  const activeCount = subsidiaries.filter(s => s.status === 'ACTIVE').length
+  const countries = new Set(subsidiaries.map(s => s.country).filter(Boolean)).size
   const withDomains = subsidiaries.filter(s => s.associated_domains && s.associated_domains.length > 0).length
+  const jurisdictions = new Set(subsidiaries.map(s => s.jurisdiction).filter(Boolean)).size
 
   const STATUS_COLORS = {
     ACTIVE: '#16a34a',
@@ -3484,65 +3506,100 @@ function EasmCorporateTab() {
         <StatCard label={t('inventory.easmEntities')} value={subsidiaries.length} icon={Building2} color="#6366f1" />
         <StatCard label={t('inventory.easmActive')} value={activeCount} icon={Building2} color="#16a34a" />
         <StatCard label={t('inventory.easmCountries')} value={countries} icon={Globe} color="#0ea5e9" />
-        <StatCard label={t('inventory.easmWithDomains')} value={withDomains} icon={Globe} color="#f59e0b" />
+        <StatCard label="Jurisdictions" value={jurisdictions} icon={Globe} color="#f59e0b" />
       </div>
       <Card>
         <FilterBar>
           <Input value={search} onChange={setSearch} placeholder={t('inventory.easmCorporateSearch')} style={{ width: 280 }} />
+          <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
+            {[
+              { key: 'all', label: 'All' },
+              { key: 'asset', label: 'Group by asset' },
+              { key: 'country', label: 'Group by country' },
+            ].map(opt => (
+              <button key={opt.key} onClick={() => setGroupBy(opt.key)} style={{
+                padding: '4px 10px', fontSize: 11, borderRadius: 6, cursor: 'pointer',
+                border: '1px solid var(--border)',
+                background: groupBy === opt.key ? 'var(--accent)' : 'var(--bg-secondary)',
+                color: groupBy === opt.key ? '#fff' : 'var(--text-muted)',
+                fontWeight: groupBy === opt.key ? 600 : 400,
+              }}>{opt.label}</button>
+            ))}
+          </div>
         </FilterBar>
         {loading ? <Spinner /> : filtered.length === 0 ? (
           <EmptyState icon={Building2} title={t('inventory.easmNoEntities')} sub={t('inventory.easmNoEntitiesSub')} />
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {filtered.map((entity, i) => (
-              <div key={entity.lei || i} style={{
-                padding: '14px 16px', background: 'var(--bg-secondary)', borderRadius: 8,
-                border: '1px solid var(--border)',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                  <Building2 size={16} style={{ color: STATUS_COLORS[entity.entity_status] || '#64748b', flexShrink: 0 }} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14 }}>{entity.legal_name}</div>
-                    {entity.trading_name && entity.trading_name !== entity.legal_name && (
-                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>DBA: {entity.trading_name}</div>
-                    )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {Object.entries(grouped).map(([groupKey, entities]) => {
+              const groupLabel = groupKey === 'all' ? 'All Entities' : groupKey
+
+              return (
+                <div key={groupKey}>
+                  <div style={{
+                    fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
+                    color: 'var(--text-muted)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8,
+                  }}>
+                    <span>{groupLabel}</span>
+                    <span style={{
+                      fontSize: 10, background: 'var(--bg-muted)', padding: '2px 8px', borderRadius: 10,
+                      fontWeight: 600, letterSpacing: 0,
+                    }}>{entities.length}</span>
                   </div>
-                  <Pill label={entity.entity_status || 'UNKNOWN'} color={STATUS_COLORS[entity.entity_status] || '#64748b'} />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    {/* Header */}
+                    <div style={{
+                      padding: '6px 16px', display: 'grid', gridTemplateColumns: '1fr 140px 140px 90px',
+                      gap: 12, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
+                      color: 'var(--text-muted)',
+                    }}>
+                      <div style={{ paddingLeft: 13 }}>Entity</div>
+                      <div>Jurisdiction</div>
+                      <div>Country</div>
+                      <div>Status</div>
+                    </div>
+                    {entities.map((entity, i) => {
+                      const statusColor = STATUS_COLORS[entity.status] || '#64748b'
+                      return (
+                        <div key={entity.lei || i} style={{
+                          padding: '10px 16px', background: 'var(--bg-secondary)',
+                          borderRadius: i === 0 ? '8px 8px 0 0' : i === entities.length - 1 ? '0 0 8px 8px' : 0,
+                          border: '1px solid var(--border)', borderTop: i > 0 ? 'none' : undefined,
+                          display: 'grid', gridTemplateColumns: '1fr 140px 140px 90px', alignItems: 'center', gap: 12,
+                        }}>
+                          {/* Name + domains */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div style={{
+                              width: 3, height: 28, borderRadius: 2, background: statusColor, flexShrink: 0,
+                            }} />
+                            <div>
+                              <div style={{ fontWeight: 600, fontSize: 13 }}>{entity.legal_name}</div>
+                              {entity.associated_domains?.length > 0 && (
+                                <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+                                  {entity.associated_domains.map((d, j) => (
+                                    <code key={j} style={{ fontSize: 10, background: 'var(--bg-muted)', padding: '1px 5px', borderRadius: 3 }}>{d}</code>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          {/* Jurisdiction */}
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                            {entity.jurisdiction || '—'}
+                          </div>
+                          {/* Country */}
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                            {entity.country || '—'}
+                          </div>
+                          {/* Status */}
+                          <Pill label={entity.status || 'UNKNOWN'} color={statusColor} />
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, fontSize: 12, color: 'var(--text-muted)' }}>
-                  <div>
-                    <span style={{ fontWeight: 600 }}>LEI:</span>{' '}
-                    <code style={{ fontSize: 11 }}>{entity.lei || '—'}</code>
-                  </div>
-                  <div>
-                    <span style={{ fontWeight: 600 }}>{t('inventory.easmJurisdiction')}:</span>{' '}
-                    {entity.legal_jurisdiction || '—'}
-                  </div>
-                  <div>
-                    <span style={{ fontWeight: 600 }}>{t('inventory.easmHeadquarters')}:</span>{' '}
-                    {[entity.headquarters_city, entity.headquarters_country].filter(Boolean).join(', ') || '—'}
-                  </div>
-                </div>
-
-                {entity.associated_domains && entity.associated_domains.length > 0 && (
-                  <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)' }}>{t('inventory.easmDomains')}:</span>
-                    {entity.associated_domains.map((d, j) => (
-                      <code key={j} style={{ fontSize: 11, background: 'var(--bg-muted)', padding: '2px 6px', borderRadius: 4 }}>{d}</code>
-                    ))}
-                  </div>
-                )}
-
-                {(entity.direct_parent_lei || entity.ultimate_parent_lei) && (
-                  <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
-                    {entity.direct_parent_lei && <span>{t('inventory.easmParent')}: <code>{entity.direct_parent_lei}</code></span>}
-                    {entity.direct_parent_lei && entity.ultimate_parent_lei && ' | '}
-                    {entity.ultimate_parent_lei && <span>{t('inventory.easmUltimateParent')}: <code>{entity.ultimate_parent_lei}</code></span>}
-                  </div>
-                )}
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </Card>

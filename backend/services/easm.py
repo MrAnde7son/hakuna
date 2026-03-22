@@ -13,15 +13,172 @@ from typing import Optional, Tuple
 
 import httpx
 
-from sqlalchemy import func as sqlfunc
+from sqlalchemy import func as sqlfunc, text as sa_text
 from sqlalchemy.orm import Session
-from models.models import Organization, Scan, Asset, Finding
+from models.models import (
+    Organization, Scan, Asset, Finding,
+    AutomateClick, FindingOwnership, CampaignFinding, SBOMVulnerability,
+)
 
 from apscheduler.triggers.cron import CronTrigger
 
 logger = logging.getLogger(__name__)
 
 HAKUNA_BASE_URL = os.getenv("HAKUNA_SCANNER_URL", "http://localhost:8001")
+
+
+def _extract_core_name(name: str) -> list[str]:
+    """Extract candidate domain names from a company name.
+
+    Returns multiple candidates: full name and stripped name.
+    'Vulcan Cyber Ltd' → ['vulcancyber', 'vulcan']
+    'Bit Discovery, Inc.' → ['bitdiscovery']
+    """
+    import re
+    core = name.lower()
+    # Remove legal suffixes
+    for suffix in (", inc.", ", inc", " inc.", " inc", " ltd.", " ltd", " llc",
+                   " sas", " gmbh", " ag", " plc", " limited", " corp.", " corp"):
+        core = core.replace(suffix, "")
+    core = re.sub(r"[^a-z0-9\s]", "", core).strip()
+
+    full = core.replace(" ", "")
+    # Also try without generic words
+    stripped = core
+    for word in ("security", "cyber", "networks", "network", "technologies",
+                 "technology", "solutions", "systems", "software", "labs"):
+        stripped = stripped.replace(word, "")
+    stripped = stripped.strip().replace(" ", "")
+
+    candidates = [full]
+    if stripped and stripped != full and len(stripped) >= 3:
+        candidates.append(stripped)
+    return candidates
+
+
+def _associate_subsidiary_domains(db: Session, org_id: int):
+    """Match subsidiary names to domains via DNS probing.
+
+    For each subsidiary without domains, tries {name}.com and {name}.io
+    via DNS resolution. Also matches against EASM-discovered hostnames.
+    """
+    import socket
+    from models.threat_intel_models import CorporateEntity
+
+    subs = db.query(CorporateEntity).filter(
+        CorporateEntity.org_id == org_id,
+        CorporateEntity.direct_parent_lei.isnot(None),
+    ).all()
+
+    if not subs:
+        return
+
+    # Get EASM hostnames for cross-matching
+    easm_scans = db.query(Scan).filter(Scan.source_type == "easm").all()
+    easm_domains = set()
+    for scan in easm_scans:
+        d = (scan.raw_metadata or {}).get("domain")
+        if d:
+            easm_domains.add(d.lower())
+    easm_assets = db.query(Asset.fqdn).filter(
+        Asset.scan_id.in_([s.id for s in easm_scans]),
+        Asset.fqdn.isnot(None),
+    ).all()
+    all_hostnames = {a[0].lower() for a in easm_assets if a[0]}
+
+    updated = 0
+    for sub in subs:
+        if sub.associated_domains:
+            continue
+
+        candidates = _extract_core_name(sub.legal_name or "")
+        if not candidates:
+            continue
+
+        matched = []
+
+        # 1. Match against EASM-discovered domains/hostnames
+        for core in candidates:
+            for d in easm_domains:
+                if core in d.split(".")[0] or d.split(".")[0] in core:
+                    if d not in matched:
+                        matched.append(d)
+            for h in all_hostnames:
+                root = ".".join(h.split(".")[-2:])
+                if core in root.split(".")[0]:
+                    if root not in matched:
+                        matched.append(root)
+
+        # 2. DNS probe: try {name}.com and {name}.io for each candidate
+        if not matched:
+            for core in candidates:
+                for tld in (".com", ".io"):
+                    candidate = core + tld
+                    try:
+                        socket.getaddrinfo(candidate, None, socket.AF_INET, socket.SOCK_STREAM, 0, socket.AI_ADDRCONFIG)
+                        matched.append(candidate)
+                        break  # one hit per candidate is enough
+                    except socket.gaierror:
+                        continue
+                if matched:
+                    break
+
+        if matched:
+            sub.associated_domains = list(set(matched))
+            updated += 1
+
+    # Also associate EASM domains with root (parent) entities
+    roots = db.query(CorporateEntity).filter(
+        CorporateEntity.org_id == org_id,
+        CorporateEntity.direct_parent_lei.is_(None),
+    ).all()
+    for root in roots:
+        if root.associated_domains:
+            continue
+        core_candidates = _extract_core_name(root.legal_name or "")
+        for core in core_candidates:
+            for d in easm_domains:
+                if core in d.split(".")[0] or d.split(".")[0] in core:
+                    root.associated_domains = [d]
+                    updated += 1
+                    break
+            if root.associated_domains:
+                break
+
+    if updated:
+        db.commit()
+        logger.info("Associated domains for %d entities", updated)
+
+
+def _clear_scan_data(db: Session, scan_id: int):
+    """Delete all findings, dependents, and non-shared assets for a scan.
+
+    Temporarily disables FK checks to avoid cascading delete issues with
+    SQLite's NO ACTION constraints on inventory/ownership tables.
+    """
+    db.execute(sa_text("PRAGMA foreign_keys=OFF"))
+    try:
+        # Delete finding dependents + findings
+        finding_ids = [r[0] for r in db.query(Finding.id).filter(Finding.scan_id == scan_id).all()]
+        if finding_ids:
+            for model in (AutomateClick, FindingOwnership, CampaignFinding, SBOMVulnerability):
+                db.query(model).filter(model.finding_id.in_(finding_ids)).delete(synchronize_session=False)
+        db.query(Finding).filter(Finding.scan_id == scan_id).delete(synchronize_session=False)
+
+        # Delete assets not referenced by findings from other scans
+        cross_scan_asset_ids = {
+            r[0] for r in db.query(Finding.asset_id).filter(
+                Finding.asset_id.in_(db.query(Asset.id).filter(Asset.scan_id == scan_id)),
+                Finding.scan_id != scan_id,
+            ).all()
+        }
+        q_del = db.query(Asset).filter(Asset.scan_id == scan_id)
+        if cross_scan_asset_ids:
+            q_del = q_del.filter(~Asset.id.in_(cross_scan_asset_ids))
+        q_del.delete(synchronize_session=False)
+        db.flush()
+    finally:
+        db.execute(sa_text("PRAGMA foreign_keys=ON"))
 
 
 _SEVERITY_KEY = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}
@@ -259,6 +416,7 @@ def _build_easm_data(ea: dict) -> dict:
         "first_seen_easm": ea.get("first_seen"),
         "last_seen_easm": ea.get("last_seen"),
         "last_enriched_easm": ea.get("last_enriched"),
+        "liveness_state": ea.get("liveness_state", "unconfirmed"),
     }
 
 
@@ -682,21 +840,7 @@ async def import_easm_assets_for_domain(
     scan = _find_existing_easm_scan(db, org, domain)
     if scan:
         # Clear EASM's own findings before reimporting.
-        db.query(Finding).filter(Finding.scan_id == scan.id).delete(synchronize_session=False)
-        # Delete only EASM assets that are NOT referenced by findings from other scans.
-        # Assets shared with VM/Nessus scans (via cross-scan dedup) must keep their IDs;
-        # they will be updated in-place by _import_assets_for_domain (upsert logic).
-        cross_scan_asset_ids = {
-            r[0] for r in db.query(Finding.asset_id).filter(
-                Finding.asset_id.in_(db.query(Asset.id).filter(Asset.scan_id == scan.id)),
-                Finding.scan_id != scan.id,
-            ).all()
-        }
-        q_del = db.query(Asset).filter(Asset.scan_id == scan.id)
-        if cross_scan_asset_ids:
-            q_del = q_del.filter(~Asset.id.in_(cross_scan_asset_ids))
-        q_del.delete(synchronize_session=False)
-        db.flush()
+        _clear_scan_data(db, scan.id)
     else:
         scan = _create_easm_scan(db, org, domain, scan_type)
 
@@ -815,19 +959,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
     # Map hakuna statuses
     if hakuna_status in ("completed", "done"):
         try:
-            # Clear EASM's own findings before importing fresh results.
-            db.query(Finding).filter(Finding.scan_id == scan.id).delete(synchronize_session=False)
-            # Delete only EASM assets that are NOT referenced by findings from other scans.
-            cross_scan_asset_ids = {
-                r[0] for r in db.query(Finding.asset_id).filter(
-                    Finding.asset_id.in_(db.query(Asset.id).filter(Asset.scan_id == scan.id)),
-                    Finding.scan_id != scan.id,
-                ).all()
-            }
-            q_del = db.query(Asset).filter(Asset.scan_id == scan.id)
-            if cross_scan_asset_ids:
-                q_del = q_del.filter(~Asset.id.in_(cross_scan_asset_ids))
-            q_del.delete(synchronize_session=False)
+            _clear_scan_data(db, scan.id)
 
             # Import assets now that scan is done
             easm_assets = await get_easm_assets(org.easm_org_id) or []
@@ -857,13 +989,41 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             from services.post_ingest import finalize_scan
             finalize_scan(db, scan_id=scan.id, org_id=org.id)
 
+            # Threat intel enrichment: HIBP breach check + GLEIF corporate structure
+            try:
+                from threat_intel.hibp_sync import sync_hibp_breaches_to_db, check_domain_breaches
+                sync_hibp_breaches_to_db(db)
+                breach_result = check_domain_breaches(db, org.id, domain)
+                logger.info(f"EASM breach check for '{domain}': {breach_result}")
+            except Exception:
+                logger.exception(f"HIBP sync failed for '{domain}' (non-fatal)")
+
+            try:
+                from threat_intel.wikidata_sync import sync_corporate_tree_to_db
+                # Derive company name from domain (e.g., "tenable.com" → "Tenable")
+                company_name = domain.split(".")[0].capitalize() if domain else org.name
+                wiki_result = sync_corporate_tree_to_db(db, company_name, org_id=org.id)
+                logger.info(f"EASM Wikidata corporate sync for '{company_name}': {wiki_result}")
+
+                # Fallback: SEC EDGAR for US public companies when Wikidata has no subsidiaries
+                if wiki_result.get("subsidiaries", 0) == 0:
+                    from threat_intel.edgar_sync import sync_subsidiaries_to_db
+                    edgar_result = sync_subsidiaries_to_db(db, company_name, org_id=org.id)
+                    logger.info(f"EASM EDGAR subsidiary sync for '{company_name}': {edgar_result}")
+
+                # Associate domains with subsidiaries by matching names against EASM scan domains
+                _associate_subsidiary_domains(db, org.id)
+            except Exception:
+                logger.exception(f"Corporate structure sync failed for domain '{domain}' (non-fatal)")
+
             logger.info(f"EASM scan completed for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
 
             return {"scan_id": scan.id, "status": "completed", "created": created, "findings_created": findings_created, "domain": domain}
-        except Exception:
+        except Exception as exc:
             db.rollback()
             logger.exception(f"EASM import failed for '{domain}' (scan_id={scan.id}), marking as failed")
-            scan.raw_metadata = {**meta, "status": "failed", "error": "Import failed"}
+            import traceback
+            scan.raw_metadata = {**meta, "status": "failed", "error": traceback.format_exc()[-500:]}
             scan.status = "failed"
             db.commit()
             return {"scan_id": scan.id, "status": "failed", "domain": domain}
