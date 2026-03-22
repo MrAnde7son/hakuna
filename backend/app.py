@@ -1773,6 +1773,14 @@ def list_findings(
         q = q.filter(Finding.exception_id != None)
     elif request.query_params.get("has_exception") == "false":
         q = q.filter(Finding.exception_id == None)
+    # Ticket filter: has_ticket, ticket_status
+    if request.query_params.get("has_ticket") == "true":
+        q = q.filter(Finding.tickets.any())
+    elif request.query_params.get("has_ticket") == "false":
+        q = q.filter(~Finding.tickets.any())
+    _ticket_status = request.query_params.get("ticket_status")
+    if _ticket_status:
+        q = q.filter(Finding.tickets.any(FindingTicket.mapped_status == _ticket_status))
     if effort_level:
         q = q.filter(Finding.effort_level == effort_level)
     if auto_resolved is not None:
@@ -1871,6 +1879,42 @@ def list_findings(
     }
 
 
+@app.get("/api/findings/products")
+def list_finding_products(
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return distinct product names from SBOM components linked to findings."""
+    from models.models import SBOMComponent, SBOMVulnerability
+    q = (
+        db.query(SBOMComponent.name)
+        .join(SBOMVulnerability, SBOMVulnerability.component_id == SBOMComponent.id)
+        .filter(SBOMVulnerability.finding_id.isnot(None))
+        .filter(SBOMComponent.name.isnot(None))
+        .distinct()
+    )
+    rows = q.all()
+    return {"products": sorted(set(r[0] for r in rows if r[0]))}
+
+
+@app.get("/api/findings/cpes")
+def list_finding_cpes(
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return distinct CPE strings from SBOM components linked to findings."""
+    from models.models import SBOMComponent, SBOMVulnerability
+    q = (
+        db.query(SBOMComponent.cpe)
+        .join(SBOMVulnerability, SBOMVulnerability.component_id == SBOMComponent.id)
+        .filter(SBOMVulnerability.finding_id.isnot(None))
+        .filter(SBOMComponent.cpe.isnot(None))
+        .distinct()
+    )
+    rows = q.all()
+    return {"cpes": sorted(set(r[0] for r in rows if r[0]))}
+
+
 @app.get("/api/findings/{finding_id}")
 def get_finding(finding_id: int, db: Session = Depends(get_db)):
     finding = db.query(Finding).filter(Finding.id == finding_id).first()
@@ -1901,6 +1945,57 @@ def trigger_ticket_sync(db: Session = Depends(get_db)):
     """Manually trigger global ticket status sync."""
     from services.ticket_sync import sync_all_tickets
     return sync_all_tickets(db)
+
+
+@app.get("/api/tickets")
+def list_tickets(
+    ticket_system: Optional[str] = None,
+    mapped_status: Optional[str] = None,
+    search: Optional[str] = None,
+    sort_by: str = "created_at",
+    order: str = "desc",
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+):
+    """List all linked external tickets with filtering."""
+    from services.ticket_sync import _ticket_to_dict
+    q = db.query(FindingTicket)
+    if ticket_system:
+        q = q.filter(FindingTicket.ticket_system == ticket_system)
+    if mapped_status:
+        q = q.filter(FindingTicket.mapped_status == mapped_status)
+    if search:
+        q = q.filter(
+            FindingTicket.ticket_key.ilike(f"%{search}%") |
+            FindingTicket.ticket_url.ilike(f"%{search}%")
+        )
+    sort_col = getattr(FindingTicket, sort_by, FindingTicket.created_at)
+    if order == "desc":
+        q = q.order_by(desc(sort_col))
+    else:
+        q = q.order_by(sort_col)
+    total = q.count()
+    tickets = q.offset((page - 1) * page_size).limit(page_size).all()
+
+    # Enrich with finding info
+    finding_ids = {t.finding_id for t in tickets}
+    findings_map = {}
+    if finding_ids:
+        rows = db.query(Finding.id, Finding.plugin_name, Finding.severity_label, Finding.asset_id).filter(Finding.id.in_(finding_ids)).all()
+        for r in rows:
+            findings_map[r.id] = {"plugin_name": r.plugin_name, "severity_label": r.severity_label, "asset_id": r.asset_id}
+
+    result = []
+    for t in tickets:
+        d = _ticket_to_dict(t)
+        fi = findings_map.get(t.finding_id, {})
+        d["finding_plugin_name"] = fi.get("plugin_name")
+        d["finding_severity_label"] = fi.get("severity_label")
+        d["finding_asset_id"] = fi.get("asset_id")
+        result.append(d)
+
+    return {"total": total, "page": page, "page_size": page_size, "tickets": result}
 
 
 def _review_status(review_by) -> Optional[str]:
@@ -4443,6 +4538,15 @@ def get_ownership_summary(scan_id: int, db: Session = Depends(get_db)):
 # Campaign Endpoints
 # ─────────────────────────────────────────────
 
+class AutoTicketConfig(BaseModel):
+    integration: str = "jira"         # jira | servicenow
+    project: Optional[str] = None     # Jira project key or ServiceNow assignment group
+    issue_type: str = "task"          # bug | task | story | incident
+    group_by: str = "one_per_asset"   # one_per_finding | one_per_asset | one_for_all
+    priority: Optional[str] = None    # highest | high | medium | low | lowest
+    labels: Optional[str] = None      # comma-separated
+
+
 class CampaignCreateBody(BaseModel):
     name: str
     description: Optional[str] = None
@@ -4450,6 +4554,7 @@ class CampaignCreateBody(BaseModel):
     query: list = []
     query_logic: str = "AND"
     owner_id: Optional[int] = None
+    auto_ticket: Optional[AutoTicketConfig] = None
 
 
 class CampaignUpdateBody(BaseModel):
@@ -4689,9 +4794,27 @@ def create_campaign(body: CampaignCreateBody, db: Session = Depends(get_db), use
               entity_name=campaign.name,
               changes={"name": campaign.name, "description": campaign.description, "status": campaign.status},
               actor=user)
+
+    # Auto-create ticket workflow if requested
+    workflow_id = None
+    if body.auto_ticket:
+        tc = body.auto_ticket
+        wf = workflow_engine.create_ticket_workflow(
+            db,
+            campaign_id=campaign.id,
+            campaign_name=campaign.name,
+            integration=tc.integration,
+            project=tc.project,
+            issue_type=tc.issue_type,
+            group_by=tc.group_by,
+            priority=tc.priority,
+            labels=tc.labels,
+        )
+        workflow_id = wf.id
+
     db.commit()
     db.refresh(campaign)
-    return {"id": campaign.id, "name": campaign.name, "status": campaign.status}
+    return {"id": campaign.id, "name": campaign.name, "status": campaign.status, "workflow_id": workflow_id}
 
 
 @app.get("/api/campaigns")
@@ -4858,6 +4981,42 @@ def update_campaign_finding(
         cf.status = body.status
     db.commit()
     return {"ok": True}
+
+
+@app.get("/api/campaigns/{campaign_id}/tickets")
+def get_campaign_tickets(campaign_id: int, db: Session = Depends(get_db)):
+    """Return all tickets linked to findings in this campaign."""
+    from services.ticket_sync import _ticket_to_dict
+    # Get finding IDs from campaign
+    finding_ids = [
+        r[0] for r in db.query(CampaignFinding.finding_id)
+        .filter(CampaignFinding.campaign_id == campaign_id).all()
+    ]
+    if not finding_ids:
+        return {"tickets": [], "total": 0}
+
+    tickets = db.query(FindingTicket).filter(
+        FindingTicket.finding_id.in_(finding_ids)
+    ).order_by(desc(FindingTicket.created_at)).all()
+
+    # Enrich with finding info
+    findings_map = {}
+    if tickets:
+        rows = db.query(Finding.id, Finding.plugin_name, Finding.severity_label, Finding.asset_id).filter(
+            Finding.id.in_({t.finding_id for t in tickets})
+        ).all()
+        for r in rows:
+            findings_map[r.id] = {"plugin_name": r.plugin_name, "severity_label": r.severity_label}
+
+    result = []
+    for t in tickets:
+        d = _ticket_to_dict(t)
+        fi = findings_map.get(t.finding_id, {})
+        d["finding_plugin_name"] = fi.get("plugin_name")
+        d["finding_severity_label"] = fi.get("severity_label")
+        result.append(d)
+
+    return {"tickets": result, "total": len(result)}
 
 
 # ─────────────────────────────────────────────

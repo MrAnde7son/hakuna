@@ -960,6 +960,84 @@ TEMPLATE_CATEGORIES = [
 ]
 
 
+def create_ticket_workflow(
+    db: Session,
+    campaign_id: int,
+    campaign_name: str,
+    integration: str = "jira",
+    project: str = None,
+    issue_type: str = "task",
+    group_by: str = "one_per_asset",
+    priority: str = None,
+    labels: str = None,
+) -> Workflow:
+    """Create a simple trigger → create_ticket workflow for a campaign."""
+    wf = Workflow(
+        name=f"Auto-ticket: {campaign_name}",
+        description=f"Automatically create {integration.title()} tickets for campaign findings",
+        campaign_id=campaign_id,
+        status="active",
+        is_enabled=True,
+    )
+    db.add(wf)
+    db.flush()
+
+    # Trigger node: on_campaign_run
+    db.add(WorkflowNode(
+        workflow_id=wf.id,
+        node_id="t1",
+        node_type="trigger",
+        node_subtype="on_campaign_run",
+        label="Campaign Run",
+        config={},
+        position_x=100,
+        position_y=200,
+    ))
+
+    # Action node: create_ticket
+    ticket_config = {
+        "integration": integration,
+        "issue_type": issue_type,
+        "group_by": group_by,
+        "title_template": "[{severity_label}] {plugin_name} on {asset_ip}",
+        "description_template": (
+            "Remediation required.\n\n"
+            "Severity: {severity_label}\nPlugin: {plugin_name}\n"
+            "Asset: {asset_ip} ({asset_hostname})\n\nSolution: {solution}"
+        ),
+    }
+    if project:
+        ticket_config["project"] = project
+    if priority:
+        ticket_config["priority"] = priority
+    if labels:
+        ticket_config["labels"] = labels
+
+    db.add(WorkflowNode(
+        workflow_id=wf.id,
+        node_id="a1",
+        node_type="action",
+        node_subtype="create_ticket",
+        label=f"Create {integration.title()} Ticket",
+        config=ticket_config,
+        position_x=400,
+        position_y=200,
+    ))
+
+    # Edge: trigger → action
+    db.add(WorkflowEdge(
+        workflow_id=wf.id,
+        edge_id="e1",
+        source_node_id="t1",
+        target_node_id="a1",
+        source_handle="output",
+        target_handle="input",
+    ))
+
+    db.flush()
+    return wf
+
+
 def create_workflow_from_template(db: Session, template_id: str, name: str = None,
                                   campaign_id: int = None) -> Workflow:
     """Create a new workflow from an OOTB template."""
