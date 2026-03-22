@@ -85,6 +85,7 @@ class AssetEnrichment(Base):
     tech_stack: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     is_cdn: Mapped[bool] = mapped_column(Boolean, default=False)
     tlsx_raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    screenshot_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     asset: Mapped["Asset"] = relationship(back_populates="enrichments")

@@ -4,7 +4,6 @@ Mini Agent API routes — CRUD for agents, run endpoint, templates, streaming, s
 import json
 import asyncio
 import os
-import sys
 from typing import Optional, List, Dict
 from datetime import datetime
 
@@ -20,11 +19,6 @@ from agents.agent_tools import get_tool_catalog
 from agents.agent_engine import run_agent, run_agent_streaming, update_agent_memory
 from agents.agent_pipeline import get_available_pipelines, PIPELINE_REGISTRY
 from agents.agent_prompts import ENHANCED_PROMPTS
-
-# Add repo root to path so hakuna package is importable from backend/
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
 
 from hakuna.routing.model_router import SONNET as _DEFAULT_MODEL
 from agents.agent_engine import get_default_model, get_available_providers

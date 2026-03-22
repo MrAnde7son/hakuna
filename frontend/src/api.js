@@ -838,6 +838,8 @@ export const rescanVmScan = (scanId) => request(`/vm/rescan/${scanId}`, { method
 export const getVmHealth = () => request('/vm/health').catch(() => null)
 
 export const getEasmAssets = () => request('/easm/assets')
+export const getEasmBreaches = () => request('/easm/breaches')
+export const getEasmSubsidiaries = () => request('/easm/corporate/subsidiaries')
 
 // ── Integration Builder API ──────────────────────────────
 

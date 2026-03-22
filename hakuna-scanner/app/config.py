@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     puredns_wordlist: str = "/app/wordlists/subdomains.txt"
     katana_depth: int = 2
     katana_rate_limit: int = 50
+    screenshot_dir: str = "/data/screenshots"
 
     shodan_api_key: str = ""
     censys_api_id: str = ""

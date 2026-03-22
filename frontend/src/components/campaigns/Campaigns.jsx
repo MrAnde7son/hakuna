@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   Target, Plus, Play, Trash2, Clock, AlertTriangle, CheckCircle, PauseCircle,
   ChevronRight, GitBranch, Zap, Settings, Download, Search,
-  Flame, Shield, Timer, Wrench, Globe, Sparkles, FileText, CalendarClock, Siren, Ticket,
+  Flame, Shield, Timer, Wrench, Globe, Sparkles, FileText, CalendarClock, Siren, Ticket, ShieldAlert,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers, getIntegrations } from '../../api.js'
@@ -177,6 +177,23 @@ const CAMPAIGN_TEMPLATES = [
       { field: 'finding.epss_score', op: 'gte', value: 0.5 },
     ],
     query_logic: 'AND',
+  },
+  {
+    id: 'expired_certificates',
+    icon: ShieldAlert,
+    color: '#e11d48',
+    bg: 'rgba(225,29,72,0.10)',
+    border: 'rgba(225,29,72,0.25)',
+    badge: 'Certificate Hygiene',
+    badgeColor: '#e11d48',
+    name: 'Expired & Expiring Certificates',
+    description: 'SSL/TLS certificates that have already expired or are approaching expiration. Expired certs cause outages and security warnings; expiring ones need proactive renewal.',
+    query: [
+      { field: 'finding.plugin_name', op: 'contains', value: 'SSL Certificate Expir' },
+      { field: 'finding.plugin_name', op: 'contains', value: 'TLS Certificate Expir' },
+      { field: 'finding.plugin_name', op: 'eq', value: 'TLS Certificate Expiring Soon' },
+    ],
+    query_logic: 'OR',
   },
   {
     id: 'blank',

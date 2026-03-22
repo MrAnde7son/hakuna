@@ -364,3 +364,81 @@ class MSRCPatch(Base):
     __table_args__ = (
         UniqueConstraint("cve_id", "kb_id", "product_id", name="uq_msrc_cve_kb_product"),
     )
+
+
+class BreachRecord(Base):
+    """Known data breach from HIBP / XposedOrNot — used for dark web / breach monitoring."""
+    __tablename__ = "breach_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True, nullable=False)  # HIBP breach name slug
+    title = Column(String, nullable=False)
+    domain = Column(String, index=True)  # Breached site domain
+    breach_date = Column(String)  # ISO date
+    added_date = Column(String)
+    modified_date = Column(String)
+    pwn_count = Column(Integer, default=0)  # Number of compromised accounts
+    description = Column(Text)
+    logo_path = Column(String)
+    data_classes = Column(JSON, default=list)  # ["Email addresses", "Passwords", ...]
+    is_verified = Column(Boolean, default=False)
+    is_fabricated = Column(Boolean, default=False)
+    is_sensitive = Column(Boolean, default=False)
+    is_spam_list = Column(Boolean, default=False)
+    is_subscription_free = Column(Boolean, default=False)
+    source = Column(String, default="hibp")  # "hibp" | "xposedornot"
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DomainBreach(Base):
+    """Association between a monitored domain and known breaches affecting it."""
+    __tablename__ = "domain_breaches"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, index=True, nullable=False)
+    domain = Column(String, index=True, nullable=False)  # Monitored domain (e.g. "acme.com")
+    breach_name = Column(String, index=True, nullable=False)  # FK-like ref to breach_records.name
+    exposed_count = Column(Integer, default=0)  # Accounts from this domain in the breach
+    checked_at = Column(DateTime, default=datetime.utcnow)
+    source = Column(String, default="xposedornot")  # API used for domain check
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "domain", "breach_name", name="uq_domain_breach"),
+    )
+
+
+class CorporateEntity(Base):
+    """Legal entity from GLEIF — tracks corporate parent/subsidiary structure for M&A."""
+    __tablename__ = "corporate_entities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    lei = Column(String, unique=True, index=True, nullable=False)  # Legal Entity Identifier
+    legal_name = Column(String, nullable=False, index=True)
+    trading_name = Column(String)
+    legal_jurisdiction = Column(String)  # ISO country/region
+    category = Column(String)  # "FUND" | "BRANCH" | "SOLE_PROPRIETOR" | general
+    entity_status = Column(String)  # "ACTIVE" | "INACTIVE" | "MERGED"
+    registration_status = Column(String)  # "ISSUED" | "LAPSED" | "RETIRED" | "MERGED"
+
+    # Relationship chain
+    direct_parent_lei = Column(String, index=True)
+    direct_parent_name = Column(String)
+    ultimate_parent_lei = Column(String, index=True)
+    ultimate_parent_name = Column(String)
+
+    # Address
+    legal_address_country = Column(String)
+    legal_address_city = Column(String)
+    headquarters_country = Column(String)
+    headquarters_city = Column(String)
+
+    # Domains (extracted from entity data or manually associated)
+    associated_domains = Column(JSON, default=list)  # ["acme.com", "acme.co.uk"]
+
+    # Org linkage
+    org_id = Column(Integer, index=True, nullable=True)  # Link to Hakuna organization
+
+    raw_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

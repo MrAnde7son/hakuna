@@ -85,6 +85,7 @@ class BaseRunner:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=1024 * 1024,  # 1MB line buffer (httpx can emit long JSON lines)
         )
 
         results: list[dict] = []

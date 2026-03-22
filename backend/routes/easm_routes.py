@@ -338,3 +338,155 @@ async def add_domain(
     if not success:
         raise HTTPException(502, "Failed to add domain")
     return {"domain": domain, "status": "added"}
+
+
+# --- Breach Monitoring ---
+
+
+@router.post("/breaches/sync")
+def sync_breaches(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Sync HIBP breach catalog to local database (admin-level, periodic)."""
+    from threat_intel.hibp_sync import sync_hibp_breaches_to_db
+    result = sync_hibp_breaches_to_db(db)
+    return result
+
+
+@router.post("/breaches/check-domain")
+def check_domain_breaches_endpoint(
+    domain: str = Query(..., min_length=3),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Check which breaches in the catalog affect a specific domain."""
+    from threat_intel.hibp_sync import check_domain_breaches
+    org = _get_org(db, user)
+    result = check_domain_breaches(db, org.id, domain)
+    return result
+
+
+@router.get("/breaches")
+def list_domain_breaches(
+    domain: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """List known breaches affecting the org's domains."""
+    from models.threat_intel_models import DomainBreach, BreachRecord
+    org = _get_org(db, user)
+
+    query = db.query(DomainBreach).filter(DomainBreach.org_id == org.id)
+    if domain:
+        query = query.filter(DomainBreach.domain == domain)
+    domain_breaches = query.order_by(DomainBreach.checked_at.desc()).all()
+
+    results = []
+    for db_entry in domain_breaches:
+        # Enrich with breach catalog data if available
+        breach_detail = db.query(BreachRecord).filter(
+            BreachRecord.name == db_entry.breach_name
+        ).first()
+
+        results.append({
+            "domain": db_entry.domain,
+            "breach_name": db_entry.breach_name,
+            "exposed_count": db_entry.exposed_count,
+            "checked_at": db_entry.checked_at.isoformat() if db_entry.checked_at else None,
+            "breach_date": breach_detail.breach_date if breach_detail else None,
+            "title": breach_detail.title if breach_detail else db_entry.breach_name,
+            "description": breach_detail.description if breach_detail else None,
+            "pwn_count": breach_detail.pwn_count if breach_detail else None,
+            "data_classes": breach_detail.data_classes if breach_detail else [],
+            "is_verified": breach_detail.is_verified if breach_detail else None,
+        })
+
+    return results
+
+
+# --- Corporate Structure (Wikidata) ---
+
+
+@router.post("/corporate/sync")
+def sync_corporate_structure(
+    company_name: str = Query(..., min_length=2),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Search Wikidata + SEC EDGAR for a company and import its corporate tree."""
+    from threat_intel.wikidata_sync import sync_corporate_tree_to_db
+    org = _get_org(db, user)
+    result = sync_corporate_tree_to_db(db, company_name, org_id=org.id)
+
+    # Fallback: SEC EDGAR for US public companies
+    if result.get("subsidiaries", 0) == 0:
+        from threat_intel.edgar_sync import sync_subsidiaries_to_db
+        edgar_result = sync_subsidiaries_to_db(db, company_name, org_id=org.id)
+        if edgar_result.get("subsidiaries", 0) > 0:
+            result = {**result, "edgar": edgar_result, "subsidiaries": edgar_result["subsidiaries"]}
+
+    # Associate domains with subsidiaries
+    from services.easm import _associate_subsidiary_domains
+    _associate_subsidiary_domains(db, org.id)
+
+    return result
+
+
+@router.get("/corporate/subsidiaries")
+def list_subsidiaries(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """List known subsidiaries for the current org."""
+    from threat_intel.gleif_sync import get_subsidiaries_for_org
+    org = _get_org(db, user)
+    return get_subsidiaries_for_org(db, org.id)
+
+
+@router.get("/corporate/search")
+def search_corporate_entities(
+    q: str = Query(..., min_length=2),
+    user: User = Depends(require_auth),
+):
+    """Search Wikidata for entities matching a company name (live search)."""
+    from threat_intel.wikidata_sync import find_company
+    result = find_company(q)
+    return [result] if result else []
+
+
+@router.get("/corporate/entity/{lei}")
+def get_corporate_entity(
+    lei: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Get a specific corporate entity by LEI (from local DB or live from GLEIF)."""
+    from models.threat_intel_models import CorporateEntity
+    from threat_intel.gleif_sync import get_entity_by_lei
+
+    # Try local DB first
+    entity = db.query(CorporateEntity).filter(CorporateEntity.lei == lei).first()
+    if entity:
+        return {
+            "lei": entity.lei,
+            "legal_name": entity.legal_name,
+            "trading_name": entity.trading_name,
+            "jurisdiction": entity.legal_jurisdiction,
+            "status": entity.entity_status,
+            "direct_parent_lei": entity.direct_parent_lei,
+            "direct_parent_name": entity.direct_parent_name,
+            "ultimate_parent_lei": entity.ultimate_parent_lei,
+            "ultimate_parent_name": entity.ultimate_parent_name,
+            "country": entity.headquarters_country or entity.legal_address_country,
+            "city": entity.headquarters_city or entity.legal_address_city,
+            "associated_domains": entity.associated_domains or [],
+            "source": "local",
+        }
+
+    # Fallback to live GLEIF
+    live = get_entity_by_lei(lei)
+    if not live:
+        raise HTTPException(404, "Entity not found")
+    live["source"] = "gleif_live"
+    return live

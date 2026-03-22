@@ -7,14 +7,18 @@ Pipeline A enrichment (runs on confirmed_alive assets only):
 import asyncio
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import text
 
+ENRICHMENT_STEP_COUNT = 5  # tlsx, httpx, cdncheck, katana, nmap_dispatch
+
 from app.celery_app import celery
 from app.config import settings
 from app.database import get_task_session
+
 from app.ingest.assets import update_enrichment, update_tls, update_cdn
 from app.ingest.delta import detect_cert_expiring, auto_tag_assets, detect_changes
 from app.ingest.enrichment import (
@@ -131,13 +135,20 @@ async def _do_tlsx(sf, org_id: str) -> dict:
 
 
 async def _do_httpx(sf, org_id: str) -> dict:
-    """Extension 3: Run httpx with full flags on confirmed_alive assets."""
+    """Extension 3: Run httpx with full flags + screenshots on confirmed_alive assets."""
     hostnames = await _get_confirmed_alive_hostnames(sf, org_id)
     if not hostnames:
         return {"probed": 0}
 
-    runner = HttpxRunner(hostnames)
+    # Try with screenshots first, fall back to without if browser is unavailable
+    ss_dir = os.path.join(settings.screenshot_dir, str(org_id))
+    runner = HttpxRunner(hostnames, screenshots=True, screenshot_dir=ss_dir)
     result = await runner.run(org_id=org_id)
+
+    if result.exit_code != 0 and "browser" in (result.stderr or "").lower():
+        logger.warning("org=%s httpx screenshot failed (no browser), retrying without screenshots", org_id)
+        runner = HttpxRunner(hostnames, screenshots=False)
+        result = await runner.run(org_id=org_id)
 
     async with sf() as db:
         # Legacy enrichment (http_status, http_title, tech_stack, etc.)
@@ -329,12 +340,13 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                 )
                 existing = row.fetchone()
                 if existing and existing.total_stages > 0:
-                    # Continuing from discovery — extend totals
-                    base_stage_index = existing.total_stages
+                    # Continuing from discovery — offset step indices
+                    base_stage_index = existing.total_stages - len(steps)
                     if existing.stage_log:
                         prior_log = existing.stage_log if isinstance(existing.stage_log, list) else json.loads(existing.stage_log)
 
-                new_total = base_stage_index + len(steps)
+                # For standalone enrichment scans, set total; for full scans it's already set by discovery
+                total = existing.total_stages if (existing and existing.total_stages > len(steps)) else len(steps)
                 await db.execute(
                     text("""
                         UPDATE scan_runs SET
@@ -343,7 +355,7 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                             total_stages = :total
                         WHERE id = :id
                     """),
-                    {"id": scan_run_id, "now": datetime.now(timezone.utc), "total": new_total},
+                    {"id": scan_run_id, "now": datetime.now(timezone.utc), "total": total},
                 )
                 await db.commit()
 

@@ -80,8 +80,10 @@ class NaabuRunner(BaseRunner):
 class HttpxRunner(BaseRunner):
     tool_name = "httpx"
 
-    def __init__(self, hosts: list[str]):
+    def __init__(self, hosts: list[str], screenshots: bool = False, screenshot_dir: str | None = None):
         self.hosts = hosts
+        self.screenshots = screenshots
+        self.screenshot_dir = screenshot_dir
         self._tmpfile: str | None = None
 
     def _write_hosts(self) -> str:
@@ -93,13 +95,18 @@ class HttpxRunner(BaseRunner):
 
     def build_command(self) -> list[str]:
         path = self._write_hosts()
-        return [
+        cmd = [
             "httpx", "-l", path, "-json", "-silent",
             "-status-code", "-title", "-tech-detect",
             "-cdn", "-follow-redirects",
             "-content-length", "-web-server", "-method",
             "-location", "-ip",
         ]
+        if self.screenshots:
+            ss_dir = self.screenshot_dir or settings.screenshot_dir
+            os.makedirs(ss_dir, exist_ok=True)
+            cmd.extend(["-screenshot", "-srd", ss_dir])
+        return cmd
 
     async def run(self, org_id: str | None = None):
         try:
@@ -142,6 +149,7 @@ class TlsxRunner(BaseRunner):
 
 class CdncheckRunner(BaseRunner):
     tool_name = "cdncheck"
+    timeout = 120
 
     def __init__(self, hosts: list[str]):
         self.hosts = hosts

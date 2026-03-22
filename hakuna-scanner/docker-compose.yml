@@ -41,6 +41,7 @@ services:
     volumes:
       - .:/app
       - pd_tools:/root/go/bin
+      - screenshots:/data/screenshots
     depends_on:
       postgres:
         condition: service_healthy
@@ -64,6 +65,7 @@ services:
     volumes:
       - .:/app
       - pd_tools:/root/go/bin
+      - screenshots:/data/screenshots
     depends_on:
       postgres:
         condition: service_healthy
@@ -113,3 +115,4 @@ services:
 volumes:
   pg_data:
   pd_tools:
+  screenshots:
