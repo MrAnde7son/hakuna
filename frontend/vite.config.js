@@ -16,6 +16,9 @@ export default defineConfig({
       },
     },
   },
+  optimizeDeps: {
+    include: ['react-markdown'],
+  },
   server: {
     port: 3000,
     proxy: {
