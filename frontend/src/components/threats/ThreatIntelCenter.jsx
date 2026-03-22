@@ -13,7 +13,7 @@ import {
   Code, Crosshair, Wrench,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { Card, Button, Spinner, EmptyState, StatCard, SeverityBadge, ScoreBar } from '../shared/ui.jsx'
+import { Card, Button, Spinner, EmptyState, StatCard, SeverityBadge, ScoreBar, SkeletonCard } from '../shared/ui.jsx'
 import {
   getThreatIntelStats, getThreatCves, getThreatGroups, getThreatTtps,
   syncThreatIntel, getGroupExposure, getCisaAdvisories,
@@ -168,6 +168,95 @@ function InlineSpinner({ size = 16 }) {
   )
 }
 
+// ─── Skeleton Helpers ─────────────────────────────────────────────────────────
+
+const shimmerKeyframes = `@keyframes threatShimmer { 0% { background-position: -400px 0 } 100% { background-position: 400px 0 } }`
+
+function ShimmerBlock({ width, height, borderRadius = 4, style = {} }) {
+  return (
+    <>
+      <div style={{
+        width, height, borderRadius,
+        background: 'linear-gradient(90deg, var(--border) 25%, var(--bg-hover, #f0f0f0) 50%, var(--border) 75%)',
+        backgroundSize: '800px 100%',
+        animation: 'threatShimmer 1.5s infinite linear',
+        ...style,
+      }} />
+      <style>{shimmerKeyframes}</style>
+    </>
+  )
+}
+
+function KevCardSkeleton() {
+  return (
+    <div style={{
+      background: 'var(--bg-card)', border: '1px solid var(--border)',
+      borderRadius: 10, padding: '12px 14px',
+      borderLeft: '3px solid var(--border)',
+      display: 'flex', gap: 14, alignItems: 'flex-start',
+    }}>
+      <div style={{ minWidth: 130 }}>
+        <ShimmerBlock width={100} height={14} />
+        <ShimmerBlock width={80} height={10} style={{ marginTop: 6 }} />
+        <ShimmerBlock width={70} height={10} style={{ marginTop: 4 }} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <ShimmerBlock width="90%" height={12} />
+        <ShimmerBlock width="70%" height={12} style={{ marginTop: 4 }} />
+        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+          <ShimmerBlock width={50} height={16} borderRadius={4} />
+          <ShimmerBlock width={60} height={16} borderRadius={4} />
+        </div>
+      </div>
+      <ShimmerBlock width={70} height={28} borderRadius={6} />
+    </div>
+  )
+}
+
+function StatCardSkeleton() {
+  return (
+    <div style={{
+      background: 'var(--bg-card)', border: '1px solid var(--border)',
+      borderRadius: 10, padding: '14px 16px',
+      display: 'flex', flexDirection: 'column', gap: 8,
+    }}>
+      <ShimmerBlock width={24} height={24} borderRadius={6} />
+      <ShimmerBlock width="60%" height={12} />
+      <ShimmerBlock width="40%" height={20} />
+    </div>
+  )
+}
+
+function EpssListSkeleton() {
+  return (
+    <div>
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
+          <ShimmerBlock width={120} height={12} style={{ flex: 1 }} />
+          <ShimmerBlock width={40} height={12} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function GroupSpotlightSkeleton() {
+  return (
+    <div>
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
+          <ShimmerBlock width={20} height={20} borderRadius={10} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <ShimmerBlock width="70%" height={12} />
+            <ShimmerBlock width="50%" height={10} style={{ marginTop: 4 }} />
+          </div>
+          <ShimmerBlock width={50} height={18} borderRadius={10} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function SectionTitle({ children }) {
   return (
     <div style={{
@@ -218,7 +307,7 @@ function Modal({ title, onClose, children, width = 520 }) {
 
 // ─── Stats Bar ────────────────────────────────────────────────────────────────
 
-function StatsBar({ stats, syncing, onSync, syncResult, onStatClick, activeFilter }) {
+function StatsBar({ stats, loading, syncing, onSync, syncResult, onStatClick, activeFilter }) {
   const { t } = useTranslation()
   return (
     <div style={{ marginBottom: 24 }}>
@@ -239,90 +328,103 @@ function StatsBar({ stats, syncing, onSync, syncResult, onStatClick, activeFilte
           </Button>
         </div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
-        <StatCard
-          label="Total Intel CVEs"
-          value={stats?.total_cves?.toLocaleString() ?? '—'}
-          icon={Database}
-          color="#6366f1"
-          active={activeFilter === 'all_cves'}
-          onClick={() => onStatClick('all_cves')}
-        />
-        <StatCard
-          label="CISA KEV CVEs"
-          value={stats?.kev_count?.toLocaleString() ?? '—'}
-          icon={AlertTriangle}
-          color="#dc2626"
-          sub="Known exploited"
-          active={activeFilter === 'kev'}
-          onClick={() => onStatClick('kev')}
-        />
-        <StatCard
-          label="High EPSS (>0.5)"
-          value={stats?.high_epss_count?.toLocaleString() ?? '—'}
-          icon={TrendingUp}
-          color="#ea580c"
-          sub={stats?.avg_epss != null ? `Avg EPSS: ${(stats.avg_epss * 100).toFixed(1)}%` : undefined}
-          active={activeFilter === 'high_epss'}
-          onClick={() => onStatClick('high_epss')}
-        />
-        <StatCard
-          label="Threat Groups"
-          value={stats?.exposed_groups?.toLocaleString() ?? '—'}
-          icon={Users}
-          color="#d97706"
-          sub="≥50% TTP overlap"
-          active={activeFilter === 'exposed_groups'}
-          onClick={() => onStatClick('exposed_groups')}
-        />
-        <StatCard
-          label="Affected Assets"
-          value={stats?.affected_assets?.toLocaleString() ?? '—'}
-          icon={Server}
-          color="#0ea5e9"
-          active={activeFilter === 'affected_assets'}
-          onClick={() => onStatClick('affected_assets')}
-        />
-      </div>
-      {/* Second row: enrichment sources */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 12 }}>
-        <StatCard
-          label="Public Exploits"
-          value={stats?.exploit_ref_cves?.toLocaleString() ?? '—'}
-          icon={Code}
-          color="#dc2626"
-          sub="CVEs with PoC/exploit"
-          active={activeFilter === 'has_exploit'}
-          onClick={() => onStatClick('has_exploit')}
-        />
-        <StatCard
-          label="SSVC: Act"
-          value={stats?.ssvc_act_count?.toLocaleString() ?? '—'}
-          icon={Crosshair}
-          color="#7c3aed"
-          sub={`${stats?.ssvc_decisions?.toLocaleString() ?? 0} total decisions`}
-          active={activeFilter === 'ssvc_act'}
-          onClick={() => onStatClick('ssvc_act')}
-        />
-        <StatCard
-          label="MSRC Patches"
-          value={stats?.msrc_patched_cves?.toLocaleString() ?? '—'}
-          icon={Wrench}
-          color="#16a34a"
-          sub="Microsoft CVEs patched"
-          active={activeFilter === 'msrc_patches'}
-          onClick={() => onStatClick('msrc_patches')}
-        />
-        <StatCard
-          label="Products Tracked"
-          value={stats?.total_products?.toLocaleString() ?? '—'}
-          icon={Package}
-          color="#0891b2"
-          sub={stats?.eol_products > 0 ? `${stats.eol_products} end-of-life` : 'Lifecycle tracking'}
-          active={activeFilter === 'products'}
-          onClick={() => onStatClick('products')}
-        />
-      </div>
+      {loading ? (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
+            {Array.from({ length: 5 }).map((_, i) => <StatCardSkeleton key={i} />)}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 12 }}>
+            {Array.from({ length: 4 }).map((_, i) => <StatCardSkeleton key={i} />)}
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
+            <StatCard
+              label="Total Intel CVEs"
+              value={stats?.total_cves?.toLocaleString() ?? '—'}
+              icon={Database}
+              color="#6366f1"
+              active={activeFilter === 'all_cves'}
+              onClick={() => onStatClick('all_cves')}
+            />
+            <StatCard
+              label="CISA KEV CVEs"
+              value={stats?.kev_count?.toLocaleString() ?? '—'}
+              icon={AlertTriangle}
+              color="#dc2626"
+              sub="Known exploited"
+              active={activeFilter === 'kev'}
+              onClick={() => onStatClick('kev')}
+            />
+            <StatCard
+              label="High EPSS (>0.5)"
+              value={stats?.high_epss_count?.toLocaleString() ?? '—'}
+              icon={TrendingUp}
+              color="#ea580c"
+              sub={stats?.avg_epss != null ? `Avg EPSS: ${(stats.avg_epss * 100).toFixed(1)}%` : undefined}
+              active={activeFilter === 'high_epss'}
+              onClick={() => onStatClick('high_epss')}
+            />
+            <StatCard
+              label="Threat Groups"
+              value={stats?.exposed_groups?.toLocaleString() ?? '—'}
+              icon={Users}
+              color="#d97706"
+              sub="≥50% TTP overlap"
+              active={activeFilter === 'exposed_groups'}
+              onClick={() => onStatClick('exposed_groups')}
+            />
+            <StatCard
+              label="Affected Assets"
+              value={stats?.affected_assets?.toLocaleString() ?? '—'}
+              icon={Server}
+              color="#0ea5e9"
+              active={activeFilter === 'affected_assets'}
+              onClick={() => onStatClick('affected_assets')}
+            />
+          </div>
+          {/* Second row: enrichment sources */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 12 }}>
+            <StatCard
+              label="Public Exploits"
+              value={stats?.exploit_ref_cves?.toLocaleString() ?? '—'}
+              icon={Code}
+              color="#dc2626"
+              sub="CVEs with PoC/exploit"
+              active={activeFilter === 'has_exploit'}
+              onClick={() => onStatClick('has_exploit')}
+            />
+            <StatCard
+              label="SSVC: Act"
+              value={stats?.ssvc_act_count?.toLocaleString() ?? '—'}
+              icon={Crosshair}
+              color="#7c3aed"
+              sub={`${stats?.ssvc_decisions?.toLocaleString() ?? 0} total decisions`}
+              active={activeFilter === 'ssvc_act'}
+              onClick={() => onStatClick('ssvc_act')}
+            />
+            <StatCard
+              label="MSRC Patches"
+              value={stats?.msrc_patched_cves?.toLocaleString() ?? '—'}
+              icon={Wrench}
+              color="#16a34a"
+              sub="Microsoft CVEs patched"
+              active={activeFilter === 'msrc_patches'}
+              onClick={() => onStatClick('msrc_patches')}
+            />
+            <StatCard
+              label="Products Tracked"
+              value={stats?.total_products?.toLocaleString() ?? '—'}
+              icon={Package}
+              color="#0891b2"
+              sub={stats?.eol_products > 0 ? `${stats.eol_products} end-of-life` : 'Lifecycle tracking'}
+              active={activeFilter === 'products'}
+              onClick={() => onStatClick('products')}
+            />
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -372,12 +474,14 @@ function TabBar({ active, onChange }) {
 // ─── Newsroom Tab ─────────────────────────────────────────────────────────────
 
 
-function HighEpssCves({ cves, onSearchCve }) {
+function HighEpssCves({ cves, loading, onSearchCve }) {
   const top = [...cves].sort((a, b) => (b.epss_score || 0) - (a.epss_score || 0)).slice(0, 12)
   return (
     <div>
       <SectionTitle><TrendingUp size={11} style={{ display: 'inline', marginRight: 4 }} />Top EPSS CVEs</SectionTitle>
-      {top.length === 0 ? (
+      {loading ? (
+        <EpssListSkeleton />
+      ) : top.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '12px 0' }}>No CVE data — run Sync Intel</div>
       ) : top.map(c => (
         <div
@@ -402,19 +506,22 @@ function HighEpssCves({ cves, onSearchCve }) {
 
 function ThreatGroupSpotlight() {
   const [groups, setGroups] = useState([])
+  const [loading, setLoading] = useState(true)
   useEffect(() => {
     fetch('/api/threat-intel/groups?limit=6')
       .then(r => r.ok ? r.json() : [])
       .then(data => setGroups(Array.isArray(data) ? data.slice(0, 6) : []))
       .catch(() => {})
+      .finally(() => setLoading(false))
   }, [])
 
-  if (groups.length === 0) return null
+  if (!loading && groups.length === 0) return null
 
   return (
     <div>
       <SectionTitle><Users size={11} style={{ display: 'inline', marginRight: 4 }} />Threat Actor Spotlight</SectionTitle>
-      {groups.map(g => (
+      {loading ? <GroupSpotlightSkeleton /> :
+      groups.map(g => (
         <div key={g.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid var(--border)' }}>
           <span style={{ fontSize: 15 }}>{COUNTRY_FLAGS[g.country] || '🌐'}</span>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -534,7 +641,9 @@ function AdvisoriesPanel({ onSearchCve }) {
       </div>
 
       {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '20px 0' }}><Spinner /></div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {Array.from({ length: 4 }).map((_, i) => <KevCardSkeleton key={i} />)}
+        </div>
       ) : items.length === 0 ? (
         <EmptyState icon={FileText} title={t('threats.noAdvisories')} sub={t('threats.noAdvisoriesDesc')} />
       ) : (
@@ -626,7 +735,7 @@ function AdvisoriesPanel({ onSearchCve }) {
   )
 }
 
-function NewsroomTab({ cves, onSearchCve }) {
+function NewsroomTab({ cves, loading, onSearchCve }) {
   const { t } = useTranslation()
   const [ransomwareOnly, setRansomwareOnly] = useState(false)
   const [search, setSearch] = useState('')
@@ -690,7 +799,9 @@ function NewsroomTab({ cves, onSearchCve }) {
 
         {/* KEV entries */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {pageSlice.length === 0 ? (
+          {loading ? (
+            Array.from({ length: 6 }).map((_, i) => <KevCardSkeleton key={i} />)
+          ) : pageSlice.length === 0 ? (
             <EmptyState icon={AlertCircle} title={t('threats.noKevEntries')} sub={t('threats.noKevEntriesDesc')} />
           ) : pageSlice.map(c => {
             const isOverdue = c.kev_due_date && new Date(c.kev_due_date) < new Date()
@@ -772,7 +883,7 @@ function NewsroomTab({ cves, onSearchCve }) {
       {/* Right: EPSS + Threat Groups */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: 16 }}>
-          <HighEpssCves cves={cves} onSearchCve={onSearchCve} />
+          <HighEpssCves cves={cves} loading={loading} onSearchCve={onSearchCve} />
         </div>
         <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: 16 }}>
           <ThreatGroupSpotlight />
@@ -1964,7 +2075,8 @@ export default function ThreatIntelCenter() {
 
   const [stats, setStats] = useState(null)
   const [cves, setCves] = useState([])
-  const [loadingStats, setLoadingStats] = useState(false)
+  const [loadingStats, setLoadingStats] = useState(true)
+  const [loadingCves, setLoadingCves] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState(null)
   const [statsError, setStatsError] = useState(null)
@@ -1999,10 +2111,11 @@ export default function ThreatIntelCenter() {
   // ── Fetch CVEs (for newsroom panels) — fetch KEV-only so the newsroom is always populated ──
   useEffect(() => {
     const fetchCves = async () => {
+      setLoadingCves(true)
       try {
         const data = await getThreatCves({ kev_only: true, limit: 200, sort_by: 'kev_date_added', sort_dir: 'desc' })
         setCves(Array.isArray(data) ? data : (data.items || []))
-      } catch { setCves([]) }
+      } catch { setCves([]) } finally { setLoadingCves(false) }
     }
     fetchCves()
   }, [])
@@ -2090,6 +2203,7 @@ export default function ThreatIntelCenter() {
       {/* Stats bar */}
       <StatsBar
         stats={stats}
+        loading={loadingStats}
         syncing={syncing}
         onSync={handleSync}
         syncResult={syncResult}
@@ -2115,6 +2229,7 @@ export default function ThreatIntelCenter() {
       {tab === 'newsroom' && (
         <NewsroomTab
           cves={cves}
+          loading={loadingCves}
           onSearchCve={handleSearchCve}
         />
       )}
