@@ -814,51 +814,59 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
 
     # Map hakuna statuses
     if hakuna_status in ("completed", "done"):
-        # Clear EASM's own findings before importing fresh results.
-        db.query(Finding).filter(Finding.scan_id == scan.id).delete(synchronize_session=False)
-        # Delete only EASM assets that are NOT referenced by findings from other scans.
-        cross_scan_asset_ids = {
-            r[0] for r in db.query(Finding.asset_id).filter(
-                Finding.asset_id.in_(db.query(Asset.id).filter(Asset.scan_id == scan.id)),
-                Finding.scan_id != scan.id,
-            ).all()
-        }
-        q_del = db.query(Asset).filter(Asset.scan_id == scan.id)
-        if cross_scan_asset_ids:
-            q_del = q_del.filter(~Asset.id.in_(cross_scan_asset_ids))
-        q_del.delete(synchronize_session=False)
+        try:
+            # Clear EASM's own findings before importing fresh results.
+            db.query(Finding).filter(Finding.scan_id == scan.id).delete(synchronize_session=False)
+            # Delete only EASM assets that are NOT referenced by findings from other scans.
+            cross_scan_asset_ids = {
+                r[0] for r in db.query(Finding.asset_id).filter(
+                    Finding.asset_id.in_(db.query(Asset.id).filter(Asset.scan_id == scan.id)),
+                    Finding.scan_id != scan.id,
+                ).all()
+            }
+            q_del = db.query(Asset).filter(Asset.scan_id == scan.id)
+            if cross_scan_asset_ids:
+                q_del = q_del.filter(~Asset.id.in_(cross_scan_asset_ids))
+            q_del.delete(synchronize_session=False)
 
-        # Import assets now that scan is done
-        easm_assets = await get_easm_assets(org.easm_org_id) or []
-        created, findings_created = _import_assets_for_domain(db, scan, easm_assets, domain)
+            # Import assets now that scan is done
+            easm_assets = await get_easm_assets(org.easm_org_id) or []
+            created, findings_created = _import_assets_for_domain(db, scan, easm_assets, domain)
 
-        now = datetime.utcnow()
-        scan.raw_metadata = {
-            **meta,
-            "status": "completed",
-            "asset_count": created,
-            "last_sync": now.isoformat(),
-        }
-        scan.status = "completed"
-        scan.last_run_at = now
-        scan.run_count = (scan.run_count or 0) + 1
+            now = datetime.utcnow()
+            scan.raw_metadata = {
+                **meta,
+                "status": "completed",
+                "asset_count": created,
+                "last_sync": now.isoformat(),
+            }
+            scan.status = "completed"
+            scan.last_run_at = now
+            scan.run_count = (scan.run_count or 0) + 1
 
-        # Compute next_run_at if scan has a schedule
-        if scan.schedule:
-            scan.next_run_at = _compute_next_run(scan.schedule)
+            # Compute next_run_at if scan has a schedule
+            if scan.schedule:
+                scan.next_run_at = _compute_next_run(scan.schedule)
 
-        # Update asset severity counts (single GROUP BY query, not N+1)
-        _update_asset_severity_counts(db, scan.id)
+            # Update asset severity counts (single GROUP BY query, not N+1)
+            _update_asset_severity_counts(db, scan.id)
 
-        db.commit()
+            db.commit()
 
-        # Run full post-ingest pipeline (auto-tag, ownership, SLA, dedup, etc.)
-        from services.post_ingest import finalize_scan
-        finalize_scan(db, scan_id=scan.id, org_id=org.id)
+            # Run full post-ingest pipeline (auto-tag, ownership, SLA, dedup, etc.)
+            from services.post_ingest import finalize_scan
+            finalize_scan(db, scan_id=scan.id, org_id=org.id)
 
-        logger.info(f"EASM scan completed for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
+            logger.info(f"EASM scan completed for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
 
-        return {"scan_id": scan.id, "status": "completed", "created": created, "findings_created": findings_created, "domain": domain}
+            return {"scan_id": scan.id, "status": "completed", "created": created, "findings_created": findings_created, "domain": domain}
+        except Exception:
+            db.rollback()
+            logger.exception(f"EASM import failed for '{domain}' (scan_id={scan.id}), marking as failed")
+            scan.raw_metadata = {**meta, "status": "failed", "error": "Import failed"}
+            scan.status = "failed"
+            db.commit()
+            return {"scan_id": scan.id, "status": "failed", "domain": domain}
 
     elif hakuna_status in ("failed", "error"):
         scan.raw_metadata = {**meta, "status": "failed"}

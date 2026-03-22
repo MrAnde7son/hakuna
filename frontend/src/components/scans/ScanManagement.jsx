@@ -759,13 +759,13 @@ function ScanProgressBar({ metadata }) {
   const errorStages = new Set(stageLog.filter(s => s.status === 'error').map(s => s.stage))
   const pct = totalStages > 0 ? Math.round(((stageIndex - 1) / totalStages) * 100) : 0
 
-  // Estimate time remaining from completed stage durations
+  // Estimate time remaining: elapsed / completed% = total → remaining = total - elapsed
   const completedDurations = stageLog.filter(s => s.duration_s).map(s => s.duration_s)
-  const avgDuration = completedDurations.length > 0
-    ? completedDurations.reduce((a, b) => a + b, 0) / completedDurations.length
+  const elapsedSeconds = completedDurations.reduce((a, b) => a + b, 0)
+  const completedFraction = totalStages > 0 ? (stageIndex - 1) / totalStages : 0
+  const etaSeconds = completedFraction > 0
+    ? Math.round(elapsedSeconds * (1 - completedFraction) / completedFraction)
     : 0
-  const remaining = totalStages > 0 ? Math.max(0, totalStages - stageIndex) : 0
-  const etaSeconds = Math.round(remaining * avgDuration)
 
   return (
     <div style={{

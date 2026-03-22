@@ -166,10 +166,13 @@ async def store_httpx_enrichment(
     is_cdn = bool(cdn_name)
     final_url = httpx_entry.get("final_url") or httpx_entry.get("location") or httpx_entry.get("url")
 
+    # httpx stores screenshot path in the JSON output when -screenshot is used
+    screenshot_path = httpx_entry.get("screenshot_path") or httpx_entry.get("screenshot")
+
     await db.execute(
         text("""
-            INSERT INTO asset_enrichments (id, asset_id, httpx_full, final_url, page_title, tech_stack, is_cdn, created_at)
-            VALUES (:id, :asset_id, cast(:httpx as jsonb), :final_url, :title, cast(:tech as jsonb), :is_cdn, :now)
+            INSERT INTO asset_enrichments (id, asset_id, httpx_full, final_url, page_title, tech_stack, is_cdn, screenshot_path, created_at)
+            VALUES (:id, :asset_id, cast(:httpx as jsonb), :final_url, :title, cast(:tech as jsonb), :is_cdn, :ss_path, :now)
         """),
         {
             "id": enrichment_id,
@@ -179,6 +182,7 @@ async def store_httpx_enrichment(
             "title": httpx_entry.get("title"),
             "tech": json.dumps(tech) if tech else None,
             "is_cdn": is_cdn,
+            "ss_path": screenshot_path,
             "now": now,
         },
     )

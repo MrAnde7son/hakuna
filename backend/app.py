@@ -2,6 +2,12 @@
 Hakuna Remediation Platform — FastAPI backend
 """
 import os
+import sys
+
+# Ensure repo root is on sys.path so the hakuna package is importable
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 import re
 import json
 import logging

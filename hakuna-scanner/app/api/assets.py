@@ -1,15 +1,19 @@
 """Asset inventory query endpoints."""
 
+import os
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.models.asset import Asset
 
@@ -109,8 +113,6 @@ async def asset_stats(org_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 @router.get("/{asset_id}", response_model=AssetResponse)
 async def get_asset(org_id: uuid.UUID, asset_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    from fastapi import HTTPException
-
     result = await db.execute(
         select(Asset).where(Asset.id == asset_id, Asset.org_id == org_id)
     )
@@ -118,3 +120,35 @@ async def get_asset(org_id: uuid.UUID, asset_id: uuid.UUID, db: AsyncSession = D
     if not asset:
         raise HTTPException(404, "Asset not found")
     return asset
+
+
+@router.get("/{asset_id}/screenshot")
+async def get_asset_screenshot(
+    org_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the most recent screenshot for an asset."""
+    result = await db.execute(
+        text("""
+            SELECT screenshot_path FROM asset_enrichments
+            WHERE asset_id = :asset_id AND screenshot_path IS NOT NULL
+            ORDER BY created_at DESC LIMIT 1
+        """),
+        {"asset_id": asset_id},
+    )
+    row = result.fetchone()
+    if not row or not row.screenshot_path:
+        raise HTTPException(404, "No screenshot available for this asset")
+
+    ss_path = row.screenshot_path
+    # Security: ensure path is within the screenshot directory
+    real_path = os.path.realpath(ss_path)
+    real_base = os.path.realpath(settings.screenshot_dir)
+    if not real_path.startswith(real_base):
+        raise HTTPException(403, "Invalid screenshot path")
+
+    if not os.path.isfile(real_path):
+        raise HTTPException(404, "Screenshot file not found")
+
+    return FileResponse(real_path, media_type="image/png")

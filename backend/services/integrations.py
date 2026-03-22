@@ -6,7 +6,6 @@ Each connector reads its config from the IntegrationConfig table.
 import json
 import logging
 import os
-import sys
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -15,11 +14,6 @@ from typing import Optional
 
 import requests
 from sqlalchemy.orm import Session
-
-# Add repo root to path so hakuna package is importable from backend/
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
 
 from hakuna.utils.token_tracker import get_tracker, track_tokens
 

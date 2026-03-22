@@ -11,7 +11,6 @@ Provides:
 import json
 import logging
 import os
-import sys
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
@@ -20,11 +19,6 @@ from sqlalchemy.orm import Session
 
 from models.models import Agent, AgentRun
 from agents.agent_context import AgentHandoff, validate_handoff
-
-# Add repo root to path so hakuna package is importable from backend/
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
 
 from hakuna.routing.model_router import ModelRouter as _ModelRouter
 

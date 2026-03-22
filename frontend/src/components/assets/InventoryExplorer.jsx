@@ -6,7 +6,7 @@ import {
   LogIn, AlertTriangle, Key, UserCheck,
   Activity, Layers, Share2, Package, Lock, Monitor, FileText, Terminal, Eye, EyeOff, BrainCircuit,
   ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Download, Database, X,
-  Bot, User, Search, GitBranch
+  Bot, User, Search, GitBranch, Globe, Building2, ShieldAlert, Image, ExternalLink
 } from 'lucide-react'
 import {
   Card, StatCard, Table, FilterBar, Select, Input,
@@ -23,6 +23,7 @@ import {
   getSecurityCoverage,
   getSBOMComponents, getSBOMComponentVulns, getSBOMAssetSummary,
   exportDownload,
+  getEasmAssets, getEasmBreaches, getEasmSubsidiaries,
 } from '../../api.js'
 import { useScan } from '../../App.jsx'
 
@@ -87,11 +88,16 @@ function getTabGroups(t) {
       { key: 'envvars',  label: t('inventory.envVariables'),  icon: Terminal },
       { key: 'aitools',  label: t('inventory.aiTools'),       icon: BrainCircuit },
     ]},
+    { label: t('inventory.easm'), icon: Globe, children: [
+      { key: 'easm_assets',    label: t('inventory.easmDomainRecords'), icon: Globe },
+      { key: 'easm_breaches',  label: t('inventory.easmBreaches'),      icon: ShieldAlert },
+      { key: 'easm_corporate', label: t('inventory.easmCorporate'),     icon: Building2 },
+    ]},
   ]
 }
 
 // Flat list of all valid tab keys (for URL validation) — keys are static, no translation needed
-const ALL_TABS = ['surface', 'users', 'groups', 'loggedon', 'computers', 'databases', 'services', 'software', 'processes', 'netconns', 'shares', 'security', 'patches', 'policy', 'certs', 'credentials', 'tasks', 'envvars', 'aitools']
+const ALL_TABS = ['surface', 'users', 'groups', 'loggedon', 'computers', 'databases', 'services', 'software', 'processes', 'netconns', 'shares', 'security', 'patches', 'policy', 'certs', 'credentials', 'tasks', 'envvars', 'aitools', 'easm_assets', 'easm_breaches', 'easm_corporate']
 
 // Find which group a tab key belongs to
 function groupForTab(tabKey, tabGroups) {
@@ -2511,16 +2517,19 @@ function CertificatesTab({ scanId, assetId }) {
   const [expiredOnly, setExpiredOnly] = useState(false)
   const [selfSignedOnly, setSelfSignedOnly] = useState(false)
   const [groupByAsset, setGroupByAsset] = useState(false)
+  const [sourceFilter, setSourceFilter] = useState('') // '', 'nessus', 'easm'
   const [sortBy, setSortBy]           = useState('not_after')
   const [sortOrder, setSortOrder]     = useState('asc')
+  const [easmCerts, setEasmCerts]     = useState([])
 
   const handleSort = (key) => {
     if (sortBy === key) { setSortOrder(o => o === 'asc' ? 'desc' : 'asc') }
     else { setSortBy(key); setSortOrder('asc') }
   }
 
-  useEffect(() => { setPage(1) }, [scanId, assetId, search, expiredOnly, selfSignedOnly])
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, expiredOnly, selfSignedOnly, sourceFilter])
 
+  // Fetch Nessus certs
   useEffect(() => {
     setLoading(true)
     getInventoryCertificates({
@@ -2536,9 +2545,57 @@ function CertificatesTab({ scanId, assetId }) {
     }).then(data => { setRows(data.certificates); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
   }, [scanId, assetId, search, expiredOnly, selfSignedOnly, sortBy, sortOrder, page])
 
-  const expiredCount    = rows.filter(r => r.is_expired).length
-  const expiringSoon    = rows.filter(r => !r.is_expired && r.days_until_expiry != null && r.days_until_expiry <= 30).length
-  const selfSignedCount = rows.filter(r => r.is_self_signed).length
+  // Fetch EASM TLS certs (once, merge client-side)
+  useEffect(() => {
+    getEasmAssets().then(assets => {
+      if (!Array.isArray(assets)) return
+      const certs = assets
+        .filter(a => a.tls_cert && (a.tls_cert.subject || a.tls_cert.subject_cn || a.tls_cert.issuer))
+        .map(a => {
+          const c = a.tls_cert
+          // tlsx stores expiry as "expiry", asset-level may use "not_after"
+          const expiryRaw = c.expiry || c.not_after || null
+          const notAfter = expiryRaw ? new Date(expiryRaw) : null
+          const now = new Date()
+          const isExpired = notAfter ? notAfter < now : false
+          const daysUntil = notAfter && !isNaN(notAfter) ? Math.ceil((notAfter - now) / 86400000) : null
+          const subjectStr = c.subject || c.subject_cn || a.hostname
+          const issuerStr = c.issuer || c.issuer_cn || c.issuer_o || '—'
+          return {
+            subject_cn: subjectStr,
+            issuer_cn: issuerStr,
+            port: c.port || 443,
+            not_after: expiryRaw,
+            days_until_expiry: daysUntil,
+            is_expired: isExpired,
+            is_self_signed: c.is_self_signed || (subjectStr && issuerStr && subjectStr === issuerStr) || false,
+            key_algorithm: c.key_algorithm || c.cipher || null,
+            key_bits: c.key_bits || c.key_size || null,
+            tls_version: c.version || null,
+            asset_label: a.hostname,
+            asset_env: 'internet',
+            _source: 'easm',
+          }
+        })
+      setEasmCerts(certs)
+    }).catch(() => {})
+  }, [])
+
+  // Merge rows based on source filter
+  const mergedRows = useMemo(() => {
+    const nessusRows = rows.map(r => ({ ...r, _source: r._source || 'nessus' }))
+    if (sourceFilter === 'nessus') return nessusRows
+    if (sourceFilter === 'easm') return easmCerts
+    // Merge — avoid duplicates by subject_cn+port
+    const seen = new Set(nessusRows.map(r => `${r.subject_cn}::${r.port}`))
+    const unique = easmCerts.filter(c => !seen.has(`${c.subject_cn}::${c.port}`))
+    return [...nessusRows, ...unique]
+  }, [rows, easmCerts, sourceFilter])
+
+  const expiredCount    = mergedRows.filter(r => r.is_expired).length
+  const expiringSoon    = mergedRows.filter(r => !r.is_expired && r.days_until_expiry != null && r.days_until_expiry <= 30).length
+  const selfSignedCount = mergedRows.filter(r => r.is_self_signed).length
+  const easmCount       = mergedRows.filter(r => r._source === 'easm').length
 
   function ExpiryBadge({ row }) {
     if (row.is_expired) {
@@ -2554,14 +2611,14 @@ function CertificatesTab({ scanId, assetId }) {
   }
 
   const columns = [
-    { key: 'subject_cn', label: 'Common Name', width: '22%', sortable: true,
+    { key: 'subject_cn', label: 'Common Name', width: '20%', sortable: true,
       render: (v, r) => (
         <span style={{ fontWeight: 600, color: r.is_expired ? '#fca5a5' : 'inherit' }}>
           {v || '—'}
         </span>
       )
     },
-    { key: 'issuer_cn', label: 'Issuer', width: '20%', sortable: true,
+    { key: 'issuer_cn', label: 'Issuer', width: '18%', sortable: true,
       render: (v, r) => (
         <span style={{ fontSize: 12, color: r.is_self_signed ? '#fcd34d' : 'var(--text-muted)' }}>
           {v || '—'}{r.is_self_signed && ' ⚠'}
@@ -2571,16 +2628,21 @@ function CertificatesTab({ scanId, assetId }) {
     { key: 'port', label: 'Port', width: '6%', sortable: true,
       render: v => <code style={{ fontSize: 12 }}>{v || '—'}</code>
     },
-    { key: 'not_after', label: 'Expires', width: '14%', sortable: true,
-      render: (v) => <span style={{ fontSize: 12 }}>{v || '—'}</span>
+    { key: 'not_after', label: 'Expires', width: '12%', sortable: true,
+      render: (v) => <span style={{ fontSize: 12 }}>{v ? (typeof v === 'string' && v.includes('T') ? new Date(v).toLocaleDateString() : v) : '—'}</span>
     },
-    { key: 'days_until_expiry', label: 'In', width: '8%', sortable: true,
+    { key: 'days_until_expiry', label: 'In', width: '7%', sortable: true,
       render: (_, r) => <ExpiryBadge row={r} />
     },
     { key: 'key_bits', label: 'Key', width: '9%', sortable: true,
       render: (v, r) => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{r.key_algorithm ? `${r.key_algorithm} ${v || ''}`.trim() : (v || '—')}</span>
     },
-    { key: 'asset_label', label: 'Asset', width: '21%',
+    { key: '_source', label: 'Source', width: '8%',
+      render: v => (
+        <Pill label={v === 'easm' ? 'EASM' : 'Nessus'} color={v === 'easm' ? '#0ea5e9' : '#6366f1'} />
+      )
+    },
+    { key: 'asset_label', label: 'Asset', width: '20%',
       render: (v, r) => <>{v}<EnvPill env={r.asset_env} /></>
     },
   ]
@@ -2595,9 +2657,18 @@ function CertificatesTab({ scanId, assetId }) {
         <Button variant={selfSignedOnly ? 'primary' : 'ghost'} size="sm" onClick={() => setSelfSignedOnly(v => !v)}>
           {selfSignedOnly ? '✕ Self-signed only' : 'Self-signed only'}
         </Button>
+        <select
+          value={sourceFilter}
+          onChange={e => setSourceFilter(e.target.value)}
+          style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: sourceFilter ? 'var(--text-primary)' : 'var(--text-muted)', borderRadius: 6, padding: '5px 8px', fontSize: 12 }}
+        >
+          <option value="">All Sources</option>
+          <option value="nessus">Nessus</option>
+          <option value="easm">EASM</option>
+        </select>
         <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
       </FilterBar>
-      {(expiredCount > 0 || expiringSoon > 0 || selfSignedCount > 0) && (
+      {(expiredCount > 0 || expiringSoon > 0 || selfSignedCount > 0 || easmCount > 0) && (
         <div style={{ display:'flex', gap:10, marginBottom:12, flexWrap:'wrap' }}>
           {expiredCount > 0 && (
             <div style={{ padding:'7px 12px', background:'#450a0a', border:'1px solid #991b1b', borderRadius:6, fontSize:13, color:'#fca5a5' }}>
@@ -2614,13 +2685,18 @@ function CertificatesTab({ scanId, assetId }) {
               ⚠ {selfSignedCount} self-signed certificate{selfSignedCount !== 1 ? 's' : ''}
             </div>
           )}
+          {easmCount > 0 && (
+            <div style={{ padding:'7px 12px', background:'#0c2d48', border:'1px solid #0ea5e944', borderRadius:6, fontSize:13, color:'#7dd3fc' }}>
+              {easmCount} from EASM discovery
+            </div>
+          )}
         </div>
       )}
       {loading ? <Spinner /> : groupByAsset
-        ? <GroupedTable columns={columns} rows={rows} emptyMessage="No certificates found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
-        : <Table columns={columns} rows={rows} emptyMessage="No certificates found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+        ? <GroupedTable columns={columns} rows={mergedRows} emptyMessage="No certificates found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+        : <Table columns={columns} rows={mergedRows} emptyMessage="No certificates found." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
       }
-      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="certificates" />
+      <Pagination page={page} total={sourceFilter === 'easm' ? easmCerts.length : (total + (sourceFilter === '' ? easmCerts.length : 0))} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="certificates" />
     </Card>
   )
 }
@@ -2999,6 +3075,482 @@ function ProcessesTab({ scanId, assetId }) {
 
 
 // ─── Root ──────────────────────────────────────────────────
+// ─── EASM Assets tab ──────────────────────────────────────
+function EasmAssetsTab() {
+  const { t } = useTranslation()
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [search, setSearch] = useState('')
+  const [expanded, setExpanded] = useState(null) // asset id for screenshot modal
+  const [sortBy, setSortBy] = useState('last_seen')
+  const [sortOrder, setSortOrder] = useState('desc')
+
+  const handleSort = (key) => {
+    if (sortBy === key) { setSortOrder(o => o === 'asc' ? 'desc' : 'asc') }
+    else { setSortBy(key); setSortOrder('desc') }
+  }
+
+  useEffect(() => {
+    setLoading(true)
+    setError(null)
+    getEasmAssets()
+      .then(data => setRows(Array.isArray(data) ? data : []))
+      .catch(() => setError('Failed to load EASM assets. Is the scanner connected?'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const filtered = useMemo(() => {
+    let list = rows
+    if (search) {
+      const q = search.toLowerCase()
+      list = list.filter(a =>
+        (a.hostname || '').toLowerCase().includes(q) ||
+        (a.ip || '').toLowerCase().includes(q) ||
+        (a.http_title || '').toLowerCase().includes(q) ||
+        (a.cdn_provider || '').toLowerCase().includes(q) ||
+        (a.waf || '').toLowerCase().includes(q) ||
+        (Array.isArray(a.tech_stack) ? a.tech_stack : []).some(t => (typeof t === 'string' ? t : t?.name || '').toLowerCase().includes(q))
+      )
+    }
+    // Sort
+    list = [...list].sort((a, b) => {
+      const va = a[sortBy] ?? '', vb = b[sortBy] ?? ''
+      const cmp = typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb))
+      return sortOrder === 'asc' ? cmp : -cmp
+    })
+    return list
+  }, [rows, search, sortBy, sortOrder])
+
+  function TechPills({ stack }) {
+    if (!stack) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    const items = Array.isArray(stack) ? stack : Object.keys(stack)
+    if (items.length === 0) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    return (
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+        {items.slice(0, 4).map((t, i) => {
+          const name = typeof t === 'string' ? t : t?.name || t?.slug || String(t)
+          return <Pill key={i} label={name} color="#6366f1" />
+        })}
+        {items.length > 4 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>+{items.length - 4}</span>}
+      </div>
+    )
+  }
+
+  function PortsList({ ports }) {
+    if (!ports || ports.length === 0) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    const shown = ports.slice(0, 6)
+    return (
+      <span style={{ fontSize: 12, fontFamily: 'monospace' }}>
+        {shown.join(', ')}{ports.length > 6 ? ` +${ports.length - 6}` : ''}
+      </span>
+    )
+  }
+
+  function TlsBadge({ cert }) {
+    if (!cert) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    const expiryRaw = cert.expiry || cert.not_after
+    const expired = expiryRaw && new Date(expiryRaw) < new Date()
+    const issuer = cert.issuer || cert.issuer_cn || cert.issuer_o || '—'
+    return (
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12,
+        color: expired ? '#fca5a5' : 'var(--text-muted)',
+      }}>
+        <Lock size={11} style={{ color: expired ? '#ef4444' : '#16a34a' }} />
+        {expired ? 'Expired' : issuer}
+      </span>
+    )
+  }
+
+  const columns = [
+    { key: 'hostname', label: t('inventory.easmHostname'), width: '22%', sortable: true,
+      render: (v, r) => (
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 13 }}>{v}</div>
+          {r.http_title && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.http_title}</div>}
+        </div>
+      ),
+    },
+    { key: 'ip', label: 'IP', width: '11%', sortable: true,
+      render: v => <span style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--text-muted)' }}>{v || '—'}</span>,
+    },
+    { key: 'open_ports', label: t('inventory.easmPorts'), width: '12%',
+      render: v => <PortsList ports={v} />,
+    },
+    { key: 'tech_stack', label: t('inventory.easmTechStack'), width: '18%',
+      render: v => <TechPills stack={v} />,
+    },
+    { key: 'cdn_provider', label: 'CDN / WAF', width: '10%', sortable: true,
+      render: (v, r) => {
+        const parts = [v, r.waf].filter(Boolean)
+        return parts.length > 0
+          ? <span style={{ fontSize: 12 }}>{parts.join(' / ')}</span>
+          : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+      },
+    },
+    { key: 'tls_cert', label: 'TLS', width: '10%',
+      render: v => <TlsBadge cert={v} />,
+    },
+    { key: 'http_status', label: 'HTTP', width: '7%', sortable: true,
+      render: v => v != null
+        ? <span style={{ fontSize: 12, fontFamily: 'monospace', fontWeight: 600, color: v >= 200 && v < 400 ? '#16a34a' : v >= 400 ? '#ef4444' : '#d97706' }}>{v}</span>
+        : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>,
+    },
+    { key: 'last_seen', label: t('inventory.easmLastSeen'), width: '10%', sortable: true,
+      render: v => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v ? new Date(v).toLocaleDateString() : '—'}</span>,
+    },
+  ]
+
+  // Screenshot modal
+  const screenshotAsset = expanded ? rows.find(a => a.id === expanded) : null
+
+  if (error) return <ErrorBanner error={error} onDismiss={() => setError(null)} />
+
+  // Summary stats
+  const withHttp = rows.filter(r => r.http_status != null).length
+  const withCdn = rows.filter(r => r.cdn_provider).length
+  const expiredTls = rows.filter(r => r.tls_cert && (r.tls_cert.expiry || r.tls_cert.not_after) && new Date(r.tls_cert.expiry || r.tls_cert.not_after) < new Date()).length
+
+  return (
+    <>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 16 }}>
+        <StatCard label={t('inventory.easmTotal')} value={rows.length} icon={Globe} color="#0ea5e9" />
+        <StatCard label={t('inventory.easmWithHttp')} value={withHttp} icon={Globe} color="#16a34a" />
+        <StatCard label={t('inventory.easmWithCdn')} value={withCdn} icon={Shield} color="#6366f1" />
+        <StatCard label={t('inventory.easmExpiredTls')} value={expiredTls} icon={ShieldAlert} color="#ef4444" />
+        <StatCard label={t('inventory.easmTechDetected')} value={rows.filter(r => r.tech_stack && (Array.isArray(r.tech_stack) ? r.tech_stack.length > 0 : Object.keys(r.tech_stack).length > 0)).length} icon={Package} color="#f59e0b" />
+      </div>
+      <Card>
+        <FilterBar>
+          <Input value={search} onChange={setSearch} placeholder={t('inventory.easmSearchPlaceholder')} style={{ width: 280 }} />
+        </FilterBar>
+        {loading ? <Spinner /> : (
+          <Table
+            columns={columns}
+            rows={filtered}
+            emptyMessage={t('inventory.easmNoAssets')}
+            onSort={handleSort}
+            sortBy={sortBy}
+            sortOrder={sortOrder}
+            onRowClick={(row) => setExpanded(expanded === row.id ? null : row.id)}
+          />
+        )}
+      </Card>
+
+      {/* Screenshot / detail modal */}
+      {screenshotAsset && (
+        <div
+          onClick={() => setExpanded(null)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: 'var(--bg-primary)', borderRadius: 12, padding: 24,
+              maxWidth: 720, width: '90vw', maxHeight: '85vh', overflow: 'auto',
+              border: '1px solid var(--border)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: 16 }}>{screenshotAsset.hostname}</h3>
+              <button onClick={() => setExpanded(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Detail grid */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: 13, marginBottom: 16 }}>
+              <div><span style={{ color: 'var(--text-muted)' }}>IP:</span> <code>{screenshotAsset.ip || '—'}</code></div>
+              <div><span style={{ color: 'var(--text-muted)' }}>HTTP Status:</span> {screenshotAsset.http_status ?? '—'}</div>
+              <div><span style={{ color: 'var(--text-muted)' }}>URL:</span> {screenshotAsset.http_url ? <a href={screenshotAsset.http_url} target="_blank" rel="noreferrer" style={{ color: '#60a5fa' }}>{screenshotAsset.http_url} <ExternalLink size={11} style={{ verticalAlign: 'middle' }} /></a> : '—'}</div>
+              <div><span style={{ color: 'var(--text-muted)' }}>CDN / WAF:</span> {[screenshotAsset.cdn_provider, screenshotAsset.waf].filter(Boolean).join(' / ') || '—'}</div>
+              <div><span style={{ color: 'var(--text-muted)' }}>ASN:</span> {screenshotAsset.asn_org || screenshotAsset.asn || '—'}</div>
+              <div><span style={{ color: 'var(--text-muted)' }}>Ports:</span> <code>{(screenshotAsset.open_ports || []).join(', ') || '—'}</code></div>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <span style={{ color: 'var(--text-muted)' }}>Tech Stack:</span>{' '}
+                <TechPills stack={screenshotAsset.tech_stack} />
+              </div>
+              {screenshotAsset.tls_cert && (
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>TLS Certificate:</span>{' '}
+                  <span style={{ fontSize: 12 }}>
+                    {screenshotAsset.tls_cert.subject || screenshotAsset.tls_cert.subject_cn || '—'}
+                    {' — issued by '}{screenshotAsset.tls_cert.issuer || screenshotAsset.tls_cert.issuer_cn || screenshotAsset.tls_cert.issuer_o || '—'}
+                    {(screenshotAsset.tls_cert.expiry || screenshotAsset.tls_cert.not_after) && ` — expires ${new Date(screenshotAsset.tls_cert.expiry || screenshotAsset.tls_cert.not_after).toLocaleDateString()}`}
+                    {screenshotAsset.tls_cert.version && ` (${screenshotAsset.tls_cert.version})`}
+                  </span>
+                </div>
+              )}
+              {screenshotAsset.dns_records && Object.keys(screenshotAsset.dns_records).length > 0 && (
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>DNS Records:</span>{' '}
+                  <span style={{ fontSize: 12, fontFamily: 'monospace' }}>
+                    {Object.entries(screenshotAsset.dns_records).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join(' | ')}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Tags */}
+            {screenshotAsset.tags && screenshotAsset.tags.length > 0 && (
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 16 }}>
+                {screenshotAsset.tags.map((tag, i) => <Pill key={i} label={tag} color={tag.includes('expired') ? '#ef4444' : tag.includes('cdn') ? '#16a34a' : '#64748b'} />)}
+              </div>
+            )}
+
+            {/* Timestamps */}
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 16 }}>
+              {screenshotAsset.first_seen && <span>First seen: {new Date(screenshotAsset.first_seen).toLocaleDateString()}</span>}
+              {screenshotAsset.last_seen && <span>Last seen: {new Date(screenshotAsset.last_seen).toLocaleDateString()}</span>}
+              {screenshotAsset.last_enriched && <span>Last enriched: {new Date(screenshotAsset.last_enriched).toLocaleDateString()}</span>}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+
+// ─── EASM Breaches tab ────────────────────────────────────
+function EasmBreachesTab() {
+  const { t } = useTranslation()
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [search, setSearch] = useState('')
+  const [sortBy, setSortBy] = useState('breach_date')
+  const [sortOrder, setSortOrder] = useState('desc')
+
+  const handleSort = (key) => {
+    if (sortBy === key) { setSortOrder(o => o === 'asc' ? 'desc' : 'asc') }
+    else { setSortBy(key); setSortOrder('desc') }
+  }
+
+  useEffect(() => {
+    setLoading(true)
+    setError(null)
+    getEasmBreaches()
+      .then(data => setRows(Array.isArray(data) ? data : []))
+      .catch(() => setError('Failed to load breach data. Ensure HIBP sync has been run.'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const filtered = useMemo(() => {
+    let list = rows
+    if (search) {
+      const q = search.toLowerCase()
+      list = list.filter(b =>
+        (b.title || b.breach_name || '').toLowerCase().includes(q) ||
+        (b.domain || '').toLowerCase().includes(q) ||
+        (b.data_classes || []).some(c => c.toLowerCase().includes(q))
+      )
+    }
+    list = [...list].sort((a, b) => {
+      const va = a[sortBy] ?? '', vb = b[sortBy] ?? ''
+      const cmp = typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb))
+      return sortOrder === 'asc' ? cmp : -cmp
+    })
+    return list
+  }, [rows, search, sortBy, sortOrder])
+
+  const totalExposed = rows.reduce((sum, r) => sum + (r.exposed_count || 0), 0)
+  const verifiedCount = rows.filter(r => r.is_verified).length
+  const domainsAffected = new Set(rows.map(r => r.domain)).size
+
+  const columns = [
+    { key: 'title', label: t('inventory.easmBreachName'), width: '22%', sortable: true,
+      render: (v, r) => (
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+            {v || r.breach_name}
+            {r.is_verified && <span title="Verified breach" style={{ color: '#ef4444', fontSize: 11 }}>verified</span>}
+          </div>
+          {r.description && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.description}</div>}
+        </div>
+      ),
+    },
+    { key: 'domain', label: t('inventory.easmBreachDomain'), width: '14%', sortable: true,
+      render: v => <code style={{ fontSize: 12 }}>{v}</code>,
+    },
+    { key: 'breach_date', label: t('inventory.easmBreachDate'), width: '10%', sortable: true,
+      render: v => <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{v || '—'}</span>,
+    },
+    { key: 'exposed_count', label: t('inventory.easmExposedAccounts'), width: '12%', sortable: true,
+      render: v => (
+        <span style={{ fontWeight: 600, fontSize: 13, color: v > 0 ? '#ef4444' : 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+          {(v || 0).toLocaleString()}
+        </span>
+      ),
+    },
+    { key: 'pwn_count', label: t('inventory.easmTotalPwned'), width: '12%', sortable: true,
+      render: v => <span style={{ fontSize: 12, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{v ? v.toLocaleString() : '—'}</span>,
+    },
+    { key: 'data_classes', label: t('inventory.easmDataTypes'), width: '22%',
+      render: v => {
+        if (!v || v.length === 0) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const sensitive = ['Passwords', 'Credit cards', 'Bank account numbers', 'Social security numbers', 'IP addresses']
+        return (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+            {v.slice(0, 4).map((cls, i) => (
+              <Pill key={i} label={cls} color={sensitive.some(s => cls.includes(s)) ? '#ef4444' : '#64748b'} />
+            ))}
+            {v.length > 4 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>+{v.length - 4}</span>}
+          </div>
+        )
+      },
+    },
+    { key: 'checked_at', label: t('inventory.easmCheckedAt'), width: '8%', sortable: true,
+      render: v => <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{v ? new Date(v).toLocaleDateString() : '—'}</span>,
+    },
+  ]
+
+  if (error) return <ErrorBanner error={error} onDismiss={() => setError(null)} />
+
+  return (
+    <>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
+        <StatCard label={t('inventory.easmBreachesFound')} value={rows.length} icon={ShieldAlert} color="#ef4444" />
+        <StatCard label={t('inventory.easmExposedTotal')} value={totalExposed} icon={Users} color="#dc2626" />
+        <StatCard label={t('inventory.easmVerifiedBreaches')} value={verifiedCount} icon={AlertTriangle} color="#f59e0b" />
+        <StatCard label={t('inventory.easmDomainsAffected')} value={domainsAffected} icon={Globe} color="#7c3aed" />
+      </div>
+      {totalExposed > 0 && (
+        <div style={{ padding: '10px 14px', background: '#450a0a', border: '1px solid #991b1b', borderRadius: 8, fontSize: 13, color: '#fca5a5', marginBottom: 16 }}>
+          {t('inventory.easmBreachWarning', { count: totalExposed, breaches: rows.length })}
+        </div>
+      )}
+      <Card>
+        <FilterBar>
+          <Input value={search} onChange={setSearch} placeholder={t('inventory.easmBreachSearch')} style={{ width: 280 }} />
+        </FilterBar>
+        {loading ? <Spinner /> : (
+          <Table columns={columns} rows={filtered} emptyMessage={t('inventory.easmNoBreaches')} onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+        )}
+      </Card>
+    </>
+  )
+}
+
+
+// ─── EASM Corporate / M&A tab ─────────────────────────────
+function EasmCorporateTab() {
+  const { t } = useTranslation()
+  const [subsidiaries, setSubsidiaries] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [search, setSearch] = useState('')
+
+  useEffect(() => {
+    setLoading(true)
+    setError(null)
+    getEasmSubsidiaries()
+      .then(data => setSubsidiaries(Array.isArray(data) ? data : []))
+      .catch(() => setError('Failed to load corporate structure. Run GLEIF sync first.'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const filtered = useMemo(() => {
+    if (!search) return subsidiaries
+    const q = search.toLowerCase()
+    return subsidiaries.filter(s =>
+      (s.legal_name || '').toLowerCase().includes(q) ||
+      (s.trading_name || '').toLowerCase().includes(q) ||
+      (s.headquarters_country || '').toLowerCase().includes(q) ||
+      (s.lei || '').toLowerCase().includes(q) ||
+      (s.associated_domains || []).some(d => d.toLowerCase().includes(q))
+    )
+  }, [subsidiaries, search])
+
+  const activeCount = subsidiaries.filter(s => s.entity_status === 'ACTIVE').length
+  const countries = new Set(subsidiaries.map(s => s.headquarters_country).filter(Boolean)).size
+  const withDomains = subsidiaries.filter(s => s.associated_domains && s.associated_domains.length > 0).length
+
+  const STATUS_COLORS = {
+    ACTIVE: '#16a34a',
+    INACTIVE: '#64748b',
+    MERGED: '#7c3aed',
+  }
+
+  if (error) return <ErrorBanner error={error} onDismiss={() => setError(null)} />
+
+  return (
+    <>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
+        <StatCard label={t('inventory.easmEntities')} value={subsidiaries.length} icon={Building2} color="#6366f1" />
+        <StatCard label={t('inventory.easmActive')} value={activeCount} icon={Building2} color="#16a34a" />
+        <StatCard label={t('inventory.easmCountries')} value={countries} icon={Globe} color="#0ea5e9" />
+        <StatCard label={t('inventory.easmWithDomains')} value={withDomains} icon={Globe} color="#f59e0b" />
+      </div>
+      <Card>
+        <FilterBar>
+          <Input value={search} onChange={setSearch} placeholder={t('inventory.easmCorporateSearch')} style={{ width: 280 }} />
+        </FilterBar>
+        {loading ? <Spinner /> : filtered.length === 0 ? (
+          <EmptyState icon={Building2} title={t('inventory.easmNoEntities')} sub={t('inventory.easmNoEntitiesSub')} />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {filtered.map((entity, i) => (
+              <div key={entity.lei || i} style={{
+                padding: '14px 16px', background: 'var(--bg-secondary)', borderRadius: 8,
+                border: '1px solid var(--border)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                  <Building2 size={16} style={{ color: STATUS_COLORS[entity.entity_status] || '#64748b', flexShrink: 0 }} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{entity.legal_name}</div>
+                    {entity.trading_name && entity.trading_name !== entity.legal_name && (
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>DBA: {entity.trading_name}</div>
+                    )}
+                  </div>
+                  <Pill label={entity.entity_status || 'UNKNOWN'} color={STATUS_COLORS[entity.entity_status] || '#64748b'} />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+                  <div>
+                    <span style={{ fontWeight: 600 }}>LEI:</span>{' '}
+                    <code style={{ fontSize: 11 }}>{entity.lei || '—'}</code>
+                  </div>
+                  <div>
+                    <span style={{ fontWeight: 600 }}>{t('inventory.easmJurisdiction')}:</span>{' '}
+                    {entity.legal_jurisdiction || '—'}
+                  </div>
+                  <div>
+                    <span style={{ fontWeight: 600 }}>{t('inventory.easmHeadquarters')}:</span>{' '}
+                    {[entity.headquarters_city, entity.headquarters_country].filter(Boolean).join(', ') || '—'}
+                  </div>
+                </div>
+
+                {entity.associated_domains && entity.associated_domains.length > 0 && (
+                  <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)' }}>{t('inventory.easmDomains')}:</span>
+                    {entity.associated_domains.map((d, j) => (
+                      <code key={j} style={{ fontSize: 11, background: 'var(--bg-muted)', padding: '2px 6px', borderRadius: 4 }}>{d}</code>
+                    ))}
+                  </div>
+                )}
+
+                {(entity.direct_parent_lei || entity.ultimate_parent_lei) && (
+                  <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+                    {entity.direct_parent_lei && <span>{t('inventory.easmParent')}: <code>{entity.direct_parent_lei}</code></span>}
+                    {entity.direct_parent_lei && entity.ultimate_parent_lei && ' | '}
+                    {entity.ultimate_parent_lei && <span>{t('inventory.easmUltimateParent')}: <code>{entity.ultimate_parent_lei}</code></span>}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </>
+  )
+}
+
+
 export default function InventoryExplorer() {
   const { t } = useTranslation()
   const { activeScanId } = useScan()
@@ -3042,6 +3594,9 @@ export default function InventoryExplorer() {
     aitools:   <AIToolsTab           scanId={activeScanId} assetId={assetId} />,
     processes: <ProcessesTab         scanId={activeScanId} assetId={assetId} />,
     credentials: <CredentialsTab    scanId={activeScanId} assetId={assetId} />,
+    easm_assets:    <EasmAssetsTab />,
+    easm_breaches:  <EasmBreachesTab />,
+    easm_corporate: <EasmCorporateTab />,
   }
 
   return (

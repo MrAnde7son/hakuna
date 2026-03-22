@@ -13,7 +13,7 @@ import {
   CheckCircle, LayoutGrid, Maximize2, Minimize2, X, PenLine,
   TrendingUp, Zap, Clock, Home, Upload, GitCompare,
   Download, FileImage, FileText, FileBarChart2, Sparkles, Filter,
-  Crosshair, TreePine, Gauge
+  Crosshair, TreePine, Gauge, Search
 } from 'lucide-react'
 import NLPReportBuilder from './NLPReportBuilder.jsx'
 import {
@@ -40,6 +40,11 @@ import {
   getFunnel,
   getRiskGrade,
   getAggregatedSolutions,
+  getEasmStatus,
+  getEasmAssets,
+  getEasmEvents,
+  getEasmBreaches,
+  getEasmSubsidiaries,
 } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons, ErrorBanner, SkeletonCard } from '../shared/ui.jsx'
 
@@ -132,6 +137,11 @@ const DATA_SOURCES = {
   risk_grade:              (scanId, f) => getRiskGrade(scanId, f?.tags, f?.tag_logic),
   aggregated_solutions:    (scanId, f) => getAggregatedSolutions({ scan_id: scanId }),
   os_sw_summary:           (scanId, f) => getOsSoftwareSummary(scanId),
+  easm_status:             (scanId, f) => getEasmStatus(),
+  easm_assets:             (scanId, f) => getEasmAssets(),
+  easm_events:             (scanId, f) => getEasmEvents(null, f?.limit || 100),
+  easm_breaches:           (scanId, f) => getEasmBreaches().catch(() => []),
+  easm_subsidiaries:       (scanId, f) => getEasmSubsidiaries().catch(() => []),
 }
 
 // Filter definitions per source — drives ConfigPanel filter UI
@@ -265,6 +275,96 @@ const DATA_PRESETS = {
   inv_default_accounts:       { label: 'Default Accounts',        group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.default_accounts ?? 0, color: '#dc2626' },
   inv_cleartext_credentials:  { label: 'Cleartext Credentials',   group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.cleartext_credentials ?? 0, color: '#ea580c' },
   inv_brute_forceable:        { label: 'Brute Forceable',         group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.brute_forceable ?? 0, color: '#f59e0b' },
+
+  // ── EASM metrics ──
+  easm_total_assets:    { label: 'Discovered Assets',    group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.total ?? 0, color: '#6366f1' },
+  easm_with_open_ports: { label: 'With Open Ports',      group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_open_ports ?? 0, color: '#ea580c' },
+  easm_with_http:       { label: 'HTTP Services',        group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_http ?? 0, color: '#0ea5e9' },
+  easm_with_cdn:        { label: 'Behind CDN',           group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_cdn ?? 0, color: '#16a34a' },
+  easm_expired_certs:   { label: 'Expired Certificates', group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_expired_cert ?? 0, color: '#dc2626' },
+  easm_breach_count:    { label: 'Known Breaches',       group: 'EASM', source: 'easm_breaches', type: 'metric', extract: d => (Array.isArray(d) ? d : []).length, color: '#7c3aed' },
+
+  // ── EASM categories ──
+  easm_asset_liveness: {
+    label: 'Asset Liveness', group: 'EASM', source: 'easm_assets', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      const counts = {}
+      arr.forEach(a => { const s = a.liveness_state || 'unknown'; counts[s] = (counts[s] || 0) + 1 })
+      const colors = { confirmed_alive: '#16a34a', unconfirmed: '#d97706', likely_dead: '#dc2626', unknown: '#94a3b8' }
+      return Object.entries(counts).map(([name, value]) => ({ name: name.replace(/_/g, ' '), value, color: colors[name] || '#6366f1' }))
+    },
+  },
+  easm_tech_stack: {
+    label: 'Technology Stack', group: 'EASM', source: 'easm_assets', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      const counts = {}
+      arr.forEach(a => { (a.tech_stack || []).forEach(t => { const name = typeof t === 'string' ? t : (t?.name || ''); if (name) counts[name] = (counts[name] || 0) + 1 }) })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  easm_open_ports: {
+    label: 'Top Open Ports', group: 'EASM', source: 'easm_assets', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      const counts = {}
+      arr.forEach(a => { (a.open_ports || []).forEach(p => { counts[p] = (counts[p] || 0) + 1 }) })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([name, value], i) => ({ name: `Port ${name}`, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  easm_cdn_providers: {
+    label: 'CDN/WAF Providers', group: 'EASM', source: 'easm_assets', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      const counts = {}
+      arr.forEach(a => { const cdn = a.cdn_provider; if (cdn) counts[cdn] = (counts[cdn] || 0) + 1 })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  easm_event_types: {
+    label: 'Change Events', group: 'EASM', source: 'easm_events', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.events ?? [])
+      const counts = {}
+      arr.forEach(e => { const t = e.event_type || 'unknown'; counts[t] = (counts[t] || 0) + 1 })
+      const colors = { new_asset: '#16a34a', ip_change: '#d97706', port_change: '#ea580c', tech_change: '#6366f1', cert_expiring: '#dc2626' }
+      return Object.entries(counts).map(([name, value]) => ({ name: name.replace(/_/g, ' '), value, color: colors[name] || '#8b5cf6' }))
+    },
+  },
+
+  // ── EASM tables ──
+  easm_assets_table: {
+    label: 'EASM Assets', group: 'EASM', source: 'easm_assets', type: 'table',
+    columns: [
+      { key: 'hostname', label: 'Hostname' },
+      { key: 'ip', label: 'IP' },
+      { key: 'http_status', label: 'HTTP' },
+      { key: 'http_title', label: 'Title' },
+      { key: 'cdn_provider', label: 'CDN' },
+      { key: 'open_ports', label: 'Ports', render: v => (v || []).join(', ') },
+    ],
+    extract: d => (Array.isArray(d) ? d : (d?.assets ?? [])).slice(0, 50),
+  },
+  easm_events_table: {
+    label: 'Recent Changes', group: 'EASM', source: 'easm_events', type: 'table',
+    columns: [
+      { key: 'event_type', label: 'Event', render: v => (v || '').replace(/_/g, ' ') },
+      { key: 'created_at', label: 'When', render: v => v ? new Date(v).toLocaleDateString() : '' },
+      { key: 'payload', label: 'Details', render: v => typeof v === 'object' ? JSON.stringify(v).slice(0, 80) : '' },
+    ],
+    extract: d => (Array.isArray(d) ? d : (d?.events ?? [])).slice(0, 30),
+  },
+  easm_breaches_table: {
+    label: 'Breach Exposure', group: 'EASM', source: 'easm_breaches', type: 'table',
+    columns: [
+      { key: 'title', label: 'Breach' },
+      { key: 'breach_date', label: 'Date' },
+      { key: 'exposed_count', label: 'Exposed Accounts', render: v => (v || 0).toLocaleString() },
+      { key: 'data_classes', label: 'Data Types', render: v => (v || []).slice(0, 3).join(', ') },
+    ],
+    extract: d => (Array.isArray(d) ? d : []).filter(b => b.is_verified !== false).slice(0, 20),
+  },
 
   // ── Categories (pie/donut/bar) ──
   severity_breakdown: {
@@ -1454,6 +1554,35 @@ const SOFTWARE_INVENTORY_DASHBOARD = {
     { id: 'sw14', type: 'card',      title: 'Software CVEs',          width: 'quarter', config: { preset: 'sw_risk_vuln_count' } },
     { id: 'sw15', type: 'bar_chart', title: 'Riskiest Software (SBOM)', width: 'two-thirds', config: { preset: 'software_risk_chart', horizontal: true } },
     { id: 'sw16', type: 'table',     title: 'Software Vulnerability Details', width: 'full', config: { preset: 'software_risk_table' } },
+  ],
+}
+
+const EASM_DASHBOARD = {
+  id: 'default-easm',
+  name: 'External Attack Surface',
+  createdAt: new Date(0).toISOString(),
+  widgets: [
+    // Header
+    { id: 'ea1', type: 'header', title: 'External Attack Surface', width: 'full', config: { title: 'External Attack Surface', subtitle: 'Discovered assets, services, certificates, and change events from EASM scanning' } },
+    // Key metrics
+    { id: 'ea2', type: 'card',      title: 'Discovered Assets',    width: 'quarter', config: { preset: 'easm_total_assets' } },
+    { id: 'ea3', type: 'card',      title: 'With Open Ports',      width: 'quarter', config: { preset: 'easm_with_open_ports' } },
+    { id: 'ea4', type: 'card',      title: 'HTTP Services',        width: 'quarter', config: { preset: 'easm_with_http' } },
+    { id: 'ea5', type: 'card',      title: 'Expired Certificates', width: 'quarter', config: { preset: 'easm_expired_certs' } },
+    // Asset overview
+    { id: 'ea6', type: 'pie_chart', title: 'Asset Liveness',       width: 'half',    config: { preset: 'easm_asset_liveness', donut: true } },
+    { id: 'ea7', type: 'pie_chart', title: 'Change Events',        width: 'half',    config: { preset: 'easm_event_types', donut: true } },
+    // Technology & ports
+    { id: 'ea8', type: 'bar_chart', title: 'Technology Stack',     width: 'half',    config: { preset: 'easm_tech_stack' } },
+    { id: 'ea9', type: 'bar_chart', title: 'Top Open Ports',       width: 'half',    config: { preset: 'easm_open_ports' } },
+    // CDN
+    { id: 'ea10',type: 'pie_chart', title: 'CDN / WAF Providers',  width: 'half',    config: { preset: 'easm_cdn_providers', donut: true } },
+    { id: 'ea11',type: 'card',      title: 'Behind CDN',           width: 'quarter', config: { preset: 'easm_with_cdn' } },
+    { id: 'ea12',type: 'card',      title: 'Known Breaches',       width: 'quarter', config: { preset: 'easm_breach_count' } },
+    // Tables
+    { id: 'ea13',type: 'table',     title: 'Discovered Assets',    width: 'full',    config: { preset: 'easm_assets_table', limit: 50 } },
+    { id: 'ea14',type: 'table',     title: 'Recent Changes',       width: 'full',    config: { preset: 'easm_events_table', limit: 30 } },
+    { id: 'ea15',type: 'table',     title: 'Breach Exposure',      width: 'full',    config: { preset: 'easm_breaches_table', limit: 20 } },
   ],
 }
 
@@ -3551,6 +3680,10 @@ function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingI
   const { t } = useTranslation()
   const navigate = useNavigate()
   const { scans, scansLoaded } = useScan()
+  const [search, setSearch] = useState('')
+  const filtered = search.trim()
+    ? reports.filter(r => r.name.toLowerCase().includes(search.trim().toLowerCase()))
+    : reports
   return (
     <div>
       {scansLoaded && scans.length === 0 && (
@@ -3603,7 +3736,33 @@ function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingI
         </div>
       </div>
 
-      {reports.length === 0 ? (
+      {reports.length > 0 && (
+        <div style={{ position: 'relative', marginBottom: 16 }}>
+          <Search size={15} color="var(--text-muted)" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }} />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder={t('reports.searchPlaceholder')}
+            style={{
+              width: '100%', padding: '9px 12px 9px 36px',
+              background: 'var(--bg-card)', border: '1px solid var(--border)',
+              borderRadius: 8, fontSize: 13, color: 'var(--text-primary)',
+              outline: 'none',
+            }}
+          />
+        </div>
+      )}
+
+      {filtered.length === 0 && reports.length > 0 ? (
+        <div style={{
+          border: '1px solid var(--border)', borderRadius: 14, padding: '40px 24px',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, textAlign: 'center',
+        }}>
+          <Search size={32} color="var(--text-muted)" style={{ opacity: 0.4 }} />
+          <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>{t('reports.noSearchResults')}</div>
+        </div>
+      ) : reports.length === 0 ? (
         <div style={{
           border: '2px dashed var(--border)', borderRadius: 14, padding: '60px 24px',
           display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, textAlign: 'center',
@@ -3622,7 +3781,7 @@ function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingI
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
-          {reports.map(report => {
+          {filtered.map(report => {
             const isHome = report.id === landingId
             return (
               <div key={report.id} style={{ background: 'var(--bg-card)', border: `1px solid ${isHome ? '#16a34a55' : 'var(--border)'}`, borderRadius: 12, overflow: 'hidden' }}>
@@ -3753,7 +3912,7 @@ export default function ReportBuilder() {
       let needsReload = false
 
       // Ensure default dashboards exist and stay up-to-date
-      const ootb = [EXECUTIVE_DASHBOARD, DEFAULT_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD]
+      const ootb = [EXECUTIVE_DASHBOARD, DEFAULT_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD, EASM_DASHBOARD]
       for (const dash of ootb) {
         const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}:${w.config?.show_benchmark ? 'bm' : ''}`).join('|')
         const existing = templates.find(t => t.name === dash.name)

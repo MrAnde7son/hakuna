@@ -6,6 +6,7 @@ services:
     volumes:
       - db-data:/app/data
       - ./intel.json:/app/intel.json:ro
+      - ./hakuna:/app/hakuna:ro
     environment:
       - DATABASE_URL=sqlite:////app/data/nessus_remediation.db
 

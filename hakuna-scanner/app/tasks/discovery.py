@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
+from app.tasks.enrichment import ENRICHMENT_STEP_COUNT
+
 from app.celery_app import celery
 from app.config import settings
 from app.database import get_task_session
@@ -395,6 +397,16 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
 
         async with sf() as db:
             if scan_run_id:
+                # Check scan type to set correct total upfront (discovery + enrichment for full scans)
+                row = await db.execute(
+                    text("SELECT scan_type FROM scan_runs WHERE id = :id"),
+                    {"id": scan_run_id},
+                )
+                scan_type_row = row.fetchone()
+                total = len(steps)
+                if scan_type_row and scan_type_row.scan_type == "full":
+                    total += ENRICHMENT_STEP_COUNT
+
                 await db.execute(
                     text("""
                         UPDATE scan_runs SET
@@ -402,7 +414,7 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                             total_stages = :total, stage_index = 0
                         WHERE id = :id
                     """),
-                    {"id": scan_run_id, "now": datetime.now(timezone.utc), "total": len(steps)},
+                    {"id": scan_run_id, "now": datetime.now(timezone.utc), "total": total},
                 )
                 await db.commit()
 

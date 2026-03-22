@@ -4,18 +4,12 @@ Mini Agent Execution Engine — runs user-defined agents using multiple LLM prov
 Supported providers: Anthropic (Claude), OpenAI (GPT), Google (Gemini), Groq (Llama/Mixtral).
 """
 import os
-import sys
 import json
 import logging
 from datetime import datetime
 from typing import Optional
 
 from sqlalchemy.orm import Session
-
-# Add repo root to path so hakuna package is importable from backend/
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
 
 from hakuna.utils.token_tracker import get_tracker
 from hakuna.utils.context_manager import rolling_context
