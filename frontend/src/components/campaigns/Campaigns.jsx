@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig } from '../../api.js'
-import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons } from '../shared/ui.jsx'
+import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons, ErrorBanner, SkeletonCard } from '../shared/ui.jsx'
 
 const STATUS_KEYS = {
   draft:     { key: 'campaigns.draft',     color: 'var(--muted)',   bg: 'rgba(100,116,139,0.1)', border: 'rgba(100,116,139,0.25)', icon: Clock },
@@ -770,6 +770,7 @@ export default function Campaigns() {
   const [campaigns, setCampaigns] = useState([])
   const [workflows, setWorkflows] = useState([])
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
   const [showCreateWf, setShowCreateWf] = useState(false)
   const [tab, setTab] = useState('campaigns')
@@ -778,13 +779,15 @@ export default function Campaigns() {
 
   const load = () => {
     setLoading(true)
+    setFetchError(null)
     Promise.all([
       getCampaigns(activeScanId),
       getWorkflows(),
     ]).then(([c, w]) => {
       setCampaigns(c)
       setWorkflows(w)
-    }).finally(() => setLoading(false))
+    }).catch(() => setFetchError('Failed to load campaigns.'))
+      .finally(() => setLoading(false))
   }
 
   useEffect(load, [activeScanId])
@@ -875,7 +878,8 @@ export default function Campaigns() {
         ))}
       </div>
 
-      {loading ? <Spinner /> : tab === 'campaigns' ? (
+      <ErrorBanner error={fetchError} onRetry={load} onDismiss={() => setFetchError(null)} />
+      {loading ? <><SkeletonCard /><SkeletonCard /><SkeletonCard /></> : tab === 'campaigns' ? (
         ordered.length === 0 ? (
           <EmptyState
             icon={Target}

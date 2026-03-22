@@ -4,7 +4,7 @@
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Card } from '../shared/ui.jsx'
+import { Card, ErrorBanner } from '../shared/ui.jsx'
 import { useNavigate } from 'react-router-dom'
 import {
   Bot, Plus, Trash2, Play, ChevronDown, ChevronRight, Clock, CheckCircle,
@@ -79,6 +79,12 @@ export default function AgentBuilder() {
   const inputRef = useRef()
   const importRef = useRef()
   const streamRef = useRef(null) // for aborting streams
+  const [fetchError, setFetchError] = useState(null)
+
+  const refresh = () => {
+    setFetchError(null)
+    return getAgents().then(setAgents).catch(() => setFetchError('Failed to load agents.'))
+  }
 
   useEffect(() => {
     refresh()
@@ -87,8 +93,6 @@ export default function AgentBuilder() {
     getAvailableModels().then(setAvailableModels).catch(() => {})
     getAgentSchedules().then(setSchedules).catch(() => {})
   }, [])
-
-  const refresh = () => getAgents().then(setAgents).catch(() => {})
 
   const selectAgent = (agent) => {
     setSelected(agent)
@@ -281,6 +285,8 @@ export default function AgentBuilder() {
   }
 
   return (
+    <div>
+      <ErrorBanner error={fetchError} onRetry={refresh} onDismiss={() => setFetchError(null)} />
     <div style={{ display: 'flex', gap: 18, height: 'calc(100vh - 72px)' }}>
       {/* Left panel — agent list */}
       <div style={{ width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -510,6 +516,7 @@ export default function AgentBuilder() {
           Select an agent or create a new one to get started.
         </div>
       )}
+    </div>
     </div>
   )
 }

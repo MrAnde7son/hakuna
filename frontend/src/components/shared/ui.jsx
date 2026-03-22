@@ -1,7 +1,7 @@
 /**
  * Shared UI primitives
  */
-import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
+import React, { useState, useEffect, useRef, useCallback, Fragment, Component } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { getTags, createCampaign, createAutoTagRule, getSources } from '../../api.js'
@@ -1297,4 +1297,178 @@ export function SourceFilter({ value, onChange }) {
     return { value: s, label: meta.label }
   })
   return <Select value={value} onChange={onChange} placeholder="All Sources" options={options} />
+}
+
+// ─────────────────────────────────────────────────────────
+// Error Boundary
+// ─────────────────────────────────────────────────────────
+
+export class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          justifyContent: 'center', padding: '64px 24px', gap: 16,
+          minHeight: this.props.fullPage ? '60vh' : undefined,
+        }}>
+          <div style={{ fontSize: 40 }}>⚠</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-secondary)' }}>
+            {this.props.title || 'Something went wrong'}
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', maxWidth: 420 }}>
+            {this.state.error?.message || 'An unexpected error occurred.'}
+          </div>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            style={{
+              padding: '8px 20px', borderRadius: 6, border: '1px solid var(--border)',
+              background: 'var(--bg)', color: 'var(--text)', cursor: 'pointer',
+              fontSize: 13, fontWeight: 500,
+            }}
+          >
+            Try again
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// Error Banner (for page-level fetch errors)
+// ─────────────────────────────────────────────────────────
+
+export function ErrorBanner({ error, onRetry, onDismiss }) {
+  if (!error) return null
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12,
+      padding: '10px 16px', borderRadius: 8, marginBottom: 12,
+      background: 'var(--danger-subtle, rgba(220,38,38,0.08))',
+      border: '1px solid var(--danger, #dc2626)30',
+      color: 'var(--danger, #dc2626)', fontSize: 13,
+    }}>
+      <span style={{ fontSize: 16, flexShrink: 0 }}>⚠</span>
+      <span style={{ flex: 1 }}>
+        {typeof error === 'string' ? error : 'Failed to load data. Please try again.'}
+      </span>
+      {onRetry && (
+        <button
+          onClick={onRetry}
+          style={{
+            padding: '4px 12px', borderRadius: 5, border: '1px solid var(--danger, #dc2626)40',
+            background: 'transparent', color: 'var(--danger, #dc2626)',
+            cursor: 'pointer', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+          }}
+        >
+          Retry
+        </button>
+      )}
+      {onDismiss && (
+        <button
+          onClick={onDismiss}
+          style={{
+            padding: '2px 6px', borderRadius: 4, border: 'none',
+            background: 'transparent', color: 'var(--danger, #dc2626)',
+            cursor: 'pointer', fontSize: 16, lineHeight: 1,
+          }}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────
+// Skeleton Loaders
+// ─────────────────────────────────────────────────────────
+
+const skeletonKeyframes = `@keyframes shimmer {
+  0% { background-position: -400px 0 }
+  100% { background-position: 400px 0 }
+}`
+
+function SkeletonBase({ width, height, borderRadius = 4, style = {} }) {
+  return (
+    <>
+      <div style={{
+        width, height, borderRadius,
+        background: 'linear-gradient(90deg, var(--border) 25%, var(--bg-hover, #f0f0f0) 50%, var(--border) 75%)',
+        backgroundSize: '800px 100%',
+        animation: 'shimmer 1.5s infinite linear',
+        ...style,
+      }} />
+      <style>{skeletonKeyframes}</style>
+    </>
+  )
+}
+
+export function SkeletonRow({ columns = 5 }) {
+  return (
+    <div style={{ display: 'flex', gap: 16, padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+      {Array.from({ length: columns }).map((_, i) => (
+        <SkeletonBase
+          key={i}
+          width={i === 0 ? '30%' : `${Math.floor(70 / (columns - 1))}%`}
+          height={14}
+        />
+      ))}
+    </div>
+  )
+}
+
+export function SkeletonTable({ rows = 8, columns = 5 }) {
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', gap: 16, padding: '12px 16px', background: 'var(--bg-secondary, var(--bg))' }}>
+        {Array.from({ length: columns }).map((_, i) => (
+          <SkeletonBase key={i} width={i === 0 ? '30%' : `${Math.floor(70 / (columns - 1))}%`} height={12} borderRadius={3} />
+        ))}
+      </div>
+      {Array.from({ length: rows }).map((_, i) => (
+        <SkeletonRow key={i} columns={columns} />
+      ))}
+    </div>
+  )
+}
+
+export function SkeletonCard({ lines = 3 }) {
+  return (
+    <div style={{
+      padding: 20, borderRadius: 8, border: '1px solid var(--border)',
+      background: 'var(--bg)', display: 'flex', flexDirection: 'column', gap: 12,
+    }}>
+      <SkeletonBase width="40%" height={16} />
+      {Array.from({ length: lines }).map((_, i) => (
+        <SkeletonBase key={i} width={`${60 + Math.random() * 30}%`} height={12} />
+      ))}
+    </div>
+  )
+}
+
+export function SkeletonDetail() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20, padding: 4 }}>
+      <SkeletonBase width="50%" height={22} />
+      <div style={{ display: 'flex', gap: 12 }}>
+        <SkeletonBase width={80} height={24} borderRadius={12} />
+        <SkeletonBase width={100} height={24} borderRadius={12} />
+        <SkeletonBase width={60} height={24} borderRadius={12} />
+      </div>
+      <SkeletonCard lines={5} />
+      <SkeletonCard lines={3} />
+    </div>
+  )
 }

@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight, Zap, Radar } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags, createCampaign, startVmScan } from '../../api.js'
-import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover, SourceDots, SourceFilter } from '../shared/ui.jsx'
+import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
 import BlastRadiusPanel, { BlastRadiusScore } from '../campaigns/BlastRadiusPanel.jsx'
@@ -364,6 +364,7 @@ export default function AssetInventory() {
   const [advancedConditions, setAdvancedConditions] = useState([])
   const [advancedLogic, setAdvancedLogic] = useState('AND')
   const [advancedLoading, setAdvancedLoading] = useState(false)
+  const [fetchError, setFetchError] = useState(null)
   const [colVis, setColVis] = useState(() => {
     try { const s = localStorage.getItem('assetColumns'); return s ? JSON.parse(s) : {} } catch { return {} }
   })
@@ -396,6 +397,7 @@ export default function AssetInventory() {
 
   const load = () => {
     setLoading(true)
+    setFetchError(null)
     const params = {
       scan_id: activeScanId,
       environment: filters.env || undefined,
@@ -447,6 +449,7 @@ export default function AssetInventory() {
             .catch(() => {})
         }
       })
+      .catch(() => setFetchError('Failed to load assets.'))
       .finally(() => setLoading(false))
   }
 
@@ -1015,7 +1018,8 @@ export default function AssetInventory() {
         )}
       </div>
 
-      {(loading || advancedLoading) ? <Spinner /> : (
+      <ErrorBanner error={fetchError} onRetry={load} onDismiss={() => setFetchError(null)} />
+      {(loading || advancedLoading) ? <SkeletonTable rows={10} columns={6} /> : (
         assets.length === 0 ? (
           <EmptyState icon={Server}
             title={advancedMode ? t('assets.noAssetsMatched') : t('assets.noAssetsFound')}

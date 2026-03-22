@@ -13,7 +13,7 @@ import {
   getWorkflows, createWorkflowFromTemplate, createWorkflow, deleteWorkflow,
   executeWorkflow, getWorkflowTemplates,
 } from '../../api.js'
-import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill } from '../shared/ui.jsx'
+import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill, ErrorBanner, SkeletonDetail } from '../shared/ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
 
 // ─── Condition chip colors ───────────────────────────────
@@ -422,6 +422,7 @@ export default function CampaignDetail() {
 
   const [campaign, setCampaign] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(null)
   const [query, setQuery] = useState([])
   const [queryLogic, setQueryLogic] = useState('AND')
   const [queryDirty, setQueryDirty] = useState(false)
@@ -441,6 +442,7 @@ export default function CampaignDetail() {
 
   const load = useCallback((autoRun = false) => {
     setLoading(true)
+    setFetchError(null)
     getCampaign(id)
       .then(data => {
         setCampaign(data)
@@ -460,6 +462,7 @@ export default function CampaignDetail() {
             .finally(() => setRunning(false))
         }
       })
+      .catch(() => setFetchError('Failed to load campaign.'))
       .finally(() => setLoading(false))
   }, [id])
 
@@ -521,7 +524,8 @@ export default function CampaignDetail() {
     setCampaign(c => ({ ...c, status }))
   }
 
-  if (loading) return <Spinner />
+  if (loading) return <SkeletonDetail />
+  if (fetchError) return <ErrorBanner error={fetchError} onRetry={() => load(false)} />
   if (!campaign) return <EmptyState icon={Target} title={t('campaigns.notFound')} />
 
   const hasResults = campaign.owner_groups?.length > 0
@@ -738,19 +742,25 @@ function CampaignWorkflows({ campaignId, hasResults }) {
   const [workflows, setWorkflows] = useState([])
   const [templates, setTemplates] = useState([])
   const [loading, setLoading] = useState(true)
+  const [wfError, setWfError] = useState(null)
   const [showAdd, setShowAdd] = useState(false)
   const [executing, setExecuting] = useState(null)
   const [execResults, setExecResults] = useState({})
 
-  useEffect(() => {
+  const loadWorkflows = () => {
+    setLoading(true)
+    setWfError(null)
     Promise.all([
       getWorkflows(campaignId),
       getWorkflowTemplates(),
     ]).then(([wfs, tplData]) => {
       setWorkflows(wfs)
       setTemplates(tplData.templates || [])
-    }).finally(() => setLoading(false))
-  }, [campaignId])
+    }).catch(() => setWfError('Failed to load workflows.'))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { loadWorkflows() }, [campaignId])
 
   const handleCreateFromTemplate = async (tpl) => {
     const wf = await createWorkflowFromTemplate({
@@ -789,6 +799,7 @@ function CampaignWorkflows({ campaignId, hasResults }) {
   }
 
   if (loading) return <Spinner />
+  if (wfError) return <ErrorBanner error={wfError} onRetry={loadWorkflows} />
 
   return (
     <div>

@@ -6,7 +6,7 @@ import { useScan } from '../../App.jsx'
 import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign } from '../../api.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, Input,
-  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, SourceDots, SourceFilter
+  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable
 } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
@@ -316,6 +316,7 @@ export default function FindingExplorer() {
   const [advancedConditions, setAdvancedConditions] = useState([])
   const [advancedLogic, setAdvancedLogic] = useState('AND')
   const [advancedLoading, setAdvancedLoading] = useState(false)
+  const [fetchError, setFetchError] = useState(null)
 
   // Column visibility (persisted in localStorage)
   const [colVis, setColVis] = useState(() => {
@@ -479,11 +480,13 @@ export default function FindingExplorer() {
       params.tags = tagFilter.map(t => t.label || `${t.category}:${t.value}`).join(',')
       params.tag_logic = tagLogic
     }
+    setFetchError(null)
     getFindings(params)
       .then(data => {
         setFindings(data.findings)
         setTotal(data.total)
       })
+      .catch(() => setFetchError('Failed to load findings.'))
       .finally(() => setLoading(false))
   }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, productFilter, cpeFilter2, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException])
 
@@ -502,7 +505,8 @@ export default function FindingExplorer() {
     }).then(data => {
       setFindings(data.findings)
       setTotal(data.total)
-    }).finally(() => setAdvancedLoading(false))
+    }).catch(() => setFetchError('Advanced search failed.'))
+      .finally(() => setAdvancedLoading(false))
   }, [advancedConditions, advancedLogic, activeScanId, pageSize])
 
   const enterAdvancedMode = () => {
@@ -1008,7 +1012,8 @@ export default function FindingExplorer() {
         </div>
       )}
 
-      {(loading || advancedLoading) ? <Spinner /> : (
+      <ErrorBanner error={fetchError} onRetry={advancedMode ? runAdvancedSearch : load} onDismiss={() => setFetchError(null)} />
+      {(loading || advancedLoading) ? <SkeletonTable rows={10} columns={6} /> : (
         findings.length === 0 ? (
           <EmptyState icon={Bug}
             title={advancedMode ? t('findings.noFindingsMatched') : t('findings.noFindingsMatch')}

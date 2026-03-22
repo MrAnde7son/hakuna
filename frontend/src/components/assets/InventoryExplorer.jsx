@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import {
   Card, StatCard, Table, FilterBar, Select, Input,
-  PageHeader, Spinner, EmptyState, Pill, Button
+  PageHeader, Spinner, EmptyState, Pill, Button, ErrorBanner, SkeletonCard
 } from '../shared/ui.jsx'
 import {
   getInventorySummary, getInventoryUsers, getInventoryUserOrgTree, getInventoryGroups,
@@ -325,16 +325,21 @@ function AttackSurfaceTab({ scanId, onTabChange }) {
   const { t } = useTranslation()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(null)
 
-  useEffect(() => {
+  const loadData = () => {
     setLoading(true)
+    setFetchError(null)
     getInventorySummary(scanId)
       .then(setData)
-      .catch(() => setData(null))
+      .catch(() => setFetchError('Failed to load inventory data.'))
       .finally(() => setLoading(false))
-  }, [scanId])
+  }
 
-  if (loading) return <Spinner />
+  useEffect(() => { loadData() }, [scanId])
+
+  if (loading) return <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>{[1,2,3,4,5,6].map(i => <SkeletonCard key={i} lines={2} />)}</div>
+  if (fetchError) return <ErrorBanner error={fetchError} onRetry={loadData} onDismiss={() => setFetchError(null)} />
   if (!data) return <EmptyState icon={AlertTriangle} title={t('inventory.noDataYet')} sub={t('inventory.uploadToPopulate')} />
 
   const { counts, attack_surface: as } = data
