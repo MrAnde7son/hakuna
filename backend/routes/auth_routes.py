@@ -16,9 +16,10 @@ from sqlalchemy import func
 from core.database import get_db
 from models.models import Organization, User, MSSPOrgAccess, Scan, CustomRole, TagPermission, UserCustomRole, Tag
 from core.auth import (
-    hash_password, verify_password, create_access_token,
+    hash_password, verify_password, create_access_token, decode_access_token,
     require_auth, require_role, get_current_user, get_accessible_org_ids,
     get_user_custom_roles, resolve_effective_permissions, ALL_PERMISSION_KEYS,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
 )
 from core.audit import log_audit, diff as _diff
 from core.i18n import get_locale_from_request, t as translate
@@ -269,6 +270,20 @@ async def get_me(user: User = Depends(require_auth), db: Session = Depends(get_d
         result["accessible_orgs"] = [_org_response(o) for o in all_orgs]
 
     return result
+
+
+@router.post("/refresh")
+async def refresh_token(user: User = Depends(require_auth), db: Session = Depends(get_db)):
+    """Issue a fresh JWT for an authenticated user whose token is still valid.
+    This allows mobile clients to silently extend sessions without re-login.
+    """
+    if not user.is_active:
+        raise HTTPException(403, "Account deactivated")
+    org = db.query(Organization).filter(Organization.id == user.org_id).first()
+    if not org or not org.is_active:
+        raise HTTPException(403, "Organization deactivated")
+    token = create_access_token(user.id, org.id, user.role)
+    return {"access_token": token, "token_type": "bearer"}
 
 
 @router.post("/change-password")

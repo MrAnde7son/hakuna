@@ -27,6 +27,21 @@ export function setOrgContext(orgId) {
 
 // ── Core request function with auth ─────────────────────
 
+const DEFAULT_TIMEOUT_MS = 30_000 // 30s timeout for mobile networks
+const MAX_RETRIES = 2 // retry up to 2 times on network errors
+const RETRY_DELAYS = [1000, 2000] // 1s, 2s backoff
+
+// Track whether a 401 redirect is already in progress to prevent loops
+let _redirecting = false
+
+function isNetworkError(err) {
+  return err instanceof TypeError || err.name === 'AbortError'
+}
+
+async function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 async function request(path, opts = {}) {
   const token = getStoredToken()
   const orgContext = getOrgContext()
@@ -38,22 +53,87 @@ async function request(path, opts = {}) {
   const locale = localStorage.getItem('i18nextLng')
   if (locale) headers['Accept-Language'] = locale
 
-  const res = await fetch(`${BASE}${path}`, { ...opts, headers })
+  let lastError
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // Wait before retrying (skip on first attempt)
+    if (attempt > 0) await sleep(RETRY_DELAYS[attempt - 1])
 
-  // Handle 401 — redirect to login
-  if (res.status === 401) {
-    clearStoredToken()
-    if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
-      window.location.href = '/login'
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), opts.timeout || DEFAULT_TIMEOUT_MS)
+
+    try {
+      const res = await fetch(`${BASE}${path}`, {
+        ...opts,
+        headers,
+        signal: opts.signal || controller.signal,
+      })
+      clearTimeout(timeoutId)
+
+      // Handle 401 — attempt token refresh, then redirect to login
+      if (res.status === 401) {
+        // Try refreshing the token once before giving up
+        const refreshed = await tryRefreshToken()
+        if (refreshed) {
+          // Retry the original request with new token
+          const newToken = getStoredToken()
+          if (newToken) headers['Authorization'] = `Bearer ${newToken}`
+          const retryRes = await fetch(`${BASE}${path}`, { ...opts, headers })
+          if (retryRes.ok) return retryRes.json()
+        }
+        clearStoredToken()
+        if (!_redirecting && window.location.pathname !== '/login' && window.location.pathname !== '/register') {
+          _redirecting = true
+          window.location.href = '/login'
+        }
+        throw new Error('Authentication required')
+      }
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }))
+        throw new Error(err.detail || 'Request failed')
+      }
+      return res.json()
+    } catch (err) {
+      clearTimeout(timeoutId)
+      lastError = err
+      // Only retry on network/timeout errors, not on HTTP errors
+      if (!isNetworkError(err) || attempt === MAX_RETRIES) throw err
+      // If the caller passed their own signal and it was aborted, don't retry
+      if (opts.signal?.aborted) throw err
     }
-    throw new Error('Authentication required')
   }
+  throw lastError
+}
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || 'Request failed')
-  }
-  return res.json()
+// ── Token refresh ──────────────────────────────────────
+
+let _refreshPromise = null
+
+async function tryRefreshToken() {
+  const token = getStoredToken()
+  if (!token) return false
+  // Deduplicate concurrent refresh attempts
+  if (_refreshPromise) return _refreshPromise
+  _refreshPromise = (async () => {
+    try {
+      const res = await fetch(`${BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+      })
+      if (!res.ok) return false
+      const data = await res.json()
+      if (data.access_token) {
+        setStoredToken(data.access_token)
+        return true
+      }
+      return false
+    } catch {
+      return false
+    } finally {
+      _refreshPromise = null
+    }
+  })()
+  return _refreshPromise
 }
 
 // ── Auth API ────────────────────────────────────────────
