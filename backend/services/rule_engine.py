@@ -233,6 +233,8 @@ CONDITION_CATALOG = [
                 ],
             },
             {"field": "finding.has_exception",   "label": "Has Exception",        "ops": ["is_true", "is_false"], "value_type": "none"},
+            {"field": "finding.product",  "label": "Product",   "ops": ["eq", "neq", "contains", "not_contains"], "value_type": "enum", "options": "__dynamic:products__"},
+            {"field": "finding.cpe",      "label": "CPE",       "ops": ["eq", "neq", "contains", "not_contains"], "value_type": "enum", "options": "__dynamic:cpes__"},
             {
                 "field": "finding.risk_factor", "label": "Risk Factor",
                 "ops": ["eq", "neq"],
@@ -320,11 +322,53 @@ def get_condition_catalog(db: Session = None, org_ids=None) -> list:
     """Return the condition catalog with dynamic options hydrated from the DB."""
     import copy
     catalog = copy.deepcopy(CONDITION_CATALOG)
+    _dynamic_resolvers = {
+        "__dynamic:sources__": lambda: _resolve_source_options(db, org_ids),
+        "__dynamic:products__": lambda: _resolve_product_options(db),
+        "__dynamic:cpes__": lambda: _resolve_cpe_options(db),
+    }
     for group in catalog:
         for cond in group.get("conditions", []):
-            if cond.get("options") == "__dynamic:sources__":
-                cond["options"] = _resolve_source_options(db, org_ids)
+            opts = cond.get("options")
+            if isinstance(opts, str) and opts in _dynamic_resolvers:
+                cond["options"] = _dynamic_resolvers[opts]()
     return catalog
+
+
+def _resolve_product_options(db):
+    """Build product options from SBOM components linked to findings."""
+    if db is None:
+        return []
+    try:
+        from models.models import SBOMComponent, SBOMVulnerability
+        rows = (
+            db.query(SBOMComponent.name)
+            .join(SBOMVulnerability, SBOMVulnerability.component_id == SBOMComponent.id)
+            .filter(SBOMVulnerability.finding_id.isnot(None), SBOMComponent.name.isnot(None))
+            .distinct().all()
+        )
+        return [{"label": r[0], "value": r[0]} for r in sorted(rows, key=lambda r: r[0])]
+    except Exception:
+        logger.debug("Failed to resolve product options", exc_info=True)
+        return []
+
+
+def _resolve_cpe_options(db):
+    """Build CPE options from SBOM components linked to findings."""
+    if db is None:
+        return []
+    try:
+        from models.models import SBOMComponent, SBOMVulnerability
+        rows = (
+            db.query(SBOMComponent.cpe)
+            .join(SBOMVulnerability, SBOMVulnerability.component_id == SBOMComponent.id)
+            .filter(SBOMVulnerability.finding_id.isnot(None), SBOMComponent.cpe.isnot(None))
+            .distinct().all()
+        )
+        return [{"label": r[0], "value": r[0]} for r in sorted(rows, key=lambda r: r[0])]
+    except Exception:
+        logger.debug("Failed to resolve CPE options", exc_info=True)
+        return []
 
 
 def _resolve_source_options(db, org_ids=None):
@@ -583,6 +627,9 @@ def _eval_finding_row(cond: dict, finding) -> bool:
         return result if op == "is_true" else not result
     if sub == "risk_factor":
         return _str_op(finding.risk_factor or "", op, str(value or ""))
+    if sub in ("product", "cpe"):
+        # Product/CPE are resolved via SBOM join at asset level, not per-finding row
+        return False
     if sub == "is_kev":
         result = bool(finding.is_kev)
         return result if op == "is_true" else not result
@@ -659,6 +706,22 @@ def _eval_finding_asset(cond: dict, db: Session, asset_id: int, scan_id) -> bool
             any(t.get("technique_id") in technique_ids for t in (f.matched_ttps or []))
             for f in findings_q.all()
         )
+
+    # Special: product/cpe require joining through SBOM tables
+    if sub in ("product", "cpe"):
+        from models.models import SBOMComponent, SBOMVulnerability
+        value = str(cond.get("value") or "")
+        col = SBOMComponent.name if sub == "product" else SBOMComponent.cpe
+        comp_q = (
+            db.query(SBOMComponent)
+            .join(SBOMVulnerability, SBOMVulnerability.component_id == SBOMComponent.id)
+            .filter(SBOMComponent.asset_id == asset_id)
+            .filter(SBOMVulnerability.finding_id.isnot(None))
+        )
+        if scan_id:
+            comp_q = comp_q.filter(SBOMComponent.scan_id == scan_id)
+        vals = [getattr(c, "name" if sub == "product" else "cpe") or "" for c in comp_q.all()]
+        return any(_str_op(v, op, value) for v in vals)
 
     q = db.query(Finding).filter(Finding.asset_id == asset_id)
     if scan_id:

@@ -17,6 +17,33 @@ import services.rule_engine as engine
 CONDITION_CATALOG = engine.CONDITION_CATALOG
 
 
+def _resolve_sbom_finding_ids(db, sbom_conds, asset_id, scan_id):
+    """Return set of finding IDs matching product/cpe SBOM conditions for an asset."""
+    from models.models import SBOMComponent, SBOMVulnerability
+    q = (
+        db.query(SBOMVulnerability.finding_id)
+        .join(SBOMComponent, SBOMVulnerability.component_id == SBOMComponent.id)
+        .filter(SBOMComponent.asset_id == asset_id)
+        .filter(SBOMVulnerability.finding_id.isnot(None))
+    )
+    if scan_id:
+        q = q.filter(SBOMComponent.scan_id == scan_id)
+    for cond in sbom_conds:
+        sub = cond["field"].split(".")[-1]
+        col = SBOMComponent.name if sub == "product" else SBOMComponent.cpe
+        op = cond.get("op", "eq")
+        val = str(cond.get("value") or "")
+        if op == "eq":
+            q = q.filter(col.ilike(val))
+        elif op == "neq":
+            q = q.filter(~col.ilike(val))
+        elif op == "contains":
+            q = q.filter(col.ilike(f"%{val}%"))
+        elif op == "not_contains":
+            q = q.filter(~col.ilike(f"%{val}%"))
+    return {r[0] for r in q.all()}
+
+
 def run_query(db: Session, conditions: list, logic: str, scan_id) -> list:
     """
     Execute a campaign query against the database.
@@ -67,11 +94,20 @@ def run_query(db: Session, conditions: list, logic: str, scan_id) -> list:
         all_findings = f_q.order_by(Finding.priority_score.desc()).all()
 
         finding_conds = [c for c in migrated if c.get("field", "").startswith("finding.")]
+        # Separate SBOM-based conditions (product/cpe) which need a DB join
+        sbom_conds = [c for c in finding_conds if c.get("field", "").split(".")[-1] in ("product", "cpe")]
+        row_conds = [c for c in finding_conds if c not in sbom_conds]
         if finding_conds:
-            findings = [
-                f for f in all_findings
-                if any(engine._eval_finding_row(c, f) for c in finding_conds)
-            ]
+            # For SBOM conditions, resolve matching finding IDs via the join
+            sbom_finding_ids = None
+            if sbom_conds:
+                sbom_finding_ids = _resolve_sbom_finding_ids(db, sbom_conds, asset.id, scan_id)
+            findings = []
+            for f in all_findings:
+                row_match = not row_conds or any(engine._eval_finding_row(c, f) for c in row_conds)
+                sbom_match = not sbom_conds or (sbom_finding_ids is not None and f.id in sbom_finding_ids)
+                if row_match and sbom_match:
+                    findings.append(f)
         else:
             findings = [f for f in all_findings if (f.severity or 0) >= 1]
 

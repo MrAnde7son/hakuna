@@ -4,6 +4,7 @@ Auto-tag rule evaluation is delegated to rule_engine (unified condition engine).
 """
 from datetime import datetime
 from typing import Optional
+import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 import csv
@@ -315,10 +316,22 @@ def run_auto_tag_rule(rule: AutoTagRule, db: Session, scan_id: Optional[int] = N
         field = cond0.get("field", "")
         prefix = cond0.get("value", "") or ""
 
-        # Remove previous assignments made by this rule so stale tags are cleaned up
-        db.query(TagAssignment).filter(
+        # Remove previous assignments made by this rule so stale tags are cleaned up.
+        # When running for a specific scan, only clear assignments for that scan's
+        # assets/findings — otherwise a per-scan run wipes tags from other scans.
+        del_filter = db.query(TagAssignment).filter(
             TagAssignment.assigned_by == f"rule:{rule.id}"
-        ).delete(synchronize_session=False)
+        )
+        if scan_id:
+            scan_asset_ids = db.query(Asset.id).filter(Asset.scan_id == scan_id)
+            scan_finding_ids = db.query(Finding.id).filter(Finding.scan_id == scan_id)
+            del_filter = del_filter.filter(
+                sa.or_(
+                    TagAssignment.asset_id.in_(scan_asset_ids),
+                    TagAssignment.finding_id.in_(scan_finding_ids),
+                )
+            )
+        del_filter.delete(synchronize_session=False)
         db.flush()
 
         if rule.target_type in ("asset", "both"):
