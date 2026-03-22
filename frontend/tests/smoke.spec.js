@@ -13,10 +13,14 @@ import { test, expect } from '@playwright/test'
 // Keep this list in sync with App.jsx <Route> definitions.
 const ROUTES = [
   { path: '/', name: 'Reports' },
+  { path: '/reports/1', name: 'Report Detail' },
   { path: '/assets', name: 'Assets' },
   { path: '/findings', name: 'Findings' },
+  { path: '/findings/1', name: 'Finding Detail' },
   { path: '/campaigns', name: 'Campaigns' },
+  { path: '/campaigns/1', name: 'Campaign Detail' },
   { path: '/aggregated-solutions', name: 'Remediation' },
+  { path: '/workflows/1', name: 'Workflow Builder' },
   { path: '/inventory', name: 'Inventory' },
   { path: '/agents', name: 'Agents' },
   { path: '/tags', name: 'Tags' },
@@ -31,6 +35,7 @@ const PUBLIC_ROUTES = [
   { path: '/login', name: 'Login' },
   { path: '/register', name: 'Register' },
   { path: '/forgot-password', name: 'Forgot Password' },
+  { path: '/reset-password', name: 'Reset Password' },
 ]
 
 for (const route of PUBLIC_ROUTES) {
