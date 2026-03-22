@@ -100,3 +100,9 @@ variable "brevo_smtp_pass" {
   description = "Brevo SMTP API key — used for password reset emails and workflow alert emails."
   sensitive   = true
 }
+
+variable "integration_secret_key" {
+  type        = string
+  description = "AES-256 key for encrypting integration credentials. Generate with: openssl rand -hex 32. Must be stable — changing it invalidates all stored credentials."
+  sensitive   = true
+}

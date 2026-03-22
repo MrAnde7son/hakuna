@@ -144,8 +144,9 @@ async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
         cpe_list = _extract_cpe_list(asset.get("cpe_list"))
         tech_stack = asset.get("tech_stack")
 
-        # 2. Get template args
+        # 2. Get template args + routing debug info
         template_args = _router.get_templates_for_asset(cpe_list, tech_stack, open_ports)
+        routing_info = _router.get_routing_debug(cpe_list, tech_stack, open_ports)
 
         # 3. Build nuclei command
         cmd = [
@@ -233,13 +234,14 @@ async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
             await proc.wait()
             logger.error("nuclei timed out for asset %s", asset_id)
             nuclei_stats = _parse_nuclei_stats(stderr_chunks)
+            stderr_text = "\n".join(stderr_chunks)
             status = "timeout"
 
             # Retry once on timeout
             if task.request.retries < task.max_retries:
                 task.retry(countdown=60)
 
-        return {
+        result = {
             "asset_id": asset_id,
             "findings_emitted": findings_emitted,
             "templates_matched": len(templates_run),
@@ -247,7 +249,12 @@ async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
             "requests_sent": nuclei_stats.get("requests_sent", 0),
             "duration_seconds": round(time.monotonic() - start, 2),
             "status": status,
+            "routing_info": routing_info,
         }
+        # Include nuclei stderr when templates didn't load — helps diagnose 0/0 template issues
+        if nuclei_stats.get("templates_loaded", 0) == 0:
+            result["nuclei_stderr"] = stderr_text[:3000]
+        return result
 
     finally:
         await conn.close()

@@ -451,8 +451,12 @@ def _reassign_asset_children(db, old_asset_id: int, new_asset_id: int, ENTITY_MO
     This prevents cascade-deletion of findings and inventory orphaning.
     """
     from models.models import Finding, AssetOwnership, TagAssignment
+    # Use "evaluate" so SQLAlchemy updates in-memory Finding objects too.
+    # With synchronize_session=False, stale session objects still reference old_asset_id,
+    # and the "delete-orphan" cascade on Asset.findings then incorrectly deletes them
+    # when old_asset is deleted — even though the DB rows were already reassigned.
     db.query(Finding).filter(Finding.asset_id == old_asset_id).update(
-        {"asset_id": new_asset_id}, synchronize_session=False
+        {"asset_id": new_asset_id}, synchronize_session="evaluate"
     )
     # Reassign or delete ownership records (unique constraint on asset_id)
     if db.query(AssetOwnership).filter(AssetOwnership.asset_id == new_asset_id).first():

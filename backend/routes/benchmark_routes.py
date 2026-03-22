@@ -14,7 +14,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, case
 
 from core.database import get_db
 from models.models import (
@@ -170,28 +170,42 @@ def _compute_org_metrics(db: Session, org_ids: Optional[List[int]], scan_id: Opt
         asset_q = asset_q.filter(Asset.scan_id == scan_id)
         finding_q = finding_q.filter(Finding.scan_id == scan_id)
 
-    total_assets = asset_q.count()
-    total_findings = finding_q.count()
+    # Single aggregation query replaces 9 separate count() calls
+    asset_agg = asset_q.with_entities(
+        func.count().label("total"),
+        func.sum(case((Asset.is_credentialed == True, 1), else_=0)).label("credentialed"),
+        func.avg(Asset.risk_score).label("avg_risk"),
+    ).one()
+    total_assets = asset_agg.total or 0
+    credentialed = int(asset_agg.credentialed or 0)
+    avg_risk_score = round(float(asset_agg.avg_risk), 2) if asset_agg.avg_risk else 0
+    coverage_pct = (credentialed / total_assets * 100) if total_assets > 0 else 0
+
+    finding_agg_rows = finding_q.with_entities(
+        Finding.severity,
+        func.count().label("cnt"),
+        func.sum(case((Finding.exploit_available == True, 1), else_=0)).label("exploit_cnt"),
+    ).group_by(Finding.severity).all()
+
+    sev_counts = {}
+    exploit_count = 0
+    total_findings = 0
+    for row in finding_agg_rows:
+        sev_counts[row.severity] = row.cnt
+        total_findings += row.cnt
+        exploit_count += int(row.exploit_cnt or 0)
 
     if total_assets == 0 and total_findings == 0:
         return {}
 
-    # Severity counts
-    sev_counts = {}
-    for sev in range(5):
-        sev_counts[sev] = finding_q.filter(Finding.severity == sev).count()
     non_info = max(total_findings - sev_counts.get(0, 0), 1)
     critical = sev_counts.get(4, 0)
     high = sev_counts.get(3, 0)
-    exploit_count = finding_q.filter(Finding.exploit_available == True).count()
 
-    # Coverage
-    credentialed = asset_q.filter(Asset.is_credentialed == True).count()
-    coverage_pct = (credentialed / total_assets * 100) if total_assets > 0 else 0
-
-    # SLA & MTTR
-    cfg_map = {c.severity: c for c in db.query(SLAConfig).all()}
-    enabled_sevs = [c.severity for c in db.query(SLAConfig).filter(SLAConfig.is_enabled == True).all()]
+    # SLA & MTTR — load SLAConfig once
+    all_sla_configs = db.query(SLAConfig).all()
+    cfg_map = {c.severity: c for c in all_sla_configs}
+    enabled_sevs = [c.severity for c in all_sla_configs if c.is_enabled]
 
     sla_q = finding_q.filter(Finding.severity.in_(enabled_sevs)) if enabled_sevs else finding_q.filter(False)
     sla_findings = sla_q.all()
@@ -244,8 +258,7 @@ def _compute_org_metrics(db: Session, org_ids: Optional[List[int]], scan_id: Opt
     critical_density = (critical / total_assets * 100) if total_assets else 0
     exploit_exposure = (exploit_count / non_info * 100) if non_info else 0
 
-    avg_risk_row = asset_q.with_entities(func.avg(Asset.risk_score)).scalar()
-    avg_risk_score = round(float(avg_risk_row), 2) if avg_risk_row else 0
+    # avg_risk_score already computed in the asset aggregation query above
 
     thirty_days_ago = datetime.utcnow() - timedelta(days=30)
     resolved_last_30 = finding_q.filter(

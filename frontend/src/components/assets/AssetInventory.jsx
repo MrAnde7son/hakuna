@@ -315,7 +315,7 @@ function BulkCampaignModal({ selectedAssets, scanId, onClose, onCreated }) {
 
 export default function AssetInventory() {
   const { t } = useTranslation()
-  const ASSET_PAGE_SIZE = 50
+  const ASSET_PAGE_SIZE = 25
   const { activeScanId } = useScan()
   const CRITICALITY_LABELS = Object.fromEntries([1,2,3,4,5,6,7,8,9,10].map(n => [n, t(`assets.critLabels.${n}`)]))
   const [assets, setAssets] = useState([])
@@ -370,7 +370,7 @@ export default function AssetInventory() {
   })
   const updateColVis = (next) => { setColVis(next); localStorage.setItem('assetColumns', JSON.stringify(next)) }
   const [filters, setFilters] = useState({
-    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '', source: '',
+    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '', source: '', minSources: '',
   })
 
   const sortBy = searchParams.get('sort') || 'risk_score'
@@ -390,7 +390,7 @@ export default function AssetInventory() {
   }
 
   const clearFilters = () => setFilters({
-    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '', source: '',
+    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '', source: '', minSources: '',
   })
 
   const activeFilterCount = Object.values(filters).filter(Boolean).length
@@ -409,6 +409,7 @@ export default function AssetInventory() {
       min_high: filters.minHigh || undefined,
       server_role: filters.serverRole || undefined,
       source: filters.source || undefined,
+      min_sources: filters.minSources || undefined,
       sort_by: sortBy,
       order: sortOrder,
       page,
@@ -470,18 +471,9 @@ export default function AssetInventory() {
     return () => clearTimeout(debounceRef.current)
   }, [activeScanId, sortBy, sortOrder, tagFilter, tagLogic, filters, advancedMode, page])
 
-  // Auto-sync EASM assets on mount (background, non-blocking) — only if EASM is configured
-  const easmSynced = useRef(false)
-  useEffect(() => {
-    if (easmSynced.current) return
-    easmSynced.current = true
-    getEasmStatus()
-      .then(status => {
-        if (!status.enabled) return
-        return syncEasmAssets().then(() => { if (!advancedMode) load() })
-      })
-      .catch(() => {})
-  }, [])
+  // EASM sync is intentionally NOT auto-triggered on mount — it runs the full import
+  // pipeline (N+1 queries + finalize_scan) and caused 20s+ page loads. Sync is
+  // triggered manually or via scheduled tasks instead.
 
   const runAdvancedSearch = () => {
     if (!advancedConditions.length) return
@@ -926,6 +918,8 @@ export default function AssetInventory() {
                 minRisk: asset_filters.min_risk != null ? String(asset_filters.min_risk) : f.minRisk,
                 minCritical: asset_filters.min_critical != null ? String(asset_filters.min_critical) : f.minCritical,
                 minHigh: asset_filters.min_high != null ? String(asset_filters.min_high) : f.minHigh,
+                source: asset_filters.source || '',
+                minSources: asset_filters.min_sources != null ? String(asset_filters.min_sources) : f.minSources,
               }))
               if (sort) {
                 setSearchParams(prev => {
@@ -936,7 +930,7 @@ export default function AssetInventory() {
                 }, { replace: true })
               }
             }}
-            onClear={() => setFilters(f => ({ ...f, search: '', env: '', minRisk: '', minCritical: '', minHigh: '' }))}
+            onClear={() => setFilters(f => ({ ...f, search: '', env: '', minRisk: '', minCritical: '', minHigh: '', source: '', minSources: '' }))}
           />
         </div>
 

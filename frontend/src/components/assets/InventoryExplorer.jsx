@@ -26,7 +26,7 @@ import {
 } from '../../api.js'
 import { useScan } from '../../App.jsx'
 
-const INV_PAGE_SIZE = 100
+const INV_PAGE_SIZE = 25
 
 // ─── Pagination bar ───────────────────────────────────────
 function Pagination({ page, total, pageSize, onPageChange, noun = 'items' }) {

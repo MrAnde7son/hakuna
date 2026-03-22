@@ -13,6 +13,7 @@ from typing import Optional, Tuple
 
 import httpx
 
+from sqlalchemy import func as sqlfunc
 from sqlalchemy.orm import Session
 from models.models import Organization, Scan, Asset, Finding
 
@@ -21,6 +22,34 @@ from apscheduler.triggers.cron import CronTrigger
 logger = logging.getLogger(__name__)
 
 HAKUNA_BASE_URL = os.getenv("HAKUNA_SCANNER_URL", "http://localhost:8001")
+
+
+_SEVERITY_KEY = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}
+
+
+def _update_asset_severity_counts(db: Session, scan_id: int) -> None:
+    """Update critical/high/medium/low/info counts for all assets in a scan.
+
+    Uses a single GROUP BY query instead of N+1 per-asset queries.
+    """
+    rows = (
+        db.query(Finding.asset_id, Finding.severity, sqlfunc.count())
+        .join(Asset, Finding.asset_id == Asset.id)
+        .filter(Asset.scan_id == scan_id)
+        .group_by(Finding.asset_id, Finding.severity)
+        .all()
+    )
+    counts_by_asset: dict = {}
+    for asset_id, severity, cnt in rows:
+        bucket = counts_by_asset.setdefault(
+            asset_id,
+            {"critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0, "info_count": 0},
+        )
+        bucket[_SEVERITY_KEY.get(severity, "info_count")] = cnt
+
+    for a in db.query(Asset).filter(Asset.scan_id == scan_id).all():
+        for k, v in counts_by_asset.get(a.id, {}).items():
+            setattr(a, k, v)
 
 
 def _compute_next_run(cron_expr: str) -> Optional[datetime]:
@@ -555,10 +584,26 @@ def _create_easm_scan(db: Session, org: Organization, domain: str, scan_type: st
 def _import_assets_for_domain(
     db: Session, scan: Scan, easm_assets: list, domain: str,
 ) -> Tuple[int, int]:
-    """Import assets belonging to a specific domain into a scan. Returns (created, findings_created)."""
+    """Upsert assets belonging to a specific domain into a scan. Returns (upserted_count, findings_created).
+
+    Uses upsert logic (update existing asset by IP/hostname if it already exists in this scan)
+    to preserve stable asset IDs. This is critical for cross-source dedup: VM scan findings
+    may reference EASM asset IDs, and deleting/recreating those assets would orphan the findings.
+    """
     created = 0
     findings_created = 0
     now = datetime.utcnow()
+
+    # Build lookup of existing assets in this scan by IP and by hostname
+    existing_by_ip: dict[str, Asset] = {}
+    existing_by_hostname: dict[str, Asset] = {}
+    for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
+        if a.ip:
+            existing_by_ip[a.ip] = a
+        if a.fqdn:
+            existing_by_hostname[a.fqdn] = a
+        elif a.hostname:
+            existing_by_hostname[a.hostname] = a
 
     for ea in easm_assets:
         hostname = ea.get("hostname", "")
@@ -583,22 +628,37 @@ def _import_assets_for_domain(
                     os_hint = t
                     break
 
-        asset = Asset(
-            scan_id=scan.id,
-            ip=ip or None,
-            hostname=hostname.split(".")[0] if hostname else None,
-            fqdn=fqdn,
-            os=os_hint,
-            is_internet_facing=True,
-            environment_tag="external",
-            criticality=5,
-            first_seen=now,
-            last_seen=now,
-            easm_data=easm_data,
-            source_systems=["easm"],
+        # Upsert: reuse existing asset if IP or hostname matches — keeps IDs stable
+        asset = (
+            (ip and existing_by_ip.get(ip))
+            or (fqdn and existing_by_hostname.get(fqdn))
+            or (hostname and existing_by_hostname.get(hostname.split(".")[0]))
         )
-        db.add(asset)
-        db.flush()
+        if asset:
+            # Update in-place to preserve asset.id (cross-scan findings may reference it)
+            asset.ip = ip or asset.ip
+            asset.hostname = hostname.split(".")[0] if hostname else asset.hostname
+            asset.fqdn = fqdn or asset.fqdn
+            asset.os = os_hint or asset.os
+            asset.easm_data = easm_data
+            asset.last_seen = now
+        else:
+            asset = Asset(
+                scan_id=scan.id,
+                ip=ip or None,
+                hostname=hostname.split(".")[0] if hostname else None,
+                fqdn=fqdn,
+                os=os_hint,
+                is_internet_facing=True,
+                environment_tag="external",
+                criticality=5,
+                first_seen=now,
+                last_seen=now,
+                easm_data=easm_data,
+                source_systems=["easm"],
+            )
+            db.add(asset)
+            db.flush()
         created += 1
 
         findings_created += _generate_easm_findings(db, scan.id, asset, ea)
@@ -621,11 +681,21 @@ async def import_easm_assets_for_domain(
     # Reuse existing scan for this domain, or create one if first time
     scan = _find_existing_easm_scan(db, org, domain)
     if scan:
-        # Clear old assets/findings before reimporting
-        db.query(Finding).filter(Finding.asset_id.in_(
-            db.query(Asset.id).filter(Asset.scan_id == scan.id)
-        )).delete(synchronize_session=False)
-        db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
+        # Clear EASM's own findings before reimporting.
+        db.query(Finding).filter(Finding.scan_id == scan.id).delete(synchronize_session=False)
+        # Delete only EASM assets that are NOT referenced by findings from other scans.
+        # Assets shared with VM/Nessus scans (via cross-scan dedup) must keep their IDs;
+        # they will be updated in-place by _import_assets_for_domain (upsert logic).
+        cross_scan_asset_ids = {
+            r[0] for r in db.query(Finding.asset_id).filter(
+                Finding.asset_id.in_(db.query(Asset.id).filter(Asset.scan_id == scan.id)),
+                Finding.scan_id != scan.id,
+            ).all()
+        }
+        q_del = db.query(Asset).filter(Asset.scan_id == scan.id)
+        if cross_scan_asset_ids:
+            q_del = q_del.filter(~Asset.id.in_(cross_scan_asset_ids))
+        q_del.delete(synchronize_session=False)
         db.flush()
     else:
         scan = _create_easm_scan(db, org, domain, scan_type)
@@ -647,14 +717,8 @@ async def import_easm_assets_for_domain(
         "status": "completed",
     }
 
-    # Update asset severity counts
-    for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
-        counts = {"critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0, "info_count": 0}
-        for f in db.query(Finding.severity).filter(Finding.asset_id == a.id).all():
-            key = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}.get(f.severity, "info_count")
-            counts[key] += 1
-        for k, v in counts.items():
-            setattr(a, k, v)
+    # Update asset severity counts (single GROUP BY query, not N+1)
+    _update_asset_severity_counts(db, scan.id)
 
     db.commit()
 
@@ -750,11 +814,19 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
 
     # Map hakuna statuses
     if hakuna_status in ("completed", "done"):
-        # Clear old assets/findings before importing fresh results
-        db.query(Finding).filter(Finding.asset_id.in_(
-            db.query(Asset.id).filter(Asset.scan_id == scan.id)
-        )).delete(synchronize_session=False)
-        db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
+        # Clear EASM's own findings before importing fresh results.
+        db.query(Finding).filter(Finding.scan_id == scan.id).delete(synchronize_session=False)
+        # Delete only EASM assets that are NOT referenced by findings from other scans.
+        cross_scan_asset_ids = {
+            r[0] for r in db.query(Finding.asset_id).filter(
+                Finding.asset_id.in_(db.query(Asset.id).filter(Asset.scan_id == scan.id)),
+                Finding.scan_id != scan.id,
+            ).all()
+        }
+        q_del = db.query(Asset).filter(Asset.scan_id == scan.id)
+        if cross_scan_asset_ids:
+            q_del = q_del.filter(~Asset.id.in_(cross_scan_asset_ids))
+        q_del.delete(synchronize_session=False)
 
         # Import assets now that scan is done
         easm_assets = await get_easm_assets(org.easm_org_id) or []
@@ -775,14 +847,8 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
         if scan.schedule:
             scan.next_run_at = _compute_next_run(scan.schedule)
 
-        # Update asset severity counts
-        for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
-            counts = {"critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0, "info_count": 0}
-            for f in db.query(Finding.severity).filter(Finding.asset_id == a.id).all():
-                key = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}.get(f.severity, "info_count")
-                counts[key] += 1
-            for k, v in counts.items():
-                setattr(a, k, v)
+        # Update asset severity counts (single GROUP BY query, not N+1)
+        _update_asset_severity_counts(db, scan.id)
 
         db.commit()
 

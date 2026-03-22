@@ -358,7 +358,7 @@ export default function FindingExplorer() {
   const groupBy = searchParams.get('group') || null
   const assetId = searchParams.get('asset_id') || null
   const page = searchParams.has('page') ? Number(searchParams.get('page')) : 1
-  const pageSize = groupBy ? 500 : 50
+  const pageSize = groupBy ? 500 : 25
   const sortBy = searchParams.get('sort') || 'priority_score'
   const sortOrder = searchParams.get('order') || 'desc'
   const slaStatus = searchParams.get('sla_status') || null
@@ -373,6 +373,8 @@ export default function FindingExplorer() {
   const threatGroupId = searchParams.get('threat_group_id') ? Number(searchParams.get('threat_group_id')) : null
   const workflowStatus = searchParams.get('workflow_status') || null
   const hasException = searchParams.has('has_exception') ? searchParams.get('has_exception') === 'true' : null
+  const productFilter = searchParams.get('product') || null
+  const cpeFilter2 = searchParams.get('cpe') || null
   const sourceFilter = searchParams.get('source') || null
 
   const setFilter = useCallback((key, value) => {
@@ -467,6 +469,8 @@ export default function FindingExplorer() {
       has_exception: hasException,
       search: search || null,
       source: sourceFilter || null,
+      product: productFilter || null,
+      cpe: cpeFilter2 || null,
       sort_by: sortBy,
       order: sortOrder,
       page,
@@ -484,7 +488,7 @@ export default function FindingExplorer() {
       })
       .catch(() => setFetchError('Failed to load findings.'))
       .finally(() => setLoading(false))
-  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException])
+  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, productFilter, cpeFilter2, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException])
 
   useEffect(() => { if (!advancedMode) load() }, [load, advancedMode])
 
@@ -542,7 +546,7 @@ export default function FindingExplorer() {
   const totalPages = Math.ceil(total / pageSize)
 
 
-  const hasActiveFilters = severity !== null || family || hasExploit !== null || isKev !== null || ransomwareLinked !== null || trendingInNews !== null || hasTtps !== null || tacticFilter || techniqueFilter || threatGroupId || slaStatus || effortLevel || cveFilter || search || groupBy || assetId || tagFilter.length > 0 || workflowStatus || hasException !== null
+  const hasActiveFilters = severity !== null || family || hasExploit !== null || isKev !== null || ransomwareLinked !== null || trendingInNews !== null || hasTtps !== null || tacticFilter || techniqueFilter || threatGroupId || slaStatus || effortLevel || cveFilter || search || groupBy || assetId || tagFilter.length > 0 || workflowStatus || hasException !== null || productFilter || cpeFilter2
 
   const saveAsConditions = useMemo(
     () => advancedMode
@@ -949,6 +953,22 @@ export default function FindingExplorer() {
           <SourceFilter
             value={sourceFilter}
             onChange={v => setFilter('source', v)}
+          />
+
+          <Input
+            defaultValue={productFilter || ''}
+            onKeyDown={e => e.key === 'Enter' && setFilter('product', e.target.value || null)}
+            onBlur={e => { if (e.target.value !== (productFilter || '')) setFilter('product', e.target.value || null) }}
+            placeholder={t('findings.product', 'Product...')}
+            style={{ width: 130 }}
+          />
+
+          <Input
+            defaultValue={cpeFilter2 || ''}
+            onKeyDown={e => e.key === 'Enter' && setFilter('cpe', e.target.value || null)}
+            onBlur={e => { if (e.target.value !== (cpeFilter2 || '')) setFilter('cpe', e.target.value || null) }}
+            placeholder={t('findings.cpe', 'CPE...')}
+            style={{ width: 130 }}
           />
 
           <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />

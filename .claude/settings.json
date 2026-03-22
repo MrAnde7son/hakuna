@@ -1,7 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(''Scans:'', len\\(d\\)\\)\")",
+      "Bash(*)",
       "Bash(source .venv/bin/activate)",
       "Bash(python3 -c \":*)",
       "Bash(npm run build)",

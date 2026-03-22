@@ -217,7 +217,7 @@ def _generic_upsert(db: Session, meta, record: dict, dedup_key: list) -> UpsertR
             col_name = col["name"]
             if col_name in dedup_key:
                 continue
-            value = record.get(col_name)
+            value = _coerce(record.get(col_name), col["type"])
             if value is not None:
                 setattr(existing, col_name, value)
                 updated = True
@@ -231,7 +231,7 @@ def _generic_insert(db: Session, meta, record: dict) -> UpsertResult:
     obj = meta.model_class()
     for col in meta.writable_columns:
         col_name = col["name"]
-        value = record.get(col_name)
+        value = _coerce(record.get(col_name), col["type"])
         if value is not None:
             setattr(obj, col_name, value)
     db.add(obj)
@@ -379,3 +379,28 @@ def _to_float(value):
         return float(value)
     except (ValueError, TypeError):
         return None
+
+
+def _coerce(value, col_type: str):
+    """Coerce a mapped value to the column's expected Python type.
+
+    Returns None rather than raising when the value is incompatible — the record
+    will be stored with that field empty rather than crashing the whole batch.
+    """
+    if value is None:
+        return None
+    if col_type == "float":
+        return _to_float(value)
+    if col_type == "integer":
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return None
+    if col_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ("true", "1", "yes")
+        return bool(value)
+    # string / json / datetime — pass through as-is
+    return value
