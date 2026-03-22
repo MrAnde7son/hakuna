@@ -7,7 +7,8 @@
  * Fields mapped to rule_engine.CONDITION_CATALOG:
  *   Asset:   hostname, environment_tag, criticality, risk_score, critical_count, high_count, tag
  *   Finding: finding.plugin_name, finding.severity, finding.plugin_family,
- *            finding.exploit, finding.cve, finding.effort, tag
+ *            finding.exploit, finding.cve, finding.effort, finding.product,
+ *            finding.cpe, tag
  *
  * Unmappable filters (isKev, ransomwareLinked, trendingInNews, slaStatus,
  * assetId, groupBy, page, sort*) are silently skipped.
@@ -38,7 +39,7 @@ export function filtersToConditions(filters, type) {
     conds.push(...tagConditions(tagFilter))
 
   } else if (type === 'finding') {
-    const { search, severity, family, hasExploit, cveFilter, effortLevel, tagFilter } = filters
+    const { search, severity, family, hasExploit, cveFilter, effortLevel, tagFilter, productFilter, cpeFilter } = filters
 
     if (search)               conds.push({ field: 'finding.plugin_name',   op: 'contains', value: search })
     if (severity !== null && severity !== undefined)
@@ -47,6 +48,8 @@ export function filtersToConditions(filters, type) {
     if (hasExploit === true)  conds.push({ field: 'finding.exploit',        op: 'is_true',  value: null })
     if (cveFilter)            conds.push({ field: 'finding.cve',            op: 'contains', value: cveFilter })
     if (effortLevel)          conds.push({ field: 'finding.effort',         op: 'eq',       value: effortLevel })
+    if (productFilter)        conds.push({ field: 'finding.product',        op: 'contains', value: productFilter })
+    if (cpeFilter)            conds.push({ field: 'finding.cpe',            op: 'contains', value: cpeFilter })
     conds.push(...tagConditions(tagFilter))
   }
 
