@@ -3414,14 +3414,14 @@ function EasmBreachesTab() {
   return (
     <>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
-        <StatCard label={t('inventory.easmBreachesFound')} value={rows.length} icon={ShieldAlert} color="#ef4444" />
-        <StatCard label={t('inventory.easmExposedTotal')} value={totalExposed} icon={Users} color="#dc2626" />
-        <StatCard label={t('inventory.easmVerifiedBreaches')} value={verifiedCount} icon={AlertTriangle} color="#f59e0b" />
-        <StatCard label={t('inventory.easmDomainsAffected')} value={domainsAffected} icon={Globe} color="#7c3aed" />
+        <StatCard label={t('inventory.easmBreachesFound')} value={rows.length.toLocaleString()} icon={ShieldAlert} color="#ef4444" />
+        <StatCard label={t('inventory.easmExposedTotal')} value={totalExposed.toLocaleString()} icon={Users} color="#dc2626" />
+        <StatCard label={t('inventory.easmVerifiedBreaches')} value={verifiedCount.toLocaleString()} icon={AlertTriangle} color="#f59e0b" />
+        <StatCard label={t('inventory.easmDomainsAffected')} value={domainsAffected.toLocaleString()} icon={Globe} color="#7c3aed" />
       </div>
       {totalExposed > 0 && (
         <div style={{ padding: '10px 14px', background: '#450a0a', border: '1px solid #991b1b', borderRadius: 8, fontSize: 13, color: '#fca5a5', marginBottom: 16 }}>
-          {t('inventory.easmBreachWarning', { count: totalExposed, breaches: rows.length })}
+          {t('inventory.easmBreachWarning', { count: totalExposed.toLocaleString(), breaches: rows.length.toLocaleString() })}
         </div>
       )}
       <Card>
