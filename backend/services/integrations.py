@@ -23,7 +23,7 @@ if _REPO_ROOT not in sys.path:
 
 from hakuna.utils.token_tracker import get_tracker, track_tokens
 
-from models.models import IntegrationConfig
+from models.models import IntegrationConfig, FindingTicket
 
 logger = logging.getLogger(__name__)
 
@@ -145,12 +145,27 @@ def create_jira_ticket(db: Session, config: dict, items: list) -> dict:
             )
             r.raise_for_status()
             data = r.json()
+            ticket_key = data.get("key")
+            ticket_id = str(data.get("id", ""))
+            ticket_url = f"{base_url}/browse/{ticket_key}"
             created.append({
-                "key": data.get("key"),
-                "id": data.get("id"),
-                "url": f"{base_url}/browse/{data.get('key')}",
+                "key": ticket_key,
+                "id": ticket_id,
+                "url": ticket_url,
                 "items_count": len(group_items),
             })
+            # Persist ticket references for bidirectional sync
+            for gi in group_items:
+                fid = gi.get("finding_id")
+                if fid:
+                    db.merge(FindingTicket(
+                        finding_id=fid,
+                        ticket_system="jira",
+                        ticket_id=ticket_id,
+                        ticket_key=ticket_key,
+                        ticket_url=ticket_url,
+                        created_at=datetime.utcnow(),
+                    ))
         except requests.RequestException as e:
             logger.error(f"Jira ticket creation failed: {e}")
             error_detail = ""
@@ -225,12 +240,27 @@ def create_servicenow_ticket(db: Session, config: dict, items: list) -> dict:
             )
             r.raise_for_status()
             data = r.json().get("result", {})
+            snow_number = data.get("number")
+            snow_sys_id = data.get("sys_id", "")
+            snow_url = f"{instance_url}/nav_to.do?uri=incident.do?sys_id={snow_sys_id}"
             created.append({
-                "number": data.get("number"),
-                "sys_id": data.get("sys_id"),
-                "url": f"{instance_url}/nav_to.do?uri=incident.do?sys_id={data.get('sys_id')}",
+                "number": snow_number,
+                "sys_id": snow_sys_id,
+                "url": snow_url,
                 "items_count": len(group_items),
             })
+            # Persist ticket references for bidirectional sync
+            for gi in group_items:
+                fid = gi.get("finding_id")
+                if fid:
+                    db.merge(FindingTicket(
+                        finding_id=fid,
+                        ticket_system="servicenow",
+                        ticket_id=snow_sys_id,
+                        ticket_key=snow_number,
+                        ticket_url=snow_url,
+                        created_at=datetime.utcnow(),
+                    ))
         except requests.RequestException as e:
             logger.error(f"ServiceNow ticket creation failed: {e}")
             created.append({"error": str(e), "items_count": len(group_items)})

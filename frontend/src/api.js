@@ -221,6 +221,8 @@ export const getFindings = (params = {}) => {
   return request(`/findings?${q}`)
 }
 export const getFinding = (id) => request(`/findings/${id}`)
+export const getFindingProducts = () => request('/findings/products')
+export const getFindingCpes = () => request('/findings/cpes')
 
 // Remediation queue
 export const getRemediationQueue = (params = {}) => {
@@ -621,6 +623,16 @@ export const bulkUpdateFindingStatus = (data) => request('/findings/bulk-status'
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(data),
 })
+
+// Finding Tickets (bidirectional sync)
+export const getFindingTickets = (id) => request(`/findings/${id}/tickets`)
+export const syncFindingTickets = (id) => request(`/findings/${id}/tickets/sync`, { method: 'POST' })
+export const getTickets = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/tickets?${q}`)
+}
+export const triggerTicketSync = () => request('/ticket-sync', { method: 'POST' })
+export const getCampaignTickets = (campaignId) => request(`/campaigns/${campaignId}/tickets`)
 
 // Global Exceptions
 export const getExceptions = (params = {}) => {

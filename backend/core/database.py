@@ -1,6 +1,6 @@
 import os
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./nessus_remediation.db")
@@ -11,6 +11,14 @@ _pool_kwargs = {} if DATABASE_URL.startswith("sqlite") else {
     "pool_recycle": 300,     # recycle connections every 5 min to avoid Cloud SQL idle timeouts
 }
 engine = create_engine(DATABASE_URL, connect_args=_connect_args, **_pool_kwargs)
+
+# SQLite requires PRAGMA foreign_keys=ON per connection for ON DELETE CASCADE to work
+if DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

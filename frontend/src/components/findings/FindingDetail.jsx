@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight, Layers } from 'lucide-react'
-import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign } from '../../api.js'
+import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight, Layers, RefreshCw, Ticket } from 'lucide-react'
+import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign, syncFindingTickets } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail } from '../shared/ui.jsx'
 import BlastRadiusPanel from '../campaigns/BlastRadiusPanel.jsx'
 
@@ -472,6 +472,51 @@ export default function FindingDetail() {
         {finding.status_changed_at && (
           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
             Last status change: {new Date(finding.status_changed_at).toLocaleString()}
+          </div>
+        )}
+
+        {/* Linked External Tickets */}
+        {finding.tickets && finding.tickets.length > 0 && (
+          <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-muted)', borderRadius: 8, border: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+              <Ticket size={14} color="var(--accent)" />
+              <span style={{ fontSize: 13, fontWeight: 600 }}>Linked Tickets</span>
+              <button
+                onClick={async () => {
+                  try {
+                    const result = await syncFindingTickets(finding.id)
+                    if (result.tickets) {
+                      setFinding(prev => ({ ...prev, tickets: result.tickets }))
+                    }
+                  } catch (e) { console.error('Ticket sync failed', e) }
+                }}
+                style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}
+                title="Sync ticket status"
+              >
+                <RefreshCw size={12} /> Sync
+              </button>
+            </div>
+            {finding.tickets.map((ticket) => (
+              <div key={ticket.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderTop: '1px solid var(--border)', fontSize: 12 }}>
+                <span style={{ textTransform: 'capitalize', color: 'var(--text-muted)', minWidth: 70, fontSize: 11 }}>{ticket.ticket_system}</span>
+                <a href={ticket.ticket_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  {ticket.ticket_key} <ExternalLink size={10} />
+                </a>
+                {ticket.external_status && (
+                  <Pill color={ticket.mapped_status === 'resolved' ? '#22c55e' : ticket.mapped_status === 'in_progress' ? '#3b82f6' : '#6b7280'}>
+                    {ticket.external_status}
+                  </Pill>
+                )}
+                {ticket.last_synced_at && (
+                  <span style={{ color: 'var(--text-muted)', marginLeft: 'auto', fontSize: 10 }}>
+                    Synced {new Date(ticket.last_synced_at).toLocaleString()}
+                  </span>
+                )}
+                {ticket.sync_error && (
+                  <span style={{ color: '#ef4444', fontSize: 10 }} title={ticket.sync_error}>⚠</span>
+                )}
+              </div>
+            ))}
           </div>
         )}
 

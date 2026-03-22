@@ -5,7 +5,7 @@ import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Dow
 import { useScan } from '../../App.jsx'
 import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign } from '../../api.js'
 import {
-  Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, Input,
+  Card, SeverityBadge, ScoreBar, Table, PageHeader, Select,
   Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable
 } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
@@ -373,6 +373,8 @@ export default function FindingExplorer() {
   const threatGroupId = searchParams.get('threat_group_id') ? Number(searchParams.get('threat_group_id')) : null
   const workflowStatus = searchParams.get('workflow_status') || null
   const hasException = searchParams.has('has_exception') ? searchParams.get('has_exception') === 'true' : null
+  const hasTicket = searchParams.has('has_ticket') ? searchParams.get('has_ticket') === 'true' : null
+  const ticketStatus = searchParams.get('ticket_status') || null
   const productFilter = searchParams.get('product') || null
   const cpeFilter2 = searchParams.get('cpe') || null
   const sourceFilter = searchParams.get('source') || null
@@ -467,6 +469,8 @@ export default function FindingExplorer() {
       threat_group_id: threatGroupId,
       workflow_status: workflowStatus,
       has_exception: hasException,
+      has_ticket: hasTicket,
+      ticket_status: ticketStatus,
       search: search || null,
       source: sourceFilter || null,
       product: productFilter || null,
@@ -488,7 +492,7 @@ export default function FindingExplorer() {
       })
       .catch(() => setFetchError('Failed to load findings.'))
       .finally(() => setLoading(false))
-  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, productFilter, cpeFilter2, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException])
+  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, productFilter, cpeFilter2, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException, hasTicket, ticketStatus])
 
   useEffect(() => { if (!advancedMode) load() }, [load, advancedMode])
 
@@ -511,7 +515,7 @@ export default function FindingExplorer() {
 
   const enterAdvancedMode = () => {
     // Pre-populate from current simple filters
-    const conds = filtersToConditions({ search, severity, family, hasExploit, cveFilter, effortLevel, tagFilter }, 'finding')
+    const conds = filtersToConditions({ search, severity, family, hasExploit, cveFilter, effortLevel, tagFilter, productFilter, cpeFilter: cpeFilter2 }, 'finding')
     setAdvancedConditions(conds)
     setAdvancedLogic('AND')
     setAdvancedMode(true)
@@ -779,6 +783,10 @@ export default function FindingExplorer() {
       render: (v) => v ? <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{v}</span> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
     },
     {
+      key: 'has_ticket', label: 'Ticket', width: '60px',
+      render: (v) => v ? <Pill label="Linked" color="#0891b2" /> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    },
+    {
       key: 'exploit_maturity', label: t('findings.maturity'),
       render: (v) => {
         if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
@@ -841,7 +849,7 @@ export default function FindingExplorer() {
   ]
 
   // Filter columns by visibility (all visible by default, KEV/EPSS/Ransomware/Trending hidden by default)
-  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen', 'vulnerability_state', 'vpr_score', 'risk_factor', 'port', 'workflow_status', 'workflow_assigned_to', 'exploit_maturity', 'ssvc_decision', 'exploit_count', 'exploit_maturity_level', 'source_systems'])
+  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen', 'vulnerability_state', 'vpr_score', 'risk_factor', 'port', 'workflow_status', 'workflow_assigned_to', 'exploit_maturity', 'ssvc_decision', 'exploit_count', 'exploit_maturity_level', 'source_systems', 'has_ticket'])
   const visibleColumns = allColumns.filter(c =>
     c.key === '_select' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
   )
@@ -955,23 +963,31 @@ export default function FindingExplorer() {
             onChange={v => setFilter('source', v)}
           />
 
-          <Input
-            defaultValue={productFilter || ''}
-            onKeyDown={e => e.key === 'Enter' && setFilter('product', e.target.value || null)}
-            onBlur={e => { if (e.target.value !== (productFilter || '')) setFilter('product', e.target.value || null) }}
-            placeholder={t('findings.product', 'Product...')}
-            style={{ width: 130 }}
+          <Select
+            value={searchParams.get('has_ticket') || searchParams.get('ticket_status') || null}
+            onChange={v => {
+              setSearchParams(prev => {
+                const next = new URLSearchParams(prev)
+                next.delete('has_ticket')
+                next.delete('ticket_status')
+                next.delete('page')
+                if (v === 'true' || v === 'false') {
+                  next.set('has_ticket', v)
+                } else if (v) {
+                  next.set('ticket_status', v)
+                }
+                return next
+              }, { replace: true })
+            }}
+            placeholder="Tickets"
+            options={[
+              { value: 'true', label: 'Has Ticket' },
+              { value: 'false', label: 'No Ticket' },
+              { value: 'open', label: 'Ticket: Open' },
+              { value: 'in_progress', label: 'Ticket: In Progress' },
+              { value: 'resolved', label: 'Ticket: Resolved' },
+            ]}
           />
-
-          <Input
-            defaultValue={cpeFilter2 || ''}
-            onKeyDown={e => e.key === 'Enter' && setFilter('cpe', e.target.value || null)}
-            onBlur={e => { if (e.target.value !== (cpeFilter2 || '')) setFilter('cpe', e.target.value || null) }}
-            placeholder={t('findings.cpe', 'CPE...')}
-            style={{ width: 130 }}
-          />
-
-          <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
 
           <Select
             value={groupBy}

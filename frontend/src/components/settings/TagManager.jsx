@@ -366,19 +366,28 @@ function TagAssetsPanel({ tag, onClose }) {
   useEffect(() => {
     let cancelled = false
     setAssetsLoading(true)
-    getAssets({ tags: tagQuery, page_size: PREVIEW_LIMIT })
-      .then(res => {
-        if (cancelled) return
-        setAssets(Array.isArray(res) ? res : res.assets || res.items || [])
-        setAssetsTotal(res.total ?? (Array.isArray(res) ? res.length : (res.assets || res.items || []).length))
-      })
-      .catch(() => { if (!cancelled) setAssets([]) })
-      .finally(() => { if (!cancelled) setAssetsLoading(false) })
+    setFindingsLoading(true)
+    // Fetch assets and findings count in parallel
+    Promise.all([
+      getAssets({ tags: tagQuery, page_size: PREVIEW_LIMIT }),
+      getFindings({ tags: tagQuery, page_size: 1 }),
+    ]).then(([assetRes, findingRes]) => {
+      if (cancelled) return
+      setAssets(Array.isArray(assetRes) ? assetRes : assetRes.assets || assetRes.items || [])
+      setAssetsTotal(assetRes.total ?? (Array.isArray(assetRes) ? assetRes.length : (assetRes.assets || assetRes.items || []).length))
+      setFindingsTotal(findingRes.total ?? 0)
+    }).catch(() => {
+      if (!cancelled) { setAssets([]); setAssetsTotal(0); setFindingsTotal(0) }
+    }).finally(() => {
+      if (!cancelled) { setAssetsLoading(false); setFindingsLoading(false) }
+    })
     return () => { cancelled = true }
   }, [tag.id, tagQuery])
 
+  // Fetch full findings list only when tab is active
+  const [findingsLoaded, setFindingsLoaded] = useState(false)
   useEffect(() => {
-    if (activeTab !== 'findings') return
+    if (activeTab !== 'findings' || findingsLoaded) return
     let cancelled = false
     setFindingsLoading(true)
     getFindings({ tags: tagQuery, page_size: PREVIEW_LIMIT })
@@ -387,11 +396,12 @@ function TagAssetsPanel({ tag, onClose }) {
         const items = res.findings || res.items || (Array.isArray(res) ? res : [])
         setFindings(items)
         setFindingsTotal(res.total ?? items.length)
+        setFindingsLoaded(true)
       })
       .catch(() => { if (!cancelled) setFindings([]) })
       .finally(() => { if (!cancelled) setFindingsLoading(false) })
     return () => { cancelled = true }
-  }, [activeTab, tag.id, tagQuery])
+  }, [activeTab, tag.id, tagQuery, findingsLoaded])
 
   const assetLabel = (a) => {
     if (a.ip && a.hostname) return a.ip
@@ -435,11 +445,11 @@ function TagAssetsPanel({ tag, onClose }) {
       {/* Stats row */}
       <div style={{ display: 'flex', gap: 12, fontSize: 11 }}>
         <span style={{ color: 'var(--text-muted)' }}>
-          <strong style={{ color: 'var(--text-primary)', fontSize: 14 }}>{tag.asset_count || assetsTotal}</strong> assets
+          <strong style={{ color: 'var(--text-primary)', fontSize: 14 }}>{assetsLoading ? '…' : assetsTotal}</strong> assets
         </span>
-        {hasFindingCount && (
+        {(findingsTotal > 0 || hasFindingCount) && (
           <span style={{ color: 'var(--text-muted)' }}>
-            <strong style={{ color: 'var(--text-primary)', fontSize: 14 }}>{tag.finding_count}</strong> findings
+            <strong style={{ color: 'var(--text-primary)', fontSize: 14 }}>{findingsLoading ? '…' : findingsTotal}</strong> findings
           </span>
         )}
       </div>

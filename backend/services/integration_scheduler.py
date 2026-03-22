@@ -43,6 +43,16 @@ def start_scheduler():
     finally:
         db.close()
 
+    # Register bidirectional ticket status sync (every 15 minutes)
+    scheduler.add_job(
+        _run_ticket_sync,
+        trigger=CronTrigger.from_crontab("*/15 * * * *"),
+        id="ticket_status_sync",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+    logger.info("Registered ticket status sync job (every 15 min)")
+
     if not scheduler.running:
         scheduler.start()
         logger.info("Integration scheduler started")
@@ -93,6 +103,20 @@ def _deregister_job(scheduler: BackgroundScheduler, integration_id: str):
             logger.info("Deregistered schedule for integration %s", integration_id)
     except Exception:
         pass
+
+
+def _run_ticket_sync():
+    """Execute bidirectional ticket status sync."""
+    logger.info("Scheduled ticket sync triggered")
+    db = SessionLocal()
+    try:
+        from services.ticket_sync import sync_all_tickets
+        result = sync_all_tickets(db)
+        logger.info("Ticket sync completed: %s", result)
+    except Exception as e:
+        logger.exception("Ticket sync failed: %s", e)
+    finally:
+        db.close()
 
 
 def _run_integration_job(integration_id: str):

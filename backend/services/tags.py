@@ -31,13 +31,15 @@ def _tag_to_dict(tag: Tag, db: Session = None, include_counts: bool = False) -> 
         "created_at": tag.created_at.isoformat() if tag.created_at else None,
     }
     if include_counts and db:
-        d["asset_count"] = db.query(TagAssignment).filter(
+        d["asset_count"] = db.query(TagAssignment).join(
+            Asset, TagAssignment.asset_id == Asset.id
+        ).filter(
             TagAssignment.tag_id == tag.id,
-            TagAssignment.asset_id.isnot(None),
         ).count()
-        d["finding_count"] = db.query(TagAssignment).filter(
+        d["finding_count"] = db.query(TagAssignment).join(
+            Finding, TagAssignment.finding_id == Finding.id
+        ).filter(
             TagAssignment.tag_id == tag.id,
-            TagAssignment.finding_id.isnot(None),
         ).count()
     return d
 

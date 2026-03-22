@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   Target, Play, Plus, X, ChevronDown, ChevronRight, ChevronLeft,
   User, Users, Zap, AlertTriangle, CheckCircle, Edit2, Save, Eye,
-  RefreshCw, Layers, GitBranch, Trash2,
+  RefreshCw, Layers, GitBranch, Trash2, Ticket, ExternalLink,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import {
@@ -12,8 +12,9 @@ import {
   previewCampaignQuery, updateCampaignFinding,
   getWorkflows, createWorkflowFromTemplate, createWorkflow, deleteWorkflow,
   executeWorkflow, getWorkflowTemplates, authListUsers,
+  getCampaignTickets, syncFindingTickets,
 } from '../../api.js'
-import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill, ErrorBanner, SkeletonDetail } from '../shared/ui.jsx'
+import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill, ErrorBanner, SkeletonDetail, Table } from '../shared/ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
 
 // ─── Condition chip colors ───────────────────────────────
@@ -433,8 +434,10 @@ export default function CampaignDetail() {
   const [editingName, setEditingName] = useState(false)
   const [nameVal, setNameVal] = useState('')
   const [descVal, setDescVal] = useState('')
-  const [activeTab, setActiveTab] = useState('results') // 'query' | 'results'
+  const [activeTab, setActiveTab] = useState('results') // 'query' | 'results' | 'workflows' | 'tickets'
   const [users, setUsers] = useState([])
+  const [campaignTickets, setCampaignTickets] = useState([])
+  const [ticketsLoading, setTicketsLoading] = useState(false)
 
   useEffect(() => {
     authListUsers().then(data => setUsers(data.users || data || [])).catch(() => {})
@@ -479,6 +482,20 @@ export default function CampaignDetail() {
   }, [id])
 
   useEffect(() => { load(true) }, [load])
+
+  // Load campaign tickets
+  const loadTickets = useCallback(() => {
+    if (!id) return
+    setTicketsLoading(true)
+    getCampaignTickets(id)
+      .then(data => setCampaignTickets(data.tickets || []))
+      .catch(() => setCampaignTickets([]))
+      .finally(() => setTicketsLoading(false))
+  }, [id])
+
+  useEffect(() => {
+    if (campaign && campaign.owner_groups?.length > 0) loadTickets()
+  }, [campaign?.id, campaign?.owner_groups?.length])
 
   const handleQueryChange = (newQ) => {
     setQuery(newQ)
@@ -675,6 +692,7 @@ export default function CampaignDetail() {
           { key: 'query', label: t('campaigns.queryBuilder'), icon: Target },
           { key: 'results', label: totalFindings > 0 ? t('campaigns.resultsWithCount', { count: totalFindings }) : t('campaigns.results'), icon: Layers },
           { key: 'workflows', label: t('campaigns.workflows'), icon: GitBranch },
+          ...(campaignTickets.length > 0 ? [{ key: 'tickets', label: `Tickets (${campaignTickets.length})`, icon: Ticket }] : []),
         ].map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -762,6 +780,63 @@ export default function CampaignDetail() {
 
       {activeTab === 'workflows' && (
         <CampaignWorkflows campaignId={campaign.id} hasResults={hasResults} />
+      )}
+
+      {activeTab === 'tickets' && (
+        <Card style={{ padding: 0 }}>
+          {ticketsLoading ? (
+            <div style={{ padding: 32, textAlign: 'center' }}><Spinner /></div>
+          ) : (
+            <Table
+              columns={[
+                {
+                  key: 'ticket_system', label: 'System', width: '90px',
+                  render: (v) => <span style={{ textTransform: 'capitalize', fontWeight: 500, fontSize: 12 }}>{v}</span>
+                },
+                {
+                  key: 'ticket_key', label: 'Ticket', width: '140px',
+                  render: (v, row) => (
+                    <a href={row.ticket_url} target="_blank" rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      style={{ color: 'var(--accent)', fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      {v} <ExternalLink size={10} />
+                    </a>
+                  )
+                },
+                {
+                  key: 'external_status', label: 'External Status',
+                  render: (v, row) => v
+                    ? <Pill label={v} color={row.mapped_status === 'resolved' ? '#22c55e' : row.mapped_status === 'in_progress' ? '#3b82f6' : '#6b7280'} />
+                    : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>Not synced</span>
+                },
+                {
+                  key: 'mapped_status', label: 'Mapped Status',
+                  render: (v) => v
+                    ? <Pill label={v.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} color={v === 'resolved' ? '#22c55e' : v === 'in_progress' ? '#3b82f6' : '#6b7280'} />
+                    : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+                },
+                {
+                  key: 'finding_plugin_name', label: 'Finding',
+                  render: (v, row) => (
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 500 }}>{v || '—'}</div>
+                      {row.finding_severity_label && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{row.finding_severity_label}</span>}
+                    </div>
+                  )
+                },
+                {
+                  key: 'last_synced_at', label: 'Last Synced', width: '150px',
+                  render: (v) => v
+                    ? <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{new Date(v).toLocaleString()}</span>
+                    : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Never</span>
+                },
+              ]}
+              rows={campaignTickets}
+              onRowClick={(row) => navigate(`/findings/${row.finding_id}`)}
+              emptyMessage="No tickets linked to this campaign's findings"
+            />
+          )}
+        </Card>
       )}
     </div>
   )
