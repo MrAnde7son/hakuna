@@ -11,7 +11,7 @@ import {
   getCampaign, updateCampaign, runCampaign,
   previewCampaignQuery, updateCampaignFinding,
   getWorkflows, createWorkflowFromTemplate, createWorkflow, deleteWorkflow,
-  executeWorkflow, getWorkflowTemplates,
+  executeWorkflow, getWorkflowTemplates, authListUsers,
 } from '../../api.js'
 import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill, ErrorBanner, SkeletonDetail } from '../shared/ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
@@ -434,6 +434,18 @@ export default function CampaignDetail() {
   const [nameVal, setNameVal] = useState('')
   const [descVal, setDescVal] = useState('')
   const [activeTab, setActiveTab] = useState('results') // 'query' | 'results'
+  const [users, setUsers] = useState([])
+
+  useEffect(() => {
+    authListUsers().then(data => setUsers(data.users || data || [])).catch(() => {})
+  }, [])
+
+  const handleOwnerChange = async (newOwnerId) => {
+    const oid = newOwnerId ? Number(newOwnerId) : null
+    await updateCampaign(id, { owner_id: oid })
+    const u = users.find(u => u.id === oid)
+    setCampaign(c => ({ ...c, owner_id: oid, owner_name: u ? (u.display_name || u.email) : null }))
+  }
 
   const statusLabel = (s) => {
     const map = { draft: t('campaigns.draft'), active: t('campaigns.active'), paused: t('campaigns.paused'), completed: t('campaigns.completed') }
@@ -595,6 +607,26 @@ export default function CampaignDetail() {
                 {campaign.critical_count > 0 && <span style={{ color: '#fca5a5' }}>{campaign.critical_count} {t('severity.critical').toLowerCase()}</span>}
                 {campaign.exploit_count > 0 && <span style={{ color: '#fb923c' }}>{campaign.exploit_count} {t('campaigns.withExploits').toLowerCase()}</span>}
                 {campaign.last_run_at && <span>{t('campaigns.lastRunAt', { date: new Date(campaign.last_run_at).toLocaleString() })}</span>}
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, fontSize: 12 }}>
+                <User size={12} color="var(--text-muted)" />
+                <span style={{ color: 'var(--text-muted)' }}>Owner:</span>
+                <select
+                  value={campaign.owner_id || ''}
+                  onChange={e => handleOwnerChange(e.target.value)}
+                  style={{
+                    padding: '3px 8px', background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)', borderRadius: 6,
+                    fontSize: 12, color: 'var(--text-primary)', cursor: 'pointer',
+                  }}
+                >
+                  <option value="">Unassigned</option>
+                  {users.map(u => (
+                    <option key={u.id} value={u.id}>
+                      {u.display_name || u.email}{u.display_name ? ` (${u.email})` : ''}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 

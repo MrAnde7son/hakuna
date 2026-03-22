@@ -21,7 +21,7 @@ from sqlalchemy import func, desc, distinct, or_, cast, Text
 from core.database import get_db, init_db
 from models.models import (
     Organization, User,
-    Scan, Asset, Finding, AutomateClick,
+    Scan, Asset, Finding, FindingTicket, AutomateClick,
     InventoryUser, InventoryGroup, InventoryDomainTrust, InventoryService,
     InventoryNetConn, InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
     InventoryShare, InventorySoftware, InventorySecurityControl,
@@ -1877,6 +1877,30 @@ def get_finding(finding_id: int, db: Session = Depends(get_db)):
     return _finding_to_dict(finding, db, include_full=True)
 
 
+# ── Ticket sync endpoints ──
+
+@app.get("/api/findings/{finding_id}/tickets")
+def get_finding_tickets(finding_id: int, db: Session = Depends(get_db)):
+    """Return all linked external tickets for a finding."""
+    from services.ticket_sync import _ticket_to_dict
+    tickets = db.query(FindingTicket).filter(FindingTicket.finding_id == finding_id).all()
+    return [_ticket_to_dict(t) for t in tickets]
+
+
+@app.post("/api/findings/{finding_id}/tickets/sync")
+def sync_finding_tickets(finding_id: int, db: Session = Depends(get_db)):
+    """Manually trigger ticket status sync for a specific finding."""
+    from services.ticket_sync import sync_tickets_for_finding
+    return sync_tickets_for_finding(db, finding_id)
+
+
+@app.post("/api/ticket-sync")
+def trigger_ticket_sync(db: Session = Depends(get_db)):
+    """Manually trigger global ticket status sync."""
+    from services.ticket_sync import sync_all_tickets
+    return sync_all_tickets(db)
+
+
 def _review_status(review_by) -> Optional[str]:
     if not review_by:
         return None
@@ -2048,6 +2072,8 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset:
         "auto_resolved": f.auto_resolved or False,
         "auto_resolved_at": f.auto_resolved_at.isoformat() if f.auto_resolved_at else None,
         "auto_resolved_by_scan_id": f.auto_resolved_by_scan_id,
+        # Ticket tracking (lightweight for list view)
+        "has_ticket": len(f.tickets) > 0 if f.tickets else False,
     }
     if include_full:
         base.update({
@@ -2062,6 +2088,18 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset:
             "plugin_pub_date": f.plugin_pub_date,
             "plugin_mod_date": f.plugin_mod_date,
             "remediation_steps": f.remediation_steps,
+            # Linked external tickets
+            "tickets": [{
+                "id": t.id,
+                "ticket_system": t.ticket_system,
+                "ticket_key": t.ticket_key,
+                "ticket_url": t.ticket_url,
+                "external_status": t.external_status,
+                "mapped_status": t.mapped_status,
+                "last_synced_at": t.last_synced_at.isoformat() if t.last_synced_at else None,
+                "sync_error": t.sync_error,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            } for t in (f.tickets or [])],
         })
         # Validated + Business context (with auto-inference)
         inferred = _infer_finding_context(f, asset, db)
@@ -4409,6 +4447,7 @@ class CampaignCreateBody(BaseModel):
     scan_id: Optional[int] = None
     query: list = []
     query_logic: str = "AND"
+    owner_id: Optional[int] = None
 
 
 class CampaignUpdateBody(BaseModel):
@@ -4417,6 +4456,7 @@ class CampaignUpdateBody(BaseModel):
     status: Optional[str] = None
     query: Optional[list] = None
     query_logic: Optional[str] = None
+    owner_id: Optional[int] = None
 
 
 class CampaignFindingUpdateBody(BaseModel):
@@ -4638,6 +4678,7 @@ def create_campaign(body: CampaignCreateBody, db: Session = Depends(get_db), use
         scan_id=body.scan_id,
         query=body.query,
         query_logic=body.query_logic,
+        owner_id=body.owner_id,
         status="draft",
     )
     db.add(campaign)
@@ -4658,6 +4699,9 @@ def list_campaigns(scan_id: Optional[int] = None, db: Session = Depends(get_db),
     if scan_id:
         q = q.filter((Campaign.scan_id == scan_id) | (Campaign.scan_id == None))
     campaigns = q.order_by(Campaign.created_at.desc()).all()
+    # Batch-load owners
+    owner_ids = {c.owner_id for c in campaigns if c.owner_id}
+    owners = {u.id: u for u in db.query(User).filter(User.id.in_(owner_ids)).all()} if owner_ids else {}
     return [
         {
             "id": c.id,
@@ -4670,6 +4714,8 @@ def list_campaigns(scan_id: Optional[int] = None, db: Session = Depends(get_db),
             "finding_count": c.finding_count,
             "created_at": c.created_at.isoformat() if c.created_at else None,
             "last_run_at": c.last_run_at.isoformat() if c.last_run_at else None,
+            "owner_id": c.owner_id,
+            "owner_name": owners[c.owner_id].display_name or owners[c.owner_id].email if c.owner_id and c.owner_id in owners else None,
         }
         for c in campaigns
     ]
@@ -4687,6 +4733,7 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
     total_critical = sum(g["critical_count"] for g in owner_groups)
     total_exploit = sum(g["exploit_count"] for g in owner_groups)
 
+    owner = db.query(User).filter(User.id == campaign.owner_id).first() if campaign.owner_id else None
     return {
         "id": campaign.id,
         "name": campaign.name,
@@ -4700,6 +4747,8 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
         "finding_count": total_findings,
         "critical_count": total_critical,
         "exploit_count": total_exploit,
+        "owner_id": campaign.owner_id,
+        "owner_name": (owner.display_name or owner.email) if owner else None,
         "owner_groups": owner_groups,
     }
 
@@ -4721,6 +4770,8 @@ def update_campaign(campaign_id: int, body: CampaignUpdateBody, db: Session = De
         campaign.query = body.query
     if body.query_logic is not None:
         campaign.query_logic = body.query_logic
+    if body.owner_id is not None:
+        campaign.owner_id = body.owner_id
     _new_c = {"name": campaign.name, "status": campaign.status, "description": campaign.description}
     log_audit(db, "update", "campaign", campaign.id,
               entity_name=campaign.name, changes=_diff(_old_c, _new_c), actor=user)

@@ -384,6 +384,34 @@ class Finding(Base):
     scan = relationship("Scan", back_populates="findings", foreign_keys="[Finding.scan_id]")
     asset = relationship("Asset", back_populates="findings")
     automate_clicks = relationship("AutomateClick", back_populates="finding", cascade="all, delete-orphan")
+    tickets = relationship("FindingTicket", back_populates="finding", cascade="all, delete-orphan")
+
+
+class FindingTicket(Base):
+    """Tracks external tickets (Jira/ServiceNow) linked to a finding for bidirectional sync."""
+    __tablename__ = "finding_tickets"
+    __table_args__ = (
+        UniqueConstraint("finding_id", "ticket_system", "ticket_id", name="uq_finding_ticket"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # External ticket identity
+    ticket_system = Column(String, nullable=False)       # "jira" | "servicenow"
+    ticket_id = Column(String, nullable=False)            # Jira issue ID or ServiceNow sys_id
+    ticket_key = Column(String, nullable=True)            # Jira key (e.g. "SEC-123") or SNOW number ("INC0012345")
+    ticket_url = Column(String, nullable=True)
+
+    # Status sync
+    external_status = Column(String, nullable=True)       # Raw status from external system
+    mapped_status = Column(String, nullable=True)         # Mapped Hakuna workflow_status equivalent
+    last_synced_at = Column(DateTime, nullable=True)
+    sync_error = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    finding = relationship("Finding", back_populates="tickets")
 
 
 class AutomateClick(Base):
@@ -1014,6 +1042,8 @@ class Campaign(Base):
     id = Column(Integer, primary_key=True, index=True)
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
     scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True, index=True)  # None = all scans
+
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # campaign owner
 
     name = Column(String, nullable=False)
     description = Column(Text)

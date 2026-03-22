@@ -29,7 +29,7 @@ def get_db():
 def init_db():
     from models.models import (  # noqa: F401
         Organization, User, MSSPOrgAccess,
-        Scan, Asset, Finding, AutomateClick,
+        Scan, Asset, Finding, FindingTicket, AutomateClick,
         InventoryUser, InventoryGroup, InventoryDomainTrust, InventoryService,
         InventoryNetConn, InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
         InventoryShare, InventorySoftware, InventorySecurityControl,
@@ -152,7 +152,7 @@ def _migrate_add_columns():
         ],
         "tags": [("org_id", "INTEGER")],
         "auto_tag_rules": [("org_id", "INTEGER")],
-        "campaigns": [("org_id", "INTEGER")],
+        "campaigns": [("org_id", "INTEGER"), ("owner_id", "INTEGER")],
         "workflows": [("org_id", "INTEGER")],
         "sla_configs": [("org_id", "INTEGER")],
         "integration_configs": [("org_id", "INTEGER")],

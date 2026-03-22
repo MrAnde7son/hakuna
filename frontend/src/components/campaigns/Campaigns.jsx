@@ -7,7 +7,7 @@ import {
   Flame, Shield, Timer, Wrench, Globe, Sparkles, FileText, CalendarClock, Siren,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig } from '../../api.js'
+import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons, ErrorBanner, SkeletonCard } from '../shared/ui.jsx'
 
 const STATUS_KEYS = {
@@ -209,6 +209,12 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [saving, setSaving] = useState(false)
+  const [users, setUsers] = useState([])
+  const [ownerId, setOwnerId] = useState('')
+
+  useEffect(() => {
+    authListUsers().then(data => setUsers(data.users || data || [])).catch(() => {})
+  }, [])
 
   const handleSelectTemplate = (tpl) => {
     setSelectedTemplate(tpl)
@@ -222,6 +228,7 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
     setSelectedTemplate(null)
     setName('')
     setDescription('')
+    setOwnerId('')
   }
 
   const handleSubmit = async (e) => {
@@ -236,6 +243,7 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
         scan_id: scanId,
         query: tpl.query || [],
         query_logic: tpl.query_logic || 'AND',
+        owner_id: ownerId ? Number(ownerId) : null,
       })
       onCreate(c)
     } finally {
@@ -366,7 +374,7 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
                 />
               </div>
 
-              <div style={{ marginBottom: 24 }}>
+              <div style={{ marginBottom: 16 }}>
                 <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
                   {t('campaigns.descriptionLabel')}
                 </label>
@@ -382,6 +390,29 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
                     fontFamily: 'inherit',
                   }}
                 />
+              </div>
+
+              <div style={{ marginBottom: 24 }}>
+                <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
+                  Campaign Owner
+                </label>
+                <select
+                  value={ownerId}
+                  onChange={e => setOwnerId(e.target.value)}
+                  style={{
+                    width: '100%', padding: '8px 12px', background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
+                    color: 'var(--text-primary)', boxSizing: 'border-box',
+                    appearance: 'auto',
+                  }}
+                >
+                  <option value="">No owner</option>
+                  {users.map(u => (
+                    <option key={u.id} value={u.id}>
+                      {u.display_name || u.email}{u.display_name ? ` (${u.email})` : ''}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
@@ -460,6 +491,7 @@ function CampaignCard({ campaign, onDelete, onRun }) {
             <span>{t('campaigns.lastRun', { date: new Date(campaign.last_run_at).toLocaleDateString() })}</span>
           )}
           {!campaign.last_run_at && <span style={{ color: '#f59e0b' }}>{t('campaigns.neverRun')}</span>}
+          {campaign.owner_name && <span>Owner: {campaign.owner_name}</span>}
         </div>
       </div>
 
@@ -776,6 +808,7 @@ export default function Campaigns() {
   const [tab, setTab] = useState('campaigns')
   const [wfSearch, setWfSearch] = useState('')
   const [campSearch, setCampSearch] = useState('')
+  const [ownerFilter, setOwnerFilter] = useState('')
 
   const load = () => {
     setLoading(true)
@@ -890,20 +923,39 @@ export default function Campaigns() {
           </EmptyState>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ position: 'relative', maxWidth: 320 }}>
-              <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-              <input
-                value={campSearch}
-                onChange={e => setCampSearch(e.target.value)}
-                placeholder="Search campaigns..."
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div style={{ position: 'relative', maxWidth: 320, flex: 1 }}>
+                <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                <input
+                  value={campSearch}
+                  onChange={e => setCampSearch(e.target.value)}
+                  placeholder="Search campaigns..."
+                  style={{
+                    width: '100%', padding: '8px 12px 8px 32px', background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
+                    color: 'var(--text-primary)', boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+              <select
+                value={ownerFilter}
+                onChange={e => setOwnerFilter(e.target.value)}
                 style={{
-                  width: '100%', padding: '8px 12px 8px 32px', background: 'var(--bg-secondary)',
+                  padding: '8px 12px', background: 'var(--bg-secondary)',
                   border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
-                  color: 'var(--text-primary)', boxSizing: 'border-box',
+                  color: 'var(--text-primary)', cursor: 'pointer',
                 }}
-              />
+              >
+                <option value="">All owners</option>
+                <option value="__unassigned__">Unassigned</option>
+                {[...new Map(campaigns.filter(c => c.owner_name).map(c => [c.owner_id, c.owner_name])).entries()].map(([oid, name]) => (
+                  <option key={oid} value={oid}>{name}</option>
+                ))}
+              </select>
             </div>
             {ordered.filter(c => {
+              if (ownerFilter === '__unassigned__' && c.owner_id) return false
+              if (ownerFilter && ownerFilter !== '__unassigned__' && String(c.owner_id) !== ownerFilter) return false
               if (!campSearch.trim()) return true
               const q = campSearch.toLowerCase()
               return c.name?.toLowerCase().includes(q) || c.description?.toLowerCase().includes(q)
