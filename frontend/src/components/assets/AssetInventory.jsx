@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import useURLFilters from '../../hooks/useURLFilters.js'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight, Zap, Radar } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags, createCampaign, startVmScan } from '../../api.js'
@@ -318,9 +319,28 @@ export default function AssetInventory() {
   const ASSET_PAGE_SIZE = 25
   const { activeScanId } = useScan()
   const CRITICALITY_LABELS = Object.fromEntries([1,2,3,4,5,6,7,8,9,10].map(n => [n, t(`assets.critLabels.${n}`)]))
+  const FILTER_SCHEMA = {
+    search: { default: '' },
+    env: { default: '' },
+    criticality: { default: '' },
+    minRisk: { default: '' },
+    maxRisk: { default: '' },
+    minCritical: { default: '' },
+    minHigh: { default: '' },
+    serverRole: { default: '' },
+    source: { default: '' },
+    minSources: { default: '' },
+    sort: { default: 'risk_score' },
+    order: { default: 'desc' },
+    page: { default: 1, type: 'number' },
+  }
+  const { filters, setFilter, setFilters: setURLFilters, clearFilters } = useURLFilters(FILTER_SCHEMA)
+  const page = filters.page || 1
+  const sortBy = filters.sort || 'risk_score'
+  const sortOrder = filters.order || 'desc'
+
   const [assets, setAssets] = useState([])
   const [totalAssets, setTotalAssets] = useState(0)
-  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [blastMap, setBlastMap] = useState({})
   const [sbomRiskMap, setSbomRiskMap] = useState({})
@@ -369,31 +389,17 @@ export default function AssetInventory() {
     try { const s = localStorage.getItem('assetColumns'); return s ? JSON.parse(s) : {} } catch { return {} }
   })
   const updateColVis = (next) => { setColVis(next); localStorage.setItem('assetColumns', JSON.stringify(next)) }
-  const [filters, setFilters] = useState({
-    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '', source: '', minSources: '',
-  })
-
-  const sortBy = searchParams.get('sort') || 'risk_score'
-  const sortOrder = searchParams.get('order') || 'desc'
 
   const handleSort = (key) => {
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev)
-      if (prev.get('sort') === key) {
-        next.set('order', prev.get('order') === 'asc' ? 'desc' : 'asc')
-      } else {
-        next.set('sort', key)
-        next.set('order', 'desc')
-      }
-      return next
-    }, { replace: true })
+    if (sortBy === key) {
+      setFilter('order', sortOrder === 'asc' ? 'desc' : 'asc')
+    } else {
+      setURLFilters({ sort: key, order: 'desc' })
+    }
   }
 
-  const clearFilters = () => setFilters({
-    search: '', env: '', criticality: '', minRisk: '', maxRisk: '', minCritical: '', minHigh: '', serverRole: '', source: '', minSources: '',
-  })
-
-  const activeFilterCount = Object.values(filters).filter(Boolean).length
+  const activeFilterCount = ['search', 'env', 'criticality', 'minRisk', 'maxRisk', 'minCritical', 'minHigh', 'serverRole', 'source', 'minSources']
+    .filter(k => filters[k]).length
 
   const load = () => {
     setLoading(true)
@@ -453,15 +459,7 @@ export default function AssetInventory() {
       .finally(() => setLoading(false))
   }
 
-  // Reset page when filters change
-  const prevFiltersRef = useRef(filters)
-  useEffect(() => {
-    if (prevFiltersRef.current !== filters || prevFiltersRef._tagFilter !== tagFilter) {
-      setPage(1)
-    }
-    prevFiltersRef.current = filters
-    prevFiltersRef._tagFilter = tagFilter
-  }, [filters, tagFilter, tagLogic, activeScanId])
+  // Page reset is handled by useURLFilters (setFilter auto-resets page)
 
   const debounceRef = useRef(null)
   useEffect(() => {
@@ -854,7 +852,7 @@ export default function AssetInventory() {
                 </Button>
               </>
             )}
-            <Button variant="ghost" size="sm" onClick={() => exportDownload('assets', { scan_id: activeScanId, environment: filters.environment, search: filters.search })}>
+            <Button variant="ghost" size="sm" onClick={() => exportDownload('assets', { scan_id: activeScanId, environment: filters.env, search: filters.search })}>
               <Download size={14} /> {t('assets.exportCsv')}
             </Button>
             <Button variant="ghost" size="sm" onClick={load}>
@@ -911,32 +909,28 @@ export default function AssetInventory() {
           <NLPSearchBar
             scanId={activeScanId}
             onResult={({ asset_filters, sort }) => {
-              setFilters(f => ({
-                ...f,
+              const updates = {
                 search: asset_filters.search || '',
-                env: asset_filters.environment || f.env,
-                minRisk: asset_filters.min_risk != null ? String(asset_filters.min_risk) : f.minRisk,
-                minCritical: asset_filters.min_critical != null ? String(asset_filters.min_critical) : f.minCritical,
-                minHigh: asset_filters.min_high != null ? String(asset_filters.min_high) : f.minHigh,
+                env: asset_filters.environment || filters.env,
+                minRisk: asset_filters.min_risk != null ? String(asset_filters.min_risk) : filters.minRisk,
+                minCritical: asset_filters.min_critical != null ? String(asset_filters.min_critical) : filters.minCritical,
+                minHigh: asset_filters.min_high != null ? String(asset_filters.min_high) : filters.minHigh,
                 source: asset_filters.source || '',
-                minSources: asset_filters.min_sources != null ? String(asset_filters.min_sources) : f.minSources,
-              }))
-              if (sort) {
-                setSearchParams(prev => {
-                  const next = new URLSearchParams(prev)
-                  next.set('sort', sort.sort_by)
-                  next.set('order', sort.order)
-                  return next
-                }, { replace: true })
+                minSources: asset_filters.min_sources != null ? String(asset_filters.min_sources) : filters.minSources,
               }
+              if (sort) {
+                updates.sort = sort.sort_by
+                updates.order = sort.order
+              }
+              setURLFilters(updates)
             }}
-            onClear={() => setFilters(f => ({ ...f, search: '', env: '', minRisk: '', minCritical: '', minHigh: '', source: '', minSources: '' }))}
+            onClear={() => setURLFilters({ search: '', env: '', minRisk: '', minCritical: '', minHigh: '', source: '', minSources: '' })}
           />
         </div>
 
         <Select
           value={filters.env}
-          onChange={v => setFilters(f => ({ ...f, env: v }))}
+          onChange={v => setFilter('env', v)}
           placeholder={t('assets.allEnvironments')}
           options={[
             { value: 'internet', label: t('assets.envOptions.internet') },
@@ -953,12 +947,12 @@ export default function AssetInventory() {
 
         <SourceFilter
           value={filters.source}
-          onChange={v => setFilters(f => ({ ...f, source: v }))}
+          onChange={v => setFilter('source', v)}
         />
 
         <Select
           value={filters.criticality}
-          onChange={v => setFilters(f => ({ ...f, criticality: v }))}
+          onChange={v => setFilter('criticality', v)}
           placeholder={t('assets.anyCriticality')}
           options={[1,2,3,4,5,6,7,8,9,10].map(n => ({ value: String(n), label: `${n} – ${CRITICALITY_LABELS[n]}` }))}
         />
@@ -968,7 +962,7 @@ export default function AssetInventory() {
           <input
             type="number" min={0} max={10} step={0.1}
             value={filters.minRisk}
-            onChange={e => setFilters(f => ({ ...f, minRisk: e.target.value }))}
+            onChange={e => setFilter('minRisk', e.target.value)}
             placeholder={t('assets.min')}
             style={{
               width: 60, background: 'var(--bg-card)', border: '1px solid var(--border)',
@@ -979,7 +973,7 @@ export default function AssetInventory() {
           <input
             type="number" min={0} max={10} step={0.1}
             value={filters.maxRisk}
-            onChange={e => setFilters(f => ({ ...f, maxRisk: e.target.value }))}
+            onChange={e => setFilter('maxRisk', e.target.value)}
             placeholder={t('assets.max')}
             style={{
               width: 60, background: 'var(--bg-card)', border: '1px solid var(--border)',
@@ -1011,7 +1005,7 @@ export default function AssetInventory() {
             <Button size="sm" variant="ghost" onClick={() => setShowSaveAs(true)}>
               <Bookmark size={13} /> {t('assets.saveAs')}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => { clearFilters(); setTagFilter([]) }}>
+            <Button size="sm" variant="ghost" onClick={() => { clearFilters(); setTagFilter([]); setTagLogic('AND') }}>
               <X size={13} /> {t('assets.clear')}
             </Button>
           </>
@@ -1042,13 +1036,13 @@ export default function AssetInventory() {
                   {totalAssets.toLocaleString()} assets
                 </span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
+                  <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setFilter('page', page - 1)}>
                     <ChevronLeft size={14} /> {t('assets.prev')}
                   </Button>
                   <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                     {page} / {Math.ceil(totalAssets / ASSET_PAGE_SIZE)}
                   </span>
-                  <Button variant="ghost" size="sm" disabled={page >= Math.ceil(totalAssets / ASSET_PAGE_SIZE)} onClick={() => setPage(p => p + 1)}>
+                  <Button variant="ghost" size="sm" disabled={page >= Math.ceil(totalAssets / ASSET_PAGE_SIZE)} onClick={() => setFilter('page', page + 1)}>
                     {t('common.next')} <ChevronRight size={14} />
                   </Button>
                 </div>

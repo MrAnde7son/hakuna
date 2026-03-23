@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import useURLFilters from '../../hooks/useURLFilters.js'
 import { useTranslation } from 'react-i18next'
 import { Wrench, Zap, ChevronRight, AlertTriangle } from 'lucide-react'
 import { useScan } from '../../App.jsx'
@@ -128,12 +129,17 @@ function FindingCard({ finding, rank, scanId }) {
 export default function RemediationQueue() {
   const { t } = useTranslation()
   const { activeScanId } = useScan()
+  const { filters, setFilter } = useURLFilters({
+    effort: { default: '' },
+    owner: { default: '' },
+    min_severity: { default: 2, type: 'number' },
+  })
+  const effort = filters.effort || null
+  const owner = filters.owner || null
+  const minSev = filters.min_severity ?? 2
   const [findings, setFindings] = useState([])
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState(null)
-  const [effort, setEffort] = useState(null)
-  const [owner, setOwner] = useState(null)
-  const [minSev, setMinSev] = useState(2)
 
   const load = () => {
     setLoading(true)
@@ -179,12 +185,12 @@ export default function RemediationQueue() {
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-        <Select value={effort} onChange={setEffort} placeholder={t('remediation.allEfforts')} options={[
+        <Select value={effort} onChange={v => setFilter('effort', v)} placeholder={t('remediation.allEfforts')} options={[
           { value: 'quick_win', label: t('remediation.quickWin') },
           { value: 'medium', label: t('remediation.medium') },
           { value: 'complex', label: t('remediation.complex') },
         ]} />
-        <Select value={owner} onChange={setOwner} placeholder={t('remediation.allOwners')} options={[
+        <Select value={owner} onChange={v => setFilter('owner', v)} placeholder={t('remediation.allOwners')} options={[
           { value: 'IT', label: t('roles.it') },
           { value: 'DevOps', label: t('roles.devops') },
           { value: 'SecOps', label: t('roles.secops') },
@@ -192,7 +198,7 @@ export default function RemediationQueue() {
         ]} />
         <Select
           value={String(minSev)}
-          onChange={v => setMinSev(Number(v))}
+          onChange={v => setFilter('min_severity', v)}
           placeholder={`${t('severity.medium')}+`}
           options={[
             { value: '1', label: `${t('severity.low')}+` },
