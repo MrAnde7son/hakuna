@@ -13,11 +13,11 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db, SessionLocal
-from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, User
+from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, AgentApproval, User
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from core.subscription import require_pro
 from agents.agent_tools import get_tool_catalog
-from agents.agent_engine import run_agent, run_agent_streaming, update_agent_memory
+from agents.agent_engine import run_agent, run_agent_streaming, update_agent_memory, resume_agent_run
 from agents.agent_pipeline import get_available_pipelines, PIPELINE_REGISTRY
 from agents.agent_prompts import ENHANCED_PROMPTS
 
@@ -400,6 +400,82 @@ def _doc_to_dict(d: AgentDocument):
     }
 
 
+# ── Approval queue (HITL) — must be before /{agent_id} ──────────────
+
+class ApprovalDecide(BaseModel):
+    decision: str          # "approved" | "rejected"
+    reason: Optional[str] = None
+
+
+@router.get("/approvals")
+def list_approvals(
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """List approval requests, optionally filtered by status (pending/approved/rejected/expired)."""
+    q = (
+        db.query(AgentApproval)
+        .join(Agent, Agent.id == AgentApproval.agent_id)
+    )
+    q = apply_org_filter(q, Agent, org_ids)
+    if status:
+        q = q.filter(AgentApproval.status == status)
+    approvals = q.order_by(AgentApproval.requested_at.desc()).limit(200).all()
+    return [_approval_to_dict(a) for a in approvals]
+
+
+@router.get("/approvals/{approval_id}")
+def get_approval(
+    approval_id: int,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Get a single approval request."""
+    q = (
+        db.query(AgentApproval)
+        .join(Agent, Agent.id == AgentApproval.agent_id)
+        .filter(AgentApproval.id == approval_id)
+    )
+    q = apply_org_filter(q, Agent, org_ids)
+    approval = q.first()
+    if not approval:
+        raise HTTPException(404, "Approval not found")
+    return _approval_to_dict(approval, include_snapshot=True)
+
+
+@router.post("/approvals/{approval_id}/decide")
+def decide_approval(
+    approval_id: int,
+    body: ApprovalDecide,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Approve or reject a pending tool call. Resumes the agent run."""
+    if body.decision not in ("approved", "rejected"):
+        raise HTTPException(400, "decision must be 'approved' or 'rejected'")
+
+    q = (
+        db.query(AgentApproval)
+        .join(Agent, Agent.id == AgentApproval.agent_id)
+        .filter(AgentApproval.id == approval_id, AgentApproval.status == "pending")
+    )
+    q = apply_org_filter(q, Agent, org_ids)
+    approval = q.first()
+    if not approval:
+        raise HTTPException(404, "Pending approval not found")
+
+    run = resume_agent_run(
+        run_id=approval.agent_run_id,
+        decision=body.decision,
+        reason=body.reason,
+        decider_id=current_user.id if current_user else None,
+        db=db,
+    )
+    return {"ok": True, "run": _run_to_dict(run)}
+
+
 # ── Agent by ID (parameterized routes last) ──────────────────────────
 
 @router.get("/{agent_id}")
@@ -505,6 +581,18 @@ def get_run(agent_id: int, run_id: int, db: Session = Depends(get_db)):
     if not run:
         raise HTTPException(404, "Run not found")
     return _run_to_dict(run)
+
+
+@router.get("/{agent_id}/runs/{run_id}/approvals")
+def list_run_approvals(agent_id: int, run_id: int, db: Session = Depends(get_db)):
+    """List all approval requests for a specific run."""
+    approvals = (
+        db.query(AgentApproval)
+        .filter(AgentApproval.agent_run_id == run_id, AgentApproval.agent_id == agent_id)
+        .order_by(AgentApproval.requested_at.asc())
+        .all()
+    )
+    return [_approval_to_dict(a) for a in approvals]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -794,3 +882,24 @@ def _schedule_to_dict(s: AgentSchedule):
         "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
         "created_at": s.created_at.isoformat() if s.created_at else None,
     }
+
+
+def _approval_to_dict(a: AgentApproval, include_snapshot: bool = False):
+    d = {
+        "id": a.id,
+        "agent_run_id": a.agent_run_id,
+        "agent_id": a.agent_id,
+        "tool_name": a.tool_name,
+        "tool_input": a.tool_input,
+        "provider": a.provider,
+        "model_name": a.model_name,
+        "current_step": a.current_step,
+        "status": a.status,
+        "requested_at": a.requested_at.isoformat() if a.requested_at else None,
+        "decided_at": a.decided_at.isoformat() if a.decided_at else None,
+        "decided_by": a.decided_by,
+        "rejection_reason": a.rejection_reason,
+    }
+    if include_snapshot:
+        d["assistant_content"] = a.assistant_content
+    return d

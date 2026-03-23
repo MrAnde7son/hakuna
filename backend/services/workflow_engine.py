@@ -12,8 +12,10 @@ from models.models import (
     WorkflowExecution, WorkflowExecutionLog,
     Finding, Asset, Campaign, CampaignFinding,
     Tag, TagAssignment, FindingOwnership, AssetOwnership,
+    Agent,
 )
 import services.integrations as integrations
+import agents.agent_engine as agent_engine
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +344,25 @@ NODE_CATALOG = {
                 "webhook_url": {"type": "string", "label": "Teams Webhook URL"},
                 "message_template": {"type": "string", "label": "Message"},
                 "include_summary": {"type": "boolean", "label": "Include Summary Card"},
+            },
+        },
+        {
+            "subtype": "run_agent",
+            "label": "Run Agent",
+            "description": "Invoke an AI agent to analyze workflow items and take intelligent actions",
+            "icon": "Bot",
+            "config_schema": {
+                "agent_id": {"type": "agent_select", "label": "Agent"},
+                "input_template": {
+                    "type": "string",
+                    "label": "Input Template",
+                    "placeholder": "Analyze these {{count}} findings on {{assets}} assets and determine remediation priority.",
+                },
+                "pass_items_downstream": {
+                    "type": "boolean",
+                    "label": "Pass original items to next step (instead of agent output)",
+                    "default": True,
+                },
             },
         },
         {
@@ -1592,6 +1613,42 @@ def _execute_action(db: Session, node: WorkflowNode, items: list) -> dict:
         result = integrations.send_teams_notification(db, config, items)
         logger.info(f"[Workflow Teams] Sent, {len(items)} items")
         affected = len(items)
+
+    elif subtype == "run_agent":
+        agent_id = config.get("agent_id")
+        input_template = config.get("input_template", "")
+        pass_items_downstream = config.get("pass_items_downstream", True)
+
+        ag = db.query(Agent).filter(Agent.id == agent_id).first() if agent_id else None
+        if not ag:
+            logger.warning(f"[Workflow Agent] Agent {agent_id!r} not found — skipping")
+            affected = 0
+        else:
+            # Build a context summary of the items for the agent
+            unique_assets = list({i.get("asset_ip") or i.get("asset_hostname", "unknown") for i in items})
+            finding_lines = []
+            for item in items[:50]:  # cap context to 50 items to stay within token limits
+                severity = item.get("severity_label") or item.get("severity", "")
+                name = item.get("plugin_name") or item.get("finding_name", "")
+                host = item.get("asset_ip") or item.get("asset_hostname", "")
+                finding_lines.append(f"- [{severity}] {name} on {host}")
+
+            findings_summary = "\n".join(finding_lines)
+            if len(items) > 50:
+                findings_summary += f"\n... and {len(items) - 50} more findings"
+
+            rendered_input = _render_template(input_template, items) if input_template else (
+                f"Workflow context: {len(items)} findings across {len(unique_assets)} assets.\n\n"
+                f"Findings:\n{findings_summary}"
+            )
+
+            run = agent_engine.run_agent(ag, rendered_input, db)
+            logger.info(f"[Workflow Agent] {ag.name} run={run.id} status={run.status} steps={run.steps_used}")
+            affected = 1
+
+            if not pass_items_downstream and run.output:
+                # Emit agent output as a single synthetic item so downstream nodes can reference it
+                items = [{"agent_run_id": run.id, "agent_output": run.output, "agent_name": ag.name}]
 
     elif subtype == "run_script":
         script_type = config.get("script_type", "bash")

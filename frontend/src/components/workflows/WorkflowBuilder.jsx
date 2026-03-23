@@ -5,11 +5,11 @@ import {
   GitBranch, Zap, Target, Clock, Upload, Server,
   UserPlus, Tag, CheckCircle, AlertTriangle, Globe, Bell,
   BarChart2, ChevronRight, Filter, Mail, MessageSquare,
-  Terminal, Ticket, History, Shield, Monitor, AlertCircle, Plug,
+  Terminal, Ticket, History, Shield, Monitor, AlertCircle, Plug, Bot,
 } from 'lucide-react'
 import {
   getWorkflow, updateWorkflow, executeWorkflow, getWorkflowExecutions,
-  getWorkflowExecution, getNodeCatalog, getIntegration,
+  getWorkflowExecution, getNodeCatalog, getIntegration, getAgents,
 } from '../../api.js'
 import { Button, Spinner, EmptyState, Pill, ErrorBanner } from '../shared/ui.jsx'
 
@@ -17,7 +17,7 @@ import { Button, Spinner, EmptyState, Pill, ErrorBanner } from '../shared/ui.jsx
 const ICON_MAP = {
   Play, Target, Clock, Upload, GitBranch, BarChart2, Tag, Zap, Server,
   UserPlus, CheckCircle, AlertTriangle, Globe, Bell, Filter, Mail,
-  MessageSquare, Terminal, Ticket, Shield, Monitor, AlertCircle, Plug,
+  MessageSquare, Terminal, Ticket, Shield, Monitor, AlertCircle, Plug, Bot,
 }
 
 const TYPE_COLORS = {
@@ -60,16 +60,18 @@ export default function WorkflowBuilder() {
   const [smtpConfigured, setSmtpConfigured] = useState(null)   // true | false | 'brevo'
   const [nodeOutputOpen, setNodeOutputOpen] = useState(false)
   const [fetchError, setFetchError] = useState(null)
+  const [agents, setAgents] = useState([])
 
   const loadWorkflow = () => {
     setLoading(true)
     setFetchError(null)
-    Promise.all([getWorkflow(id), getNodeCatalog()])
-      .then(([wf, cat]) => {
+    Promise.all([getWorkflow(id), getNodeCatalog(), getAgents()])
+      .then(([wf, cat, agentList]) => {
         setWorkflow(wf)
         setNodes(wf.nodes || [])
         setEdges(wf.edges || [])
         setCatalog(cat)
+        setAgents(agentList || [])
         setLoading(false)
       })
       .catch(() => { setFetchError('Failed to load workflow.'); setLoading(false) })
@@ -890,7 +892,18 @@ export default function WorkflowBuilder() {
                   <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', display: 'block', marginBottom: 4 }}>
                     {schema.label || key}
                   </label>
-                  {schema.type === 'enum' ? (
+                  {schema.type === 'agent_select' ? (
+                    <select
+                      value={selectedNodeData.config?.[key] || ''}
+                      onChange={e => updateNodeConfig(selectedNode, key, e.target.value)}
+                      style={{ width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box', background: 'var(--bg)', color: 'var(--text)' }}
+                    >
+                      <option value="">Select an agent...</option>
+                      {agents.map(a => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                    </select>
+                  ) : schema.type === 'enum' ? (
                     <select
                       value={selectedNodeData.config?.[key] || ''}
                       onChange={e => updateNodeConfig(selectedNode, key, e.target.value)}
