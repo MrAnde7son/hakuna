@@ -184,6 +184,7 @@ def _migrate_add_columns():
         "users": [
             ("password_reset_token", "VARCHAR"),
             ("password_reset_expires", "TIMESTAMP"),
+            ("google_id", "VARCHAR"),
         ],
         "organizations": [
             ("stripe_customer_id", "VARCHAR"),
