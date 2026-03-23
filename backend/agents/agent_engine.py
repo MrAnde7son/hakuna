@@ -392,6 +392,7 @@ CONFIRMATION_REQUIRED_TOOLS = {
     "send_slack_message", "send_teams_message", "send_email_alert",
     "create_campaign", "send_webhook",
     "update_finding_status", "create_exception",
+    "call_integration_fetch", "call_integration_push",
 }
 
 # Tools gated by HITL approval (superset of confirmation-required tools)
