@@ -27,6 +27,14 @@ class Organization(Base):
     easm_org_id = Column(String, nullable=True)       # UUID of org in hakuna-scanner
     easm_domain = Column(String, nullable=True)        # Corporate domain extracted from email
 
+    # Stripe billing
+    stripe_customer_id = Column(String, nullable=True, index=True)
+    stripe_subscription_id = Column(String, nullable=True)
+    subscription_tier = Column(String, default="free")          # free | pro
+    subscription_status = Column(String, nullable=True)         # active | past_due | canceled | trialing
+    trial_ends_at = Column(DateTime, nullable=True)
+    current_period_end = Column(DateTime, nullable=True)
+
     parent = relationship("Organization", remote_side=[id], backref="children")
     users = relationship("User", back_populates="organization")
 
@@ -37,7 +45,8 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, nullable=False, unique=True, index=True)
-    hashed_password = Column(String, nullable=False)
+    hashed_password = Column(String, nullable=True)  # Nullable for Google OAuth users
+    google_id = Column(String, nullable=True, unique=True, index=True)  # Google sub claim
     display_name = Column(String)
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     role = Column(String, default="analyst")  # superadmin | org_admin | analyst | viewer | custom

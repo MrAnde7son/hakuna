@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import require_auth
+from core.subscription import check_scan_limit
 from models.models import Organization, User
 from models.models import Scan
 from services.vm_scanner import start_vm_scan, rescan_vm_scan, refresh_vm_scan, get_vm_health
@@ -31,7 +32,7 @@ def _get_org(db: Session, user: User) -> Organization:
     return org
 
 
-@router.post("/scan")
+@router.post("/scan", dependencies=[Depends(check_scan_limit)])
 async def create_vm_scan(
     body: VmScanRequest,
     db: Session = Depends(get_db),

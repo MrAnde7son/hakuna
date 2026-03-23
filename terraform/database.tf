@@ -24,12 +24,12 @@ resource "google_sql_database_instance" "primary" {
     # Phase 3: change to "REGIONAL" for HA auto-failover (~$195/mo)
     availability_type = "ZONAL"
 
-    disk_size       = 20   # GB, auto-grows
+    disk_size       = 20 # GB, auto-grows
     disk_type       = "PD_SSD"
     disk_autoresize = true
 
     ip_configuration {
-      ipv4_enabled    = false                           # no public IP
+      ipv4_enabled    = false # no public IP
       private_network = google_compute_network.main.id
     }
 

@@ -150,6 +150,12 @@ export const authLogin = (data) => request('/auth/login', {
   body: JSON.stringify(data),
 })
 
+export const authGoogleLogin = (credential) => request('/auth/google', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ credential }),
+})
+
 export const authMe = () => request('/auth/me')
 
 export const authChangePassword = (data) => request('/auth/change-password', {
@@ -1009,3 +1015,21 @@ export const uploadIntegrationFile = async (file) => {
   }
   return res.json()
 }
+
+// ── Billing API ─────────────────────────────────────────
+
+export const getBillingPlans = () => request('/billing/plans')
+
+export const getBillingStatus = () => request('/billing/status')
+
+export const createCheckoutSession = (data) => request('/billing/checkout', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const createPortalSession = (data) => request('/billing/portal', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import get_current_user, require_auth
+from core.subscription import check_scan_limit
 from models.models import Organization, Scan, User
 from services.easm import (
     extract_corporate_domain,
@@ -121,7 +122,7 @@ async def setup_easm(
     }
 
 
-@router.post("/scan-domain")
+@router.post("/scan-domain", dependencies=[Depends(check_scan_limit)])
 async def scan_domain_endpoint(
     domain: str = Query(..., min_length=3),
     scan_type: str = Query("full", regex="^(full|discovery|enrichment)$"),

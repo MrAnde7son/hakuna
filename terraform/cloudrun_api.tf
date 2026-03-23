@@ -47,7 +47,7 @@ resource "google_cloud_run_v2_service" "api" {
         # CPU must stay allocated after response so FastAPI background tasks (threat intel syncs,
         # SSVC/ExploitDB/MSRC downloads) run at full speed. With cpu_idle=true, CPU is throttled
         # after the HTTP response is sent, causing multi-minute background syncs to stall.
-        cpu_idle = false
+        cpu_idle          = false
         startup_cpu_boost = true
       }
 
@@ -178,6 +178,43 @@ resource "google_cloud_run_v2_service" "api" {
         value = "https://${var.app_domain}"
       }
 
+      # ── Stripe billing ──────────────────────────────────────────────────
+
+      env {
+        name = "STRIPE_SECRET_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.stripe_secret_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name  = "STRIPE_PUBLISHABLE_KEY"
+        value = var.stripe_publishable_key
+      }
+
+      env {
+        name = "STRIPE_WEBHOOK_SECRET"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.stripe_webhook_secret.secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name  = "STRIPE_PRICE_ID_MONTHLY"
+        value = var.stripe_price_id_monthly
+      }
+
+      env {
+        name  = "STRIPE_PRICE_ID_ANNUAL"
+        value = var.stripe_price_id_annual
+      }
+
       # Scanner services — reachable via private VPC IP (no public internet)
       env {
         name  = "HAKUNA_SCANNER_URL"
@@ -224,7 +261,7 @@ resource "google_cloud_run_v2_service" "api" {
         "--structured-logs",
         "--port=5432",
         "--address=0.0.0.0", # listen on all interfaces so Cloud Run TCP health probe can reach it
-        "--private-ip", # connect via private IP (requires VPC connector)
+        "--private-ip",      # connect via private IP (requires VPC connector)
         "${var.project_id}:${var.region}:${google_sql_database_instance.primary.name}",
         # Phase 3: add replica on port 5433 when replica is uncommented in database.tf
         # "--port=5433",
@@ -244,7 +281,7 @@ resource "google_cloud_run_v2_service" "api" {
         tcp_socket { port = 5432 }
         initial_delay_seconds = 10
         period_seconds        = 10
-        failure_threshold     = 12  # 120s total startup time
+        failure_threshold     = 12 # 120s total startup time
       }
     }
   }
@@ -259,6 +296,8 @@ resource "google_cloud_run_v2_service" "api" {
     google_secret_manager_secret_version.sentry_dsn,
     google_secret_manager_secret_version.brevo_smtp_pass,
     google_secret_manager_secret_version.integration_secret_key,
+    google_secret_manager_secret_version.stripe_secret_key,
+    google_secret_manager_secret_version.stripe_webhook_secret,
     google_project_iam_member.api_roles,
   ]
 }

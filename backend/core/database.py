@@ -184,6 +184,15 @@ def _migrate_add_columns():
         "users": [
             ("password_reset_token", "VARCHAR"),
             ("password_reset_expires", "TIMESTAMP"),
+            ("google_id", "VARCHAR"),
+        ],
+        "organizations": [
+            ("stripe_customer_id", "VARCHAR"),
+            ("stripe_subscription_id", "VARCHAR"),
+            ("subscription_tier", "VARCHAR DEFAULT 'free'"),
+            ("subscription_status", "VARCHAR"),
+            ("trial_ends_at", "TIMESTAMP"),
+            ("current_period_end", "TIMESTAMP"),
         ],
         "integrations": [
             ("logo_url", "VARCHAR"),
