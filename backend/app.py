@@ -8704,6 +8704,150 @@ def get_risk_by_tags(
 
 
 # ─────────────────────────────────────────────────────────
+# Owner Risk Summary (Hall of Shame)
+# ─────────────────────────────────────────────────────────
+
+@app.get("/api/reports/owner-risk-summary")
+def get_owner_risk_summary(
+    scan_id: Optional[int] = None,
+    tags: Optional[str] = None,
+    tag_logic: str = "AND",
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Per-owner risk breakdown with RAG (red/amber/green) scoring.
+
+    Resolution order for owner identity:
+      1. FindingOwnership.owner_name / owner_role
+      2. AssetOwnership.owner_name / owner_role
+      3. Asset.inferred_team
+      4. Finding.owner_suggestion (IT / DevOps / SecOps / AppSec)
+      5. 'Unassigned' fallback
+    """
+    from collections import defaultdict
+    from sqlalchemy.orm import joinedload
+
+    finding_q = (
+        db.query(Finding)
+        .join(Scan, Finding.scan_id == Scan.id)
+    )
+    finding_q = apply_scan_org_filter(finding_q, org_ids)
+    if scan_id:
+        finding_q = finding_q.filter(Finding.scan_id == scan_id)
+    if tags:
+        pairs = tag_engine.parse_tag_filter(tags)
+        id_sets = tag_engine.resolve_tag_ids(pairs, False, db)
+        finding_q = tag_engine.apply_finding_tag_filter(finding_q, id_sets, tag_logic, db)
+
+    findings = (
+        finding_q
+        .options(
+            joinedload(Finding.ownership),
+            joinedload(Finding.asset).joinedload(Asset.ownership),
+        )
+        .all()
+    )
+
+    # Bucket findings by resolved owner label
+    buckets: dict = defaultdict(lambda: {
+        "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0,
+        "total": 0, "exploit": 0,
+        "sla_on": 0, "sla_resolved": 0, "sla_breached": 0, "sla_at_risk": 0,
+        "priority_sum": 0.0, "priority_count": 0,
+        "quick_wins": 0,
+        "owner_role": None,
+    })
+
+    for f in findings:
+        asset = f.asset
+        owner_label = "Unassigned"
+        owner_role = None
+
+        if f.ownership:
+            own = f.ownership[0]
+            if own.owner_name or own.owner_role:
+                owner_label = own.owner_name or own.owner_role
+                owner_role = own.owner_role or own.owner_name
+        elif asset and asset.ownership:
+            own = asset.ownership[0]
+            if own.owner_name or own.owner_role:
+                owner_label = own.owner_name or own.owner_role
+                owner_role = own.owner_role or own.owner_name
+        elif asset and asset.inferred_team:
+            owner_label = asset.inferred_team
+            owner_role = asset.inferred_team
+        elif f.owner_suggestion:
+            owner_label = f.owner_suggestion
+            owner_role = f.owner_suggestion
+
+        b = buckets[owner_label]
+        if b["owner_role"] is None:
+            b["owner_role"] = owner_role or owner_label
+
+        sev_key = {4: "critical", 3: "high", 2: "medium", 1: "low", 0: "info"}.get(f.severity, "info")
+        b[sev_key] += 1
+        b["total"] += 1
+        if f.exploit_available:
+            b["exploit"] += 1
+        if f.sla_status == "on_track":
+            b["sla_on"] += 1
+        elif f.sla_status == "resolved":
+            b["sla_resolved"] += 1
+        elif f.sla_status == "breached":
+            b["sla_breached"] += 1
+        elif f.sla_status == "at_risk":
+            b["sla_at_risk"] += 1
+        if f.priority_score is not None:
+            b["priority_sum"] += f.priority_score
+            b["priority_count"] += 1
+        if f.effort_level == "quick_win" and f.severity >= 2:
+            b["quick_wins"] += 1
+
+    owners = []
+    for label, b in buckets.items():
+        avg_priority = round(b["priority_sum"] / b["priority_count"], 2) if b["priority_count"] else 0
+        sla_total = b["sla_on"] + b["sla_resolved"] + b["sla_breached"] + b["sla_at_risk"]
+        sla_compliance = round((b["sla_on"] + b["sla_resolved"]) / sla_total * 100, 1) if sla_total else None
+
+        # RAG: Red = critical > 0 OR avg_priority > 7 OR SLA < 40
+        #      Amber = avg_priority > 4 OR SLA < 70 OR has exploitable findings
+        #      Green = otherwise
+        if b["critical"] > 0 or avg_priority > 7 or (sla_compliance is not None and sla_compliance < 40):
+            rag = "red"
+        elif avg_priority > 4 or (sla_compliance is not None and sla_compliance < 70) or b["exploit"] > 0:
+            rag = "amber"
+        else:
+            rag = "green"
+
+        owners.append({
+            "owner": label,
+            "owner_role": b["owner_role"] or label,
+            "rag": rag,
+            "total": b["total"],
+            "critical": b["critical"],
+            "high": b["high"],
+            "medium": b["medium"],
+            "low": b["low"],
+            "exploit_count": b["exploit"],
+            "quick_wins": b["quick_wins"],
+            "avg_priority_score": avg_priority,
+            "sla_compliance": sla_compliance,
+            "sla_breached": b["sla_breached"],
+        })
+
+    rag_order = {"red": 0, "amber": 1, "green": 2}
+    owners.sort(key=lambda o: (rag_order[o["rag"]], -o["critical"], -o["avg_priority_score"]))
+    for i, o in enumerate(owners):
+        o["rank"] = i + 1
+
+    return {
+        "owners": owners,
+        "total_findings": sum(o["total"] for o in owners),
+        "owner_count": len(owners),
+    }
+
+
+# ─────────────────────────────────────────────────────────
 # Funnel Widget
 # ─────────────────────────────────────────────────────────
 

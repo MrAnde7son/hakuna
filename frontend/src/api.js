@@ -726,6 +726,11 @@ export const getRiskByTags = (params = {}) => {
   return request(`/reports/risk-by-tags?${q}`)
 }
 
+export const getOwnerRiskSummary = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/reports/owner-risk-summary?${q}`)
+}
+
 // Deduplication
 export const getDedupConfig = () => request('/dedup/config')
 export const saveDedupConfig = (cfg) => request('/dedup/config', {

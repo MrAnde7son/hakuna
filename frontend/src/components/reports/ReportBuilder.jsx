@@ -31,7 +31,7 @@ import {
   getTemporalSummary, getRemediationVelocity,
   getReportTemplates, createReportTemplate, updateReportTemplate, deleteReportTemplate as apiDeleteTemplate,
   exportConfig,
-  getRiskByTags, getTags, getBenchmarks, getOsSoftwareSummary,
+  getRiskByTags, getOwnerRiskSummary, getTags, getBenchmarks, getOsSoftwareSummary,
   getInventorySummary, getInventoryUsers, getInventoryGroups, getInventoryServices,
   getInventoryNetconns, getInventoryTasks, getInventoryPatches, getInventoryLoggedOn,
   getInventoryShares, getInventorySoftware, getInventorySecurityControls, getInventoryComputers,
@@ -116,6 +116,7 @@ const DATA_SOURCES = {
   remediation_queue:  (scanId, f) => getRemediationQueue({ scan_id: scanId, effort: f?.effort, owner: f?.owner, min_severity: f?.min_severity, limit: f?.limit || 20 }),
   automation_wishlist:(scanId, f) => getAutomateClicks(),
   risk_by_tags:       (scanId, f) => getRiskByTags({ scan_id: scanId, category: f?.category }),
+  owner_risk:         (scanId, f) => getOwnerRiskSummary({ scan_id: scanId }),
   plugin_families:    (scanId, f) => getPluginFamilies(scanId, f?.tags, f?.tag_logic),
   inv_summary:        (scanId, f) => getInventorySummary(scanId),
   inv_users:          (scanId, f) => getInventoryUsers({ scan_id: scanId, user_type: f?.user_type, is_admin: f?.is_admin, is_domain_admin: f?.is_domain_admin, is_privileged: f?.is_privileged, search: f?.search, page_size: 0 }),
@@ -450,6 +451,22 @@ const DATA_PRESETS = {
       name: g.category ? `${g.category}: ${g.value}` : g.value,
       value: g.asset_count,
       color: g.color || PALETTE[(d?.groups || []).indexOf(g) % PALETTE.length],
+    })),
+  },
+  owner_risk_bar: {
+    label: 'Owner Risk Score', group: 'Ownership', source: 'owner_risk', type: 'categories',
+    extract: d => (d?.owners || []).map(o => ({
+      name: o.owner,
+      value: parseFloat(o.avg_priority_score) || 0,
+      color: o.rag === 'red' ? '#ef4444' : o.rag === 'amber' ? '#f59e0b' : '#22c55e',
+    })),
+  },
+  owner_finding_count: {
+    label: 'Owner Finding Count', group: 'Ownership', source: 'owner_risk', type: 'categories',
+    extract: d => (d?.owners || []).map(o => ({
+      name: o.owner,
+      value: o.total,
+      color: o.rag === 'red' ? '#ef4444' : o.rag === 'amber' ? '#f59e0b' : '#22c55e',
     })),
   },
   age_distribution: {
@@ -863,6 +880,26 @@ const DATA_PRESETS = {
       { key: 'finding_count', label: 'Findings' },
       { key: 'finding_density', label: 'Density' },
       { key: 'sla_compliance', label: 'SLA', render: v => v != null ? `${v}%` : 'N/A' },
+    ],
+  },
+  owner_risk_table: {
+    label: 'Owner Risk (Hall of Shame)', group: 'Ownership', source: 'owner_risk', type: 'table',
+    extract: d => (d?.owners || []),
+    columns: [
+      { key: 'rank', label: '#' },
+      { key: 'owner', label: 'Owner' },
+      { key: 'rag', label: 'Status', render: v => {
+        const cfg = { red: ['#ef4444', '●'], amber: ['#f59e0b', '●'], green: ['#22c55e', '●'] }
+        const [color, icon] = cfg[v] || ['#94a3b8', '●']
+        return <span style={{ color, fontWeight: 700, fontSize: 18 }} title={v}>{icon}</span>
+      }},
+      { key: 'critical', label: 'Crit', render: v => v > 0 ? <span style={{ color: '#ef4444', fontWeight: 700 }}>{v}</span> : v },
+      { key: 'high', label: 'High' },
+      { key: 'total', label: 'Total' },
+      { key: 'exploit_count', label: 'Exploits', render: v => v > 0 ? <span style={{ color: '#f97316', fontWeight: 600 }}>{v}</span> : v },
+      { key: 'avg_priority_score', label: 'Avg Priority', render: v => v?.toFixed?.(1) },
+      { key: 'sla_compliance', label: 'SLA', render: v => v != null ? `${v}%` : 'N/A' },
+      { key: 'quick_wins', label: 'Quick Wins' },
     ],
   },
   quick_wins_table: {
@@ -1586,6 +1623,25 @@ const EASM_DASHBOARD = {
     { id: 'ea13',type: 'table',     title: 'Discovered Assets',    width: 'full',    config: { preset: 'easm_assets_table', limit: 50 } },
     { id: 'ea14',type: 'table',     title: 'Recent Changes',       width: 'full',    config: { preset: 'easm_events_table', limit: 30 } },
     { id: 'ea15',type: 'table',     title: 'Breach Exposure',      width: 'full',    config: { preset: 'easm_breaches_table', limit: 20 } },
+  ],
+}
+
+const OWNER_ACCOUNTABILITY_DASHBOARD = {
+  id: 'default-owner-accountability',
+  name: 'Owner Accountability',
+  createdAt: new Date(0).toISOString(),
+  widgets: [
+    { id: 'oa0',  type: 'header',    title: 'Owner Accountability',            width: 'full',    config: { title: 'Owner Accountability Report', subtitle: 'Risk posture and remediation workload broken down by responsible owner — red means action required now' } },
+    { id: 'oa1',  type: 'card',      title: 'Total Findings',                  width: 'quarter', config: { preset: 'total_findings' } },
+    { id: 'oa2',  type: 'card',      title: 'Critical',                        width: 'quarter', config: { preset: 'critical_count' } },
+    { id: 'oa3',  type: 'card',      title: 'SLA Breached',                    width: 'quarter', config: { preset: 'sla_breached' } },
+    { id: 'oa4',  type: 'card',      title: 'With Exploit',                    width: 'quarter', config: { preset: 'exploit_count' } },
+    { id: 'oa5',  type: 'bar_chart', title: 'Risk Score by Owner',             width: 'full',    config: { preset: 'owner_risk_bar', horizontal: true } },
+    { id: 'oa6',  type: 'bar_chart', title: 'Open Findings by Owner',          width: 'half',    config: { preset: 'owner_finding_count', horizontal: true } },
+    { id: 'oa7',  type: 'pie_chart', title: 'Severity Distribution',           width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
+    { id: 'oa8',  type: 'table',     title: 'Owner Risk Scorecard',            width: 'full',    config: { preset: 'owner_risk_table' } },
+    { id: 'oa9',  type: 'table',     title: 'Remediation Queue',               width: 'full',    config: { preset: 'remediation_queue_data', limit: 20 } },
+    { id: 'oa10', type: 'table',     title: 'Quick Wins (Assign to Owner)',    width: 'full',    config: { preset: 'quick_wins_table', limit: 10 } },
   ],
 }
 
@@ -3928,7 +3984,7 @@ export default function ReportBuilder() {
       let needsReload = false
 
       // Ensure default dashboards exist and stay up-to-date
-      const ootb = [EXECUTIVE_DASHBOARD, DEFAULT_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD, EASM_DASHBOARD]
+      const ootb = [EXECUTIVE_DASHBOARD, DEFAULT_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD, EASM_DASHBOARD, OWNER_ACCOUNTABILITY_DASHBOARD]
       for (const dash of ootb) {
         const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}:${w.config?.show_benchmark ? 'bm' : ''}`).join('|')
         const existing = templates.find(t => t.name === dash.name)
