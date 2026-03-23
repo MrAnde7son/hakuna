@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from hakuna.utils.token_tracker import get_tracker
 from hakuna.utils.context_manager import rolling_context
 
-from models.models import Agent, AgentRun, IntegrationConfig
+from models.models import Agent, AgentRun, AgentApproval, IntegrationConfig
 from agents.agent_tools import TOOL_REGISTRY, get_claude_tool_schemas, get_openai_tool_schemas
 from agents.agent_context import compress_tool_result, build_context_section
 
@@ -394,6 +394,52 @@ CONFIRMATION_REQUIRED_TOOLS = {
     "update_finding_status", "create_exception",
 }
 
+# Tools gated by HITL approval (superset of confirmation-required tools)
+HITL_TOOLS = CONFIRMATION_REQUIRED_TOOLS | {
+    "tag_assets", "bulk_tag_findings", "create_tag", "run_auto_tag_rules",
+}
+
+
+class ApprovalRequired(Exception):
+    """Raised when a HITL agent tries to call a write tool that needs human approval."""
+    def __init__(self, approval_id: int, tool_name: str):
+        self.approval_id = approval_id
+        self.tool_name = tool_name
+        super().__init__(f"Approval required for tool '{tool_name}' (approval_id={approval_id})")
+
+
+def _create_approval(
+    agent: Agent,
+    run: AgentRun,
+    db: Session,
+    tool_name: str,
+    tool_input: dict,
+    messages_snapshot: list,
+    assistant_content: list,
+    provider: str,
+    model_name: str,
+    current_step: int,
+    tool_use_id: str,
+) -> "AgentApproval":
+    """Persist an AgentApproval record and raise ApprovalRequired."""
+    approval = AgentApproval(
+        org_id=agent.org_id,
+        agent_run_id=run.id,
+        agent_id=agent.id,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        messages_snapshot=messages_snapshot,
+        assistant_content=assistant_content,
+        provider=provider,
+        model_name=model_name,
+        current_step=current_step,
+        tool_use_id=tool_use_id,
+        status="pending",
+    )
+    db.add(approval)
+    db.flush()  # get id without committing yet
+    return approval
+
 
 def _check_confirmation(tool_name: str, tool_input: dict):
     """Enforce confirmation for destructive/external-facing tools.
@@ -476,11 +522,26 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
 
         # Process tool calls — serialize content to plain dicts to avoid
         # unsupported properties (e.g. 'annotations') from the SDK objects
+        approval_mode = (agent.guardrails or {}).get("approval_mode", "auto")
         messages.append({"role": "assistant", "content": assistant_content})
         tool_results = []
         for block in response.content:
             if block.type != "tool_use":
                 continue
+            # HITL: pause before any write tool that needs human approval
+            if approval_mode == "hitl" and block.name in HITL_TOOLS:
+                approval = _create_approval(
+                    agent=agent, run=run, db=db,
+                    tool_name=block.name, tool_input=block.input or {},
+                    messages_snapshot=messages[:-1],  # before the appended assistant msg
+                    assistant_content=assistant_content,
+                    provider="anthropic", model_name=model,
+                    current_step=step, tool_use_id=block.id,
+                )
+                run.status = "awaiting_approval"
+                run.trace = trace
+                db.commit()
+                raise ApprovalRequired(approval.id, block.name)
             result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
             tool_results.append({
                 "type": "tool_result",
@@ -555,6 +616,7 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
 
         # Process tool calls — build clean message dict to avoid SDK-injected
         # fields like 'annotations', 'audio', 'refusal' that APIs reject
+        approval_mode = (agent.guardrails or {}).get("approval_mode", "auto")
         assistant_msg = {"role": "assistant", "content": msg.content or ""}
         if msg.tool_calls:
             assistant_msg["tool_calls"] = [
@@ -564,6 +626,20 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
         messages.append(assistant_msg)
         for tc in msg.tool_calls:
             tool_input = json.loads(tc.function.arguments) if tc.function.arguments else {}
+            # HITL: pause before write tool
+            if approval_mode == "hitl" and tc.function.name in HITL_TOOLS:
+                approval = _create_approval(
+                    agent=agent, run=run, db=db,
+                    tool_name=tc.function.name, tool_input=tool_input,
+                    messages_snapshot=messages[:-1],  # before appended assistant msg
+                    assistant_content=assistant_content,
+                    provider=provider, model_name=model,
+                    current_step=step, tool_use_id=tc.id,
+                )
+                run.status = "awaiting_approval"
+                run.trace = trace
+                db.commit()
+                raise ApprovalRequired(approval.id, tc.function.name)
             result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
             messages.append({
                 "role": "tool",
@@ -707,6 +783,10 @@ def run_agent(agent: Agent, user_input: str, db: Session) -> AgentRun:
             _run_gemini(agent, user_input, db, run, model)
         else:
             raise RuntimeError(f"Unsupported provider: {provider}")
+    except ApprovalRequired:
+        # HITL pause — run already set to awaiting_approval and committed
+        db.refresh(run)
+        return run
     except Exception as e:
         logger.exception("Agent run failed")
         run.status = "failed"
@@ -760,6 +840,16 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session):
             yield from _stream_gemini(agent, user_input, db, run, model)
         else:
             raise RuntimeError(f"Unsupported provider: {provider}")
+    except ApprovalRequired as e:
+        # HITL pause — emit event so frontend can show approval UI
+        db.refresh(run)
+        yield {
+            "type": "approval_required",
+            "run_id": run.id,
+            "approval_id": e.approval_id,
+            "tool_name": e.tool_name,
+        }
+        return
     except Exception as e:
         logger.exception("Agent run failed")
         run.status = "failed"
@@ -821,11 +911,25 @@ def _stream_anthropic(agent, user_input, db, run, model):
             run.status = "done"
             break
 
+        approval_mode = (agent.guardrails or {}).get("approval_mode", "auto")
         messages.append({"role": "assistant", "content": assistant_content})
         tool_results = []
         for block in response.content:
             if block.type != "tool_use":
                 continue
+            if approval_mode == "hitl" and block.name in HITL_TOOLS:
+                approval = _create_approval(
+                    agent=agent, run=run, db=db,
+                    tool_name=block.name, tool_input=block.input or {},
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider="anthropic", model_name=model,
+                    current_step=step, tool_use_id=block.id,
+                )
+                run.status = "awaiting_approval"
+                run.trace = trace
+                db.commit()
+                raise ApprovalRequired(approval.id, block.name)
             result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
             yield {"type": "tool_result", "name": block.name, "result": result_str[:2000], "step": step}
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_str})
@@ -885,9 +989,23 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider):
                 {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                 for tc in msg.tool_calls
             ]
+        approval_mode = (agent.guardrails or {}).get("approval_mode", "auto")
         messages.append(assistant_msg)
         for tc in msg.tool_calls:
             tool_input = json.loads(tc.function.arguments) if tc.function.arguments else {}
+            if approval_mode == "hitl" and tc.function.name in HITL_TOOLS:
+                approval = _create_approval(
+                    agent=agent, run=run, db=db,
+                    tool_name=tc.function.name, tool_input=tool_input,
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider=provider, model_name=model,
+                    current_step=step, tool_use_id=tc.id,
+                )
+                run.status = "awaiting_approval"
+                run.trace = trace
+                db.commit()
+                raise ApprovalRequired(approval.id, tc.function.name)
             result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
             yield {"type": "tool_result", "name": tc.function.name, "result": result_str[:2000], "step": step}
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
@@ -970,3 +1088,266 @@ def update_agent_memory(agent: Agent, memory_updates: dict, db: Session):
     mem.update(memory_updates)
     agent.memory = mem
     db.commit()
+
+
+# ── HITL Resume ───────────────────────────────────────────────────────
+
+def resume_agent_run(run_id: int, decision: str, reason: Optional[str], decider_id: Optional[int], db: Session) -> AgentRun:
+    """Resume a paused agent run after a human approval decision.
+
+    decision: "approved" | "rejected"
+    reason:   optional rejection reason shown to the agent
+    """
+    run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+    if not run:
+        raise ValueError(f"Run {run_id} not found")
+    if run.status != "awaiting_approval":
+        raise ValueError(f"Run {run_id} is not awaiting approval (status: {run.status})")
+
+    approval = (
+        db.query(AgentApproval)
+        .filter(AgentApproval.agent_run_id == run_id, AgentApproval.status == "pending")
+        .order_by(AgentApproval.requested_at.desc())
+        .first()
+    )
+    if not approval:
+        raise ValueError(f"No pending approval found for run {run_id}")
+
+    # Record the decision
+    approval.status = decision  # "approved" or "rejected"
+    approval.decided_at = datetime.utcnow()
+    approval.decided_by = decider_id
+    approval.rejection_reason = reason
+    db.flush()
+
+    agent = db.query(Agent).filter(Agent.id == run.agent_id).first()
+    run.status = "running"
+    db.commit()
+
+    try:
+        provider = approval.provider
+        model = approval.model_name or agent.model or get_default_model(db)
+        trace = run.trace or []
+
+        if provider == "anthropic":
+            _resume_anthropic(agent, run, approval, decision, reason, model, trace, db)
+        elif provider in ("openai", "groq"):
+            _resume_openai_compat(agent, run, approval, decision, reason, model, provider, trace, db)
+        else:
+            # Gemini and unknown providers: inject a note and mark done
+            run.output = f"Action '{approval.tool_name}' was {decision}. " + (f"Reason: {reason}" if reason else "")
+            run.status = "done"
+    except ApprovalRequired:
+        # Another HITL gate hit during continuation — leave as awaiting_approval
+        db.refresh(run)
+        return run
+    except Exception as e:
+        logger.exception("Agent resume failed")
+        run.status = "failed"
+        run.error = str(e)
+
+    run.finished_at = datetime.utcnow()
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
+    """Continue an Anthropic run from the point of HITL pause."""
+    messages = list(approval.messages_snapshot or [])
+    assistant_content = approval.assistant_content or []
+
+    # Re-append the assistant message with all its tool_use blocks
+    messages.append({"role": "assistant", "content": assistant_content})
+
+    tool_results = []
+    for block in assistant_content:
+        if block.get("type") != "tool_use":
+            continue
+        block_id = block.get("id", "")
+        tool_name = block.get("name", "")
+        tool_input = block.get("input") or {}
+
+        if block_id == approval.tool_use_id:
+            # This is the gated tool — execute or inject rejection
+            if decision == "approved":
+                result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True}, approval.current_step, trace)
+            else:
+                result_str = json.dumps({
+                    "status": "rejected",
+                    "reason": reason or "Action rejected by reviewer. Please take an alternate action.",
+                })
+                trace.append({
+                    "role": "tool", "tool_name": tool_name,
+                    "input": tool_input, "output": result_str,
+                    "step": approval.current_step,
+                })
+        else:
+            # Other tool_use blocks in the same step — execute normally
+            result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace)
+
+        tool_results.append({"type": "tool_result", "tool_use_id": block_id, "content": result_str})
+
+    messages.append({"role": "user", "content": tool_results})
+    run.steps_used = (run.steps_used or 0) + 1
+
+    # Continue from next step
+    max_steps = (agent.guardrails or {}).get("max_steps", 15)
+    remaining = max_steps - approval.current_step - 1
+    system = _build_system_prompt_cached(agent)
+    tools = get_claude_tool_schemas(agent.tools or [])
+    cl = _get_anthropic_client(db)
+    approval_mode = (agent.guardrails or {}).get("approval_mode", "auto")
+
+    for step in range(approval.current_step + 1, approval.current_step + 1 + remaining):
+        compressed_messages = rolling_context(messages, max_turns=5)
+        create_kwargs = {"model": model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
+        if tools:
+            create_kwargs["tools"] = tools
+        response = cl.messages.create(**create_kwargs)
+
+        get_tracker().track_call(
+            agent_name=agent.name or "unknown", model=model,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0),
+            call_metadata={"function": "_resume_anthropic", "step": step, "run_id": run.id},
+        )
+
+        assistant_content = []
+        for block in response.content:
+            if block.type == "text":
+                assistant_content.append({"type": "text", "text": block.text})
+            elif block.type == "tool_use":
+                assistant_content.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
+        trace.append({"role": "assistant", "content": assistant_content, "step": step})
+
+        if response.stop_reason == "end_turn":
+            run.output = "".join(b.text for b in response.content if b.type == "text")
+            run.status = "done"
+            break
+
+        messages.append({"role": "assistant", "content": assistant_content})
+        tool_results = []
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
+            if approval_mode == "hitl" and block.name in HITL_TOOLS:
+                new_approval = _create_approval(
+                    agent=agent, run=run, db=db,
+                    tool_name=block.name, tool_input=block.input or {},
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider="anthropic", model_name=model,
+                    current_step=step, tool_use_id=block.id,
+                )
+                run.status = "awaiting_approval"
+                run.trace = trace
+                db.commit()
+                raise ApprovalRequired(new_approval.id, block.name)
+            result_str = _execute_tool(agent, db, block.name, block.input or {}, step, trace)
+            tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_str})
+
+        messages.append({"role": "user", "content": tool_results})
+        run.steps_used = step + 1
+    else:
+        run.output = "Agent reached maximum steps without completing."
+        run.status = "done"
+
+    run.trace = trace
+
+
+def _resume_openai_compat(agent, run, approval, decision, reason, model, provider, trace, db):
+    """Continue an OpenAI-compatible run from the point of HITL pause."""
+    messages = list(approval.messages_snapshot or [])
+    assistant_content = approval.assistant_content or []
+
+    # Reconstruct the clean assistant_msg with tool_calls
+    tool_call_blocks = [b for b in assistant_content if b.get("type") == "tool_use"]
+    assistant_msg = {"role": "assistant", "content": ""}
+    if tool_call_blocks:
+        assistant_msg["tool_calls"] = [
+            {"id": b["id"], "type": "function", "function": {"name": b["name"], "arguments": json.dumps(b.get("input", {}))}}
+            for b in tool_call_blocks
+        ]
+    messages.append(assistant_msg)
+
+    for block in tool_call_blocks:
+        block_id = block.get("id", "")
+        tool_name = block.get("name", "")
+        tool_input = block.get("input") or {}
+
+        if block_id == approval.tool_use_id:
+            if decision == "approved":
+                result_str = _execute_tool(agent, db, tool_name, {**tool_input, "confirmed": True}, approval.current_step, trace)
+            else:
+                result_str = json.dumps({
+                    "status": "rejected",
+                    "reason": reason or "Action rejected by reviewer. Please take an alternate action.",
+                })
+                trace.append({"role": "tool", "tool_name": tool_name, "input": tool_input, "output": result_str, "step": approval.current_step})
+        else:
+            result_str = _execute_tool(agent, db, tool_name, tool_input, approval.current_step, trace)
+
+        messages.append({"role": "tool", "tool_call_id": block_id, "content": result_str})
+
+    run.steps_used = (run.steps_used or 0) + 1
+
+    max_steps = (agent.guardrails or {}).get("max_steps", 15)
+    remaining = max_steps - approval.current_step - 1
+    tools = get_openai_tool_schemas(agent.tools or [])
+    cl = _get_groq_client(db) if provider == "groq" else _get_openai_client(db)
+    approval_mode = (agent.guardrails or {}).get("approval_mode", "auto")
+
+    for step in range(approval.current_step + 1, approval.current_step + 1 + remaining):
+        compressed_messages = _compress_openai_messages(messages, provider)
+        create_kwargs = {"model": model, "max_tokens": 4096, "messages": compressed_messages}
+        if tools:
+            create_kwargs["tools"] = tools
+        response = cl.chat.completions.create(**create_kwargs)
+        choice = response.choices[0]
+        msg = choice.message
+
+        assistant_content = []
+        if msg.content:
+            assistant_content.append({"type": "text", "text": msg.content})
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                assistant_content.append({"type": "tool_use", "id": tc.id, "name": tc.function.name, "input": json.loads(tc.function.arguments) if tc.function.arguments else {}})
+        trace.append({"role": "assistant", "content": assistant_content, "step": step})
+
+        if choice.finish_reason in ("stop", "length") or not msg.tool_calls:
+            run.output = msg.content or ""
+            run.status = "done"
+            break
+
+        clean_msg = {"role": "assistant", "content": msg.content or ""}
+        if msg.tool_calls:
+            clean_msg["tool_calls"] = [
+                {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                for tc in msg.tool_calls
+            ]
+        messages.append(clean_msg)
+        for tc in msg.tool_calls:
+            tool_input = json.loads(tc.function.arguments) if tc.function.arguments else {}
+            if approval_mode == "hitl" and tc.function.name in HITL_TOOLS:
+                new_approval = _create_approval(
+                    agent=agent, run=run, db=db,
+                    tool_name=tc.function.name, tool_input=tool_input,
+                    messages_snapshot=messages[:-1],
+                    assistant_content=assistant_content,
+                    provider=provider, model_name=model,
+                    current_step=step, tool_use_id=tc.id,
+                )
+                run.status = "awaiting_approval"
+                run.trace = trace
+                db.commit()
+                raise ApprovalRequired(new_approval.id, tc.function.name)
+            result_str = _execute_tool(agent, db, tc.function.name, tool_input, step, trace)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
+        run.steps_used = step + 1
+    else:
+        run.output = "Agent reached maximum steps without completing."
+        run.status = "done"
+
+    run.trace = trace

@@ -19,8 +19,9 @@ import {
   getAgentSchedules, createAgentSchedule, updateAgentSchedule, deleteAgentSchedule,
   exportAgent, importAgent,
   getAgentDocuments, uploadAgentDocument, deleteAgentDocument,
-  getAvailableModels,
+  getAvailableModels, getAgentApprovals,
 } from '../../api.js'
+import AgentApprovalQueue from './AgentApprovalQueue.jsx'
 
 const MODELS = [
   // Anthropic
@@ -74,6 +75,8 @@ export default function AgentBuilder() {
   const [tab, setTab] = useState('runs') // config | runs | schedule
   const [saving, setSaving] = useState(false)
   const [showTemplates, setShowTemplates] = useState(false)
+  const [showApprovals, setShowApprovals] = useState(false)
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0)
   const [schedules, setSchedules] = useState([])
   const [documents, setDocuments] = useState([])
   const inputRef = useRef()
@@ -92,6 +95,7 @@ export default function AgentBuilder() {
     getAgentTemplates().then(setTemplates).catch(() => {})
     getAvailableModels().then(setAvailableModels).catch(() => {})
     getAgentSchedules().then(setSchedules).catch(() => {})
+    getAgentApprovals('pending').then(a => setPendingApprovalCount(a.length)).catch(() => {})
   }, [])
 
   const selectAgent = (agent) => {
@@ -100,6 +104,8 @@ export default function AgentBuilder() {
     setTab('runs')
     setActiveRun(null)
     setStreamEvents([])
+    setShowTemplates(false)
+    setShowApprovals(false)
     getAgentRuns(agent.id).then(setRuns).catch(() => setRuns([]))
     getAgentSchedules().then(setSchedules).catch(() => {})
     getAgentDocuments(agent.id).then(setDocuments).catch(() => setDocuments([]))
@@ -117,10 +123,10 @@ export default function AgentBuilder() {
   }
 
   const handleFromTemplate = async (template) => {
+    setShowTemplates(false)
     const agent = await createAgentFromTemplate({ template_id: template.id })
     await refresh()
     selectAgent(agent)
-    setShowTemplates(false)
   }
 
   const handleExport = async () => {
@@ -294,7 +300,7 @@ export default function AgentBuilder() {
           <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Agents</h2>
           <div style={{ display: 'flex', gap: 4 }}>
             <button
-              onClick={() => setShowTemplates(!showTemplates)}
+              onClick={() => { setShowTemplates(v => !v); setShowApprovals(false); setSelected(null); setEditing(null) }}
               title="Create from template"
               style={{
                 display: 'flex', alignItems: 'center', gap: 4, flex: 1, justifyContent: 'center',
@@ -357,11 +363,42 @@ export default function AgentBuilder() {
             </div>
           )}
         </div>
+
+        {/* Approvals button */}
+        <button
+          onClick={() => { setShowApprovals(v => !v); setShowTemplates(false); setSelected(null); setEditing(null) }}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, marginTop: 8,
+            width: '100%', padding: '7px 10px', borderRadius: 6,
+            border: '1px solid var(--border)',
+            background: showApprovals ? 'var(--nav-active-bg)' : 'transparent',
+            color: showApprovals ? 'var(--nav-active-text)' : 'var(--muted)',
+            cursor: 'pointer', fontSize: 12, fontWeight: 600, textAlign: 'left',
+          }}
+        >
+          <CheckCircle size={13} />
+          Approval Queue
+          {pendingApprovalCount > 0 && (
+            <span style={{
+              marginLeft: 'auto', padding: '1px 6px', borderRadius: 10,
+              background: '#f59e0b', color: '#fff', fontSize: 10, fontWeight: 700,
+            }}>
+              {pendingApprovalCount}
+            </span>
+          )}
+        </button>
       </div>
 
-      {/* Right panel — templates gallery / config + runner */}
+      {/* Right panel — templates gallery / approval queue / config + runner */}
       {showTemplates ? (
         <TemplateGallery templates={templates} onCreate={handleFromTemplate} onClose={() => setShowTemplates(false)} />
+      ) : showApprovals ? (
+        <div style={{ flex: 1, overflow: 'auto', padding: '0 4px' }}>
+          <AgentApprovalQueue
+            panel
+            onPendingCount={setPendingApprovalCount}
+          />
+        </div>
       ) : selected && editing ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0, overflow: 'hidden' }}>
           {/* Header */}

@@ -915,6 +915,16 @@ export const runAgentPipeline = (pipelineId, input, modelOverrides = {}) => requ
   body: JSON.stringify({ input, model_overrides: modelOverrides }),
 })
 
+// Agent Approvals (HITL)
+export const getAgentApprovals = (status) => request(`/agents/approvals${status ? `?status=${status}` : ''}`)
+export const getAgentApproval = (approvalId) => request(`/agents/approvals/${approvalId}`)
+export const decideAgentApproval = (approvalId, decision, reason) => request(`/agents/approvals/${approvalId}/decide`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ decision, reason }),
+})
+export const getRunApprovals = (agentId, runId) => request(`/agents/${agentId}/runs/${runId}/approvals`)
+
 // ── VM Scanner API (via main backend) ─────────────────────
 export const startVmScan = (data) => request('/vm/scan', {
   method: 'POST',

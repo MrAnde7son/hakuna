@@ -16,6 +16,7 @@
     "campaigns": "Campaigns",
     "remediation": "Remediation",
     "agents": "Agents",
+    "agentApprovals": "Approval Queue",
     "integrations": "Integrations",
     "settings": "Settings",
     "expandNav": "Expand navigation",

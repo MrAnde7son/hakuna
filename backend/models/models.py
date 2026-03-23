@@ -1430,6 +1430,38 @@ class AgentSchedule(Base):
     agent = relationship("Agent")
 
 
+class AgentApproval(Base):
+    """Pending human-in-the-loop approval for a write/destructive tool call during an agent run."""
+    __tablename__ = "agent_approvals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    agent_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=False, index=True)
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=False, index=True)
+
+    # Tool being gated
+    tool_name = Column(String, nullable=False)
+    tool_input = Column(JSON, default=dict)
+
+    # Execution state snapshot for seamless resume
+    messages_snapshot = Column(JSON, default=list)   # messages list BEFORE the paused assistant turn
+    assistant_content = Column(JSON, default=list)   # full assistant content block (all tool_use blocks)
+    provider = Column(String)                        # "anthropic" / "openai" / "groq"
+    model_name = Column(String)                      # which model was running
+    current_step = Column(Integer, default=0)        # step index in the agent loop
+    tool_use_id = Column(String)                     # tool_use block ID (Anthropic) or tool_call ID (OpenAI)
+
+    # Decision
+    status = Column(String, default="pending")       # pending / approved / rejected / expired
+    requested_at = Column(DateTime, default=datetime.utcnow)
+    decided_at = Column(DateTime, nullable=True)
+    decided_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+
+    run = relationship("AgentRun")
+    agent = relationship("Agent")
+
+
 # ─────────────────────────────────────────────────────────
 # Aggregated Solutions (root-cause grouping)
 # ─────────────────────────────────────────────────────────
