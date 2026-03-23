@@ -341,6 +341,188 @@ class AgentPipeline:
         # Should not reach here
         return StageResult(stage_name=stage.name, success=False)
 
+    def execute_with_parallel(
+        self,
+        db: Session,
+        user_input: str,
+        parallel_groups: Optional[Dict[str, List[str]]] = None,
+        model_overrides: Optional[Dict[str, str]] = None,
+        db_factory=None,
+    ) -> List[StageResult]:
+        """Execute pipeline with support for parallel stage groups.
+
+        Args:
+            parallel_groups: Dict mapping group name to list of stage names that
+                             should run concurrently. E.g. {"analysis": ["risk_scoring", "threat_check"]}
+            db_factory: Session factory for parallel execution (required for parallel groups).
+
+        Stages not in any parallel group run sequentially as normal.
+        """
+        from agents.agent_engine import run_agent
+
+        model_overrides = model_overrides or {}
+        parallel_groups = parallel_groups or {}
+        results: List[StageResult] = []
+        current_input = user_input
+
+        # Build reverse lookup: stage_name -> group_name
+        stage_to_group = {}
+        for group_name, stage_names in parallel_groups.items():
+            for sn in stage_names:
+                stage_to_group[sn] = group_name
+
+        # Track which groups have been executed
+        executed_groups = set()
+
+        i = 0
+        while i < len(self.stages):
+            stage = self.stages[i]
+            group = stage_to_group.get(stage.name)
+
+            if group and group not in executed_groups:
+                # Collect all stages in this parallel group
+                group_stages = [s for s in self.stages if s.name in parallel_groups[group]]
+                executed_groups.add(group)
+
+                if not db_factory:
+                    from core.database import SessionLocal
+                    db_factory = SessionLocal
+
+                group_results = self._execute_parallel_group(
+                    group_stages, current_input, db_factory, model_overrides
+                )
+                results.extend(group_results)
+
+                # Merge outputs from parallel group for the next stage
+                outputs = [r.output for r in group_results if r.success and r.output]
+                if outputs:
+                    current_input = (
+                        f"Results from parallel analysis ({', '.join(s.name for s in group_stages)}):\n\n"
+                        + "\n\n---\n\n".join(outputs)
+                    )
+
+                # Skip past all stages in this group
+                i += 1
+                continue
+
+            elif group and group in executed_groups:
+                # Already executed as part of parallel group
+                i += 1
+                continue
+
+            # Normal sequential execution
+            logger.info(f"Pipeline '{self.name}': executing stage '{stage.name}'")
+            model = get_model_for_tier(stage.model_tier, model_overrides.get(stage.name))
+            agent = Agent(
+                name=f"{self.name}/{stage.name}",
+                description=stage.description,
+                system_prompt=stage.system_prompt,
+                tools=stage.tools,
+                guardrails={"max_steps": stage.max_steps, "read_only": stage.model_tier == ModelTier.DETERMINISTIC},
+                model=model,
+            )
+            agent.id = hash(f"{self.name}_{stage.name}") % 100000
+
+            stage_result = self._execute_stage(agent, stage, current_input, db, model)
+            results.append(stage_result)
+
+            if not stage_result.success and stage.on_error == "stop":
+                break
+
+            if stage_result.handoff:
+                current_input = (
+                    f"Previous stage '{stage.name}' produced this handoff data. "
+                    f"Process it according to your instructions.\n\n"
+                    f"```json\n{stage_result.handoff.to_json()}\n```"
+                )
+            elif stage_result.output:
+                current_input = f"Previous stage '{stage.name}' output:\n\n{stage_result.output}"
+
+            i += 1
+
+        return results
+
+    def _execute_parallel_group(
+        self,
+        stages: List[PipelineStage],
+        user_input: str,
+        db_factory,
+        model_overrides: Dict[str, str],
+    ) -> List[StageResult]:
+        """Execute a group of stages in parallel using threads."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from agents.agent_engine import run_agent
+
+        def _run_stage(stage: PipelineStage) -> StageResult:
+            db = db_factory()
+            try:
+                model = get_model_for_tier(stage.model_tier, model_overrides.get(stage.name))
+                agent = Agent(
+                    name=f"{self.name}/{stage.name}",
+                    description=stage.description,
+                    system_prompt=stage.system_prompt,
+                    tools=stage.tools,
+                    guardrails={"max_steps": stage.max_steps, "read_only": stage.model_tier == ModelTier.DETERMINISTIC},
+                    model=model,
+                )
+                agent.id = hash(f"{self.name}_{stage.name}") % 100000
+
+                run = run_agent(agent, user_input, db)
+
+                if run.status == "failed":
+                    return StageResult(
+                        stage_name=stage.name, success=False,
+                        error=AgentError(
+                            error_type=AgentErrorType.PROVIDER_ERROR,
+                            message=run.error or "Agent execution failed",
+                            stage_name=stage.name,
+                        ),
+                        trace=run.trace, model_used=model,
+                    )
+
+                handoff = self._extract_handoff(stage, run.output)
+                return StageResult(
+                    stage_name=stage.name, success=True,
+                    output=run.output, handoff=handoff,
+                    trace=run.trace, model_used=model,
+                    steps_used=run.steps_used or 0,
+                )
+            except Exception as e:
+                logger.exception(f"Parallel stage '{stage.name}' failed")
+                return StageResult(
+                    stage_name=stage.name, success=False,
+                    error=AgentError(
+                        error_type=AgentErrorType.PROVIDER_ERROR,
+                        message=str(e), stage_name=stage.name,
+                    ),
+                )
+            finally:
+                db.close()
+
+        stage_names = [s.name for s in stages]
+        logger.info(f"Pipeline '{self.name}': executing parallel group {stage_names}")
+
+        results = []
+        with ThreadPoolExecutor(max_workers=len(stages)) as executor:
+            futures = {executor.submit(_run_stage, s): s.name for s in stages}
+            for future in as_completed(futures):
+                try:
+                    results.append(future.result(timeout=300))
+                except Exception as e:
+                    stage_name = futures[future]
+                    results.append(StageResult(
+                        stage_name=stage_name, success=False,
+                        error=AgentError(
+                            error_type=AgentErrorType.PROVIDER_ERROR,
+                            message=str(e), stage_name=stage_name,
+                        ),
+                    ))
+
+        # Sort results back to original stage order
+        order = {s.name: i for i, s in enumerate(stages)}
+        results.sort(key=lambda r: order.get(r.stage_name, 999))
+        return results
+
     def _extract_handoff(self, stage: PipelineStage, output: Optional[str]) -> Optional[AgentHandoff]:
         """Try to extract a structured handoff from agent output."""
         if not output or not stage.output_type:

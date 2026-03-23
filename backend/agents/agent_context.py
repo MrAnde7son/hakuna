@@ -129,6 +129,14 @@ HANDOFF_SCHEMAS = {
         "description": "Batch of tickets to create from the ticket agent",
         "required_fields": ["tickets", "ticketing_system", "requires_confirmation"],
     },
+    "orchestration_result": {
+        "description": "Merged output from a multi-agent orchestration (parallel fan-in)",
+        "required_fields": ["agent_outputs", "merge_strategy", "agent_count"],
+    },
+    "multi_perspective_analysis": {
+        "description": "Combined analyses from multiple specialist agents",
+        "required_fields": ["perspectives", "consensus_items", "conflicts"],
+    },
 }
 
 

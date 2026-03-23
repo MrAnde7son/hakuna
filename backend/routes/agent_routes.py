@@ -126,6 +126,135 @@ def run_pipeline(pipeline_id: str, body: PipelineRunRequest, db: Session = Depen
     }
 
 
+# ── Multi-Agent Orchestration ─────────────────────────────────────────
+
+@router.get("/orchestrator/templates")
+def list_orchestrator_templates():
+    """List available multi-agent orchestration plan templates."""
+    from agents.agent_orchestrator import get_orchestrator_templates
+    return get_orchestrator_templates()
+
+
+class OrchestratorRunRequest(BaseModel):
+    """Request body for executing a multi-agent orchestration plan."""
+    model_config = {"protected_namespaces": ()}
+    input: str
+    steps: List[Dict] = []  # Custom plan steps (overrides template)
+    template_id: Optional[str] = None  # Use a pre-built template
+
+
+class InvokeAgentRequest(BaseModel):
+    agent_id: int
+    input: str
+
+
+class InvokeParallelRequest(BaseModel):
+    agents: List[Dict]  # [{"agent_id": int, "input": str}, ...]
+    merge_strategy: str = "concatenate"
+
+
+@router.post("/orchestrator/invoke")
+def invoke_single_agent(body: InvokeAgentRequest, db: Session = Depends(get_db)):
+    """Invoke a single agent programmatically and return its result."""
+    from agents.agent_orchestrator import invoke_agent_by_id
+    result = invoke_agent_by_id(body.agent_id, body.input, db)
+    if result.get("status") == "failed" and "not found" in result.get("error", ""):
+        raise HTTPException(404, result["error"])
+    return result
+
+
+@router.post("/orchestrator/invoke-parallel")
+def invoke_parallel_agents(body: InvokeParallelRequest, db: Session = Depends(get_db)):
+    """Invoke multiple agents in parallel and merge their results."""
+    from agents.agent_orchestrator import invoke_agents_parallel, merge_results, MergeStrategy
+
+    if not body.agents:
+        raise HTTPException(400, "agents list is required")
+
+    for cfg in body.agents:
+        if "agent_id" not in cfg or "input" not in cfg:
+            raise HTTPException(400, "Each agent must have 'agent_id' and 'input'")
+
+    try:
+        strategy = MergeStrategy(body.merge_strategy)
+    except ValueError:
+        strategy = MergeStrategy.CONCATENATE
+
+    result = invoke_agents_parallel(body.agents, SessionLocal, max_workers=4)
+    merged = merge_results(result["results"], strategy)
+    merged["duration_ms"] = result["duration_ms"]
+    return merged
+
+
+@router.post("/orchestrator/run")
+def run_orchestration(body: OrchestratorRunRequest, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    """Execute a multi-agent orchestration plan.
+
+    Either provide a template_id to use a pre-built plan, or define custom steps.
+    """
+    from agents.agent_orchestrator import (
+        execute_plan, OrchestratorPlan, OrchestratorStep,
+        StepType, MergeStrategy, ORCHESTRATOR_TEMPLATES,
+    )
+
+    if body.template_id:
+        template = ORCHESTRATOR_TEMPLATES.get(body.template_id)
+        if not template:
+            raise HTTPException(404, f"Orchestrator template '{body.template_id}' not found")
+
+        # Resolve agent roles to actual agent IDs from the org
+        steps = []
+        for step_def in template["steps"]:
+            agents = []
+            for agent_def in step_def["agents"]:
+                role = agent_def.get("role", "")
+                # Find agent by name matching the role
+                from models.models import Agent as AgentModel
+                agent = db.query(AgentModel).filter(
+                    AgentModel.org_id.in_(org_ids),
+                    AgentModel.name.ilike(f"%{role}%"),
+                ).first()
+                if agent:
+                    agents.append({
+                        "agent_id": agent.id,
+                        "input_template": agent_def.get("input_template", "{input}"),
+                    })
+                else:
+                    raise HTTPException(
+                        400,
+                        f"No agent found matching role '{role}'. "
+                        f"Create an agent with '{role}' in its name first.",
+                    )
+            steps.append(OrchestratorStep(
+                step_type=StepType(step_def["type"]),
+                agents=agents,
+                merge_strategy=MergeStrategy(step_def.get("merge_strategy", "concatenate")),
+                name=step_def.get("name", ""),
+            ))
+
+        plan = OrchestratorPlan(
+            name=body.template_id,
+            steps=steps,
+            description=template.get("description", ""),
+        )
+    elif body.steps:
+        # Custom plan from request body
+        steps = []
+        for step_def in body.steps:
+            steps.append(OrchestratorStep(
+                step_type=StepType(step_def.get("type", "sequential")),
+                agents=step_def.get("agents", []),
+                merge_strategy=MergeStrategy(step_def.get("merge_strategy", "concatenate")),
+                name=step_def.get("name", ""),
+            ))
+        plan = OrchestratorPlan(name="custom", steps=steps)
+    else:
+        raise HTTPException(400, "Either template_id or steps is required")
+
+    result = execute_plan(plan, body.input, db, db_factory=SessionLocal)
+    return result
+
+
 # ── Templates (must be before /{agent_id} to avoid route conflicts) ──
 
 @router.get("/templates")

@@ -1780,3 +1780,149 @@ def search_documents(db: Session, params: dict):
         "total_matches": len(scored),
         "documents_searched": len(docs),
     }
+
+
+# ── Multi-Agent Orchestration Tools ───────────────────────────────────
+
+@agent_tool(
+    "invoke_agent",
+    "Run another agent by ID or name and return its output. Use this to delegate sub-tasks "
+    "to specialized agents (e.g. threat intel analysis, remediation planning). "
+    "WHEN TO CALL: When you need a specialized perspective from another agent.",
+    {
+        "agent_id": {"type": "integer", "description": "ID of the agent to invoke"},
+        "agent_name": {"type": "string", "description": "Name of the agent to invoke (alternative to agent_id)"},
+        "input": {"type": "string", "description": "The input/task to send to the target agent"},
+    },
+)
+def tool_invoke_agent(db: Session, params: dict):
+    from agents.agent_orchestrator import invoke_agent_by_id, invoke_agent_by_name
+
+    agent_id = params.get("agent_id")
+    agent_name = params.get("agent_name")
+    user_input = params.get("input", "")
+
+    if not user_input:
+        return {"error": "Input is required"}
+
+    if agent_id:
+        return invoke_agent_by_id(agent_id, user_input, db)
+    elif agent_name:
+        # Need org context — try to get from the calling agent
+        calling_agent_id = params.get("_agent_id")
+        if calling_agent_id:
+            calling_agent = db.query(Agent).filter(Agent.id == calling_agent_id).first()
+            if calling_agent and calling_agent.org_id:
+                return invoke_agent_by_name(agent_name, calling_agent.org_id, user_input, db)
+        return {"error": "Cannot resolve agent by name without org context. Use agent_id instead."}
+    else:
+        return {"error": "Either agent_id or agent_name is required"}
+
+
+@agent_tool(
+    "invoke_agents_parallel",
+    "Run multiple agents in parallel and return their combined results. Fan-out/fan-in pattern. "
+    "Use this for multi-perspective analysis where different agents examine the same data. "
+    "WHEN TO CALL: When you need multiple independent analyses that can run concurrently.",
+    {
+        "agents": {
+            "type": "array",
+            "description": "List of agents to run: [{\"agent_id\": 1, \"input\": \"task for this agent\"}, ...]",
+        },
+        "merge_strategy": {
+            "type": "string",
+            "description": "How to merge results: 'concatenate' (default) or 'structured'",
+        },
+    },
+)
+def tool_invoke_agents_parallel(db: Session, params: dict):
+    from agents.agent_orchestrator import invoke_agents_parallel, merge_results, MergeStrategy
+    from core.database import SessionLocal
+
+    agent_configs = params.get("agents", [])
+    if not agent_configs or not isinstance(agent_configs, list):
+        return {"error": "agents must be a non-empty list of {agent_id, input} objects"}
+
+    for cfg in agent_configs:
+        if "agent_id" not in cfg or "input" not in cfg:
+            return {"error": "Each agent config must have 'agent_id' and 'input' fields"}
+
+    strategy_str = params.get("merge_strategy", "concatenate")
+    try:
+        strategy = MergeStrategy(strategy_str)
+    except ValueError:
+        strategy = MergeStrategy.CONCATENATE
+
+    result = invoke_agents_parallel(agent_configs, SessionLocal, max_workers=4)
+    merged = merge_results(result["results"], strategy)
+    merged["duration_ms"] = result["duration_ms"]
+    return merged
+
+
+@agent_tool(
+    "list_available_agents",
+    "List all agents available in the current organization that can be invoked. "
+    "WHEN TO CALL: Before using invoke_agent, to discover which agents are available.",
+    {},
+)
+def tool_list_available_agents(db: Session, params: dict):
+    calling_agent_id = params.get("_agent_id")
+    org_id = None
+    if calling_agent_id:
+        calling_agent = db.query(Agent).filter(Agent.id == calling_agent_id).first()
+        if calling_agent:
+            org_id = calling_agent.org_id
+
+    q = db.query(Agent)
+    if org_id:
+        q = q.filter(Agent.org_id == org_id)
+    agents = q.order_by(Agent.name).limit(50).all()
+    return [
+        {
+            "id": a.id,
+            "name": a.name,
+            "description": a.description,
+            "tools": a.tools,
+            "model": a.model,
+        }
+        for a in agents
+        if a.id != calling_agent_id  # exclude self
+    ]
+
+
+@agent_tool(
+    "trigger_workflow",
+    "Trigger a workflow execution by workflow ID. Allows agents to kick off automated "
+    "remediation, notification, or ticketing workflows. "
+    "WHEN TO CALL: When analysis is complete and automated follow-up actions should begin.",
+    {
+        "workflow_id": {"type": "integer", "description": "ID of the workflow to trigger"},
+        "trigger_data": {
+            "type": "object",
+            "description": "Optional data to pass to the workflow trigger (e.g. finding_ids, asset_ids)",
+        },
+    },
+)
+def tool_trigger_workflow(db: Session, params: dict):
+    from services.workflow_engine import execute_workflow
+
+    workflow_id = params.get("workflow_id")
+    if not workflow_id:
+        return {"error": "workflow_id is required"}
+
+    trigger_data = params.get("trigger_data", {})
+
+    try:
+        result = execute_workflow(db, workflow_id, trigger_data)
+        return {
+            "status": "completed",
+            "workflow_id": workflow_id,
+            "execution_id": result.get("execution_id"),
+            "items_processed": result.get("items_processed", 0),
+            "summary": result.get("result_summary", "Workflow executed"),
+        }
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.exception("trigger_workflow failed for workflow %s", workflow_id)
+        return {"error": f"Workflow execution failed: {str(e)}"}
