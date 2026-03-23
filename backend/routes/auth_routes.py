@@ -109,6 +109,8 @@ def _user_response(user: User, org: Organization) -> dict:
             "subscription_tier": org.subscription_tier or "free",
             "subscription_status": org.subscription_status,
         },
+        "onboarding_completed": bool(getattr(user, "onboarding_completed", False)),
+        "onboarding_state": getattr(user, "onboarding_state", None) or {},
     }
 
 

@@ -56,6 +56,8 @@ class User(Base):
     last_login_at = Column(DateTime, nullable=True)
     password_reset_token = Column(String, nullable=True, index=True)
     password_reset_expires = Column(DateTime, nullable=True)
+    onboarding_completed = Column(Boolean, default=False)
+    onboarding_state = Column(JSON, default=dict)  # {scan_uploaded, priorities_reviewed, campaign_created}
 
     organization = relationship("Organization", back_populates="users")
 

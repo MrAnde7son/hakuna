@@ -69,6 +69,7 @@ const AgentBuilder = React.lazy(() => import('./components/agents/AgentBuilder.j
 const AggregatedSolutions = React.lazy(() => import('./components/remediation/AggregatedSolutions.jsx'))
 const UserManagement = React.lazy(() => import('./components/settings/UserManagement.jsx'))
 const UserDocs = React.lazy(() => import('./components/docs/UserDocs.jsx'))
+const OnboardingWizard = React.lazy(() => import('./components/onboarding/OnboardingWizard.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
@@ -635,6 +636,17 @@ function HelpButton() {
   )
 }
 
+function OnboardingRedirect() {
+  const { user } = useAuth()
+  const navigate = useNavigate()
+  useEffect(() => {
+    if (user && user.onboarding_completed === false && window.location.pathname !== '/onboarding') {
+      navigate('/onboarding', { replace: true })
+    }
+  }, [user, navigate])
+  return null
+}
+
 function AppShell() {
   const [scans, setScans] = useState([])
   const [activeScanId, setActiveScanId] = useState(null)
@@ -656,6 +668,7 @@ function AppShell() {
 
   return (
     <ScanContext.Provider value={{ activeScanId, setActiveScanId, scans, scansLoaded, refreshScans }}>
+      <OnboardingRedirect />
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-muted)' }}>
         <Sidebar
           collapsed={navCollapsed}
@@ -705,6 +718,7 @@ function AppShell() {
                 <Route path="/profile" element={<UserManagement />} />
                 <Route path="/billing" element={<Navigate to="/profile" replace />} />
                 <Route path="/docs" element={<UserDocs />} />
+                <Route path="/onboarding" element={<OnboardingWizard />} />
               </Routes>
             </Suspense>
             </ErrorBoundary>

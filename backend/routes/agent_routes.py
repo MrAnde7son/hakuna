@@ -870,6 +870,22 @@ AGENT_TEMPLATES = [
         "guardrails": {"max_steps": 12, "read_only": True},
         "suggested_input": "Which low-value findings are creating the most noise across our scans?",
     },
+    {
+        "id": "onboarding_guide",
+        "name": "Onboarding Guide",
+        "description": "First-run assistant: walks you through your scan results, highlights priorities, and helps create your first campaign.",
+        "icon": "rocket",
+        "system_prompt": ENHANCED_PROMPTS["onboarding_guide"],
+        "tools": [
+            "list_scans", "get_scan_summary", "get_top_risky_assets",
+            "get_exploit_findings", "get_quick_wins", "get_plugin_family_stats",
+            "query_findings", "get_remediation_grouping",
+            "create_campaign",
+            "read_scratchpad", "write_scratchpad", "request_clarification",
+        ],
+        "guardrails": {"max_steps": 15, "read_only": False},
+        "suggested_input": "I just uploaded my first scan — walk me through what to do next.",
+    },
 ]
 
 

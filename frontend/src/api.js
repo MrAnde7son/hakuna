@@ -1048,3 +1048,13 @@ export const createPortalSession = (data) => request('/billing/portal', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(data),
 })
+
+// Onboarding
+export const getOnboardingStatus = () => request('/onboarding/status')
+export const completeOnboardingStep = (step) => request('/onboarding/complete-step', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ step }),
+})
+export const completeOnboarding = () => request('/onboarding/complete', { method: 'POST' })
+export const skipOnboarding = () => request('/onboarding/skip', { method: 'POST' })

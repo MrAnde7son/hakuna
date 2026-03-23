@@ -75,6 +75,7 @@ from routes.vm_routes import router as vm_router
 from routes.integration_builder_routes import router as integration_builder_router
 from routes.discovery_routes import router as discovery_router
 from routes.billing_routes import router as billing_router
+from routes.onboarding_routes import router as onboarding_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -300,6 +301,7 @@ app.include_router(vm_router)
 app.include_router(integration_builder_router)
 app.include_router(discovery_router)
 app.include_router(billing_router)
+app.include_router(onboarding_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 

@@ -888,5 +888,38 @@
       "apiReference": "API Reference",
       "keyboardTips": "Tips & Shortcuts"
     }
+  },
+  "onboarding": {
+    "welcome": "Welcome, {{name}}!",
+    "subtitle": "Let's get you set up in three quick steps: upload a scan, review your priorities, and launch your first campaign.",
+    "skipSetup": "Skip setup",
+    "step1Title": "Upload Your First Scan",
+    "step1Desc": "Import a Nessus, Qualys, or CSV scan report to get started.",
+    "step2Title": "Review Your Priorities",
+    "step2Desc": "See how Hakuna scores and prioritizes your findings.",
+    "step3Title": "Create a Campaign",
+    "step3Desc": "Launch a remediation campaign to start fixing critical issues.",
+    "chooseFile": "Choose a scan file or drag & drop",
+    "uploading": "Uploading...",
+    "uploadError": "Upload failed. Please try again.",
+    "supportedFormats": "Supported: .nessus, .csv, .html, .htm",
+    "scanUploaded": "Scan uploaded successfully!",
+    "scanStats": "{{assets}} assets, {{findings}} findings discovered",
+    "viewFindings": "View Findings",
+    "markReviewed": "Mark as reviewed",
+    "step2Hint": "Hakuna scores each finding 0–10 based on severity, exploitability, and asset criticality. Check out your top priorities.",
+    "prioritiesReviewed": "Priorities reviewed",
+    "step3Hint": "We'll create an \"Exploitable Now\" campaign targeting critical and high-severity findings with known exploits.",
+    "createCampaign": "Create Campaign",
+    "customCampaign": "Build custom campaign",
+    "creating": "Creating...",
+    "campaignCreated": "Campaign created!",
+    "findingsMatched": "findings matched",
+    "firstCampaignName": "Exploitable Now — Quick Start",
+    "firstCampaignDesc": "Auto-generated onboarding campaign targeting critical and high findings with weaponized exploits.",
+    "allDone": "You're all set!",
+    "allDoneDesc": "Your vulnerability management program is ready. Explore the dashboard or let an AI agent analyze your results.",
+    "goToDashboard": "Go to Dashboard",
+    "tryAgent": "Try AI Agent"
   }
 }
