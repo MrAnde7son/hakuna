@@ -62,6 +62,7 @@ from core.auth import (
     get_current_user, require_auth, require_role, require_permission,
     get_accessible_org_ids, apply_org_filter, apply_scan_org_filter,
 )
+from core.subscription import check_scan_limit, check_campaign_limit
 from routes.auth_routes import router as auth_router
 from routes.threat_intel_routes import router as threat_intel_router
 from routes.export import router as export_router
@@ -73,6 +74,7 @@ from routes.sbom_routes import router as sbom_router
 from routes.vm_routes import router as vm_router
 from routes.integration_builder_routes import router as integration_builder_router
 from routes.discovery_routes import router as discovery_router
+from routes.billing_routes import router as billing_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -297,6 +299,7 @@ app.include_router(sbom_router)
 app.include_router(vm_router)
 app.include_router(integration_builder_router)
 app.include_router(discovery_router)
+app.include_router(billing_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
@@ -717,7 +720,7 @@ def _delete_scan_cascade(db: Session, scan: Scan):
     db.flush()
 
 
-@app.post("/api/upload")
+@app.post("/api/upload", dependencies=[Depends(check_scan_limit)])
 async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
     """Upload and parse a vulnerability scan file (Nessus, Qualys, etc.)."""
     content = await file.read()
@@ -4781,7 +4784,7 @@ def advanced_search(body: AdvancedSearchBody, db: Session = Depends(get_db)):
     return {"total": total, "page": body.page, "page_size": body.page_size, "findings": findings_out}
 
 
-@app.post("/api/campaigns")
+@app.post("/api/campaigns", dependencies=[Depends(check_campaign_limit)])
 def create_campaign(body: CampaignCreateBody, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
     """Create a new remediation campaign."""
     campaign = Campaign(

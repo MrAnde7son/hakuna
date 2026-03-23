@@ -142,9 +142,13 @@ if $DO_API; then
 
   # Update Cloud Run to use the new image
   step "Deploying API to Cloud Run"
+  # Pull GOOGLE_CLIENT_ID from Secret Manager for Cloud Run
+  GOOGLE_CLIENT_ID_VAL="${GOOGLE_CLIENT_ID:-$(gcloud secrets versions access latest --secret="google-oauth-client-id" 2>/dev/null || true)}"
+
   gcloud run services update "${CLOUD_RUN_SERVICE}" \
     --image="${API_IMAGE}" \
     --region="${REGION}" \
+    --update-env-vars="GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID_VAL}" \
     --quiet
 
   success "Cloud Run service updated"
@@ -188,6 +192,12 @@ fi
 if $DO_FRONTEND; then
   step "Building React frontend"
   cd "${SCRIPT_DIR}/frontend"
+
+  # VITE_GOOGLE_CLIENT_ID must be set at build time (baked into the JS bundle)
+  if [[ -z "${VITE_GOOGLE_CLIENT_ID:-}" ]]; then
+    VITE_GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret="google-oauth-client-id" 2>/dev/null || true)
+  fi
+  export VITE_GOOGLE_CLIENT_ID
 
   npm ci --silent
   npm run build

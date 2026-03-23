@@ -22,6 +22,7 @@ from core.auth import (
 )
 from core.audit import log_audit, diff as _diff
 from core.i18n import get_locale_from_request, t as translate
+from core.subscription import check_user_invite_limit
 from services.easm import trigger_easm_for_new_org
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,9 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
 
+class GoogleAuthRequest(BaseModel):
+    credential: str  # Google ID token from Google Identity Services
+
 
 # ── Helpers ───────────────────────────────────────────────
 
@@ -101,6 +105,8 @@ def _user_response(user: User, org: Organization) -> dict:
             "slug": org.slug,
             "org_type": org.org_type,
             "parent_org_id": org.parent_org_id,
+            "subscription_tier": org.subscription_tier or "free",
+            "subscription_status": org.subscription_status,
         },
     }
 
@@ -182,7 +188,7 @@ async def login(body: LoginRequest, request: Request, db: Session = Depends(get_
     """Authenticate with email + password, returns JWT."""
     locale = get_locale_from_request(request)
     user = db.query(User).filter(User.email == body.email).first()
-    if not user or not verify_password(body.password, user.hashed_password):
+    if not user or not user.hashed_password or not verify_password(body.password, user.hashed_password):
         raise HTTPException(401, translate("invalid_credentials", locale))
     if not user.is_active:
         raise HTTPException(403, translate("account_deactivated", locale))
@@ -202,6 +208,109 @@ async def login(body: LoginRequest, request: Request, db: Session = Depends(get_
         "token_type": "bearer",
         "user": _user_response(user, org),
     }
+
+
+# ── Google OAuth (public) ────────────────────────────────
+
+@router.post("/google")
+async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = Depends(get_db)):
+    """Authenticate or register via Google ID token (from Google Identity Services)."""
+    import os
+    from google.oauth2 import id_token as google_id_token
+    from google.auth.transport import requests as google_requests
+
+    locale = get_locale_from_request(request)
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    if not client_id:
+        raise HTTPException(500, "Google OAuth is not configured")
+
+    # Verify the Google ID token
+    try:
+        idinfo = google_id_token.verify_oauth2_token(
+            body.credential, google_requests.Request(), client_id
+        )
+    except ValueError:
+        raise HTTPException(401, translate("invalid_credentials", locale))
+
+    google_sub = idinfo["sub"]
+    email = idinfo.get("email")
+    if not email or not idinfo.get("email_verified"):
+        raise HTTPException(400, "Google account email is not verified")
+
+    # Try to find existing user by google_id or email
+    user = db.query(User).filter(User.google_id == google_sub).first()
+    if not user:
+        user = db.query(User).filter(User.email == email).first()
+
+    if user:
+        # ── Existing user: log in ──
+        if not user.is_active:
+            raise HTTPException(403, translate("account_deactivated", locale))
+        org = db.query(Organization).filter(Organization.id == user.org_id).first()
+        if not org or not org.is_active:
+            raise HTTPException(403, translate("org_deactivated", locale))
+
+        # Link Google ID if not yet linked
+        if not user.google_id:
+            user.google_id = google_sub
+        user.last_login_at = datetime.utcnow()
+        db.commit()
+
+        token = create_access_token(user.id, org.id, user.role)
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user": _user_response(user, org),
+        }
+    else:
+        # ── New user: register ──
+        display_name = idinfo.get("name") or email.split("@")[0]
+
+        # Create org from email domain
+        domain = email.split("@")[1]
+        org_name = domain.split(".")[0].title()
+        slug = _slugify(org_name)
+        base_slug = slug
+        counter = 1
+        while db.query(Organization).filter(Organization.slug == slug).first():
+            slug = f"{base_slug}-{counter}"
+            counter += 1
+
+        org = Organization(name=org_name, slug=slug)
+        db.add(org)
+        db.flush()
+
+        # First user in the system becomes superadmin
+        user_count = db.query(func.count(User.id)).scalar()
+        role = "superadmin" if user_count == 0 else "org_admin"
+
+        user = User(
+            email=email,
+            hashed_password=None,
+            display_name=display_name,
+            org_id=org.id,
+            role=role,
+            google_id=google_sub,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        db.refresh(org)
+
+        token = create_access_token(user.id, org.id, user.role)
+        logger.info(f"Google registration: {email} → org '{org.name}' (role={role})")
+
+        # Trigger EASM discovery for corporate email domains (non-blocking)
+        try:
+            await trigger_easm_for_new_org(db, org, email)
+        except Exception as e:
+            logger.warning(f"EASM trigger failed (non-fatal): {e}")
+
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user": _user_response(user, org),
+        }
 
 
 # ── Password reset (public) ───────────────────────────────
@@ -301,7 +410,7 @@ async def update_locale(body: UpdateLocaleRequest, user: User = Depends(require_
 
 # ── User management (org_admin+) ─────────────────────────
 
-@router.post("/invite")
+@router.post("/invite", dependencies=[Depends(check_user_invite_limit)])
 async def invite_user(
     body: InviteRequest,
     user: User = Depends(require_role("superadmin", "org_admin")),

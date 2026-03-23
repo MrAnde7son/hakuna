@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  authMe, authLogin, authRegister,
+  authMe, authLogin, authRegister, authGoogleLogin,
   setStoredToken, clearStoredToken, getStoredToken,
   setOrgContext, getOrgContext,
 } from '../api.js'
@@ -82,6 +82,22 @@ export function AuthProvider({ children }) {
     return data
   }, [])
 
+  const googleLogin = useCallback(async (credential) => {
+    const data = await authGoogleLogin(credential)
+    setStoredToken(data.access_token)
+    setUser(data.user)
+    setOrg(data.user.org)
+    setIsAuthenticated(true)
+    try {
+      const me = await authMe()
+      setUser(me)
+      setOrg(me.org)
+      setAccessibleOrgs(me.accessible_orgs || [me.org])
+      setEffectivePermissions(me.effective_permissions || {})
+    } catch {}
+    return data
+  }, [])
+
   const logout = useCallback(() => {
     clearStoredToken()
     setUser(null)
@@ -113,6 +129,7 @@ export function AuthProvider({ children }) {
       isAuthenticated,
       login,
       register,
+      googleLogin,
       logout,
       switchOrg,
       currentOrgContext,
@@ -124,6 +141,9 @@ export function AuthProvider({ children }) {
       isAdmin: user?.role === 'org_admin' || user?.role === 'superadmin',
       isViewer: user?.role === 'viewer',
       isCustomRole: user?.role === 'custom',
+      subscriptionTier: org?.subscription_tier || 'free',
+      subscriptionStatus: org?.subscription_status,
+      isPro: (org?.subscription_tier === 'pro') && (org?.subscription_status === 'active' || org?.subscription_status === 'trialing'),
     }}>
       {children}
     </AuthContext.Provider>

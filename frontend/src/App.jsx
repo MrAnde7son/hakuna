@@ -38,6 +38,8 @@ import {
   BookOpen,
   HelpCircle,
   Menu,
+  Lock,
+  CreditCard,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -46,6 +48,7 @@ import Register from './components/auth/Register.jsx'
 import ForgotPassword from './components/auth/ForgotPassword.jsx'
 import ResetPassword from './components/auth/ResetPassword.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
+import SubscriptionBanner from './components/billing/SubscriptionBanner.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
 import { getScans, setOrgContext, authUpdateLocale } from './api.js'
 import { ErrorBoundary } from './components/shared/ui.jsx'
@@ -67,6 +70,7 @@ const AgentBuilder = React.lazy(() => import('./components/agents/AgentBuilder.j
 const AggregatedSolutions = React.lazy(() => import('./components/remediation/AggregatedSolutions.jsx'))
 const UserManagement = React.lazy(() => import('./components/settings/UserManagement.jsx'))
 const UserDocs = React.lazy(() => import('./components/docs/UserDocs.jsx'))
+const BillingPage = React.lazy(() => import('./components/billing/BillingPage.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
@@ -93,12 +97,13 @@ const NAV_GROUPS = [
     items: [
       { path: '/campaigns', labelKey: 'nav.campaigns', icon: Target, permission: 'page_campaigns' },
       { path: '/aggregated-solutions', labelKey: 'nav.remediation', icon: Layers, permission: 'page_remediation' },
-      { path: '/agents', labelKey: 'nav.agents', icon: Bot, permission: 'page_agents' },
+      { path: '/agents', labelKey: 'nav.agents', icon: Bot, permission: 'page_agents', proOnly: true },
     ],
   },
 ]
 
 const NAV_SETTINGS = { path: '/settings', labelKey: 'nav.settings', icon: SettingsIcon, permission: 'page_settings' }
+const NAV_BILLING = { path: '/billing', labelKey: 'Billing', icon: CreditCard, adminOnly: true }
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -323,8 +328,9 @@ function UserMenu({ collapsed }) {
 function Sidebar({ collapsed, onToggle }) {
   const width = collapsed ? 56 : 220
   const { scans, activeScanId, setActiveScanId } = useScan()
-  const { hasPermission } = useAuth()
+  const { hasPermission, isPro, isAdmin } = useAuth()
   const { t } = useTranslation()
+  const navigate = useNavigate()
 
   return (
     <aside
@@ -440,7 +446,35 @@ function Sidebar({ collapsed, onToggle }) {
               <div style={{ height: 1, background: 'var(--border)', margin: '6px 0' }} />
             )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-              {visibleItems.map(({ path, labelKey, icon: Icon, exact, alsoPaths }) => (
+              {visibleItems.map(({ path, labelKey, icon: Icon, exact, alsoPaths, proOnly }) => {
+                const locked = proOnly && !isPro
+                if (locked) {
+                  return (
+                    <button
+                      key={path}
+                      onClick={() => navigate('/billing')}
+                      title={t(labelKey) + ' (Pro)'}
+                      aria-label={t(labelKey)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '7px 10px', borderRadius: 6,
+                        color: 'var(--muted)', background: 'transparent',
+                        border: 'none', textDecoration: 'none', cursor: 'pointer',
+                        justifyContent: collapsed ? 'center' : 'flex-start',
+                        opacity: 0.6, width: '100%', textAlign: 'left',
+                      }}
+                    >
+                      <Icon size={18} />
+                      {!collapsed && (
+                        <>
+                          <span style={{ fontSize: 13, fontWeight: 500, flex: 1 }}>{t(labelKey)}</span>
+                          <Lock size={12} style={{ flexShrink: 0 }} />
+                        </>
+                      )}
+                    </button>
+                  )
+                }
+                return (
                 <NavLink
                   key={path}
                   to={path}
@@ -467,7 +501,7 @@ function Sidebar({ collapsed, onToggle }) {
                   <Icon size={18} />
                   {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t(labelKey)}</span>}
                 </NavLink>
-              ))}
+              )})}
             </div>
           </div>
         )})}
@@ -522,6 +556,30 @@ function Sidebar({ collapsed, onToggle }) {
           >
             <NAV_SETTINGS.icon size={18} />
             {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t(NAV_SETTINGS.labelKey)}</span>}
+          </NavLink>
+          )}
+          {isAdmin && (
+          <NavLink
+            to={NAV_BILLING.path}
+            title={NAV_BILLING.labelKey}
+            aria-label={NAV_BILLING.labelKey}
+            style={({ isActive }) => ({
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '7px 10px',
+              borderRadius: 6,
+              color: isActive ? 'var(--nav-active-text)' : 'var(--muted)',
+              background: isActive ? 'var(--nav-active-bg)' : 'transparent',
+              textDecoration: 'none',
+              cursor: 'pointer',
+              boxShadow: isActive ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
+              transition: 'background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease',
+              justifyContent: collapsed ? 'center' : 'flex-start',
+            })}
+          >
+            <NAV_BILLING.icon size={18} />
+            {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{NAV_BILLING.labelKey}</span>}
           </NavLink>
           )}
         </div>
@@ -651,6 +709,7 @@ function AppShell() {
               overflowX: 'hidden',
             }}
           >
+            <SubscriptionBanner />
             <ErrorBoundary fullPage title="Page failed to load">
             <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#71717a' }}>Loading...</div>}>
               <Routes>
@@ -671,6 +730,7 @@ function AppShell() {
                 <Route path="/scans" element={<Navigate to="/settings?tab=upload" replace />} />
                 <Route path="/upload" element={<Navigate to="/settings?tab=upload" replace />} />
                 <Route path="/profile" element={<UserManagement />} />
+                <Route path="/billing" element={<BillingPage />} />
                 <Route path="/docs" element={<UserDocs />} />
               </Routes>
             </Suspense>
