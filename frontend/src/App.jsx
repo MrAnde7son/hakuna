@@ -39,7 +39,6 @@ import {
   HelpCircle,
   Menu,
   Lock,
-  CreditCard,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -70,7 +69,6 @@ const AgentBuilder = React.lazy(() => import('./components/agents/AgentBuilder.j
 const AggregatedSolutions = React.lazy(() => import('./components/remediation/AggregatedSolutions.jsx'))
 const UserManagement = React.lazy(() => import('./components/settings/UserManagement.jsx'))
 const UserDocs = React.lazy(() => import('./components/docs/UserDocs.jsx'))
-const BillingPage = React.lazy(() => import('./components/billing/BillingPage.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
@@ -103,7 +101,6 @@ const NAV_GROUPS = [
 ]
 
 const NAV_SETTINGS = { path: '/settings', labelKey: 'nav.settings', icon: SettingsIcon, permission: 'page_settings' }
-const NAV_BILLING = { path: '/billing', labelKey: 'Billing', icon: CreditCard, adminOnly: true }
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -558,30 +555,6 @@ function Sidebar({ collapsed, onToggle }) {
             {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t(NAV_SETTINGS.labelKey)}</span>}
           </NavLink>
           )}
-          {isAdmin && (
-          <NavLink
-            to={NAV_BILLING.path}
-            title={NAV_BILLING.labelKey}
-            aria-label={NAV_BILLING.labelKey}
-            style={({ isActive }) => ({
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              padding: '7px 10px',
-              borderRadius: 6,
-              color: isActive ? 'var(--nav-active-text)' : 'var(--muted)',
-              background: isActive ? 'var(--nav-active-bg)' : 'transparent',
-              textDecoration: 'none',
-              cursor: 'pointer',
-              boxShadow: isActive ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
-              transition: 'background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease',
-              justifyContent: collapsed ? 'center' : 'flex-start',
-            })}
-          >
-            <NAV_BILLING.icon size={18} />
-            {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{NAV_BILLING.labelKey}</span>}
-          </NavLink>
-          )}
         </div>
       </nav>
 
@@ -730,7 +703,7 @@ function AppShell() {
                 <Route path="/scans" element={<Navigate to="/settings?tab=upload" replace />} />
                 <Route path="/upload" element={<Navigate to="/settings?tab=upload" replace />} />
                 <Route path="/profile" element={<UserManagement />} />
-                <Route path="/billing" element={<BillingPage />} />
+                <Route path="/billing" element={<Navigate to="/profile" replace />} />
                 <Route path="/docs" element={<UserDocs />} />
               </Routes>
             </Suspense>

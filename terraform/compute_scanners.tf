@@ -27,7 +27,7 @@ resource "google_compute_instance" "scanners" {
   boot_disk {
     initialize_params {
       image = "debian-cloud/debian-12"
-      size  = 50   # GB — Docker images + Nuclei templates + scan data
+      size  = 50 # GB — Docker images + Nuclei templates + scan data
       type  = "pd-ssd"
     }
   }

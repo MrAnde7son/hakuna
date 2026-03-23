@@ -106,3 +106,32 @@ variable "integration_secret_key" {
   description = "AES-256 key for encrypting integration credentials. Generate with: openssl rand -hex 32. Must be stable — changing it invalidates all stored credentials."
   sensitive   = true
 }
+
+# ── Stripe billing ────────────────────────────────────────────────────────────
+
+variable "stripe_secret_key" {
+  type        = string
+  description = "Stripe secret key (sk_live_... or sk_test_...)"
+  sensitive   = true
+}
+
+variable "stripe_publishable_key" {
+  type        = string
+  description = "Stripe publishable key (pk_live_... or pk_test_...)"
+}
+
+variable "stripe_webhook_secret" {
+  type        = string
+  description = "Stripe webhook signing secret (whsec_...)"
+  sensitive   = true
+}
+
+variable "stripe_price_id_monthly" {
+  type        = string
+  description = "Stripe Price ID for the monthly Pro plan"
+}
+
+variable "stripe_price_id_annual" {
+  type        = string
+  description = "Stripe Price ID for the annual Pro plan"
+}

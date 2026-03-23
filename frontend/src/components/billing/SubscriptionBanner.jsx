@@ -26,7 +26,7 @@ export default function SubscriptionBanner() {
           Your payment failed. Update your payment method to avoid service interruption.
         </span>
         <button
-          onClick={() => navigate('/billing')}
+          onClick={() => navigate('/profile')}
           style={{
             padding: '4px 12px', borderRadius: 5, border: 'none',
             background: '#92400e', color: '#fdba74', fontSize: 12,
@@ -63,7 +63,7 @@ export function ProFeatureGate({ feature }) {
         {feature || 'This feature'} requires a Pro subscription
       </span>
       <button
-        onClick={() => navigate('/billing')}
+        onClick={() => navigate('/profile')}
         style={{
           padding: '8px 20px', borderRadius: 6, border: 'none',
           background: 'var(--accent)', color: '#fff', fontSize: 13,

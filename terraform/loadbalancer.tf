@@ -67,10 +67,10 @@ resource "google_compute_backend_bucket" "frontend" {
 
   cdn_policy {
     cache_mode                   = "CACHE_ALL_STATIC"
-    default_ttl                  = 3600    # 1 hour
-    max_ttl                      = 86400   # 24 hours
+    default_ttl                  = 3600  # 1 hour
+    max_ttl                      = 86400 # 24 hours
     client_ttl                   = 3600
-    serve_while_stale            = 86400   # serve stale content for up to 24h while revalidating
+    serve_while_stale            = 86400 # serve stale content for up to 24h while revalidating
     signed_url_cache_max_age_sec = 0
   }
 }
