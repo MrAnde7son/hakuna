@@ -9,6 +9,7 @@ services:
       - ./hakuna:/app/hakuna:ro
     environment:
       - DATABASE_URL=sqlite:////app/data/nessus_remediation.db
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
 
   frontend:
     build: ./frontend
@@ -16,6 +17,8 @@ services:
       - "3000:3000"
     depends_on:
       - backend
+    environment:
+      - VITE_GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
 
 volumes:
   db-data:

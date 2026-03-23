@@ -83,6 +83,32 @@ resource "google_secret_manager_secret_version" "integration_secret_key" {
   secret_data = var.integration_secret_key
 }
 
+# ── Stripe billing secrets ────────────────────────────────────────────────────
+
+resource "google_secret_manager_secret" "stripe_secret_key" {
+  secret_id = "hakuna-stripe-secret-key"
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "stripe_secret_key" {
+  secret      = google_secret_manager_secret.stripe_secret_key.id
+  secret_data = var.stripe_secret_key
+}
+
+resource "google_secret_manager_secret" "stripe_webhook_secret" {
+  secret_id = "hakuna-stripe-webhook-secret"
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "stripe_webhook_secret" {
+  secret      = google_secret_manager_secret.stripe_webhook_secret.id
+  secret_data = var.stripe_webhook_secret
+}
+
 # Brevo SMTP API key — used for password reset emails and workflow alert fallback
 resource "google_secret_manager_secret" "brevo_smtp_pass" {
   secret_id = "hakuna-brevo-smtp-pass"

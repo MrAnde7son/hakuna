@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../../contexts/AuthContext.jsx'
+import GoogleSignInButton from './GoogleSignInButton.jsx'
 
 function HakunaLogo({ size = 40 }) {
   const scale = size / 65
@@ -77,6 +78,17 @@ export default function Register() {
           <p style={{ fontSize: 13, color: 'var(--muted, #71717a)', marginTop: 4 }}>
             {t('auth.setupOrg')}
           </p>
+        </div>
+
+        <GoogleSignInButton />
+
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12, margin: '16px 0',
+          color: 'var(--muted, #71717a)', fontSize: 13,
+        }}>
+          <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+          or
+          <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
         </div>
 
         <form onSubmit={handleSubmit}>
