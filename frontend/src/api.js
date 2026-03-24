@@ -988,6 +988,9 @@ export const ibUpdateLogo = (id, data) => request(`${IB}/integrations/${id}/logo
 })
 
 // Discovery
+export const discoverOAuth = (url) => request(`${IB}/discovery/oauth`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+})
 export const discoverApi = (url) => request(`${IB}/discovery/discover`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
 })
@@ -1007,6 +1010,9 @@ export const mcpOAuthStart = (serverUrl, oauthMetadata) => request(`${IB}/oauth/
 // OAuth
 export const oauthStart = (connectorId, data) => request(`${IB}/oauth/start/${connectorId}`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}),
+})
+export const oauthClientCredentials = (data) => request(`${IB}/oauth/client-credentials`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
 })
 export const refreshCredential = (id) => request(`${IB}/credentials/${id}/refresh`, { method: 'POST' })
 

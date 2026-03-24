@@ -320,8 +320,11 @@ async def oauth_start(connector_id: str, body: OAuthStartRequest = None,
 
     instance_url = (body.instance_url if body else None) or ""
     redirect_uri = os.environ.get("OAUTH_REDIRECT_URI", "http://localhost:8000/api/integration-builder/oauth/callback")
-    client_id = acq.get("client_id", "").replace("{{env.JIRA_CLIENT_ID}}", os.environ.get("JIRA_CLIENT_ID", ""))
-    client_id = client_id.replace("{{env.CROWDSTRIKE_CLIENT_ID}}", os.environ.get("CROWDSTRIKE_CLIENT_ID", ""))
+
+    # Resolve all {{env.VAR}} placeholders in client_id generically
+    import re
+    raw_client_id = acq.get("client_id", "")
+    client_id = re.sub(r'\{\{env\.(\w+)\}\}', lambda m: os.environ.get(m.group(1), ""), raw_client_id)
 
     scopes = " ".join(acq.get("scopes", []))
     auth_url = acq.get("authorization_url", "")
@@ -337,8 +340,11 @@ async def oauth_start(connector_id: str, body: OAuthStartRequest = None,
         params["code_challenge"] = code_challenge
         params["code_challenge_method"] = "S256"
 
-    query = "&".join(f"{k}={v}" for k, v in params.items() if v)
-    authorization_url = f"{auth_url}?{query}"
+    # Merge any connector-specific extra params (e.g. audience for Atlassian)
+    params.update(acq.get("extra_params", {}))
+
+    from urllib.parse import urlencode
+    authorization_url = f"{auth_url}?{urlencode({k: v for k, v in params.items() if v})}"
 
     # Store state for callback verification
     _oauth_states[state] = {
@@ -349,6 +355,7 @@ async def oauth_start(connector_id: str, body: OAuthStartRequest = None,
         "org_id": user.org_id,
         "redirect_uri": redirect_uri,
         "token_url": acq.get("token_url", ""),
+        "token_request_format": acq.get("token_request_format", "form"),
         "client_id": client_id,
         "validation_request": acq.get("validation_request"),
     }
@@ -382,7 +389,10 @@ async def oauth_callback(code: str = Query(...), state: str = Query(...),
             token_data["client_secret"] = client_secret
 
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(flow["token_url"], data=token_data)
+            if flow.get("token_request_format") == "json":
+                resp = await client.post(flow["token_url"], json=token_data)
+            else:
+                resp = await client.post(flow["token_url"], data=token_data)
 
         if resp.status_code >= 400:
             return _oauth_html_response(False, f"Token exchange failed: {resp.text[:200]}")
@@ -444,10 +454,92 @@ def _oauth_html_response(success: bool, error: str = None, connected_user: str =
         "credentials_id": credentials_id,
     })
     html = f"""<!DOCTYPE html><html><body><script>
-    window.opener && window.opener.postMessage({payload}, '*');
+    window.opener && window.opener.postMessage({payload}, window.location.origin);
     window.close();
     </script><p>{'Connected!' if success else 'Error: ' + (error or '')}</p></body></html>"""
     return HTMLResponse(html)
+
+
+# ─────────────────────────────────────────────────────────
+# OAuth2 Client Credentials — for machine-to-machine APIs
+# ─────────────────────────────────────────────────────────
+
+class ClientCredentialsRequest(BaseModel):
+    instance_url: str
+    token_url: str  # discovered token endpoint
+    client_id: str
+    client_secret: str
+    scopes: list = []
+    connector_id: str = "custom"
+
+
+@router.post("/oauth/client-credentials")
+async def oauth_client_credentials(body: ClientCredentialsRequest, db: Session = Depends(get_db),
+                                    user: User = Depends(require_auth)):
+    """Exchange client_id + client_secret for an access token (client_credentials grant).
+
+    Used for machine-to-machine APIs like CrowdStrike, where there is no user popup —
+    the app authenticates directly with its own credentials.
+    """
+    import httpx
+
+    token_data = {
+        "grant_type": "client_credentials",
+        "client_id": body.client_id,
+        "client_secret": body.client_secret,
+    }
+    if body.scopes:
+        token_data["scope"] = " ".join(body.scopes)
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            resp = await client.post(body.token_url, data=token_data)
+    except httpx.RequestError as e:
+        raise HTTPException(400, f"Connection error: {e}")
+
+    if resp.status_code >= 400:
+        raise HTTPException(400, f"Token request failed (HTTP {resp.status_code}): {resp.text[:300]}")
+
+    tokens = resp.json()
+    access_token = tokens.get("access_token", "")
+    if not access_token:
+        raise HTTPException(400, "Token response did not include an access_token")
+
+    expires_in = tokens.get("expires_in")
+    # client_credentials rarely return refresh tokens, but handle it if present
+    refresh_token = tokens.get("refresh_token")
+
+    from datetime import datetime, timedelta
+    cred = IntegrationCredential(
+        org_id=user.org_id,
+        name=f"OAuth2 (client credentials) — {body.connector_id}",
+        connector_id=body.connector_id,
+        auth_type="oauth2",
+        encrypted_values=credential_vault.encrypt({"access_token": access_token}),
+        instance_url=body.instance_url,
+        connected_user=body.client_id,
+        expires_at=datetime.utcnow() + timedelta(seconds=expires_in) if expires_in else None,
+        encrypted_refresh_token=credential_vault.encrypt_string(refresh_token) if refresh_token else None,
+    )
+    # Store client_id/secret so we can re-issue when expired (no refresh token)
+    # We re-encrypt together with the access token so refresh logic can use them
+    cred.encrypted_values = credential_vault.encrypt({
+        "access_token": access_token,
+        "_client_id": body.client_id,
+        "_client_secret": body.client_secret,
+        "_token_url": body.token_url,
+        "_scopes": body.scopes,
+    })
+    db.add(cred)
+    db.commit()
+    db.refresh(cred)
+
+    return {
+        "success": True,
+        "credentials_id": cred.id,
+        "connected_user": body.client_id,
+        "expires_at": str(cred.expires_at) if cred.expires_at else None,
+    }
 
 
 # ─────────────────────────────────────────────────────────
@@ -621,6 +713,92 @@ def _detect_format(filename: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────
+# OAuth2 Discovery — probe a URL for OAuth2 support
+# ─────────────────────────────────────────────────────────
+
+class OAuthDiscoverRequest(BaseModel):
+    url: str
+
+
+@router.post("/discovery/oauth")
+async def discover_oauth(body: OAuthDiscoverRequest, user: User = Depends(require_auth)):
+    """Probe a base URL for OAuth2/OIDC support.
+
+    Checks (in order):
+      1. /.well-known/openid-configuration  (OIDC)
+      2. /.well-known/oauth-authorization-server  (RFC 8414)
+      3. WWW-Authenticate header on a bare request to /
+
+    Returns discovered endpoints and grant types so the frontend
+    can present the right auth flow without a pre-built connector.
+    """
+    import httpx
+    from urllib.parse import urlparse, urljoin
+
+    url = body.url.rstrip("/")
+    parsed = urlparse(url if "://" in url else f"https://{url}")
+    base = f"{parsed.scheme}://{parsed.netloc}"
+
+    result = {
+        "oauth_supported": False,
+        "grant_types": [],
+        "authorization_endpoint": None,
+        "token_endpoint": None,
+        "scopes_supported": [],
+        "pkce_required": False,
+        "client_credentials_supported": False,
+        "authorization_code_supported": False,
+        "source": None,
+    }
+
+    well_known_paths = [
+        "/.well-known/openid-configuration",
+        "/.well-known/oauth-authorization-server",
+    ]
+
+    async with httpx.AsyncClient(timeout=10.0, verify=False, follow_redirects=True) as client:
+        # 1 & 2 — well-known discovery docs
+        for path in well_known_paths:
+            try:
+                resp = await client.get(f"{base}{path}")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    grant_types = data.get("grant_types_supported", ["authorization_code"])
+                    result.update({
+                        "oauth_supported": True,
+                        "grant_types": grant_types,
+                        "authorization_endpoint": data.get("authorization_endpoint"),
+                        "token_endpoint": data.get("token_endpoint"),
+                        "scopes_supported": data.get("scopes_supported", []),
+                        "pkce_required": "S256" in data.get("code_challenge_methods_supported", []),
+                        "client_credentials_supported": "client_credentials" in grant_types,
+                        "authorization_code_supported": "authorization_code" in grant_types,
+                        "source": path,
+                    })
+                    return result
+            except Exception:
+                continue
+
+        # 3 — probe for WWW-Authenticate header
+        try:
+            resp = await client.get(f"{url}/")
+            www_auth = resp.headers.get("www-authenticate", "")
+            if "bearer" in www_auth.lower() or "oauth" in www_auth.lower():
+                result["oauth_supported"] = True
+                result["source"] = "www-authenticate"
+                result["authorization_code_supported"] = True
+                # Try to extract realm/scope hints
+                import re
+                scope_match = re.search(r'scope="([^"]+)"', www_auth, re.IGNORECASE)
+                if scope_match:
+                    result["scopes_supported"] = scope_match.group(1).split()
+        except Exception:
+            pass
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────
 # OAuth Token Refresh
 # ─────────────────────────────────────────────────────────
 
@@ -636,40 +814,73 @@ async def refresh_token(credential_id: str, db: Session = Depends(get_db),
     ).first()
     if not cred:
         raise HTTPException(404, "Credential not found")
-    if cred.auth_type != "oauth2" or not cred.encrypted_refresh_token:
-        raise HTTPException(400, "No refresh token available")
+    if cred.auth_type != "oauth2":
+        raise HTTPException(400, "This credential does not use OAuth2")
 
-    refresh_token_val = credential_vault.decrypt_string(cred.encrypted_refresh_token)
+    from datetime import datetime, timedelta
+    import re
 
-    from integrations.connector_loader import get_connector
-    connector = get_connector(cred.connector_id)
-    if not connector:
-        raise HTTPException(404, "Connector not found")
+    current_values = credential_vault.decrypt(cred.encrypted_values)
 
-    acq = connector.get("credential_acquisition", {})
-    token_url = acq.get("token_url", "")
-    client_id = acq.get("client_id", "")
+    if cred.encrypted_refresh_token:
+        # Standard refresh_token flow
+        refresh_token_val = credential_vault.decrypt_string(cred.encrypted_refresh_token)
+        from integrations.connector_loader import get_connector
+        connector = get_connector(cred.connector_id)
+        acq = (connector or {}).get("credential_acquisition", {}) if connector else {}
+        token_url = acq.get("token_url", current_values.get("_token_url", ""))
+        client_id = acq.get("client_id", current_values.get("_client_id", ""))
+        client_id = re.sub(r'\{\{env\.(\w+)\}\}', lambda m: os.environ.get(m.group(1), ""), client_id)
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(token_url, data={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token_val,
-            "client_id": client_id,
-        })
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(token_url, data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token_val,
+                "client_id": client_id,
+            })
 
-    if resp.status_code >= 400:
-        raise HTTPException(400, f"Token refresh failed: {resp.text[:200]}")
+        if resp.status_code >= 400:
+            raise HTTPException(400, f"Token refresh failed: {resp.text[:200]}")
 
-    tokens = resp.json()
-    new_access = tokens.get("access_token", "")
-    new_refresh = tokens.get("refresh_token", refresh_token_val)
-    expires_in = tokens.get("expires_in")
+        tokens = resp.json()
+        new_access = tokens.get("access_token", "")
+        new_refresh = tokens.get("refresh_token", refresh_token_val)
+        expires_in = tokens.get("expires_in")
 
-    cred.encrypted_values = credential_vault.encrypt({"access_token": new_access})
-    cred.encrypted_refresh_token = credential_vault.encrypt_string(new_refresh)
-    if expires_in:
-        from datetime import datetime, timedelta
-        cred.expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+        current_values["access_token"] = new_access
+        cred.encrypted_values = credential_vault.encrypt(current_values)
+        cred.encrypted_refresh_token = credential_vault.encrypt_string(new_refresh)
+        if expires_in:
+            cred.expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+
+    elif current_values.get("_client_id") and current_values.get("_client_secret"):
+        # Client credentials re-issue
+        token_url = current_values.get("_token_url", "")
+        token_data = {
+            "grant_type": "client_credentials",
+            "client_id": current_values["_client_id"],
+            "client_secret": current_values["_client_secret"],
+        }
+        if current_values.get("_scopes"):
+            token_data["scope"] = " ".join(current_values["_scopes"])
+
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            resp = await client.post(token_url, data=token_data)
+
+        if resp.status_code >= 400:
+            raise HTTPException(400, f"Token re-issue failed: {resp.text[:200]}")
+
+        tokens = resp.json()
+        new_access = tokens.get("access_token", "")
+        expires_in = tokens.get("expires_in")
+
+        current_values["access_token"] = new_access
+        cred.encrypted_values = credential_vault.encrypt(current_values)
+        if expires_in:
+            cred.expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+
+    else:
+        raise HTTPException(400, "No refresh token or client credentials available for re-issue")
+
     db.commit()
-
     return {"success": True, "expires_at": str(cred.expires_at) if cred.expires_at else None}

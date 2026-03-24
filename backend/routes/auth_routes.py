@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 
 from core.database import get_db
+from core.limiter import limiter
 from models.models import Organization, User, MSSPOrgAccess, Scan, CustomRole, TagPermission, UserCustomRole, Tag
 from core.auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
@@ -129,6 +130,7 @@ def _org_response(org: Organization) -> dict:
 # ── Public routes ─────────────────────────────────────────
 
 @router.post("/register")
+@limiter.limit("3/minute")
 async def register(body: RegisterRequest, request: Request, db: Session = Depends(get_db)):
     """Register a new organization and its first admin user.
     Also serves as the bootstrap route for the first superadmin.
@@ -187,6 +189,7 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
 
 
 @router.post("/login")
+@limiter.limit("5/minute")
 async def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
     """Authenticate with email + password, returns JWT."""
     locale = get_locale_from_request(request)
@@ -216,6 +219,7 @@ async def login(body: LoginRequest, request: Request, db: Session = Depends(get_
 # ── Google OAuth (public) ────────────────────────────────
 
 @router.post("/google")
+@limiter.limit("5/minute")
 async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = Depends(get_db)):
     """Authenticate or register via Google ID token (from Google Identity Services)."""
     import os
@@ -319,7 +323,8 @@ async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = D
 # ── Password reset (public) ───────────────────────────────
 
 @router.post("/forgot-password")
-async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def forgot_password(body: ForgotPasswordRequest, request: Request, db: Session = Depends(get_db)):
     """Request a password reset email. Always returns 200 to prevent email enumeration."""
     from services.brevo import send_password_reset, is_configured as brevo_configured
     user = db.query(User).filter(User.email == body.email).first()
@@ -336,7 +341,8 @@ async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get
 
 
 @router.post("/reset-password")
-async def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def reset_password(body: ResetPasswordRequest, request: Request, db: Session = Depends(get_db)):
     """Reset password using a valid token from a reset email."""
     if len(body.new_password) < 8:
         raise HTTPException(400, "Password must be at least 8 characters")

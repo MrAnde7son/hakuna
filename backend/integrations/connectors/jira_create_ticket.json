@@ -1,6 +1,6 @@
 {
   "id": "jira_create_ticket",
-  "name": "Jira \u2014 Create Ticket",
+  "name": "Jira — Create Ticket",
   "description": "Push findings to Jira as new issues",
   "logo": "/logos/vendors/jira.svg",
   "direction": "push",
@@ -11,21 +11,16 @@
     "method": "POST",
     "path": "/rest/api/3/issue",
     "headers": {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      "Accept": "application/json"
     },
     "body": {
       "fields": {
-        "project": {
-          "key": "{{params.project_key}}"
-        },
+        "project": { "key": "{{params.project_key}}" },
         "summary": "[{{finding.severity|upper}}] {{finding.title}} on {{asset.hostname}}",
         "description": "CVE: {{finding.cve_id}}\nCVSS: {{finding.cvss_score}}\n\nSolution:\n{{finding.solution}}",
-        "issuetype": {
-          "name": "{{params.issue_type}}"
-        },
-        "priority": {
-          "name": "{{finding.severity|capitalize}}"
-        }
+        "issuetype": { "name": "{{params.issue_type}}" },
+        "priority": { "name": "{{finding.severity|capitalize}}" }
       }
     }
   },
@@ -38,17 +33,15 @@
     },
     "authorization_url": "https://auth.atlassian.com/authorize",
     "token_url": "https://auth.atlassian.com/oauth/token",
+    "token_request_format": "json",
     "client_id": "{{env.JIRA_CLIENT_ID}}",
-    "scopes": [
-      "read:jira-work",
-      "write:jira-work",
-      "offline_access"
-    ],
-    "pkce": true,
-    "popup": {
-      "width": 600,
-      "height": 700
+    "scopes": ["read:jira-work", "write:jira-work", "offline_access"],
+    "extra_params": {
+      "audience": "api.atlassian.com",
+      "prompt": "consent"
     },
+    "pkce": true,
+    "popup": { "width": 600, "height": 700 },
     "validation_request": {
       "method": "GET",
       "path": "/rest/api/3/myself",

@@ -65,8 +65,9 @@ def _inject_auth(headers: dict, credentials: dict):
 
     elif auth_type == "basic":
         import base64
-        username = credentials.get("username", "")
-        password = credentials.get("password", "")
+        # Support email/api_token (Jira) as well as username/password
+        username = credentials.get("username") or credentials.get("email", "")
+        password = credentials.get("password") or credentials.get("api_token", "")
         encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
         headers["Authorization"] = f"Basic {encoded}"
 
