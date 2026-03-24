@@ -1,4 +1,5 @@
-import React, { useState, useEffect, createContext, useContext, Suspense } from 'react'
+import React, { useState, useEffect, useRef, createContext, useContext, Suspense } from 'react'
+import { createPortal } from 'react-dom'
 
 function HakunaLogo({ size = 28, style }) {
   const scale = size / 65
@@ -40,6 +41,9 @@ import {
   Menu,
   Lock,
   X,
+  Search,
+  FileText,
+  ArrowRight,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -50,7 +54,7 @@ import ResetPassword from './components/auth/ResetPassword.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
 import SubscriptionBanner from './components/billing/SubscriptionBanner.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
-import { getScans, setOrgContext, authUpdateLocale } from './api.js'
+import { getScans, setOrgContext, authUpdateLocale, getFindings, getAssets, getCampaigns } from './api.js'
 import { ErrorBoundary, ToastProvider, ConfirmProvider } from './components/shared/ui.jsx'
 
 // Lazy-loaded route components (code-split per page)
@@ -71,6 +75,7 @@ const AgentBuilder = React.lazy(() => import('./components/agents/AgentBuilder.j
 const AggregatedSolutions = React.lazy(() => import('./components/remediation/AggregatedSolutions.jsx'))
 const UserManagement = React.lazy(() => import('./components/settings/UserManagement.jsx'))
 const UserDocs = React.lazy(() => import('./components/docs/UserDocs.jsx'))
+const CopilotPanel = React.lazy(() => import('./components/copilot/CopilotPanel.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
@@ -681,18 +686,249 @@ function HelpButton() {
       title={t('nav.help')}
       aria-label={t('nav.help')}
       style={{
-        position: 'fixed', bottom: 20, right: 20, zIndex: 90,
-        width: 44, height: 44, borderRadius: '50%',
-        background: 'var(--accent)', color: '#fff', border: 'none',
+        position: 'fixed', bottom: 20, right: 76, zIndex: 90,
+        width: 40, height: 40, borderRadius: '50%',
+        background: 'var(--card)', color: 'var(--text-muted)', border: '1px solid var(--border)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        cursor: 'pointer', boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+        cursor: 'pointer', boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
         transition: 'transform 0.15s ease, box-shadow 0.15s ease',
       }}
-      onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.1)'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)' }}
-      onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)' }}
+      onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.1)'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.2)' }}
+      onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)' }}
     >
-      <HelpCircle size={22} />
+      <HelpCircle size={18} />
     </button>
+  )
+}
+
+function CopilotButton({ onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Security Copilot Agent"
+      aria-label="Security Copilot Agent"
+      style={{
+        position: 'fixed', bottom: 20, right: 20, zIndex: 90,
+        width: 48, height: 48, borderRadius: 14,
+        background: 'var(--accent)', color: '#fff', border: 'none',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        cursor: 'pointer', boxShadow: '0 2px 12px rgba(0,0,0,0.25)',
+        transition: 'transform 0.15s ease, box-shadow 0.15s ease',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.1)'; e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.35)' }}
+      onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.boxShadow = '0 2px 12px rgba(0,0,0,0.25)' }}
+    >
+      <Bot size={22} />
+    </button>
+  )
+}
+
+// ─────────────────────────────────────────────────────────
+// Command Palette (Cmd+K)
+// ─────────────────────────────────────────────────────────
+
+function CommandPalette({ open, onClose }) {
+  const { t } = useTranslation()
+  const navigate = useNavigate()
+  const { hasPermission } = useAuth()
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [activeIdx, setActiveIdx] = useState(0)
+  const inputRef = useRef(null)
+  const listRef = useRef(null)
+  const debounceRef = useRef(null)
+
+  // Static nav items
+  const pages = NAV_GROUPS.flatMap(g => g.items)
+    .filter(item => !item.permission || hasPermission(item.permission))
+    .map(item => ({ type: 'page', label: t(item.labelKey), path: item.path, icon: item.icon }))
+    .concat([
+      { type: 'page', label: t('nav.settings'), path: '/settings', icon: SettingsIcon },
+      { type: 'page', label: t('nav.docs') || 'Docs', path: '/docs', icon: BookOpen },
+    ])
+
+  // Filter pages by query
+  const filteredPages = query
+    ? pages.filter(p => p.label.toLowerCase().includes(query.toLowerCase()))
+    : pages
+
+  // Search API for findings/assets when query is non-trivial
+  useEffect(() => {
+    if (!open) return
+    if (query.length < 2) { setResults([]); setLoading(false); return }
+    setLoading(true)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const [findingsRes, assetsRes] = await Promise.all([
+          getFindings({ search: query, page_size: 5 }).catch(() => ({ items: [] })),
+          getAssets({ search: query, page_size: 5 }).catch(() => ({ items: [] })),
+        ])
+        const items = []
+        for (const f of (findingsRes.items || [])) {
+          items.push({ type: 'finding', label: f.plugin_name, sub: f.asset_hostname || f.asset_ip, path: `/findings/${f.id}`, severity: f.severity })
+        }
+        for (const a of (assetsRes.items || [])) {
+          items.push({ type: 'asset', label: a.hostname || a.ip || a.fqdn, sub: a.os || '', path: `/assets/${a.id}` })
+        }
+        setResults(items)
+      } catch { setResults([]) }
+      setLoading(false)
+    }, 250)
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [query, open])
+
+  // All items for rendering
+  const allItems = [...filteredPages, ...results]
+
+  // Reset index when items change
+  useEffect(() => { setActiveIdx(0) }, [allItems.length])
+
+  // Focus input on open
+  useEffect(() => {
+    if (open) { setQuery(''); setResults([]); setActiveIdx(0); setTimeout(() => inputRef.current?.focus(), 0) }
+  }, [open])
+
+  // Keyboard navigation
+  useEffect(() => {
+    if (!open) return
+    const handler = (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setActiveIdx(i => Math.min(i + 1, allItems.length - 1)) }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, 0)) }
+      else if (e.key === 'Enter' && allItems[activeIdx]) { e.preventDefault(); navigate(allItems[activeIdx].path); onClose() }
+      else if (e.key === 'Escape') { onClose() }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [open, activeIdx, allItems, navigate, onClose])
+
+  // Scroll active item into view
+  useEffect(() => {
+    if (listRef.current) {
+      const el = listRef.current.children[activeIdx]
+      if (el) el.scrollIntoView({ block: 'nearest' })
+    }
+  }, [activeIdx])
+
+  if (!open) return null
+
+  const isMac = navigator.platform?.includes('Mac')
+
+  return createPortal(
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 99997,
+      background: 'rgba(0,0,0,0.45)', display: 'flex',
+      alignItems: 'flex-start', justifyContent: 'center', paddingTop: '15vh',
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--card)', borderRadius: 12,
+        border: '1px solid var(--border)', boxShadow: 'var(--shadow)',
+        width: '100%', maxWidth: 520, overflow: 'hidden',
+      }}>
+        {/* Search input */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+          <Search size={16} color="var(--muted)" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder={t('commandPalette.placeholder') || 'Search pages, findings, assets...'}
+            style={{
+              flex: 1, background: 'none', border: 'none', outline: 'none',
+              color: 'var(--text)', fontSize: 14, fontFamily: 'var(--sans)',
+            }}
+          />
+          <kbd style={{
+            fontSize: 10, padding: '2px 6px', borderRadius: 4,
+            background: 'var(--secondary)', border: '1px solid var(--border)',
+            color: 'var(--muted)', fontFamily: 'var(--sans)',
+          }}>ESC</kbd>
+        </div>
+
+        {/* Results */}
+        <div ref={listRef} style={{ maxHeight: 340, overflowY: 'auto', padding: '4px 0' }}>
+          {allItems.length === 0 && !loading && query.length >= 2 && (
+            <div style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+              {t('commandPalette.noResults') || 'No results found'}
+            </div>
+          )}
+          {loading && query.length >= 2 && (
+            <div style={{ padding: '8px 16px', color: 'var(--muted)', fontSize: 12 }}>
+              {t('commandPalette.searching') || 'Searching...'}
+            </div>
+          )}
+
+          {/* Pages section */}
+          {filteredPages.length > 0 && (
+            <div style={{ padding: '6px 16px 2px', fontSize: 10, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              {t('commandPalette.pages') || 'Pages'}
+            </div>
+          )}
+          {filteredPages.map((item, i) => {
+            const Icon = item.icon
+            return (
+              <div
+                key={item.path}
+                onClick={() => { navigate(item.path); onClose() }}
+                onMouseEnter={() => setActiveIdx(i)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '8px 16px', cursor: 'pointer',
+                  background: activeIdx === i ? 'var(--bg-hover)' : 'transparent',
+                  borderRadius: 0,
+                }}
+              >
+                {Icon && <Icon size={15} color={activeIdx === i ? 'var(--accent)' : 'var(--muted)'} />}
+                <span style={{ fontSize: 13, color: 'var(--text)', flex: 1 }}>{item.label}</span>
+                <ArrowRight size={12} color="var(--muted)" style={{ opacity: activeIdx === i ? 1 : 0 }} />
+              </div>
+            )
+          })}
+
+          {/* Search results section */}
+          {results.length > 0 && (
+            <div style={{ padding: '10px 16px 2px', fontSize: 10, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', borderTop: '1px solid var(--border)', marginTop: 4 }}>
+              {t('commandPalette.searchResults') || 'Search Results'}
+            </div>
+          )}
+          {results.map((item, ri) => {
+            const idx = filteredPages.length + ri
+            const typeIcon = item.type === 'finding' ? Bug : Server
+            const TypeIcon = typeIcon
+            return (
+              <div
+                key={`${item.type}-${item.path}`}
+                onClick={() => { navigate(item.path); onClose() }}
+                onMouseEnter={() => setActiveIdx(idx)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '8px 16px', cursor: 'pointer',
+                  background: activeIdx === idx ? 'var(--bg-hover)' : 'transparent',
+                }}
+              >
+                <TypeIcon size={15} color={activeIdx === idx ? 'var(--accent)' : 'var(--muted)'} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.label}</div>
+                  {item.sub && <div style={{ fontSize: 11, color: 'var(--muted)' }}>{item.sub}</div>}
+                </div>
+                <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: 'var(--secondary)', color: 'var(--muted)', textTransform: 'uppercase', flexShrink: 0 }}>
+                  {item.type}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border)', display: 'flex', gap: 16, fontSize: 11, color: 'var(--muted)' }}>
+          <span><kbd style={{ padding: '1px 4px', borderRadius: 3, background: 'var(--secondary)', border: '1px solid var(--border)', fontSize: 10 }}>&uarr;&darr;</kbd> navigate</span>
+          <span><kbd style={{ padding: '1px 4px', borderRadius: 3, background: 'var(--secondary)', border: '1px solid var(--border)', fontSize: 10 }}>&crarr;</kbd> open</span>
+          <span><kbd style={{ padding: '1px 4px', borderRadius: 3, background: 'var(--secondary)', border: '1px solid var(--border)', fontSize: 10 }}>esc</kbd> close</span>
+        </div>
+      </div>
+    </div>,
+    document.body
   )
 }
 
@@ -702,9 +938,23 @@ function AppShell() {
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [scansLoaded, setScansLoaded] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [copilotOpen, setCopilotOpen] = useState(false)
+  const [cmdkOpen, setCmdkOpen] = useState(false)
   const isMobile = useIsMobile()
   const location = useLocation()
   const { t } = useTranslation()
+
+  // Cmd+K shortcut
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setCmdkOpen(prev => !prev)
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [])
 
   useEffect(() => {
     getScans().then(data => {
@@ -838,6 +1088,11 @@ function AppShell() {
           </main>
         </div>
         <HelpButton />
+        <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} />
+        <CopilotButton onClick={() => setCopilotOpen(true)} />
+        <Suspense fallback={null}>
+          <CopilotPanel open={copilotOpen} onClose={() => setCopilotOpen(false)} />
+        </Suspense>
       </div>
     </ScanContext.Provider>
   )

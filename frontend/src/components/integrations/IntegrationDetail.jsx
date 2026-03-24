@@ -56,6 +56,7 @@ export default function IntegrationDetail({ embedded, integrationId: embeddedId,
     setRunning(true)
     try {
       await ibRunIntegration(id)
+      toast.success('Integration run started')
       setTimeout(load, 1500)
     } catch (e) {
       toast.error('Run failed: ' + e.message)
@@ -67,6 +68,7 @@ export default function IntegrationDetail({ embedded, integrationId: embeddedId,
   const handleDelete = async () => {
     if (!await confirm('Delete this integration? This cannot be undone.')) return
     await ibDeleteIntegration(id)
+    toast.success('Integration deleted')
     goBack()
   }
 
@@ -98,6 +100,7 @@ export default function IntegrationDetail({ embedded, integrationId: embeddedId,
       const res = await ibUpdateLogo(id, url ? { logo_url: url } : { auto: true })
       setIntegration(prev => ({ ...prev, logo_url: res.logo_url }))
       setLogoInput(false)
+      toast.success('Logo updated')
     } catch (e) {
       toast.error('Failed to update logo: ' + e.message)
     }

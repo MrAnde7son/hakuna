@@ -156,6 +156,7 @@ function IntegrationCard({ integration, onRefresh }) {
     setSaving(true)
     try {
       await saveIntegration(integration.provider, { config, is_enabled: enabled })
+      toast.success('Settings saved')
       onRefresh()
     } catch (e) {
       toast.error('Save failed: ' + e.message)
@@ -179,6 +180,7 @@ function IntegrationCard({ integration, onRefresh }) {
   const handleDelete = async () => {
     if (!await confirm(`Remove ${meta.label} configuration?`)) return
     await deleteIntegration(integration.provider)
+    toast.success('Integration removed')
     onRefresh()
   }
 

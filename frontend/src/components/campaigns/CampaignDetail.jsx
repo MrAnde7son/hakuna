@@ -14,7 +14,7 @@ import {
   executeWorkflow, getWorkflowTemplates, authListUsers,
   getCampaignTickets, syncFindingTickets, createCampaignSlackChannel,
 } from '../../api.js'
-import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill, ErrorBanner, SkeletonDetail, Table } from '../shared/ui.jsx'
+import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill, ErrorBanner, SkeletonDetail, Table, buildFindingBreakdown, useRiskWeights } from '../shared/ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
 
 // ─── Condition chip colors ───────────────────────────────
@@ -205,7 +205,7 @@ function CampaignFindingCard({ finding, campaignId, onOwnerUpdate }) {
         </div>
 
         <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 80 }}>
-          <ScoreBar score={finding.priority_score} />
+          <ScoreBar score={finding.priority_score} breakdown={buildFindingBreakdown(finding, riskWeights)} />
           {(finding.cvss3_score || finding.cvss2_score) && (
             <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
               CVSS {(finding.cvss3_score || finding.cvss2_score)?.toFixed(1)}
@@ -360,6 +360,7 @@ export default function CampaignDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { activeScanId } = useScan()
+  const riskWeights = useRiskWeights()
 
   const [campaign, setCampaign] = useState(null)
   const [loading, setLoading] = useState(true)

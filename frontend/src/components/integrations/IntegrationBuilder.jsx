@@ -378,6 +378,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         await import('../../api.js').then(api => api.ibRunIntegration(result.id))
       }
 
+      toast.success('Integration saved')
       goDone()
     } catch (e) {
       toast.error('Save failed: ' + e.message)

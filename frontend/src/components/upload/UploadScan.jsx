@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { Upload, CheckCircle, AlertCircle, FileText, X } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { uploadScan, deleteScan, getScanStatus } from '../../api.js'
-import { Card, PageHeader, Button, useConfirm } from '../shared/ui.jsx'
+import { Card, PageHeader, Button, useConfirm, useToast } from '../shared/ui.jsx'
 
 function DropZone({ onFile, disabled }) {
   const { t } = useTranslation()
@@ -96,6 +96,7 @@ export default function UploadScan() {
   const { scans, refreshScans, setActiveScanId } = useScan()
   const navigate = useNavigate()
   const confirm = useConfirm()
+  const toast = useToast()
   const [uploads, setUploads] = useState([])
   const [deletingId, setDeletingId] = useState(null)
 
@@ -153,6 +154,7 @@ export default function UploadScan() {
     try {
       await deleteScan(scanId)
       await refreshScans()
+      toast.success('Scan deleted')
     } finally {
       setDeletingId(null)
     }

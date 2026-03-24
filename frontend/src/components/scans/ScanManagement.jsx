@@ -10,7 +10,7 @@ import {
   uploadScan, deleteScan, getScanStatus, getEasmStatus, scanEasmDomain, rescanEasmScan, refreshEasmScan, setupEasm,
   getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
 } from '../../api.js'
-import { Card, PageHeader, Button, Spinner, useConfirm } from '../shared/ui.jsx'
+import { Card, PageHeader, Button, Spinner, useConfirm, useToast } from '../shared/ui.jsx'
 
 
 // ── Source type metadata ─────────────────────────────────────────────
@@ -1547,6 +1547,7 @@ export default function ScanManagement() {
   const { scans, scansLoaded, refreshScans, setActiveScanId } = useScan()
   const navigate = useNavigate()
   const confirm = useConfirm()
+  const toast = useToast()
 
   const [uploads, setUploads] = useState([])
   const [deletingId, setDeletingId] = useState(null)
@@ -1644,6 +1645,7 @@ export default function ScanManagement() {
     try {
       await deleteScan(scanId)
       await refreshScans()
+      toast.success('Scan deleted')
     } finally {
       setDeletingId(null)
     }

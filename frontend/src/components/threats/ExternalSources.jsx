@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link2, Plus, Upload, RefreshCw, Settings2, Trash2, Save, X, Edit2, ArrowRight } from 'lucide-react'
-import { Card, Button, Spinner, useConfirm } from '../shared/ui.jsx'
+import { Card, Button, Spinner, useConfirm, useToast } from '../shared/ui.jsx'
 import {
   getTags,
   getExternalTagSources, createExternalTagSource, updateExternalTagSource, deleteExternalTagSource,
@@ -32,6 +32,7 @@ const getMatchFields = (t) => [
 // ─── Source config form ───────────────────────────────────────────────────────
 function SourceForm({ source, onSave, onCancel }) {
   const { t } = useTranslation()
+  const toast = useToast()
   const [name, setName]             = useState(source?.name || '')
   const [type, setType]             = useState(source?.source_type || 'csv')
   const [matchField, setMatchField] = useState(source?.match_field || 'any')
@@ -65,6 +66,7 @@ function SourceForm({ source, onSave, onCancel }) {
       const payload = { name, source_type: type, match_field: matchField, api_url: apiUrl || null, api_config: apiConfig, auto_create_tags: autoCreate }
       if (source) await updateExternalTagSource(source.id, payload)
       else await createExternalTagSource(payload)
+      toast.success(source ? 'Source updated' : 'Source created')
       onSave()
     } catch (e) {
       setError(e.message)
@@ -235,6 +237,7 @@ function TagMapRow({ sourceId, map, allTags, onSaved, onDelete }) {
 // ─── Source card ──────────────────────────────────────────────────────────────
 function SourceCard({ source, allTags, onRefresh }) {
   const { t } = useTranslation()
+  const toast = useToast()
   const confirm = useConfirm()
   const [expanded, setExpanded]     = useState(false)
   const [editOpen, setEditOpen]     = useState(false)
@@ -249,6 +252,7 @@ function SourceCard({ source, allTags, onRefresh }) {
   const handleDelete = async () => {
     if (!await confirm(`Delete source "${source.name}"? Existing tag assignments are kept.`)) return
     await deleteExternalTagSource(source.id)
+    toast.success('Source deleted')
     onRefresh()
   }
 

@@ -7,7 +7,7 @@ import { useScan } from '../../App.jsx'
 import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign } from '../../api.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select,
-  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable
+  Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable, useToast
 } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
@@ -176,6 +176,7 @@ function SLABadge({ status, dueDate, t: tProp }) {
 
 function BulkTagModal({ findingIds, onClose, onDone }) {
   const { t } = useTranslation()
+  const toast = useToast()
   const [selected, setSelected] = useState([])
   const [saving, setSaving] = useState(false)
 
@@ -184,6 +185,7 @@ function BulkTagModal({ findingIds, onClose, onDone }) {
     setSaving(true)
     try {
       await assignTags({ tag_ids: selected.map(t => t.tag_id), finding_ids: findingIds })
+      toast.success('Tags updated')
       onDone()
     } finally {
       setSaving(false)
@@ -216,6 +218,7 @@ function BulkTagModal({ findingIds, onClose, onDone }) {
 }
 
 function BulkFindingCampaignModal({ selectedFindings, scanId, onClose, onCreated }) {
+  const toast = useToast()
   const [name, setName] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
@@ -244,6 +247,7 @@ function BulkFindingCampaignModal({ selectedFindings, scanId, onClose, onCreated
         query_logic: 'OR',
         status: 'planned',
       })
+      toast.success('Campaign created')
       onCreated(result)
     } catch (e) {
       setError(e.message || 'Failed to create campaign')

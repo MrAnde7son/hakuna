@@ -91,6 +91,7 @@ function TagForm({ tag, allTags, onSave, onCancel }) {
   const [description, setDescription] = useState(tag?.description || '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  const toast = useToast()
 
   const isEdit = !!tag
   const categories = [...new Set(allTags.map(t => t.category))].sort()
@@ -107,8 +108,8 @@ function TagForm({ tag, allTags, onSave, onCancel }) {
         color,
         description: description.trim() || null,
       }
-      if (isEdit) await updateTag(tag.id, payload)
-      else await createTag(payload)
+      if (isEdit) { await updateTag(tag.id, payload); toast.success('Tag updated') }
+      else { await createTag(payload); toast.success('Tag created') }
       onSave()
     } catch (e) {
       setError(e.message)
@@ -204,6 +205,7 @@ function AutoTagRuleForm({ rule, allTags, onSave, onCancel }) {
   const [enabled, setEnabled] = useState(rule?.is_enabled !== false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+  const toast = useToast()
 
   const submit = async () => {
     if (!name.trim()) { setError('Name is required'); return }
@@ -217,8 +219,8 @@ function AutoTagRuleForm({ rule, allTags, onSave, onCancel }) {
         name, description, tag_id: Number(tagId), target_type: targetType,
         conditions: validConditions, condition_logic: logic, is_enabled: enabled,
       }
-      if (rule) await updateAutoTagRule(rule.id, payload)
-      else await createAutoTagRule(payload)
+      if (rule) { await updateAutoTagRule(rule.id, payload); toast.success('Rule updated') }
+      else { await createAutoTagRule(payload); toast.success('Rule created') }
       onSave()
     } catch (e) {
       setError(e.message)
@@ -616,6 +618,7 @@ export default function TagManager() {
   const handleDeleteTag = async (strategy) => {
     try {
       await deleteTag(deletingTag.id, strategy)
+      toast.success('Tag deleted')
       setDeletingTag(null); setSelectedTag(null); load()
     } catch (e) { toast.error(e.message) }
   }
@@ -644,13 +647,15 @@ export default function TagManager() {
 
   const handleToggleRule = async (rule) => {
     try {
-      await updateAutoTagRule(rule.id, { is_enabled: !rule.is_enabled }); load()
+      await updateAutoTagRule(rule.id, { is_enabled: !rule.is_enabled })
+      toast.success(rule.is_enabled ? 'Rule disabled' : 'Rule enabled')
+      load()
     } catch (e) { toast.error(e.message) }
   }
 
   const handleDeleteRule = async (rule) => {
     if (!await confirm(`Delete rule "${rule.name}"?`)) return
-    try { await deleteAutoTagRule(rule.id); load() }
+    try { await deleteAutoTagRule(rule.id); toast.success('Rule deleted'); load() }
     catch (e) { toast.error(e.message) }
   }
 

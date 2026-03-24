@@ -14,7 +14,8 @@ import {
 } from '../../api.js'
 import {
   Card, ScoreBar, Spinner, Button, Pill, SeverityBadge, Table,
-  ErrorBanner, SkeletonDetail, TagPill, EmptyState, InlineSpinner
+  ErrorBanner, SkeletonDetail, TagPill, EmptyState, InlineSpinner,
+  buildAssetBreakdown
 } from '../shared/ui.jsx'
 import { useScan } from '../../App.jsx'
 
@@ -190,7 +191,7 @@ function OverviewTab({ asset, blastRadius, onReload }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
           <div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('assetDetail.riskScore').toUpperCase()}</div>
-            <ScoreBar score={asset.risk_score || 0} />
+            <ScoreBar score={asset.risk_score || 0} breakdown={buildAssetBreakdown(asset)} />
           </div>
           <div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('assetDetail.criticality').toUpperCase()}</div>
@@ -582,7 +583,7 @@ export default function AssetDetail() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
           <div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('assetDetail.riskScore').toUpperCase()}</div>
-            <ScoreBar score={asset.risk_score || 0} />
+            <ScoreBar score={asset.risk_score || 0} breakdown={buildAssetBreakdown(asset)} />
           </div>
           <div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('assetDetail.criticality').toUpperCase()}</div>

@@ -5,7 +5,7 @@ import {
   authListRoles, authGetUserCustomRoles, authAssignCustomRole, authUnassignCustomRole,
 } from '../../api.js'
 import { UserPlus, Trash2, X } from 'lucide-react'
-import { useConfirm } from '../shared/ui.jsx'
+import { useConfirm, useToast } from '../shared/ui.jsx'
 
 const ROLE_COLORS = {
   superadmin: { bg: 'var(--warning-subtle)', color: 'var(--warning)', label: 'Super Admin' },
@@ -30,6 +30,7 @@ function RoleBadge({ role }) {
 export default function UsersPanel() {
   const { user: currentUser, isSuperadmin, isAdmin } = useAuth()
   const confirm = useConfirm()
+  const toast = useToast()
   const [users, setUsers] = useState([])
   const [showInvite, setShowInvite] = useState(false)
   const [inviteForm, setInviteForm] = useState({ email: '', display_name: '', role: 'analyst', password: '' })
@@ -82,6 +83,7 @@ export default function UsersPanel() {
     try {
       const newUser = await authInviteUser(inviteForm)
       setUsers(prev => [newUser, ...prev])
+      toast.success('User invited')
       setShowInvite(false)
       setInviteForm({ email: '', display_name: '', role: 'analyst', password: '' })
     } catch (err) {
@@ -114,6 +116,7 @@ export default function UsersPanel() {
     try {
       await authDeleteUser(u.id)
       setUsers(prev => prev.filter(x => x.id !== u.id))
+      toast.success('User deleted')
     } catch (err) {
       setError(err.message)
     }

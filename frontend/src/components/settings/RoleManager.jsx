@@ -9,7 +9,7 @@ import {
 import {
   Shield, Plus, Trash2, Pencil, Check, X, ChevronRight, Users, Tag, Lock, Unlock,
 } from 'lucide-react'
-import { useConfirm } from '../shared/ui.jsx'
+import { useConfirm, useToast } from '../shared/ui.jsx'
 
 const PERMISSION_SECTIONS = [
   {
@@ -170,6 +170,7 @@ function TagPermissionRow({ perm, onRemove, canEdit }) {
 export default function RoleManager() {
   const { isAdmin, isSuperadmin, user: currentUser } = useAuth()
   const confirm = useConfirm()
+  const toast = useToast()
   const [roles, setRoles] = useState([])
   const [selectedRole, setSelectedRole] = useState(null)
   const [users, setUsers] = useState([])
@@ -246,6 +247,7 @@ export default function RoleManager() {
       const role = await authCreateRole({ name: createForm.name, description: createForm.description, base_permissions: {} })
       setRoles(prev => [...prev, role])
       setSelectedRole(role)
+      toast.success('Role created')
       setShowCreate(false)
       setCreateForm({ name: '', description: '' })
     } catch (err) {
@@ -260,6 +262,7 @@ export default function RoleManager() {
       const updated = await authUpdateRole(selectedRole.id, editForm)
       setRoles(prev => prev.map(r => r.id === updated.id ? updated : r))
       setSelectedRole(updated)
+      toast.success('Role updated')
       setEditing(false)
     } catch (err) {
       setError(err.message)
@@ -282,6 +285,7 @@ export default function RoleManager() {
       await authDeleteRole(selectedRole.id)
       setRoles(prev => prev.filter(r => r.id !== selectedRole.id))
       setSelectedRole(null)
+      toast.success('Role deleted')
     } catch (err) {
       setError(err.message)
     }

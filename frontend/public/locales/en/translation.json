@@ -4,6 +4,13 @@
     "tagline": "Exposure Center",
     "loading": "Loading..."
   },
+  "commandPalette": {
+    "placeholder": "Search pages, findings, assets...",
+    "noResults": "No results found",
+    "searching": "Searching...",
+    "pages": "Pages",
+    "searchResults": "Search Results"
+  },
   "nav": {
     "intelligence": "Intelligence",
     "exposure": "Exposure",
@@ -229,7 +236,14 @@
     "firstSeen": "First Seen",
     "lastSeen": "Last Seen",
     "timesSeen": "Times Seen",
-    "noDataAvailable": "No scan data available to compute a risk grade. Upload a scan to get started."
+    "noDataAvailable": "No scan data available to compute a risk grade. Upload a scan to get started.",
+    "severity": "Severity",
+    "threatIntel": "Threat Intel",
+    "exploitability": "Exploitability",
+    "assetCriticality": "Asset Criticality",
+    "showBreakdown": "Show breakdown",
+    "scoreBreakdown": "Score Breakdown",
+    "weightedTotal": "Weighted total"
   },
   "assets": {
     "title": "Assets",

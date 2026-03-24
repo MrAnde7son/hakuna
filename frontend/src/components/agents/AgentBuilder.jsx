@@ -142,6 +142,7 @@ export default function AgentBuilder() {
       a.download = `${selected.name.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase()}.agent.json`
       a.click()
       URL.revokeObjectURL(url)
+      toast.success('Agent exported')
     } catch (e) {
       toast.error('Export failed: ' + e.message)
     }
@@ -160,6 +161,7 @@ export default function AgentBuilder() {
       const agent = await importAgent(config)
       await refresh()
       selectAgent(agent)
+      toast.success('Agent imported')
     } catch (err) {
       toast.error('Import failed: ' + err.message)
     } finally {
@@ -182,6 +184,7 @@ export default function AgentBuilder() {
       setSelected(updated)
       setEditing({ ...updated })
       refresh()
+      toast.success('Agent saved')
     } finally {
       setSaving(false)
     }
@@ -194,6 +197,7 @@ export default function AgentBuilder() {
     setSelected(null)
     setEditing(null)
     refresh()
+    toast.success('Agent deleted')
   }
 
   // ── Streaming run ────────────────────────────────────────────────
@@ -721,6 +725,7 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
     try {
       await uploadAgentDocument(agentId, file)
       onDocumentsChange()
+      toast.success('Document uploaded')
     } catch (err) {
       toast.error('Upload failed: ' + err.message)
     } finally {
@@ -734,6 +739,7 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
     try {
       await deleteAgentDocument(agentId, docId)
       onDocumentsChange()
+      toast.success('Document removed')
     } catch (err) {
       toast.error('Delete failed: ' + err.message)
     }
@@ -1141,6 +1147,7 @@ function SchedulePanel({ agentId, schedules, onRefresh }) {
         input: schedInput.trim(),
       })
       onRefresh()
+      toast.success('Schedule created')
     } catch (e) {
       toast.error(e.message)
     } finally {
@@ -1157,6 +1164,7 @@ function SchedulePanel({ agentId, schedules, onRefresh }) {
     if (!await confirm('Delete this schedule?')) return
     await deleteAgentSchedule(sched.id)
     onRefresh()
+    toast.success('Schedule deleted')
   }
 
   return (

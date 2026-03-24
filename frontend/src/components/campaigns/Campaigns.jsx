@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers, getIntegrations, previewCampaignQuery } from '../../api.js'
-import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons, ErrorBanner, SkeletonCard } from '../shared/ui.jsx'
+import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast } from '../shared/ui.jsx'
 
 const STATUS_KEYS = {
   draft:     { key: 'campaigns.draft',     color: 'var(--muted)',   bg: 'rgba(100,116,139,0.1)', border: 'rgba(100,116,139,0.25)', icon: Clock },
@@ -249,6 +249,7 @@ function readableCondition(cond) {
 
 function CreateCampaignModal({ scanId, onClose, onCreate }) {
   const { t } = useTranslation()
+  const toast = useToast()
   const [step, setStep] = useState('templates') // 'templates' | 'details'
   const [selectedTemplate, setSelectedTemplate] = useState(null)
   const [name, setName] = useState('')
@@ -328,6 +329,7 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
         }
       }
       const c = await createCampaign(payload)
+      toast.success('Campaign created')
       onCreate(c)
     } finally {
       setSaving(false)
@@ -1068,6 +1070,7 @@ function CreateWorkflowModal({ onClose, onCreate }) {
 
 export default function Campaigns() {
   const { t } = useTranslation()
+  const toast = useToast()
   const { activeScanId } = useScan()
   const navigate = useNavigate()
   const [campaigns, setCampaigns] = useState([])
@@ -1109,6 +1112,7 @@ export default function Campaigns() {
   const handleDelete = async (id) => {
     await deleteCampaign(id)
     setCampaigns(prev => prev.filter(c => c.id !== id))
+    toast.success('Campaign deleted')
   }
 
   const handleDeleteWf = async (id) => {

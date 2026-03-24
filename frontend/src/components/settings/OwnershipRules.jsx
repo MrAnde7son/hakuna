@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect, useCallback } from 'react'
 import { UserCheck, Plus, Play, Edit2, Trash2, ToggleLeft, ToggleRight, X, Save, ArrowRight } from 'lucide-react'
-import { Card, Button, Spinner, useConfirm } from '../shared/ui.jsx'
+import { Card, Button, Spinner, useConfirm, useToast } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import {
   getOwnershipRules, createOwnershipRule, updateOwnershipRule,
@@ -40,6 +40,7 @@ function OwnershipRuleForm({ rule, onSave, onCancel }) {
   const [enabled, setEnabled]       = useState(rule?.is_enabled !== false)
   const [saving, setSaving]         = useState(false)
   const [error, setError]           = useState(null)
+  const toast = useToast()
 
   const submit = async () => {
     if (!name.trim()) { setError('Name is required'); return }
@@ -57,8 +58,8 @@ function OwnershipRuleForm({ rule, onSave, onCancel }) {
         owner_role: ownerRole || null, team: team || null, notes: notes || null,
         overwrite_existing: overwrite, is_enabled: enabled,
       }
-      if (rule) await updateOwnershipRule(rule.id, payload)
-      else await createOwnershipRule(payload)
+      if (rule) { await updateOwnershipRule(rule.id, payload); toast.success('Rule updated') }
+      else { await createOwnershipRule(payload); toast.success('Rule created') }
       onSave()
     } catch (e) {
       setError(e.message)
@@ -187,6 +188,7 @@ function OwnershipMappingRow({ mapping, catalog, onSave, onDelete }) {
   const [assignTo, setAssignTo]       = useState(mapping?.conditions?.[0]?.value || 'owner_name')
   const [target, setTarget]           = useState(mapping?.target_type || 'asset')
   const [saving, setSaving]           = useState(false)
+  const toast = useToast()
 
   const effectiveField = field === '__custom__' ? customField : field
 
@@ -205,8 +207,8 @@ function OwnershipMappingRow({ mapping, catalog, onSave, onDelete }) {
         overwrite_existing: true,
       }
       let ruleId = mapping?.id
-      if (mapping) await updateOwnershipRule(mapping.id, payload)
-      else { const r = await createOwnershipRule(payload); ruleId = r.id }
+      if (mapping) { await updateOwnershipRule(mapping.id, payload); toast.success('Mapping updated') }
+      else { const r = await createOwnershipRule(payload); ruleId = r.id; toast.success('Mapping created') }
       // Auto-run in background — don't await, let UI update immediately
       if (ruleId) runOwnershipRule(ruleId).catch(() => {})
       onSave()
@@ -272,6 +274,7 @@ function OwnershipMappingRow({ mapping, catalog, onSave, onDelete }) {
 
 function OwnershipMappingTab() {
   const confirm = useConfirm()
+  const toast = useToast()
   const [mappings, setMappings]     = useState([])
   const [catalog, setCatalog]       = useState([])
   const [loading, setLoading]       = useState(true)
@@ -306,6 +309,7 @@ function OwnershipMappingTab() {
     if (id === null) { setAddingNew(false); return }
     if (!await confirm('Delete this ownership mapping?')) return
     await deleteOwnershipRule(id)
+    toast.success('Mapping deleted')
     load()
   }
 
@@ -385,6 +389,7 @@ function OwnershipMappingTab() {
 // ─── Main export ──────────────────────────────────────────────────────────────
 export default function OwnershipRules() {
   const confirm = useConfirm()
+  const toast = useToast()
   const [activeTab, setActiveTab] = useState('mapping')
   const [rules, setRules]             = useState([])
   const [loading, setLoading]         = useState(true)
@@ -402,12 +407,14 @@ export default function OwnershipRules() {
 
   const handleToggle = async (rule) => {
     await updateOwnershipRule(rule.id, { is_enabled: !rule.is_enabled })
+    toast.success(rule.is_enabled ? 'Rule disabled' : 'Rule enabled')
     load()
   }
 
   const handleDelete = async (rule) => {
     if (!await confirm(`Delete rule "${rule.name}"?`)) return
     await deleteOwnershipRule(rule.id)
+    toast.success('Rule deleted')
     load()
   }
 

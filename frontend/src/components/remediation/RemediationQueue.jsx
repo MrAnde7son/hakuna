@@ -6,13 +6,13 @@ import { Wrench, Zap, ChevronRight, AlertTriangle } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getRemediationQueue, createCampaign, runCampaign } from '../../api.js'
 import {
-  Card, SeverityBadge, ScoreBar, PageHeader, Select, Spinner,
+  Card, SeverityBadge, ScoreBar, buildFindingBreakdown, useRiskWeights, PageHeader, Select, Spinner,
   EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, ErrorBanner, SkeletonCard
 } from '../shared/ui.jsx'
 
 const SEV_COLORS = ['var(--info)', 'var(--low)', 'var(--medium)', 'var(--high)', 'var(--critical)']
 
-function FindingCard({ finding, rank, scanId }) {
+function FindingCard({ finding, rank, scanId, riskWeights }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [expanded, setExpanded] = useState(false)
@@ -84,7 +84,7 @@ function FindingCard({ finding, rank, scanId }) {
         {/* Score */}
         <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 90 }}>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>{t('findings.priority')}</div>
-          <ScoreBar score={finding.priority_score} />
+          <ScoreBar score={finding.priority_score} breakdown={buildFindingBreakdown(finding, riskWeights)} />
           {(finding.cvss3_score || finding.cvss2_score) && (
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
               CVSS: {(finding.cvss3_score || finding.cvss2_score).toFixed(1)}
@@ -128,6 +128,7 @@ function FindingCard({ finding, rank, scanId }) {
 
 export default function RemediationQueue() {
   const { t } = useTranslation()
+  const riskWeights = useRiskWeights()
   const { activeScanId } = useScan()
   const { filters, setFilter } = useURLFilters({
     effort: { default: '' },
@@ -216,7 +217,7 @@ export default function RemediationQueue() {
         ) : (
           <div>
             {findings.map((f, i) => (
-              <FindingCard key={f.id} finding={f} rank={i + 1} scanId={activeScanId} />
+              <FindingCard key={f.id} finding={f} rank={i + 1} scanId={activeScanId} riskWeights={riskWeights} />
             ))}
           </div>
         )

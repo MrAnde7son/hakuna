@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight, Layers, RefreshCw, Ticket } from 'lucide-react'
 import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign, syncFindingTickets } from '../../api.js'
-import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail, useToast } from '../shared/ui.jsx'
+import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail, useToast, buildFindingBreakdown, useRiskWeights } from '../shared/ui.jsx'
 import BlastRadiusPanel from '../campaigns/BlastRadiusPanel.jsx'
 
 function Section({ title, icon: Icon, children, defaultOpen = true }) {
@@ -122,6 +122,7 @@ export default function FindingDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const toast = useToast()
+  const riskWeights = useRiskWeights()
   const [finding, setFinding] = useState(null)
   const [loading, setLoading] = useState(true)
   const [creatingCampaign, setCreatingCampaign] = useState(false)
@@ -169,6 +170,7 @@ export default function FindingDetail() {
     try {
       const res = await resolveFinding(id)
       setFinding(prev => ({ ...prev, sla_status: 'resolved', resolved_at: res.resolved_at }))
+      toast.success('Finding resolved')
     } finally {
       setResolving(false)
     }
@@ -179,6 +181,7 @@ export default function FindingDetail() {
     try {
       const res = await unresolveFinding(id)
       setFinding(prev => ({ ...prev, sla_status: res.sla_status, resolved_at: null }))
+      toast.success('Finding reopened')
     } finally {
       setResolving(false)
     }
@@ -206,6 +209,7 @@ export default function FindingDetail() {
       setFinding(prev => ({ ...prev, workflow_status: type, exception_id: -1 }))
       setShowExceptionForm(false)
       setExceptionReason('')
+      toast.success('Exception created')
     } catch (e) {
       toast.error('Failed to create exception: ' + e.message)
     }
@@ -216,6 +220,7 @@ export default function FindingDetail() {
     try {
       const updated = await updateFindingContext(id, { [field]: value || null })
       setFinding(prev => ({ ...prev, ...updated }))
+      toast.success('Ownership updated')
     } finally {
       setCtxSaving(false)
     }
@@ -271,7 +276,7 @@ export default function FindingDetail() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
           <div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('findingDetail.priorityScore').toUpperCase()}</div>
-            <ScoreBar score={finding.priority_score} />
+            <ScoreBar score={finding.priority_score} breakdown={buildFindingBreakdown(finding, riskWeights)} />
           </div>
           {bestScore && (
             <div>

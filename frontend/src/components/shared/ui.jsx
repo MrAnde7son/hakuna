@@ -178,14 +178,14 @@ function ConfirmDialog({ message, title, confirmLabel, cancelLabel, destructive,
 
 export function SeverityBadge({ severity, label }) {
   const { t } = useTranslation()
-  const SEV_COLORS = {
-    4: { bg: '#450a0a', text: '#fca5a5', border: '#991b1b' },
-    3: { bg: '#431407', text: '#fdba74', border: '#9a3412' },
-    2: { bg: '#451a03', text: '#fcd34d', border: '#92400e' },
-    1: { bg: '#1a2e05', text: '#86efac', border: '#166534' },
-    0: { bg: '#0c1a2e', text: '#7dd3fc', border: '#0369a1' },
+  const SEV_VARS = {
+    4: { bg: 'var(--sev-critical-bg)', text: 'var(--sev-critical-text)', border: 'var(--sev-critical-border)' },
+    3: { bg: 'var(--sev-high-bg)', text: 'var(--sev-high-text)', border: 'var(--sev-high-border)' },
+    2: { bg: 'var(--sev-medium-bg)', text: 'var(--sev-medium-text)', border: 'var(--sev-medium-border)' },
+    1: { bg: 'var(--sev-low-bg)', text: 'var(--sev-low-text)', border: 'var(--sev-low-border)' },
+    0: { bg: 'var(--sev-info-bg)', text: 'var(--sev-info-text)', border: 'var(--sev-info-border)' },
   }
-  const c = SEV_COLORS[severity] || SEV_COLORS[0]
+  const c = SEV_VARS[severity] || SEV_VARS[0]
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 4,
@@ -198,17 +198,159 @@ export function SeverityBadge({ severity, label }) {
   )
 }
 
-export function ScoreBar({ score, max = 10, color }) {
+export function ScoreBar({ score, max = 10, color, breakdown }) {
   const pct = Math.min((score / max) * 100, 100)
   const c = color || (score >= 8 ? 'var(--critical)' : score >= 6 ? 'var(--high)' : score >= 4 ? 'var(--medium)' : 'var(--low)')
+  const [tipOpen, setTipOpen] = useState(false)
+  const [tipPos, setTipPos] = useState({ x: 0, y: 0 })
+  const barRef = useRef(null)
+
+  const showTip = () => {
+    if (!breakdown) return
+    const rect = barRef.current?.getBoundingClientRect()
+    if (rect) setTipPos({ x: rect.left, y: rect.bottom + 6 })
+    setTipOpen(true)
+  }
+
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+    <div
+      ref={barRef}
+      onMouseEnter={showTip}
+      onMouseLeave={() => setTipOpen(false)}
+      style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: breakdown ? 'help' : 'default' }}
+    >
       <div style={{ flex: 1, height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
         <div style={{ width: `${pct}%`, height: '100%', background: c, borderRadius: 3, transition: 'width 0.3s' }} />
       </div>
       <span style={{ fontSize: 12, color: c, fontWeight: 600, minWidth: 28 }}>{score?.toFixed(1)}</span>
+      {tipOpen && breakdown && createPortal(
+        <ScoreBreakdownTooltip breakdown={breakdown} pos={tipPos} />,
+        document.body
+      )}
     </div>
   )
+}
+
+function ScoreBreakdownTooltip({ breakdown, pos }) {
+  const factors = breakdown.factors || []
+  return (
+    <div style={{
+      position: 'fixed', left: Math.min(pos.x, window.innerWidth - 310), top: pos.y,
+      zIndex: 99996, width: 290, padding: '10px 12px',
+      background: 'var(--card)', border: '1px solid var(--border)',
+      borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+      animation: 'toast-in 0.15s ease-out',
+    }}>
+      <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+        {breakdown.title || 'Score Breakdown'}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+        {factors.map(f => (
+          <div key={f.label} style={{ display: 'grid', gridTemplateColumns: '90px 1fr 70px', gap: 6, alignItems: 'center' }}>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between' }}>
+              <span>{f.label}</span>
+              <span style={{ color: 'var(--muted)' }}>{Math.round(f.weight * 100)}%</span>
+            </div>
+            <div style={{ height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
+              <div style={{ width: `${Math.min(f.value * 100, 100)}%`, height: '100%', background: f.color, borderRadius: 2 }} />
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'right', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={f.detail}>
+              {f.detail}
+            </div>
+          </div>
+        ))}
+      </div>
+      {breakdown.total != null && (
+        <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--muted)' }}>
+          <span>Weighted total</span>
+          <span style={{ fontWeight: 600, color: 'var(--text)' }}>{breakdown.total.toFixed(1)} / 10</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────
+// Score Breakdown Helpers
+// ─────────────────────────────────────────────────────────
+
+const DEFAULT_FINDING_WEIGHTS = {
+  severity: 0.25, intel: 0.25, exploitability: 0.20,
+  criticality: 0.10, family: 0.10, controls: 0.05, reachability: 0.05,
+}
+
+let _cachedRiskWeights = null
+
+export function useRiskWeights() {
+  const [weights, setWeights] = useState(_cachedRiskWeights)
+  useEffect(() => {
+    if (_cachedRiskWeights) return
+    import('../../api.js').then(api => api.getRiskConfig()).then(cfg => {
+      _cachedRiskWeights = cfg?.finding_formula_weights || DEFAULT_FINDING_WEIGHTS
+      setWeights(_cachedRiskWeights)
+    }).catch(() => {
+      _cachedRiskWeights = DEFAULT_FINDING_WEIGHTS
+      setWeights(DEFAULT_FINDING_WEIGHTS)
+    })
+  }, [])
+  return weights || DEFAULT_FINDING_WEIGHTS
+}
+
+export function buildFindingBreakdown(finding, riskWeights) {
+  const w = riskWeights || DEFAULT_FINDING_WEIGHTS
+  const cvss = finding.cvss4_score || finding.cvss3_score || finding.cvss2_score || 0
+  const sevNorm = cvss / 10
+  let exploitBonus = 0
+  if (finding.zero_day) exploitBonus = 1.0
+  else if (finding.exploit_maturity) {
+    const m = { weaponized: 0.9, functional: 0.7, poc: 0.5, unproven: 0.2 }
+    exploitBonus = m[finding.exploit_maturity.toLowerCase()] || 0.2
+  } else if (finding.exploit_available) exploitBonus = 0.5
+  const signals = []
+  if (finding.is_kev) signals.push(0.9)
+  if (finding.epss_score > 0) signals.push(Math.min(finding.epss_score * 1.5, 1.0))
+  if (finding.ransomware_linked) signals.push(1.0)
+  if (finding.trending_in_news) signals.push(0.6)
+  if (finding.vpr_score > 0) signals.push(finding.vpr_score / 10)
+  const intelFactor = signals.length ? Math.max(...signals) : 0
+  const critRaw = finding.asset_criticality || 5
+  const critNorm = (critRaw - 1) / 9
+  // All 7 factors matching Settings > Risk > Finding Formula Weights
+  const allFactors = [
+    { key: 'severity', label: 'Severity', value: sevNorm, detail: cvss ? `CVSS ${cvss.toFixed(1)}` : 'N/A', color: 'var(--critical)' },
+    { key: 'exploitability', label: 'Exploitability', value: exploitBonus,
+      detail: finding.zero_day ? 'Zero-day' : finding.exploit_maturity || (finding.exploit_available ? 'Known exploit' : 'None'),
+      color: 'var(--medium)' },
+    { key: 'intel', label: 'Threat Intel', value: intelFactor,
+      detail: [finding.is_kev && 'KEV', finding.ransomware_linked && 'Ransomware', finding.trending_in_news && 'Trending', finding.epss_score > 0 && `EPSS ${(finding.epss_score * 100).toFixed(1)}%`, finding.vpr_score > 0 && `VPR ${finding.vpr_score}`].filter(Boolean).join(', ') || 'None',
+      color: 'var(--high)' },
+    { key: 'criticality', label: 'Asset Crit.', value: critNorm, detail: `${critRaw}/10`, color: 'var(--info)' },
+    { key: 'family', label: 'Family', value: 0.5, detail: finding.plugin_family || 'General', color: 'var(--low)' },
+    { key: 'controls', label: 'Controls', value: 0.5, detail: 'N/A', color: 'var(--muted)' },
+    { key: 'reachability', label: 'Reachability', value: 0.5, detail: 'N/A', color: 'var(--muted)' },
+  ]
+  // Only show factors that have weight > 0
+  const factors = allFactors
+    .filter(f => (w[f.key] || 0) > 0)
+    .map(f => ({ ...f, weight: w[f.key] }))
+  // Use actual priority_score from backend (already has severity floors + cap)
+  const actual = finding.priority_score
+  return { title: 'Priority Score Breakdown', factors, total: actual != null ? actual : Math.min(factors.reduce((s, f) => s + f.value * f.weight, 0) * 10, 10) }
+}
+
+export function buildAssetBreakdown(asset) {
+  const cc = asset.critical_count || 0, hc = asset.high_count || 0
+  const mc = asset.medium_count || 0, lc = asset.low_count || 0
+  const total = cc * 10 + hc * 7 + mc * 4 + lc * 1
+  const normalized = Math.min(total / 50, 1.0) * 10
+  const factors = [
+    { label: 'Critical', value: cc > 0 ? Math.min(cc / 5, 1) : 0, weight: 0.40, detail: `${cc} findings`, color: 'var(--critical)' },
+    { label: 'High', value: hc > 0 ? Math.min(hc / 10, 1) : 0, weight: 0.28, detail: `${hc} findings`, color: 'var(--high)' },
+    { label: 'Medium', value: mc > 0 ? Math.min(mc / 20, 1) : 0, weight: 0.16, detail: `${mc} findings`, color: 'var(--medium)' },
+    { label: 'Low', value: lc > 0 ? Math.min(lc / 50, 1) : 0, weight: 0.08, detail: `${lc} findings`, color: 'var(--low)' },
+    { label: 'Asset Crit.', value: ((asset.criticality || 5) - 1) / 9, weight: 0.08, detail: `${asset.criticality || 5}/10`, color: 'var(--info)' },
+  ]
+  return { title: 'Risk Score Breakdown', factors, total: normalized }
 }
 
 export function Card({ children, style = {}, onClick, activeBorderColor, active, activeColor }) {

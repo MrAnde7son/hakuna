@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect, useCallback } from 'react'
 import { Tag, Plus, Play, Edit2, Trash2, Save, X, ArrowRight } from 'lucide-react'
-import { Card, Button, Spinner, useConfirm } from '../shared/ui.jsx'
+import { Card, Button, Spinner, useConfirm, useToast } from '../shared/ui.jsx'
 import {
   getAutoTagRules, createAutoTagRule, updateAutoTagRule,
   deleteAutoTagRule, runAutoTagRule, getTagConditionCatalog,
@@ -26,6 +26,7 @@ function TagMappingRow({ mapping, catalog, onSave, onDelete }) {
   const [prefix, setPrefix]           = useState(mapping?.conditions?.[0]?.value || '')
   const [target, setTarget]           = useState(mapping?.target_type || 'asset')
   const [saving, setSaving]           = useState(false)
+  const toast = useToast()
 
   const allFields      = catalog.flatMap(g => g.conditions || [])
   const effectiveField = field === '__custom__' ? customField : field
@@ -43,8 +44,8 @@ function TagMappingRow({ mapping, catalog, onSave, onDelete }) {
         is_enabled: true,
       }
       let ruleId = mapping?.id
-      if (mapping) await updateAutoTagRule(mapping.id, payload)
-      else { const r = await createAutoTagRule(payload); ruleId = r.id }
+      if (mapping) { await updateAutoTagRule(mapping.id, payload); toast.success('Mapping updated') }
+      else { const r = await createAutoTagRule(payload); ruleId = r.id; toast.success('Mapping created') }
       // Auto-run in background — don't await, let UI update immediately
       if (ruleId) runAutoTagRule(ruleId).catch(() => {})
       onSave()
@@ -112,6 +113,7 @@ function TagMappingRow({ mapping, catalog, onSave, onDelete }) {
 
 export default function TagMappings() {
   const confirm = useConfirm()
+  const toast = useToast()
   const [mappings, setMappings]   = useState([])
   const [catalog, setCatalog]     = useState([])
   const [loading, setLoading]     = useState(true)
@@ -135,6 +137,7 @@ export default function TagMappings() {
     if (id === null) { setAddingNew(false); return }
     if (!await confirm('Delete this tag mapping?')) return
     await deleteAutoTagRule(id)
+    toast.success('Mapping deleted')
     load()
   }
 

@@ -395,6 +395,7 @@ export default function IntegrationList({ embedded, onNew, onEdit, onDetail }) {
   const handleRun = async (id) => {
     try {
       await ibRunIntegration(id)
+      toast.success('Integration run started')
       setTimeout(load, 1000) // refresh after a moment
     } catch (e) {
       toast.error('Run failed: ' + e.message)
@@ -404,6 +405,7 @@ export default function IntegrationList({ embedded, onNew, onEdit, onDetail }) {
   const handleDelete = async (id) => {
     if (!await confirm('Delete this integration?')) return
     await ibDeleteIntegration(id)
+    toast.success('Integration deleted')
     load()
   }
 
