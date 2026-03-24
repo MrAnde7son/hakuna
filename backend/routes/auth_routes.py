@@ -11,7 +11,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from core.database import get_db
 from models.models import Organization, User, MSSPOrgAccess, Scan, CustomRole, TagPermission, UserCustomRole, Tag
@@ -651,12 +651,52 @@ async def delete_org(
         raise HTTPException(400, "Cannot delete your own organization")
 
     _org_name = org.name
-    # Delete all users in this org
-    db.query(User).filter(User.org_id == org_id).delete()
-    # Delete MSSP links
-    db.query(MSSPOrgAccess).filter(
-        (MSSPOrgAccess.mssp_org_id == org_id) | (MSSPOrgAccess.client_org_id == org_id)
-    ).delete(synchronize_session=False)
+
+    # Delete all org data in dependency order (children before parents)
+    # to avoid FK constraint violations.
+    leaf_tables = [
+        # workflow children
+        "workflow_execution_logs", "workflow_executions",
+        "workflow_nodes", "workflow_edges",
+        # agent children
+        "agent_runs", "agent_documents", "agent_schedules", "agent_approvals",
+        # finding/asset children
+        "finding_tickets", "campaign_findings", "finding_exceptions",
+        "tag_assignments", "asset_ownership", "finding_ownership",
+        "automate_clicks", "aggregated_solutions", "benchmark_references",
+        "scan_comparisons",
+        # inventory
+        "inventory_users", "inventory_groups", "inventory_domain_trusts",
+        "inventory_services", "inventory_netconns", "inventory_scheduled_tasks",
+        "inventory_patches", "inventory_logged_on", "inventory_shares",
+        "inventory_software", "inventory_security_controls", "inventory_computers",
+        "inventory_database_instances", "inventory_env_vars",
+        "inventory_password_policies", "inventory_processes",
+        "inventory_ai_tools", "inventory_certificates", "inventory_credentials",
+        # sbom
+        "sbom_vulnerabilities", "sbom_components",
+        # external tags
+        "external_tag_maps",
+        # main data
+        "findings", "assets", "scans",
+        # org-level entities
+        "campaigns", "workflows", "agents",
+        "tags", "auto_tag_rules", "ownership_rules",
+        "sla_configs", "report_templates",
+        "integration_configs", "integration_credentials", "integrations",
+        "external_tag_sources", "custom_roles", "audit_logs",
+    ]
+    for table in leaf_tables:
+        db.execute(text(f"DELETE FROM {table} WHERE org_id = :oid"), {"oid": org_id})
+
+    # Delete MSSP links (uses two FK columns, not org_id)
+    db.execute(
+        text("DELETE FROM mssp_org_access WHERE mssp_org_id = :oid OR client_org_id = :oid"),
+        {"oid": org_id},
+    )
+    # Delete users
+    db.execute(text("DELETE FROM users WHERE org_id = :oid"), {"oid": org_id})
+
     db.delete(org)
     log_audit(db, "delete", "organization", org_id, entity_name=_org_name, actor=user)
     db.commit()
