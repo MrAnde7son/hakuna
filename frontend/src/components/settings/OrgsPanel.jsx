@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import {
   authListOrgs, authCreateOrg, authUpdateOrg, authDeleteOrg,
-  authMSSPClients,
+  authMSSPClients, adminOverrideSubscription,
 } from '../../api.js'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
 
@@ -52,6 +52,16 @@ export default function OrgsPanel() {
     try {
       const updated = await authUpdateOrg(o.id, { name: newName })
       setOrgs(prev => prev.map(x => x.id === o.id ? updated : x))
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const handleTogglePlan = async (o) => {
+    const newTier = (o.subscription_tier || 'free') === 'pro' ? 'free' : 'pro'
+    try {
+      const updated = await adminOverrideSubscription(o.id, newTier)
+      setOrgs(prev => prev.map(x => x.id === o.id ? { ...x, subscription_tier: updated.subscription_tier, subscription_status: updated.subscription_status } : x))
     } catch (err) {
       setError(err.message)
     }
@@ -149,6 +159,7 @@ export default function OrgsPanel() {
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Slug</th>
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Type</th>
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Status</th>
+                  <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Plan</th>
                   <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600 }}>Created</th>
                   {isSuperadmin && <th style={{ textAlign: 'right', padding: '8px 12px', fontWeight: 600 }}>Actions</th>}
                 </tr>
@@ -169,6 +180,15 @@ export default function OrgsPanel() {
                     </td>
                     <td style={{ padding: '8px 12px', fontSize: 11, color: o.is_active ? 'var(--success)' : 'var(--danger)' }}>
                       {o.is_active ? 'Active' : 'Disabled'}
+                    </td>
+                    <td style={{ padding: '8px 12px' }}>
+                      <span style={{
+                        fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 999,
+                        background: (o.subscription_tier || 'free') === 'pro' ? 'rgba(234,179,8,0.15)' : 'var(--bg-muted)',
+                        color: (o.subscription_tier || 'free') === 'pro' ? '#b45309' : 'var(--text-secondary)',
+                      }}>
+                        {(o.subscription_tier || 'free').toUpperCase()}
+                      </span>
                     </td>
                     <td style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text-secondary)' }}>
                       {o.created_at ? new Date(o.created_at).toLocaleDateString() : '—'}
@@ -195,6 +215,17 @@ export default function OrgsPanel() {
                             }}
                           >
                             {o.is_active ? 'Disable' : 'Enable'}
+                          </button>
+                          <button
+                            onClick={() => handleTogglePlan(o)}
+                            style={{
+                              fontSize: 12, padding: '3px 10px', borderRadius: 6,
+                              border: `1px solid ${(o.subscription_tier || 'free') === 'pro' ? 'var(--border)' : 'rgba(234,179,8,0.5)'}`,
+                              background: 'var(--bg-card)', cursor: 'pointer',
+                              color: (o.subscription_tier || 'free') === 'pro' ? 'var(--text-secondary)' : '#b45309',
+                            }}
+                          >
+                            {(o.subscription_tier || 'free') === 'pro' ? '↓ Free' : '↑ Pro'}
                           </button>
                           {o.id !== org?.id && (
                             <button

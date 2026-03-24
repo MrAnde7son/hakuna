@@ -1049,3 +1049,9 @@ export const createPortalSession = (data) => request('/billing/portal', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(data),
 })
+
+export const adminOverrideSubscription = (org_id, tier) => request('/billing/admin/override', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ org_id, tier, status: tier === 'pro' ? 'active' : 'canceled' }),
+})

@@ -120,6 +120,8 @@ def _org_response(org: Organization) -> dict:
         "org_type": org.org_type,
         "parent_org_id": org.parent_org_id,
         "is_active": org.is_active,
+        "subscription_tier": org.subscription_tier or "free",
+        "subscription_status": org.subscription_status,
         "created_at": org.created_at.isoformat() if org.created_at else None,
     }
 
