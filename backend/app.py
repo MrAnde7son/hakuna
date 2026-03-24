@@ -4884,6 +4884,8 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
         "owner_id": campaign.owner_id,
         "owner_name": (owner.display_name or owner.email) if owner else None,
         "owner_groups": owner_groups,
+        "slack_channel_id": campaign.slack_channel_id,
+        "slack_channel_name": campaign.slack_channel_name,
     }
 
 
@@ -5026,6 +5028,45 @@ def get_campaign_tickets(campaign_id: int, db: Session = Depends(get_db)):
         result.append(d)
 
     return {"tickets": result, "total": len(result)}
+
+
+@app.post("/api/campaigns/{campaign_id}/slack-channel")
+def create_campaign_slack_channel(campaign_id: int, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+    """Create a Slack channel for a campaign and invite all collaborators."""
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+
+    # Collect collaborator emails from campaign findings owner groups
+    owner_groups = _group_findings_by_owner(campaign.findings)
+    emails = list({
+        g["owner_email"]
+        for g in owner_groups
+        if g.get("owner_email")
+    })
+
+    try:
+        result = integ_module.create_slack_campaign_channel(
+            db,
+            campaign_name=campaign.name,
+            collaborator_emails=emails,
+            campaign_description=campaign.description,
+        )
+    except ConnectionError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+
+    # Persist channel info on the campaign
+    campaign.slack_channel_id = result["channel_id"]
+    campaign.slack_channel_name = result["channel_name"]
+    db.commit()
+
+    return {
+        "channel_id": result["channel_id"],
+        "channel_name": result["channel_name"],
+        "invited": result["invited"],
+    }
 
 
 # ─────────────────────────────────────────────
@@ -7458,6 +7499,7 @@ INTEGRATION_SCHEMAS = {
         "fields": [
             {"key": "webhook_url", "label": "Incoming Webhook URL", "type": "string", "placeholder": "https://hooks.slack.com/services/..."},
             {"key": "default_channel", "label": "Default Channel", "type": "string", "placeholder": "#security-alerts"},
+            {"key": "bot_token", "label": "Bot Token (for channel creation)", "type": "password", "placeholder": "xoxb-...", "required": False},
         ],
     },
     "teams": {

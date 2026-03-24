@@ -719,6 +719,7 @@ export const getTickets = (params = {}) => {
 }
 export const triggerTicketSync = () => request('/ticket-sync', { method: 'POST' })
 export const getCampaignTickets = (campaignId) => request(`/campaigns/${campaignId}/tickets`)
+export const createCampaignSlackChannel = (campaignId) => request(`/campaigns/${campaignId}/slack-channel`, { method: 'POST' })
 
 // Global Exceptions
 export const getExceptions = (params = {}) => {

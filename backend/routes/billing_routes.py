@@ -126,6 +126,35 @@ def billing_portal(
     return {"portal_url": url}
 
 
+class AdminOverrideRequest(BaseModel):
+    org_id: int
+    tier: str  # "free" or "pro"
+    status: str = "active"  # "active", "trialing", "canceled", etc.
+
+
+@router.post("/admin/override")
+def admin_override_subscription(
+    body: AdminOverrideRequest,
+    user: User = Depends(require_role("superadmin")),
+    db: Session = Depends(get_db),
+):
+    """Superadmin only — manually set an org's subscription tier without Stripe."""
+    if body.tier not in ("free", "pro"):
+        raise HTTPException(400, "tier must be 'free' or 'pro'")
+    org = db.query(Organization).filter(Organization.id == body.org_id).first()
+    if not org:
+        raise HTTPException(404, f"Organization {body.org_id} not found")
+    org.subscription_tier = body.tier
+    org.subscription_status = body.status
+    db.commit()
+    logger.info(f"Superadmin {user.email} manually set org {org.id} to tier={body.tier} status={body.status}")
+    return {
+        "org_id": org.id,
+        "subscription_tier": org.subscription_tier,
+        "subscription_status": org.subscription_status,
+    }
+
+
 @router.get("/status")
 def billing_status(
     user: User = Depends(require_auth),

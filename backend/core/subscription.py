@@ -44,6 +44,8 @@ def require_pro(
     db: Session = Depends(get_db),
 ) -> User:
     """Raise 402 if the org is not on an active Pro subscription."""
+    if user.role == "superadmin":
+        return user
     org = _get_org(db, user)
     if _is_pro(org):
         return user
@@ -55,6 +57,8 @@ def check_scan_limit(
     db: Session = Depends(get_db),
 ) -> User:
     """Allow scan creation if Pro, or if free tier hasn't exceeded 3 total scans."""
+    if user.role == "superadmin":
+        return user
     org = _get_org(db, user)
     if _is_pro(org):
         return user
@@ -77,6 +81,8 @@ def check_campaign_limit(
     db: Session = Depends(get_db),
 ) -> User:
     """Allow campaign creation if Pro, or if free tier hasn't exceeded 3 campaigns."""
+    if user.role == "superadmin":
+        return user
     org = _get_org(db, user)
     if _is_pro(org):
         return user
@@ -99,6 +105,8 @@ def check_user_invite_limit(
     db: Session = Depends(get_db),
 ) -> User:
     """Allow invite if Pro, or if free tier hasn't exceeded user limit."""
+    if user.role == "superadmin":
+        return user
     org = _get_org(db, user)
     if _is_pro(org):
         return user
