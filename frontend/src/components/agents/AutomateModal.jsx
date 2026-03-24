@@ -1,15 +1,16 @@
 import React from 'react'
 import { X, Zap, Lock } from 'lucide-react'
 import { logAutomateClick } from '../../api.js'
-import { Button } from '../shared/ui.jsx'
+import { Button, useToast } from '../shared/ui.jsx'
 
 export default function AutomateModal({ finding, onClose }) {
+  const toast = useToast()
   const handleContact = async () => {
     if (finding) {
       await logAutomateClick(finding.id).catch(() => {})
     }
     // In production, this would open a contact/sales form or Calendly
-    alert('Request logged! Our team will reach out to discuss autonomous remediation for your environment.')
+    toast.success('Request logged! Our team will reach out to discuss autonomous remediation for your environment.')
     onClose()
   }
 

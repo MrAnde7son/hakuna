@@ -7,7 +7,7 @@ import {
   getIntegrations, getIntegration, saveIntegration,
   testIntegration, deleteIntegration,
 } from '../../api.js'
-import { Card, Button, Spinner, Pill } from '../shared/ui.jsx'
+import { Card, Button, Spinner, Pill, useToast, useConfirm } from '../shared/ui.jsx'
 
 // ── SVG Logos ────────────────────────────────────────────────────────
 
@@ -125,6 +125,8 @@ const CATEGORIES = [
 // ── Integration Card ─────────────────────────────────────────────────
 
 function IntegrationCard({ integration, onRefresh }) {
+  const toast = useToast()
+  const confirm = useConfirm()
   const [expanded, setExpanded] = useState(false)
   const [config, setConfig] = useState({})
   const [enabled, setEnabled] = useState(integration.is_enabled)
@@ -156,7 +158,7 @@ function IntegrationCard({ integration, onRefresh }) {
       await saveIntegration(integration.provider, { config, is_enabled: enabled })
       onRefresh()
     } catch (e) {
-      alert('Save failed: ' + e.message)
+      toast.error('Save failed: ' + e.message)
     }
     setSaving(false)
   }
@@ -175,7 +177,7 @@ function IntegrationCard({ integration, onRefresh }) {
   }
 
   const handleDelete = async () => {
-    if (!confirm(`Remove ${meta.label} configuration?`)) return
+    if (!await confirm(`Remove ${meta.label} configuration?`)) return
     await deleteIntegration(integration.provider)
     onRefresh()
   }

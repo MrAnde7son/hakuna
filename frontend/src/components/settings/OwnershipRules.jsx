@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect, useCallback } from 'react'
 import { UserCheck, Plus, Play, Edit2, Trash2, ToggleLeft, ToggleRight, X, Save, ArrowRight } from 'lucide-react'
-import { Card, Button, Spinner } from '../shared/ui.jsx'
+import { Card, Button, Spinner, useConfirm } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import {
   getOwnershipRules, createOwnershipRule, updateOwnershipRule,
@@ -271,6 +271,7 @@ function OwnershipMappingRow({ mapping, catalog, onSave, onDelete }) {
 }
 
 function OwnershipMappingTab() {
+  const confirm = useConfirm()
   const [mappings, setMappings]     = useState([])
   const [catalog, setCatalog]       = useState([])
   const [loading, setLoading]       = useState(true)
@@ -303,7 +304,7 @@ function OwnershipMappingTab() {
 
   const handleDelete = async (id) => {
     if (id === null) { setAddingNew(false); return }
-    if (!confirm('Delete this ownership mapping?')) return
+    if (!await confirm('Delete this ownership mapping?')) return
     await deleteOwnershipRule(id)
     load()
   }
@@ -383,6 +384,7 @@ function OwnershipMappingTab() {
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 export default function OwnershipRules() {
+  const confirm = useConfirm()
   const [activeTab, setActiveTab] = useState('mapping')
   const [rules, setRules]             = useState([])
   const [loading, setLoading]         = useState(true)
@@ -404,7 +406,7 @@ export default function OwnershipRules() {
   }
 
   const handleDelete = async (rule) => {
-    if (!confirm(`Delete rule "${rule.name}"?`)) return
+    if (!await confirm(`Delete rule "${rule.name}"?`)) return
     await deleteOwnershipRule(rule.id)
     load()
   }

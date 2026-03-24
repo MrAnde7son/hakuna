@@ -5,6 +5,7 @@ import {
   authMSSPClients, adminOverrideSubscription,
 } from '../../api.js'
 import { Plus, Pencil, Trash2, X } from 'lucide-react'
+import { useConfirm } from '../shared/ui.jsx'
 
 function EditOrgDialog({ org, onClose, onSave }) {
   const [form, setForm] = useState({
@@ -123,6 +124,7 @@ function EditOrgDialog({ org, onClose, onSave }) {
 
 export default function OrgsPanel() {
   const { isSuperadmin, isMSSP, org } = useAuth()
+  const confirm = useConfirm()
   const [orgs, setOrgs] = useState([])
   const [msspClients, setMsspClients] = useState([])
   const [showCreateOrg, setShowCreateOrg] = useState(false)
@@ -159,7 +161,7 @@ export default function OrgsPanel() {
   }
 
   const handleDeleteOrg = async (o) => {
-    if (!window.confirm(`Delete organization "${o.name}" and ALL its users? This cannot be undone.`)) return
+    if (!await confirm(`Delete organization "${o.name}" and ALL its users? This cannot be undone.`)) return
     try {
       await authDeleteOrg(o.id)
       setOrgs(prev => prev.filter(x => x.id !== o.id))

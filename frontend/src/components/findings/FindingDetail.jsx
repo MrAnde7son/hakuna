@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight, Layers, RefreshCw, Ticket } from 'lucide-react'
 import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign, syncFindingTickets } from '../../api.js'
-import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail } from '../shared/ui.jsx'
+import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail, useToast } from '../shared/ui.jsx'
 import BlastRadiusPanel from '../campaigns/BlastRadiusPanel.jsx'
 
 function Section({ title, icon: Icon, children, defaultOpen = true }) {
@@ -121,6 +121,7 @@ export default function FindingDetail() {
   const { t } = useTranslation()
   const { id } = useParams()
   const navigate = useNavigate()
+  const toast = useToast()
   const [finding, setFinding] = useState(null)
   const [loading, setLoading] = useState(true)
   const [creatingCampaign, setCreatingCampaign] = useState(false)
@@ -206,7 +207,7 @@ export default function FindingDetail() {
       setShowExceptionForm(false)
       setExceptionReason('')
     } catch (e) {
-      alert('Failed to create exception: ' + e.message)
+      toast.error('Failed to create exception: ' + e.message)
     }
   }
 

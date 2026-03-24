@@ -51,7 +51,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
 import SubscriptionBanner from './components/billing/SubscriptionBanner.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
 import { getScans, setOrgContext, authUpdateLocale } from './api.js'
-import { ErrorBoundary } from './components/shared/ui.jsx'
+import { ErrorBoundary, ToastProvider, ConfirmProvider } from './components/shared/ui.jsx'
 
 // Lazy-loaded route components (code-split per page)
 const AssetInventory = React.lazy(() => import('./components/assets/AssetInventory.jsx'))
@@ -846,21 +846,25 @@ function AppShell() {
 export default function App() {
   return (
     <ThemeProvider>
-      <BrowserRouter>
-        <AuthProvider>
-          <Routes>
-            <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
-            <Route path="/forgot-password" element={<ForgotPassword />} />
-            <Route path="/reset-password" element={<ResetPassword />} />
-            <Route path="/*" element={
-              <ProtectedRoute>
-                <AppShell />
-              </ProtectedRoute>
-            } />
-          </Routes>
-        </AuthProvider>
-      </BrowserRouter>
+      <ToastProvider>
+        <ConfirmProvider>
+          <BrowserRouter>
+            <AuthProvider>
+              <Routes>
+                <Route path="/login" element={<Login />} />
+                <Route path="/register" element={<Register />} />
+                <Route path="/forgot-password" element={<ForgotPassword />} />
+                <Route path="/reset-password" element={<ResetPassword />} />
+                <Route path="/*" element={
+                  <ProtectedRoute>
+                    <AppShell />
+                  </ProtectedRoute>
+                } />
+              </Routes>
+            </AuthProvider>
+          </BrowserRouter>
+        </ConfirmProvider>
+      </ToastProvider>
     </ThemeProvider>
   )
 }

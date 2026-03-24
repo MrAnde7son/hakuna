@@ -4,7 +4,7 @@ import {
   Plus, Play, Pencil, Power, PowerOff, Trash2, Clock, CheckCircle2, AlertCircle,
   Circle, History, ChevronDown, ChevronUp, Loader, XCircle, AlertTriangle,
 } from 'lucide-react'
-import { Card, Button, PageHeader, EmptyState, Spinner } from '../shared/ui.jsx'
+import { Card, Button, PageHeader, EmptyState, Spinner, useToast, useConfirm } from '../shared/ui.jsx'
 import {
   ibGetIntegrations, ibRunIntegration, ibDeleteIntegration,
   ibEnableIntegration, ibDisableIntegration, ibGetIntegrationRuns,
@@ -374,6 +374,8 @@ export default function IntegrationList({ embedded, onNew, onEdit, onDetail }) {
   const goNew = onNew || (() => navigate('/integrations/new'))
   const goEdit = onEdit || ((id) => navigate(`/integrations/${id}/edit`))
   const goDetail = onDetail || ((id) => navigate(`/integrations/${id}`))
+  const toast = useToast()
+  const confirm = useConfirm()
   const [integrations, setIntegrations] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -395,12 +397,12 @@ export default function IntegrationList({ embedded, onNew, onEdit, onDetail }) {
       await ibRunIntegration(id)
       setTimeout(load, 1000) // refresh after a moment
     } catch (e) {
-      alert('Run failed: ' + e.message)
+      toast.error('Run failed: ' + e.message)
     }
   }
 
   const handleDelete = async (id) => {
-    if (!confirm('Delete this integration?')) return
+    if (!await confirm('Delete this integration?')) return
     await ibDeleteIntegration(id)
     load()
   }

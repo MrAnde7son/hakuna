@@ -4,7 +4,7 @@ import {
   ArrowLeft, Play, Pencil, Power, PowerOff, Trash2, CheckCircle2, XCircle,
   Clock, ChevronDown, ChevronUp, AlertTriangle, Loader, Image,
 } from 'lucide-react'
-import { Card, Button, Spinner, PageHeader } from '../shared/ui.jsx'
+import { Card, Button, Spinner, PageHeader, useToast, useConfirm } from '../shared/ui.jsx'
 import {
   ibGetIntegration, ibGetIntegrationRuns, ibGetIntegrationRun, ibRunIntegration,
   ibDeleteIntegration, ibEnableIntegration, ibDisableIntegration, ibUpdateLogo,
@@ -35,6 +35,8 @@ export default function IntegrationDetail({ embedded, integrationId: embeddedId,
   const [runDetail, setRunDetail] = useState({})
   const [logoInput, setLogoInput] = useState(false)
   const [logoUrl, setLogoUrl] = useState('')
+  const toast = useToast()
+  const confirm = useConfirm()
 
   const load = async () => {
     try {
@@ -56,14 +58,14 @@ export default function IntegrationDetail({ embedded, integrationId: embeddedId,
       await ibRunIntegration(id)
       setTimeout(load, 1500)
     } catch (e) {
-      alert('Run failed: ' + e.message)
+      toast.error('Run failed: ' + e.message)
     } finally {
       setRunning(false)
     }
   }
 
   const handleDelete = async () => {
-    if (!confirm('Delete this integration? This cannot be undone.')) return
+    if (!await confirm('Delete this integration? This cannot be undone.')) return
     await ibDeleteIntegration(id)
     goBack()
   }
@@ -97,7 +99,7 @@ export default function IntegrationDetail({ embedded, integrationId: embeddedId,
       setIntegration(prev => ({ ...prev, logo_url: res.logo_url }))
       setLogoInput(false)
     } catch (e) {
-      alert('Failed to update logo: ' + e.message)
+      toast.error('Failed to update logo: ' + e.message)
     }
   }
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { getBillingPlans, createCheckoutSession, createPortalSession } from '../../api.js'
 import { CreditCard, Check, Star, AlertTriangle } from 'lucide-react'
+import { useToast } from '../shared/ui.jsx'
 
 const STATUS_COLORS = {
   active: { bg: '#052e16', text: '#86efac', border: '#166534' },
@@ -28,6 +29,7 @@ function StatusBadge({ status }) {
 
 export default function BillingPage() {
   const { org, isAdmin } = useAuth()
+  const toast = useToast()
   const [plans, setPlans] = useState([])
   const [billingCycle, setBillingCycle] = useState('monthly')
   const [loading, setLoading] = useState(false)
@@ -54,7 +56,7 @@ export default function BillingPage() {
       })
       window.location.href = data.checkout_url
     } catch (e) {
-      alert(e.message || 'Failed to start checkout')
+      toast.error(e.message || 'Failed to start checkout')
     } finally {
       setLoading(false)
     }
@@ -68,7 +70,7 @@ export default function BillingPage() {
       })
       window.location.href = data.portal_url
     } catch (e) {
-      alert(e.message || 'Failed to open billing portal')
+      toast.error(e.message || 'Failed to open billing portal')
     } finally {
       setLoading(false)
     }

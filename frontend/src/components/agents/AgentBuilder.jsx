@@ -4,7 +4,7 @@
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Card, ErrorBanner } from '../shared/ui.jsx'
+import { Card, ErrorBanner, useToast, useConfirm } from '../shared/ui.jsx'
 import { useNavigate } from 'react-router-dom'
 import {
   Bot, Plus, Trash2, Play, ChevronDown, ChevronRight, Clock, CheckCircle,
@@ -61,6 +61,8 @@ const TEMPLATE_ICONS = {
 
 export default function AgentBuilder() {
   const navigate = useNavigate()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [agents, setAgents] = useState([])
   const [toolCatalog, setToolCatalog] = useState([])
   const [availableModels, setAvailableModels] = useState(null) // { providers, default_model }
@@ -141,7 +143,7 @@ export default function AgentBuilder() {
       a.click()
       URL.revokeObjectURL(url)
     } catch (e) {
-      alert('Export failed: ' + e.message)
+      toast.error('Export failed: ' + e.message)
     }
   }
 
@@ -152,14 +154,14 @@ export default function AgentBuilder() {
       const text = await file.text()
       const config = JSON.parse(text)
       if (!config.name || !config.system_prompt) {
-        alert('Invalid agent file: must contain "name" and "system_prompt".')
+        toast.error('Invalid agent file: must contain "name" and "system_prompt".')
         return
       }
       const agent = await importAgent(config)
       await refresh()
       selectAgent(agent)
     } catch (err) {
-      alert('Import failed: ' + err.message)
+      toast.error('Import failed: ' + err.message)
     } finally {
       e.target.value = '' // reset so same file can be re-imported
     }
@@ -187,7 +189,7 @@ export default function AgentBuilder() {
 
   const handleDelete = async () => {
     if (!selected) return
-    if (!confirm(`Delete agent "${selected.name}"?`)) return
+    if (!await confirm(`Delete agent "${selected.name}"?`)) return
     await deleteAgent(selected.id)
     setSelected(null)
     setEditing(null)
@@ -707,6 +709,8 @@ function TemplateGallery({ templates, onCreate, onClose }) {
 // ── Config Panel ──────────────────────────────────────────────────────
 
 function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuardrail, agentId, documents, onDocumentsChange, availableModels, navigate }) {
+  const toast = useToast()
+  const confirm = useConfirm()
   const docInputRef = useRef()
   const [uploading, setUploading] = useState(false)
 
@@ -718,7 +722,7 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
       await uploadAgentDocument(agentId, file)
       onDocumentsChange()
     } catch (err) {
-      alert('Upload failed: ' + err.message)
+      toast.error('Upload failed: ' + err.message)
     } finally {
       setUploading(false)
       e.target.value = ''
@@ -726,12 +730,12 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
   }
 
   const handleDocDelete = async (docId) => {
-    if (!confirm('Remove this document?')) return
+    if (!await confirm('Remove this document?')) return
     try {
       await deleteAgentDocument(agentId, docId)
       onDocumentsChange()
     } catch (err) {
-      alert('Delete failed: ' + err.message)
+      toast.error('Delete failed: ' + err.message)
     }
   }
 
@@ -1121,6 +1125,8 @@ const CRON_PRESETS = [
 ]
 
 function SchedulePanel({ agentId, schedules, onRefresh }) {
+  const toast = useToast()
+  const confirm = useConfirm()
   const [cronExpr, setCronExpr] = useState('0 8 * * 1-5')
   const [schedInput, setSchedInput] = useState('Run the daily triage for the latest scan.')
   const [creating, setCreating] = useState(false)
@@ -1136,7 +1142,7 @@ function SchedulePanel({ agentId, schedules, onRefresh }) {
       })
       onRefresh()
     } catch (e) {
-      alert(e.message)
+      toast.error(e.message)
     } finally {
       setCreating(false)
     }
@@ -1148,7 +1154,7 @@ function SchedulePanel({ agentId, schedules, onRefresh }) {
   }
 
   const handleDelete = async (sched) => {
-    if (!confirm('Delete this schedule?')) return
+    if (!await confirm('Delete this schedule?')) return
     await deleteAgentSchedule(sched.id)
     onRefresh()
   }

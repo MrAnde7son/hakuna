@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { authChangePassword, getBillingPlans, createCheckoutSession, createPortalSession } from '../../api.js'
 import { KeyRound, CreditCard, Star, Check, AlertTriangle } from 'lucide-react'
+import { useToast } from '../shared/ui.jsx'
 
 const ROLE_COLORS = {
   superadmin: { bg: 'var(--warning-subtle)', color: 'var(--warning)', label: 'Super Admin' },
@@ -25,6 +26,7 @@ function RoleBadge({ role }) {
 
 function SubscriptionSection() {
   const { org, isPro, isAdmin } = useAuth()
+  const toast = useToast()
   const [plans, setPlans] = useState([])
   const [billingCycle, setBillingCycle] = useState('monthly')
   const [loading, setLoading] = useState(false)
@@ -51,7 +53,7 @@ function SubscriptionSection() {
       })
       window.location.href = data.checkout_url
     } catch (e) {
-      alert(e.message || 'Failed to start checkout')
+      toast.error(e.message || 'Failed to start checkout')
     } finally {
       setLoading(false)
     }
@@ -65,7 +67,7 @@ function SubscriptionSection() {
       })
       window.location.href = data.portal_url
     } catch (e) {
-      alert(e.message || 'Failed to open billing portal')
+      toast.error(e.message || 'Failed to open billing portal')
     } finally {
       setLoading(false)
     }

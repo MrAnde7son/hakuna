@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link2, Plus, Upload, RefreshCw, Settings2, Trash2, Save, X, Edit2, ArrowRight } from 'lucide-react'
-import { Card, Button, Spinner } from '../shared/ui.jsx'
+import { Card, Button, Spinner, useConfirm } from '../shared/ui.jsx'
 import {
   getTags,
   getExternalTagSources, createExternalTagSource, updateExternalTagSource, deleteExternalTagSource,
@@ -235,6 +235,7 @@ function TagMapRow({ sourceId, map, allTags, onSaved, onDelete }) {
 // ─── Source card ──────────────────────────────────────────────────────────────
 function SourceCard({ source, allTags, onRefresh }) {
   const { t } = useTranslation()
+  const confirm = useConfirm()
   const [expanded, setExpanded]     = useState(false)
   const [editOpen, setEditOpen]     = useState(false)
   const [addingMap, setAddingMap]   = useState(false)
@@ -246,7 +247,7 @@ function SourceCard({ source, allTags, onRefresh }) {
   const SOURCE_TYPES = getSourceTypes(t)
 
   const handleDelete = async () => {
-    if (!confirm(`Delete source "${source.name}"? Existing tag assignments are kept.`)) return
+    if (!await confirm(`Delete source "${source.name}"? Existing tag assignments are kept.`)) return
     await deleteExternalTagSource(source.id)
     onRefresh()
   }

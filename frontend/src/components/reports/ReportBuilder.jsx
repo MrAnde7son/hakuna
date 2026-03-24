@@ -46,7 +46,7 @@ import {
   getEasmBreaches,
   getEasmSubsidiaries,
 } from '../../api.js'
-import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons, ErrorBanner, SkeletonCard } from '../shared/ui.jsx'
+import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast, useConfirm } from '../shared/ui.jsx'
 
 // ─── Storage helpers ─────────────────────────────────────────────────────────
 
@@ -3370,6 +3370,7 @@ async function exportAsPPT(ref, name) {
 
 function ExportDropdown({ canvasRef, reportName, disabled }) {
   const { t } = useTranslation()
+  const toast = useToast()
   const [open, setOpen] = useState(false)
   const [exporting, setExporting] = useState(null)
   const ref = useRef()
@@ -3390,7 +3391,7 @@ function ExportDropdown({ canvasRef, reportName, disabled }) {
       else if (format === 'ppt') await exportAsPPT(canvasRef.current, reportName)
     } catch (e) {
       console.error('Export failed', e)
-      alert(t('reports.exportFailed') + ': ' + e.message)
+      toast.error(t('reports.exportFailed') + ': ' + e.message)
     } finally {
       setExporting(null)
     }
@@ -3970,6 +3971,8 @@ function TabBar({ active, onChange }) {
 
 export default function ReportBuilder() {
   const { t } = useTranslation()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [reports, setReports] = useState([])
   const [loading, setLoading] = useState(true)
   const [landingId, setLandingId] = useState(loadLandingId)
@@ -4097,7 +4100,7 @@ export default function ReportBuilder() {
   }
 
   const deleteReport = async (id) => {
-    if (!confirm(t('reports.deleteConfirm'))) return
+    if (!await confirm(t('reports.deleteConfirm'))) return
     try {
       await apiDeleteTemplate(id)
       const next = reports.filter(r => r.id !== id)

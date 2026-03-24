@@ -5,6 +5,7 @@ import {
   authListRoles, authGetUserCustomRoles, authAssignCustomRole, authUnassignCustomRole,
 } from '../../api.js'
 import { UserPlus, Trash2, X } from 'lucide-react'
+import { useConfirm } from '../shared/ui.jsx'
 
 const ROLE_COLORS = {
   superadmin: { bg: 'var(--warning-subtle)', color: 'var(--warning)', label: 'Super Admin' },
@@ -28,6 +29,7 @@ function RoleBadge({ role }) {
 
 export default function UsersPanel() {
   const { user: currentUser, isSuperadmin, isAdmin } = useAuth()
+  const confirm = useConfirm()
   const [users, setUsers] = useState([])
   const [showInvite, setShowInvite] = useState(false)
   const [inviteForm, setInviteForm] = useState({ email: '', display_name: '', role: 'analyst', password: '' })
@@ -108,7 +110,7 @@ export default function UsersPanel() {
   }
 
   const handleDeleteUser = async (u) => {
-    if (!window.confirm(`Delete user "${u.display_name}" (${u.email})? This cannot be undone.`)) return
+    if (!await confirm(`Delete user "${u.display_name}" (${u.email})? This cannot be undone.`)) return
     try {
       await authDeleteUser(u.id)
       setUsers(prev => prev.filter(x => x.id !== u.id))

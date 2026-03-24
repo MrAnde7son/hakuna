@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect, useCallback } from 'react'
 import { Tag, Plus, Play, Edit2, Trash2, Save, X, ArrowRight } from 'lucide-react'
-import { Card, Button, Spinner } from '../shared/ui.jsx'
+import { Card, Button, Spinner, useConfirm } from '../shared/ui.jsx'
 import {
   getAutoTagRules, createAutoTagRule, updateAutoTagRule,
   deleteAutoTagRule, runAutoTagRule, getTagConditionCatalog,
@@ -111,6 +111,7 @@ function TagMappingRow({ mapping, catalog, onSave, onDelete }) {
 }
 
 export default function TagMappings() {
+  const confirm = useConfirm()
   const [mappings, setMappings]   = useState([])
   const [catalog, setCatalog]     = useState([])
   const [loading, setLoading]     = useState(true)
@@ -132,7 +133,7 @@ export default function TagMappings() {
 
   const handleDelete = async (id) => {
     if (id === null) { setAddingNew(false); return }
-    if (!confirm('Delete this tag mapping?')) return
+    if (!await confirm('Delete this tag mapping?')) return
     await deleteAutoTagRule(id)
     load()
   }

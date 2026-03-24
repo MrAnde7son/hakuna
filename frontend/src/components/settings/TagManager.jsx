@@ -5,7 +5,7 @@ import {
   getAutoTagRules, createAutoTagRule, updateAutoTagRule, deleteAutoTagRule,
   runAutoTagRule, runAllAutoTagRules, exportConfig, getAssets, getFindings,
 } from '../../api.js'
-import { Card, PageHeader, Button, Input, Select, Spinner, EmptyState, ExportImportButtons } from '../shared/ui.jsx'
+import { Card, PageHeader, Button, Input, Select, Spinner, EmptyState, ExportImportButtons, useToast, useConfirm } from '../shared/ui.jsx'
 import { useNavigate } from 'react-router-dom'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import TagMappings from './TagMappings.jsx'
@@ -590,6 +590,8 @@ export default function TagManager() {
   const [editingRule, setEditingRule] = useState(null) // null | 'new' | ruleObj
   const [runStatus, setRunStatus] = useState({})
   const [runAllStatus, setRunAllStatus] = useState(null)
+  const toast = useToast()
+  const confirm = useConfirm()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -615,7 +617,7 @@ export default function TagManager() {
     try {
       await deleteTag(deletingTag.id, strategy)
       setDeletingTag(null); setSelectedTag(null); load()
-    } catch (e) { alert(e.message) }
+    } catch (e) { toast.error(e.message) }
   }
 
   const handleRunRule = async (rule) => {
@@ -643,13 +645,13 @@ export default function TagManager() {
   const handleToggleRule = async (rule) => {
     try {
       await updateAutoTagRule(rule.id, { is_enabled: !rule.is_enabled }); load()
-    } catch (e) { alert(e.message) }
+    } catch (e) { toast.error(e.message) }
   }
 
   const handleDeleteRule = async (rule) => {
-    if (!confirm(`Delete rule "${rule.name}"?`)) return
+    if (!await confirm(`Delete rule "${rule.name}"?`)) return
     try { await deleteAutoTagRule(rule.id); load() }
-    catch (e) { alert(e.message) }
+    catch (e) { toast.error(e.message) }
   }
 
   if (loading) return <Spinner />

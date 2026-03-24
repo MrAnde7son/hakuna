@@ -1,10 +1,180 @@
 /**
  * Shared UI primitives
  */
-import React, { useState, useEffect, useRef, useCallback, Fragment, Component } from 'react'
+import React, { useState, useEffect, useRef, useCallback, Fragment, Component, createContext, useContext } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { getTags, createCampaign, createAutoTagRule, getSources } from '../../api.js'
+
+// ─────────────────────────────────────────────────────────
+// Toast Notification System
+// ─────────────────────────────────────────────────────────
+
+const ToastContext = createContext(null)
+
+export function useToast() {
+  const ctx = useContext(ToastContext)
+  if (!ctx) throw new Error('useToast must be used within ToastProvider')
+  return ctx
+}
+
+let toastId = 0
+
+export function ToastProvider({ children }) {
+  const [toasts, setToasts] = useState([])
+
+  const add = useCallback((type, message, duration = 4000) => {
+    const id = ++toastId
+    setToasts(prev => [...prev, { id, type, message }])
+    if (duration > 0) setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration)
+    return id
+  }, [])
+
+  const dismiss = useCallback((id) => {
+    setToasts(prev => prev.filter(t => t.id !== id))
+  }, [])
+
+  const toast = useCallback(Object.assign(
+    (message) => add('info', message),
+    {
+      success: (message, duration) => add('success', message, duration),
+      error: (message, duration) => add('error', message, duration ?? 6000),
+      info: (message, duration) => add('info', message, duration),
+      warning: (message, duration) => add('warning', message, duration),
+      dismiss,
+    }
+  ), [add, dismiss])
+
+  return (
+    <ToastContext.Provider value={toast}>
+      {children}
+      {createPortal(<ToastContainer toasts={toasts} onDismiss={dismiss} />, document.body)}
+    </ToastContext.Provider>
+  )
+}
+
+const TOAST_STYLES = {
+  success: { bg: 'var(--success-subtle)', border: 'var(--success)', icon: '\u2713', color: 'var(--success)' },
+  error: { bg: 'var(--danger-subtle)', border: 'var(--danger)', icon: '\u2716', color: 'var(--danger)' },
+  warning: { bg: 'var(--warning-subtle)', border: 'var(--warning)', icon: '\u26A0', color: 'var(--warning)' },
+  info: { bg: 'var(--secondary)', border: 'var(--primary)', icon: '\u2139', color: 'var(--primary)' },
+}
+
+function ToastContainer({ toasts, onDismiss }) {
+  if (!toasts.length) return null
+  return (
+    <div style={{
+      position: 'fixed', bottom: 16, right: 16, zIndex: 99999,
+      display: 'flex', flexDirection: 'column-reverse', gap: 8,
+      maxWidth: 400, pointerEvents: 'none',
+    }}>
+      {toasts.map(t => {
+        const s = TOAST_STYLES[t.type] || TOAST_STYLES.info
+        return (
+          <div key={t.id} style={{
+            display: 'flex', alignItems: 'flex-start', gap: 10,
+            padding: '10px 14px', borderRadius: 8,
+            background: s.bg, border: `1px solid ${s.border}`,
+            color: 'var(--text)', fontSize: 13, lineHeight: 1.5,
+            boxShadow: 'var(--shadow)', pointerEvents: 'auto',
+            animation: 'toast-in 0.2s ease-out',
+          }}>
+            <span style={{ color: s.color, fontSize: 14, flexShrink: 0, marginTop: 1 }}>{s.icon}</span>
+            <span style={{ flex: 1, wordBreak: 'break-word' }}>{t.message}</span>
+            <button onClick={() => onDismiss(t.id)} style={{
+              background: 'none', border: 'none', color: 'var(--muted)',
+              cursor: 'pointer', fontSize: 15, lineHeight: 1, padding: 0, flexShrink: 0,
+            }}>&times;</button>
+          </div>
+        )
+      })}
+      <style>{`@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }`}</style>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────
+// Confirm Dialog (replaces window.confirm)
+// ─────────────────────────────────────────────────────────
+
+const ConfirmContext = createContext(null)
+
+export function useConfirm() {
+  const ctx = useContext(ConfirmContext)
+  if (!ctx) throw new Error('useConfirm must be used within ConfirmProvider')
+  return ctx
+}
+
+export function ConfirmProvider({ children }) {
+  const [state, setState] = useState(null)
+
+  const confirm = useCallback((message, opts = {}) => {
+    return new Promise((resolve) => {
+      setState({ message, opts, resolve })
+    })
+  }, [])
+
+  const handleClose = useCallback((result) => {
+    state?.resolve(result)
+    setState(null)
+  }, [state])
+
+  return (
+    <ConfirmContext.Provider value={confirm}>
+      {children}
+      {state && createPortal(
+        <ConfirmDialog
+          message={state.message}
+          title={state.opts.title}
+          confirmLabel={state.opts.confirmLabel}
+          cancelLabel={state.opts.cancelLabel}
+          destructive={state.opts.destructive !== false}
+          onConfirm={() => handleClose(true)}
+          onCancel={() => handleClose(false)}
+        />,
+        document.body
+      )}
+    </ConfirmContext.Provider>
+  )
+}
+
+function ConfirmDialog({ message, title, confirmLabel, cancelLabel, destructive, onConfirm, onCancel }) {
+  useEffect(() => {
+    const h = (e) => { if (e.key === 'Escape') onCancel() }
+    document.addEventListener('keydown', h)
+    return () => document.removeEventListener('keydown', h)
+  }, [onCancel])
+
+  return (
+    <div onClick={onCancel} style={{
+      position: 'fixed', inset: 0, zIndex: 99998,
+      background: 'rgba(0,0,0,0.45)', display: 'flex',
+      alignItems: 'center', justifyContent: 'center',
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--card)', borderRadius: 12,
+        border: '1px solid var(--border)', boxShadow: 'var(--shadow)',
+        padding: 24, maxWidth: 420, width: '90%',
+      }}>
+        {title && <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8, color: 'var(--text)' }}>{title}</div>}
+        <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-secondary)', marginBottom: 20 }}>{message}</div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={onCancel} style={{
+            padding: '7px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+            border: '1px solid var(--border)', background: 'var(--secondary)',
+            color: 'var(--text)', cursor: 'pointer',
+          }}>{cancelLabel || 'Cancel'}</button>
+          <button onClick={onConfirm} autoFocus style={{
+            padding: '7px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+            border: 'none', cursor: 'pointer',
+            background: destructive ? 'var(--danger)' : 'var(--primary)',
+            color: destructive ? '#fff' : 'var(--primary-foreground)',
+          }}>{confirmLabel || (destructive ? 'Delete' : 'Confirm')}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export function SeverityBadge({ severity, label }) {
   const { t } = useTranslation()

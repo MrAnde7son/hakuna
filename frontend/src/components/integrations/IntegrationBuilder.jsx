@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, Check, ChevronRight, ChevronDown, Zap, Database as DbIcon, FileText, Globe, Wand2, Eye, EyeOff, List } from 'lucide-react'
-import { Card, Button } from '../shared/ui.jsx'
+import { Card, Button, useToast } from '../shared/ui.jsx'
 import {
   getConnectors, getConnector, getIntegrationSchema, getAcquisitionFlow,
   validateCredentials, createCredential, integrationConnect, integrationPreview,
@@ -34,6 +34,7 @@ const AUTH_TYPES = [
 ]
 
 export default function IntegrationBuilder({ embedded, editId: embeddedEditId, onBack, onDone }) {
+  const toast = useToast()
   const navigate = !embedded ? useNavigate() : null
   const routeParams = !embedded ? useParams() : {}
   const editId = embeddedEditId || routeParams.id
@@ -204,7 +205,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         setStep(1)
       }
     } catch (e) {
-      alert('Failed to load connector: ' + e.message)
+      toast.error('Failed to load connector: ' + e.message)
     } finally {
       setLoading(false)
     }
@@ -297,7 +298,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       setDetectedPaths(result.detected_paths || [])
       setStep(4) // advance to Pick Target
     } catch (e) {
-      alert('Failed to fetch records at path: ' + e.message)
+      toast.error('Failed to fetch records at path: ' + e.message)
     } finally {
       setLoading(false)
     }
@@ -318,7 +319,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       setPreviewRecords(result.records || [])
       setStep(6)
     } catch (e) {
-      alert('Preview failed: ' + e.message)
+      toast.error('Preview failed: ' + e.message)
     } finally {
       setLoading(false)
     }
@@ -379,7 +380,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
 
       goDone()
     } catch (e) {
-      alert('Save failed: ' + e.message)
+      toast.error('Save failed: ' + e.message)
     } finally {
       setLoading(false)
     }
@@ -891,7 +892,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
               try {
                 const result = await uploadIntegrationFile(file)
                 setTransportConfig({ ...transportConfig, path: result.path, source: 'local', format: result.format })
-              } catch (err) { alert('Upload failed: ' + err.message) }
+              } catch (err) { toast.error('Upload failed: ' + err.message) }
               finally { setLoading(false) }
             }}
             style={{
@@ -919,7 +920,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
                 try {
                   const result = await uploadIntegrationFile(file)
                   setTransportConfig({ ...transportConfig, path: result.path, source: 'local', format: result.format })
-                } catch (err) { alert('Upload failed: ' + err.message) }
+                } catch (err) { toast.error('Upload failed: ' + err.message) }
                 finally { setLoading(false) }
               }}
             />

@@ -9,6 +9,7 @@ import {
 import {
   Shield, Plus, Trash2, Pencil, Check, X, ChevronRight, Users, Tag, Lock, Unlock,
 } from 'lucide-react'
+import { useConfirm } from '../shared/ui.jsx'
 
 const PERMISSION_SECTIONS = [
   {
@@ -168,6 +169,7 @@ function TagPermissionRow({ perm, onRemove, canEdit }) {
 
 export default function RoleManager() {
   const { isAdmin, isSuperadmin, user: currentUser } = useAuth()
+  const confirm = useConfirm()
   const [roles, setRoles] = useState([])
   const [selectedRole, setSelectedRole] = useState(null)
   const [users, setUsers] = useState([])
@@ -275,7 +277,7 @@ export default function RoleManager() {
   }
 
   const handleDeleteRole = async () => {
-    if (!window.confirm(`Delete role "${selectedRole.name}"? This will remove it from all assigned users.`)) return
+    if (!await confirm(`Delete role "${selectedRole.name}"? This will remove it from all assigned users.`)) return
     try {
       await authDeleteRole(selectedRole.id)
       setRoles(prev => prev.filter(r => r.id !== selectedRole.id))

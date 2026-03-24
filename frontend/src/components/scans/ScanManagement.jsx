@@ -10,7 +10,7 @@ import {
   uploadScan, deleteScan, getScanStatus, getEasmStatus, scanEasmDomain, rescanEasmScan, refreshEasmScan, setupEasm,
   getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
 } from '../../api.js'
-import { Card, PageHeader, Button, Spinner } from '../shared/ui.jsx'
+import { Card, PageHeader, Button, Spinner, useConfirm } from '../shared/ui.jsx'
 
 
 // ── Source type metadata ─────────────────────────────────────────────
@@ -1546,6 +1546,7 @@ function formatAge(isoDate) {
 export default function ScanManagement() {
   const { scans, scansLoaded, refreshScans, setActiveScanId } = useScan()
   const navigate = useNavigate()
+  const confirm = useConfirm()
 
   const [uploads, setUploads] = useState([])
   const [deletingId, setDeletingId] = useState(null)
@@ -1638,7 +1639,7 @@ export default function ScanManagement() {
   }
 
   const handleDelete = async (scanId) => {
-    if (!confirm('Delete this scan and all its data?')) return
+    if (!await confirm('Delete this scan and all its data?')) return
     setDeletingId(scanId)
     try {
       await deleteScan(scanId)
