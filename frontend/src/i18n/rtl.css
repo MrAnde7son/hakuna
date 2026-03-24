@@ -34,3 +34,19 @@
 [dir="rtl"] .sidebar-collapsed ~ div main {
   margin-right: 56px;
 }
+
+/* Mobile: sidebar is a drawer, no margin offset needed */
+@media (max-width: 767px) {
+  [dir="rtl"] aside + div,
+  [dir="rtl"] main {
+    margin-right: 0 !important;
+    margin-left: 0 !important;
+  }
+
+  [dir="rtl"] aside {
+    right: auto;
+    left: 0;
+    border-left: none;
+    border-right: none;
+  }
+}

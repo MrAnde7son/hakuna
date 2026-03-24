@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/integration-builder", tags=["integration-builder"])
 
 
+from services.credential_manager import load_credentials as _load_credentials
+
+
 # ─────────────────────────────────────────────────────────
 # Schema & Connectors (Phase 1)
 # ─────────────────────────────────────────────────────────
@@ -202,8 +205,10 @@ async def validate_credentials(connector_id: str, body: ValidateCredentialReques
 
     if val_req.get("auth") == "basic":
         import base64
+        u_field = val_req.get("basic_username_field", "username")
+        p_field = val_req.get("basic_password_field", "password")
         encoded = base64.b64encode(
-            f"{body.values.get('username', '')}:{body.values.get('password', '')}".encode()
+            f"{body.values.get(u_field, '')}:{body.values.get(p_field, '')}".encode()
         ).decode()
         headers["Authorization"] = f"Basic {encoded}"
 
@@ -273,16 +278,7 @@ async def live_connect(body: ConnectRequest, db: Session = Depends(get_db),
         raise HTTPException(400, f"Unsupported transport: {body.transport_type}")
 
     try:
-        credentials = {}
-        if body.credentials_id:
-            cred = db.query(IntegrationCredential).filter(
-                IntegrationCredential.id == body.credentials_id,
-                IntegrationCredential.org_id == user.org_id,
-            ).first()
-            if cred:
-                credentials = credential_vault.decrypt(cred.encrypted_values)
-                credentials["_auth_type"] = cred.auth_type
-                credentials["instance_url"] = cred.instance_url or ""
+        credentials = await _load_credentials(db, body.credentials_id, user.org_id) if body.credentials_id else {}
 
         config = body.transport_config
         if body.records_path:
@@ -348,16 +344,7 @@ async def preview_mapping(body: PreviewRequest, db: Session = Depends(get_db),
         raise HTTPException(400, f"Unsupported transport: {body.transport_type}")
 
     try:
-        credentials = {}
-        if body.credentials_id:
-            cred = db.query(IntegrationCredential).filter(
-                IntegrationCredential.id == body.credentials_id,
-                IntegrationCredential.org_id == user.org_id,
-            ).first()
-            if cred:
-                credentials = credential_vault.decrypt(cred.encrypted_values)
-                credentials["_auth_type"] = cred.auth_type
-                credentials["instance_url"] = cred.instance_url or ""
+        credentials = await _load_credentials(db, body.credentials_id, user.org_id) if body.credentials_id else {}
 
         config = body.transport_config
         if body.records_path:

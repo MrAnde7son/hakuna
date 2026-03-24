@@ -24,25 +24,13 @@
   },
   "records_path": "resources",
   "credential_acquisition": {
-    "pattern": "oauth2",
-    "authorization_url": "https://falcon.crowdstrike.com/oauth2/authorize",
+    "pattern": "client_credentials",
     "token_url": "https://api.crowdstrike.com/oauth2/token",
-    "client_id": "{{env.CROWDSTRIKE_CLIENT_ID}}",
-    "scopes": [
-      "spotlight-vulnerabilities:read"
-    ],
-    "pkce": false,
-    "popup": {
-      "width": 600,
-      "height": 700
-    },
-    "validation_request": {
-      "method": "GET",
-      "path": "/me/user-info/v1",
-      "success_extracts": {
-        "connected_user": "response.user.uid"
-      }
-    }
+    "scopes": ["spotlight-vulnerabilities:read"],
+    "fields": [
+      { "field": "client_id", "label": "Client ID", "type": "text", "help": "From CrowdStrike API clients page" },
+      { "field": "client_secret", "label": "Client Secret", "type": "password", "help": "Generated when you created the API client" }
+    ]
   },
   "default_field_map": [
     {

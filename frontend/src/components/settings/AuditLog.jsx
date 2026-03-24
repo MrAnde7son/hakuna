@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { ClipboardList, ChevronDown, ChevronRight, RefreshCw, Search } from 'lucide-react'
 import { Card, PageHeader, Button, Input, Spinner, EmptyState } from '../shared/ui.jsx'
 import { getStoredToken, getOrgContext } from '../../api.js'
+import useURLFilters from '../../hooks/useURLFilters.js'
 
 const SELECT_STYLE = {
   background: 'var(--bg-card)',
@@ -160,24 +161,32 @@ function fullTime(isoStr) {
 
 // ─── Main component ───────────────────────────────────────
 export default function AuditLog() {
+  const { filters, setFilter, clearFilters } = useURLFilters({
+    entity_type: { default: '' },
+    action: { default: '' },
+    actor: { default: '' },
+    date_from: { default: '' },
+    date_to: { default: '' },
+    audit_page: { default: 1, type: 'number' },
+  }, { pageKey: 'audit_page' })
+  const filterEntityType = filters.entity_type
+  const filterAction = filters.action
+  const filterActor = filters.actor
+  const filterDateFrom = filters.date_from
+  const filterDateTo = filters.date_to
+  const page = filters.audit_page || 1
+
   const [entries, setEntries] = useState([])
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [entityTypes, setEntityTypes] = useState([])
   const [actions, setActions] = useState([])
 
-  // Filters
-  const [filterEntityType, setFilterEntityType] = useState('')
-  const [filterAction, setFilterAction] = useState('')
-  const [filterActor, setFilterActor] = useState('')
-  const [filterDateFrom, setFilterDateFrom] = useState('')
-  const [filterDateTo, setFilterDateTo] = useState('')
-
   const PAGE_SIZE = 50
 
-  const load = useCallback(async (pg = 1) => {
+  const load = useCallback(async (pg) => {
+    const loadPage = pg ?? page
     setLoading(true)
     setError(null)
     try {
@@ -187,22 +196,21 @@ export default function AuditLog() {
         actor_email: filterActor,
         date_from: filterDateFrom,
         date_to: filterDateTo,
-        page: pg,
+        page: loadPage,
         page_size: PAGE_SIZE,
       })
       setEntries(data.entries)
       setTotal(data.total)
       if (data.entity_types?.length) setEntityTypes(data.entity_types.filter(Boolean))
       if (data.actions?.length) setActions(data.actions.filter(Boolean))
-      setPage(pg)
     } catch (e) {
       setError(e.message)
     } finally {
       setLoading(false)
     }
-  }, [filterEntityType, filterAction, filterActor, filterDateFrom, filterDateTo])
+  }, [filterEntityType, filterAction, filterActor, filterDateFrom, filterDateTo, page])
 
-  useEffect(() => { load(1) }, [load])
+  useEffect(() => { load() }, [load])
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
@@ -224,7 +232,7 @@ export default function AuditLog() {
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 140px', minWidth: 120 }}>
             <label style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 500 }}>Entity Type</label>
-            <select style={SELECT_STYLE} value={filterEntityType} onChange={e => setFilterEntityType(e.target.value)}>
+            <select style={SELECT_STYLE} value={filterEntityType} onChange={e => setFilter('entity_type', e.target.value)}>
               <option value="">All types</option>
               {entityTypes.map(t => (
                 <option key={t} value={t}>{ENTITY_LABEL[t] || t}</option>
@@ -234,7 +242,7 @@ export default function AuditLog() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 120px', minWidth: 100 }}>
             <label style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 500 }}>Action</label>
-            <select style={SELECT_STYLE} value={filterAction} onChange={e => setFilterAction(e.target.value)}>
+            <select style={SELECT_STYLE} value={filterAction} onChange={e => setFilter('action', e.target.value)}>
               <option value="">All actions</option>
               {actions.map(a => (
                 <option key={a} value={a}>{a}</option>
@@ -248,7 +256,7 @@ export default function AuditLog() {
               <Search size={12} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }} />
               <Input
                 value={filterActor}
-                onChange={e => setFilterActor(e.target.value)}
+                onChange={e => setFilter('actor', e.target.value)}
                 placeholder="Filter by user..."
                 style={{ paddingLeft: 26 }}
               />
@@ -260,7 +268,7 @@ export default function AuditLog() {
             <input
               type="date"
               value={filterDateFrom}
-              onChange={e => setFilterDateFrom(e.target.value)}
+              onChange={e => setFilter('date_from', e.target.value)}
               style={{
                 background: 'var(--bg)',
                 border: '1px solid var(--border)',
@@ -277,7 +285,7 @@ export default function AuditLog() {
             <input
               type="date"
               value={filterDateTo}
-              onChange={e => setFilterDateTo(e.target.value)}
+              onChange={e => setFilter('date_to', e.target.value)}
               style={{
                 background: 'var(--bg)',
                 border: '1px solid var(--border)',
@@ -291,13 +299,7 @@ export default function AuditLog() {
 
           <Button
             variant="ghost"
-            onClick={() => {
-              setFilterEntityType('')
-              setFilterAction('')
-              setFilterActor('')
-              setFilterDateFrom('')
-              setFilterDateTo('')
-            }}
+            onClick={() => clearFilters()}
             style={{ alignSelf: 'flex-end' }}
           >
             Clear
@@ -407,7 +409,7 @@ export default function AuditLog() {
                 <div style={{ display: 'flex', gap: 6 }}>
                   <Button
                     variant="ghost"
-                    onClick={() => load(page - 1)}
+                    onClick={() => setFilter('audit_page', page - 1)}
                     disabled={page === 1}
                     style={{ padding: '4px 10px', fontSize: 12 }}
                   >
@@ -415,7 +417,7 @@ export default function AuditLog() {
                   </Button>
                   <Button
                     variant="ghost"
-                    onClick={() => load(page + 1)}
+                    onClick={() => setFilter('audit_page', page + 1)}
                     disabled={page >= totalPages}
                     style={{ padding: '4px 10px', fontSize: 12 }}
                   >

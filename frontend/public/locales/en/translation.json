@@ -757,6 +757,7 @@
     "uploadToPopulate": "Upload a Nessus scan to populate inventory data",
     "easm": "EASM",
     "easmDomainRecords": "Domain Records",
+    "easmLoadError": "Failed to load EASM assets",
     "easmBreaches": "Breaches",
     "easmCorporate": "Corporate",
     "easmHostname": "Hostname",

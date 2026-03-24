@@ -25,6 +25,10 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc, distinct, or_, cast, Text
 
 from core.database import get_db, init_db
+from core.limiter import limiter
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from models.models import (
     Organization, User,
     Scan, Asset, Finding, FindingTicket, AutomateClick,
@@ -278,6 +282,9 @@ if _sentry_dsn:
     )
 
 app = FastAPI(title="Hakuna Remediation Platform", version="1.0.0", docs_url="/api/docs", redoc_url="/api/redoc", openapi_url="/openapi.json")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 _cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 
@@ -723,7 +730,7 @@ def _delete_scan_cascade(db: Session, scan: Scan):
 
 
 @app.post("/api/upload", dependencies=[Depends(check_scan_limit)])
-async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
+async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(require_auth), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
     """Upload and parse a vulnerability scan file (Nessus, Qualys, etc.)."""
     content = await file.read()
 
@@ -746,7 +753,7 @@ async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db
     # Create Scan record with source provenance
     scan_data = parsed["scan"]
     # Use X-Org-Context if set (e.g. superadmin uploading into a specific org)
-    effective_org_id = int(x_org_context) if x_org_context else (user.org_id if user else None)
+    effective_org_id = int(x_org_context) if x_org_context else user.org_id
 
     # ── Duplicate scan detection: replace existing scan with same identity ──
     _scan_name = scan_data.get("scan_name") or file.filename
@@ -1204,7 +1211,7 @@ class SignedUrlRequest(BaseModel):
 
 
 @app.post("/api/upload/signed-url")
-async def get_upload_signed_url(body: SignedUrlRequest, user: Optional[User] = Depends(get_current_user)):
+async def get_upload_signed_url(body: SignedUrlRequest, user: User = Depends(require_auth)):
     """Generate a GCS signed URL for direct browser upload (bypasses Cloud Run 32MB limit)."""
     if not GCS_SCAN_BUCKET:
         raise HTTPException(501, "GCS upload not configured (GCS_BUCKET env var missing)")
@@ -1232,7 +1239,7 @@ class GcsIngestRequest(BaseModel):
 
 
 @app.post("/api/upload/gcs")
-async def ingest_from_gcs(body: GcsIngestRequest, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
+async def ingest_from_gcs(body: GcsIngestRequest, db: Session = Depends(get_db), user: User = Depends(require_auth), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
     """Process a scan file already uploaded to GCS via signed URL."""
     if not GCS_SCAN_BUCKET:
         raise HTTPException(501, "GCS upload not configured")
@@ -4886,6 +4893,8 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
         "owner_id": campaign.owner_id,
         "owner_name": (owner.display_name or owner.email) if owner else None,
         "owner_groups": owner_groups,
+        "slack_channel_id": campaign.slack_channel_id,
+        "slack_channel_name": campaign.slack_channel_name,
     }
 
 
@@ -5028,6 +5037,45 @@ def get_campaign_tickets(campaign_id: int, db: Session = Depends(get_db)):
         result.append(d)
 
     return {"tickets": result, "total": len(result)}
+
+
+@app.post("/api/campaigns/{campaign_id}/slack-channel")
+def create_campaign_slack_channel(campaign_id: int, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
+    """Create a Slack channel for a campaign and invite all collaborators."""
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+
+    # Collect collaborator emails from campaign findings owner groups
+    owner_groups = _group_findings_by_owner(campaign.findings)
+    emails = list({
+        g["owner_email"]
+        for g in owner_groups
+        if g.get("owner_email")
+    })
+
+    try:
+        result = integ_module.create_slack_campaign_channel(
+            db,
+            campaign_name=campaign.name,
+            collaborator_emails=emails,
+            campaign_description=campaign.description,
+        )
+    except ConnectionError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+
+    # Persist channel info on the campaign
+    campaign.slack_channel_id = result["channel_id"]
+    campaign.slack_channel_name = result["channel_name"]
+    db.commit()
+
+    return {
+        "channel_id": result["channel_id"],
+        "channel_name": result["channel_name"],
+        "invited": result["invited"],
+    }
 
 
 # ─────────────────────────────────────────────
@@ -7460,6 +7508,7 @@ INTEGRATION_SCHEMAS = {
         "fields": [
             {"key": "webhook_url", "label": "Incoming Webhook URL", "type": "string", "placeholder": "https://hooks.slack.com/services/..."},
             {"key": "default_channel", "label": "Default Channel", "type": "string", "placeholder": "#security-alerts"},
+            {"key": "bot_token", "label": "Bot Token (for channel creation)", "type": "password", "placeholder": "xoxb-...", "required": False},
         ],
     },
     "teams": {

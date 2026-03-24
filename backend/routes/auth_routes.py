@@ -11,9 +11,10 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from core.database import get_db
+from core.limiter import limiter
 from models.models import Organization, User, MSSPOrgAccess, Scan, CustomRole, TagPermission, UserCustomRole, Tag
 from core.auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
@@ -122,6 +123,8 @@ def _org_response(org: Organization) -> dict:
         "org_type": org.org_type,
         "parent_org_id": org.parent_org_id,
         "is_active": org.is_active,
+        "subscription_tier": org.subscription_tier or "free",
+        "subscription_status": org.subscription_status,
         "created_at": org.created_at.isoformat() if org.created_at else None,
     }
 
@@ -129,6 +132,7 @@ def _org_response(org: Organization) -> dict:
 # ── Public routes ─────────────────────────────────────────
 
 @router.post("/register")
+@limiter.limit("3/minute")
 async def register(body: RegisterRequest, request: Request, db: Session = Depends(get_db)):
     """Register a new organization and its first admin user.
     Also serves as the bootstrap route for the first superadmin.
@@ -187,6 +191,7 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
 
 
 @router.post("/login")
+@limiter.limit("5/minute")
 async def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
     """Authenticate with email + password, returns JWT."""
     locale = get_locale_from_request(request)
@@ -216,6 +221,7 @@ async def login(body: LoginRequest, request: Request, db: Session = Depends(get_
 # ── Google OAuth (public) ────────────────────────────────
 
 @router.post("/google")
+@limiter.limit("5/minute")
 async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = Depends(get_db)):
     """Authenticate or register via Google ID token (from Google Identity Services)."""
     import os
@@ -319,7 +325,8 @@ async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = D
 # ── Password reset (public) ───────────────────────────────
 
 @router.post("/forgot-password")
-async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def forgot_password(body: ForgotPasswordRequest, request: Request, db: Session = Depends(get_db)):
     """Request a password reset email. Always returns 200 to prevent email enumeration."""
     from services.brevo import send_password_reset, is_configured as brevo_configured
     user = db.query(User).filter(User.email == body.email).first()
@@ -336,7 +343,8 @@ async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get
 
 
 @router.post("/reset-password")
-async def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def reset_password(body: ResetPasswordRequest, request: Request, db: Session = Depends(get_db)):
     """Reset password using a valid token from a reset email."""
     if len(body.new_password) < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
@@ -651,12 +659,109 @@ async def delete_org(
         raise HTTPException(400, "Cannot delete your own organization")
 
     _org_name = org.name
-    # Delete all users in this org
-    db.query(User).filter(User.org_id == org_id).delete()
-    # Delete MSSP links
-    db.query(MSSPOrgAccess).filter(
-        (MSSPOrgAccess.mssp_org_id == org_id) | (MSSPOrgAccess.client_org_id == org_id)
-    ).delete(synchronize_session=False)
+
+    # Delete in strict dependency order — deepest children first.
+    # findings and assets have NO org_id; they're scoped through scan_id.
+    p = {"oid": org_id}
+
+    # ── Workflow children ────────────────────────────────────────────
+    db.execute(text("""
+        DELETE FROM workflow_execution_logs WHERE execution_id IN (
+            SELECT id FROM workflow_executions
+            WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid))
+    """), p)
+    db.execute(text("DELETE FROM workflow_executions WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM workflow_nodes WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM workflow_edges WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid)"), p)
+
+    # ── Agent children ───────────────────────────────────────────────
+    db.execute(text("DELETE FROM agent_approvals  WHERE org_id = :oid"), p)
+    db.execute(text("DELETE FROM agent_runs       WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM agent_documents  WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM agent_schedules  WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
+
+    # ── Finding children (findings scoped via scan_id) ───────────────
+    db.execute(text("""
+        DELETE FROM finding_tickets WHERE finding_id IN (
+            SELECT id FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+    """), p)
+    db.execute(text("""
+        DELETE FROM automate_clicks WHERE finding_id IN (
+            SELECT id FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+    """), p)
+    db.execute(text("""
+        DELETE FROM finding_ownership WHERE finding_id IN (
+            SELECT id FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+    """), p)
+
+    # ── Asset children (assets scoped via scan_id) ───────────────────
+    db.execute(text("""
+        DELETE FROM asset_ownership WHERE asset_id IN (
+            SELECT id FROM assets WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+    """), p)
+
+    # ── Tag assignments (can reference tags, assets, or findings) ────
+    db.execute(text("""
+        DELETE FROM tag_assignments
+        WHERE tag_id IN (SELECT id FROM tags WHERE org_id = :oid)
+           OR asset_id IN (
+               SELECT id FROM assets WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+           OR finding_id IN (
+               SELECT id FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+    """), p)
+
+    # ── Campaign findings ────────────────────────────────────────────
+    db.execute(text("DELETE FROM campaign_findings WHERE campaign_id IN (SELECT id FROM campaigns WHERE org_id = :oid)"), p)
+
+    # ── Finding exceptions ───────────────────────────────────────────
+    db.execute(text("DELETE FROM finding_exceptions WHERE org_id = :oid"), p)
+
+    # ── SBOM children (sbom_components scoped via scan_id) ───────────
+    db.execute(text("""
+        DELETE FROM sbom_vulnerabilities WHERE component_id IN (
+            SELECT id FROM sbom_components WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+    """), p)
+    db.execute(text("DELETE FROM sbom_components WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)
+
+    # ── Scan children ────────────────────────────────────────────────
+    db.execute(text("DELETE FROM aggregated_solutions WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)
+    db.execute(text("""
+        DELETE FROM scan_comparisons
+        WHERE base_scan_id IN (SELECT id FROM scans WHERE org_id = :oid)
+           OR compare_scan_id IN (SELECT id FROM scans WHERE org_id = :oid)
+    """), p)
+    for inv in [
+        "inventory_users", "inventory_groups", "inventory_domain_trusts",
+        "inventory_services", "inventory_netconns", "inventory_scheduled_tasks",
+        "inventory_patches", "inventory_logged_on", "inventory_shares",
+        "inventory_software", "inventory_security_controls", "inventory_computers",
+        "inventory_database_instances", "inventory_env_vars",
+        "inventory_password_policies", "inventory_processes",
+        "inventory_ai_tools", "inventory_certificates", "inventory_credentials",
+    ]:
+        db.execute(text(f"DELETE FROM {inv} WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)  # noqa: S608
+
+    # ── External tag children ────────────────────────────────────────
+    db.execute(text("DELETE FROM external_tag_maps WHERE source_id IN (SELECT id FROM external_tag_sources WHERE org_id = :oid)"), p)
+
+    # ── Findings and assets (scoped through scans) ───────────────────
+    db.execute(text("DELETE FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM assets   WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)
+
+    # ── Org-scoped tables (all have org_id directly) ─────────────────
+    for table in [
+        "scans", "campaigns", "workflows", "agents",
+        "tags", "auto_tag_rules", "ownership_rules",
+        "sla_configs", "report_templates",
+        "integration_configs", "integration_credentials", "integrations",
+        "external_tag_sources", "finding_exceptions", "custom_roles", "audit_logs",
+    ]:
+        db.execute(text(f"DELETE FROM {table} WHERE org_id = :oid"), p)  # noqa: S608
+
+    # ── MSSP links + users ───────────────────────────────────────────
+    db.execute(text("DELETE FROM mssp_org_access WHERE mssp_org_id = :oid OR client_org_id = :oid"), p)
+    db.execute(text("DELETE FROM users WHERE org_id = :oid"), p)
+
     db.delete(org)
     log_audit(db, "delete", "organization", org_id, entity_name=_org_name, actor=user)
     db.commit()

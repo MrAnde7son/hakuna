@@ -52,17 +52,11 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
     progress = RunProgress()
 
     try:
-        # Load + decrypt credentials
+        # Load + decrypt credentials (auto-refresh OAuth2 if expired)
         credentials = {}
         if integration.credentials_id:
-            from models.models import IntegrationCredential
-            cred = db.query(IntegrationCredential).filter(
-                IntegrationCredential.id == integration.credentials_id
-            ).first()
-            if cred:
-                credentials = credential_vault.decrypt(cred.encrypted_values)
-                credentials["_auth_type"] = cred.auth_type
-                credentials["instance_url"] = cred.instance_url or ""
+            from services.credential_manager import load_credentials
+            credentials = await load_credentials(db, integration.credentials_id, integration.org_id)
 
         # Get transport
         transport_cls = TRANSPORTS.get(integration.transport_type)
