@@ -16,7 +16,7 @@ function HakunaLogo({ size = 28, style }) {
     </svg>
   )
 }
-import { BrowserRouter, Routes, Route, NavLink, Navigate, useNavigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, NavLink, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   Server,
@@ -39,6 +39,7 @@ import {
   HelpCircle,
   Menu,
   Lock,
+  X,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -73,6 +74,19 @@ const UserDocs = React.lazy(() => import('./components/docs/UserDocs.jsx'))
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
 export const useScan = () => useContext(ScanContext)
+
+const MOBILE_BREAKPOINT = 768
+
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT)
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`)
+    const handler = (e) => setIsMobile(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+  return isMobile
+}
 
 const NAV_GROUPS = [
   {
@@ -322,16 +336,32 @@ function UserMenu({ collapsed }) {
   )
 }
 
-function Sidebar({ collapsed, onToggle }) {
-  const width = collapsed ? 56 : 220
+function Sidebar({ collapsed, onToggle, isMobile, mobileOpen }) {
+  const effectiveCollapsed = isMobile ? false : collapsed
+  const width = isMobile ? 260 : (collapsed ? 56 : 220)
   const { scans, activeScanId, setActiveScanId } = useScan()
   const { hasPermission, isPro, isAdmin } = useAuth()
   const { t } = useTranslation()
   const navigate = useNavigate()
 
-  return (
-    <aside
-      style={{
+  const sidebarStyle = isMobile
+    ? {
+        width,
+        flexShrink: 0,
+        background: 'var(--bg)',
+        borderRight: '1px solid var(--border)',
+        display: 'flex',
+        flexDirection: 'column',
+        padding: '16px 0',
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        bottom: 0,
+        zIndex: 200,
+        transform: mobileOpen ? 'translateX(0)' : 'translateX(-100%)',
+        transition: 'transform 0.25s ease',
+      }
+    : {
         width,
         flexShrink: 0,
         background: 'var(--bg)',
@@ -344,9 +374,11 @@ function Sidebar({ collapsed, onToggle }) {
         left: 0,
         bottom: 0,
         zIndex: 50,
-        transition: 'width 0.2s ease'
-      }}
-    >
+        transition: 'width 0.2s ease',
+      }
+
+  return (
+    <aside style={sidebarStyle}>
       {/* Top row: hamburger + brand */}
       <div
         style={{
@@ -358,7 +390,35 @@ function Sidebar({ collapsed, onToggle }) {
           marginBottom: 20
         }}
       >
-        {!collapsed ? (
+        {isMobile ? (
+          <>
+            <HakunaLogo size={28} style={{ display: 'block', flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 800 }}>{t('app.name')}</div>
+              <div style={{ fontSize: 11, color: 'var(--muted)' }}>{t('app.tagline')}</div>
+            </div>
+            <button
+              type="button"
+              onClick={onToggle}
+              aria-label="Close menu"
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: 'transparent',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                padding: 0,
+                flexShrink: 0,
+              }}
+            >
+              <X size={15} color="var(--text-muted)" />
+            </button>
+          </>
+        ) : !collapsed ? (
           <>
             <HakunaLogo size={28} style={{ display: 'block', flexShrink: 0 }} />
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -416,7 +476,7 @@ function Sidebar({ collapsed, onToggle }) {
           flexDirection: 'column',
           gap: 2,
           alignItems: 'stretch',
-          padding: collapsed ? '0 10px' : '0 12px',
+          padding: effectiveCollapsed ? '0 10px' : '0 12px',
           flex: 1,
           overflowY: 'auto',
         }}
@@ -425,8 +485,8 @@ function Sidebar({ collapsed, onToggle }) {
           const visibleItems = group.items.filter(item => !item.permission || hasPermission(item.permission))
           if (visibleItems.length === 0) return null
           return (
-          <div key={group.labelKey} style={{ marginBottom: collapsed ? 8 : 4 }}>
-            {!collapsed && (
+          <div key={group.labelKey} style={{ marginBottom: effectiveCollapsed ? 8 : 4 }}>
+            {!effectiveCollapsed && (
               <div style={{
                 fontSize: 10,
                 fontWeight: 600,
@@ -439,7 +499,7 @@ function Sidebar({ collapsed, onToggle }) {
                 {t(group.labelKey)}
               </div>
             )}
-            {collapsed && gi > 0 && (
+            {effectiveCollapsed && gi > 0 && (
               <div style={{ height: 1, background: 'var(--border)', margin: '6px 0' }} />
             )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
@@ -457,12 +517,12 @@ function Sidebar({ collapsed, onToggle }) {
                         padding: '7px 10px', borderRadius: 6,
                         color: 'var(--muted)', background: 'transparent',
                         border: 'none', textDecoration: 'none', cursor: 'pointer',
-                        justifyContent: collapsed ? 'center' : 'flex-start',
+                        justifyContent: effectiveCollapsed ? 'center' : 'flex-start',
                         opacity: 0.6, width: '100%', textAlign: 'left',
                       }}
                     >
                       <Icon size={18} />
-                      {!collapsed && (
+                      {!effectiveCollapsed && (
                         <>
                           <span style={{ fontSize: 13, fontWeight: 500, flex: 1 }}>{t(labelKey)}</span>
                           <Lock size={12} style={{ flexShrink: 0 }} />
@@ -492,11 +552,11 @@ function Sidebar({ collapsed, onToggle }) {
                     cursor: 'pointer',
                     boxShadow: active ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
                     transition: 'background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease',
-                    justifyContent: collapsed ? 'center' : 'flex-start',
+                    justifyContent: effectiveCollapsed ? 'center' : 'flex-start',
                   }}}
                 >
                   <Icon size={18} />
-                  {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t(labelKey)}</span>}
+                  {!effectiveCollapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t(labelKey)}</span>}
                 </NavLink>
               )})}
             </div>
@@ -506,7 +566,7 @@ function Sidebar({ collapsed, onToggle }) {
 
         {/* Docs & Settings — ungrouped at bottom */}
         <div style={{ marginTop: 'auto', paddingTop: 8, paddingBottom: 8 }}>
-          {!collapsed && (
+          {!effectiveCollapsed && (
             <div style={{ height: 1, background: 'var(--border)', marginBottom: 8 }} />
           )}
           <NavLink
@@ -525,11 +585,11 @@ function Sidebar({ collapsed, onToggle }) {
               cursor: 'pointer',
               boxShadow: isActive ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
               transition: 'background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease',
-              justifyContent: collapsed ? 'center' : 'flex-start',
+              justifyContent: effectiveCollapsed ? 'center' : 'flex-start',
             })}
           >
             <BookOpen size={18} />
-            {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t('nav.docs')}</span>}
+            {!effectiveCollapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t('nav.docs')}</span>}
           </NavLink>
           {(!NAV_SETTINGS.permission || hasPermission(NAV_SETTINGS.permission)) && (
           <NavLink
@@ -548,37 +608,37 @@ function Sidebar({ collapsed, onToggle }) {
               cursor: 'pointer',
               boxShadow: isActive ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
               transition: 'background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease',
-              justifyContent: collapsed ? 'center' : 'flex-start',
+              justifyContent: effectiveCollapsed ? 'center' : 'flex-start',
             })}
           >
             <NAV_SETTINGS.icon size={18} />
-            {!collapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t(NAV_SETTINGS.labelKey)}</span>}
+            {!effectiveCollapsed && <span style={{ fontSize: 13, fontWeight: 500 }}>{t(NAV_SETTINGS.labelKey)}</span>}
           </NavLink>
           )}
         </div>
       </nav>
 
       {/* Org switcher (MSSP / superadmin) */}
-      <OrgSwitcher collapsed={collapsed} />
+      <OrgSwitcher collapsed={effectiveCollapsed} />
 
       {/* Active scan selector */}
       {scans.length > 0 && (
         <div
           style={{
-            padding: collapsed ? '8px 6px' : '12px',
+            padding: effectiveCollapsed ? '8px 6px' : '12px',
             borderTop: '1px solid var(--border)',
           }}
         >
           <div
             style={{
-              fontSize: collapsed ? 9 : 11,
+              fontSize: effectiveCollapsed ? 9 : 11,
               color: 'var(--muted)',
               textTransform: 'uppercase',
               letterSpacing: '0.06em',
               marginBottom: 6
             }}
           >
-            {collapsed ? 'Scan' : 'Active Scan'}
+            {effectiveCollapsed ? 'Scan' : 'Active Scan'}
           </div>
           <select
             value={activeScanId || ''}
@@ -588,8 +648,8 @@ function Sidebar({ collapsed, onToggle }) {
               background: 'var(--bg)',
               border: '1px solid var(--border)',
               borderRadius: 10,
-              padding: collapsed ? '4px 6px' : '6px 10px',
-              fontSize: collapsed ? 10 : 12,
+              padding: effectiveCollapsed ? '4px 6px' : '6px 10px',
+              fontSize: effectiveCollapsed ? 10 : 12,
               color: 'var(--text)',
               cursor: 'pointer',
               boxShadow: '0 1px 2px rgba(0,0,0,0.03)'
@@ -606,7 +666,7 @@ function Sidebar({ collapsed, onToggle }) {
       )}
 
       {/* User menu */}
-      <UserMenu collapsed={collapsed} />
+      <UserMenu collapsed={effectiveCollapsed} />
     </aside>
   )
 }
@@ -640,6 +700,10 @@ function AppShell() {
   const [activeScanId, setActiveScanId] = useState(null)
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [scansLoaded, setScansLoaded] = useState(false)
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const isMobile = useIsMobile()
+  const location = useLocation()
+  const { t } = useTranslation()
 
   useEffect(() => {
     getScans().then(data => {
@@ -647,6 +711,11 @@ function AppShell() {
       setScansLoaded(true)
     }).catch(() => { setScansLoaded(true) })
   }, [])
+
+  // Close mobile drawer on route change
+  useEffect(() => {
+    if (isMobile) setMobileOpen(false)
+  }, [location.pathname, isMobile])
 
   const refreshScans = () => {
     getScans().then(data => {
@@ -657,9 +726,25 @@ function AppShell() {
   return (
     <ScanContext.Provider value={{ activeScanId, setActiveScanId, scans, scansLoaded, refreshScans }}>
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-muted)' }}>
+        {/* Mobile backdrop overlay */}
+        {isMobile && mobileOpen && (
+          <div
+            onClick={() => setMobileOpen(false)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.5)',
+              zIndex: 150,
+              transition: 'opacity 0.25s ease',
+            }}
+          />
+        )}
+
         <Sidebar
           collapsed={navCollapsed}
-          onToggle={() => setNavCollapsed(prev => !prev)}
+          onToggle={isMobile ? () => setMobileOpen(false) : () => setNavCollapsed(prev => !prev)}
+          isMobile={isMobile}
+          mobileOpen={mobileOpen}
         />
 
         {/* Main content */}
@@ -667,16 +752,56 @@ function AppShell() {
           style={{
             flex: 1,
             minWidth: 0,
-            marginLeft: navCollapsed ? 56 : 220,
+            marginLeft: isMobile ? 0 : (navCollapsed ? 56 : 220),
             minHeight: '100vh',
             display: 'flex',
             flexDirection: 'column'
           }}
         >
+          {/* Mobile top bar with hamburger */}
+          {isMobile && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '10px 14px',
+                background: 'var(--bg)',
+                borderBottom: '1px solid var(--border)',
+                position: 'sticky',
+                top: 0,
+                zIndex: 40,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setMobileOpen(true)}
+                aria-label="Open menu"
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 8,
+                  border: '1px solid var(--border)',
+                  background: 'transparent',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  padding: 0,
+                  flexShrink: 0,
+                }}
+              >
+                <Menu size={18} color="var(--text)" />
+              </button>
+              <HakunaLogo size={22} style={{ display: 'block', flexShrink: 0 }} />
+              <span style={{ fontSize: 13, fontWeight: 800 }}>{t('app.name')}</span>
+            </div>
+          )}
+
           <main
             style={{
               flex: 1,
-              padding: 18,
+              padding: isMobile ? 12 : 18,
               background: 'var(--bg-muted)',
               overflowY: 'auto',
               overflowX: 'hidden',

@@ -1,6 +1,6 @@
 {
   "id": "jira_issues_pull",
-  "name": "Jira \u2014 Pull Issues",
+  "name": "Jira — Pull Issues",
   "description": "Pull issues from Jira using JQL queries",
   "logo": "/logos/vendors/jira.svg",
   "direction": "pull",
@@ -10,9 +10,7 @@
     "base_url": "{{instance_url}}",
     "method": "GET",
     "path": "/rest/api/3/search",
-    "headers": {
-      "Accept": "application/json"
-    },
+    "headers": { "Accept": "application/json" },
     "query_params": {
       "jql": "{{params.jql}}",
       "maxResults": "100",
@@ -35,16 +33,15 @@
     },
     "authorization_url": "https://auth.atlassian.com/authorize",
     "token_url": "https://auth.atlassian.com/oauth/token",
+    "token_request_format": "json",
     "client_id": "{{env.JIRA_CLIENT_ID}}",
-    "scopes": [
-      "read:jira-work",
-      "offline_access"
-    ],
-    "pkce": true,
-    "popup": {
-      "width": 600,
-      "height": 700
+    "scopes": ["read:jira-work", "offline_access"],
+    "extra_params": {
+      "audience": "api.atlassian.com",
+      "prompt": "consent"
     },
+    "pkce": true,
+    "popup": { "width": 600, "height": 700 },
     "validation_request": {
       "method": "GET",
       "path": "/rest/api/3/myself",
@@ -55,81 +52,31 @@
     }
   },
   "default_field_map": [
-    {
-      "source": "key",
-      "target": "source_id"
-    },
-    {
-      "source": "fields.summary",
-      "target": "title"
-    },
-    {
-      "source": "fields.description.content[0].content[0].text",
-      "target": "description"
-    },
-    {
-      "source": "fields.status.name",
-      "target": "status"
-    },
+    { "source": "key", "target": "source_id" },
+    { "source": "fields.summary", "target": "title" },
+    { "source": "fields.description.content[0].content[0].text", "target": "description" },
+    { "source": "fields.status.name", "target": "status" },
     {
       "source": "fields.priority.name",
       "target": "severity",
       "transform": {
         "type": "map",
-        "mapping": {
-          "Highest": "critical",
-          "High": "high",
-          "Medium": "medium",
-          "Low": "low",
-          "Lowest": "info"
-        }
+        "mapping": { "Highest": "critical", "High": "high", "Medium": "medium", "Low": "low", "Lowest": "info" }
       }
     },
-    {
-      "source": "fields.assignee.displayName",
-      "target": "assignee"
-    },
-    {
-      "source": "fields.issuetype.name",
-      "target": "issue_type"
-    },
-    {
-      "source": "fields.labels",
-      "target": "tags"
-    },
-    {
-      "source": "fields.components[0].name",
-      "target": "asset.hostname"
-    },
-    {
-      "source": "fields.created",
-      "target": "first_seen",
-      "transform": {
-        "type": "datetime"
-      }
-    },
-    {
-      "source": "fields.updated",
-      "target": "last_seen",
-      "transform": {
-        "type": "datetime"
-      }
-    }
+    { "source": "fields.assignee.displayName", "target": "assignee" },
+    { "source": "fields.issuetype.name", "target": "issue_type" },
+    { "source": "fields.labels", "target": "tags" },
+    { "source": "fields.components[0].name", "target": "asset.hostname" },
+    { "source": "fields.created", "target": "first_seen", "transform": { "type": "datetime" } },
+    { "source": "fields.updated", "target": "last_seen", "transform": { "type": "datetime" } }
   ],
-  "dedup_key": [
-    "source_system",
-    "source_id"
-  ],
+  "dedup_key": ["source_system", "source_id"],
   "params_schema": {
     "jql": {
       "type": "string",
       "required": true,
       "description": "JQL query to filter issues (e.g. 'project = SEC AND status != Done')"
-    },
-    "max_results": {
-      "type": "integer",
-      "default": 100,
-      "description": "Maximum results per page"
     }
   }
 }

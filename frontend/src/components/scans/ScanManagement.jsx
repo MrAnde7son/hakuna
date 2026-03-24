@@ -1543,7 +1543,7 @@ function formatAge(isoDate) {
 // ── Main component ───────────────────────────────────────────────────
 
 export default function ScanManagement() {
-  const { scans, refreshScans, setActiveScanId } = useScan()
+  const { scans, scansLoaded, refreshScans, setActiveScanId } = useScan()
   const navigate = useNavigate()
 
   const [uploads, setUploads] = useState([])
@@ -1552,6 +1552,11 @@ export default function ScanManagement() {
   const [filter, setFilter] = useState('all')
   const [search, setSearch] = useState('')
   const [easmStatus, setEasmStatus] = useState(null)
+
+  // Refresh scans on mount to avoid stale-context race on first login
+  useEffect(() => {
+    refreshScans()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load EASM status on mount
   useEffect(() => {
@@ -1726,14 +1731,16 @@ export default function ScanManagement() {
           <div style={{ padding: 40, textAlign: 'center' }}>
             <Radar size={40} color="var(--text-muted)" style={{ marginBottom: 12, opacity: 0.5 }} />
             <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6, color: 'var(--text-secondary)' }}>
-              {scans.length === 0 ? 'No scans yet' : 'No scans match your filter'}
+              {!scansLoaded ? 'Loading scans…' : scans.length === 0 ? 'No scans yet' : 'No scans match your filter'}
             </div>
             <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
-              {scans.length === 0
-                ? 'Import a vulnerability scan or trigger an EASM discovery to get started.'
-                : 'Try adjusting your search or filter.'}
+              {!scansLoaded
+                ? ''
+                : scans.length === 0
+                  ? 'Import a vulnerability scan or trigger an EASM discovery to get started.'
+                  : 'Try adjusting your search or filter.'}
             </div>
-            {scans.length === 0 && (
+            {scansLoaded && scans.length === 0 && (
               <Button onClick={() => setShowNewScan(true)}>
                 <Plus size={15} /> Add Your First Scan
               </Button>

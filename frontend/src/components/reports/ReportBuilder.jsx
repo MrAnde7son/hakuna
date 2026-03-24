@@ -1647,6 +1647,21 @@ const OWNER_ACCOUNTABILITY_DASHBOARD = {
 
 // ─── Live widget renderers ────────────────────────────────────────────────────
 
+// In-flight deduplication: multiple widgets requesting the same source+params share one fetch.
+// Cache entries expire after 10s so filter changes always get fresh data.
+const _fetchCache = new Map() // key → { promise, ts }
+const _FETCH_TTL = 10_000
+
+function _cachedFetch(key, fetchFn) {
+  const now = Date.now()
+  const entry = _fetchCache.get(key)
+  if (entry && now - entry.ts < _FETCH_TTL) return entry.promise
+  const promise = fetchFn()
+  _fetchCache.set(key, { promise, ts: now })
+  promise.catch(() => _fetchCache.delete(key)) // evict on error so retries work
+  return promise
+}
+
 function useWidgetData(sourceId, scanId, filters, globalTags, globalTagLogic) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -1660,7 +1675,8 @@ function useWidgetData(sourceId, scanId, filters, globalTags, globalTagLogic) {
     if (!sourceId || !DATA_SOURCES[sourceId]) { setLoading(false); return }
     setLoading(true)
     let cancelled = false
-    DATA_SOURCES[sourceId](scanId, mergedFilters)
+    const cacheKey = `${sourceId}|${scanId || ''}|${filtersKey}`
+    _cachedFetch(cacheKey, () => DATA_SOURCES[sourceId](scanId, mergedFilters))
       .then(d => { if (!cancelled) { setData(d); setLoading(false) } })
       .catch(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
