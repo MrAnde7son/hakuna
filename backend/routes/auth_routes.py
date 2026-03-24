@@ -653,49 +653,73 @@ async def delete_org(
     _org_name = org.name
 
     # Delete in strict dependency order — deepest children first.
-    # Tables that don't have org_id use subqueries through their parent.
+    # findings and assets have NO org_id; they're scoped through scan_id.
     p = {"oid": org_id}
 
     # ── Workflow children ────────────────────────────────────────────
     db.execute(text("""
-        DELETE FROM workflow_execution_logs
-        WHERE execution_id IN (
+        DELETE FROM workflow_execution_logs WHERE execution_id IN (
             SELECT id FROM workflow_executions
-            WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid)
-        )
+            WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid))
     """), p)
-    db.execute(text("""
-        DELETE FROM workflow_executions
-        WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid)
-    """), p)
+    db.execute(text("DELETE FROM workflow_executions WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid)"), p)
     db.execute(text("DELETE FROM workflow_nodes WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid)"), p)
     db.execute(text("DELETE FROM workflow_edges WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid)"), p)
 
     # ── Agent children ───────────────────────────────────────────────
-    db.execute(text("DELETE FROM agent_approvals WHERE org_id = :oid"), p)
-    db.execute(text("DELETE FROM agent_runs    WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
-    db.execute(text("DELETE FROM agent_documents WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM agent_approvals  WHERE org_id = :oid"), p)
+    db.execute(text("DELETE FROM agent_runs       WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM agent_documents  WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
     db.execute(text("DELETE FROM agent_schedules  WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
 
-    # ── Finding / asset children ─────────────────────────────────────
-    db.execute(text("DELETE FROM finding_tickets   WHERE finding_id IN (SELECT id FROM findings WHERE org_id = :oid)"), p)
-    db.execute(text("DELETE FROM automate_clicks   WHERE finding_id IN (SELECT id FROM findings WHERE org_id = :oid)"), p)
-    db.execute(text("DELETE FROM asset_ownership   WHERE asset_id   IN (SELECT id FROM assets   WHERE org_id = :oid)"), p)
-    db.execute(text("DELETE FROM finding_ownership WHERE finding_id IN (SELECT id FROM findings WHERE org_id = :oid)"), p)
+    # ── Finding children (findings scoped via scan_id) ───────────────
+    db.execute(text("""
+        DELETE FROM finding_tickets WHERE finding_id IN (
+            SELECT id FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+    """), p)
+    db.execute(text("""
+        DELETE FROM automate_clicks WHERE finding_id IN (
+            SELECT id FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+    """), p)
+    db.execute(text("""
+        DELETE FROM finding_ownership WHERE finding_id IN (
+            SELECT id FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+    """), p)
+
+    # ── Asset children (assets scoped via scan_id) ───────────────────
+    db.execute(text("""
+        DELETE FROM asset_ownership WHERE asset_id IN (
+            SELECT id FROM assets WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+    """), p)
+
+    # ── Tag assignments (can reference tags, assets, or findings) ────
     db.execute(text("""
         DELETE FROM tag_assignments
-        WHERE tag_id     IN (SELECT id FROM tags     WHERE org_id = :oid)
-           OR asset_id   IN (SELECT id FROM assets   WHERE org_id = :oid)
-           OR finding_id IN (SELECT id FROM findings WHERE org_id = :oid)
+        WHERE tag_id IN (SELECT id FROM tags WHERE org_id = :oid)
+           OR asset_id IN (
+               SELECT id FROM assets WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+           OR finding_id IN (
+               SELECT id FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
     """), p)
+
+    # ── Campaign findings ────────────────────────────────────────────
     db.execute(text("DELETE FROM campaign_findings WHERE campaign_id IN (SELECT id FROM campaigns WHERE org_id = :oid)"), p)
+
+    # ── Finding exceptions ───────────────────────────────────────────
     db.execute(text("DELETE FROM finding_exceptions WHERE org_id = :oid"), p)
+
+    # ── SBOM children (sbom_components scoped via scan_id) ───────────
+    db.execute(text("""
+        DELETE FROM sbom_vulnerabilities WHERE component_id IN (
+            SELECT id FROM sbom_components WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid))
+    """), p)
+    db.execute(text("DELETE FROM sbom_components WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)
 
     # ── Scan children ────────────────────────────────────────────────
     db.execute(text("DELETE FROM aggregated_solutions WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)
     db.execute(text("""
         DELETE FROM scan_comparisons
-        WHERE base_scan_id    IN (SELECT id FROM scans WHERE org_id = :oid)
+        WHERE base_scan_id IN (SELECT id FROM scans WHERE org_id = :oid)
            OR compare_scan_id IN (SELECT id FROM scans WHERE org_id = :oid)
     """), p)
     for inv in [
@@ -709,23 +733,20 @@ async def delete_org(
     ]:
         db.execute(text(f"DELETE FROM {inv} WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)  # noqa: S608
 
-    # ── SBOM children ────────────────────────────────────────────────
-    db.execute(text("""
-        DELETE FROM sbom_vulnerabilities
-        WHERE component_id IN (SELECT id FROM sbom_components WHERE org_id = :oid)
-    """), p)
-
     # ── External tag children ────────────────────────────────────────
     db.execute(text("DELETE FROM external_tag_maps WHERE source_id IN (SELECT id FROM external_tag_sources WHERE org_id = :oid)"), p)
 
-    # ── Org-scoped tables (all have org_id) ──────────────────────────
+    # ── Findings and assets (scoped through scans) ───────────────────
+    db.execute(text("DELETE FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM assets   WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)
+
+    # ── Org-scoped tables (all have org_id directly) ─────────────────
     for table in [
-        "sbom_components", "findings", "assets", "scans",
-        "campaigns", "workflows", "agents",
+        "scans", "campaigns", "workflows", "agents",
         "tags", "auto_tag_rules", "ownership_rules",
         "sla_configs", "report_templates",
         "integration_configs", "integration_credentials", "integrations",
-        "external_tag_sources", "custom_roles", "audit_logs",
+        "external_tag_sources", "finding_exceptions", "custom_roles", "audit_logs",
     ]:
         db.execute(text(f"DELETE FROM {table} WHERE org_id = :oid"), p)  # noqa: S608
 
