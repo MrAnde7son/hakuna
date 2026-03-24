@@ -7,7 +7,7 @@ import {
   validateCredentials, createCredential, integrationConnect, integrationPreview,
   ibCreateIntegration, ibUpdateIntegration, ibGetIntegration,
   discoverApi, parseDocs, uploadIntegrationFile, discoverMcpTools, mcpOAuthStart,
-  getTargetModels, getTargetSchema,
+  getTargetModels, getTargetSchema, oauthClientCredentials, discoverOAuth,
 } from '../../api.js'
 import StepAuthenticate from './steps/StepAuthenticate.jsx'
 import StepFieldMapper from './steps/StepFieldMapper.jsx'
@@ -28,6 +28,7 @@ const TRANSPORT_ICONS = { api: Globe, sql: DbIcon, file: FileText, mcp: Zap }
 const AUTH_TYPES = [
   { value: 'none', label: 'None' },
   { value: 'bearer', label: 'Bearer Token' },
+  { value: 'oauth2_client', label: 'OAuth2 (Client Credentials)' },
   { value: 'api_key', label: 'API Key (Header)' },
   { value: 'basic', label: 'Basic Auth' },
 ]
@@ -69,6 +70,8 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [inlineAuthType, setInlineAuthType] = useState('none')
   const [inlineAuthValues, setInlineAuthValues] = useState({})
   const [showSecrets, setShowSecrets] = useState(false)
+  const [oauthDiscovering, setOauthDiscovering] = useState(false)
+  const [oauthDiscovered, setOauthDiscovered] = useState(null) // null | false | { token_endpoint, scopes_supported }
 
   // Custom request headers (key-value pairs)
   const [customHeaders, setCustomHeaders] = useState([]) // [{key, value}]
@@ -229,15 +232,31 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
 
       if (hasInlineAuth && (!cId || editId)) {
         const authType = transportType === 'sql' ? 'basic' : transportType === 'mcp' ? 'api_key' : inlineAuthType
-        const cred = await createCredential({
-          name: `${transportConfig.base_url || transportConfig.server_url || 'Custom'} credentials`,
-          connector_id: selectedConnector || 'custom',
-          auth_type: authType,
-          values: inlineAuthValues,
-          instance_url: transportConfig.base_url || transportConfig.server_url || null,
-        })
-        cId = cred.id
-        setCredentialsId(cId)
+
+        if (authType === 'oauth2_client') {
+          // Exchange client credentials for a token — backend stores it with auto-refresh
+          const result = await oauthClientCredentials({
+            instance_url: transportConfig.base_url || '',
+            token_url: inlineAuthValues.token_url,
+            client_id: inlineAuthValues.client_id,
+            client_secret: inlineAuthValues.client_secret,
+            scopes: inlineAuthValues.scopes ? inlineAuthValues.scopes.trim().split(/\s+/) : [],
+            connector_id: selectedConnector || 'custom',
+          })
+          cId = result.credentials_id
+          setCredentialsId(cId)
+          setConnectedUser(result.connected_user || null)
+        } else {
+          const cred = await createCredential({
+            name: `${transportConfig.base_url || transportConfig.server_url || 'Custom'} credentials`,
+            connector_id: selectedConnector || 'custom',
+            auth_type: authType,
+            values: inlineAuthValues,
+            instance_url: transportConfig.base_url || transportConfig.server_url || null,
+          })
+          cId = cred.id
+          setCredentialsId(cId)
+        }
       }
 
       const result = await integrationConnect({
@@ -676,6 +695,87 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
                   </div>
                 </div>
               )}
+
+              {inlineAuthType === 'oauth2_client' && (() => {
+                const baseUrl = transportConfig.base_url || ''
+                const handleDiscover = async () => {
+                  if (!baseUrl) return
+                  setOauthDiscovering(true)
+                  setOauthDiscovered(null)
+                  try {
+                    const r = await discoverOAuth(baseUrl)
+                    if (r.oauth_supported && r.token_endpoint) {
+                      setOauthDiscovered(r)
+                      setInlineAuthValues(v => ({
+                        ...v,
+                        token_url: r.token_endpoint,
+                        scopes: (r.scopes_supported || []).join(' '),
+                      }))
+                    } else {
+                      setOauthDiscovered(false)
+                    }
+                  } catch { setOauthDiscovered(false) }
+                  finally { setOauthDiscovering(false) }
+                }
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      Hakuna exchanges your credentials for an access token and refreshes it automatically.
+                    </div>
+
+                    {/* Token URL row — auto-discover from base URL */}
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <input
+                        placeholder="Token URL (e.g. https://api.example.com/oauth2/token)"
+                        value={inlineAuthValues.token_url || ''}
+                        onChange={e => setInlineAuthValues({ ...inlineAuthValues, token_url: e.target.value })}
+                        style={{ ...inputStyle, flex: 1 }}
+                      />
+                      <button
+                        onClick={handleDiscover}
+                        disabled={oauthDiscovering || !baseUrl}
+                        title={baseUrl ? 'Auto-detect token URL and scopes from this API' : 'Enter a Base URL above first'}
+                        style={{
+                          padding: '0 10px', borderRadius: 6, border: '1px solid var(--border)',
+                          background: 'var(--bg)', color: 'var(--text-muted)', cursor: baseUrl ? 'pointer' : 'not-allowed',
+                          fontSize: 11, whiteSpace: 'nowrap', opacity: baseUrl ? 1 : 0.5,
+                        }}
+                      >
+                        {oauthDiscovering ? '…' : oauthDiscovered ? '✓ Detected' : 'Auto-detect'}
+                      </button>
+                    </div>
+
+                    {oauthDiscovered === false && (
+                      <div style={{ fontSize: 11, color: '#f59e0b' }}>
+                        No OAuth2 discovery doc found — enter the token URL manually.
+                      </div>
+                    )}
+
+                    <input
+                      placeholder="Client ID"
+                      value={inlineAuthValues.client_id || ''}
+                      onChange={e => setInlineAuthValues({ ...inlineAuthValues, client_id: e.target.value })}
+                      style={inputStyle}
+                    />
+                    <div style={{ position: 'relative' }}>
+                      <input
+                        type={showSecrets ? 'text' : 'password'}
+                        placeholder="Client Secret"
+                        value={inlineAuthValues.client_secret || ''}
+                        onChange={e => setInlineAuthValues({ ...inlineAuthValues, client_secret: e.target.value })}
+                        style={inputStyle}
+                      />
+                      <SecretToggle show={showSecrets} onToggle={() => setShowSecrets(!showSecrets)} />
+                    </div>
+                    <input
+                      placeholder="Scopes (space-separated, optional)"
+                      value={inlineAuthValues.scopes || ''}
+                      onChange={e => setInlineAuthValues({ ...inlineAuthValues, scopes: e.target.value })}
+                      style={inputStyle}
+                    />
+                  </div>
+                )
+              })()}
             </div>
           )}
 

@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   Target, Play, Plus, X, ChevronDown, ChevronRight, ChevronLeft,
   User, Users, Zap, AlertTriangle, CheckCircle, Edit2, Save, Eye,
-  RefreshCw, Layers, GitBranch, Trash2, Ticket, ExternalLink,
+  RefreshCw, Layers, GitBranch, Trash2, Ticket, ExternalLink, Hash,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import {
@@ -12,7 +12,7 @@ import {
   previewCampaignQuery, updateCampaignFinding,
   getWorkflows, createWorkflowFromTemplate, createWorkflow, deleteWorkflow,
   executeWorkflow, getWorkflowTemplates, authListUsers,
-  getCampaignTickets, syncFindingTickets,
+  getCampaignTickets, syncFindingTickets, createCampaignSlackChannel,
 } from '../../api.js'
 import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill, ErrorBanner, SkeletonDetail, Table } from '../shared/ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
@@ -438,6 +438,8 @@ export default function CampaignDetail() {
   const [users, setUsers] = useState([])
   const [campaignTickets, setCampaignTickets] = useState([])
   const [ticketsLoading, setTicketsLoading] = useState(false)
+  const [creatingSlackChannel, setCreatingSlackChannel] = useState(false)
+  const [slackChannelError, setSlackChannelError] = useState(null)
 
   useEffect(() => {
     authListUsers().then(data => setUsers(data.users || data || [])).catch(() => {})
@@ -553,6 +555,19 @@ export default function CampaignDetail() {
     setCampaign(c => ({ ...c, status }))
   }
 
+  const handleCreateSlackChannel = async () => {
+    setCreatingSlackChannel(true)
+    setSlackChannelError(null)
+    try {
+      const result = await createCampaignSlackChannel(id)
+      setCampaign(c => ({ ...c, slack_channel_id: result.channel_id, slack_channel_name: result.channel_name }))
+    } catch (e) {
+      setSlackChannelError(e.message || 'Failed to create Slack channel')
+    } finally {
+      setCreatingSlackChannel(false)
+    }
+  }
+
   if (loading) return <SkeletonDetail />
   if (fetchError) return <ErrorBanner error={fetchError} onRetry={() => load(false)} />
   if (!campaign) return <EmptyState icon={Target} title={t('campaigns.notFound')} />
@@ -648,7 +663,7 @@ export default function CampaignDetail() {
             </div>
 
             {/* Status + Run */}
-            <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
               <select
                 value={campaign.status}
                 onChange={e => handleStatusChange(e.target.value)}
@@ -665,6 +680,37 @@ export default function CampaignDetail() {
                 <Button variant='ghost' size='sm' onClick={handleSaveQuery} disabled={saving}>
                   <Save size={12} /> {saving ? t('campaigns.savingQuery') : t('campaigns.saveQuery')}
                 </Button>
+              )}
+
+              {/* Slack channel */}
+              {campaign.slack_channel_name ? (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 5,
+                  padding: '6px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                  background: '#1a1a2e', border: '1px solid #4a154b55', color: '#e01e5a',
+                }}>
+                  <Hash size={12} />
+                  {campaign.slack_channel_name}
+                </div>
+              ) : (
+                <button
+                  onClick={handleCreateSlackChannel}
+                  disabled={creatingSlackChannel || !hasResults}
+                  title={!hasResults ? 'Run campaign first to identify collaborators' : 'Create a Slack channel and invite all collaborators'}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                    border: '1px solid #4a154b66', background: '#4a154b22', color: '#e01e5a',
+                    cursor: (!hasResults || creatingSlackChannel) ? 'not-allowed' : 'pointer',
+                    opacity: !hasResults ? 0.5 : 1,
+                  }}
+                >
+                  <Hash size={13} />
+                  {creatingSlackChannel ? 'Creating…' : 'Create Slack Channel'}
+                </button>
+              )}
+              {slackChannelError && (
+                <div style={{ fontSize: 11, color: '#f87171', maxWidth: 200 }}>{slackChannelError}</div>
               )}
 
               <button

@@ -7,12 +7,13 @@ import os
 from typing import Optional, List, Dict
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Header, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core.database import get_db, SessionLocal
+from core.limiter import limiter
 from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, AgentApproval, User
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from core.subscription import require_pro
@@ -109,7 +110,8 @@ class PipelineRunRequest(BaseModel):
 
 
 @router.post("/pipelines/{pipeline_id}/run")
-def run_pipeline(pipeline_id: str, body: PipelineRunRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def run_pipeline(pipeline_id: str, body: PipelineRunRequest, request: Request, db: Session = Depends(get_db)):
     """Execute a multi-stage agent pipeline."""
     factory = PIPELINE_REGISTRY.get(pipeline_id)
     if not factory:
@@ -646,7 +648,8 @@ def delete_agent(agent_id: int, db: Session = Depends(get_db), org_ids: Optional
 # ── Run agent ────────────────────────────────────────────────────────
 
 @router.post("/{agent_id}/run")
-def run_agent_endpoint(agent_id: int, body: AgentRunRequest, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+@limiter.limit("10/minute")
+def run_agent_endpoint(agent_id: int, body: AgentRunRequest, request: Request, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     q = db.query(Agent).filter(Agent.id == agent_id)
     q = apply_org_filter(q, Agent, org_ids)
     agent = q.first()
@@ -659,7 +662,8 @@ def run_agent_endpoint(agent_id: int, body: AgentRunRequest, db: Session = Depen
 # ── Streaming run (SSE) ──────────────────────────────────────────────
 
 @router.post("/{agent_id}/run/stream")
-async def run_agent_stream(agent_id: int, body: AgentRunRequest, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+@limiter.limit("10/minute")
+async def run_agent_stream(agent_id: int, body: AgentRunRequest, request: Request, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Run an agent with Server-Sent Events streaming."""
     q = db.query(Agent).filter(Agent.id == agent_id)
     q = apply_org_filter(q, Agent, org_ids)

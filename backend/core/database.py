@@ -160,7 +160,7 @@ def _migrate_add_columns():
         ],
         "tags": [("org_id", "INTEGER")],
         "auto_tag_rules": [("org_id", "INTEGER")],
-        "campaigns": [("org_id", "INTEGER"), ("owner_id", "INTEGER")],
+        "campaigns": [("org_id", "INTEGER"), ("owner_id", "INTEGER"), ("slack_channel_id", "VARCHAR"), ("slack_channel_name", "VARCHAR")],
         "workflows": [("org_id", "INTEGER")],
         "sla_configs": [("org_id", "INTEGER")],
         "integration_configs": [("org_id", "INTEGER")],

@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
-import { CheckCircle2, ExternalLink, Eye, EyeOff } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { CheckCircle2, ExternalLink, Eye, EyeOff, RefreshCw } from 'lucide-react'
 import { Button, Spinner, InlineSpinner } from '../../shared/ui.jsx'
-import { getAcquisitionFlow, validateCredentials, createCredential } from '../../../api.js'
+import { getAcquisitionFlow, validateCredentials, createCredential, oauthStart, discoverOAuth, oauthClientCredentials } from '../../../api.js'
 
 export default function StepAuthenticate({ connectorId, connectorDetail, onComplete, onSkip }) {
   const [flow, setFlow] = useState(null)
@@ -14,6 +14,11 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
   const [validatedUser, setValidatedUser] = useState(null)
   const [error, setError] = useState(null)
   const [showPasswords, setShowPasswords] = useState({})
+  const [oauthPending, setOauthPending] = useState(false)
+  const [discovered, setDiscovered] = useState(null)   // result from /discovery/oauth
+  const [discovering, setDiscovering] = useState(false)
+  const popupRef = useRef(null)
+  const messageListenerRef = useRef(null)
 
   useEffect(() => {
     if (!connectorId) { onSkip(); return }
@@ -36,10 +41,13 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
         setValidated(true)
         setValidatedUser(result.connected_user || null)
         // Save credentials
+        const authType = flow.pattern === 'oauth2' ? 'oauth2'
+          : flow.validation_request?.auth === 'basic' ? 'basic'
+          : 'api_key'
         const cred = await createCredential({
           name: `${connectorDetail?.name || connectorId} credentials`,
           connector_id: connectorId,
-          auth_type: flow.pattern === 'oauth2' ? 'oauth2' : 'api_key',
+          auth_type: authType,
           values: values,
           instance_url: instanceUrl || null,
           connected_user: result.connected_user || null,
@@ -138,16 +146,16 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
           <div style={{ flex: 1 }}>
             {steps[activeStep] && (
               <div>
-                {steps[activeStep].deeplink_path && instanceUrl && (
+                {(steps[activeStep].deeplink_override || (steps[activeStep].deeplink_path && instanceUrl)) && (
                   <a
-                    href={`${instanceUrl.replace(/\/$/, '')}${steps[activeStep].deeplink_path}`}
+                    href={steps[activeStep].deeplink_override || `${instanceUrl.replace(/\/$/, '')}${steps[activeStep].deeplink_path}`}
                     target="_blank" rel="noopener noreferrer"
                     style={{
                       display: 'inline-flex', alignItems: 'center', gap: 4,
                       color: 'var(--accent)', fontSize: 12, marginBottom: 12, textDecoration: 'none',
                     }}
                   >
-                    <ExternalLink size={12} /> Open in tool
+                    <ExternalLink size={12} /> Open in Atlassian
                   </a>
                 )}
 
@@ -220,26 +228,116 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
 
   // ── OAuth2 ──
   if (flow.pattern === 'oauth2') {
+    const handleOAuthConnect = async () => {
+      setOauthPending(true)
+      setError(null)
+
+      // Clean up any previous listener
+      if (messageListenerRef.current) {
+        window.removeEventListener('message', messageListenerRef.current)
+      }
+
+      try {
+        const { authorization_url } = await oauthStart(connectorId, { instance_url: instanceUrl || undefined })
+
+        // Open popup
+        const width = flow.popup?.width || 600
+        const height = flow.popup?.height || 700
+        const left = Math.round(window.screenX + (window.outerWidth - width) / 2)
+        const top = Math.round(window.screenY + (window.outerHeight - height) / 2)
+        const popup = window.open(
+          authorization_url,
+          'hakuna_oauth',
+          `width=${width},height=${height},left=${left},top=${top},toolbar=no,menubar=no`
+        )
+        popupRef.current = popup
+
+        // Listen for callback postMessage
+        const listener = (event) => {
+          if (event.origin !== window.location.origin) return
+          if (!event.data || typeof event.data !== 'object') return
+          const { success, error: oauthError, connected_user, credentials_id } = event.data
+          if (success === undefined && credentials_id === undefined) return  // not our message
+
+          window.removeEventListener('message', listener)
+          messageListenerRef.current = null
+          setOauthPending(false)
+
+          if (success && credentials_id) {
+            setValidated(true)
+            setValidatedUser(connected_user || null)
+            onComplete(credentials_id, connected_user)
+          } else {
+            setError(oauthError || 'Authorization failed or was cancelled')
+          }
+        }
+        messageListenerRef.current = listener
+        window.addEventListener('message', listener)
+
+        // Detect popup closed without completing
+        const pollClosed = setInterval(() => {
+          if (popup && popup.closed) {
+            clearInterval(pollClosed)
+            if (messageListenerRef.current) {
+              window.removeEventListener('message', messageListenerRef.current)
+              messageListenerRef.current = null
+            }
+            setOauthPending(false)
+          }
+        }, 500)
+
+      } catch (e) {
+        setOauthPending(false)
+        setError(e.message || 'Failed to start OAuth flow')
+      }
+    }
+
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center', padding: 40 }}>
         <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Connect to {connectorDetail?.name}</h3>
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
-          Approve access in a popup. No credentials are shared with Hakuna.
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', maxWidth: 360 }}>
+          You'll be redirected to {connectorDetail?.name} to approve access.
+          Hakuna never sees your password.
         </p>
 
         {flow.instance_url_field && (
-          <input
-            placeholder={flow.instance_url_field.placeholder}
-            value={instanceUrl}
-            onChange={e => setInstanceUrl(e.target.value)}
-            style={{ ...inputStyle, maxWidth: 400 }}
-          />
+          <div style={{ width: '100%', maxWidth: 400 }}>
+            <label style={labelStyle}>{flow.instance_url_field.label}</label>
+            <input
+              placeholder={flow.instance_url_field.placeholder}
+              value={instanceUrl}
+              onChange={e => setInstanceUrl(e.target.value)}
+              style={inputStyle}
+            />
+          </div>
         )}
 
-        <Button onClick={() => alert('OAuth2 popup flow will connect to the provider\'s authorization endpoint.\nThis requires server-side OAuth routes to be configured.')}>
-          Connect to {connectorDetail?.name}
-        </Button>
-        <Button onClick={onSkip} style={{ background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+        {validated ? (
+          <div style={{
+            padding: '10px 16px', borderRadius: 8, background: '#22c55e18',
+            border: '1px solid #22c55e40', display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <CheckCircle2 size={16} color="#22c55e" />
+            <span style={{ fontSize: 13, color: '#22c55e' }}>
+              Connected{validatedUser ? ` as ${validatedUser}` : ''}
+            </span>
+          </div>
+        ) : (
+          <Button
+            onClick={handleOAuthConnect}
+            disabled={oauthPending || (flow.instance_url_field && !instanceUrl.trim())}
+          >
+            {oauthPending ? <><InlineSpinner /> Waiting for authorization…</> : `Connect to ${connectorDetail?.name || connectorId}`}
+          </Button>
+        )}
+
+        {error && (
+          <div style={{ padding: '10px 16px', borderRadius: 8, background: '#ef444418', border: '1px solid #ef444440', color: '#ef4444', fontSize: 12, maxWidth: 400, textAlign: 'center' }}>
+            {error}
+          </div>
+        )}
+
+        <Button onClick={onSkip} style={{ background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)', fontSize: 12 }}>
           Skip for now
         </Button>
       </div>
@@ -274,6 +372,259 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
         <Button onClick={handleValidate} disabled={validating}>
           {validating ? <InlineSpinner /> : 'Provision Hakuna Account'}
         </Button>
+      </div>
+    )
+  }
+
+  // ── Client Credentials (machine-to-machine OAuth2) ──
+  if (flow.pattern === 'client_credentials') {
+    const fields = flow.fields || [
+      { field: 'client_id', label: 'Client ID', type: 'text' },
+      { field: 'client_secret', label: 'Client Secret', type: 'password' },
+    ]
+
+    const handleConnect = async () => {
+      setValidating(true)
+      setError(null)
+      try {
+        const result = await oauthClientCredentials({
+          instance_url: instanceUrl || '',
+          token_url: flow.token_url,
+          client_id: values.client_id || '',
+          client_secret: values.client_secret || '',
+          scopes: flow.scopes || [],
+          connector_id: connectorId || 'custom',
+        })
+        setValidated(true)
+        setValidatedUser(result.connected_user || null)
+        onComplete(result.credentials_id, result.connected_user)
+      } catch (e) {
+        setError(e.message)
+      } finally {
+        setValidating(false)
+      }
+    }
+
+    const allFilled = fields.every(f => (values[f.field] || '').trim().length > 0)
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Authenticate</h3>
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
+          Enter your API client credentials. Hakuna will obtain an access token automatically and refresh it before it expires.
+        </p>
+
+        {flow.instance_url_field && (
+          <div>
+            <label style={labelStyle}>{flow.instance_url_field.label}</label>
+            <input placeholder={flow.instance_url_field.placeholder} value={instanceUrl} onChange={e => setInstanceUrl(e.target.value)} style={inputStyle} />
+          </div>
+        )}
+
+        {fields.map(f => (
+          <div key={f.field}>
+            <label style={labelStyle}>{f.label}</label>
+            <div style={{ position: 'relative' }}>
+              <input
+                type={showPasswords[f.field] ? 'text' : (f.type || 'text')}
+                value={values[f.field] || ''}
+                onChange={e => setValues({ ...values, [f.field]: e.target.value })}
+                style={inputStyle}
+              />
+              {f.type === 'password' && (
+                <button onClick={() => setShowPasswords(p => ({ ...p, [f.field]: !p[f.field] }))}
+                  style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                  {showPasswords[f.field] ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              )}
+            </div>
+            {f.help && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{f.help}</div>}
+          </div>
+        ))}
+
+        {validated ? (
+          <div style={{ padding: '10px 16px', borderRadius: 8, background: '#22c55e18', border: '1px solid #22c55e40', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <CheckCircle2 size={16} color="#22c55e" />
+            <span style={{ fontSize: 13, color: '#22c55e' }}>Connected{validatedUser ? ` as ${validatedUser}` : ''}</span>
+          </div>
+        ) : (
+          <Button onClick={handleConnect} disabled={validating || !allFilled}>
+            {validating ? <InlineSpinner /> : 'Get Access Token'}
+          </Button>
+        )}
+
+        {error && (
+          <div style={{ padding: '10px 16px', borderRadius: 8, background: '#ef444418', border: '1px solid #ef444440', color: '#ef4444', fontSize: 12 }}>
+            {error}
+          </div>
+        )}
+
+        <Button onClick={onSkip} style={{ background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>Skip</Button>
+      </div>
+    )
+  }
+
+  // ── Dynamic OAuth2 Discovery ──
+  // Used when the connector has pattern: "discover_oauth" (e.g. CrowdStrike, any unknown API).
+  // User enters the base URL, we probe for OAuth2 support and present the right flow.
+  if (flow.pattern === 'discover_oauth') {
+    const handleDiscover = async () => {
+      if (!instanceUrl.trim()) return
+      setDiscovering(true)
+      setError(null)
+      setDiscovered(null)
+      try {
+        const result = await discoverOAuth(instanceUrl.trim())
+        setDiscovered(result)
+        if (!result.oauth_supported) {
+          setError('No OAuth2 support detected at this URL. Try using an API key instead.')
+        }
+      } catch (e) {
+        setError(e.message)
+      } finally {
+        setDiscovering(false)
+      }
+    }
+
+    const handleClientCredentials = async () => {
+      setValidating(true)
+      setError(null)
+      try {
+        const result = await oauthClientCredentials({
+          instance_url: instanceUrl,
+          token_url: discovered.token_endpoint,
+          client_id: values.client_id || '',
+          client_secret: values.client_secret || '',
+          scopes: discovered.scopes_supported || [],
+          connector_id: connectorId || 'custom',
+        })
+        if (result.success) {
+          setValidated(true)
+          setValidatedUser(result.connected_user)
+          onComplete(result.credentials_id, result.connected_user)
+        }
+      } catch (e) {
+        setError(e.message)
+      } finally {
+        setValidating(false)
+      }
+    }
+
+    const handleAuthCodeConnect = async () => {
+      // Use the discovered endpoints to start an OAuth2 popup.
+      // This requires the connector to have a registered client_id — prompt for it.
+      setOauthPending(true)
+      setError(null)
+      if (messageListenerRef.current) window.removeEventListener('message', messageListenerRef.current)
+      try {
+        const { authorization_url } = await oauthStart(connectorId || 'custom', { instance_url: instanceUrl })
+        const width = 600, height = 700
+        const left = Math.round(window.screenX + (window.outerWidth - width) / 2)
+        const top = Math.round(window.screenY + (window.outerHeight - height) / 2)
+        const popup = window.open(authorization_url, 'hakuna_oauth', `width=${width},height=${height},left=${left},top=${top},toolbar=no,menubar=no`)
+        popupRef.current = popup
+        const listener = (event) => {
+          if (!event.data || typeof event.data !== 'object') return
+          const { success, error: oauthError, connected_user, credentials_id } = event.data
+          if (success === undefined && credentials_id === undefined) return
+          window.removeEventListener('message', listener)
+          messageListenerRef.current = null
+          setOauthPending(false)
+          if (success && credentials_id) { setValidated(true); setValidatedUser(connected_user); onComplete(credentials_id, connected_user) }
+          else setError(oauthError || 'Authorization failed or was cancelled')
+        }
+        messageListenerRef.current = listener
+        window.addEventListener('message', listener)
+        const poll = setInterval(() => { if (popup?.closed) { clearInterval(poll); if (messageListenerRef.current) { window.removeEventListener('message', messageListenerRef.current); messageListenerRef.current = null } setOauthPending(false) } }, 500)
+      } catch (e) {
+        setOauthPending(false)
+        setError(e.message)
+      }
+    }
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Authenticate</h3>
+
+        {/* URL input + probe button */}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            placeholder={flow.instance_url_field?.placeholder || 'https://api.example.com'}
+            value={instanceUrl}
+            onChange={e => { setInstanceUrl(e.target.value); setDiscovered(null) }}
+            style={{ ...inputStyle, flex: 1 }}
+          />
+          <Button onClick={handleDiscover} disabled={discovering || !instanceUrl.trim()} style={{ whiteSpace: 'nowrap' }}>
+            {discovering ? <InlineSpinner /> : 'Detect Auth'}
+          </Button>
+        </div>
+
+        {/* Discovery result */}
+        {discovered && discovered.oauth_supported && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ padding: '10px 16px', borderRadius: 8, background: 'var(--accent)10', border: '1px solid var(--accent)30', fontSize: 12 }}>
+              OAuth2 detected via <code>{discovered.source}</code> &nbsp;·&nbsp;
+              Grant types: <strong>{discovered.grant_types.join(', ') || 'authorization_code'}</strong>
+            </div>
+
+            {/* Client Credentials flow (machine-to-machine, e.g. CrowdStrike) */}
+            {discovered.client_credentials_supported && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
+                  This API uses client credentials (machine-to-machine). Enter your Client ID and Secret.
+                </p>
+                <div>
+                  <label style={labelStyle}>Client ID</label>
+                  <input value={values.client_id || ''} onChange={e => setValues({ ...values, client_id: e.target.value })} style={inputStyle} />
+                </div>
+                <div>
+                  <label style={labelStyle}>Client Secret</label>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type={showPasswords.client_secret ? 'text' : 'password'}
+                      value={values.client_secret || ''}
+                      onChange={e => setValues({ ...values, client_secret: e.target.value })}
+                      style={inputStyle}
+                    />
+                    <button onClick={() => setShowPasswords(p => ({ ...p, client_secret: !p.client_secret }))}
+                      style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                      {showPasswords.client_secret ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
+                </div>
+                {!validated ? (
+                  <Button onClick={handleClientCredentials} disabled={validating || !values.client_id || !values.client_secret}>
+                    {validating ? <InlineSpinner /> : 'Get Access Token'}
+                  </Button>
+                ) : (
+                  <div style={{ padding: '10px 16px', borderRadius: 8, background: '#22c55e18', border: '1px solid #22c55e40', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <CheckCircle2 size={16} color="#22c55e" />
+                    <span style={{ fontSize: 13, color: '#22c55e' }}>Connected as {validatedUser}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Authorization code popup flow */}
+            {discovered.authorization_code_supported && !discovered.client_credentials_supported && (
+              <Button onClick={handleAuthCodeConnect} disabled={oauthPending}>
+                {oauthPending ? <><InlineSpinner /> Waiting for authorization…</> : 'Connect via OAuth2'}
+              </Button>
+            )}
+          </div>
+        )}
+
+        {error && (
+          <div style={{ padding: '10px 16px', borderRadius: 8, background: '#ef444418', border: '1px solid #ef444440', color: '#ef4444', fontSize: 12 }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button onClick={onSkip} style={{ background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+            Skip
+          </Button>
+        </div>
       </div>
     )
   }

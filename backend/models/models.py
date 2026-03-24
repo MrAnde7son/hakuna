@@ -1067,6 +1067,9 @@ class Campaign(Base):
     last_run_at = Column(DateTime)
     finding_count = Column(Integer, default=0)  # cached count from last run
 
+    slack_channel_id = Column(String)    # Slack channel ID (e.g. C0123456789)
+    slack_channel_name = Column(String)  # Slack channel name (e.g. campaign-log4shell)
+
     findings = relationship("CampaignFinding", back_populates="campaign", cascade="all, delete-orphan")
 
 
