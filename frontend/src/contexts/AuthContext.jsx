@@ -107,6 +107,16 @@ export function AuthProvider({ children }) {
     setIsAuthenticated(false)
   }, [])
 
+  const refreshUser = useCallback(async () => {
+    try {
+      const me = await authMe()
+      setUser(me)
+      setOrg(me.org)
+      setAccessibleOrgs(me.accessible_orgs || [me.org])
+      setEffectivePermissions(me.effective_permissions || {})
+    } catch {}
+  }, [])
+
   const switchOrg = useCallback((orgId) => {
     setOrgContext(orgId || null)
     // Reload the page to re-fetch all data with new org context
@@ -131,6 +141,7 @@ export function AuthProvider({ children }) {
       register,
       googleLogin,
       logout,
+      refreshUser,
       switchOrg,
       currentOrgContext,
       hasPermission,

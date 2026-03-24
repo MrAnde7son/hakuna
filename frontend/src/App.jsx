@@ -700,7 +700,7 @@ function OnboardingRedirect() {
   const { user } = useAuth()
   const navigate = useNavigate()
   useEffect(() => {
-    if (user && user.onboarding_completed === false && window.location.pathname !== '/onboarding') {
+    if (user && user.onboarding_completed === false && window.location.pathname === '/') {
       navigate('/onboarding', { replace: true })
     }
   }, [user, navigate])

@@ -17,7 +17,7 @@ const STEPS = [
 export default function OnboardingWizard() {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user, refreshUser } = useAuth()
   const [currentStep, setCurrentStep] = useState(0)
   const [state, setState] = useState({})
   const [loading, setLoading] = useState(true)
@@ -73,7 +73,7 @@ export default function OnboardingWizard() {
         name: t('onboarding.firstCampaignName'),
         description: t('onboarding.firstCampaignDesc'),
         scan_id: scanId,
-        rules: [
+        query: [
           { field: 'finding.severity', op: 'gte', value: 3 },
           { field: 'finding.exploit', op: 'is_true', value: true },
         ],
@@ -83,6 +83,7 @@ export default function OnboardingWizard() {
       setCampaignResult(result)
       await completeOnboardingStep('campaign_created')
       setState(prev => ({ ...prev, campaign_created: true }))
+      if (result?.id) window.open(`/campaigns/${result.id}`, '_blank')
     } catch (err) {
       setCampaignResult({ error: err.message })
     } finally {
@@ -93,13 +94,15 @@ export default function OnboardingWizard() {
   const handleFinish = useCallback(async () => {
     setFinishing(true)
     await completeOnboarding().catch(() => {})
+    await refreshUser()
     navigate('/')
-  }, [navigate])
+  }, [navigate, refreshUser])
 
   const handleSkip = useCallback(async () => {
     await skipOnboarding().catch(() => {})
+    await refreshUser()
     navigate('/')
-  }, [navigate])
+  }, [navigate, refreshUser])
 
   if (loading) {
     return (
@@ -244,7 +247,7 @@ export default function OnboardingWizard() {
               </p>
               <div style={{ display: 'flex', gap: 10 }}>
                 <button
-                  onClick={() => { navigate('/findings'); handleReviewPriorities() }}
+                  onClick={() => window.open('/findings', '_blank')}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8,
                     padding: '10px 18px', borderRadius: 8, border: 'none',
@@ -304,7 +307,7 @@ export default function OnboardingWizard() {
                   {creatingCampaign ? t('onboarding.creating') : t('onboarding.createCampaign')}
                 </button>
                 <button
-                  onClick={() => navigate('/campaigns')}
+                  onClick={() => window.open('/campaigns', '_blank')}
                   style={{
                     padding: '10px 18px', borderRadius: 8,
                     border: '1px solid var(--border)', background: 'var(--bg)',
@@ -356,7 +359,7 @@ export default function OnboardingWizard() {
               <ArrowRight size={18} /> {t('onboarding.goToDashboard')}
             </button>
             <button
-              onClick={() => { completeOnboarding().catch(() => {}); navigate('/agents') }}
+              onClick={async () => { await completeOnboarding().catch(() => {}); await refreshUser(); navigate('/agents') }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 8,
                 padding: '12px 24px', borderRadius: 10,
