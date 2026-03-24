@@ -927,6 +927,13 @@ export const decideAgentApproval = (approvalId, decision, reason) => request(`/a
 })
 export const getRunApprovals = (agentId, runId) => request(`/agents/${agentId}/runs/${runId}/approvals`)
 
+// ── Security Copilot ───────────────────────────────────────
+export const getCopilotConversations = () => request('/copilot/conversations')
+export const createCopilotConversation = () => request('/copilot/conversations', { method: 'POST' })
+export const getCopilotConversation = (id) => request(`/copilot/conversations/${id}`)
+export const deleteCopilotConversation = (id) => request(`/copilot/conversations/${id}`, { method: 'DELETE' })
+export const getCopilotSuggestedPrompts = () => request('/copilot/suggested-prompts')
+
 // ── VM Scanner API (via main backend) ─────────────────────
 export const startVmScan = (data) => request('/vm/scan', {
   method: 'POST',

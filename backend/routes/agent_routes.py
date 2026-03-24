@@ -71,7 +71,7 @@ def available_models(db: Session = Depends(get_db)):
 
 @router.get("")
 def list_agents(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
-    q = db.query(Agent).order_by(Agent.updated_at.desc())
+    q = db.query(Agent).filter(Agent.name != "__copilot__").order_by(Agent.updated_at.desc())
     q = apply_org_filter(q, Agent, org_ids)
     return [_agent_to_dict(a) for a in q.all()]
 

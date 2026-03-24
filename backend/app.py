@@ -79,6 +79,7 @@ from routes.vm_routes import router as vm_router
 from routes.integration_builder_routes import router as integration_builder_router
 from routes.discovery_routes import router as discovery_router
 from routes.billing_routes import router as billing_router
+from routes.copilot_routes import router as copilot_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -300,6 +301,7 @@ app.include_router(threat_intel_router)
 app.include_router(export_router)
 app.include_router(config_portability_router)
 app.include_router(agent_router)
+app.include_router(copilot_router)
 app.include_router(benchmark_router)
 app.include_router(easm_router)
 app.include_router(sbom_router)

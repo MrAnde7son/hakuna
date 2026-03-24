@@ -1822,7 +1822,7 @@ def list_integrations(db: Session, params: dict):
     "result with record counts. "
     "WHEN TO CALL: When you need fresh data from an external system that has a configured pull integration.",
     {
-        "integration_id": {"type": "string", "description": "ID of the integration to run (from list_integrations)"},
+        "integration_id": {"type": "integer", "description": "ID of the integration to run (from list_integrations)"},
         "confirmed": {"type": "boolean", "description": "Must be true to execute — confirm with the user first"},
     },
 )
@@ -1874,7 +1874,7 @@ def call_integration_fetch(db: Session, params: dict):
     "and enabled. Returns the run result with success/error counts. "
     "WHEN TO CALL: When you need to push findings or data to an external system that has a configured push integration.",
     {
-        "integration_id": {"type": "string", "description": "ID of the integration to run (from list_integrations)"},
+        "integration_id": {"type": "integer", "description": "ID of the integration to run (from list_integrations)"},
         "confirmed": {"type": "boolean", "description": "Must be true to execute — confirm with the user first"},
     },
 )

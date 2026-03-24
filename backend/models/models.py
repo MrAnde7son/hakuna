@@ -1465,6 +1465,19 @@ class AgentApproval(Base):
     agent = relationship("Agent")
 
 
+class CopilotConversation(Base):
+    """Multi-turn conversation between a user and the Security Copilot."""
+    __tablename__ = "copilot_conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    title = Column(String, default="New conversation")
+    messages = Column(JSON, default=list)  # [{role, content, timestamp, tool_calls?}]
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 # ─────────────────────────────────────────────────────────
 # Aggregated Solutions (root-cause grouping)
 # ─────────────────────────────────────────────────────────

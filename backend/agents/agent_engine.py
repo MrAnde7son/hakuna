@@ -338,6 +338,38 @@ def _check_guardrails(agent: Agent, tool_name: str, step: int):
         raise ValueError(f"Tool '{tool_name}' is a write operation but agent is read-only")
 
 
+def _coerce_params(params: dict, schema: dict) -> dict:
+    """Coerce tool parameters to match their declared schema types.
+
+    LLMs (especially Groq/Llama) often send integers as strings (e.g. "50"
+    instead of 50), which breaks SQLAlchemy filters, min(), timedelta(), etc.
+    This walks the schema and casts values to the declared type.
+    """
+    coerced = dict(params)
+    for key, spec in schema.items():
+        if key not in coerced or coerced[key] is None:
+            continue
+        val = coerced[key]
+        declared_type = spec.get("type")
+        try:
+            if declared_type == "integer" and not isinstance(val, int):
+                coerced[key] = int(val)
+            elif declared_type == "number" and not isinstance(val, (int, float)):
+                coerced[key] = float(val)
+            elif declared_type == "boolean" and not isinstance(val, bool):
+                coerced[key] = str(val).lower() in ("true", "1", "yes")
+            elif declared_type == "array" and isinstance(val, list):
+                item_spec = spec.get("items", {})
+                item_type = item_spec.get("type")
+                if item_type == "integer":
+                    coerced[key] = [int(x) for x in val]
+                elif item_type == "number":
+                    coerced[key] = [float(x) for x in val]
+        except (ValueError, TypeError):
+            pass  # leave as-is; tool will handle or error naturally
+    return coerced
+
+
 def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optional[dict], step: int, trace: list):
     tool_input = tool_input or {}
     """Execute a tool call and return the result string.
@@ -359,8 +391,10 @@ def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optiona
                 "hint": "Call 'request_clarification' if you're unsure which tool to use.",
             }
         else:
+            # Coerce params to match schema types (fixes LLMs sending "50" instead of 50)
+            coerced_input = _coerce_params(tool_input, tool_def["parameters"])
             # Inject agent_id for scratchpad tools
-            enriched_input = {**tool_input, "_agent_id": agent.id}
+            enriched_input = {**coerced_input, "_agent_id": agent.id}
             result = tool_def["fn"](db, enriched_input)
     except ValueError as e:
         result = {"error": str(e)}
@@ -606,7 +640,19 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
         if tools:
             create_kwargs["tools"] = tools
 
-        response = cl.chat.completions.create(**create_kwargs)
+        try:
+            response = cl.chat.completions.create(**create_kwargs)
+        except Exception as exc:
+            err_str = str(exc)
+            if "tool_use_failed" in err_str or "failed_generation" in err_str:
+                logger.warning("tool_use_failed on step %d — retrying with clean context", step)
+                create_kwargs["messages"] = [
+                    {"role": "system", "content": _build_system_prompt(agent)},
+                    {"role": "user", "content": user_input},
+                ]
+                response = cl.chat.completions.create(**create_kwargs)
+            else:
+                raise
         choice = response.choices[0]
         msg = choice.message
 
@@ -987,7 +1033,24 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider):
         create_kwargs = {"model": model, "max_tokens": 4096, "messages": compressed_messages}
         if tools:
             create_kwargs["tools"] = tools
-        response = cl.chat.completions.create(**create_kwargs)
+
+        try:
+            response = cl.chat.completions.create(**create_kwargs)
+        except Exception as exc:
+            # Groq/Llama returns tool_use_failed (400) when the model generates a
+            # text-based function call instead of a proper tool_use block.
+            # Retry once with clean single-message context.
+            err_str = str(exc)
+            if "tool_use_failed" in err_str or "failed_generation" in err_str:
+                logger.warning("tool_use_failed on step %d — retrying with clean context", step)
+                create_kwargs["messages"] = [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_input},
+                ]
+                response = cl.chat.completions.create(**create_kwargs)
+            else:
+                raise
+
         choice = response.choices[0]
         msg = choice.message
 
