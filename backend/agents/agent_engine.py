@@ -485,7 +485,22 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
         if tools:
             create_kwargs["tools"] = tools
 
-        response = cl.messages.create(**create_kwargs)
+        try:
+            response = cl.messages.create(**create_kwargs)
+        except Exception as exc:
+            # Anthropic returns tool_use_failed (400) when the model generates a
+            # text-based function call (<function=name|null</function>) instead of
+            # a proper tool_use block.  This happens when the compressed context
+            # confuses the model.  Retry once with a clean single-message context.
+            from anthropic import BadRequestError
+            if isinstance(exc, BadRequestError) and "tool_use_failed" in str(exc):
+                logger.warning("tool_use_failed on step %d — retrying with clean context", step)
+                create_kwargs["messages"] = _sanitize_messages(
+                    [{"role": "user", "content": user_input}]
+                )
+                response = cl.messages.create(**create_kwargs)
+            else:
+                raise
 
         # ── Token tracking ────────────────────────────────────────────
         get_tracker().track_call(
@@ -884,7 +899,18 @@ def _stream_anthropic(agent, user_input, db, run, model):
         create_kwargs = {"model": model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
         if tools:
             create_kwargs["tools"] = tools
-        response = cl.messages.create(**create_kwargs)
+        try:
+            response = cl.messages.create(**create_kwargs)
+        except Exception as exc:
+            from anthropic import BadRequestError
+            if isinstance(exc, BadRequestError) and "tool_use_failed" in str(exc):
+                logger.warning("tool_use_failed on step %d — retrying with clean context", step)
+                create_kwargs["messages"] = _sanitize_messages(
+                    [{"role": "user", "content": user_input}]
+                )
+                response = cl.messages.create(**create_kwargs)
+            else:
+                raise
 
         # ── Token tracking ────────────────────────────────────────────
         get_tracker().track_call(
@@ -1205,7 +1231,18 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
         create_kwargs = {"model": model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
         if tools:
             create_kwargs["tools"] = tools
-        response = cl.messages.create(**create_kwargs)
+        try:
+            response = cl.messages.create(**create_kwargs)
+        except Exception as exc:
+            from anthropic import BadRequestError
+            if isinstance(exc, BadRequestError) and "tool_use_failed" in str(exc):
+                logger.warning("tool_use_failed on step %d — retrying with clean context", step)
+                # Fall back to just the original user message from the snapshot
+                original_user = messages[:1] if messages else []
+                create_kwargs["messages"] = _sanitize_messages(original_user)
+                response = cl.messages.create(**create_kwargs)
+            else:
+                raise
 
         get_tracker().track_call(
             agent_name=agent.name or "unknown", model=model,
