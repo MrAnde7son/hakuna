@@ -19,6 +19,7 @@ from models.models import (
     Tag, TagAssignment, SLAConfig, FindingException,
     ScanComparison, Campaign, CampaignFinding,
     IntegrationConfig, AutoTagRule,
+    Integration, IntegrationRun,
 )
 from models.threat_intel_models import (
     ThreatGroup, ThreatGroupTTP, TTP, ThreatCVE, ThreatCampaign,
@@ -1779,4 +1780,139 @@ def search_documents(db: Session, params: dict):
         "results": results,
         "total_matches": len(scored),
         "documents_searched": len(docs),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Integration tools — let agents use configured integrations
+# ---------------------------------------------------------------------------
+
+
+@agent_tool(
+    "list_integrations",
+    "List all configured integrations for the current organization, showing name, direction, entity, "
+    "transport type, status, and last run info. "
+    "WHEN TO CALL: When you need to discover what external systems are connected (Jira, ServiceNow, "
+    "SIEM, CMDB, etc.) before fetching or pushing data through them.",
+    {},
+)
+def list_integrations(db: Session, params: dict):
+    rows = db.query(Integration).filter(Integration.enabled == True).all()
+    return [
+        {
+            "id": i.id,
+            "name": i.name,
+            "direction": i.direction,
+            "entity": i.entity,
+            "transport_type": i.transport_type,
+            "template_id": i.template_id,
+            "enabled": i.enabled,
+            "last_run_status": i.last_run_status,
+            "last_run_at": str(i.last_run_at) if i.last_run_at else None,
+            "last_run_records": i.last_run_records,
+        }
+        for i in rows
+    ]
+
+
+@agent_tool(
+    "call_integration_fetch",
+    "Trigger a pull integration to fetch data from an external system (e.g. import assets from a CMDB, "
+    "pull tickets from Jira). The integration must already be configured and enabled. Returns the run "
+    "result with record counts. "
+    "WHEN TO CALL: When you need fresh data from an external system that has a configured pull integration.",
+    {
+        "integration_id": {"type": "string", "description": "ID of the integration to run (from list_integrations)"},
+        "confirmed": {"type": "boolean", "description": "Must be true to execute — confirm with the user first"},
+    },
+)
+def call_integration_fetch(db: Session, params: dict):
+    import asyncio
+    from services.run_engine import execute
+
+    integration_id = params.get("integration_id")
+    if not integration_id:
+        return {"error": "integration_id is required"}
+
+    integration = db.query(Integration).filter(
+        Integration.id == integration_id,
+        Integration.enabled == True,
+    ).first()
+    if not integration:
+        return {"error": f"Integration {integration_id} not found or disabled"}
+    if integration.direction != "pull":
+        return {"error": f"Integration '{integration.name}' is a {integration.direction} integration, not pull. Use call_integration_push for push integrations."}
+
+    try:
+        run_id = asyncio.get_event_loop().run_until_complete(
+            execute(db, integration_id, triggered_by="agent")
+        )
+    except RuntimeError:
+        # No running event loop — create one
+        run_id = asyncio.run(execute(db, integration_id, triggered_by="agent"))
+
+    run = db.query(IntegrationRun).filter(IntegrationRun.id == run_id).first()
+    if not run:
+        return {"error": "Run completed but record not found"}
+
+    return {
+        "run_id": run.id,
+        "status": run.status,
+        "records_fetched": run.records_fetched,
+        "records_inserted": run.records_inserted,
+        "records_updated": run.records_updated,
+        "records_skipped": run.records_skipped,
+        "error_message": run.error_message,
+        "duration_ms": run.duration_ms,
+    }
+
+
+@agent_tool(
+    "call_integration_push",
+    "Trigger a push integration to send data to an external system (e.g. push findings to Jira, "
+    "send alerts to a SIEM, create tickets in ServiceNow). The integration must already be configured "
+    "and enabled. Returns the run result with success/error counts. "
+    "WHEN TO CALL: When you need to push findings or data to an external system that has a configured push integration.",
+    {
+        "integration_id": {"type": "string", "description": "ID of the integration to run (from list_integrations)"},
+        "confirmed": {"type": "boolean", "description": "Must be true to execute — confirm with the user first"},
+    },
+)
+def call_integration_push(db: Session, params: dict):
+    import asyncio
+    from services.run_engine import execute
+
+    integration_id = params.get("integration_id")
+    if not integration_id:
+        return {"error": "integration_id is required"}
+
+    integration = db.query(Integration).filter(
+        Integration.id == integration_id,
+        Integration.enabled == True,
+    ).first()
+    if not integration:
+        return {"error": f"Integration {integration_id} not found or disabled"}
+    if integration.direction != "push":
+        return {"error": f"Integration '{integration.name}' is a {integration.direction} integration, not push. Use call_integration_fetch for pull integrations."}
+
+    try:
+        run_id = asyncio.get_event_loop().run_until_complete(
+            execute(db, integration_id, triggered_by="agent")
+        )
+    except RuntimeError:
+        run_id = asyncio.run(execute(db, integration_id, triggered_by="agent"))
+
+    run = db.query(IntegrationRun).filter(IntegrationRun.id == run_id).first()
+    if not run:
+        return {"error": "Run completed but record not found"}
+
+    return {
+        "run_id": run.id,
+        "status": run.status,
+        "records_fetched": run.records_fetched,
+        "records_inserted": run.records_inserted,
+        "records_updated": run.records_updated,
+        "records_skipped": run.records_skipped,
+        "error_message": run.error_message,
+        "duration_ms": run.duration_ms,
     }
