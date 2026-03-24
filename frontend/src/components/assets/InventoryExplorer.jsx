@@ -3096,7 +3096,7 @@ function EasmAssetsTab() {
     setError(null)
     getEasmAssets()
       .then(data => setRows(Array.isArray(data) ? data : []))
-      .catch(() => setError('Failed to load EASM assets. Is the scanner connected?'))
+      .catch(() => setError(t('inventory.easmLoadError')))
       .finally(() => setLoading(false))
   }, [])
 

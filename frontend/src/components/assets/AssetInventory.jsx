@@ -314,27 +314,28 @@ function BulkCampaignModal({ selectedAssets, scanId, onClose, onCreated }) {
   )
 }
 
+const ASSET_FILTER_SCHEMA = {
+  search: { default: '' },
+  env: { default: '' },
+  criticality: { default: '' },
+  minRisk: { default: '' },
+  maxRisk: { default: '' },
+  minCritical: { default: '' },
+  minHigh: { default: '' },
+  serverRole: { default: '' },
+  source: { default: '' },
+  minSources: { default: '' },
+  sort: { default: 'risk_score' },
+  order: { default: 'desc' },
+  page: { default: 1, type: 'number' },
+}
+
 export default function AssetInventory() {
   const { t } = useTranslation()
   const ASSET_PAGE_SIZE = 25
   const { activeScanId } = useScan()
   const CRITICALITY_LABELS = Object.fromEntries([1,2,3,4,5,6,7,8,9,10].map(n => [n, t(`assets.critLabels.${n}`)]))
-  const FILTER_SCHEMA = {
-    search: { default: '' },
-    env: { default: '' },
-    criticality: { default: '' },
-    minRisk: { default: '' },
-    maxRisk: { default: '' },
-    minCritical: { default: '' },
-    minHigh: { default: '' },
-    serverRole: { default: '' },
-    source: { default: '' },
-    minSources: { default: '' },
-    sort: { default: 'risk_score' },
-    order: { default: 'desc' },
-    page: { default: 1, type: 'number' },
-  }
-  const { filters, setFilter, setFilters: setURLFilters, clearFilters } = useURLFilters(FILTER_SCHEMA)
+  const { filters, setFilter, setFilters: setURLFilters, clearFilters } = useURLFilters(ASSET_FILTER_SCHEMA)
   const page = filters.page || 1
   const sortBy = filters.sort || 'risk_score'
   const sortOrder = filters.order || 'desc'
