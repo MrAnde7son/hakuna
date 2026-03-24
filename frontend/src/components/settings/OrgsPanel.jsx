@@ -4,7 +4,122 @@ import {
   authListOrgs, authCreateOrg, authUpdateOrg, authDeleteOrg,
   authMSSPClients, adminOverrideSubscription,
 } from '../../api.js'
-import { Plus, Pencil, Trash2 } from 'lucide-react'
+import { Plus, Pencil, Trash2, X } from 'lucide-react'
+
+function EditOrgDialog({ org, onClose, onSave }) {
+  const [form, setForm] = useState({
+    name: org.name,
+    is_active: org.is_active,
+    subscription_tier: org.subscription_tier || 'free',
+  })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      // Name / active status via authUpdateOrg
+      const updated = await authUpdateOrg(org.id, {
+        name: form.name,
+        is_active: form.is_active,
+      })
+      // Plan override if changed
+      let finalOrg = { ...updated, subscription_tier: org.subscription_tier, subscription_status: org.subscription_status }
+      if (form.subscription_tier !== (org.subscription_tier || 'free')) {
+        const planResult = await adminOverrideSubscription(org.id, form.subscription_tier)
+        finalOrg.subscription_tier = planResult.subscription_tier
+        finalOrg.subscription_status = planResult.subscription_status
+      }
+      onSave(finalOrg)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const inputStyle = {
+    width: '100%', padding: '7px 10px', borderRadius: 8,
+    border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box',
+    background: 'var(--bg-card)', color: 'var(--text-primary)',
+  }
+
+  const labelStyle = { fontSize: 12, fontWeight: 500, display: 'block', marginBottom: 4, color: 'var(--text-secondary)' }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={onClose}>
+      <div style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12,
+        padding: 24, width: 400, maxWidth: '90vw', boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 15 }}>Edit Organization</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2, fontFamily: 'monospace' }}>{org.slug}</div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex' }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {error && (
+          <div style={{ background: 'var(--danger-subtle)', color: 'var(--danger)', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 16, border: '1px solid var(--danger)' }}>
+            {error}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div>
+            <label style={labelStyle}>Name</label>
+            <input
+              type="text"
+              value={form.name}
+              onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
+              required
+              style={inputStyle}
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Status</label>
+            <select value={form.is_active ? 'active' : 'disabled'} onChange={e => setForm(p => ({ ...p, is_active: e.target.value === 'active' }))} style={inputStyle}>
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={labelStyle}>Plan</label>
+            <select value={form.subscription_tier} onChange={e => setForm(p => ({ ...p, subscription_tier: e.target.value }))} style={inputStyle}>
+              <option value="free">Free</option>
+              <option value="pro">Pro</option>
+            </select>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+            <button type="button" onClick={onClose} style={{
+              padding: '7px 16px', borderRadius: 8, border: '1px solid var(--border)',
+              background: 'var(--bg-card)', color: 'var(--text-secondary)', fontSize: 13, cursor: 'pointer',
+            }}>
+              Cancel
+            </button>
+            <button type="submit" disabled={loading} style={{
+              padding: '7px 16px', borderRadius: 8, border: 'none',
+              background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+            }}>
+              {loading ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
 
 export default function OrgsPanel() {
   const { isSuperadmin, isMSSP, org } = useAuth()
@@ -12,6 +127,7 @@ export default function OrgsPanel() {
   const [msspClients, setMsspClients] = useState([])
   const [showCreateOrg, setShowCreateOrg] = useState(false)
   const [orgForm, setOrgForm] = useState({ name: '', org_type: 'standard' })
+  const [editingOrg, setEditingOrg] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [view, setView] = useState(isSuperadmin ? 'orgs' : 'clients')
@@ -37,34 +153,9 @@ export default function OrgsPanel() {
     }
   }
 
-  const handleToggleOrgActive = async (o) => {
-    try {
-      const updated = await authUpdateOrg(o.id, { is_active: !o.is_active })
-      setOrgs(prev => prev.map(x => x.id === o.id ? updated : x))
-    } catch (err) {
-      setError(err.message)
-    }
-  }
-
-  const handleRenameOrg = async (o) => {
-    const newName = window.prompt('New organization name:', o.name)
-    if (!newName || newName === o.name) return
-    try {
-      const updated = await authUpdateOrg(o.id, { name: newName })
-      setOrgs(prev => prev.map(x => x.id === o.id ? updated : x))
-    } catch (err) {
-      setError(err.message)
-    }
-  }
-
-  const handleTogglePlan = async (o) => {
-    const newTier = (o.subscription_tier || 'free') === 'pro' ? 'free' : 'pro'
-    try {
-      const updated = await adminOverrideSubscription(o.id, newTier)
-      setOrgs(prev => prev.map(x => x.id === o.id ? { ...x, subscription_tier: updated.subscription_tier, subscription_status: updated.subscription_status } : x))
-    } catch (err) {
-      setError(err.message)
-    }
+  const handleEditSave = (updated) => {
+    setOrgs(prev => prev.map(x => x.id === updated.id ? { ...x, ...updated } : x))
+    setEditingOrg(null)
   }
 
   const handleDeleteOrg = async (o) => {
@@ -86,6 +177,14 @@ export default function OrgsPanel() {
 
   return (
     <div>
+      {editingOrg && (
+        <EditOrgDialog
+          org={editingOrg}
+          onClose={() => setEditingOrg(null)}
+          onSave={handleEditSave}
+        />
+      )}
+
       {error && (
         <div style={{ background: 'var(--danger-subtle)', color: 'var(--danger)', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 12, border: '1px solid var(--danger)' }}>
           {error}
@@ -197,8 +296,8 @@ export default function OrgsPanel() {
                       <td style={{ padding: '8px 12px', textAlign: 'right' }}>
                         <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                           <button
-                            onClick={() => handleRenameOrg(o)}
-                            title="Rename"
+                            onClick={() => setEditingOrg(o)}
+                            title="Edit organization"
                             style={{
                               fontSize: 12, padding: '3px 8px', borderRadius: 6,
                               border: '1px solid var(--border)', background: 'var(--bg-card)', cursor: 'pointer',
@@ -206,26 +305,6 @@ export default function OrgsPanel() {
                             }}
                           >
                             <Pencil size={12} />
-                          </button>
-                          <button
-                            onClick={() => handleToggleOrgActive(o)}
-                            style={{
-                              fontSize: 12, padding: '3px 10px', borderRadius: 6,
-                              border: '1px solid var(--border)', background: 'var(--bg-card)', cursor: 'pointer',
-                            }}
-                          >
-                            {o.is_active ? 'Disable' : 'Enable'}
-                          </button>
-                          <button
-                            onClick={() => handleTogglePlan(o)}
-                            style={{
-                              fontSize: 12, padding: '3px 10px', borderRadius: 6,
-                              border: `1px solid ${(o.subscription_tier || 'free') === 'pro' ? 'var(--border)' : 'rgba(234,179,8,0.5)'}`,
-                              background: 'var(--bg-card)', cursor: 'pointer',
-                              color: (o.subscription_tier || 'free') === 'pro' ? 'var(--text-secondary)' : '#b45309',
-                            }}
-                          >
-                            {(o.subscription_tier || 'free') === 'pro' ? '↓ Free' : '↑ Pro'}
                           </button>
                           {o.id !== org?.id && (
                             <button
