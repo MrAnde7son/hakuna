@@ -652,20 +652,53 @@ async def delete_org(
 
     _org_name = org.name
 
-    # Delete all org data in dependency order (children before parents)
-    # to avoid FK constraint violations.
-    leaf_tables = [
-        # workflow children
-        "workflow_execution_logs", "workflow_executions",
-        "workflow_nodes", "workflow_edges",
-        # agent children
-        "agent_runs", "agent_documents", "agent_schedules", "agent_approvals",
-        # finding/asset children
-        "finding_tickets", "campaign_findings", "finding_exceptions",
-        "tag_assignments", "asset_ownership", "finding_ownership",
-        "automate_clicks", "aggregated_solutions", "benchmark_references",
-        "scan_comparisons",
-        # inventory
+    # Delete in strict dependency order — deepest children first.
+    # Tables that don't have org_id use subqueries through their parent.
+    p = {"oid": org_id}
+
+    # ── Workflow children ────────────────────────────────────────────
+    db.execute(text("""
+        DELETE FROM workflow_execution_logs
+        WHERE execution_id IN (
+            SELECT id FROM workflow_executions
+            WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid)
+        )
+    """), p)
+    db.execute(text("""
+        DELETE FROM workflow_executions
+        WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid)
+    """), p)
+    db.execute(text("DELETE FROM workflow_nodes WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM workflow_edges WHERE workflow_id IN (SELECT id FROM workflows WHERE org_id = :oid)"), p)
+
+    # ── Agent children ───────────────────────────────────────────────
+    db.execute(text("DELETE FROM agent_approvals WHERE org_id = :oid"), p)
+    db.execute(text("DELETE FROM agent_runs    WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM agent_documents WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM agent_schedules  WHERE agent_id IN (SELECT id FROM agents WHERE org_id = :oid)"), p)
+
+    # ── Finding / asset children ─────────────────────────────────────
+    db.execute(text("DELETE FROM finding_tickets   WHERE finding_id IN (SELECT id FROM findings WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM automate_clicks   WHERE finding_id IN (SELECT id FROM findings WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM asset_ownership   WHERE asset_id   IN (SELECT id FROM assets   WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM finding_ownership WHERE finding_id IN (SELECT id FROM findings WHERE org_id = :oid)"), p)
+    db.execute(text("""
+        DELETE FROM tag_assignments
+        WHERE tag_id     IN (SELECT id FROM tags     WHERE org_id = :oid)
+           OR asset_id   IN (SELECT id FROM assets   WHERE org_id = :oid)
+           OR finding_id IN (SELECT id FROM findings WHERE org_id = :oid)
+    """), p)
+    db.execute(text("DELETE FROM campaign_findings WHERE campaign_id IN (SELECT id FROM campaigns WHERE org_id = :oid)"), p)
+    db.execute(text("DELETE FROM finding_exceptions WHERE org_id = :oid"), p)
+
+    # ── Scan children ────────────────────────────────────────────────
+    db.execute(text("DELETE FROM aggregated_solutions WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)
+    db.execute(text("""
+        DELETE FROM scan_comparisons
+        WHERE base_scan_id    IN (SELECT id FROM scans WHERE org_id = :oid)
+           OR compare_scan_id IN (SELECT id FROM scans WHERE org_id = :oid)
+    """), p)
+    for inv in [
         "inventory_users", "inventory_groups", "inventory_domain_trusts",
         "inventory_services", "inventory_netconns", "inventory_scheduled_tasks",
         "inventory_patches", "inventory_logged_on", "inventory_shares",
@@ -673,29 +706,32 @@ async def delete_org(
         "inventory_database_instances", "inventory_env_vars",
         "inventory_password_policies", "inventory_processes",
         "inventory_ai_tools", "inventory_certificates", "inventory_credentials",
-        # sbom
-        "sbom_vulnerabilities", "sbom_components",
-        # external tags
-        "external_tag_maps",
-        # main data
-        "findings", "assets", "scans",
-        # org-level entities
+    ]:
+        db.execute(text(f"DELETE FROM {inv} WHERE scan_id IN (SELECT id FROM scans WHERE org_id = :oid)"), p)  # noqa: S608
+
+    # ── SBOM children ────────────────────────────────────────────────
+    db.execute(text("""
+        DELETE FROM sbom_vulnerabilities
+        WHERE component_id IN (SELECT id FROM sbom_components WHERE org_id = :oid)
+    """), p)
+
+    # ── External tag children ────────────────────────────────────────
+    db.execute(text("DELETE FROM external_tag_maps WHERE source_id IN (SELECT id FROM external_tag_sources WHERE org_id = :oid)"), p)
+
+    # ── Org-scoped tables (all have org_id) ──────────────────────────
+    for table in [
+        "sbom_components", "findings", "assets", "scans",
         "campaigns", "workflows", "agents",
         "tags", "auto_tag_rules", "ownership_rules",
         "sla_configs", "report_templates",
         "integration_configs", "integration_credentials", "integrations",
         "external_tag_sources", "custom_roles", "audit_logs",
-    ]
-    for table in leaf_tables:
-        db.execute(text(f"DELETE FROM {table} WHERE org_id = :oid"), {"oid": org_id})
+    ]:
+        db.execute(text(f"DELETE FROM {table} WHERE org_id = :oid"), p)  # noqa: S608
 
-    # Delete MSSP links (uses two FK columns, not org_id)
-    db.execute(
-        text("DELETE FROM mssp_org_access WHERE mssp_org_id = :oid OR client_org_id = :oid"),
-        {"oid": org_id},
-    )
-    # Delete users
-    db.execute(text("DELETE FROM users WHERE org_id = :oid"), {"oid": org_id})
+    # ── MSSP links + users ───────────────────────────────────────────
+    db.execute(text("DELETE FROM mssp_org_access WHERE mssp_org_id = :oid OR client_org_id = :oid"), p)
+    db.execute(text("DELETE FROM users WHERE org_id = :oid"), p)
 
     db.delete(org)
     log_audit(db, "delete", "organization", org_id, entity_name=_org_name, actor=user)
