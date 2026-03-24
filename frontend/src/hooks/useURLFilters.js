@@ -4,16 +4,16 @@ import { useSearchParams } from 'react-router-dom'
 /**
  * Generic hook that syncs filter/sort/page state with URL search params.
  *
+ * Mirrors the inline pattern established in FindingExplorer:
+ *   - setFilter deletes param when value is null/undefined/''
+ *   - setFilter resets the page param when a non-page filter changes
+ *   - clearFilters only removes params defined in the schema
+ *
  * @param {Object} schema - Describes each param.  Key = param name.
  *   Each value: { default, type: 'string'|'number'|'boolean' }
  *   `type` controls parsing; omit for string (the default).
- *
- * @returns {{ filters, setFilter, setFilters, clearFilters, resetPage }}
- *   - filters: object whose keys match schema, values parsed from URL
- *   - setFilter(key, value): sets one param (resets `page` to 1 unless key === 'page')
- *   - setFilters(obj): bulk-set multiple params at once (resets page)
- *   - clearFilters(): removes all params
- *   - resetPage(): convenience to set page=1
+ * @param {Object} [options]
+ * @param {string} [options.pageKey='page'] - Name of the pagination param.
  */
 export default function useURLFilters(schema, { pageKey = 'page' } = {}) {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -36,11 +36,12 @@ export default function useURLFilters(schema, { pageKey = 'page' } = {}) {
     return out
   }, [searchParams, schema])
 
-  // Set a single filter value; resets page unless the key IS page
+  // Set a single filter value; resets page unless the key IS page.
+  // Matches FindingExplorer: only delete on null/undefined/'', NOT on false.
   const setFilter = useCallback((key, value) => {
     setSearchParams(prev => {
       const next = new URLSearchParams(prev)
-      if (value === null || value === undefined || value === '' || value === false) {
+      if (value === null || value === undefined || value === '') {
         next.delete(key)
       } else {
         next.set(key, String(value))
@@ -48,7 +49,7 @@ export default function useURLFilters(schema, { pageKey = 'page' } = {}) {
       if (key !== pageKey) next.delete(pageKey)
       return next
     }, { replace: true })
-  }, [setSearchParams])
+  }, [setSearchParams, pageKey])
 
   // Bulk-set multiple params at once
   const setFilters = useCallback((obj) => {
@@ -56,17 +57,17 @@ export default function useURLFilters(schema, { pageKey = 'page' } = {}) {
       const next = new URLSearchParams(prev)
       let pageReset = false
       for (const [key, value] of Object.entries(obj)) {
-        if (value === null || value === undefined || value === '' || value === false) {
+        if (value === null || value === undefined || value === '') {
           next.delete(key)
         } else {
           next.set(key, String(value))
         }
-        if (key !== 'page') pageReset = true
+        if (key !== pageKey) pageReset = true
       }
-      if (pageReset) next.delete('page')
+      if (pageReset) next.delete(pageKey)
       return next
     }, { replace: true })
-  }, [setSearchParams])
+  }, [setSearchParams, pageKey])
 
   // Clear only params defined in the schema (preserves other URL params like ?tab=)
   const clearFilters = useCallback(() => {
@@ -82,10 +83,10 @@ export default function useURLFilters(schema, { pageKey = 'page' } = {}) {
   const resetPage = useCallback(() => {
     setSearchParams(prev => {
       const next = new URLSearchParams(prev)
-      next.delete('page')
+      next.delete(pageKey)
       return next
     }, { replace: true })
-  }, [setSearchParams])
+  }, [setSearchParams, pageKey])
 
   return { filters, setFilter, setFilters, clearFilters, resetPage }
 }
