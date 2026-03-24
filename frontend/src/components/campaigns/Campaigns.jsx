@@ -3,11 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   Target, Plus, Play, Trash2, Clock, AlertTriangle, CheckCircle, PauseCircle,
-  ChevronRight, GitBranch, Zap, Settings, Download, Search,
+  ChevronRight, ChevronDown, GitBranch, Zap, Settings, Download, Search, Eye, Info,
   Flame, Shield, Timer, Wrench, Globe, Sparkles, FileText, CalendarClock, Siren, Ticket, ShieldAlert,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers, getIntegrations } from '../../api.js'
+import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers, getIntegrations, previewCampaignQuery } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons, ErrorBanner, SkeletonCard } from '../shared/ui.jsx'
 
 const STATUS_KEYS = {
@@ -219,6 +219,34 @@ function TemplateBadge({ label, color }) {
   )
 }
 
+// ─── Readable condition labels ────────────────────────────────────────────────
+const OP_LABELS = {
+  eq: '=', neq: '≠', gt: '>', lt: '<', gte: '≥', lte: '≤',
+  contains: 'contains', not_contains: 'not contains', startswith: 'starts with',
+  endswith: 'ends with', regex: 'regex', glob: 'glob', cidr: 'in CIDR',
+  is_true: 'is present', is_false: 'is not present', has_tag: 'has tag', not_has_tag: 'not has tag',
+}
+
+const FIELD_LABELS = {
+  'finding.severity': 'Severity', 'finding.exploit': 'Exploit Available',
+  'finding.exploit_maturity': 'Exploit Maturity', 'finding.missing_patches': 'Missing Patches',
+  'finding.sla_status': 'SLA Status', 'inventory.is_internet_facing': 'Internet-Facing',
+  'finding.effort': 'Remediation Effort', 'finding.vulnerability_state': 'Vulnerability State',
+  'finding.zero_day': 'Zero-Day', 'finding.epss_score': 'EPSS Score',
+  'finding.plugin_name': 'Plugin Name',
+}
+
+const SEV_VALUE_LABELS = { 0: 'Info', 1: 'Low', 2: 'Medium', 3: 'High', 4: 'Critical' }
+
+function readableCondition(cond) {
+  const field = FIELD_LABELS[cond.field] || cond.field?.split('.').pop()?.replace(/_/g, ' ') || '?'
+  const op = OP_LABELS[cond.op] || cond.op || '='
+  if (['is_true', 'is_false'].includes(cond.op)) return `${field} ${op}`
+  let val = cond.value
+  if (cond.field === 'finding.severity' && SEV_VALUE_LABELS[val] !== undefined) val = SEV_VALUE_LABELS[val]
+  return `${field} ${op} ${val ?? ''}`
+}
+
 function CreateCampaignModal({ scanId, onClose, onCreate }) {
   const { t } = useTranslation()
   const [step, setStep] = useState('templates') // 'templates' | 'details'
@@ -234,7 +262,11 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
   const [ticketProject, setTicketProject] = useState('')
   const [ticketGroupBy, setTicketGroupBy] = useState('one_per_asset')
   const [ticketPriority, setTicketPriority] = useState('')
-  const [availableIntegrations, setAvailableIntegrations] = useState([]) // configured ticketing integrations
+  const [availableIntegrations, setAvailableIntegrations] = useState([])
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  // Preview
+  const [previewResult, setPreviewResult] = useState(null)
+  const [previewing, setPreviewing] = useState(false)
 
   useEffect(() => {
     authListUsers().then(data => setUsers(data.users || data || [])).catch(() => {})
@@ -252,7 +284,16 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
     setSelectedTemplate(tpl)
     setName(tpl.name)
     setDescription(tpl.description)
+    setPreviewResult(null)
     setStep('details')
+    // Auto-preview for templates with conditions
+    if (tpl.query?.length > 0 && scanId) {
+      setPreviewing(true)
+      previewCampaignQuery({ query: tpl.query, query_logic: tpl.query_logic || 'AND', scan_id: scanId })
+        .then(res => setPreviewResult(res))
+        .catch(() => {})
+        .finally(() => setPreviewing(false))
+    }
   }
 
   const handleBack = () => {
@@ -261,6 +302,7 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
     setName('')
     setDescription('')
     setOwnerId('')
+    setPreviewResult(null)
   }
 
   const handleSubmit = async (e) => {
@@ -293,6 +335,7 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
   }
 
   const TplIcon = selectedTemplate?.icon || FileText
+  const tplQuery = selectedTemplate?.query || []
 
   return (
     <div style={{
@@ -314,10 +357,10 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
             {step === 'templates'
-              ? 'Choose a template to get started quickly, or build from scratch.'
+              ? 'A campaign is a saved query that matches findings across scans. Run it to track remediation progress and assign owners.'
               : selectedTemplate?.id !== 'blank'
                 ? `Based on: ${selectedTemplate?.name}`
-                : 'Blank campaign — add conditions after creation.'}
+                : 'Blank campaign — you\'ll add conditions in the next step.'}
           </div>
         </div>
 
@@ -380,19 +423,68 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
         ) : (
           /* ── Details form ── */
           <div style={{ padding: '20px 24px 24px', overflowY: 'auto' }}>
-            {/* Template preview chip */}
-            {selectedTemplate?.id !== 'blank' && (
+            {/* Condition preview with finding count */}
+            {tplQuery.length > 0 && (
               <div style={{
-                display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20,
-                padding: '10px 12px', borderRadius: 8,
+                marginBottom: 20, padding: '12px 14px', borderRadius: 8,
                 background: selectedTemplate.bg, border: `1px solid ${selectedTemplate.border}`,
               }}>
-                <TplIcon size={14} color={selectedTemplate.color} />
-                <span style={{ fontSize: 12, color: selectedTemplate.color, fontWeight: 600 }}>
-                  {selectedTemplate.query.length} pre-built conditions
-                </span>
-                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  · You can customize them after creation
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <TplIcon size={14} color={selectedTemplate.color} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: selectedTemplate.color }}>
+                    {tplQuery.length} condition{tplQuery.length > 1 ? 's' : ''}
+                  </span>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                    · Editable after creation
+                  </span>
+                </div>
+                {/* Readable conditions */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+                  {tplQuery.map((cond, i) => (
+                    <React.Fragment key={i}>
+                      {i > 0 && (
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)', alignSelf: 'center', fontWeight: 700 }}>
+                          {selectedTemplate.query_logic || 'AND'}
+                        </span>
+                      )}
+                      <span style={{
+                        fontSize: 11, padding: '3px 8px', borderRadius: 4,
+                        background: 'var(--bg-card)', border: '1px solid var(--border)',
+                        color: 'var(--text-primary)', fontFamily: 'monospace',
+                      }}>
+                        {readableCondition(cond)}
+                      </span>
+                    </React.Fragment>
+                  ))}
+                </div>
+                {/* Preview count */}
+                <div style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Eye size={12} color='var(--text-muted)' />
+                  {previewing ? (
+                    <span style={{ color: 'var(--text-muted)' }}>Checking matches...</span>
+                  ) : previewResult ? (
+                    <span>
+                      <span style={{ color: '#60a5fa', fontWeight: 600 }}>{previewResult.finding_count} findings</span>
+                      <span style={{ color: 'var(--text-muted)' }}> across </span>
+                      <span style={{ color: '#60a5fa', fontWeight: 600 }}>{previewResult.asset_count} assets</span>
+                    </span>
+                  ) : (
+                    <span style={{ color: 'var(--text-muted)' }}>Preview unavailable</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Blank campaign hint */}
+            {selectedTemplate?.id === 'blank' && (
+              <div style={{
+                display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 20,
+                padding: '10px 12px', borderRadius: 8,
+                background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.15)',
+              }}>
+                <Info size={14} color='#60a5fa' style={{ flexShrink: 0, marginTop: 1 }} />
+                <span style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                  After creation you'll be taken to the campaign editor where you can build conditions using the query builder.
                 </span>
               </div>
             )}
@@ -423,7 +515,7 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
                   value={description}
                   onChange={e => setDescription(e.target.value)}
                   placeholder={t('campaigns.descriptionPlaceholder')}
-                  rows={3}
+                  rows={2}
                   style={{
                     width: '100%', padding: '8px 12px', background: 'var(--bg-secondary)',
                     border: '1px solid var(--border)', borderRadius: 8, fontSize: 13,
@@ -433,7 +525,7 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
                 />
               </div>
 
-              <div style={{ marginBottom: 24 }}>
+              <div style={{ marginBottom: 16 }}>
                 <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>
                   Campaign Owner
                 </label>
@@ -456,122 +548,139 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
                 </select>
               </div>
 
-              {/* Auto-ticket creation */}
+              {/* Advanced: Auto-ticket creation (collapsed by default) */}
               {availableIntegrations.length > 0 && (
-                <div style={{ marginBottom: 24 }}>
-                  <div
-                    onClick={() => setTicketEnabled(!ticketEnabled)}
+                <div style={{ marginBottom: 20 }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvanced(!showAdvanced)}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px',
-                      borderRadius: 8, cursor: 'pointer', userSelect: 'none',
-                      border: ticketEnabled ? '1px solid #3b82f6' : '1px solid var(--border)',
-                      background: ticketEnabled ? 'rgba(59,130,246,0.06)' : 'var(--bg-secondary)',
-                      transition: 'all 0.15s',
+                      display: 'flex', alignItems: 'center', gap: 6,
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      color: 'var(--text-muted)', fontSize: 12, fontWeight: 600, padding: 0,
                     }}
                   >
-                    <div style={{
-                      width: 36, height: 20, borderRadius: 10, padding: 2,
-                      background: ticketEnabled ? '#3b82f6' : 'var(--border)',
-                      transition: 'background 0.15s', flexShrink: 0,
-                    }}>
-                      <div style={{
-                        width: 16, height: 16, borderRadius: 8, background: '#fff',
-                        transform: ticketEnabled ? 'translateX(16px)' : 'translateX(0)',
-                        transition: 'transform 0.15s',
-                      }} />
-                    </div>
-                    <Ticket size={15} color={ticketEnabled ? '#3b82f6' : 'var(--text-muted)'} />
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: ticketEnabled ? 'var(--text-primary)' : 'var(--text-muted)' }}>
-                        Auto-create tickets
-                      </div>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                        Automatically create {availableIntegrations.map(i => i.provider === 'jira' ? 'Jira' : 'ServiceNow').join(' / ')} tickets when the campaign runs
-                      </div>
-                    </div>
-                  </div>
+                    {showAdvanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    Advanced: Auto-ticket creation
+                  </button>
 
-                  {ticketEnabled && (
-                    <div style={{ marginTop: 12, padding: 14, background: 'var(--bg-secondary)', borderRadius: 8, border: '1px solid var(--border)' }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                        {availableIntegrations.length > 1 && (
-                          <div>
-                            <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Integration</label>
-                            <select
-                              value={ticketIntegration}
-                              onChange={e => setTicketIntegration(e.target.value)}
-                              style={{
-                                width: '100%', padding: '6px 10px', background: 'var(--bg-card)',
-                                border: '1px solid var(--border)', borderRadius: 6, fontSize: 12,
-                                color: 'var(--text-primary)', appearance: 'auto',
-                              }}
-                            >
-                              {availableIntegrations.map(i => (
-                                <option key={i.provider} value={i.provider}>
-                                  {i.provider === 'jira' ? 'Jira' : 'ServiceNow'}
-                                </option>
-                              ))}
-                            </select>
+                  {showAdvanced && (
+                    <div style={{ marginTop: 10 }}>
+                      <div
+                        onClick={() => setTicketEnabled(!ticketEnabled)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px',
+                          borderRadius: 8, cursor: 'pointer', userSelect: 'none',
+                          border: ticketEnabled ? '1px solid #3b82f6' : '1px solid var(--border)',
+                          background: ticketEnabled ? 'rgba(59,130,246,0.06)' : 'var(--bg-secondary)',
+                          transition: 'all 0.15s',
+                        }}
+                      >
+                        <div style={{
+                          width: 36, height: 20, borderRadius: 10, padding: 2,
+                          background: ticketEnabled ? '#3b82f6' : 'var(--border)',
+                          transition: 'background 0.15s', flexShrink: 0,
+                        }}>
+                          <div style={{
+                            width: 16, height: 16, borderRadius: 8, background: '#fff',
+                            transform: ticketEnabled ? 'translateX(16px)' : 'translateX(0)',
+                            transition: 'transform 0.15s',
+                          }} />
+                        </div>
+                        <Ticket size={15} color={ticketEnabled ? '#3b82f6' : 'var(--text-muted)'} />
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: ticketEnabled ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                            Auto-create tickets
                           </div>
-                        )}
-
-                        <div>
-                          <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
-                            {ticketIntegration === 'jira' ? 'Project Key' : 'Assignment Group'}
-                          </label>
-                          <input
-                            value={ticketProject}
-                            onChange={e => setTicketProject(e.target.value)}
-                            placeholder={ticketIntegration === 'jira' ? 'e.g. SEC' : 'e.g. IT Security'}
-                            style={{
-                              width: '100%', padding: '6px 10px', background: 'var(--bg-card)',
-                              border: '1px solid var(--border)', borderRadius: 6, fontSize: 12,
-                              color: 'var(--text-primary)', boxSizing: 'border-box',
-                            }}
-                          />
-                        </div>
-
-                        <div>
-                          <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Ticket grouping</label>
-                          <select
-                            value={ticketGroupBy}
-                            onChange={e => setTicketGroupBy(e.target.value)}
-                            style={{
-                              width: '100%', padding: '6px 10px', background: 'var(--bg-card)',
-                              border: '1px solid var(--border)', borderRadius: 6, fontSize: 12,
-                              color: 'var(--text-primary)', appearance: 'auto',
-                            }}
-                          >
-                            <option value="one_per_asset">One ticket per asset</option>
-                            <option value="one_per_finding">One ticket per finding</option>
-                            <option value="one_for_all">Single ticket for all</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Priority</label>
-                          <select
-                            value={ticketPriority}
-                            onChange={e => setTicketPriority(e.target.value)}
-                            style={{
-                              width: '100%', padding: '6px 10px', background: 'var(--bg-card)',
-                              border: '1px solid var(--border)', borderRadius: 6, fontSize: 12,
-                              color: 'var(--text-primary)', appearance: 'auto',
-                            }}
-                          >
-                            <option value="">Auto (from severity)</option>
-                            <option value="highest">Highest</option>
-                            <option value="high">High</option>
-                            <option value="medium">Medium</option>
-                            <option value="low">Low</option>
-                            <option value="lowest">Lowest</option>
-                          </select>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                            Automatically create {availableIntegrations.map(i => i.provider === 'jira' ? 'Jira' : 'ServiceNow').join(' / ')} tickets when the campaign runs
+                          </div>
                         </div>
                       </div>
 
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10 }}>
-                        A workflow will be created automatically. You can edit it in the Workflows tab after creation.
-                      </div>
+                      {ticketEnabled && (
+                        <div style={{ marginTop: 12, padding: 14, background: 'var(--bg-secondary)', borderRadius: 8, border: '1px solid var(--border)' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                            {availableIntegrations.length > 1 && (
+                              <div>
+                                <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Integration</label>
+                                <select
+                                  value={ticketIntegration}
+                                  onChange={e => setTicketIntegration(e.target.value)}
+                                  style={{
+                                    width: '100%', padding: '6px 10px', background: 'var(--bg-card)',
+                                    border: '1px solid var(--border)', borderRadius: 6, fontSize: 12,
+                                    color: 'var(--text-primary)', appearance: 'auto',
+                                  }}
+                                >
+                                  {availableIntegrations.map(i => (
+                                    <option key={i.provider} value={i.provider}>
+                                      {i.provider === 'jira' ? 'Jira' : 'ServiceNow'}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
+
+                            <div>
+                              <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>
+                                {ticketIntegration === 'jira' ? 'Project Key' : 'Assignment Group'}
+                              </label>
+                              <input
+                                value={ticketProject}
+                                onChange={e => setTicketProject(e.target.value)}
+                                placeholder={ticketIntegration === 'jira' ? 'e.g. SEC' : 'e.g. IT Security'}
+                                style={{
+                                  width: '100%', padding: '6px 10px', background: 'var(--bg-card)',
+                                  border: '1px solid var(--border)', borderRadius: 6, fontSize: 12,
+                                  color: 'var(--text-primary)', boxSizing: 'border-box',
+                                }}
+                              />
+                            </div>
+
+                            <div>
+                              <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Ticket grouping</label>
+                              <select
+                                value={ticketGroupBy}
+                                onChange={e => setTicketGroupBy(e.target.value)}
+                                style={{
+                                  width: '100%', padding: '6px 10px', background: 'var(--bg-card)',
+                                  border: '1px solid var(--border)', borderRadius: 6, fontSize: 12,
+                                  color: 'var(--text-primary)', appearance: 'auto',
+                                }}
+                              >
+                                <option value="one_per_asset">One ticket per asset</option>
+                                <option value="one_per_finding">One ticket per finding</option>
+                                <option value="one_for_all">Single ticket for all</option>
+                              </select>
+                            </div>
+
+                            <div>
+                              <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}>Priority</label>
+                              <select
+                                value={ticketPriority}
+                                onChange={e => setTicketPriority(e.target.value)}
+                                style={{
+                                  width: '100%', padding: '6px 10px', background: 'var(--bg-card)',
+                                  border: '1px solid var(--border)', borderRadius: 6, fontSize: 12,
+                                  color: 'var(--text-primary)', appearance: 'auto',
+                                }}
+                              >
+                                <option value="">Auto (from severity)</option>
+                                <option value="highest">Highest</option>
+                                <option value="high">High</option>
+                                <option value="medium">Medium</option>
+                                <option value="low">Low</option>
+                                <option value="lowest">Lowest</option>
+                              </select>
+                            </div>
+                          </div>
+
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10 }}>
+                            A workflow will be created automatically. You can edit it in the Workflows tab after creation.
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

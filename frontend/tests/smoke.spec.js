@@ -15,6 +15,7 @@ const ROUTES = [
   { path: '/', name: 'Reports' },
   { path: '/reports/1', name: 'Report Detail' },
   { path: '/assets', name: 'Assets' },
+  { path: '/assets/1', name: 'Asset Detail' },
   { path: '/findings', name: 'Findings' },
   { path: '/findings/1', name: 'Finding Detail' },
   { path: '/campaigns', name: 'Campaigns' },

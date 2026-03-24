@@ -97,8 +97,8 @@ function RowActions({ row, onNavigate }) {
   }, [open])
 
   const items = [
-    { icon: AlertTriangle, label: t('assets.viewFindings'), action: () => onNavigate(`/findings?asset_id=${row.id}`) },
-    { icon: Database, label: t('assets.viewInventory'), action: () => onNavigate(`/inventory?asset_id=${row.id}&asset_name=${encodeURIComponent(row.hostname || row.ip)}`) },
+    { icon: AlertTriangle, label: t('assets.viewFindings'), action: () => onNavigate(`/assets/${row.id}?tab=findings`) },
+    { icon: Database, label: t('assets.viewInventory'), action: () => onNavigate(`/assets/${row.id}?tab=inventory`) },
   ]
 
   return (
@@ -1025,7 +1025,7 @@ export default function AssetInventory() {
             <Table
               columns={visibleColumns}
               rows={assets}
-              onRowClick={row => navigate(`/findings?asset_id=${row.id}`)}
+              onRowClick={row => navigate(`/assets/${row.id}`)}
               onSort={handleSort}
               sortBy={sortBy}
               sortOrder={sortOrder}

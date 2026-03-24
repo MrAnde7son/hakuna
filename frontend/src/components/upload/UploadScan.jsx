@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Upload, CheckCircle, AlertCircle, FileText, X } from 'lucide-react'
 import { useScan } from '../../App.jsx'
-import { uploadScan, deleteScan } from '../../api.js'
+import { uploadScan, deleteScan, getScanStatus } from '../../api.js'
 import { Card, PageHeader, Button } from '../shared/ui.jsx'
 
 function DropZone({ onFile, disabled }) {
@@ -63,7 +63,7 @@ function UploadProgress({ file, status, result, error, onDismiss }) {
       }`, alignItems: 'flex-start',
     }}>
       <div style={{ flexShrink: 0, marginTop: 2 }}>
-        {status === 'uploading' && (
+        {(status === 'uploading' || status === 'processing') && (
           <div style={{ width: 20, height: 20, border: '2px solid var(--border)', borderTop: '2px solid var(--accent)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
         )}
         {status === 'done' && <CheckCircle size={20} color="#16a34a" />}
@@ -76,7 +76,7 @@ function UploadProgress({ file, status, result, error, onDismiss }) {
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
           {(file.size / 1024).toFixed(0)} KB
         </div>
-        {status === 'uploading' && <div style={{ fontSize: 12, color: 'var(--accent)' }}>{t('upload.parsing')}</div>}
+        {(status === 'uploading' || status === 'processing') && <div style={{ fontSize: 12, color: 'var(--accent)' }}>{status === 'processing' ? t('upload.processing', 'Processing scan data…') : t('upload.parsing')}</div>}
         {status === 'done' && result && (
           <div style={{ fontSize: 12, color: '#86efac' }}>
             ✓ {t('upload.ingested', { assets: result.assets, findings: result.findings })}
@@ -104,9 +104,41 @@ export default function UploadScan() {
 
     try {
       const result = await uploadScan(file)
-      setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'done', result } : u))
-      await refreshScans()
-      setActiveScanId(result.scan_id)
+
+      if (result.status === 'processing') {
+        // Server returned immediately — poll until processing completes
+        setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'processing' } : u))
+        await refreshScans()
+
+        let attempts = 0
+        while (attempts < 120) {
+          await new Promise(r => setTimeout(r, 3000))
+          const statusData = await getScanStatus(result.scan_id)
+          if (statusData.status !== 'processing') {
+            const finalResult = {
+              scan_id: result.scan_id,
+              scan_name: statusData.scan_name,
+              assets: statusData.asset_count,
+              findings: statusData.finding_count,
+            }
+            if (statusData.status === 'failed') {
+              setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'error', error: 'Scan processing failed' } : u))
+            } else {
+              setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'done', result: finalResult } : u))
+              await refreshScans()
+              setActiveScanId(result.scan_id)
+            }
+            return
+          }
+          attempts++
+          if (attempts % 5 === 0) await refreshScans()
+        }
+        setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'error', error: 'Processing timed out' } : u))
+      } else {
+        setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'done', result } : u))
+        await refreshScans()
+        setActiveScanId(result.scan_id)
+      }
     } catch (err) {
       setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'error', error: err.message } : u))
     }
@@ -133,7 +165,7 @@ export default function UploadScan() {
       />
 
       <Card style={{ marginBottom: 20 }}>
-        <DropZone onFile={handleFile} disabled={uploads.some(u => u.status === 'uploading')} />
+        <DropZone onFile={handleFile} disabled={uploads.some(u => u.status === 'uploading' || u.status === 'processing')} />
       </Card>
 
       {/* Upload status */}

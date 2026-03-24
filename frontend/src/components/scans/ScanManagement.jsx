@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import {
-  uploadScan, deleteScan, getEasmStatus, scanEasmDomain, rescanEasmScan, refreshEasmScan, setupEasm,
+  uploadScan, deleteScan, getScanStatus, getEasmStatus, scanEasmDomain, rescanEasmScan, refreshEasmScan, setupEasm,
   getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner } from '../shared/ui.jsx'
@@ -104,14 +104,14 @@ function UploadRow({ upload, onDismiss }) {
   return (
     <div style={{
       padding: '14px 16px', borderBottom: `1px solid ${borderColor}`,
-      background: status === 'uploading' ? 'rgba(99,102,241,0.03)' : status === 'error' ? 'rgba(220,38,38,0.03)' : 'rgba(22,163,106,0.03)',
+      background: (status === 'uploading' || status === 'processing') ? 'rgba(99,102,241,0.03)' : status === 'error' ? 'rgba(220,38,38,0.03)' : 'rgba(22,163,106,0.03)',
     }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
         <div style={{
           width: 36, height: 36, borderRadius: 8, flexShrink: 0,
           background: meta.bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          {status === 'uploading' && <Spinner size={18} />}
+          {(status === 'uploading' || status === 'processing') && <Spinner size={18} />}
           {status === 'done' && <CheckCircle size={18} color="#16a34a" />}
           {status === 'error' && <AlertCircle size={18} color="#dc2626" />}
         </div>
@@ -121,19 +121,20 @@ function UploadRow({ upload, onDismiss }) {
             <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {file.name}
             </span>
-            {status === 'uploading' && (
+            {(status === 'uploading' || status === 'processing') && (
               <span style={{
                 display: 'inline-flex', alignItems: 'center', gap: 4,
                 background: '#6366f118', color: '#6366f1', border: '1px solid #6366f144',
                 borderRadius: 4, padding: '2px 8px', fontSize: 11, fontWeight: 600,
               }}>
                 <Loader size={10} style={{ animation: 'spin 1.5s linear infinite' }} />
-                Importing
+                {status === 'processing' ? 'Processing' : 'Importing'}
               </span>
             )}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
             {status === 'uploading' && 'Parsing & importing...'}
+            {status === 'processing' && 'Processing scan data…'}
             {status === 'done' && result && (
               <span style={{ color: '#16a34a' }}>{result.assets} assets, {result.findings} findings imported</span>
             )}
@@ -145,7 +146,7 @@ function UploadRow({ upload, onDismiss }) {
           <X size={14} />
         </button>
       </div>
-      {status === 'uploading' && <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>}
+      {(status === 'uploading' || status === 'processing') && <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>}
     </div>
   )
 }
@@ -1597,9 +1598,40 @@ export default function ScanManagement() {
     setUploads(prev => [...prev, { id, file, status: 'uploading', result: null, error: null }])
     try {
       const result = await uploadScan(file)
-      setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'done', result } : u))
-      await refreshScans()
-      setActiveScanId(result.scan_id)
+
+      if (result.status === 'processing') {
+        setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'processing' } : u))
+        await refreshScans()
+
+        let attempts = 0
+        while (attempts < 120) {
+          await new Promise(r => setTimeout(r, 3000))
+          const statusData = await getScanStatus(result.scan_id)
+          if (statusData.status !== 'processing') {
+            const finalResult = {
+              scan_id: result.scan_id,
+              scan_name: statusData.scan_name,
+              assets: statusData.asset_count,
+              findings: statusData.finding_count,
+            }
+            if (statusData.status === 'failed') {
+              setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'error', error: 'Scan processing failed' } : u))
+            } else {
+              setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'done', result: finalResult } : u))
+              await refreshScans()
+              setActiveScanId(result.scan_id)
+            }
+            return
+          }
+          attempts++
+          if (attempts % 5 === 0) await refreshScans()
+        }
+        setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'error', error: 'Processing timed out' } : u))
+      } else {
+        setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'done', result } : u))
+        await refreshScans()
+        setActiveScanId(result.scan_id)
+      }
     } catch (err) {
       setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'error', error: err.message } : u))
     }
@@ -1782,7 +1814,7 @@ export default function ScanManagement() {
         <NewScanModal
           onClose={() => setShowNewScan(false)}
           onFile={handleFile}
-          uploading={uploads.some(u => u.status === 'uploading')}
+          uploading={uploads.some(u => u.status === 'uploading' || u.status === 'processing')}
           easmEnabled={easmStatus?.enabled}
           onScanDomain={handleScanDomain}
           onSetupEasm={handleSetupEasm}

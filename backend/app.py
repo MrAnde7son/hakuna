@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional, List
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Query, Request, Header
+from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Query, Request, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -727,467 +727,569 @@ def _delete_scan_cascade(db: Session, scan: Scan):
     db.flush()
 
 
+def _run_scan_ingest(
+    scan_id: int,
+    content: bytes,
+    filename: str,
+    effective_org_id: int,
+    user_id: int,
+    user_email: str,
+    user_display_name: Optional[str],
+):
+    """Synchronous scan processing — runs in a thread pool with its own DB session."""
+    from core.database import SessionLocal
+    db = SessionLocal()
+
+    class _AuditUser:
+        def __init__(self):
+            self.id = user_id
+            self.email = user_email
+            self.display_name = user_display_name
+            self.org_id = effective_org_id
+
+    mock_user = _AuditUser()
+
+    try:
+        # Load CVE intel
+        intel = load_intel_json(str(INTEL_PATH)) if INTEL_PATH.exists() else {}
+
+        # Detect parser
+        source_parser = detect_parser(content, filename or "")
+        if not source_parser:
+            db.query(Scan).filter(Scan.id == scan_id).update({"status": "failed"})
+            db.commit()
+            return
+
+        # Parse file
+        try:
+            parsed = source_parser.parse(content, filename)
+        except Exception as e:
+            logger.exception(f"Scan {scan_id} parse error")
+            db.query(Scan).filter(Scan.id == scan_id).update({"status": "failed"})
+            db.commit()
+            return
+
+        # Fetch stub scan and update with real metadata
+        scan = db.query(Scan).filter(Scan.id == scan_id).first()
+        if not scan:
+            logger.error(f"Scan {scan_id} missing during background processing")
+            return
+
+        scan_data = parsed["scan"]
+        _scan_name = scan_data.get("scan_name") or filename
+        _scan_date = scan_data.get("scan_date")
+
+        # Duplicate scan detection (exclude this stub scan)
+        dup_q = db.query(Scan).filter(
+            Scan.id != scan_id,
+            Scan.scan_name == _scan_name,
+            Scan.org_id == effective_org_id,
+        )
+        if _scan_date:
+            dup_q = dup_q.filter(Scan.scan_date == _scan_date)
+        else:
+            dup_q = dup_q.filter(Scan.scan_date.is_(None))
+        existing_scan = dup_q.first()
+        if existing_scan:
+            logger.info(f"Replacing existing scan '{_scan_name}' (id={existing_scan.id}) with re-upload")
+            _delete_scan_cascade(db, existing_scan)
+
+        # Update stub with real scan metadata
+        scan.scan_name = _scan_name
+        scan.scan_date = _scan_date
+        scan.scan_type = scan_data.get("scan_type")
+        scan.scanner_ip = scan_data.get("scanner_ip")
+        scan.nessus_version = scan_data.get("nessus_version")
+        scan.policy_used = scan_data.get("policy_used")
+        scan.source_type = source_parser.source_type
+        scan.source_version = scan_data.get("scanner_version") or scan_data.get("nessus_version")
+        scan.raw_metadata = scan_data
+        db.flush()
+
+        # Load configs once (used throughout the upload)
+        risk_cfg = risk_engine.load_config()
+        dedup_cfg = dedup_engine.load_config()
+
+        # Within-scan asset dedup: collapse duplicate hosts before creating DB records
+        parsed_assets = parsed["assets"]
+        if dedup_cfg.get("enabled") and dedup_cfg.get("apply_on_upload"):
+            asset_dcfg = dedup_cfg.get("assets", {})
+            if asset_dcfg.get("enabled"):
+                before = len(parsed_assets)
+                parsed_assets = dedup_engine.dedup_records(
+                    parsed_assets,
+                    asset_dcfg.get("key_fields", ["ip"]),
+                    asset_dcfg.get("strategy", "merge"),
+                    key_mode=asset_dcfg.get("key_mode", "and"),
+                )
+                if len(parsed_assets) < before:
+                    logger.info(f"Within-scan asset dedup: {before} → {len(parsed_assets)} assets")
+
+        # Create Asset records
+        asset_map = {}  # hostname/ip → Asset (populated with both keys for reliable lookup)
+        for asset_data in parsed_assets:
+            # Determine criticality: auto-rules if configured, else default 5
+            auto_crit = None
+            if risk_cfg.get("auto_apply_rules_on_upload"):
+                auto_crit = risk_engine.evaluate_criticality_rules(asset_data, risk_cfg)
+
+            # Enrich asset_data with scan-level context for classification
+            asset_data["scanner_type"] = scan_data.get("scanner_type")
+            ctx = classify_asset(asset_data)
+            # Internet-facing = public IP scanned by an external/cloud scanner
+            is_ext_scanner = scan_data.get("scanner_type") in ("cloud", "external")
+            is_facing = _is_public_ip(asset_data.get("ip")) and is_ext_scanner
+            # Criticality cascade: auto-rules → business-context baseline → default 5
+            effective_crit = (
+                auto_crit if auto_crit is not None
+                else ctx.get("context_criticality") or 5
+            )
+            asset = Asset(
+                scan_id=scan.id,
+                ip=asset_data.get("ip"),
+                hostname=asset_data.get("hostname"),
+                fqdn=asset_data.get("fqdn"),
+                os=asset_data.get("os"),
+                netbios_name=asset_data.get("netbios_name"),
+                mac_address=asset_data.get("mac_address"),
+                scan_start=asset_data.get("scan_start"),
+                scan_end=asset_data.get("scan_end"),
+                is_credentialed=asset_data.get("is_credentialed", False),
+                last_auth_run=asset_data.get("last_auth_run"),
+                system_type=asset_data.get("system_type"),
+                is_internet_facing=is_facing,
+                criticality=effective_crit,
+                critical_count=asset_data.get("critical_count", 0),
+                high_count=asset_data.get("high_count", 0),
+                medium_count=asset_data.get("medium_count", 0),
+                low_count=asset_data.get("low_count", 0),
+                info_count=asset_data.get("info_count", 0),
+                environment_tag=ctx["environment_tag"],
+                business_context=ctx["business_context"],
+                source_systems=[source_parser.source_type],
+            )
+            db.add(asset)
+            db.flush()
+            # Register both hostname and IP so finding lookup works after dedup merges
+            if asset_data.get("hostname"):
+                asset_map[asset_data["hostname"]] = asset
+            if asset_data.get("ip"):
+                asset_map[asset_data["ip"]] = asset
+            if not asset_data.get("hostname") and not asset_data.get("ip"):
+                # Fallback: use whichever key exists
+                key = asset_data.get("hostname") or asset_data.get("ip")
+                if key:
+                    asset_map[key] = asset
+
+        # Create Finding records
+        for finding_data in parsed["findings"]:
+            host_key = finding_data.get("host_name")
+            asset = asset_map.get(host_key)
+            if not asset:
+                # Try fuzzy match
+                for k, a in asset_map.items():
+                    if k and host_key and (k in host_key or host_key in k):
+                        asset = a
+                        break
+            if not asset:
+                # Create a placeholder asset
+                asset = Asset(scan_id=scan.id, hostname=host_key, ip=host_key)
+                db.add(asset)
+                db.flush()
+                asset_map[host_key] = asset
+
+            # Compute priority (risk_cfg passed for configurable weights;
+            # asset_inventory not available yet at upload time — defaults to neutral)
+            finding_data["asset_os"] = asset.os or ""
+            priority_data = compute_priority_score(
+                finding_data,
+                asset_criticality=asset.criticality,
+                intel=intel,
+                risk_cfg=risk_cfg,
+            )
+
+            finding = Finding(
+                scan_id=scan.id,
+                asset_id=asset.id,
+                # Multi-source provenance
+                source_type=source_parser.source_type,
+                source_vuln_id=finding_data.get("plugin_id"),
+                normalized_id=compute_normalized_id(finding_data),
+                # Plugin metadata
+                plugin_id=finding_data.get("plugin_id"),
+                plugin_name=finding_data.get("plugin_name"),
+                plugin_family=finding_data.get("plugin_family"),
+                plugin_pub_date=finding_data.get("plugin_pub_date"),
+                plugin_mod_date=finding_data.get("plugin_mod_date"),
+                severity=finding_data.get("severity", 0),
+                severity_label=finding_data.get("severity_label", "Info"),
+                risk_factor=finding_data.get("risk_factor"),
+                cvss2_score=finding_data.get("cvss2_score"),
+                cvss2_vector=finding_data.get("cvss2_vector"),
+                cvss3_score=finding_data.get("cvss3_score"),
+                cvss3_vector=finding_data.get("cvss3_vector"),
+                vpr_score=finding_data.get("vpr_score"),
+                cves=finding_data.get("cves", []),
+                references=finding_data.get("references", {}),
+                synopsis=finding_data.get("synopsis"),
+                description=finding_data.get("description"),
+                solution=finding_data.get("solution"),
+                see_also=finding_data.get("see_also", []),
+                port=finding_data.get("port"),
+                protocol=finding_data.get("protocol"),
+                vulnerability_state=finding_data.get("vulnerability_state"),
+                plugin_output=finding_data.get("plugin_output"),
+                exploit_available=finding_data.get("exploit_available", False),
+                exploit_maturity=finding_data.get("exploit_maturity"),
+                zero_day=finding_data.get("zero_day", False),
+                priority_score=priority_data["priority_score"],
+                effort_level=priority_data["effort_level"],
+                owner_suggestion=priority_data["owner_suggestion"],
+                remediation_steps=priority_data["remediation_steps"],
+                source_systems=[source_parser.source_type],
+            )
+            db.add(finding)
+
+        db.flush()
+
+        # ── Recount severity per asset (covers placeholder assets created mid-loop) ──
+        from sqlalchemy import func as sa_func
+        sev_counts = (
+            db.query(
+                Finding.asset_id,
+                Finding.severity,
+                sa_func.count(Finding.id),
+            )
+            .filter(Finding.scan_id == scan.id)
+            .group_by(Finding.asset_id, Finding.severity)
+            .all()
+        )
+        count_map: dict[int, dict[int, int]] = {}
+        for asset_id, sev, cnt in sev_counts:
+            count_map.setdefault(asset_id, {})[sev] = cnt
+        sev_key = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}
+        for asset in asset_map.values():
+            counts = count_map.get(asset.id, {})
+            asset.critical_count = counts.get(4, 0)
+            asset.high_count = counts.get(3, 0)
+            asset.medium_count = counts.get(2, 0)
+            asset.low_count = counts.get(1, 0)
+            asset.info_count = counts.get(0, 0)
+
+        # ── Populate temporal tracking (first_seen / last_seen / regression) ──
+        _populate_temporal_fields(db, scan)
+
+        # ── Delta reconciliation: auto-resolve findings fixed since last scan ──
+        _reconcile_findings_delta(db, scan)
+
+        # ── Detect internet-facing assets & credentialed scan status via scanner detection plugin ──
+        import ipaddress as _ipaddress
+        detection_plugin_id = source_parser.get_scanner_detection_plugin()
+        plugin_19506_findings = db.query(Finding).filter(
+            Finding.scan_id == scan.id, Finding.plugin_id == detection_plugin_id
+        ).all() if detection_plugin_id else []
+        for f19506 in plugin_19506_findings:
+            output = f19506.plugin_output or ""
+            asset = db.query(Asset).filter(Asset.id == f19506.asset_id).first()
+            if not asset:
+                continue
+            # Scanner IP & internet-facing detection
+            m = re.search(r"Scanner IP\s*:\s*([\d.]+)", output)
+            if m:
+                scanner_ip = m.group(1)
+                asset.scanner_ip = scanner_ip
+                try:
+                    addr = _ipaddress.ip_address(scanner_ip)
+                    asset.is_internet_facing = not addr.is_private
+                except ValueError:
+                    asset.is_internet_facing = False
+            # Credentialed scan detection (from plugin output, supplements XML host property)
+            if not asset.is_credentialed:
+                cred_m = re.search(r"Credentialed checks\s*:\s*(yes|no)", output, re.IGNORECASE)
+                if cred_m and cred_m.group(1).lower() == "yes":
+                    asset.is_credentialed = True
+
+        # ── Enrich assets with OS identification (11936) and CPE (45590) ──
+        os_plugin_findings = db.query(Finding).filter(
+            Finding.scan_id == scan.id,
+            Finding.plugin_id.in_(["11936", "45590"]),
+        ).all()
+        # Group by asset_id
+        _os_enrich: dict[int, dict[str, str]] = {}
+        for f_os in os_plugin_findings:
+            bucket = _os_enrich.setdefault(f_os.asset_id, {})
+            bucket[f_os.plugin_id] = f_os.plugin_output or ""
+        for aid, plugins in _os_enrich.items():
+            asset = db.query(Asset).filter(Asset.id == aid).first()
+            if asset:
+                enrich_asset_from_os_plugins(
+                    asset,
+                    plugin_11936_output=plugins.get("11936"),
+                    plugin_45590_output=plugins.get("45590"),
+                )
+
+        db.commit()
+
+        # ── Extract structured inventory from Info-level plugin outputs ──
+        # Build a flat list of finding dicts enriched with asset context
+        findings_for_inventory = []
+        for f in db.query(Finding).filter(Finding.scan_id == scan.id).all():
+            asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
+            findings_for_inventory.append({
+                "plugin_id": f.plugin_id,
+                "plugin_output": f.plugin_output,
+                "plugin_name": f.plugin_name,
+                "plugin_family": f.plugin_family,
+                "severity": f.severity,
+                "synopsis": f.synopsis,
+                "solution": f.solution,
+                "asset_id": f.asset_id,
+                "scan_id": f.scan_id,
+                "asset_hostname": asset.hostname if asset else "",
+                "port": f.port,
+                "protocol": f.protocol,
+            })
+
+        inventory = extract_inventory_from_findings(
+            findings_for_inventory,
+            dispatch=source_parser.get_inventory_dispatch(),
+        )
+
+        # Apply configurable dedup to inventory records before inserting
+        inventory = dedup_engine.dedup_inventory(inventory, dedup_cfg)
+
+        MODEL_MAP = {
+            "users": (InventoryUser, ["scan_id", "asset_id", "source_plugin", "user_type",
+                                       "username", "domain", "sid", "rid", "dn", "uac",
+                                       "spns", "member_of", "password_last_set", "date_joined",
+                                       "is_local_admin", "is_domain_admin", "is_privileged",
+                                       "is_disabled", "password_never_expires", "never_logged_in",
+                                       "never_changed_password", "last_logon_host",
+                                       "identity_type", "identity_subtype", "source_systems",
+                                       "department", "job_title", "manager_dn", "manager_username"]),
+            "groups": (InventoryGroup, ["scan_id", "asset_id", "source_plugin",
+                                         "group_name", "domain", "sid", "dn",
+                                         "description", "members", "is_privileged"]),
+            "services": (InventoryService, ["scan_id", "asset_id", "source_plugin",
+                                             "service_name", "display_name", "is_running"]),
+            "netconns": (InventoryNetConn, ["scan_id", "asset_id", "source_plugin",
+                                             "proto", "state", "local_addr", "local_port",
+                                             "remote_addr", "remote_port", "pid"]),
+            "scheduled_tasks": (InventoryScheduledTask, ["scan_id", "asset_id", "source_plugin",
+                                                           "task_uri", "author", "run_as_sid",
+                                                           "run_as_user", "command", "arguments",
+                                                           "trigger_type", "logon_type", "is_enabled"]),
+            "patches": (InventoryPatch, ["scan_id", "asset_id", "source_plugin",
+                                          "kb_id", "vuln_count", "description", "cves"]),
+            "logged_on": (InventoryLoggedOn, ["scan_id", "asset_id", "source_plugin",
+                                               "sid", "domain", "username"]),
+            "shares": (InventoryShare, ["scan_id", "asset_id", "source_plugin",
+                                         "share_name", "share_type", "comment", "path",
+                                         "max_users", "acl", "is_writeable", "is_default_share"]),
+            "software": (InventorySoftware, ["scan_id", "asset_id", "source_plugin",
+                                              "name", "version", "installed_on", "vendor", "category"]),
+            "security_controls": (InventorySecurityControl, ["scan_id", "asset_id", "source_plugin",
+                                                              "control_type", "product_name", "vendor",
+                                                              "version", "is_enabled", "is_up_to_date",
+                                                              "signature_date", "details"]),
+            "computers": (InventoryComputer, ["scan_id", "asset_id", "source_plugin",
+                                               "computer_name", "dns_hostname", "os", "os_version",
+                                               "sid", "dn", "is_domain_controller", "is_disabled",
+                                               "uac", "date_joined"]),
+            "password_policies": (InventoryPasswordPolicy, ["scan_id", "asset_id", "source_plugin",
+                                                             "domain", "min_length", "history_count",
+                                                             "max_age_days", "min_age_days",
+                                                             "complexity_enabled", "reversible_encryption",
+                                                             "lockout_threshold", "lockout_duration_mins",
+                                                             "lockout_window_mins", "is_weak"]),
+            "env_vars": (InventoryEnvVar, ["scan_id", "asset_id", "source_plugin",
+                                            "name", "value", "scope", "is_sensitive"]),
+            "certificates": (InventoryCertificate, [
+                "scan_id", "asset_id", "source_plugin",
+                "subject_cn", "subject_o", "subject_ou", "subject_c", "subject_email",
+                "issuer_cn", "issuer_o", "issuer_ou", "issuer_c",
+                "serial_number", "not_before", "not_after",
+                "is_expired", "days_until_expiry",
+                "signature_algorithm", "key_algorithm", "key_bits",
+                "subject_alt_names", "is_ca", "is_self_signed",
+                "port", "protocol",
+            ]),
+            "ai_tools": (InventoryAITool, [
+                "scan_id", "asset_id", "source_plugin",
+                "tool_name", "category",
+            ]),
+            "processes": (InventoryProcess, [
+                "scan_id", "asset_id", "source_plugin",
+                "process_name", "pid", "ppid", "session_id",
+                "parent_name", "depth",
+            ]),
+            "database_instances": (InventoryDatabaseInstance, [
+                "scan_id", "asset_id", "source_plugin",
+                "db_type", "instance_name", "version", "port",
+                "databases", "named_pipes", "is_running",
+            ]),
+            "domain_trusts": (InventoryDomainTrust, [
+                "scan_id", "asset_id", "source_plugin",
+                "trusted_domain", "flat_name", "sid", "dn",
+                "trust_direction", "trust_type", "trust_attributes",
+                "is_transitive", "is_sid_filtering_enabled",
+                "source_domain", "when_created",
+            ]),
+            "credentials": (InventoryCredential, [
+                "scan_id", "asset_id", "source_plugin",
+                "credential_type", "protocol", "username", "severity",
+                "port", "description", "plugin_name", "remediation",
+            ]),
+        }
+
+        inv_counts = {}
+        for key, (Model, fields) in MODEL_MAP.items():
+            records = inventory.get(key, [])
+            for rec in records:
+                obj = Model(**{f: rec.get(f) for f in fields if f in rec})
+                db.add(obj)
+            inv_counts[key] = len(records)
+            if records:
+                db.commit()
+
+        logger.info(f"Inventory extracted: { {k: v for k, v in inv_counts.items() if v} }")
+
+        # ── Boost criticality for Domain Controllers discovered in inventory ──
+        dc_asset_ids = _resolve_dc_asset_ids(db, scan_id=scan.id)
+        if dc_asset_ids:
+            dc_assets = db.query(Asset).filter(Asset.id.in_(dc_asset_ids)).all()
+            for asset in dc_assets:
+                if (asset.criticality or 5) < 9:
+                    asset.criticality = 9
+            db.commit()
+            logger.info(f"Boosted criticality to 9 (Critical) for {len(dc_assets)} domain controller(s)")
+
+        # ── Enhanced internet-reachability detection (uses inventory data) ──
+        try:
+            reachability_stats = _apply_reachability_detection(db, scan.id)
+            if reachability_stats["newly_flagged"]:
+                logger.info(f"Reachability detection: {reachability_stats['newly_flagged']} asset(s) newly flagged as internet-facing")
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"Reachability detection failed (non-fatal): {e}")
+
+        # ── Recompute asset risk scores using full formula (findings + inventory) ──
+        _recompute_risk_for_scan(db, scan.id, risk_cfg)
+
+        # ── Detect security controls from services + software (catalog matching) ──
+        try:
+            from parsers.inventory_extractor import detect_security_controls_from_inventory
+            sc_count = detect_security_controls_from_inventory(db, scan.id)
+            if sc_count:
+                logger.info(f"Security catalog: {sc_count} controls detected for scan {scan.id}")
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"Security catalog detection failed (non-fatal): {e}")
+
+        # ── Build SBOM from inventory software + findings correlation ──
+        try:
+            from services.sbom_pipeline import build_sbom_from_inventory
+            sbom_stats = build_sbom_from_inventory(db, scan.id)
+            if sbom_stats.get("components"):
+                logger.info(f"SBOM: {sbom_stats}")
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"SBOM pipeline failed (non-fatal): {e}")
+
+        # ── Post-ingest pipeline: auto-tag, ownership, exceptions, SLA, dedup, etc. ──
+        from services.post_ingest import finalize_scan
+        finalize_scan(db, scan_id=scan.id, org_id=effective_org_id)
+
+        total_findings = len(parsed["findings"])
+        total_assets = len(asset_map)
+        logger.info(f"Ingested scan '{filename}': {total_assets} assets, {total_findings} findings")
+        log_audit(db, "create", "scan", scan.id,
+                  entity_name=scan.scan_name or filename,
+                  changes={"filename": filename, "assets": total_assets, "findings": total_findings},
+                  actor=mock_user)
+        scan.status = "completed"
+        db.commit()
+
+    except Exception as e:
+        logger.exception(f"Background scan processing failed for scan {scan_id}: {e}")
+        try:
+            db.rollback()
+            db.query(Scan).filter(Scan.id == scan_id).update({"status": "failed"})
+            db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+async def _background_process_scan(
+    scan_id: int,
+    content: bytes,
+    filename: str,
+    effective_org_id: int,
+    user_id: int,
+    user_email: str,
+    user_display_name: Optional[str],
+):
+    """Async wrapper — runs _run_scan_ingest in a thread pool so the event loop stays free."""
+    import asyncio
+    await asyncio.to_thread(
+        _run_scan_ingest, scan_id, content, filename, effective_org_id,
+        user_id, user_email, user_display_name,
+    )
+
+
 @app.post("/api/upload", dependencies=[Depends(check_scan_limit)])
-async def upload_scan(file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(require_auth), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
+async def upload_scan(
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
     """Upload and parse a vulnerability scan file (Nessus, Qualys, etc.)."""
     content = await file.read()
+    effective_org_id = int(x_org_context) if x_org_context else user.org_id
 
-    # Detect the appropriate parser via the registry
+    # Quick format validation (fast — just checks extension/header bytes)
     source_parser = detect_parser(content, file.filename or "")
     if not source_parser:
         supported = [ext for p in list_parsers() for ext in p["extensions"]]
         raise HTTPException(400, f"Unsupported file type. Accepted: {', '.join(supported)}")
 
-    # Load CVE intel
-    intel = load_intel_json(str(INTEL_PATH)) if INTEL_PATH.exists() else {}
-
-    # Parse using the detected parser
-    try:
-        parsed = source_parser.parse(content, file.filename)
-    except Exception as e:
-        logger.exception("Parse error")
-        raise HTTPException(500, f"Parse error: {e}")
-
-    # Create Scan record with source provenance
-    scan_data = parsed["scan"]
-    # Use X-Org-Context if set (e.g. superadmin uploading into a specific org)
-    effective_org_id = int(x_org_context) if x_org_context else user.org_id
-
-    # ── Duplicate scan detection: replace existing scan with same identity ──
-    _scan_name = scan_data.get("scan_name") or file.filename
-    _scan_date = scan_data.get("scan_date")
-    existing_scan = _find_duplicate_scan(db, _scan_name, _scan_date, effective_org_id)
-    if existing_scan:
-        logger.info(f"Replacing existing scan '{_scan_name}' (id={existing_scan.id}) with re-upload")
-        _delete_scan_cascade(db, existing_scan)
-
+    # Create stub scan record immediately so the client gets a scan_id right away
     scan = Scan(
         org_id=effective_org_id,
         filename=file.filename,
-        scan_name=scan_data.get("scan_name") or file.filename,
-        scan_date=scan_data.get("scan_date"),
-        scan_type=scan_data.get("scan_type"),
-        scanner_ip=scan_data.get("scanner_ip"),
-        nessus_version=scan_data.get("nessus_version"),
-        policy_used=scan_data.get("policy_used"),
-        # Multi-source provenance
+        scan_name=file.filename,  # updated with real name once parsed in background
         source_type=source_parser.source_type,
-        source_version=scan_data.get("scanner_version") or scan_data.get("nessus_version"),
-        raw_metadata=scan_data,
+        status="processing",
     )
     db.add(scan)
     db.flush()
-
-    # Load configs once (used throughout the upload)
-    risk_cfg = risk_engine.load_config()
-    dedup_cfg = dedup_engine.load_config()
-
-    # Within-scan asset dedup: collapse duplicate hosts before creating DB records
-    parsed_assets = parsed["assets"]
-    if dedup_cfg.get("enabled") and dedup_cfg.get("apply_on_upload"):
-        asset_dcfg = dedup_cfg.get("assets", {})
-        if asset_dcfg.get("enabled"):
-            before = len(parsed_assets)
-            parsed_assets = dedup_engine.dedup_records(
-                parsed_assets,
-                asset_dcfg.get("key_fields", ["ip"]),
-                asset_dcfg.get("strategy", "merge"),
-                key_mode=asset_dcfg.get("key_mode", "and"),
-            )
-            if len(parsed_assets) < before:
-                logger.info(f"Within-scan asset dedup: {before} → {len(parsed_assets)} assets")
-
-    # Create Asset records
-    asset_map = {}  # hostname/ip → Asset (populated with both keys for reliable lookup)
-    for asset_data in parsed_assets:
-        # Determine criticality: auto-rules if configured, else default 5
-        auto_crit = None
-        if risk_cfg.get("auto_apply_rules_on_upload"):
-            auto_crit = risk_engine.evaluate_criticality_rules(asset_data, risk_cfg)
-
-        # Enrich asset_data with scan-level context for classification
-        asset_data["scanner_type"] = scan_data.get("scanner_type")
-        ctx = classify_asset(asset_data)
-        # Internet-facing = public IP scanned by an external/cloud scanner
-        is_ext_scanner = scan_data.get("scanner_type") in ("cloud", "external")
-        is_facing = _is_public_ip(asset_data.get("ip")) and is_ext_scanner
-        # Criticality cascade: auto-rules → business-context baseline → default 5
-        effective_crit = (
-            auto_crit if auto_crit is not None
-            else ctx.get("context_criticality") or 5
-        )
-        asset = Asset(
-            scan_id=scan.id,
-            ip=asset_data.get("ip"),
-            hostname=asset_data.get("hostname"),
-            fqdn=asset_data.get("fqdn"),
-            os=asset_data.get("os"),
-            netbios_name=asset_data.get("netbios_name"),
-            mac_address=asset_data.get("mac_address"),
-            scan_start=asset_data.get("scan_start"),
-            scan_end=asset_data.get("scan_end"),
-            is_credentialed=asset_data.get("is_credentialed", False),
-            last_auth_run=asset_data.get("last_auth_run"),
-            system_type=asset_data.get("system_type"),
-            is_internet_facing=is_facing,
-            criticality=effective_crit,
-            critical_count=asset_data.get("critical_count", 0),
-            high_count=asset_data.get("high_count", 0),
-            medium_count=asset_data.get("medium_count", 0),
-            low_count=asset_data.get("low_count", 0),
-            info_count=asset_data.get("info_count", 0),
-            environment_tag=ctx["environment_tag"],
-            business_context=ctx["business_context"],
-            source_systems=[source_parser.source_type],
-        )
-        db.add(asset)
-        db.flush()
-        # Register both hostname and IP so finding lookup works after dedup merges
-        if asset_data.get("hostname"):
-            asset_map[asset_data["hostname"]] = asset
-        if asset_data.get("ip"):
-            asset_map[asset_data["ip"]] = asset
-        if not asset_data.get("hostname") and not asset_data.get("ip"):
-            # Fallback: use whichever key exists
-            key = asset_data.get("hostname") or asset_data.get("ip")
-            if key:
-                asset_map[key] = asset
-
-    # Create Finding records
-    for finding_data in parsed["findings"]:
-        host_key = finding_data.get("host_name")
-        asset = asset_map.get(host_key)
-        if not asset:
-            # Try fuzzy match
-            for k, a in asset_map.items():
-                if k and host_key and (k in host_key or host_key in k):
-                    asset = a
-                    break
-        if not asset:
-            # Create a placeholder asset
-            asset = Asset(scan_id=scan.id, hostname=host_key, ip=host_key)
-            db.add(asset)
-            db.flush()
-            asset_map[host_key] = asset
-
-        # Compute priority (risk_cfg passed for configurable weights;
-        # asset_inventory not available yet at upload time — defaults to neutral)
-        finding_data["asset_os"] = asset.os or ""
-        priority_data = compute_priority_score(
-            finding_data,
-            asset_criticality=asset.criticality,
-            intel=intel,
-            risk_cfg=risk_cfg,
-        )
-
-        finding = Finding(
-            scan_id=scan.id,
-            asset_id=asset.id,
-            # Multi-source provenance
-            source_type=source_parser.source_type,
-            source_vuln_id=finding_data.get("plugin_id"),
-            normalized_id=compute_normalized_id(finding_data),
-            # Plugin metadata
-            plugin_id=finding_data.get("plugin_id"),
-            plugin_name=finding_data.get("plugin_name"),
-            plugin_family=finding_data.get("plugin_family"),
-            plugin_pub_date=finding_data.get("plugin_pub_date"),
-            plugin_mod_date=finding_data.get("plugin_mod_date"),
-            severity=finding_data.get("severity", 0),
-            severity_label=finding_data.get("severity_label", "Info"),
-            risk_factor=finding_data.get("risk_factor"),
-            cvss2_score=finding_data.get("cvss2_score"),
-            cvss2_vector=finding_data.get("cvss2_vector"),
-            cvss3_score=finding_data.get("cvss3_score"),
-            cvss3_vector=finding_data.get("cvss3_vector"),
-            vpr_score=finding_data.get("vpr_score"),
-            cves=finding_data.get("cves", []),
-            references=finding_data.get("references", {}),
-            synopsis=finding_data.get("synopsis"),
-            description=finding_data.get("description"),
-            solution=finding_data.get("solution"),
-            see_also=finding_data.get("see_also", []),
-            port=finding_data.get("port"),
-            protocol=finding_data.get("protocol"),
-            vulnerability_state=finding_data.get("vulnerability_state"),
-            plugin_output=finding_data.get("plugin_output"),
-            exploit_available=finding_data.get("exploit_available", False),
-            exploit_maturity=finding_data.get("exploit_maturity"),
-            zero_day=finding_data.get("zero_day", False),
-            priority_score=priority_data["priority_score"],
-            effort_level=priority_data["effort_level"],
-            owner_suggestion=priority_data["owner_suggestion"],
-            remediation_steps=priority_data["remediation_steps"],
-            source_systems=[source_parser.source_type],
-        )
-        db.add(finding)
-
-    db.flush()
-
-    # ── Recount severity per asset (covers placeholder assets created mid-loop) ──
-    from sqlalchemy import func as sa_func
-    sev_counts = (
-        db.query(
-            Finding.asset_id,
-            Finding.severity,
-            sa_func.count(Finding.id),
-        )
-        .filter(Finding.scan_id == scan.id)
-        .group_by(Finding.asset_id, Finding.severity)
-        .all()
-    )
-    count_map: dict[int, dict[int, int]] = {}
-    for asset_id, sev, cnt in sev_counts:
-        count_map.setdefault(asset_id, {})[sev] = cnt
-    sev_key = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}
-    for asset in asset_map.values():
-        counts = count_map.get(asset.id, {})
-        asset.critical_count = counts.get(4, 0)
-        asset.high_count = counts.get(3, 0)
-        asset.medium_count = counts.get(2, 0)
-        asset.low_count = counts.get(1, 0)
-        asset.info_count = counts.get(0, 0)
-
-    # ── Populate temporal tracking (first_seen / last_seen / regression) ──
-    _populate_temporal_fields(db, scan)
-
-    # ── Delta reconciliation: auto-resolve findings fixed since last scan ──
-    delta_stats = _reconcile_findings_delta(db, scan)
-
-    # ── Detect internet-facing assets & credentialed scan status via scanner detection plugin ──
-    import ipaddress as _ipaddress
-    detection_plugin_id = source_parser.get_scanner_detection_plugin()
-    plugin_19506_findings = db.query(Finding).filter(
-        Finding.scan_id == scan.id, Finding.plugin_id == detection_plugin_id
-    ).all() if detection_plugin_id else []
-    for f19506 in plugin_19506_findings:
-        output = f19506.plugin_output or ""
-        asset = db.query(Asset).filter(Asset.id == f19506.asset_id).first()
-        if not asset:
-            continue
-        # Scanner IP & internet-facing detection
-        m = re.search(r"Scanner IP\s*:\s*([\d.]+)", output)
-        if m:
-            scanner_ip = m.group(1)
-            asset.scanner_ip = scanner_ip
-            try:
-                addr = _ipaddress.ip_address(scanner_ip)
-                asset.is_internet_facing = not addr.is_private
-            except ValueError:
-                asset.is_internet_facing = False
-        # Credentialed scan detection (from plugin output, supplements XML host property)
-        if not asset.is_credentialed:
-            cred_m = re.search(r"Credentialed checks\s*:\s*(yes|no)", output, re.IGNORECASE)
-            if cred_m and cred_m.group(1).lower() == "yes":
-                asset.is_credentialed = True
-
-    # ── Enrich assets with OS identification (11936) and CPE (45590) ──
-    os_plugin_findings = db.query(Finding).filter(
-        Finding.scan_id == scan.id,
-        Finding.plugin_id.in_(["11936", "45590"]),
-    ).all()
-    # Group by asset_id
-    _os_enrich: dict[int, dict[str, str]] = {}
-    for f_os in os_plugin_findings:
-        bucket = _os_enrich.setdefault(f_os.asset_id, {})
-        bucket[f_os.plugin_id] = f_os.plugin_output or ""
-    for aid, plugins in _os_enrich.items():
-        asset = db.query(Asset).filter(Asset.id == aid).first()
-        if asset:
-            enrich_asset_from_os_plugins(
-                asset,
-                plugin_11936_output=plugins.get("11936"),
-                plugin_45590_output=plugins.get("45590"),
-            )
-
+    scan_id = scan.id
     db.commit()
 
-    # ── Extract structured inventory from Info-level plugin outputs ──
-    # Build a flat list of finding dicts enriched with asset context
-    findings_for_inventory = []
-    for f in db.query(Finding).filter(Finding.scan_id == scan.id).all():
-        asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
-        findings_for_inventory.append({
-            "plugin_id": f.plugin_id,
-            "plugin_output": f.plugin_output,
-            "plugin_name": f.plugin_name,
-            "plugin_family": f.plugin_family,
-            "severity": f.severity,
-            "synopsis": f.synopsis,
-            "solution": f.solution,
-            "asset_id": f.asset_id,
-            "scan_id": f.scan_id,
-            "asset_hostname": asset.hostname if asset else "",
-            "port": f.port,
-            "protocol": f.protocol,
-        })
-
-    inventory = extract_inventory_from_findings(
-        findings_for_inventory,
-        dispatch=source_parser.get_inventory_dispatch(),
+    # Schedule all heavy processing in a background thread (does NOT block the event loop)
+    background_tasks.add_task(
+        _background_process_scan,
+        scan_id,
+        content,
+        file.filename,
+        effective_org_id,
+        user.id,
+        user.email,
+        getattr(user, "display_name", None),
     )
-
-    # Apply configurable dedup to inventory records before inserting
-    inventory = dedup_engine.dedup_inventory(inventory, dedup_cfg)
-
-    MODEL_MAP = {
-        "users": (InventoryUser, ["scan_id", "asset_id", "source_plugin", "user_type",
-                                   "username", "domain", "sid", "rid", "dn", "uac",
-                                   "spns", "member_of", "password_last_set", "date_joined",
-                                   "is_local_admin", "is_domain_admin", "is_privileged",
-                                   "is_disabled", "password_never_expires", "never_logged_in",
-                                   "never_changed_password", "last_logon_host",
-                                   "identity_type", "identity_subtype", "source_systems",
-                                   "department", "job_title", "manager_dn", "manager_username"]),
-        "groups": (InventoryGroup, ["scan_id", "asset_id", "source_plugin",
-                                     "group_name", "domain", "sid", "dn",
-                                     "description", "members", "is_privileged"]),
-        "services": (InventoryService, ["scan_id", "asset_id", "source_plugin",
-                                         "service_name", "display_name", "is_running"]),
-        "netconns": (InventoryNetConn, ["scan_id", "asset_id", "source_plugin",
-                                         "proto", "state", "local_addr", "local_port",
-                                         "remote_addr", "remote_port", "pid"]),
-        "scheduled_tasks": (InventoryScheduledTask, ["scan_id", "asset_id", "source_plugin",
-                                                       "task_uri", "author", "run_as_sid",
-                                                       "run_as_user", "command", "arguments",
-                                                       "trigger_type", "logon_type", "is_enabled"]),
-        "patches": (InventoryPatch, ["scan_id", "asset_id", "source_plugin",
-                                      "kb_id", "vuln_count", "description", "cves"]),
-        "logged_on": (InventoryLoggedOn, ["scan_id", "asset_id", "source_plugin",
-                                           "sid", "domain", "username"]),
-        "shares": (InventoryShare, ["scan_id", "asset_id", "source_plugin",
-                                     "share_name", "share_type", "comment", "path",
-                                     "max_users", "acl", "is_writeable", "is_default_share"]),
-        "software": (InventorySoftware, ["scan_id", "asset_id", "source_plugin",
-                                          "name", "version", "installed_on", "vendor", "category"]),
-        "security_controls": (InventorySecurityControl, ["scan_id", "asset_id", "source_plugin",
-                                                          "control_type", "product_name", "vendor",
-                                                          "version", "is_enabled", "is_up_to_date",
-                                                          "signature_date", "details"]),
-        "computers": (InventoryComputer, ["scan_id", "asset_id", "source_plugin",
-                                           "computer_name", "dns_hostname", "os", "os_version",
-                                           "sid", "dn", "is_domain_controller", "is_disabled",
-                                           "uac", "date_joined"]),
-        "password_policies": (InventoryPasswordPolicy, ["scan_id", "asset_id", "source_plugin",
-                                                         "domain", "min_length", "history_count",
-                                                         "max_age_days", "min_age_days",
-                                                         "complexity_enabled", "reversible_encryption",
-                                                         "lockout_threshold", "lockout_duration_mins",
-                                                         "lockout_window_mins", "is_weak"]),
-        "env_vars": (InventoryEnvVar, ["scan_id", "asset_id", "source_plugin",
-                                        "name", "value", "scope", "is_sensitive"]),
-        "certificates": (InventoryCertificate, [
-            "scan_id", "asset_id", "source_plugin",
-            "subject_cn", "subject_o", "subject_ou", "subject_c", "subject_email",
-            "issuer_cn", "issuer_o", "issuer_ou", "issuer_c",
-            "serial_number", "not_before", "not_after",
-            "is_expired", "days_until_expiry",
-            "signature_algorithm", "key_algorithm", "key_bits",
-            "subject_alt_names", "is_ca", "is_self_signed",
-            "port", "protocol",
-        ]),
-        "ai_tools": (InventoryAITool, [
-            "scan_id", "asset_id", "source_plugin",
-            "tool_name", "category",
-        ]),
-        "processes": (InventoryProcess, [
-            "scan_id", "asset_id", "source_plugin",
-            "process_name", "pid", "ppid", "session_id",
-            "parent_name", "depth",
-        ]),
-        "database_instances": (InventoryDatabaseInstance, [
-            "scan_id", "asset_id", "source_plugin",
-            "db_type", "instance_name", "version", "port",
-            "databases", "named_pipes", "is_running",
-        ]),
-        "domain_trusts": (InventoryDomainTrust, [
-            "scan_id", "asset_id", "source_plugin",
-            "trusted_domain", "flat_name", "sid", "dn",
-            "trust_direction", "trust_type", "trust_attributes",
-            "is_transitive", "is_sid_filtering_enabled",
-            "source_domain", "when_created",
-        ]),
-        "credentials": (InventoryCredential, [
-            "scan_id", "asset_id", "source_plugin",
-            "credential_type", "protocol", "username", "severity",
-            "port", "description", "plugin_name", "remediation",
-        ]),
-    }
-
-    inv_counts = {}
-    for key, (Model, fields) in MODEL_MAP.items():
-        records = inventory.get(key, [])
-        for rec in records:
-            obj = Model(**{f: rec.get(f) for f in fields if f in rec})
-            db.add(obj)
-        inv_counts[key] = len(records)
-        if records:
-            db.commit()
-
-    logger.info(f"Inventory extracted: { {k: v for k, v in inv_counts.items() if v} }")
-
-    # ── Boost criticality for Domain Controllers discovered in inventory ──
-    dc_asset_ids = _resolve_dc_asset_ids(db, scan_id=scan.id)
-    if dc_asset_ids:
-        dc_assets = db.query(Asset).filter(Asset.id.in_(dc_asset_ids)).all()
-        for asset in dc_assets:
-            if (asset.criticality or 5) < 9:
-                asset.criticality = 9
-        db.commit()
-        logger.info(f"Boosted criticality to 9 (Critical) for {len(dc_assets)} domain controller(s)")
-
-    # ── Enhanced internet-reachability detection (uses inventory data) ──
-    try:
-        reachability_stats = _apply_reachability_detection(db, scan.id)
-        if reachability_stats["newly_flagged"]:
-            logger.info(f"Reachability detection: {reachability_stats['newly_flagged']} asset(s) newly flagged as internet-facing")
-    except Exception as e:
-        db.rollback()
-        logger.warning(f"Reachability detection failed (non-fatal): {e}")
-
-    # ── Recompute asset risk scores using full formula (findings + inventory) ──
-    _recompute_risk_for_scan(db, scan.id, risk_cfg)
-
-    # ── Detect security controls from services + software (catalog matching) ──
-    try:
-        from parsers.inventory_extractor import detect_security_controls_from_inventory
-        sc_count = detect_security_controls_from_inventory(db, scan.id)
-        if sc_count:
-            logger.info(f"Security catalog: {sc_count} controls detected for scan {scan.id}")
-    except Exception as e:
-        db.rollback()
-        logger.warning(f"Security catalog detection failed (non-fatal): {e}")
-
-    # ── Build SBOM from inventory software + findings correlation ──
-    try:
-        from services.sbom_pipeline import build_sbom_from_inventory
-        sbom_stats = build_sbom_from_inventory(db, scan.id)
-        if sbom_stats.get("components"):
-            logger.info(f"SBOM: {sbom_stats}")
-    except Exception as e:
-        db.rollback()
-        logger.warning(f"SBOM pipeline failed (non-fatal): {e}")
-
-    # ── Post-ingest pipeline: auto-tag, ownership, exceptions, SLA, dedup, etc. ──
-    from services.post_ingest import finalize_scan
-    finalize_scan(db, scan_id=scan.id, org_id=effective_org_id)
-
-    total_findings = len(parsed["findings"])
-    total_assets = len(asset_map)
-    logger.info(f"Ingested scan '{file.filename}': {total_assets} assets, {total_findings} findings")
-    log_audit(db, "create", "scan", scan.id,
-              entity_name=scan.scan_name or file.filename,
-              changes={"filename": file.filename, "assets": total_assets, "findings": total_findings},
-              actor=user)
-    db.commit()
 
     return {
-        "scan_id": scan.id,
-        "scan_name": scan.scan_name,
-        "assets": total_assets,
-        "findings": total_findings,
-        "delta": delta_stats,
-        "message": "Scan uploaded and processed successfully",
+        "scan_id": scan_id,
+        "scan_name": file.filename,
+        "status": "processing",
+        "assets": 0,
+        "findings": 0,
+        "delta": {},
+        "message": "Scan uploaded, processing in background",
     }
 
 
@@ -1237,7 +1339,7 @@ class GcsIngestRequest(BaseModel):
 
 
 @app.post("/api/upload/gcs")
-async def ingest_from_gcs(body: GcsIngestRequest, db: Session = Depends(get_db), user: User = Depends(require_auth), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
+async def ingest_from_gcs(body: GcsIngestRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db), user: User = Depends(require_auth), x_org_context: Optional[str] = Header(None, alias="X-Org-Context")):
     """Process a scan file already uploaded to GCS via signed URL."""
     if not GCS_SCAN_BUCKET:
         raise HTTPException(501, "GCS upload not configured")
@@ -1260,7 +1362,7 @@ async def ingest_from_gcs(body: GcsIngestRequest, db: Session = Depends(get_db),
             return self._data
 
     fake_file = _GcsFile(body.filename, content)
-    return await upload_scan(file=fake_file, db=db, user=user, x_org_context=x_org_context)
+    return await upload_scan(file=fake_file, background_tasks=background_tasks, db=db, user=user, x_org_context=x_org_context)
 
 
 # ─────────────────────────────────────────────
@@ -1321,6 +1423,26 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
             "run_count": s.run_count or 0,
         })
     return result
+
+
+@app.get("/api/scans/{scan_id}")
+def get_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    q = apply_org_filter(db.query(Scan), Scan, org_ids)
+    scan = q.filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+    finding_count = db.query(func.count(Finding.id)).filter(Finding.scan_id == scan_id).scalar()
+    asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == scan_id).scalar()
+    return {
+        "id": scan.id,
+        "status": scan.status or "completed",
+        "scan_name": scan.scan_name,
+        "filename": scan.filename,
+        "scan_date": scan.scan_date,
+        "source_type": scan.source_type or "nessus",
+        "asset_count": asset_count,
+        "finding_count": finding_count,
+    }
 
 
 @app.delete("/api/scans/{scan_id}")

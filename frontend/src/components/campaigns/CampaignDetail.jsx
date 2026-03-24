@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   Target, Play, Plus, X, ChevronDown, ChevronRight, ChevronLeft,
   User, Users, Zap, AlertTriangle, CheckCircle, Edit2, Save, Eye,
-  RefreshCw, Layers, GitBranch, Trash2, Ticket, ExternalLink, Hash,
+  RefreshCw, GitBranch, Trash2, Ticket, ExternalLink, Hash,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import {
@@ -38,66 +38,6 @@ const OWNER_ROLE_COLORS = {
 
 function getOwnerColors(role) {
   return OWNER_ROLE_COLORS[role] || OWNER_ROLE_COLORS.Unassigned
-}
-
-// ─── Query Builder ────────────────────────────────────────
-function QueryBuilder({ query, queryLogic, onChange, onLogicChange, onPreview, previewing, previewResult }) {
-  const { t } = useTranslation()
-  return (
-    <Card style={{ marginBottom: 20 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <div>
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>{t('campaigns.searchQuery')}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            {t('campaigns.searchQueryDesc')}
-          </div>
-        </div>
-      </div>
-
-      {query.length === 0 && (
-        <div style={{
-          padding: '12px', textAlign: 'center', background: 'var(--bg-secondary)',
-          borderRadius: 8, border: '1px dashed var(--border)',
-          fontSize: 12, color: 'var(--text-muted)', marginBottom: 10,
-        }}>
-          {t('campaigns.noConditions')}
-        </div>
-      )}
-
-      <RuleBuilder
-        conditions={query}
-        logic={queryLogic}
-        onChange={(conds, lgc) => { onChange(conds); onLogicChange(lgc) }}
-        showLogic
-        addLabel={t('campaigns.addCondition')}
-      />
-
-      {/* Preview */}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12 }}>
-        <button
-          onClick={onPreview}
-          disabled={query.length === 0 || previewing}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 5,
-            padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
-            border: '1px solid #36456644', background: '#36456622', color: '#7dd3fc',
-            cursor: query.length === 0 ? 'not-allowed' : 'pointer',
-            opacity: query.length === 0 ? 0.5 : 1,
-          }}
-        >
-          <Eye size={13} />
-          {previewing ? t('campaigns.previewing') : t('campaigns.preview')}
-        </button>
-        {previewResult && (
-          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            → <span style={{ color: '#60a5fa', fontWeight: 600 }}>{t('campaigns.assetsFound', { count: previewResult.asset_count })}</span>
-            {' · '}
-            <span style={{ color: '#f87171', fontWeight: 600 }}>{t('campaigns.findingsFound', { count: previewResult.finding_count })}</span>
-          </div>
-        )}
-      </div>
-    </Card>
-  )
 }
 
 // ─── Ownership Editor ─────────────────────────────────────
@@ -434,7 +374,8 @@ export default function CampaignDetail() {
   const [editingName, setEditingName] = useState(false)
   const [nameVal, setNameVal] = useState('')
   const [descVal, setDescVal] = useState('')
-  const [activeTab, setActiveTab] = useState('results') // 'query' | 'results' | 'workflows' | 'tickets'
+  const [activeTab, setActiveTab] = useState('campaign') // 'campaign' | 'workflows' | 'tickets'
+  const [queryExpanded, setQueryExpanded] = useState(false) // collapsed by default when results exist
   const [users, setUsers] = useState([])
   const [campaignTickets, setCampaignTickets] = useState([])
   const [ticketsLoading, setTicketsLoading] = useState(false)
@@ -524,7 +465,7 @@ export default function CampaignDetail() {
     try {
       await runCampaign(id)
       load()
-      setActiveTab('results')
+      setQueryExpanded(false) // collapse query builder to show results
     } finally {
       setRunning(false)
     }
@@ -735,8 +676,7 @@ export default function CampaignDetail() {
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
         {[
-          { key: 'query', label: t('campaigns.queryBuilder'), icon: Target },
-          { key: 'results', label: totalFindings > 0 ? t('campaigns.resultsWithCount', { count: totalFindings }) : t('campaigns.results'), icon: Layers },
+          { key: 'campaign', label: totalFindings > 0 ? `Campaign (${totalFindings})` : 'Campaign', icon: Target },
           { key: 'workflows', label: t('campaigns.workflows'), icon: GitBranch },
           ...(campaignTickets.length > 0 ? [{ key: 'tickets', label: `Tickets (${campaignTickets.length})`, icon: Ticket }] : []),
         ].map(({ key, label, icon: Icon }) => (
@@ -758,35 +698,101 @@ export default function CampaignDetail() {
       </div>
 
       {/* Tab content */}
-      {activeTab === 'query' && (
-        <QueryBuilder
-          query={query}
-          queryLogic={queryLogic}
-          onChange={handleQueryChange}
-          onLogicChange={handleLogicChange}
-          onPreview={handlePreview}
-          previewing={previewing}
-          previewResult={previewResult}
-        />
-      )}
-
-      {activeTab === 'results' && (
+      {activeTab === 'campaign' && (
         <div>
-          {!hasResults ? (
-            <EmptyState
-              icon={Play}
-              title={query.length === 0 ? t('campaigns.buildQueryFirst') : t('campaigns.runToSeeResults')}
-              sub={query.length === 0
-                ? t('campaigns.buildQueryFirstDesc')
-                : t('campaigns.runToSeeResultsDesc')}
+          {/* Query Builder — collapsible, auto-expanded when no results */}
+          <Card style={{ marginBottom: 20 }}>
+            <button
+              onClick={() => setQueryExpanded(e => !e)}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                width: '100%', background: 'none', border: 'none', cursor: 'pointer',
+                padding: 0, color: 'var(--text-primary)',
+              }}
             >
-              {query.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {(queryExpanded || !hasResults) ? <ChevronDown size={14} color='var(--text-muted)' /> : <ChevronRight size={14} color='var(--text-muted)' />}
+                <span style={{ fontWeight: 700, fontSize: 14 }}>{t('campaigns.searchQuery')}</span>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  {query.length} condition{query.length !== 1 ? 's' : ''}
+                </span>
+                {queryDirty && (
+                  <span style={{ fontSize: 10, fontWeight: 700, color: '#f59e0b', background: '#78350f22', border: '1px solid #78350f44', borderRadius: 4, padding: '1px 6px' }}>
+                    Unsaved
+                  </span>
+                )}
+              </div>
+              {!queryExpanded && hasResults && query.length > 0 && (
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Click to edit conditions</span>
+              )}
+            </button>
+
+            {(queryExpanded || !hasResults) && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
+                  {t('campaigns.searchQueryDesc')}
+                </div>
+
+                {query.length === 0 && (
+                  <div style={{
+                    padding: '12px', textAlign: 'center', background: 'var(--bg-secondary)',
+                    borderRadius: 8, border: '1px dashed var(--border)',
+                    fontSize: 12, color: 'var(--text-muted)', marginBottom: 10,
+                  }}>
+                    {t('campaigns.noConditions')}
+                  </div>
+                )}
+
+                <RuleBuilder
+                  conditions={query}
+                  logic={queryLogic}
+                  onChange={(conds, lgc) => { handleQueryChange(conds); handleLogicChange(lgc) }}
+                  showLogic
+                  addLabel={t('campaigns.addCondition')}
+                />
+
+                {/* Preview + Save + Run */}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
+                  <button
+                    onClick={handlePreview}
+                    disabled={query.length === 0 || previewing}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 5,
+                      padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                      border: '1px solid #36456644', background: '#36456622', color: '#7dd3fc',
+                      cursor: query.length === 0 ? 'not-allowed' : 'pointer',
+                      opacity: query.length === 0 ? 0.5 : 1,
+                    }}
+                  >
+                    <Eye size={13} />
+                    {previewing ? t('campaigns.previewing') : t('campaigns.preview')}
+                  </button>
+                  {previewResult && (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      → <span style={{ color: '#60a5fa', fontWeight: 600 }}>{t('campaigns.assetsFound', { count: previewResult.asset_count })}</span>
+                      {' · '}
+                      <span style={{ color: '#f87171', fontWeight: 600 }}>{t('campaigns.findingsFound', { count: previewResult.finding_count })}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </Card>
+
+          {/* Results */}
+          {!hasResults ? (
+            query.length > 0 && (
+              <EmptyState
+                icon={Play}
+                title={t('campaigns.runToSeeResults')}
+                sub={t('campaigns.runToSeeResultsDesc')}
+              >
                 <button onClick={handleRun} disabled={running}
                   style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 20px', borderRadius: 8, fontSize: 13, fontWeight: 700, border: 'none', background: '#1d4ed8', color: '#fff', cursor: 'pointer' }}>
                   <Play size={14} /> {t('campaigns.runNow')}
                 </button>
-              )}
-            </EmptyState>
+              </EmptyState>
+            )
           ) : (
             <>
               {/* Summary bar */}

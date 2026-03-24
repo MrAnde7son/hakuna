@@ -236,6 +236,7 @@ export const authUnassignCustomRole = (userId, roleId) =>
 // Scans
 export const getScans = () => request('/scans')
 export const deleteScan = (id) => request(`/scans/${id}`, { method: 'DELETE' })
+export const getScanStatus = (id) => request(`/scans/${id}`)
 export const updateScanSchedule = (id, schedule) => request(`/scans/${id}/schedule`, {
   method: 'PATCH',
   headers: { 'Content-Type': 'application/json' },

@@ -55,6 +55,7 @@ import { ErrorBoundary } from './components/shared/ui.jsx'
 
 // Lazy-loaded route components (code-split per page)
 const AssetInventory = React.lazy(() => import('./components/assets/AssetInventory.jsx'))
+const AssetDetail = React.lazy(() => import('./components/assets/AssetDetail.jsx'))
 const FindingExplorer = React.lazy(() => import('./components/findings/FindingExplorer.jsx'))
 const FindingDetail = React.lazy(() => import('./components/findings/FindingDetail.jsx'))
 const Campaigns = React.lazy(() => import('./components/campaigns/Campaigns.jsx'))
@@ -814,6 +815,7 @@ function AppShell() {
                 <Route path="/" element={<Reports />} />
                 <Route path="/reports/:reportId" element={<Reports />} />
                 <Route path="/assets" element={<AssetInventory />} />
+                <Route path="/assets/:id" element={<AssetDetail />} />
                 <Route path="/findings" element={<FindingExplorer />} />
                 <Route path="/findings/:id" element={<FindingDetail />} />
                 <Route path="/campaigns" element={<Campaigns />} />
