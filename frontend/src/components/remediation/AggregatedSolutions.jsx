@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import useURLFilters from '../../hooks/useURLFilters.js'
 import { useTranslation } from 'react-i18next'
 import { Layers, ChevronDown, ChevronUp, ExternalLink, RefreshCw, ArrowRight, Monitor, Shield, Zap, AlertTriangle, Info, CheckCircle } from 'lucide-react'
 import { useScan } from '../../App.jsx'
@@ -381,14 +382,18 @@ export default function AggregatedSolutions() {
   const { activeScanId } = useScan()
   const [searchParams] = useSearchParams()
   const highlightId = searchParams.get('highlight')
+  const { filters, setFilter } = useURLFilters({
+    root_cause: { default: '' },
+    sort: { default: 'efficiency' },
+  })
+  const rootCauseFilter = filters.root_cause
+  const sortBy = filters.sort || 'efficiency'
   const [solutions, setSolutions] = useState([])
   const [findingPriorityMap, setFindingPriorityMap] = useState({})
   const [totalScanRisk, setTotalScanRisk] = useState(0)
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState(null)
   const [rebuilding, setRebuilding] = useState(false)
-  const [rootCauseFilter, setRootCauseFilter] = useState('')
-  const [sortBy, setSortBy] = useState('efficiency')
 
   const loadSolutions = () => {
     setLoading(true)
@@ -516,7 +521,7 @@ export default function AggregatedSolutions() {
           return (
             <Card
               key={rc}
-              onClick={() => setRootCauseFilter(isActive ? '' : rc)}
+              onClick={() => setFilter('root_cause', isActive ? '' : rc)}
               activeBorderColor={isActive ? color : null}
               style={{
                 padding: '12px 16px', cursor: 'pointer',
@@ -541,7 +546,7 @@ export default function AggregatedSolutions() {
       <FilterBar>
         <Select
           value={rootCauseFilter}
-          onChange={setRootCauseFilter}
+          onChange={v => setFilter('root_cause', v)}
           options={[
             { value: '', label: t('aggregated.allRootCauses') },
             ...ROOT_CAUSE_KEYS.map(rc => ({ value: rc, label: t(`aggregated.rootCauseLabels.${rc}`, rc) })),
@@ -549,7 +554,7 @@ export default function AggregatedSolutions() {
         />
         <Select
           value={sortBy}
-          onChange={setSortBy}
+          onChange={v => setFilter('sort', v)}
           options={[
             { value: 'efficiency', label: 'Sort: ' + t('aggregated.efficiency') },
             { value: 'risk', label: 'Sort: Risk Reduction' },

@@ -9,16 +9,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.auth import get_current_user, require_auth
+from core.auth import get_current_user, require_auth, get_accessible_org_ids
 from core.subscription import check_scan_limit
-from models.models import Organization, Scan, User
+from models.models import Asset, Organization, Scan, User
 from services.easm import (
     extract_corporate_domain,
     trigger_easm_for_new_org,
     import_easm_assets_for_domain,
     scan_domain,
     refresh_easm_scan,
-    get_easm_assets,
     get_easm_asset_stats,
     get_easm_events,
     get_easm_scan_status,
@@ -221,20 +220,43 @@ async def scan_status(
 
 
 @router.get("/assets")
-async def list_easm_assets(
+def list_easm_assets(
     limit: int = Query(100, le=1000),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    user: User = Depends(require_auth),
+    org_ids: list = Depends(get_accessible_org_ids),
 ):
-    """List EASM-discovered assets (from hakuna-scanner, not yet imported)."""
-    org = _get_org(db, user)
-    easm_org_id = _require_easm_org_id(db, org)
+    """List EASM-discovered assets from the local database."""
+    query = (
+        db.query(Asset)
+        .join(Scan, Asset.scan_id == Scan.id)
+        .filter(Asset.easm_data.isnot(None))
+    )
+    if org_ids is not None:  # None means superadmin — sees all orgs
+        query = query.filter(Scan.org_id.in_(org_ids))
+    assets = query.order_by(Asset.last_seen.desc()).offset(offset).limit(limit).all()
 
-    assets = await get_easm_assets(easm_org_id, limit=limit, offset=offset)
-    if assets is None:
-        raise HTTPException(502, "Failed to fetch EASM assets")
-    return assets
+    result = []
+    for a in assets:
+        d = a.easm_data or {}
+        result.append({
+            "id": str(a.id),
+            "hostname": a.fqdn or a.hostname,
+            "ip": a.ip,
+            "last_seen": a.last_seen.isoformat() if a.last_seen else None,
+            "tech_stack": d.get("tech_stack"),
+            "open_ports": d.get("open_ports"),
+            "tls_cert": d.get("tls_cert"),
+            "cdn_provider": d.get("cdn_provider"),
+            "waf": d.get("waf"),
+            "http_status": d.get("http_status"),
+            "http_title": d.get("http_title"),
+            "http_url": d.get("http_url"),
+            "dns_records": d.get("dns_records"),
+            "liveness_state": d.get("liveness_state"),
+            "tags": d.get("easm_tags"),
+        })
+    return result
 
 
 @router.post("/import")

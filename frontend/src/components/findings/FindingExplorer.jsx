@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
+import useURLFilters from '../../hooks/useURLFilters.js'
 import { useTranslation } from 'react-i18next'
 import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon, Zap } from 'lucide-react'
 import { useScan } from '../../App.jsx'
@@ -295,7 +296,65 @@ export default function FindingExplorer() {
   const { t } = useTranslation()
   const { activeScanId } = useScan()
   const navigate = useNavigate()
+  const FILTER_SCHEMA = useMemo(() => ({
+    search: { default: '' },
+    severity: { default: null, type: 'number' },
+    family: { default: null },
+    exploit: { default: null, type: 'boolean' },
+    group: { default: null },
+    asset_id: { default: null },
+    page: { default: 1, type: 'number' },
+    sort: { default: 'priority_score' },
+    order: { default: 'desc' },
+    sla_status: { default: null },
+    effort_level: { default: null },
+    cve: { default: null },
+    is_kev: { default: null, type: 'boolean' },
+    ransomware: { default: null, type: 'boolean' },
+    trending: { default: null, type: 'boolean' },
+    has_ttps: { default: null, type: 'boolean' },
+    tactic: { default: null },
+    technique_id: { default: null },
+    threat_group_id: { default: null, type: 'number' },
+    workflow_status: { default: null },
+    has_exception: { default: null, type: 'boolean' },
+    has_ticket: { default: null, type: 'boolean' },
+    ticket_status: { default: null },
+    product: { default: null },
+    cpe: { default: null },
+    source: { default: null },
+  }), [])
+  const { filters: urlFilters, setFilter, clearFilters } = useURLFilters(FILTER_SCHEMA)
   const [searchParams, setSearchParams] = useSearchParams()
+
+  // Destructure for backwards-compat with existing references
+  const search = urlFilters.search
+  const severity = urlFilters.severity
+  const family = urlFilters.family
+  const hasExploit = urlFilters.exploit
+  const groupBy = urlFilters.group
+  const assetId = urlFilters.asset_id
+  const page = urlFilters.page || 1
+  const pageSize = groupBy ? 500 : 25
+  const sortBy = urlFilters.sort || 'priority_score'
+  const sortOrder = urlFilters.order || 'desc'
+  const slaStatus = urlFilters.sla_status
+  const effortLevel = urlFilters.effort_level
+  const cveFilter = urlFilters.cve
+  const isKev = urlFilters.is_kev
+  const ransomwareLinked = urlFilters.ransomware
+  const trendingInNews = urlFilters.trending
+  const hasTtps = urlFilters.has_ttps
+  const tacticFilter = urlFilters.tactic
+  const techniqueFilter = urlFilters.technique_id
+  const threatGroupId = urlFilters.threat_group_id
+  const workflowStatus = urlFilters.workflow_status
+  const hasException = urlFilters.has_exception
+  const hasTicket = urlFilters.has_ticket
+  const ticketStatus = urlFilters.ticket_status
+  const productFilter = urlFilters.product
+  const cpeFilter2 = urlFilters.cpe
+  const sourceFilter = urlFilters.source
 
   const [findings, setFindings] = useState([])
   const [total, setTotal] = useState(0)
@@ -349,53 +408,6 @@ export default function FindingExplorer() {
       if (matched.length) setTagFilter(matched)
     }).catch(() => {})
   }, [searchParams])
-
-  // Derive all filter state from URL params
-  const search = searchParams.get('search') || ''
-  const severity = searchParams.has('severity') ? Number(searchParams.get('severity')) : null
-  const family = searchParams.get('family') || null
-  const hasExploit = searchParams.has('exploit') ? searchParams.get('exploit') === 'true' : null
-  const groupBy = searchParams.get('group') || null
-  const assetId = searchParams.get('asset_id') || null
-  const page = searchParams.has('page') ? Number(searchParams.get('page')) : 1
-  const pageSize = groupBy ? 500 : 25
-  const sortBy = searchParams.get('sort') || 'priority_score'
-  const sortOrder = searchParams.get('order') || 'desc'
-  const slaStatus = searchParams.get('sla_status') || null
-  const effortLevel = searchParams.get('effort_level') || null
-  const cveFilter = searchParams.get('cve') || null
-  const isKev = searchParams.has('is_kev') ? searchParams.get('is_kev') === 'true' : null
-  const ransomwareLinked = searchParams.has('ransomware') ? searchParams.get('ransomware') === 'true' : null
-  const trendingInNews = searchParams.has('trending') ? searchParams.get('trending') === 'true' : null
-  const hasTtps = searchParams.has('has_ttps') ? searchParams.get('has_ttps') === 'true' : null
-  const tacticFilter = searchParams.get('tactic') || null
-  const techniqueFilter = searchParams.get('technique_id') || null
-  const threatGroupId = searchParams.get('threat_group_id') ? Number(searchParams.get('threat_group_id')) : null
-  const workflowStatus = searchParams.get('workflow_status') || null
-  const hasException = searchParams.has('has_exception') ? searchParams.get('has_exception') === 'true' : null
-  const hasTicket = searchParams.has('has_ticket') ? searchParams.get('has_ticket') === 'true' : null
-  const ticketStatus = searchParams.get('ticket_status') || null
-  const productFilter = searchParams.get('product') || null
-  const cpeFilter2 = searchParams.get('cpe') || null
-  const sourceFilter = searchParams.get('source') || null
-
-  const setFilter = useCallback((key, value) => {
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev)
-      if (value === null || value === undefined || value === '') {
-        next.delete(key)
-      } else {
-        next.set(key, String(value))
-      }
-      // Reset pagination whenever a non-page filter changes
-      if (key !== 'page') next.delete('page')
-      return next
-    }, { replace: true })
-  }, [setSearchParams])
-
-  const clearFilters = useCallback(() => {
-    setSearchParams(new URLSearchParams(), { replace: true })
-  }, [setSearchParams])
 
   // NLP filter keys that we apply/remove as a unit
   const NLP_PARAM_KEYS = ['severity', 'exploit', 'is_kev', 'ransomware', 'trending', 'effort_level', 'sla_status', 'cve', 'search', 'sort', 'order', 'plugin_family']
