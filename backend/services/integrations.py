@@ -411,6 +411,102 @@ def send_slack_notification(db: Session, config: dict, items: list) -> dict:
     return {"status": "sent", "items_count": len(items)}
 
 
+def create_slack_campaign_channel(db: Session, campaign_name: str, collaborator_emails: list, campaign_description: str = None) -> dict:
+    """Create a Slack channel for a campaign and invite collaborators by email.
+
+    Requires a Slack Bot Token (xoxb-...) with scopes:
+      channels:manage, users:read, users:read.email, chat:write
+
+    Returns dict with channel_id and channel_name.
+    """
+    int_cfg = get_integration_config(db, "slack")
+    if not int_cfg:
+        raise ConnectionError("Slack integration not configured")
+    bot_token = int_cfg.get("bot_token")
+    if not bot_token:
+        raise ConnectionError("Slack bot_token not configured — add it in the Slack integration settings")
+
+    headers = {"Authorization": f"Bearer {bot_token}", "Content-Type": "application/json"}
+
+    # Sanitize campaign name into a valid Slack channel name (max 80 chars, lowercase, hyphens)
+    import re
+    raw = re.sub(r"[^a-z0-9\-]", "-", campaign_name.lower())
+    raw = re.sub(r"-+", "-", raw).strip("-")
+    channel_name = f"campaign-{raw}"[:80]
+
+    # Create the channel
+    r = requests.post(
+        "https://slack.com/api/conversations.create",
+        headers=headers,
+        json={"name": channel_name, "is_private": False},
+        timeout=10,
+    )
+    r.raise_for_status()
+    data = r.json()
+    if not data.get("ok"):
+        error = data.get("error", "unknown_error")
+        if error == "name_taken":
+            # Channel already exists — fetch it
+            list_r = requests.post(
+                "https://slack.com/api/conversations.list",
+                headers=headers,
+                json={"types": "public_channel", "limit": 200},
+                timeout=10,
+            )
+            list_r.raise_for_status()
+            list_data = list_r.json()
+            existing = next((c for c in list_data.get("channels", []) if c["name"] == channel_name), None)
+            if not existing:
+                raise RuntimeError(f"Slack channel name taken but could not find existing channel: {channel_name}")
+            channel_id = existing["id"]
+        else:
+            raise RuntimeError(f"Failed to create Slack channel: {error}")
+    else:
+        channel_id = data["channel"]["id"]
+
+    # Post initial message with campaign summary
+    desc_text = f"\n>{campaign_description}" if campaign_description else ""
+    intro = (
+        f":rocket: *Campaign: {campaign_name}*{desc_text}\n"
+        f"This channel tracks the remediation progress for this campaign. "
+        f"{len(collaborator_emails)} collaborator(s) have been invited."
+    )
+    requests.post(
+        "https://slack.com/api/chat.postMessage",
+        headers=headers,
+        json={"channel": channel_id, "text": intro},
+        timeout=10,
+    )
+
+    # Invite collaborators by looking up each email
+    invited = []
+    for email in set(collaborator_emails):
+        if not email:
+            continue
+        try:
+            lu = requests.get(
+                "https://slack.com/api/users.lookupByEmail",
+                headers=headers,
+                params={"email": email},
+                timeout=10,
+            )
+            lu.raise_for_status()
+            lu_data = lu.json()
+            if lu_data.get("ok"):
+                user_id = lu_data["user"]["id"]
+                requests.post(
+                    "https://slack.com/api/conversations.invite",
+                    headers=headers,
+                    json={"channel": channel_id, "users": user_id},
+                    timeout=10,
+                )
+                invited.append(email)
+        except Exception:
+            logger.warning("Could not invite %s to Slack channel %s", email, channel_name)
+
+    return {"channel_id": channel_id, "channel_name": channel_name, "invited": invited}
+
+
 def _test_slack(cfg: dict) -> dict:
     webhook_url = cfg.get("webhook_url")
     if not webhook_url:
