@@ -68,19 +68,6 @@ DEFAULT_RISK_CONFIG: dict[str, Any] = {
         "unproven":   0.25,
         "none":       0.0,
     },
-    # ── Criticality level → final score multiplier ──
-    "criticality_multipliers": {
-        "1":  0.50,
-        "2":  0.60,
-        "3":  0.70,
-        "4":  0.80,
-        "5":  0.90,
-        "6":  1.00,
-        "7":  1.15,
-        "8":  1.30,
-        "9":  1.45,
-        "10": 1.60,
-    },
     # ── Severity source for the "severity" component ──
     # Which technical severity metric drives the severity weight in the finding formula.
     # Options: cvss_best | cvss2 | cvss3 | cvss4 | vpr | epss
@@ -233,7 +220,6 @@ def compute_asset_risk_score(
     weights    = cfg.get("formula_weights", DEFAULT_RISK_CONFIG["formula_weights"])
     sev_scores = cfg.get("severity_scores",  DEFAULT_RISK_CONFIG["severity_scores"])
     mat_scores = cfg.get("exploit_maturity_scores", DEFAULT_RISK_CONFIG["exploit_maturity_scores"])
-    crit_mults = cfg.get("criticality_multipliers", DEFAULT_RISK_CONFIG["criticality_multipliers"])
 
     if not findings:
         return 0.0
@@ -340,9 +326,5 @@ def compute_asset_risk_score(
         weights.get("controls",        0.05) * controls_component +
         weights.get("reachability",    0.05) * reachability_component
     )
-
-    # ── Criticality multiplier ──
-    mult = float(crit_mults.get(str(asset_criticality), 1.0))
-    score *= mult
 
     return round(min(score * 10.0, 10.0), 2)

@@ -101,22 +101,6 @@ function SeverityScoreRow({ id, value, label, color, onChange }) {
   )
 }
 
-function CritMultRow({ level, value, onChange }) {
-  const colors = { 1: '#0ea5e9', 2: '#65a30d', 3: '#d97706', 4: '#ea580c', 5: '#dc2626' }
-  const c = colors[level] || 'var(--text)'
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '36px 1fr 64px', gap: 10, alignItems: 'center', marginBottom: 6 }}>
-      <span style={{ fontSize: 13, fontWeight: 700, color: c, textAlign: 'center' }}>{level}</span>
-      <input
-        type="range" min={0.1} max={3} step={0.05}
-        value={parseFloat(value || 1)}
-        onChange={e => onChange(parseFloat(e.target.value))}
-        style={{ accentColor: c, width: '100%' }}
-      />
-      <span style={{ fontSize: 13, fontWeight: 600, color: c, textAlign: 'right' }}>×{parseFloat(value || 1).toFixed(2)}</span>
-    </div>
-  )
-}
 
 const CRIT_COLORS = { 1: '#0ea5e9', 2: '#38bdf8', 3: '#65a30d', 4: '#84cc16', 5: '#d97706', 6: '#f59e0b', 7: '#ea580c', 8: '#ef4444', 9: '#dc2626', 10: '#991b1b' }
 
@@ -214,11 +198,7 @@ export default function RiskSettings({ onSave }) {
     setCfg(p => ({ ...p, severity_scores: { ...p.severity_scores, [key]: val } }))
   }, [])
 
-  const setCritMult = useCallback((level, val) => {
-    setCfg(p => ({ ...p, criticality_multipliers: { ...p.criticality_multipliers, [String(level)]: val } }))
-  }, [])
-
-  const addRule = () => {
+const addRule = () => {
     setCfg(p => ({
       ...p,
       criticality_rules: [
@@ -316,21 +296,6 @@ export default function RiskSettings({ onSave }) {
             color={SEV_COLORS[key]}
             value={cfg.severity_scores?.[key] ?? 0}
             onChange={val => setSevScore(key, val)}
-          />
-        ))}
-      </Card>
-
-      {/* ── Criticality Multipliers ── */}
-      <Card style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 4 }}>Criticality Multipliers</div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-          Final score multiplier applied based on asset criticality level (1 = lowest, 10 = highest).
-        </div>
-        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(level => (
-          <CritMultRow
-            key={level} level={level}
-            value={cfg.criticality_multipliers?.[String(level)] ?? 1.0}
-            onChange={val => setCritMult(level, val)}
           />
         ))}
       </Card>
