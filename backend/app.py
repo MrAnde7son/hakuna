@@ -3144,6 +3144,8 @@ def list_inventory_services(
         "service_name": s.service_name,
         "display_name": s.display_name,
         "is_running": s.is_running,
+        "startup_type": s.startup_type,
+        "run_as_user": s.run_as_user,
         "source_plugin": s.source_plugin,
     } for s in services]}
 
@@ -9188,7 +9190,8 @@ def reextract_inventory(scan_id: int, db: Session = Depends(get_db)):
                                      "group_name", "domain", "sid", "dn",
                                      "description", "members", "is_privileged"]),
         "services": (InventoryService, ["scan_id", "asset_id", "source_plugin",
-                                         "service_name", "display_name", "is_running"]),
+                                         "service_name", "display_name", "is_running",
+                                         "startup_type", "run_as_user"]),
         "netconns": (InventoryNetConn, ["scan_id", "asset_id", "source_plugin",
                                          "proto", "state", "local_addr", "local_port",
                                          "remote_addr", "remote_port", "pid"]),

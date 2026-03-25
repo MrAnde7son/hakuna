@@ -780,6 +780,78 @@ def extract_services(plugin_output: str, asset_id: int, scan_id: int) -> list[di
 
 
 # ─────────────────────────────────────────────────────────
+# Plugin 44401 — Service Configuration Details (SMB)
+# ─────────────────────────────────────────────────────────
+
+def extract_service_config(plugin_output: str, asset_id: int, scan_id: int) -> list[dict]:
+    """Parse service startup type and run-as user from plugin 44401.
+
+    Typical block format (one blank line between services):
+        Display Name : Windows Update
+        Short Name   : wuauserv
+        Startup Type : Automatic
+        Log On As    : Local System
+        State        : Running
+    """
+    if not plugin_output:
+        return []
+
+    _STATE_MAP = {"running": True, "started": True, "stopped": False, "disabled": False}
+
+    services = []
+    # Split on blank lines to get per-service blocks
+    blocks = re.split(r"\n\s*\n", plugin_output.strip())
+    for block in blocks:
+        if not block.strip():
+            continue
+
+        def _field(pattern: str) -> str | None:
+            m = re.search(pattern, block, re.IGNORECASE)
+            return m.group(1).strip() if m else None
+
+        # Accept both "Short Name" and "Service Name" / "Service" labels
+        service_name = (
+            _field(r"Short\s+Name\s*[:\-]\s*(.+)") or
+            _field(r"Service\s+Name\s*[:\-]\s*(.+)") or
+            _field(r"^Service\s*[:\-]\s*(.+)")
+        )
+        display_name = _field(r"Display\s+Name\s*[:\-]\s*(.+)")
+        startup_type = (
+            _field(r"Startup\s+Type\s*[:\-]\s*(.+)") or
+            _field(r"Start\s+Type\s*[:\-]\s*(.+)") or
+            _field(r"Startup\s*[:\-]\s*(.+)")
+        )
+        run_as_user = (
+            _field(r"Log\s+On\s+As\s*[:\-]\s*(.+)") or
+            _field(r"Login\s+As\s*[:\-]\s*(.+)") or
+            _field(r"Run\s+As\s*[:\-]\s*(.+)")
+        )
+        state_raw = _field(r"State\s*[:\-]\s*(.+)")
+        is_running = _STATE_MAP.get((state_raw or "").lower().strip(), True)
+
+        if not service_name:
+            continue
+
+        rec: dict = {
+            "scan_id": scan_id,
+            "asset_id": asset_id,
+            "source_plugin": "44401",
+            "service_name": service_name,
+            "is_running": is_running,
+        }
+        if display_name:
+            rec["display_name"] = display_name
+        if startup_type:
+            rec["startup_type"] = startup_type
+        if run_as_user:
+            rec["run_as_user"] = run_as_user
+
+        services.append(rec)
+
+    return services
+
+
+# ─────────────────────────────────────────────────────────
 # Plugin 64582 — Netstat Connection Info (structured)
 # ─────────────────────────────────────────────────────────
 
@@ -2216,6 +2288,7 @@ PLUGIN_DISPATCH = {
     "167251": ("ldap_groups", extract_ldap_groups),
     "168912": ("domain_trusts", extract_domain_trusts),
     "10456": ("services", extract_services),
+    "44401": ("services", extract_service_config),
     "64582": ("netconns", extract_netstat_info),
     "58651": ("netconns", extract_netstat_active),
     "70625": ("scheduled_tasks", extract_scheduled_tasks),

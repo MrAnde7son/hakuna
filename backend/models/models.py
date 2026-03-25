@@ -561,6 +561,8 @@ class InventoryService(Base):
     service_name = Column(String, index=True)   # Short name (e.g. "DNS")
     display_name = Column(String)               # Long name (e.g. "DNS Server")
     is_running = Column(Boolean, default=True)
+    startup_type = Column(String)               # Automatic, Manual, Disabled, etc.
+    run_as_user = Column(String)                # LocalSystem, NT AUTHORITY\NetworkService, custom account
     source_plugin = Column(String)
 
 

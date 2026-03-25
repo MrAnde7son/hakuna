@@ -328,6 +328,8 @@ def export_inv_services(
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
             "Running": s.is_running,
+            "Startup Type": s.startup_type,
+            "Run As User": s.run_as_user,
         }
     return _inv_export(db, InventoryService, scan_id, asset_id, row, "inventory_services", fmt, org_ids=org_ids)
 

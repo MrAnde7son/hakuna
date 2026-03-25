@@ -1302,16 +1302,22 @@ function ServicesTab({ scanId, assetId }) {
   useEffect(() => { load() }, [load])
 
   const columns = [
-    { key: 'display_name', label: 'Display Name', width: '38%', sortable: true,
+    { key: 'display_name', label: 'Display Name', width: '25%', sortable: true,
       render: v => <span style={{ fontWeight: 600 }}>{v}</span>
     },
-    { key: 'service_name', label: 'Service Name', width: '25%', sortable: true,
+    { key: 'service_name', label: 'Service Name', width: '16%', sortable: true,
       render: v => <code style={{ fontSize: 12, background: 'var(--bg-muted)', padding: '2px 6px', borderRadius: 4 }}>{v}</code>
     },
-    { key: 'is_running', label: 'Status', width: '12%', sortable: true,
+    { key: 'startup_type', label: 'Startup', width: '14%', sortable: true,
+      render: v => v ? <span style={{ fontSize: 12 }}>{v}</span> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    },
+    { key: 'run_as_user', label: 'Run As', width: '20%', sortable: true,
+      render: v => v ? <code style={{ fontSize: 11, background: 'var(--bg-muted)', padding: '2px 6px', borderRadius: 4 }}>{v}</code> : <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+    },
+    { key: 'is_running', label: 'Status', width: '10%', sortable: true,
       render: v => <StatePill state={v ? 'Running' : 'Stopped'} />
     },
-    { key: 'asset_label', label: 'Asset', width: '25%',
+    { key: 'asset_label', label: 'Asset', width: '15%',
       render: (v, r) => <>{v}<EnvPill env={r.asset_env} /></>
     },
   ]
