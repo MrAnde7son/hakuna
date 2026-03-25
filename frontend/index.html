@@ -43,6 +43,7 @@
         --medium: #d97706;
         --low: #65a30d;
         --info: #0ea5e9;
+        --violet: #7c3aed;
         --bg-primary: var(--bg);
         --bg-secondary: var(--bg);
         --bg-card: var(--card);
@@ -96,6 +97,7 @@
         --medium: #e3b341;
         --low: #7ee787;
         --info: #58a6ff;
+        --violet: #a78bfa;
         --bg-primary: var(--bg);
         --bg-secondary: var(--bg);
         --bg-card: var(--card);
@@ -127,6 +129,15 @@
         font-family: var(--sans);
         background: var(--bg);
         color: var(--text);
+      }
+
+      /* Global focus-visible indicator for keyboard accessibility */
+      :focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: 2px;
+      }
+      :focus:not(:focus-visible) {
+        outline: none;
       }
     </style>
   </head>

@@ -22,11 +22,11 @@ function RiskScore({ score }) {
 
 function SevCounts({ asset }) {
   const items = [
-    { label: 'C', count: asset.critical_count, color: '#dc2626' },
-    { label: 'H', count: asset.high_count, color: '#ea580c' },
-    { label: 'M', count: asset.medium_count, color: '#d97706' },
-    { label: 'L', count: asset.low_count, color: '#65a30d' },
-    { label: 'I', count: asset.info_count, color: '#0ea5e9' },
+    { label: 'C', count: asset.critical_count, color: 'var(--critical)' },
+    { label: 'H', count: asset.high_count, color: 'var(--high)' },
+    { label: 'M', count: asset.medium_count, color: 'var(--medium)' },
+    { label: 'L', count: asset.low_count, color: 'var(--low)' },
+    { label: 'I', count: asset.info_count, color: 'var(--info)' },
   ]
   return (
     <div style={{ display: 'flex', gap: 6 }}>

@@ -10,11 +10,11 @@ import { Card, PageHeader, Spinner, EmptyState, SeverityBadge, EffortBadge, Sele
 const ROOT_CAUSE_KEYS = ['eol_software', 'deprecated_protocol', 'outdated_version', 'misconfiguration', 'missing_patch']
 
 const ROOT_CAUSE_COLORS = {
-  eol_software: '#dc2626',
-  deprecated_protocol: '#ea580c',
-  outdated_version: '#d97706',
-  misconfiguration: '#7c3aed',
-  missing_patch: '#2563eb',
+  eol_software: 'var(--critical)',
+  deprecated_protocol: 'var(--high)',
+  outdated_version: 'var(--medium)',
+  misconfiguration: 'var(--violet)',
+  missing_patch: 'var(--primary)',
 }
 
 const ACTION_ICONS = {
@@ -28,7 +28,7 @@ const ACTION_ICONS = {
 
 function RootCauseBadge({ type }) {
   const { t } = useTranslation()
-  const color = ROOT_CAUSE_COLORS[type] || '#6b7280'
+  const color = ROOT_CAUSE_COLORS[type] || 'var(--muted)'
   const label = t(`aggregated.rootCauseLabels.${type}`, type)
   return (
     <span style={{
@@ -58,7 +58,7 @@ function ActionBadge({ type }) {
 
 function EfficiencyBar({ score, max = 100 }) {
   const pct = Math.min((score / max) * 100, 100)
-  const color = pct > 60 ? '#10b981' : pct > 30 ? '#f59e0b' : '#6b7280'
+  const color = pct > 60 ? 'var(--success)' : pct > 30 ? 'var(--warning)' : 'var(--muted)'
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <div style={{ flex: 1, height: 6, borderRadius: 3, background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
@@ -72,9 +72,9 @@ function EfficiencyBar({ score, max = 100 }) {
 }
 
 const VERDICT_STYLES = {
-  high_risk: { bg: '#dc262618', border: '#dc262640', color: '#dc2626', icon: AlertTriangle, label: 'High Risk' },
-  needs_review: { bg: '#f59e0b18', border: '#f59e0b40', color: '#f59e0b', icon: Info, label: 'Needs Review' },
-  safe: { bg: '#10b98118', border: '#10b98140', color: '#10b981', icon: CheckCircle, label: 'Safe' },
+  high_risk: { bg: 'var(--danger-subtle)', border: 'var(--critical)', color: 'var(--critical)', icon: AlertTriangle, label: 'High Risk' },
+  needs_review: { bg: 'var(--warning-subtle)', border: 'var(--warning)', color: 'var(--warning)', icon: Info, label: 'Needs Review' },
+  safe: { bg: 'var(--success-subtle)', border: 'var(--success)', color: 'var(--success)', icon: CheckCircle, label: 'Safe' },
 }
 
 function VerdictBadge({ verdict }) {
@@ -135,8 +135,8 @@ function DownstreamImpactBanner({ impact }) {
             {impact.introduced_cves.slice(0, 20).map(cve => (
               <span key={cve.cve_id} style={{
                 padding: '2px 8px', borderRadius: 3, fontSize: 10, fontFamily: 'monospace',
-                background: cve.severity === 'critical' ? '#dc262620' : cve.severity === 'high' ? '#ea580c20' : 'var(--bg-tertiary)',
-                color: cve.severity === 'critical' ? '#dc2626' : cve.severity === 'high' ? '#ea580c' : 'var(--text-muted)',
+                background: cve.severity === 'critical' ? 'var(--danger-subtle)' : cve.severity === 'high' ? 'var(--warning-subtle)' : 'var(--bg-tertiary)',
+                color: cve.severity === 'critical' ? 'var(--critical)' : cve.severity === 'high' ? 'var(--high)' : 'var(--text-muted)',
                 fontWeight: cve.severity === 'critical' || cve.severity === 'high' ? 600 : 400,
               }}>
                 {cve.cve_id} ({cve.severity}{cve.cvss3_score ? ` ${cve.cvss3_score}` : ''})

@@ -127,7 +127,7 @@ function ProtectedRoute({ children }) {
   const { t } = useTranslation()
   if (isLoading) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: '#71717a' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: 'var(--muted)' }}>
         {t('app.loading')}
       </div>
     )
@@ -244,7 +244,7 @@ function UserMenu({ collapsed }) {
             cursor: 'pointer', padding: 0, flexShrink: 0,
           }}
         >
-          <MoreVertical size={14} color="#71717a" />
+          <MoreVertical size={14} color="var(--muted)" />
         </button>
       </div>
 
@@ -1060,7 +1060,7 @@ function AppShell() {
           >
             <SubscriptionBanner />
             <ErrorBoundary fullPage title="Page failed to load">
-            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#71717a' }}>Loading...</div>}>
+            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: 'var(--muted)' }}>Loading...</div>}>
               <Routes>
                 <Route path="/" element={<Reports />} />
                 <Route path="/reports/:reportId" element={<Reports />} />

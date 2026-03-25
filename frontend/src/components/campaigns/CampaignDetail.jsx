@@ -123,7 +123,7 @@ function OwnerChip({ role, name, team, editable, onEdit }) {
 }
 
 // ─── Finding Card (campaign context) ─────────────────────
-function CampaignFindingCard({ finding, campaignId, onOwnerUpdate }) {
+function CampaignFindingCard({ finding, campaignId, onOwnerUpdate, riskWeights }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [expanded, setExpanded] = useState(false)
@@ -276,7 +276,7 @@ function CampaignFindingCard({ finding, campaignId, onOwnerUpdate }) {
 }
 
 // ─── Owner Group Section ──────────────────────────────────
-function OwnerGroup({ group, campaignId, onOwnerUpdate, defaultExpanded = true }) {
+function OwnerGroup({ group, campaignId, onOwnerUpdate, riskWeights, defaultExpanded = true }) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [editingGroup, setEditingGroup] = useState(false)
@@ -344,6 +344,7 @@ function OwnerGroup({ group, campaignId, onOwnerUpdate, defaultExpanded = true }
               finding={f}
               campaignId={campaignId}
               onOwnerUpdate={onOwnerUpdate}
+              riskWeights={riskWeights}
             />
           ))}
         </div>
@@ -823,6 +824,7 @@ export default function CampaignDetail() {
                   group={group}
                   campaignId={campaign.id}
                   onOwnerUpdate={load}
+                  riskWeights={riskWeights}
                   defaultExpanded={idx === 0}
                 />
               ))}

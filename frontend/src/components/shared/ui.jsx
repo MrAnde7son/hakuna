@@ -859,7 +859,7 @@ export function ContextEditPopover({ field, currentValue, onSave, onConfirm, onC
 }
 
 export function ConfidenceDot({ confidence }) {
-  const colors = { high: '#22c55e', medium: '#f59e0b', low: '#6b7280' }
+  const colors = { high: 'var(--success)', medium: 'var(--warning)', low: 'var(--muted)' }
   const c = colors[confidence] || colors.low
   return (
     <span title={`${confidence} confidence`} style={{

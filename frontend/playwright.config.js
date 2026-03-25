@@ -1,7 +1,6 @@
 import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
-  testDir: './tests',
   timeout: 30_000,
   retries: 0,
   use: {
@@ -14,4 +13,22 @@ export default defineConfig({
     reuseExistingServer: true,
     timeout: 60_000,
   },
+  projects: [
+    {
+      name: 'smoke',
+      testDir: './tests',
+      testMatch: 'smoke.spec.js',
+    },
+    {
+      name: 'ui',
+      testDir: './tests/ui',
+      testMatch: '**/*.spec.js',
+    },
+    {
+      name: 'e2e',
+      testDir: './tests/e2e',
+      testMatch: '**/*.spec.js',
+      timeout: 60_000,
+    },
+  ],
 })
