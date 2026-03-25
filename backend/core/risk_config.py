@@ -202,7 +202,8 @@ def compute_asset_risk_score(
     asset_criticality: int = 5,
     inventory: dict | None = None,
     cfg: dict | None = None,
-) -> float:
+    return_components: bool = False,
+) -> "float | dict":
     """
     Compute a risk score (0-10) for an asset.
 
@@ -222,6 +223,12 @@ def compute_asset_risk_score(
     mat_scores = cfg.get("exploit_maturity_scores", DEFAULT_RISK_CONFIG["exploit_maturity_scores"])
 
     if not findings:
+        if return_components:
+            return {
+                "severity": 0.0, "exploitability": 0.0, "intel": 0.0,
+                "criticality": round((max(1, min(10, asset_criticality)) - 1) / 9.0, 4),
+                "controls": 0.5, "reachability": 0.0, "total": 0.0,
+            }
         return 0.0
 
     n = len(findings)
@@ -327,4 +334,16 @@ def compute_asset_risk_score(
         weights.get("reachability",    0.05) * reachability_component
     )
 
-    return round(min(score * 10.0, 10.0), 2)
+    total = round(min(score * 10.0, 10.0), 2)
+
+    if return_components:
+        return {
+            "severity":       round(severity_component, 4),
+            "exploitability": round(exploitability_component, 4),
+            "intel":          round(intel_component, 4),
+            "criticality":    round(criticality_component, 4),
+            "controls":       round(controls_component, 4),
+            "reachability":   round(reachability_component, 4),
+            "total":          total,
+        }
+    return total

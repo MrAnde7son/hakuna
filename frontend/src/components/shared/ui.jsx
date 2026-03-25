@@ -387,39 +387,62 @@ export function buildFindingBreakdown(finding, riskWeights) {
   return { title: 'Priority Score Breakdown', factors, total: actual != null ? actual : Math.min(factors.reduce((s, f) => s + f.value * f.weight, 0) * 10, 10) }
 }
 
-export function buildAssetBreakdown(asset, weights) {
+export function buildAssetBreakdown(asset, weights, components) {
   const w = weights || DEFAULT_ASSET_WEIGHTS
   const cc = asset.critical_count || 0, hc = asset.high_count || 0
   const mc = asset.medium_count || 0, lc = asset.low_count || 0
   const nonInfo = cc + hc + mc + lc
 
-  // Approximate severity component using same logic as backend:
-  // quality = weighted avg of severity scores / 10, volume = density of high/critical
-  let severityValue = 0
-  let severityDetail = 'No findings'
-  if (nonInfo > 0) {
-    const quality = (cc * 10 + hc * 7 + mc * 4 + lc * 1.5) / (nonInfo * 10)
-    const volume = Math.min(cc * 0.5 + hc * 0.25 + mc * 0.05, 10) / 10
-    severityValue = Math.min(0.70 * quality + 0.30 * volume, 1)
+  // Severity: use backend component if available, otherwise approximate from counts
+  let severityValue, severityDetail
+  if (components) {
+    severityValue = components.severity
     const parts = []
     if (cc) parts.push(`${cc}C`)
     if (hc) parts.push(`${hc}H`)
     if (mc) parts.push(`${mc}M`)
     if (lc) parts.push(`${lc}L`)
-    severityDetail = parts.join(' / ')
+    severityDetail = parts.join(' / ') || 'No findings'
+  } else {
+    severityValue = 0
+    severityDetail = 'No findings'
+    if (nonInfo > 0) {
+      const quality = (cc * 10 + hc * 7 + mc * 4 + lc * 1.5) / (nonInfo * 10)
+      const volume = Math.min(cc * 0.5 + hc * 0.25 + mc * 0.05, 10) / 10
+      severityValue = Math.min(0.70 * quality + 0.30 * volume, 1)
+      const parts = []
+      if (cc) parts.push(`${cc}C`)
+      if (hc) parts.push(`${hc}H`)
+      if (mc) parts.push(`${mc}M`)
+      if (lc) parts.push(`${lc}L`)
+      severityDetail = parts.join(' / ')
+    }
   }
 
-  // Criticality component: normalize 1-10 → 0-1 (same as backend)
   const crit = asset.criticality || 5
-  const critValue = (crit - 1) / 9
+  const critValue = components ? components.criticality : (crit - 1) / 9
 
   const allFactors = [
-    { key: 'severity',       label: 'Tech. Severity',  value: severityValue, detail: severityDetail,   color: 'var(--critical)' },
-    { key: 'exploitability', label: 'Exploitability',  value: null,          detail: 'N/A',            color: 'var(--medium)' },
-    { key: 'intel',          label: 'Threat Intel',    value: null,          detail: 'N/A',            color: 'var(--high)' },
-    { key: 'criticality',    label: 'Asset Crit.',     value: critValue,     detail: `${crit}/10`,     color: 'var(--info)' },
-    { key: 'controls',       label: 'Controls',        value: null,          detail: 'N/A',            color: 'var(--muted)' },
-    { key: 'reachability',   label: 'Reachability',    value: null,          detail: 'N/A',            color: 'var(--muted)' },
+    { key: 'severity',       label: 'Tech. Severity', value: severityValue,
+      detail: severityDetail, color: 'var(--critical)' },
+    { key: 'exploitability', label: 'Exploitability',
+      value: components ? components.exploitability : null,
+      detail: components ? (components.exploitability > 0 ? `${(components.exploitability * 100).toFixed(0)}% score` : 'No exploits') : 'N/A',
+      color: 'var(--medium)' },
+    { key: 'intel',          label: 'Threat Intel',
+      value: components ? components.intel : null,
+      detail: components ? (components.intel > 0 ? `${(components.intel * 100).toFixed(0)}% signal` : 'No signals') : 'N/A',
+      color: 'var(--high)' },
+    { key: 'criticality',    label: 'Asset Crit.',    value: critValue,
+      detail: `${crit}/10`, color: 'var(--info)' },
+    { key: 'controls',       label: 'Controls',
+      value: components ? components.controls : null,
+      detail: components ? (components.controls_detail || (components.controls > 0 ? 'No controls' : 'Controls present')) : 'N/A',
+      color: components && components.controls > 0 ? 'var(--critical)' : 'var(--low)' },
+    { key: 'reachability',   label: 'Reachability',
+      value: components ? components.reachability : null,
+      detail: components ? (components.reachability_detail || `${(components.reachability * 100).toFixed(0)}%`) : 'N/A',
+      color: 'var(--muted)' },
   ]
 
   const factors = allFactors

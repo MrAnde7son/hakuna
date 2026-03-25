@@ -1722,11 +1722,62 @@ def list_assets(
 
 
 @app.get("/api/assets/{asset_id}")
-def get_asset(asset_id: int, db: Session = Depends(get_db)):
-    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+def get_asset(asset_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    query = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id == asset_id)
+    query = apply_scan_org_filter(query, org_ids)
+    asset = query.first()
     if not asset:
         raise HTTPException(404, "Asset not found")
     return _asset_to_dict(asset)
+
+
+@app.get("/api/assets/{asset_id}/risk-breakdown")
+def get_asset_risk_breakdown(asset_id: int, db: Session = Depends(get_db)):
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+    findings = db.query(Finding).filter(Finding.asset_id == asset_id).all()
+    findings_dicts = [
+        {
+            "severity":          f.severity,
+            "port":              f.port,
+            "exploit_available": f.exploit_available,
+            "exploit_maturity":  f.exploit_maturity,
+            "vpr_score":         f.vpr_score,
+            "zero_day":          f.zero_day,
+            "is_kev":            f.is_kev or False,
+            "epss_score":        f.epss_score,
+            "ransomware_linked": f.ransomware_linked or False,
+            "trending_in_news":  f.trending_in_news or False,
+        }
+        for f in findings
+    ]
+    inv = _get_asset_inventory_context(db, asset_id, asset=asset)
+    components = risk_engine.compute_asset_risk_score(
+        findings_dicts,
+        asset_criticality=asset.criticality or 5,
+        inventory=inv,
+        return_components=True,
+    )
+    # Human-readable details for controls and reachability
+    if inv.get("has_av") or inv.get("has_firewall"):
+        controls_detail = "AV/Firewall present"
+    elif inv.get("has_av") is False and inv.get("has_firewall") is False:
+        controls_detail = "No AV or Firewall"
+    else:
+        controls_detail = "Unknown"
+    if inv.get("is_internet_facing"):
+        reach_detail = "Internet-facing"
+    elif inv.get("established_ports") or inv.get("listening_ports"):
+        port_count = len(inv.get("listening_ports", set())) + len(inv.get("established_ports", set()))
+        reach_detail = f"{port_count} ports tracked"
+    else:
+        reach_detail = "No port data"
+    return {
+        **components,
+        "controls_detail":     controls_detail,
+        "reachability_detail": reach_detail,
+    }
 
 
 @app.patch("/api/assets/{asset_id}")
@@ -2038,8 +2089,10 @@ def list_finding_cpes(
 
 
 @app.get("/api/findings/{finding_id}")
-def get_finding(finding_id: int, db: Session = Depends(get_db)):
-    finding = db.query(Finding).filter(Finding.id == finding_id).first()
+def get_finding(finding_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    query = db.query(Finding).join(Scan, Finding.scan_id == Scan.id).filter(Finding.id == finding_id)
+    query = apply_scan_org_filter(query, org_ids)
+    finding = query.first()
     if not finding:
         raise HTTPException(404, "Finding not found")
     return _finding_to_dict(finding, db, include_full=True)
@@ -4969,9 +5022,11 @@ def list_campaigns(scan_id: Optional[int] = None, db: Session = Depends(get_db),
 
 
 @app.get("/api/campaigns/{campaign_id}")
-def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
+def get_campaign(campaign_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Get a campaign with its findings grouped by owner."""
-    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    query = db.query(Campaign).filter(Campaign.id == campaign_id)
+    query = apply_org_filter(query, Campaign, org_ids)
+    campaign = query.first()
     if not campaign:
         raise HTTPException(404, "Campaign not found")
 

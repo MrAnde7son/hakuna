@@ -1,6 +1,7 @@
 """API tests for multi-tenancy isolation and MSSP access."""
 import pytest
 from tests.conftest import create_user, make_auth_headers, _set_org_id
+from core.auth import create_access_token
 
 
 def _extract_items(data, key="assets"):
@@ -62,7 +63,7 @@ class TestOrgIsolation:
         finding_b = Finding(
             scan_id=scan_b.id, asset_id=asset_b.id,
             plugin_id="50002", plugin_name="Org B Finding",
-            severity="high", risk_factor="high",
+            severity=3, risk_factor="high",
         )
         db_session.add(finding_b)
         db_session.flush()
@@ -142,7 +143,13 @@ class TestMSSPAccess:
         }
 
     def test_mssp_can_see_client_assets(self, client, mssp_setup):
-        headers = make_auth_headers(mssp_setup["mssp_admin"], mssp_setup["mssp_org"])
+        # MSSP admin should see client assets without X-Org-Context restriction
+        token = create_access_token(
+            mssp_setup["mssp_admin"].id,
+            mssp_setup["mssp_org"].id,
+            mssp_setup["mssp_admin"].role,
+        )
+        headers = {"Authorization": f"Bearer {token}"}  # No X-Org-Context — see all linked orgs
         resp = client.get("/api/assets", headers=headers)
         assert resp.status_code == 200
         items = _extract_items(resp.json(), "assets")

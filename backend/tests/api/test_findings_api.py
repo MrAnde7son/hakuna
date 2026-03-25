@@ -14,7 +14,7 @@ class TestListFindings:
         assert resp.status_code == 401
 
     def test_list_findings_filter_severity(self, authed_client, test_findings):
-        resp = authed_client.get("/api/findings?severity=critical")
+        resp = authed_client.get("/api/findings?severity=4")  # 4=Critical
         assert resp.status_code == 200
 
     def test_list_findings_pagination(self, authed_client, test_findings):

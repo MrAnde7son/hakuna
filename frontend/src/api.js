@@ -313,6 +313,7 @@ export const getAssets = (params = {}) => {
   return request(`/assets?${q}`)
 }
 export const getAsset = (id) => request(`/assets/${id}`)
+export const getAssetRiskBreakdown = (id) => request(`/assets/${id}/risk-breakdown`)
 export const updateAsset = (id, data) => {
   const q = new URLSearchParams(Object.entries(data).filter(([, v]) => v != null && v !== ''))
   return request(`/assets/${id}?${q}`, { method: 'PATCH' })

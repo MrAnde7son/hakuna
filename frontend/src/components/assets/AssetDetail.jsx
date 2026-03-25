@@ -7,7 +7,7 @@ import {
   ExternalLink, Package, Lock, Layers, Copy, Check
 } from 'lucide-react'
 import {
-  getAsset, getFindings, getBlastRadius,
+  getAsset, getAssetRiskBreakdown, getFindings, getBlastRadius,
   getInventoryUsers, getInventoryServices,
   getInventorySoftware, getInventoryNetconns, getInventoryPatches,
   getInventorySecurityControls, getInventoryCertificates,
@@ -15,7 +15,7 @@ import {
 import {
   Card, ScoreBar, Spinner, Button, Pill, SeverityBadge, Table,
   ErrorBanner, SkeletonDetail, TagPill, EmptyState, InlineSpinner,
-  buildAssetBreakdown
+  buildAssetBreakdown, useAssetRiskWeights
 } from '../shared/ui.jsx'
 import { useScan } from '../../App.jsx'
 
@@ -176,7 +176,7 @@ const TABS = [
 
 
 // ─── Overview Tab ─────────────────────────────────────────
-function OverviewTab({ asset, blastRadius, onReload }) {
+function OverviewTab({ asset, blastRadius, onReload, riskComponents, assetRiskWeights }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
 
@@ -191,7 +191,7 @@ function OverviewTab({ asset, blastRadius, onReload }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
           <div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('assetDetail.riskScore').toUpperCase()}</div>
-            <ScoreBar score={asset.risk_score || 0} breakdown={buildAssetBreakdown(asset)} />
+            <ScoreBar score={asset.risk_score || 0} breakdown={buildAssetBreakdown(asset, assetRiskWeights, riskComponents)} />
           </div>
           <div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('assetDetail.criticality').toUpperCase()}</div>
@@ -478,11 +478,13 @@ export default function AssetDetail() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const { activeScan } = useScan()
+  const assetRiskWeights = useAssetRiskWeights()
 
   const [asset, setAsset] = useState(null)
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState(null)
   const [blastRadius, setBlastRadius] = useState(null)
+  const [riskComponents, setRiskComponents] = useState(null)
 
   const activeTab = searchParams.get('tab') || 'overview'
   const setActiveTab = (tab) => {
@@ -500,10 +502,11 @@ export default function AssetDetail() {
     getAsset(id)
       .then(data => {
         setAsset(data)
-        // Fetch blast radius in background
+        // Fetch blast radius and risk breakdown in background
         if (data.scan_id) {
           getBlastRadius(data.scan_id, data.id).then(setBlastRadius).catch(() => {})
         }
+        getAssetRiskBreakdown(data.id).then(setRiskComponents).catch(() => {})
       })
       .catch(() => setFetchError(t('assetDetail.loadError')))
       .finally(() => setLoading(false))
@@ -583,7 +586,7 @@ export default function AssetDetail() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16, marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
           <div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('assetDetail.riskScore').toUpperCase()}</div>
-            <ScoreBar score={asset.risk_score || 0} breakdown={buildAssetBreakdown(asset)} />
+            <ScoreBar score={asset.risk_score || 0} breakdown={buildAssetBreakdown(asset, assetRiskWeights, riskComponents)} />
           </div>
           <div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{t('assetDetail.criticality').toUpperCase()}</div>
@@ -621,7 +624,7 @@ export default function AssetDetail() {
       </div>
 
       {/* Tab content */}
-      {activeTab === 'overview' && <OverviewTab asset={asset} blastRadius={blastRadius} onReload={load} />}
+      {activeTab === 'overview' && <OverviewTab asset={asset} blastRadius={blastRadius} onReload={load} riskComponents={riskComponents} assetRiskWeights={assetRiskWeights} />}
       {activeTab === 'findings' && <FindingsTab asset={asset} />}
       {activeTab === 'inventory' && <InventoryTab asset={asset} />}
     </div>
