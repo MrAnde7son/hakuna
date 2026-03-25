@@ -364,8 +364,17 @@ export default function AgentBuilder() {
             </Card>
           ))}
           {agents.length === 0 && !showTemplates && (
-            <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 13, padding: 24 }}>
-              No agents yet. Click "Templates" for presets or "New" for a blank agent.
+            <div style={{ textAlign: 'center', padding: '32px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+              <div style={{
+                width: 48, height: 48, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'color-mix(in srgb, var(--accent) 10%, transparent)',
+              }}>
+                <Bot size={24} color="var(--accent)" />
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>No agents yet</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                Pick a template from the gallery to get started quickly.
+              </div>
             </div>
           )}
         </div>
@@ -551,12 +560,14 @@ export default function AgentBuilder() {
             </button>
           </div>
         </div>
+      ) : agents.length === 0 ? (
+        <TemplateGallery templates={templates} onCreate={handleFromTemplate} onClose={() => {}} hideClose />
       ) : (
         <div style={{
           flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
           color: 'var(--text-muted)', fontSize: 14,
         }}>
-          Select an agent or create a new one to get started.
+          Select an agent to view runs and configuration.
         </div>
       )}
     </div>
@@ -567,7 +578,7 @@ export default function AgentBuilder() {
 
 // ── Template Gallery ──────────────────────────────────────────────────
 
-function TemplateGallery({ templates, onCreate, onClose }) {
+function TemplateGallery({ templates, onCreate, onClose, hideClose }) {
   const [search, setSearch] = useState('')
   const CATEGORY_COLORS = {
     read_only: { bg: '#dbeafe', text: '#1d4ed8', label: 'Read-only' },
@@ -591,15 +602,17 @@ function TemplateGallery({ templates, onCreate, onClose }) {
             Choose a template to create a pre-configured agent. Click any card to get started.
           </p>
         </div>
-        <button
-          onClick={onClose}
-          style={{
-            background: 'transparent', border: '1px solid var(--border)', borderRadius: 6,
-            padding: '6px 14px', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 12, fontWeight: 600,
-          }}
-        >
-          Close
-        </button>
+        {!hideClose && (
+          <button
+            onClick={onClose}
+            style={{
+              background: 'transparent', border: '1px solid var(--border)', borderRadius: 6,
+              padding: '6px 14px', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 12, fontWeight: 600,
+            }}
+          >
+            Close
+          </button>
+        )}
       </div>
 
       <div style={{ position: 'relative', marginBottom: 14 }}>
@@ -619,7 +632,7 @@ function TemplateGallery({ templates, onCreate, onClose }) {
 
       {filtered.length === 0 && (
         <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)', fontSize: 13 }}>
-          No templates match "{search}"
+          {search ? `No templates match "${search}"` : 'No templates available.'}
         </div>
       )}
 
