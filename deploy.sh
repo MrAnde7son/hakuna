@@ -278,6 +278,8 @@ if $DO_MIGRATE; then
   fi
 
   info "Starting Cloud SQL Auth Proxy for: ${SQL_CONN}"
+  # Cloud SQL instance is private-IP-only — proxy must run from within the VPC (e.g. a Cloud Run job or the scanner VM).
+  # Running --migrate from a local machine requires Cloud VPN or IAP tunnel access to the VPC.
   cloud-sql-proxy "${SQL_CONN}" --port=5432 --private-ip &
   PROXY_PID=$!
   trap "kill ${PROXY_PID} 2>/dev/null || true" EXIT
