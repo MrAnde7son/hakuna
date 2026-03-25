@@ -154,9 +154,10 @@ def _migrate_add_columns():
             ("raw_metadata", "JSON"),
             ("schedule", "VARCHAR"),
             ("status", "VARCHAR DEFAULT 'completed'"),
-            ("last_run_at", "DATETIME"),
-            ("next_run_at", "DATETIME"),
+            ("last_run_at", "TIMESTAMP"),
+            ("next_run_at", "TIMESTAMP"),
             ("run_count", "INTEGER DEFAULT 0"),
+            ("nessus_version", "VARCHAR"),
         ],
         "tags": [("org_id", "INTEGER")],
         "auto_tag_rules": [("org_id", "INTEGER")],
@@ -219,13 +220,20 @@ def _migrate_add_columns():
         ],
     }
     insp = inspect(engine)
-    with engine.connect() as conn:
-        for table, columns in migrations.items():
-            try:
-                existing = {c["name"] for c in insp.get_columns(table)}
-            except Exception:
+    is_pg = DATABASE_URL.startswith("postgresql")
+    for table, columns in migrations.items():
+        try:
+            existing = {c["name"] for c in insp.get_columns(table)}
+        except Exception:
+            continue
+        for col_name, col_type in columns:
+            if col_name in existing:
                 continue
-            for col_name, col_type in columns:
-                if col_name not in existing:
+            # Each ALTER TABLE runs in its own connection so one failure doesn't
+            # roll back the others (important for PostgreSQL where DDL is transactional)
+            try:
+                with engine.connect() as conn:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"))
-        conn.commit()
+                    conn.commit()
+            except Exception as exc:
+                logger.warning("_migrate_add_columns: skipping %s.%s — %s", table, col_name, exc)

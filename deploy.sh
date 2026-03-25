@@ -278,7 +278,7 @@ if $DO_MIGRATE; then
   fi
 
   info "Starting Cloud SQL Auth Proxy for: ${SQL_CONN}"
-  cloud-sql-proxy "${SQL_CONN}" --port=5432 &
+  cloud-sql-proxy "${SQL_CONN}" --port=5432 --private-ip &
   PROXY_PID=$!
   trap "kill ${PROXY_PID} 2>/dev/null || true" EXIT
   sleep 3  # wait for proxy to be ready
