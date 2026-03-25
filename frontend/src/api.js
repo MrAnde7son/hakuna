@@ -34,6 +34,9 @@ const RETRY_DELAYS = [1000, 2000] // 1s, 2s backoff
 // Track whether a 401 redirect is already in progress to prevent loops
 let _redirecting = false
 
+// Deduplicate concurrent GET requests to the same URL
+const _inflight = new Map()
+
 function isNetworkError(err) {
   return err instanceof TypeError || err.name === 'AbortError'
 }
@@ -42,7 +45,7 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-async function request(path, opts = {}) {
+async function _doRequest(path, opts = {}) {
   const token = getStoredToken()
   const orgContext = getOrgContext()
 
@@ -103,6 +106,19 @@ async function request(path, opts = {}) {
     }
   }
   throw lastError
+}
+
+// Deduplicate concurrent identical GET requests (e.g. from React StrictMode double-mount)
+async function request(path, opts = {}) {
+  const method = (opts.method || 'GET').toUpperCase()
+  if (method !== 'GET') return _doRequest(path, opts)
+
+  const key = path
+  if (_inflight.has(key)) return _inflight.get(key)
+
+  const promise = _doRequest(path, opts).finally(() => _inflight.delete(key))
+  _inflight.set(key, promise)
+  return promise
 }
 
 // ── Token refresh ──────────────────────────────────────

@@ -508,11 +508,12 @@ function ThreatGroupSpotlight() {
   const [groups, setGroups] = useState([])
   const [loading, setLoading] = useState(true)
   useEffect(() => {
-    fetch('/api/threat-intel/groups?limit=6')
-      .then(r => r.ok ? r.json() : [])
-      .then(data => setGroups(Array.isArray(data) ? data.slice(0, 6) : []))
-      .catch(() => {})
-      .finally(() => setLoading(false))
+    let cancelled = false
+    getThreatGroups({ limit: 6 })
+      .then(data => { if (!cancelled) setGroups(Array.isArray(data) ? data.slice(0, 6) : []) })
+      .catch(() => { if (!cancelled) setGroups([]) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [])
 
   if (!loading && groups.length === 0) return null
@@ -2093,31 +2094,35 @@ export default function ThreatIntelCenter() {
 
   // ── Fetch stats ──
   useEffect(() => {
+    let cancelled = false
     const fetchStats = async () => {
       setLoadingStats(true)
       setStatsError(null)
       try {
-        setStats(await getThreatIntelStats())
+        const data = await getThreatIntelStats()
+        if (!cancelled) setStats(data)
       } catch (e) {
-        setStatsError(e.message)
-        setStats({})
+        if (!cancelled) { setStatsError(e.message); setStats({}) }
       } finally {
-        setLoadingStats(false)
+        if (!cancelled) setLoadingStats(false)
       }
     }
     fetchStats()
+    return () => { cancelled = true }
   }, [])
 
   // ── Fetch CVEs (for newsroom panels) — fetch KEV-only so the newsroom is always populated ──
   useEffect(() => {
+    let cancelled = false
     const fetchCves = async () => {
       setLoadingCves(true)
       try {
         const data = await getThreatCves({ kev_only: true, limit: 200, sort_by: 'kev_date_added', sort_dir: 'desc' })
-        setCves(Array.isArray(data) ? data : (data.items || []))
-      } catch { setCves([]) } finally { setLoadingCves(false) }
+        if (!cancelled) setCves(Array.isArray(data) ? data : (data.items || []))
+      } catch { if (!cancelled) setCves([]) } finally { if (!cancelled) setLoadingCves(false) }
     }
     fetchCves()
+    return () => { cancelled = true }
   }, [])
 
   // ── Sync handler ──
