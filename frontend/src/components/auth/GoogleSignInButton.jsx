@@ -16,47 +16,76 @@ export default function GoogleSignInButton() {
   const navigate = useNavigate()
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const hiddenBtnRef = useRef(null)
+  const initializedRef = useRef(false)
+  const callbackRef = useRef(null)
 
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
 
-  useEffect(() => {
-    if (!clientId || !window.google?.accounts) return
-
-    window.google.accounts.id.initialize({
-      client_id: clientId,
-      callback: async (response) => {
-        setError('')
-        setLoading(true)
-        try {
-          await googleLogin(response.credential)
-          navigate('/')
-        } catch (err) {
-          setError(err.message || 'Google sign-in failed')
-        } finally {
-          setLoading(false)
-        }
-      },
-      ux_mode: 'popup',
-    })
-
-    // Render Google's real button in a hidden div (for popup auth)
-    if (hiddenBtnRef.current) {
-      window.google.accounts.id.renderButton(hiddenBtnRef.current, {
-        type: 'icon',
-        size: 'large',
-      })
+  // Keep callback ref in sync so the GIS callback always uses latest state
+  callbackRef.current = async (response) => {
+    setError('')
+    setLoading(true)
+    try {
+      await googleLogin(response.credential)
+      navigate('/')
+    } catch (err) {
+      setError(err.message || 'Google sign-in failed')
+    } finally {
+      setLoading(false)
     }
-  }, [clientId, googleLogin, navigate])
+  }
+
+  useEffect(() => {
+    if (!clientId || initializedRef.current) return
+
+    const initGsi = () => {
+      if (!window.google?.accounts) return
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: (response) => callbackRef.current(response),
+        ux_mode: 'popup',
+      })
+      initializedRef.current = true
+    }
+
+    // If the script is already loaded, init immediately
+    if (window.google?.accounts) {
+      initGsi()
+    } else {
+      // Wait for the GSI script to load
+      const script = document.querySelector('script[src*="accounts.google.com/gsi/client"]')
+      if (script) {
+        script.addEventListener('load', initGsi)
+        return () => script.removeEventListener('load', initGsi)
+      }
+    }
+  }, [clientId])
 
   const handleClick = useCallback(() => {
-    // Click the hidden Google button to trigger the real OAuth popup
-    const googleBtn = hiddenBtnRef.current?.querySelector('[role="button"]')
-      || hiddenBtnRef.current?.querySelector('div[aria-labelledby]')
-      || hiddenBtnRef.current?.querySelector('iframe')
-    if (googleBtn) {
-      googleBtn.click()
+    if (!window.google?.accounts) {
+      setError('Google sign-in is not available. Please refresh the page.')
+      return
     }
+    // Use the official prompt() API — no hidden button hack needed
+    window.google.accounts.id.prompt((notification) => {
+      if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+        // prompt() was suppressed (e.g. cooldown, browser policy).
+        // Fall back to rendering a temporary real Google button and clicking it.
+        const container = document.createElement('div')
+        container.style.cssText = 'position:fixed;top:-9999px;left:-9999px;'
+        document.body.appendChild(container)
+        window.google.accounts.id.renderButton(container, { type: 'icon', size: 'large' })
+        // Give the iframe a moment to render, then click it
+        setTimeout(() => {
+          const btn = container.querySelector('[role="button"]')
+            || container.querySelector('div[aria-labelledby]')
+            || container.querySelector('iframe')
+          if (btn) btn.click()
+          // Clean up after a delay
+          setTimeout(() => container.remove(), 60000)
+        }, 100)
+      }
+    })
   }, [])
 
   if (!clientId) return null
@@ -76,8 +105,6 @@ export default function GoogleSignInButton() {
           {error}
         </div>
       )}
-      {/* Hidden Google button — triggers popup when clicked programmatically */}
-      <div ref={hiddenBtnRef} style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', width: 0, height: 0, overflow: 'hidden' }} />
       <button
         type="button"
         onClick={handleClick}
