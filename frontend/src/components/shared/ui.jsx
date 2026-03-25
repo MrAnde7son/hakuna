@@ -279,14 +279,23 @@ const DEFAULT_FINDING_WEIGHTS = {
   criticality: 0.10, family: 0.10, controls: 0.05, reachability: 0.05,
 }
 
+const DEFAULT_ASSET_WEIGHTS = {
+  severity: 0.35, exploitability: 0.25, intel: 0.15,
+  criticality: 0.15, controls: 0.05, reachability: 0.05,
+}
+
 let _cachedRiskWeights = null
+let _cachedAssetWeights = null
 
 export function useRiskWeights() {
   const [weights, setWeights] = useState(_cachedRiskWeights)
   useEffect(() => {
     if (_cachedRiskWeights) return
     import('../../api.js').then(api => api.getRiskConfig()).then(cfg => {
-      _cachedRiskWeights = cfg?.finding_formula_weights || DEFAULT_FINDING_WEIGHTS
+      _cachedRiskWeights = {
+        ...(cfg?.finding_formula_weights || DEFAULT_FINDING_WEIGHTS),
+        severity_source: cfg?.severity_source || 'cvss_best',
+      }
       setWeights(_cachedRiskWeights)
     }).catch(() => {
       _cachedRiskWeights = DEFAULT_FINDING_WEIGHTS
@@ -296,10 +305,50 @@ export function useRiskWeights() {
   return weights || DEFAULT_FINDING_WEIGHTS
 }
 
+export function useAssetRiskWeights() {
+  const [weights, setWeights] = useState(_cachedAssetWeights)
+  useEffect(() => {
+    if (_cachedAssetWeights) return
+    import('../../api.js').then(api => api.getRiskConfig()).then(cfg => {
+      _cachedAssetWeights = cfg?.formula_weights || DEFAULT_ASSET_WEIGHTS
+      setWeights(_cachedAssetWeights)
+    }).catch(() => {
+      _cachedAssetWeights = DEFAULT_ASSET_WEIGHTS
+      setWeights(DEFAULT_ASSET_WEIGHTS)
+    })
+  }, [])
+  return weights || DEFAULT_ASSET_WEIGHTS
+}
+
 export function buildFindingBreakdown(finding, riskWeights) {
   const w = riskWeights || DEFAULT_FINDING_WEIGHTS
-  const cvss = finding.cvss4_score || finding.cvss3_score || finding.cvss2_score || 0
-  const sevNorm = cvss / 10
+  const sevSource = w.severity_source || 'cvss_best'
+  let sevRaw, sevNorm, sevDetail
+  if (sevSource === 'epss') {
+    sevRaw = finding.epss_score || 0
+    sevNorm = Math.min(sevRaw, 1.0)
+    sevDetail = sevRaw ? `EPSS ${(sevRaw * 100).toFixed(1)}%` : 'N/A'
+  } else if (sevSource === 'vpr') {
+    sevRaw = finding.vpr_score || 0
+    sevNorm = sevRaw / 10
+    sevDetail = sevRaw ? `VPR ${sevRaw.toFixed(1)}` : 'N/A'
+  } else if (sevSource === 'cvss2') {
+    sevRaw = finding.cvss2_score || 0
+    sevNorm = sevRaw / 10
+    sevDetail = sevRaw ? `CVSS2 ${sevRaw.toFixed(1)}` : 'N/A'
+  } else if (sevSource === 'cvss3') {
+    sevRaw = finding.cvss3_score || 0
+    sevNorm = sevRaw / 10
+    sevDetail = sevRaw ? `CVSS3 ${sevRaw.toFixed(1)}` : 'N/A'
+  } else if (sevSource === 'cvss4') {
+    sevRaw = finding.cvss4_score || 0
+    sevNorm = sevRaw / 10
+    sevDetail = sevRaw ? `CVSS4 ${sevRaw.toFixed(1)}` : 'N/A'
+  } else { // cvss_best
+    sevRaw = finding.cvss4_score || finding.cvss3_score || finding.cvss2_score || 0
+    sevNorm = sevRaw / 10
+    sevDetail = sevRaw ? `CVSS ${sevRaw.toFixed(1)}` : 'N/A'
+  }
   let exploitBonus = 0
   if (finding.zero_day) exploitBonus = 1.0
   else if (finding.exploit_maturity) {
@@ -317,7 +366,7 @@ export function buildFindingBreakdown(finding, riskWeights) {
   const critNorm = (critRaw - 1) / 9
   // All 7 factors matching Settings > Risk > Finding Formula Weights
   const allFactors = [
-    { key: 'severity', label: 'Severity', value: sevNorm, detail: cvss ? `CVSS ${cvss.toFixed(1)}` : 'N/A', color: 'var(--critical)' },
+    { key: 'severity', label: 'Severity', value: sevNorm, detail: sevDetail, color: 'var(--critical)' },
     { key: 'exploitability', label: 'Exploitability', value: exploitBonus,
       detail: finding.zero_day ? 'Zero-day' : finding.exploit_maturity || (finding.exploit_available ? 'Known exploit' : 'None'),
       color: 'var(--medium)' },
@@ -338,19 +387,46 @@ export function buildFindingBreakdown(finding, riskWeights) {
   return { title: 'Priority Score Breakdown', factors, total: actual != null ? actual : Math.min(factors.reduce((s, f) => s + f.value * f.weight, 0) * 10, 10) }
 }
 
-export function buildAssetBreakdown(asset) {
+export function buildAssetBreakdown(asset, weights) {
+  const w = weights || DEFAULT_ASSET_WEIGHTS
   const cc = asset.critical_count || 0, hc = asset.high_count || 0
   const mc = asset.medium_count || 0, lc = asset.low_count || 0
-  const total = cc * 10 + hc * 7 + mc * 4 + lc * 1
-  const normalized = Math.min(total / 50, 1.0) * 10
-  const factors = [
-    { label: 'Critical', value: cc > 0 ? Math.min(cc / 5, 1) : 0, weight: 0.40, detail: `${cc} findings`, color: 'var(--critical)' },
-    { label: 'High', value: hc > 0 ? Math.min(hc / 10, 1) : 0, weight: 0.28, detail: `${hc} findings`, color: 'var(--high)' },
-    { label: 'Medium', value: mc > 0 ? Math.min(mc / 20, 1) : 0, weight: 0.16, detail: `${mc} findings`, color: 'var(--medium)' },
-    { label: 'Low', value: lc > 0 ? Math.min(lc / 50, 1) : 0, weight: 0.08, detail: `${lc} findings`, color: 'var(--low)' },
-    { label: 'Asset Crit.', value: ((asset.criticality || 5) - 1) / 9, weight: 0.08, detail: `${asset.criticality || 5}/10`, color: 'var(--info)' },
+  const nonInfo = cc + hc + mc + lc
+
+  // Approximate severity component using same logic as backend:
+  // quality = weighted avg of severity scores / 10, volume = density of high/critical
+  let severityValue = 0
+  let severityDetail = 'No findings'
+  if (nonInfo > 0) {
+    const quality = (cc * 10 + hc * 7 + mc * 4 + lc * 1.5) / (nonInfo * 10)
+    const volume = Math.min(cc * 0.5 + hc * 0.25 + mc * 0.05, 10) / 10
+    severityValue = Math.min(0.70 * quality + 0.30 * volume, 1)
+    const parts = []
+    if (cc) parts.push(`${cc}C`)
+    if (hc) parts.push(`${hc}H`)
+    if (mc) parts.push(`${mc}M`)
+    if (lc) parts.push(`${lc}L`)
+    severityDetail = parts.join(' / ')
+  }
+
+  // Criticality component: normalize 1-10 → 0-1 (same as backend)
+  const crit = asset.criticality || 5
+  const critValue = (crit - 1) / 9
+
+  const allFactors = [
+    { key: 'severity',       label: 'Tech. Severity',  value: severityValue, detail: severityDetail,   color: 'var(--critical)' },
+    { key: 'exploitability', label: 'Exploitability',  value: null,          detail: 'N/A',            color: 'var(--medium)' },
+    { key: 'intel',          label: 'Threat Intel',    value: null,          detail: 'N/A',            color: 'var(--high)' },
+    { key: 'criticality',    label: 'Asset Crit.',     value: critValue,     detail: `${crit}/10`,     color: 'var(--info)' },
+    { key: 'controls',       label: 'Controls',        value: null,          detail: 'N/A',            color: 'var(--muted)' },
+    { key: 'reachability',   label: 'Reachability',    value: null,          detail: 'N/A',            color: 'var(--muted)' },
   ]
-  return { title: 'Risk Score Breakdown', factors, total: normalized }
+
+  const factors = allFactors
+    .filter(f => (w[f.key] || 0) > 0)
+    .map(f => ({ ...f, weight: w[f.key], value: f.value ?? 0 }))
+
+  return { title: 'Risk Score Breakdown', factors, total: asset.risk_score ?? null }
 }
 
 export function Card({ children, style = {}, onClick, activeBorderColor, active, activeColor }) {
