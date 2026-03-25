@@ -11,7 +11,7 @@ from typing import List, Optional
 import os
 
 import httpx
-from sqlalchemy import or_
+from sqlalchemy import cast, or_, String
 from sqlalchemy.orm import Session
 
 from models.models import Asset, Finding, Scan, Organization
@@ -388,3 +388,121 @@ def _is_ip(s: str) -> bool:
 async def get_vm_health() -> Optional[dict]:
     """Check if the VM scanner container is reachable."""
     return await _vm_request("GET", "/health")
+
+
+# ── Auto VM scan after EASM discovery ─────────────────────────────
+
+# High-value ports that indicate scannable services (web apps, admin panels, APIs)
+_HIGH_VALUE_PORTS = {80, 443, 8080, 8443, 8888, 3000, 5000, 8000, 9090, 9443}
+
+MAX_AUTO_VM_TARGETS = 20
+
+
+async def trigger_vm_scan_for_easm_assets(
+    db: Session, org: Organization, easm_scan_id: int, domain: str,
+) -> Optional[dict]:
+    """
+    Auto-trigger a VM scan on the most valuable EASM-discovered assets.
+
+    Called after EASM import completes. Selects up to MAX_AUTO_VM_TARGETS assets
+    prioritized by: has high-value open ports, has detected tech stack,
+    not behind CDN/WAF (direct targets yield better results).
+
+    Creates a proper Scan record so it appears on the scans page.
+    Idempotent — skips if a VM scan was already triggered for this EASM scan.
+    """
+    # Guard: don't trigger twice for the same EASM scan
+    existing = db.query(Scan.id).filter(
+        Scan.org_id == org.id,
+        Scan.source_type == "vm_scanner",
+        cast(Scan.raw_metadata, String).contains(f'"easm_scan_id": {easm_scan_id}'),
+    ).first()
+    if existing:
+        logger.info("VM scan already triggered for EASM scan %s (vm_scan=%s), skipping", easm_scan_id, existing[0])
+        return None
+
+    # Fetch EASM assets from this scan
+    assets = db.query(Asset).filter(
+        Asset.scan_id == easm_scan_id,
+        Asset.is_internet_facing == True,
+    ).all()
+
+    if not assets:
+        logger.info("No EASM assets to auto-scan for org %s", org.id)
+        return None
+
+    # Score and rank assets for VM scanning
+    scored: list[tuple[float, Asset]] = []
+    for asset in assets:
+        easm = asset.easm_data or {}
+        score = 0.0
+
+        # Prefer assets with high-value open ports
+        ports = set(easm.get("open_ports") or [])
+        high_value_hits = ports & _HIGH_VALUE_PORTS
+        score += len(high_value_hits) * 2.0
+
+        # Prefer assets with detected tech stack (more templates will match)
+        tech = easm.get("tech_stack") or []
+        if tech:
+            score += min(len(tech), 5)  # cap contribution
+
+        # Prefer assets that are alive (have HTTP response)
+        if easm.get("http_status"):
+            score += 3.0
+
+        # Deprioritize assets behind CDN/WAF (scans hit the CDN, not the origin)
+        if easm.get("cdn_provider"):
+            score -= 4.0
+        if easm.get("waf"):
+            score -= 2.0
+
+        # Skip assets with no ports and no HTTP — nothing to scan
+        if not ports and not easm.get("http_status"):
+            continue
+
+        scored.append((score, asset))
+
+    if not scored:
+        logger.info("No scannable EASM assets for org %s (all filtered out)", org.id)
+        return None
+
+    # Sort by score descending, take top N
+    scored.sort(key=lambda x: x[0], reverse=True)
+    selected = scored[:MAX_AUTO_VM_TARGETS]
+
+    # Build targets and asset_id mapping
+    targets = []
+    asset_ids = []
+    for _score, asset in selected:
+        # Prefer FQDN (Nuclei works best with hostnames), fall back to IP
+        target = asset.fqdn or asset.hostname or asset.ip
+        if target:
+            targets.append(target)
+            asset_ids.append(asset.id)
+
+    if not targets:
+        return None
+
+    logger.info(
+        "Auto-triggering VM scan for %d EASM assets (org=%s, domain=%s)",
+        len(targets), org.id, domain,
+    )
+
+    result = await start_vm_scan(db, org, targets, asset_ids=asset_ids)
+
+    if result and result.get("scan_id"):
+        # Tag the scan so the UI knows it was auto-triggered from EASM
+        scan = db.query(Scan).filter(Scan.id == result["scan_id"]).first()
+        if scan:
+            scan.scan_name = f"VM Scan — {domain} (auto, from EASM)"
+            scan.raw_metadata = {
+                **scan.raw_metadata,
+                "auto_triggered": True,
+                "triggered_by": "easm",
+                "easm_scan_id": easm_scan_id,
+                "easm_domain": domain,
+            }
+            db.commit()
+
+    return result

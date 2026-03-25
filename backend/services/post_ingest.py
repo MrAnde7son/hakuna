@@ -91,7 +91,14 @@ def finalize_scan(
             db, "EASM enrichment", lambda: _easm_enrich(db, org_id, scan_id)
         )
 
-    # 11. Fire event-driven workflow triggers for new data
+    # 11. Auto VM scan for EASM-discovered assets
+    if org_id and scan_id:
+        results["auto_vm_scan"] = _step(
+            db, "Auto VM scan (EASM→VM)",
+            lambda: _auto_vm_scan_for_easm(db, org_id, scan_id),
+        )
+
+    # 12. Fire event-driven workflow triggers for new data
     results["workflows"] = _step(
         db, "Workflow triggers",
         lambda: _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids),
@@ -238,6 +245,33 @@ def _easm_enrich(db, org_id, scan_id):
         # No running loop — run directly
         asyncio.run(enrich_assets_from_easm(db, org, scan_id))
     return True
+
+
+def _auto_vm_scan_for_easm(db, org_id, scan_id):
+    """Trigger a VM scan on high-value assets when an EASM scan completes."""
+    from models.models import Scan, Organization
+    import asyncio
+
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan or scan.source_type != "easm":
+        return None
+
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        return None
+
+    domain = (scan.raw_metadata or {}).get("domain")
+    if not domain:
+        return None
+
+    from services.vm_scanner import trigger_vm_scan_for_easm_assets
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(trigger_vm_scan_for_easm_assets(db, org, scan_id, domain))
+    except RuntimeError:
+        asyncio.run(trigger_vm_scan_for_easm_assets(db, org, scan_id, domain))
+    return {"triggered": True, "domain": domain}
 
 
 def _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids):
