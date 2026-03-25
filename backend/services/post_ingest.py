@@ -155,8 +155,7 @@ def _run_ownership_inference(db, scan_id):
 
 def _apply_global_exceptions(db, scan_id):
     from models.models import FindingException
-    # import lazily to avoid circular deps
-    from app import _apply_exception_to_findings
+    from services.exception_engine import apply_exception_to_findings
 
     active = db.query(FindingException).filter(FindingException.is_active == True).all()
     now = datetime.utcnow()
@@ -165,7 +164,7 @@ def _apply_global_exceptions(db, scan_id):
         if exc.expires_at and exc.expires_at < now:
             exc.is_active = False
             continue
-        applied += _apply_exception_to_findings(db, exc, scan_id=scan_id)
+        applied += apply_exception_to_findings(db, exc, scan_id=scan_id)
     if applied:
         logger.info("Applied %d global exceptions", applied)
         db.flush()
@@ -200,11 +199,11 @@ def _match_ttps(db, scan_id):
 
 def _compute_sla(db, scan_id):
     from models.models import SLAConfig
-    from app import _ensure_sla_defaults, _recalculate_sla_for_scan
+    from services.sla_engine import ensure_sla_defaults, recalculate_sla_for_scan
 
-    _ensure_sla_defaults(db)
+    ensure_sla_defaults(db)
     configs = db.query(SLAConfig).all()
-    updated = _recalculate_sla_for_scan(db, scan_id, configs)
+    updated = recalculate_sla_for_scan(db, scan_id, configs)
     if updated:
         logger.info("SLA computed for %d findings", updated)
     return updated
@@ -212,6 +211,7 @@ def _compute_sla(db, scan_id):
 
 def _cross_scan_dedup(db, org_id):
     import services.dedup as dedup_engine
+    from models.entity_registry import ENTITY_MODEL_MAP
 
     cfg = dedup_engine.load_config()
     if not cfg.get("enabled") or not cfg.get("apply_on_upload"):
@@ -220,7 +220,6 @@ def _cross_scan_dedup(db, org_id):
     if not asset_cfg.get("enabled") or asset_cfg.get("scope", "cross_scan") != "cross_scan":
         return None
 
-    from app import ENTITY_MODEL_MAP
     result = dedup_engine.run_cross_scan_asset_dedup(db, org_id, cfg, ENTITY_MODEL_MAP)
     if result.get("removed"):
         logger.info("Cross-scan dedup: merged %d duplicate asset(s)", result["removed"])

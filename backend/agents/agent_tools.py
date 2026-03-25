@@ -1256,6 +1256,7 @@ def create_campaign(db: Session, params: dict):
         return {"error": "Campaign name is required"}
 
     campaign = Campaign(
+        org_id=params.get("_org_id"),
         name=name,
         description=params.get("description", ""),
         scan_id=params.get("scan_id"),
@@ -1293,6 +1294,7 @@ def create_exception(db: Session, params: dict):
         return {"error": "plugin_id is required"}
 
     exc = FindingException(
+        org_id=params.get("_org_id"),
         plugin_id=plugin_id,
         asset_ip=params.get("asset_ip"),
         exception_type=params.get("exception_type", "accepted_risk"),
@@ -1329,7 +1331,7 @@ def create_tag(db: Session, params: dict):
     if existing:
         return {"tag_id": existing.id, "already_exists": True, "label": f"{category}:{value}"}
 
-    tag = Tag(category=category, value=value, color=params.get("color", "#6b7280"))
+    tag = Tag(org_id=params.get("_org_id"), category=category, value=value, color=params.get("color", "#6b7280"))
     db.add(tag)
     db.commit()
     return {"tag_id": tag.id, "label": f"{category}:{value}"}

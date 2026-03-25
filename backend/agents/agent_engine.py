@@ -394,7 +394,7 @@ def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optiona
             # Coerce params to match schema types (fixes LLMs sending "50" instead of 50)
             coerced_input = _coerce_params(tool_input, tool_def["parameters"])
             # Inject agent_id for scratchpad tools
-            enriched_input = {**coerced_input, "_agent_id": agent.id}
+            enriched_input = {**coerced_input, "_agent_id": agent.id, "_org_id": agent.org_id}
             result = tool_def["fn"](db, enriched_input)
     except ValueError as e:
         result = {"error": str(e)}
@@ -1233,6 +1233,7 @@ def resume_agent_run(run_id: int, decision: str, reason: Optional[str], decider_
         return run
     except Exception as e:
         logger.exception("Agent resume failed")
+        db.rollback()
         run.status = "failed"
         run.error = str(e)
 

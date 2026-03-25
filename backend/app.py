@@ -80,6 +80,7 @@ from routes.integration_builder_routes import router as integration_builder_rout
 from routes.discovery_routes import router as discovery_router
 from routes.billing_routes import router as billing_router
 from routes.copilot_routes import router as copilot_router
+from routes.workflow_routes import router as workflow_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -309,6 +310,7 @@ app.include_router(vm_router)
 app.include_router(integration_builder_router)
 app.include_router(discovery_router)
 app.include_router(billing_router)
+app.include_router(workflow_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
@@ -319,7 +321,8 @@ INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
 
 # Maps dedup entity_type → (Model, list_fields, bool_fields) for DB-level dedup
-ENTITY_MODEL_MAP: dict = {}  # populated after models are imported (below)
+# Canonical source: models.entity_registry — re-exported here for backward compatibility
+from models.entity_registry import ENTITY_MODEL_MAP
 
 
 def _deferred_startup():
@@ -385,28 +388,7 @@ def startup():
     init_db()
     init_parsers()
     logger.info("Database initialized, parsers registered")
-    # Build ENTITY_MODEL_MAP after models are loaded
-    ENTITY_MODEL_MAP.update({
-        "assets":            (Asset,                    ["inferred_admin_contacts", "source_systems"],  ["is_internet_facing", "is_credentialed"]),
-        "findings":          (Finding,                  ["cves", "source_systems"],              []),
-        "users":             (InventoryUser,            ["spns", "member_of"], ["is_local_admin", "is_domain_admin", "is_privileged", "is_disabled", "password_never_expires", "never_logged_in", "never_changed_password"]),
-        "groups":            (InventoryGroup,           ["members"],           ["is_privileged"]),
-        "computers":         (InventoryComputer,        [],                    ["is_domain_controller", "is_disabled"]),
-        "services":          (InventoryService,         [],                    ["is_running"]),
-        "software":          (InventorySoftware,        [],                    []),
-        "shares":            (InventoryShare,           ["acl"],               ["is_writeable", "is_default_share"]),
-        "netconns":          (InventoryNetConn,         [],                    []),
-        "patches":           (InventoryPatch,           ["cves"],              []),
-        "security_controls": (InventorySecurityControl, [],                   ["is_enabled", "is_up_to_date"]),
-        "password_policies": (InventoryPasswordPolicy,  [],                   ["complexity_enabled", "reversible_encryption", "is_weak"]),
-        "logged_on":         (InventoryLoggedOn,        [],                    []),
-        "scheduled_tasks":   (InventoryScheduledTask,   [],                   ["is_enabled"]),
-        "env_vars":          (InventoryEnvVar,           [],                   ["is_sensitive"]),
-        "certificates":      (InventoryCertificate,      ["subject_alt_names"], ["is_expired", "is_ca", "is_self_signed"]),
-        "processes":         (InventoryProcess,          [],                    []),
-        "database_instances": (InventoryDatabaseInstance, [],                  ["is_running"]),
-        "credentials":        (InventoryCredential,       [],                  []),
-    })
+    # ENTITY_MODEL_MAP is now populated at import time via models.entity_registry
     # Run heavy tasks (schedulers, SLA backfill) in background so the port
     # is available immediately for Render's port-scan health check.
     import threading
@@ -6978,17 +6960,10 @@ _SLA_DEFAULTS = {
 
 
 def _ensure_sla_defaults(db: Session):
-    """Seed SLAConfig rows with defaults if they don't exist yet."""
-    for sev, d in _SLA_DEFAULTS.items():
-        if not db.query(SLAConfig).filter(SLAConfig.severity == sev).first():
-            db.add(SLAConfig(
-                severity=sev,
-                severity_label=d["label"],
-                days_to_remediate=d["days"],
-                warn_days_before=d["warn"],
-                is_enabled=d["enabled"],
-            ))
-    db.commit()
+    """Seed SLAConfig rows with defaults if they don't exist yet.
+    Delegates to services.sla_engine — kept here for backward compatibility."""
+    from services.sla_engine import ensure_sla_defaults
+    ensure_sla_defaults(db)
 
 
 _DATE_FORMATS = [
@@ -7032,45 +7007,9 @@ def _compute_sla_status(due_date, resolved_at, warn_days: int) -> str:
 
 def _recalculate_sla_for_scan(db: Session, scan_id: int, configs: list):
     """Recompute sla_due_date and sla_status for every finding in a scan.
-
-    Base date priority (most accurate → fallback):
-      1. asset.scan_start  — per-asset scan start from Nessus
-      2. scan.scan_date    — scan-level date from the Nessus file
-      3. scan.created_at   — upload timestamp (last resort)
-    """
-    from datetime import timedelta
-
-    scan = db.query(Scan).filter(Scan.id == scan_id).first()
-    if not scan:
-        return 0
-
-    cfg_map = {c.severity: c for c in configs}
-
-    # scan-level fallback date (from Nessus file, or upload time)
-    scan_fallback = _parse_nessus_date(scan.scan_date) or scan.created_at or datetime.utcnow()
-
-    # Build per-asset observation date cache
-    assets = db.query(Asset).filter(Asset.scan_id == scan_id).all()
-    asset_obs_date: dict = {}
-    for a in assets:
-        asset_obs_date[a.id] = _parse_nessus_date(a.scan_start) or scan_fallback
-
-    findings = db.query(Finding).filter(Finding.scan_id == scan_id).all()
-    updated = 0
-    for f in findings:
-        cfg = cfg_map.get(f.severity)
-        if not cfg or not cfg.is_enabled:
-            f.sla_due_date = None
-            f.sla_status = "n/a"
-        else:
-            # Use the asset's observation date so the SLA reflects when
-            # this specific host was actually scanned, not the upload time.
-            base_date = asset_obs_date.get(f.asset_id, scan_fallback)
-            f.sla_due_date = base_date + timedelta(days=cfg.days_to_remediate)
-            f.sla_status = _compute_sla_status(f.sla_due_date, f.resolved_at, cfg.warn_days_before)
-        updated += 1
-    db.commit()
-    return updated
+    Delegates to services.sla_engine — kept here for backward compatibility."""
+    from services.sla_engine import recalculate_sla_for_scan
+    return recalculate_sla_for_scan(db, scan_id, configs)
 
 
 @app.get("/api/sla/config")
@@ -7248,353 +7187,6 @@ def unresolve_finding(finding_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True, "finding_id": finding_id, "sla_status": finding.sla_status}
 
-
-# ─────────────────────────────────────────────
-# Workflow Engine
-# ─────────────────────────────────────────────
-
-@app.get("/api/workflows/node-catalog")
-def get_node_catalog():
-    """Return available node types for the workflow builder."""
-    return workflow_engine.NODE_CATALOG
-
-
-@app.get("/api/workflows/templates")
-def get_workflow_templates():
-    """Return OOTB workflow templates."""
-    return {
-        "templates": workflow_engine.WORKFLOW_TEMPLATES,
-        "categories": workflow_engine.TEMPLATE_CATEGORIES,
-    }
-
-
-class WorkflowCreateFromTemplate(BaseModel):
-    template_id: str
-    name: Optional[str] = None
-    campaign_id: Optional[int] = None
-
-
-@app.post("/api/workflows/from-template")
-def create_workflow_from_template(body: WorkflowCreateFromTemplate, db: Session = Depends(get_db)):
-    """Create a workflow from an OOTB template."""
-    try:
-        wf = workflow_engine.create_workflow_from_template(
-            db, body.template_id, name=body.name, campaign_id=body.campaign_id)
-        d = _workflow_to_dict(wf)
-        d["nodes"] = [_node_to_dict(n) for n in wf.nodes]
-        d["edges"] = [_edge_to_dict(e) for e in wf.edges]
-        return d
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-
-class WorkflowCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-    campaign_id: Optional[int] = None
-
-
-class WorkflowUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    campaign_id: Optional[int] = None
-    status: Optional[str] = None
-    is_enabled: Optional[bool] = None
-    nodes: Optional[list] = None
-    edges: Optional[list] = None
-
-
-@app.post("/api/workflows")
-def create_workflow(body: WorkflowCreate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
-    wf = Workflow(
-        org_id=user.org_id if user else None,
-        name=body.name,
-        description=body.description,
-        campaign_id=body.campaign_id,
-    )
-    db.add(wf)
-    db.flush()
-    log_audit(db, "create", "workflow", wf.id,
-              entity_name=wf.name,
-              changes={"name": wf.name, "description": wf.description},
-              actor=user)
-    db.commit()
-    db.refresh(wf)
-    return _workflow_to_dict(wf)
-
-
-@app.get("/api/workflows")
-def list_workflows(
-    campaign_id: Optional[int] = None,
-    db: Session = Depends(get_db),
-    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
-):
-    q = apply_org_filter(db.query(Workflow), Workflow, org_ids).order_by(desc(Workflow.updated_at))
-    if campaign_id is not None:
-        q = q.filter(Workflow.campaign_id == campaign_id)
-    return [_workflow_to_dict(w) for w in q.all()]
-
-
-@app.get("/api/workflows/{wf_id}")
-def get_workflow(wf_id: int, db: Session = Depends(get_db)):
-    wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
-    if not wf:
-        raise HTTPException(404, "Workflow not found")
-    d = _workflow_to_dict(wf)
-    d["nodes"] = [_node_to_dict(n) for n in wf.nodes]
-    d["edges"] = [_edge_to_dict(e) for e in wf.edges]
-    return d
-
-
-@app.patch("/api/workflows/{wf_id}")
-def update_workflow(wf_id: int, body: WorkflowUpdate, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
-    wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
-    if not wf:
-        raise HTTPException(404, "Workflow not found")
-    _old_wf = {"name": wf.name, "status": wf.status, "is_enabled": wf.is_enabled, "description": wf.description}
-
-    if body.name is not None:
-        wf.name = body.name
-    if body.description is not None:
-        wf.description = body.description
-    if body.campaign_id is not None:
-        wf.campaign_id = body.campaign_id
-    if body.status is not None:
-        wf.status = body.status
-    if body.is_enabled is not None:
-        wf.is_enabled = body.is_enabled
-
-    # Sync nodes — snapshot current version before overwriting
-    if body.nodes is not None or body.edges is not None:
-        old_nodes = [_node_to_dict(n) for n in wf.nodes]
-        old_edges = [_edge_to_dict(e) for e in wf.edges]
-        history = list(wf.version_history or [])
-        history.append({
-            "version": wf.version or 1,
-            "nodes": old_nodes,
-            "edges": old_edges,
-            "saved_at": datetime.utcnow().isoformat(),
-        })
-        # Keep last 20 versions
-        wf.version_history = history[-20:]
-        wf.version = (wf.version or 1) + 1
-
-    if body.nodes is not None:
-        db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wf_id).delete(synchronize_session=False)
-        for nd in body.nodes:
-            db.add(WorkflowNode(
-                workflow_id=wf_id,
-                node_id=nd["node_id"],
-                node_type=nd["node_type"],
-                node_subtype=nd["node_subtype"],
-                label=nd.get("label", ""),
-                config=nd.get("config", {}),
-                position_x=nd.get("position_x", 0),
-                position_y=nd.get("position_y", 0),
-            ))
-
-    # Sync edges
-    if body.edges is not None:
-        db.query(WorkflowEdge).filter(WorkflowEdge.workflow_id == wf_id).delete(synchronize_session=False)
-        for ed in body.edges:
-            db.add(WorkflowEdge(
-                workflow_id=wf_id,
-                edge_id=ed["edge_id"],
-                source_node_id=ed["source_node_id"],
-                target_node_id=ed["target_node_id"],
-                source_handle=ed.get("source_handle", "output"),
-                target_handle=ed.get("target_handle", "input"),
-                label=ed.get("label"),
-            ))
-
-    _new_wf = {"name": wf.name, "status": wf.status, "is_enabled": wf.is_enabled, "description": wf.description}
-    log_audit(db, "update", "workflow", wf_id,
-              entity_name=wf.name, changes=_diff(_old_wf, _new_wf), actor=user)
-    db.commit()
-    db.refresh(wf)
-    d = _workflow_to_dict(wf)
-    d["nodes"] = [_node_to_dict(n) for n in wf.nodes]
-    d["edges"] = [_edge_to_dict(e) for e in wf.edges]
-    return d
-
-
-@app.delete("/api/workflows/{wf_id}")
-def delete_workflow(wf_id: int, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
-    wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
-    if not wf:
-        raise HTTPException(404, "Workflow not found")
-    _wf_name, _wf_org = wf.name, wf.org_id
-    db.delete(wf)
-    log_audit(db, "delete", "workflow", wf_id, entity_name=_wf_name, actor=user, org_id=_wf_org)
-    db.commit()
-    return {"message": "Workflow deleted"}
-
-
-@app.get("/api/workflows/{wf_id}/versions")
-def get_workflow_versions(wf_id: int, db: Session = Depends(get_db)):
-    """Return version history for a workflow."""
-    wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
-    if not wf:
-        raise HTTPException(404, "Workflow not found")
-    return {
-        "current_version": getattr(wf, "version", 1) or 1,
-        "history": list(getattr(wf, "version_history", None) or []),
-    }
-
-
-@app.post("/api/workflows/{wf_id}/restore/{version}")
-def restore_workflow_version(wf_id: int, version: int, db: Session = Depends(get_db), user: Optional[User] = Depends(get_current_user)):
-    """Restore a workflow to a previous version."""
-    wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
-    if not wf:
-        raise HTTPException(404, "Workflow not found")
-    history = list(getattr(wf, "version_history", None) or [])
-    snapshot = next((h for h in history if h.get("version") == version), None)
-    if not snapshot:
-        raise HTTPException(404, f"Version {version} not found")
-
-    # Snapshot current state before restoring
-    old_nodes = [_node_to_dict(n) for n in wf.nodes]
-    old_edges = [_edge_to_dict(e) for e in wf.edges]
-    history.append({
-        "version": wf.version or 1,
-        "nodes": old_nodes,
-        "edges": old_edges,
-        "saved_at": datetime.utcnow().isoformat(),
-    })
-    wf.version_history = history[-20:]
-    wf.version = (wf.version or 1) + 1
-
-    # Replace nodes and edges
-    db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wf_id).delete(synchronize_session=False)
-    for nd in snapshot.get("nodes", []):
-        db.add(WorkflowNode(
-            workflow_id=wf_id, node_id=nd["node_id"], node_type=nd["node_type"],
-            node_subtype=nd["node_subtype"], label=nd.get("label", ""),
-            config=nd.get("config", {}),
-            position_x=nd.get("position_x", 0), position_y=nd.get("position_y", 0),
-        ))
-    db.query(WorkflowEdge).filter(WorkflowEdge.workflow_id == wf_id).delete(synchronize_session=False)
-    for ed in snapshot.get("edges", []):
-        db.add(WorkflowEdge(
-            workflow_id=wf_id, edge_id=ed["edge_id"],
-            source_node_id=ed["source_node_id"], target_node_id=ed["target_node_id"],
-            source_handle=ed.get("source_handle", "output"),
-            target_handle=ed.get("target_handle", "input"), label=ed.get("label"),
-        ))
-    log_audit(db, "update", "workflow", wf_id,
-              entity_name=wf.name, changes={"action": "restore", "restored_version": version}, actor=user)
-    db.commit()
-    db.refresh(wf)
-    d = _workflow_to_dict(wf)
-    d["nodes"] = [_node_to_dict(n) for n in wf.nodes]
-    d["edges"] = [_edge_to_dict(e) for e in wf.edges]
-    return d
-
-
-@app.post("/api/workflows/{wf_id}/execute")
-def execute_workflow_endpoint(wf_id: int, db: Session = Depends(get_db)):
-    """Execute a workflow manually."""
-    wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
-    if not wf:
-        raise HTTPException(404, "Workflow not found")
-    try:
-        result = workflow_engine.execute_workflow(db, wf_id)
-        return result
-    except Exception as e:
-        raise HTTPException(400, str(e))
-
-
-@app.get("/api/workflows/{wf_id}/executions")
-def list_workflow_executions(wf_id: int, limit: int = 20, db: Session = Depends(get_db)):
-    execs = db.query(WorkflowExecution).filter(
-        WorkflowExecution.workflow_id == wf_id
-    ).order_by(desc(WorkflowExecution.started_at)).limit(limit).all()
-    return [_execution_to_dict(e) for e in execs]
-
-
-@app.get("/api/workflows/executions/{exec_id}")
-def get_workflow_execution(exec_id: int, db: Session = Depends(get_db)):
-    ex = db.query(WorkflowExecution).filter(WorkflowExecution.id == exec_id).first()
-    if not ex:
-        raise HTTPException(404, "Execution not found")
-    d = _execution_to_dict(ex)
-    d["logs"] = [
-        {
-            "id": l.id,
-            "node_id": l.node_id,
-            "node_type": l.node_type,
-            "node_subtype": l.node_subtype,
-            "status": l.status,
-            "items_in": l.items_in,
-            "items_out": l.items_out,
-            "output_data": l.output_data,
-            "error": l.error,
-            "executed_at": l.executed_at.isoformat() if l.executed_at else None,
-        }
-        for l in ex.logs
-    ]
-    return d
-
-
-def _workflow_to_dict(wf: Workflow) -> dict:
-    return {
-        "id": wf.id,
-        "campaign_id": wf.campaign_id,
-        "name": wf.name,
-        "description": wf.description,
-        "status": wf.status,
-        "is_enabled": wf.is_enabled,
-        "created_at": wf.created_at.isoformat() if wf.created_at else None,
-        "updated_at": wf.updated_at.isoformat() if wf.updated_at else None,
-        "last_run_at": wf.last_run_at.isoformat() if wf.last_run_at else None,
-        "run_count": wf.run_count,
-        "version": getattr(wf, "version", 1) or 1,
-        "node_count": len(wf.nodes),
-        "edge_count": len(wf.edges),
-    }
-
-
-def _node_to_dict(n: WorkflowNode) -> dict:
-    return {
-        "node_id": n.node_id,
-        "node_type": n.node_type,
-        "node_subtype": n.node_subtype,
-        "label": n.label,
-        "config": n.config or {},
-        "position_x": n.position_x,
-        "position_y": n.position_y,
-    }
-
-
-def _edge_to_dict(e: WorkflowEdge) -> dict:
-    return {
-        "edge_id": e.edge_id,
-        "source_node_id": e.source_node_id,
-        "target_node_id": e.target_node_id,
-        "source_handle": e.source_handle,
-        "target_handle": e.target_handle,
-        "label": e.label,
-    }
-
-
-def _execution_to_dict(ex: WorkflowExecution) -> dict:
-    return {
-        "id": ex.id,
-        "workflow_id": ex.workflow_id,
-        "status": ex.status,
-        "trigger_type": ex.trigger_type,
-        "started_at": ex.started_at.isoformat() if ex.started_at else None,
-        "completed_at": ex.completed_at.isoformat() if ex.completed_at else None,
-        "items_processed": ex.items_processed,
-        "result_summary": ex.result_summary,
-        "error": ex.error,
-    }
-
-
-# ─────────────────────────────────────────────────────────
-# Integration Settings (Jira, ServiceNow, Email, Slack, Teams)
-# ─────────────────────────────────────────────────────────
 
 INTEGRATION_SCHEMAS = {
     "jira": {
@@ -8158,93 +7750,16 @@ _SEVERITY_LABELS = {0: "Info", 1: "Low", 2: "Medium", 3: "High", 4: "Critical"}
 
 
 def _check_scope_tags(db: Session, asset_id: int, scope_tags: list) -> bool:
-    """Check if an asset matches any of the scope tags."""
-    from models.models import Tag, TagAssignment
-    rows = (
-        db.query(Tag.category, Tag.value)
-        .join(TagAssignment, TagAssignment.tag_id == Tag.id)
-        .filter(TagAssignment.asset_id == asset_id)
-        .all()
-    )
-    asset_tags = {f"{r.category}:{r.value}".lower() for r in rows}
-    return any(t.lower() in asset_tags for t in scope_tags)
+    """Delegates to services.exception_engine — kept here for backward compatibility."""
+    from services.exception_engine import _check_scope_tags as _impl
+    return _impl(db, asset_id, scope_tags)
 
 
 def _apply_exception_to_findings(db: Session, exc: FindingException, scan_id: int = None) -> int:
-    """Apply a single exception to all matching findings. Returns count of affected findings."""
-    import services.rule_engine as engine
-
-    q = db.query(Finding)
-    if exc.plugin_id:
-        q = q.filter(Finding.plugin_id == exc.plugin_id)
-    if scan_id:
-        q = q.filter(Finding.scan_id == scan_id)
-
-    # Asset-level scope: IP or tags (need join for either)
-    has_asset_join = False
-    if exc.asset_ip:
-        q = q.join(Asset, Finding.asset_id == Asset.id)
-        q = q.filter(Asset.ip == exc.asset_ip)
-        has_asset_join = True
-
-    conditions = exc.conditions or []
-    logic = exc.condition_logic or "AND"
-    scope_tags = exc.scope_tags or []
-    findings = q.all()
-    count = 0
-    now = datetime.utcnow()
-
-    for f in findings:
-        # Check scope_tags if set
-        if scope_tags and not _check_scope_tags(db, f.asset_id, scope_tags):
-            continue
-
-        # If conditions are set, evaluate them against the finding + its asset
-        if conditions:
-            parent_asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
-            asset_dict = {
-                "ip": parent_asset.ip, "hostname": parent_asset.hostname,
-                "fqdn": parent_asset.fqdn, "os": parent_asset.os,
-                "netbios_name": parent_asset.netbios_name,
-                "environment_tag": parent_asset.environment_tag,
-                "criticality": parent_asset.criticality or 5,
-                "risk_score": parent_asset.risk_score or 0.0,
-                "critical_count": parent_asset.critical_count or 0,
-                "high_count": parent_asset.high_count or 0,
-                "medium_count": parent_asset.medium_count or 0,
-                "low_count": parent_asset.low_count or 0,
-                "info_count": parent_asset.info_count or 0,
-            } if parent_asset else {}
-
-            # Split conditions: finding.* evaluated per-finding, rest per-asset
-            finding_conds = [c for c in conditions if c.get("field", "").startswith("finding.")]
-            asset_conds = [c for c in conditions if not c.get("field", "").startswith("finding.")]
-
-            finding_match = all(engine._eval_finding_row(c, f) for c in finding_conds) if finding_conds else True
-            asset_match = engine.evaluate_conditions(
-                asset_conds, logic, asset_dict=asset_dict,
-                db=db, asset_id=f.asset_id, scan_id=f.scan_id,
-            ) if asset_conds else True
-
-            if logic == "AND":
-                if not (finding_match and asset_match):
-                    continue
-            else:  # OR
-                if not (finding_match or asset_match):
-                    continue
-
-        f.exception_id = exc.id
-        f.status_changed_at = now
-
-        if exc.exception_type == "severity_override" and exc.override_severity is not None:
-            # Severity override: change severity instead of workflow status
-            f.severity = exc.override_severity
-            f.severity_label = _SEVERITY_LABELS.get(exc.override_severity, "Info")
-        else:
-            f.workflow_status = exc.exception_type  # accepted_risk / false_positive / compensating_control
-
-        count += 1
-    return count
+    """Apply a single exception to all matching findings. Returns count of affected findings.
+    Delegates to services.exception_engine — kept here for backward compatibility."""
+    from services.exception_engine import apply_exception_to_findings
+    return apply_exception_to_findings(db, exc, scan_id=scan_id)
 
 
 @app.post("/api/exceptions/apply-all")

@@ -45,26 +45,11 @@ def test_integration(db: Session, provider: str) -> dict:
         return {"status": "error", "detail": f"{provider} not configured"}
     cfg = row.config
 
-    try:
-        if provider == "jira":
-            return _test_jira(cfg)
-        elif provider == "servicenow":
-            return _test_servicenow(cfg)
-        elif provider == "email":
-            return _test_email(cfg)
-        elif provider == "slack":
-            return _test_slack(cfg)
-        elif provider == "teams":
-            return _test_teams(cfg)
-        elif provider == "anthropic":
-            return _test_anthropic(cfg)
-        elif provider == "openai":
-            return _test_openai(cfg)
-        elif provider == "google_gemini":
-            return _test_google_gemini(cfg)
-        elif provider == "groq":
-            return _test_groq(cfg)
+    tester = _INTEGRATION_TESTERS.get(provider)
+    if not tester:
         return {"status": "error", "detail": f"Unknown provider: {provider}"}
+    try:
+        return tester(cfg)
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
@@ -740,3 +725,20 @@ def _test_groq(cfg: dict) -> dict:
         return {"status": "ok", "detail": f"Connected — model: {resp.model}"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
+
+
+# ─────────────────────────────────────────────
+# Provider test dispatch registry (OCP)
+# ─────────────────────────────────────────────
+
+_INTEGRATION_TESTERS: dict = {
+    "jira": _test_jira,
+    "servicenow": _test_servicenow,
+    "email": _test_email,
+    "slack": _test_slack,
+    "teams": _test_teams,
+    "anthropic": _test_anthropic,
+    "openai": _test_openai,
+    "google_gemini": _test_google_gemini,
+    "groq": _test_groq,
+}
