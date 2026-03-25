@@ -2,9 +2,9 @@ import React, { useState, useEffect } from 'react'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import {
   authListOrgs, authCreateOrg, authUpdateOrg, authDeleteOrg,
-  authMSSPClients, adminOverrideSubscription,
+  authMSSPClients, adminOverrideSubscription, authMSSPInviteClient,
 } from '../../api.js'
-import { Plus, Pencil, Trash2, X } from 'lucide-react'
+import { Plus, Pencil, Trash2, X, Link, Mail, Copy, Check } from 'lucide-react'
 import { useConfirm, useToast } from '../shared/ui.jsx'
 
 function EditOrgDialog({ org, onClose, onSave }) {
@@ -122,6 +122,170 @@ function EditOrgDialog({ org, onClose, onSave }) {
   )
 }
 
+function InviteClientModal({ onClose, onInvited }) {
+  const [form, setForm] = useState({ invited_email: '', client_org_name: '' })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState(null)
+  const [copied, setCopied] = useState(false)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      const data = await authMSSPInviteClient({
+        invited_email: form.invited_email || null,
+        client_org_name: form.client_org_name || null,
+      })
+      setResult(data)
+      if (onInvited) onInvited()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(result.invite_url).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
+  const inputStyle = {
+    width: '100%', padding: '7px 10px', borderRadius: 8,
+    border: '1px solid var(--border)', fontSize: 13, boxSizing: 'border-box',
+    background: 'var(--bg-card)', color: 'var(--text-primary)',
+  }
+  const labelStyle = { fontSize: 12, fontWeight: 500, display: 'block', marginBottom: 4, color: 'var(--text-secondary)' }
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={onClose}>
+      <div style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12,
+        padding: 24, width: 440, maxWidth: '90vw', boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 15 }}>Invite a client</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+              Generate a self-serve onboarding link for a new client organization
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex' }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {error && (
+          <div style={{ background: 'var(--danger-subtle)', color: 'var(--danger)', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 16, border: '1px solid var(--danger)' }}>
+            {error}
+          </div>
+        )}
+
+        {result ? (
+          <div>
+            <div style={{
+              background: 'var(--success-subtle)', color: 'var(--success)',
+              padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 16,
+              border: '1px solid var(--success)',
+            }}>
+              {result.email_sent
+                ? `Invite sent to ${form.invited_email}`
+                : 'Invite link generated — share it with your client'}
+            </div>
+
+            <label style={labelStyle}>Invite link</label>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+              <input
+                readOnly
+                value={result.invite_url}
+                style={{ ...inputStyle, flex: 1, fontFamily: 'monospace', fontSize: 11 }}
+                onFocus={e => e.target.select()}
+              />
+              <button
+                onClick={handleCopy}
+                style={{
+                  padding: '7px 12px', borderRadius: 8, border: '1px solid var(--border)',
+                  background: 'var(--bg-card)', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 4,
+                  color: copied ? 'var(--success)' : 'var(--text-secondary)', fontSize: 13,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {copied ? <Check size={14} /> : <Copy size={14} />}
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 16 }}>
+              Expires: {new Date(result.expires_at).toLocaleDateString()}
+            </div>
+
+            <button onClick={onClose} style={{
+              width: '100%', padding: '8px 0', borderRadius: 8, border: '1px solid var(--border)',
+              background: 'var(--bg-card)', color: 'var(--text-secondary)', fontSize: 13, cursor: 'pointer',
+            }}>
+              Done
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div>
+              <label style={labelStyle}>Client email <span style={{ fontWeight: 400 }}>(optional — sends invite email if configured)</span></label>
+              <div style={{ position: 'relative' }}>
+                <Mail size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-secondary)' }} />
+                <input
+                  type="email"
+                  value={form.invited_email}
+                  onChange={e => setForm(p => ({ ...p, invited_email: e.target.value }))}
+                  placeholder="client@example.com"
+                  style={{ ...inputStyle, paddingLeft: 30 }}
+                  autoFocus
+                />
+              </div>
+            </div>
+
+            <div>
+              <label style={labelStyle}>Organization name <span style={{ fontWeight: 400 }}>(optional — pre-fills registration form)</span></label>
+              <input
+                type="text"
+                value={form.client_org_name}
+                onChange={e => setForm(p => ({ ...p, client_org_name: e.target.value }))}
+                placeholder="Acme Corp"
+                style={inputStyle}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+              <button type="button" onClick={onClose} style={{
+                padding: '7px 16px', borderRadius: 8, border: '1px solid var(--border)',
+                background: 'var(--bg-card)', color: 'var(--text-secondary)', fontSize: 13, cursor: 'pointer',
+              }}>
+                Cancel
+              </button>
+              <button type="submit" disabled={loading} style={{
+                padding: '7px 16px', borderRadius: 8, border: 'none',
+                background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)',
+                fontSize: 13, fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6,
+              }}>
+                <Link size={13} />
+                {loading ? 'Generating…' : 'Generate invite link'}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function OrgsPanel() {
   const { isSuperadmin, isMSSP, org } = useAuth()
   const confirm = useConfirm()
@@ -129,7 +293,10 @@ export default function OrgsPanel() {
   const [orgs, setOrgs] = useState([])
   const [msspClients, setMsspClients] = useState([])
   const [showCreateOrg, setShowCreateOrg] = useState(false)
-  const [orgForm, setOrgForm] = useState({ name: '', org_type: 'standard' })
+  const [showInviteClient, setShowInviteClient] = useState(false)
+  const [orgForm, setOrgForm] = useState({ name: '', org_type: 'standard', admin_email: '' })
+  const [createResult, setCreateResult] = useState(null)
+  const [copiedActivation, setCopiedActivation] = useState(false)
   const [editingOrg, setEditingOrg] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -147,9 +314,13 @@ export default function OrgsPanel() {
     try {
       const newOrg = await authCreateOrg(orgForm)
       setOrgs(prev => [newOrg, ...prev])
-      toast.success('Organization created')
-      setShowCreateOrg(false)
-      setOrgForm({ name: '', org_type: 'standard' })
+      if (orgForm.admin_email && !newOrg.admin_email_sent && newOrg.admin_activation_link) {
+        setCreateResult(newOrg)
+      } else {
+        toast.success('Organization created' + (newOrg.admin_email_sent ? ' — activation email sent' : ''))
+        setShowCreateOrg(false)
+        setOrgForm({ name: '', org_type: 'standard', admin_email: '' })
+      }
     } catch (err) {
       setError(err.message)
     } finally {
@@ -187,6 +358,13 @@ export default function OrgsPanel() {
           org={editingOrg}
           onClose={() => setEditingOrg(null)}
           onSave={handleEditSave}
+        />
+      )}
+
+      {showInviteClient && (
+        <InviteClientModal
+          onClose={() => setShowInviteClient(false)}
+          onInvited={() => authMSSPClients().then(setMsspClients).catch(() => {})}
         />
       )}
 
@@ -234,25 +412,64 @@ export default function OrgsPanel() {
           </div>
 
           {showCreateOrg && (
-            <form onSubmit={handleCreateOrg} style={{
-              background: 'var(--bg-muted)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16,
-              display: 'flex', gap: 10, alignItems: 'flex-end',
-            }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 12, fontWeight: 500 }}>Name</label>
-                <input type="text" value={orgForm.name} onChange={e => setOrgForm(p => ({ ...p, name: e.target.value }))} required style={inputStyle} />
-              </div>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 500 }}>Type</label>
-                <select value={orgForm.org_type} onChange={e => setOrgForm(p => ({ ...p, org_type: e.target.value }))} style={inputStyle}>
-                  <option value="standard">Standard</option>
-                  <option value="mssp">MSSP</option>
-                </select>
-              </div>
-              <button type="submit" disabled={loading} style={{ padding: '7px 14px', borderRadius: 8, border: 'none', background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                Create
-              </button>
-            </form>
+            <div style={{ background: 'var(--bg-muted)', border: '1px solid var(--border)', borderRadius: 10, padding: 16, marginBottom: 16 }}>
+              {createResult ? (
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>
+                    "{createResult.name}" created
+                  </div>
+                  <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+                    Email couldn't be sent. Share this activation link with the admin:
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                    <input
+                      readOnly
+                      value={createResult.admin_activation_link}
+                      style={{ ...inputStyle, flex: 1, fontFamily: 'monospace', fontSize: 11 }}
+                      onFocus={e => e.target.select()}
+                    />
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(createResult.admin_activation_link)
+                        setCopiedActivation(true)
+                        setTimeout(() => setCopiedActivation(false), 2000)
+                      }}
+                      style={{ padding: '7px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap' }}
+                    >
+                      {copiedActivation ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
+                  <button onClick={() => { setCreateResult(null); setShowCreateOrg(false); setOrgForm({ name: '', org_type: 'standard', admin_email: '' }) }}
+                    style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', fontSize: 13, cursor: 'pointer' }}>
+                    Done
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleCreateOrg} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 500 }}>Name</label>
+                    <input type="text" value={orgForm.name} onChange={e => setOrgForm(p => ({ ...p, name: e.target.value }))} required style={inputStyle} autoFocus />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, fontWeight: 500 }}>Type</label>
+                    <select value={orgForm.org_type} onChange={e => setOrgForm(p => ({ ...p, org_type: e.target.value }))} style={inputStyle}>
+                      <option value="standard">Standard</option>
+                      <option value="mssp">MSSP</option>
+                    </select>
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={{ fontSize: 12, fontWeight: 500 }}>Admin email <span style={{ fontWeight: 400, color: 'var(--text-secondary)' }}>(optional — sends activation link)</span></label>
+                    <input type="email" value={orgForm.admin_email} onChange={e => setOrgForm(p => ({ ...p, admin_email: e.target.value }))} placeholder="admin@company.com" style={inputStyle} />
+                  </div>
+                  <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                    <button type="button" onClick={() => setShowCreateOrg(false)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
+                    <button type="submit" disabled={loading} style={{ padding: '7px 14px', borderRadius: 8, border: 'none', background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                      {loading ? 'Creating…' : 'Create'}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
           )}
 
           <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
@@ -338,7 +555,19 @@ export default function OrgsPanel() {
       {/* MSSP Clients */}
       {(isMSSP && (!showBothViews || view === 'clients')) && (
         <div>
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>{msspClients.length} client org{msspClients.length !== 1 ? 's' : ''}</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{msspClients.length} client org{msspClients.length !== 1 ? 's' : ''}</div>
+            <button
+              onClick={() => setShowInviteClient(true)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '6px 14px', borderRadius: 8, border: 'none',
+                background: 'var(--nav-active-bg)', color: 'var(--nav-active-text)', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              <Plus size={14} /> Invite Client
+            </button>
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
             {msspClients.map(c => (
               <div key={c.id} style={{

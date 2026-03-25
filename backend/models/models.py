@@ -82,6 +82,22 @@ class MSSPOrgAccess(Base):
     )
 
 
+class OrgInvite(Base):
+    """Self-serve invite for an MSSP to onboard a new client org."""
+    __tablename__ = "org_invites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String, nullable=False, unique=True, index=True)
+    mssp_org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    invited_email = Column(String, nullable=True)       # Pre-fill email; null = open invite
+    client_org_name = Column(String, nullable=True)     # Pre-fill org name suggestion
+    expires_at = Column(DateTime, nullable=False)
+    accepted_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    mssp_org = relationship("Organization", foreign_keys=[mssp_org_id])
+
+
 # ─────────────────────────────────────────────────────────
 # Custom RBAC — Roles, Tag Permissions, User Assignments
 # ─────────────────────────────────────────────────────────

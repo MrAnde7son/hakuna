@@ -220,6 +220,20 @@ export const authDeleteOrg = (orgId) => request(`/auth/orgs/${orgId}`, { method:
 
 export const authMSSPClients = () => request('/auth/mssp/clients')
 
+export const authMSSPInviteClient = (data) => request('/auth/mssp/invite-client', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const getInviteInfo = (token) => request(`/auth/invite/${token}`)
+
+export const acceptInvite = (data) => request('/auth/accept-invite', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
 // Custom Roles
 export const authListRoles = () => request('/auth/roles')
 export const authGetRole = (roleId) => request(`/auth/roles/${roleId}`)

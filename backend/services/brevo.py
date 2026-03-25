@@ -94,3 +94,79 @@ def send_password_reset(to: str, display_name: str, token: str) -> None:
 </html>"""
 
     send_email(to, subject, body_text, body_html)
+
+
+def send_org_admin_activation(to: str, org_name: str, token: str) -> None:
+    """Send an account activation email to a newly created org admin."""
+    activate_url = f"{APP_URL}/reset-password?token={token}"
+    subject = f"Activate your Hakuna account — {org_name}"
+
+    body_text = (
+        f"Hello,\n\n"
+        f"An account has been created for you as the admin of {org_name} on Hakuna.\n\n"
+        f"Click the link below to set your password and activate your account (expires in 24 hours):\n"
+        f"{activate_url}\n\n"
+        f"— The Hakuna Team"
+    )
+
+    body_html = f"""<html>
+<body style="font-family:sans-serif;color:#1a1a1a;max-width:480px;margin:auto;padding:32px">
+  <h2 style="margin-bottom:8px">Activate your Hakuna account</h2>
+  <p>An account has been created for you as the admin of <strong>{org_name}</strong> on Hakuna.</p>
+  <p style="margin:24px 0">
+    <a href="{activate_url}"
+       style="background:#590202;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">
+      Set Password &amp; Activate
+    </a>
+  </p>
+  <p style="font-size:13px;color:#71717a">
+    This link expires in 24 hours. If you didn't expect this, you can safely ignore this email.
+  </p>
+  <p style="font-size:13px;color:#71717a">
+    Or copy and paste this URL into your browser:<br/>
+    <a href="{activate_url}" style="color:#590202">{activate_url}</a>
+  </p>
+  <hr style="border:none;border-top:1px solid #e4e4e7;margin:24px 0"/>
+  <p style="font-size:12px;color:#a1a1aa">The Hakuna Team</p>
+</body>
+</html>"""
+
+    send_email(to, subject, body_text, body_html)
+
+
+def send_client_invite(to: str, mssp_org_name: str, invite_url: str, client_org_name: str = None) -> None:
+    """Send an MSSP client onboarding invite email."""
+    subject = f"You've been invited to join {mssp_org_name} on Hakuna"
+    org_hint = f" for {client_org_name}" if client_org_name else ""
+
+    body_text = (
+        f"Hello,\n\n"
+        f"You've been invited by {mssp_org_name} to create your organization{org_hint} on Hakuna.\n\n"
+        f"Click the link below to set up your account (expires in 7 days):\n"
+        f"{invite_url}\n\n"
+        f"— The Hakuna Team"
+    )
+
+    body_html = f"""<html>
+<body style="font-family:sans-serif;color:#1a1a1a;max-width:480px;margin:auto;padding:32px">
+  <h2 style="margin-bottom:8px">You've been invited to Hakuna</h2>
+  <p><strong>{mssp_org_name}</strong> has invited you to create your organization{org_hint} on Hakuna's vulnerability management platform.</p>
+  <p style="margin:24px 0">
+    <a href="{invite_url}"
+       style="background:#590202;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">
+      Accept Invitation
+    </a>
+  </p>
+  <p style="font-size:13px;color:#71717a">
+    This invite expires in 7 days. If you didn't expect this, you can safely ignore this email.
+  </p>
+  <p style="font-size:13px;color:#71717a">
+    Or copy and paste this URL into your browser:<br/>
+    <a href="{invite_url}" style="color:#590202">{invite_url}</a>
+  </p>
+  <hr style="border:none;border-top:1px solid #e4e4e7;margin:24px 0"/>
+  <p style="font-size:12px;color:#a1a1aa">The Hakuna Team</p>
+</body>
+</html>"""
+
+    send_email(to, subject, body_text, body_html)

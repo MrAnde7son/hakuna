@@ -15,7 +15,7 @@ from sqlalchemy import func, text
 
 from core.database import get_db
 from core.limiter import limiter
-from models.models import Organization, User, MSSPOrgAccess, Scan, CustomRole, TagPermission, UserCustomRole, Tag
+from models.models import Organization, User, MSSPOrgAccess, OrgInvite, Scan, CustomRole, TagPermission, UserCustomRole, Tag
 from core.auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
     require_auth, require_role, get_current_user, get_accessible_org_ids,
@@ -26,6 +26,7 @@ from core.audit import log_audit, diff as _diff
 from core.i18n import get_locale_from_request, t as translate
 from core.subscription import check_user_invite_limit
 from services.easm import trigger_easm_for_new_org
+from services.brevo import APP_URL
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -53,6 +54,7 @@ class CreateOrgRequest(BaseModel):
     name: str
     org_type: str = "standard"  # standard | mssp
     parent_org_id: Optional[int] = None
+    admin_email: Optional[str] = None  # If set, creates an org_admin user and sends activation email
 
 class MSSPLinkRequest(BaseModel):
     mssp_org_id: int
@@ -109,6 +111,7 @@ def _user_response(user: User, org: Organization) -> dict:
             "parent_org_id": org.parent_org_id,
             "subscription_tier": org.subscription_tier or "free",
             "subscription_status": org.subscription_status,
+            "easm_domain": org.easm_domain,
         },
     }
 
@@ -610,9 +613,39 @@ async def create_org(
               entity_name=new_org.name,
               changes={"name": new_org.name, "org_type": new_org.org_type},
               actor=user)
+
+    activation_link = None
+    email_sent = False
+    if body.admin_email:
+        from services.brevo import send_org_admin_activation, is_configured as brevo_configured
+        if db.query(User).filter(User.email == body.admin_email).first():
+            raise HTTPException(400, f"Email {body.admin_email} is already registered")
+        token = secrets.token_urlsafe(32)
+        admin_user = User(
+            email=body.admin_email,
+            hashed_password=hash_password(secrets.token_hex(32)),  # unusable placeholder — user must activate via link
+            display_name=body.admin_email.split("@")[0],
+            org_id=new_org.id,
+            role="org_admin",
+            password_reset_token=token,
+            password_reset_expires=datetime.utcnow() + timedelta(hours=24),
+        )
+        db.add(admin_user)
+        activation_link = f"{APP_URL}/reset-password?token={token}"
+        if brevo_configured():
+            try:
+                send_org_admin_activation(body.admin_email, new_org.name, token)
+                email_sent = True
+            except Exception as e:
+                logger.error(f"Failed to send org admin activation email: {e}")
+
     db.commit()
     db.refresh(new_org)
-    return _org_response(new_org)
+    result = _org_response(new_org)
+    if body.admin_email:
+        result["admin_activation_link"] = activation_link
+        result["admin_email_sent"] = email_sent
+    return result
 
 
 @router.patch("/orgs/{org_id}")
@@ -839,6 +872,159 @@ async def list_mssp_clients(
             clients.append(info)
 
     return clients
+
+
+# ── MSSP Self-Serve Client Invites ───────────────────────
+
+class MSSPInviteClientRequest(BaseModel):
+    invited_email: Optional[str] = None
+    client_org_name: Optional[str] = None
+
+
+class AcceptInviteRequest(BaseModel):
+    token: str
+    org_name: str
+    admin_name: str
+    admin_email: str
+    password: str
+
+
+@router.post("/mssp/invite-client")
+async def mssp_invite_client(
+    body: MSSPInviteClientRequest,
+    user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Generate a self-serve invite link for a new MSSP client org.
+
+    Returns the invite link always. If Brevo is configured and invited_email
+    is provided, also sends an invite email.
+    """
+    from services.brevo import send_client_invite, is_configured as brevo_configured
+
+    org = db.query(Organization).filter(Organization.id == user.org_id).first()
+    if not org or org.org_type != "mssp":
+        raise HTTPException(400, "Not an MSSP organization")
+    if user.role not in ("superadmin", "org_admin"):
+        raise HTTPException(403, "Insufficient permissions")
+
+    token = secrets.token_urlsafe(32)
+    invite = OrgInvite(
+        token=token,
+        mssp_org_id=user.org_id,
+        invited_email=body.invited_email or None,
+        client_org_name=body.client_org_name or None,
+        expires_at=datetime.utcnow() + timedelta(days=7),
+    )
+    db.add(invite)
+    db.commit()
+
+    invite_url = f"{APP_URL}/accept-invite?token={token}"
+
+    email_sent = False
+    if body.invited_email and brevo_configured():
+        try:
+            send_client_invite(body.invited_email, org.name, invite_url, body.client_org_name)
+            email_sent = True
+        except Exception as e:
+            logger.error(f"Failed to send client invite email: {e}")
+
+    return {
+        "invite_url": invite_url,
+        "token": token,
+        "email_sent": email_sent,
+        "expires_at": invite.expires_at.isoformat(),
+    }
+
+
+@router.get("/invite/{token}")
+async def get_invite_info(token: str, db: Session = Depends(get_db)):
+    """Return public invite metadata for a token. Used to pre-fill the registration form."""
+    invite = db.query(OrgInvite).filter(OrgInvite.token == token).first()
+    if not invite:
+        raise HTTPException(404, "Invite not found")
+    if invite.accepted_at:
+        raise HTTPException(410, "This invite has already been used")
+    if invite.expires_at < datetime.utcnow():
+        raise HTTPException(410, "This invite has expired")
+
+    mssp = db.query(Organization).filter(Organization.id == invite.mssp_org_id).first()
+    return {
+        "mssp_org_name": mssp.name if mssp else "",
+        "invited_email": invite.invited_email,
+        "client_org_name": invite.client_org_name,
+        "expires_at": invite.expires_at.isoformat(),
+    }
+
+
+@router.post("/accept-invite")
+@limiter.limit("10/minute")
+async def accept_invite(body: AcceptInviteRequest, request: Request, db: Session = Depends(get_db)):
+    """Accept an MSSP client invite — creates the new org, admin user, and MSSP access link."""
+    invite = db.query(OrgInvite).filter(OrgInvite.token == body.token).first()
+    if not invite:
+        raise HTTPException(404, "Invite not found")
+    if invite.accepted_at:
+        raise HTTPException(410, "This invite has already been used")
+    if invite.expires_at < datetime.utcnow():
+        raise HTTPException(410, "This invite has expired")
+
+    if len(body.password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    if db.query(User).filter(User.email == body.admin_email).first():
+        raise HTTPException(400, "Email already registered")
+
+    mssp_org = db.query(Organization).filter(Organization.id == invite.mssp_org_id).first()
+    if not mssp_org:
+        raise HTTPException(400, "MSSP organization not found")
+
+    # Create client org
+    slug = _slugify(body.org_name)
+    base_slug = slug
+    counter = 1
+    while db.query(Organization).filter(Organization.slug == slug).first():
+        slug = f"{base_slug}-{counter}"
+        counter += 1
+
+    client_org = Organization(
+        name=body.org_name,
+        slug=slug,
+        org_type="standard",
+        parent_org_id=mssp_org.id,
+    )
+    db.add(client_org)
+    db.flush()
+
+    # Create admin user
+    admin = User(
+        email=body.admin_email,
+        hashed_password=hash_password(body.password),
+        display_name=body.admin_name or body.admin_email.split("@")[0],
+        org_id=client_org.id,
+        role="org_admin",
+    )
+    db.add(admin)
+    db.flush()
+
+    # Grant MSSP access to the new client org
+    link = MSSPOrgAccess(mssp_org_id=mssp_org.id, client_org_id=client_org.id)
+    db.add(link)
+
+    # Mark invite as used
+    invite.accepted_at = datetime.utcnow()
+
+    log_audit(db, "create", "organization", client_org.id,
+              entity_name=client_org.name,
+              changes={"name": client_org.name, "via": "mssp_invite", "mssp_org": mssp_org.name})
+    db.commit()
+    db.refresh(admin)
+
+    token = create_access_token(admin.id, client_org.id, admin.role)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": _user_response(admin, client_org),
+    }
 
 
 # ── Custom Role Management ────────────────────────────────

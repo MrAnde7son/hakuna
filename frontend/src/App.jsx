@@ -51,6 +51,7 @@ import Login from './components/auth/Login.jsx'
 import Register from './components/auth/Register.jsx'
 import ForgotPassword from './components/auth/ForgotPassword.jsx'
 import ResetPassword from './components/auth/ResetPassword.jsx'
+import AcceptInvite from './components/auth/AcceptInvite.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
 import SubscriptionBanner from './components/billing/SubscriptionBanner.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
@@ -971,6 +972,7 @@ function AppShell() {
   const refreshScans = () => {
     getScans().then(data => {
       setScans(data)
+      setScansLoaded(true)
     }).catch(() => {})
   }
 
@@ -1110,6 +1112,7 @@ export default function App() {
                 <Route path="/register" element={<Register />} />
                 <Route path="/forgot-password" element={<ForgotPassword />} />
                 <Route path="/reset-password" element={<ResetPassword />} />
+                <Route path="/accept-invite" element={<AcceptInvite />} />
                 <Route path="/*" element={
                   <ProtectedRoute>
                     <AppShell />
