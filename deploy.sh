@@ -10,7 +10,7 @@
 #   --scanners      Build & push scanner images (hakuna-scanner + vm-scanner)
 #   --frontend      Build React app and sync to GCS
 #   --infra         Run terraform apply (use for infra changes)
-#   --migrate       Run Alembic DB migrations via Cloud SQL Auth Proxy
+#   --migrate       Run standalone Python migration scripts via Cloud SQL Auth Proxy
 #   --help          Show this help
 #
 # Examples:
@@ -83,6 +83,7 @@ check_cmd docker
 check_cmd gcloud
 check_cmd gsutil
 $DO_INFRA   && check_cmd terraform
+$DO_API     && check_cmd terraform
 $DO_MIGRATE && check_cmd cloud-sql-proxy
 
 # Verify gcloud is authenticated and project is set
@@ -145,10 +146,25 @@ if $DO_API; then
   # Pull GOOGLE_CLIENT_ID from Secret Manager for Cloud Run
   GOOGLE_CLIENT_ID_VAL="${GOOGLE_CLIENT_ID:-$(gcloud secrets versions access latest --secret="google-oauth-client-id" 2>/dev/null || true)}"
 
+  # Resolve scanner VM private IP from terraform so HAKUNA_SCANNER_URL stays in sync
+  SCANNER_VM_IP=$(tf_output scanner_vm_ip 2>/dev/null || true)
+  if [[ -n "$SCANNER_VM_IP" ]]; then
+    HAKUNA_SCANNER_URL_VAL="http://${SCANNER_VM_IP}:8001"
+    VM_SCANNER_URL_VAL="http://${SCANNER_VM_IP}:8002"
+    info "Scanner VM IP: ${SCANNER_VM_IP}"
+  else
+    warn "Could not read scanner_vm_ip from terraform output — HAKUNA_SCANNER_URL will not be updated"
+    HAKUNA_SCANNER_URL_VAL=""
+    VM_SCANNER_URL_VAL=""
+  fi
+
+  ENV_VARS="GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID_VAL}"
+  [[ -n "$HAKUNA_SCANNER_URL_VAL" ]] && ENV_VARS="${ENV_VARS},HAKUNA_SCANNER_URL=${HAKUNA_SCANNER_URL_VAL},VM_SCANNER_URL=${VM_SCANNER_URL_VAL}"
+
   gcloud run services update "${CLOUD_RUN_SERVICE}" \
     --image="${API_IMAGE}" \
     --region="${REGION}" \
-    --update-env-vars="GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID_VAL}" \
+    --update-env-vars="${ENV_VARS}" \
     --quiet
 
   success "Cloud Run service updated"
@@ -250,7 +266,7 @@ fi
 
 # ── Step: Database migrations ─────────────────────────────────────────────────
 if $DO_MIGRATE; then
-  step "Running Alembic database migrations"
+  step "Running database migrations"
   cd "${SCRIPT_DIR}"
 
   # Get Cloud SQL connection name from terraform
@@ -268,11 +284,27 @@ if $DO_MIGRATE; then
   sleep 3  # wait for proxy to be ready
 
   DB_PASS=$(gcloud secrets versions access latest --secret="hakuna-db-password")
-  export DATABASE_URL="postgresql+asyncpg://hakuna:${DB_PASS}@localhost:5432/hakuna"
+  # Use psycopg2 (sync) driver — migration scripts use SQLAlchemy sync engine
+  export DATABASE_URL="postgresql://hakuna:${DB_PASS}@localhost:5432/hakuna"
 
   cd "${SCRIPT_DIR}/backend"
-  alembic upgrade head
-  success "Migrations applied"
+
+  # Activate virtualenv if present
+  if [[ -f ".venv/bin/activate" ]]; then
+    source .venv/bin/activate
+  fi
+
+  # Run all migration scripts in order (idempotent — each checks before altering)
+  MIGRATION_COUNT=0
+  for migration in migrations/[0-9]*.py; do
+    if [[ -f "$migration" ]]; then
+      info "Applying: ${migration}"
+      python "${migration}"
+      MIGRATION_COUNT=$((MIGRATION_COUNT + 1))
+    fi
+  done
+
+  success "Migrations applied (${MIGRATION_COUNT} scripts run)"
 
   kill "${PROXY_PID}" 2>/dev/null || true
   trap - EXIT
