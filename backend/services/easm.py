@@ -360,6 +360,10 @@ async def trigger_easm_for_new_org(db: Session, org: Organization, email: str):
         logger.info(f"Skipping EASM for org '{org.name}': free/personal email domain")
         return
 
+    # Persist the domain immediately so the frontend can show it even if the scanner is unreachable
+    org.easm_domain = domain
+    db.commit()
+
     logger.info(f"Triggering EASM discovery for org '{org.name}' domain '{domain}'")
 
     hakuna_org_id = await create_easm_org(org.name)
@@ -371,9 +375,8 @@ async def trigger_easm_for_new_org(db: Session, org: Organization, email: str):
         logger.warning(f"Failed to add domain '{domain}' to EASM org {hakuna_org_id}")
         return
 
-    # Persist hakuna references so scan_domain() can use them
+    # Persist hakuna org reference now that scanner confirmed it
     org.easm_org_id = hakuna_org_id
-    org.easm_domain = domain
     db.commit()
 
     # Create local Scan record, trigger scan, and set weekly schedule
