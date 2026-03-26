@@ -101,6 +101,7 @@ def _user_response(user: User, org: Organization) -> dict:
         "role": user.role,
         "is_active": user.is_active,
         "locale": user.locale or "en",
+        "email_verified": bool(user.email_verified),
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
         "org": {
@@ -163,12 +164,20 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
     user_count = db.query(func.count(User.id)).scalar()
     role = "superadmin" if user_count == 0 else "org_admin"
 
+    # Superadmin (first user) is auto-verified; others must verify email
+    is_first_user = role == "superadmin"
+
+    verify_token = None if is_first_user else secrets.token_urlsafe(32)
+
     user = User(
         email=body.email,
         hashed_password=hash_password(body.password),
         display_name=body.display_name or body.email.split("@")[0],
         org_id=org.id,
         role=role,
+        email_verified=is_first_user,
+        email_verify_token=verify_token,
+        email_verify_expires=None if is_first_user else datetime.utcnow() + timedelta(hours=24),
     )
     db.add(user)
     db.commit()
@@ -177,6 +186,18 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
 
     token = create_access_token(user.id, org.id, user.role)
     logger.info(f"New registration: {body.email} → org '{org.name}' (role={role})")
+
+    # Send verification email (non-blocking)
+    if not is_first_user:
+        try:
+            from services.brevo import send_email_verification, is_configured as brevo_configured
+            if brevo_configured():
+                send_email_verification(body.email, user.display_name, verify_token)
+                logger.info(f"Verification email sent to {body.email}")
+            else:
+                logger.warning("Brevo not configured — skipping verification email")
+        except Exception as e:
+            logger.warning(f"Failed to send verification email (non-fatal): {e}")
 
     # Trigger EASM discovery for corporate email domains (non-blocking)
     try:
@@ -189,6 +210,53 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
         "token_type": "bearer",
         "user": _user_response(user, org),
     }
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str
+
+
+@router.post("/verify-email")
+@limiter.limit("10/minute")
+async def verify_email(body: VerifyEmailRequest, request: Request, db: Session = Depends(get_db)):
+    """Verify a user's email address using the token from the verification email."""
+    user = db.query(User).filter(User.email_verify_token == body.token).first()
+    if not user or not user.email_verify_expires or user.email_verify_expires < datetime.utcnow():
+        raise HTTPException(400, "Invalid or expired verification link")
+
+    user.email_verified = True
+    user.email_verify_token = None
+    user.email_verify_expires = None
+    db.commit()
+
+    logger.info(f"Email verified: {user.email}")
+    return {"status": "ok", "message": "Email verified successfully"}
+
+
+@router.post("/resend-verification")
+@limiter.limit("3/minute")
+async def resend_verification(request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_auth)):
+    """Resend the email verification link to the current user."""
+    if current_user.email_verified:
+        return {"status": "ok", "message": "Email already verified"}
+
+    verify_token = secrets.token_urlsafe(32)
+    current_user.email_verify_token = verify_token
+    current_user.email_verify_expires = datetime.utcnow() + timedelta(hours=24)
+    db.commit()
+
+    try:
+        from services.brevo import send_email_verification, is_configured as brevo_configured
+        if brevo_configured():
+            send_email_verification(current_user.email, current_user.display_name, verify_token)
+            return {"status": "ok", "message": "Verification email sent"}
+        else:
+            raise HTTPException(503, "Email service is not configured")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to send verification email: {e}")
+        raise HTTPException(500, "Failed to send verification email")
 
 
 @router.post("/login")
@@ -263,6 +331,9 @@ async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = D
         # Link Google ID if not yet linked
         if not user.google_id:
             user.google_id = google_sub
+        # Google-verified email → mark as verified
+        if not user.email_verified:
+            user.email_verified = True
         user.last_login_at = datetime.utcnow()
         db.commit()
 
@@ -301,6 +372,7 @@ async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = D
             org_id=org.id,
             role=role,
             google_id=google_sub,
+            email_verified=True,
         )
         db.add(user)
         db.commit()

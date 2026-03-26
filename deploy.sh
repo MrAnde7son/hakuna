@@ -278,16 +278,18 @@ if $DO_MIGRATE; then
   fi
 
   info "Starting Cloud SQL Auth Proxy for: ${SQL_CONN}"
-  # Cloud SQL instance is private-IP-only — proxy must run from within the VPC (e.g. a Cloud Run job or the scanner VM).
-  # Running --migrate from a local machine requires Cloud VPN or IAP tunnel access to the VPC.
-  cloud-sql-proxy "${SQL_CONN}" --port=5432 --private-ip &
+  # Use --private-ip when running from within VPC (Cloud Run, scanner VM).
+  # From local machines, public IP must be temporarily enabled on the instance.
+  cloud-sql-proxy "${SQL_CONN}" --port=5432 &
   PROXY_PID=$!
   trap "kill ${PROXY_PID} 2>/dev/null || true" EXIT
   sleep 3  # wait for proxy to be ready
 
   DB_PASS=$(gcloud secrets versions access latest --secret="hakuna-db-password")
+  # URL-encode the password to handle special characters (@, %, #, etc.)
+  DB_PASS_ENCODED=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote_plus(sys.stdin.read().strip()))" <<< "${DB_PASS}")
   # Use psycopg2 (sync) driver — migration scripts use SQLAlchemy sync engine
-  export DATABASE_URL="postgresql://hakuna:${DB_PASS}@localhost:5432/hakuna"
+  export DATABASE_URL="postgresql://hakuna:${DB_PASS_ENCODED}@127.0.0.1:5432/hakuna"
 
   cd "${SCRIPT_DIR}/backend"
 

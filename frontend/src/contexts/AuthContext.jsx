@@ -140,6 +140,7 @@ export function AuthProvider({ children }) {
       isSuperadmin: user?.role === 'superadmin',
       isAdmin: user?.role === 'org_admin' || user?.role === 'superadmin',
       isViewer: user?.role === 'viewer',
+      emailVerified: user?.email_verified !== false,
       isCustomRole: user?.role === 'custom',
       subscriptionTier: org?.subscription_tier || 'free',
       subscriptionStatus: org?.subscription_status,

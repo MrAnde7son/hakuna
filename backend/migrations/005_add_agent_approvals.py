@@ -17,12 +17,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import text
 from core.database import engine
 
+_is_pg = "postgresql" in str(engine.url)
+_PK = "SERIAL PRIMARY KEY" if _is_pg else "INTEGER PRIMARY KEY AUTOINCREMENT"
+
 
 def upgrade():
     with engine.connect() as conn:
-        conn.execute(text("""
+        conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS agent_approvals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {_PK},
                 org_id INTEGER REFERENCES organizations(id),
                 agent_run_id INTEGER NOT NULL REFERENCES agent_runs(id),
                 agent_id INTEGER NOT NULL REFERENCES agents(id),
@@ -38,8 +41,8 @@ def upgrade():
                 tool_use_id VARCHAR,
 
                 status VARCHAR DEFAULT 'pending',
-                requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                decided_at DATETIME,
+                requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                decided_at TIMESTAMP,
                 decided_by INTEGER REFERENCES users(id),
                 rejection_reason TEXT
             )

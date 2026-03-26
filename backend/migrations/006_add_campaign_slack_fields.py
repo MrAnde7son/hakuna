@@ -14,14 +14,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 from core.database import engine
 
 
 def upgrade():
     with engine.connect() as conn:
-        # Check existing columns (SQLite doesn't support IF NOT EXISTS on ALTER TABLE)
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(campaigns)"))}
+        insp = inspect(conn)
+        existing = {c["name"] for c in insp.get_columns("campaigns")}
         if "slack_channel_id" not in existing:
             conn.execute(text("ALTER TABLE campaigns ADD COLUMN slack_channel_id VARCHAR"))
         if "slack_channel_name" not in existing:

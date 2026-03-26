@@ -32,7 +32,7 @@ def upgrade():
             print("ai_tokens_used already exists, skipping.")
 
         if not _col_exists(conn, "organizations", "ai_tokens_reset_at"):
-            conn.execute(text("ALTER TABLE organizations ADD COLUMN ai_tokens_reset_at DATETIME"))
+            conn.execute(text("ALTER TABLE organizations ADD COLUMN ai_tokens_reset_at TIMESTAMP"))
             print("Added ai_tokens_reset_at column.")
         else:
             print("ai_tokens_reset_at already exists, skipping.")

@@ -134,6 +134,46 @@ def send_org_admin_activation(to: str, org_name: str, token: str) -> None:
     send_email(to, subject, body_text, body_html)
 
 
+def send_email_verification(to: str, display_name: str, token: str) -> None:
+    """Send an email verification link to a newly registered user."""
+    verify_url = f"{APP_URL}/verify-email?token={token}"
+    subject = "Verify your Hakuna email address"
+
+    body_text = (
+        f"Hello {display_name},\n\n"
+        "Thanks for signing up for Hakuna! Please verify your email address "
+        "by clicking the link below (expires in 24 hours):\n\n"
+        f"{verify_url}\n\n"
+        "If you didn't create this account, you can safely ignore this email.\n\n"
+        "— The Hakuna Team"
+    )
+
+    body_html = f"""<html>
+<body style="font-family:sans-serif;color:#1a1a1a;max-width:480px;margin:auto;padding:32px">
+  <h2 style="margin-bottom:8px">Verify your email address</h2>
+  <p>Hello <strong>{display_name}</strong>,</p>
+  <p>Thanks for signing up for Hakuna! Please verify your email address to activate your account.</p>
+  <p style="margin:24px 0">
+    <a href="{verify_url}"
+       style="background:#590202;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">
+      Verify Email
+    </a>
+  </p>
+  <p style="font-size:13px;color:#71717a">
+    This link expires in 24 hours. If you didn't create this account, you can safely ignore this email.
+  </p>
+  <p style="font-size:13px;color:#71717a">
+    Or copy and paste this URL into your browser:<br/>
+    <a href="{verify_url}" style="color:#590202">{verify_url}</a>
+  </p>
+  <hr style="border:none;border-top:1px solid #e4e4e7;margin:24px 0"/>
+  <p style="font-size:12px;color:#a1a1aa">The Hakuna Team</p>
+</body>
+</html>"""
+
+    send_email(to, subject, body_text, body_html)
+
+
 def send_client_invite(to: str, mssp_org_name: str, invite_url: str, client_org_name: str = None) -> None:
     """Send an MSSP client onboarding invite email."""
     subject = f"You've been invited to join {mssp_org_name} on Hakuna"

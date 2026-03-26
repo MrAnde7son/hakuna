@@ -38,8 +38,12 @@ export default function Register() {
     }
     setLoading(true)
     try {
-      await register(orgName, email, password, displayName)
-      navigate('/')
+      const data = await register(orgName, email, password, displayName)
+      if (data?.user?.email_verified === false) {
+        navigate('/verify-email')
+      } else {
+        navigate('/')
+      }
     } catch (err) {
       setError(err.message || t('auth.registrationFailed'))
     } finally {

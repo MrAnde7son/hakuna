@@ -20,12 +20,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import text
 from core.database import engine
 
+_is_pg = "postgresql" in str(engine.url)
+_PK = "SERIAL PRIMARY KEY" if _is_pg else "INTEGER PRIMARY KEY AUTOINCREMENT"
+
 
 def upgrade():
     with engine.connect() as conn:
-        conn.execute(text("""
+        conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS sbom_components (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {_PK},
                 scan_id INTEGER NOT NULL REFERENCES scans(id),
                 asset_id INTEGER NOT NULL REFERENCES assets(id),
                 software_id INTEGER REFERENCES inventory_software(id),
@@ -65,9 +68,9 @@ def upgrade():
             ON sbom_components(component_type)
         """))
 
-        conn.execute(text("""
+        conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS sbom_vulnerabilities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {_PK},
                 component_id INTEGER NOT NULL REFERENCES sbom_components(id),
                 finding_id INTEGER REFERENCES findings(id),
                 cve_id VARCHAR,

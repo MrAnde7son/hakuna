@@ -56,7 +56,7 @@ def upgrade():
                     (SELECT s.source_type FROM scans s WHERE s.id = assets.scan_id),
                     'nessus'
                 ))
-                WHERE source_systems IS NULL OR source_systems = '[]'::jsonb
+                WHERE source_systems IS NULL OR source_systems::text = '[]'
             """))
         else:
             conn.execute(text("""
@@ -74,7 +74,7 @@ def upgrade():
             conn.execute(text("""
                 UPDATE findings
                 SET source_systems = jsonb_build_array(COALESCE(source_type, 'nessus'))
-                WHERE source_systems IS NULL OR source_systems = '[]'::jsonb
+                WHERE source_systems IS NULL OR source_systems::text = '[]'
             """))
         else:
             conn.execute(text("""

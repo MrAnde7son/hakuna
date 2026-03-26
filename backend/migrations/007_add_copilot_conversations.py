@@ -16,18 +16,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import text
 from core.database import engine
 
+_is_pg = "postgresql" in str(engine.url)
+_PK = "SERIAL PRIMARY KEY" if _is_pg else "INTEGER PRIMARY KEY AUTOINCREMENT"
+
 
 def upgrade():
     with engine.connect() as conn:
-        conn.execute(text("""
+        conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS copilot_conversations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {_PK},
                 org_id INTEGER REFERENCES organizations(id),
                 user_id INTEGER REFERENCES users(id),
                 title VARCHAR DEFAULT 'New conversation',
                 messages JSON DEFAULT '[]',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_copilot_conversations_org_id ON copilot_conversations (org_id)"))

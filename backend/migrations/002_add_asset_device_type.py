@@ -16,13 +16,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 from core.database import engine
 
 
 def _column_exists(conn, table: str, column: str) -> bool:
-    result = conn.execute(text(f"PRAGMA table_info({table})"))
-    return any(row[1] == column for row in result)
+    insp = inspect(conn)
+    columns = [c["name"] for c in insp.get_columns(table)]
+    return column in columns
 
 
 def upgrade():

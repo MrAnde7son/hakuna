@@ -20,6 +20,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import text, inspect
 from core.database import engine
 
+_is_pg = "postgresql" in str(engine.url)
+_PK = "SERIAL PRIMARY KEY" if _is_pg else "INTEGER PRIMARY KEY AUTOINCREMENT"
+
 
 def _table_exists(conn, table: str) -> bool:
     insp = inspect(conn)
@@ -29,16 +32,16 @@ def _table_exists(conn, table: str) -> bool:
 def upgrade():
     with engine.connect() as conn:
         if not _table_exists(conn, "org_invites"):
-            conn.execute(text("""
+            conn.execute(text(f"""
                 CREATE TABLE org_invites (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {_PK},
                     token VARCHAR NOT NULL UNIQUE,
                     mssp_org_id INTEGER NOT NULL REFERENCES organizations(id),
                     invited_email VARCHAR,
                     client_org_name VARCHAR,
-                    expires_at DATETIME NOT NULL,
-                    accepted_at DATETIME,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    expires_at TIMESTAMP NOT NULL,
+                    accepted_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
             conn.execute(text("CREATE UNIQUE INDEX ix_org_invites_token ON org_invites (token)"))
