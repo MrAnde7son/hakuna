@@ -477,7 +477,7 @@ const DATA_PRESETS = {
       name: o.owner,
       value: parseFloat(o.avg_priority_score) || 0,
       color: o.rag === 'red' ? '#ef4444' : o.rag === 'amber' ? '#f59e0b' : '#22c55e',
-    })),
+    })).sort((a, b) => b.value - a.value).slice(0, 10),
   },
   owner_finding_count: {
     label: 'Owner Finding Count', group: 'Ownership', source: 'owner_risk', type: 'categories',
@@ -485,7 +485,7 @@ const DATA_PRESETS = {
       name: o.owner,
       value: o.total,
       color: o.rag === 'red' ? '#ef4444' : o.rag === 'amber' ? '#f59e0b' : '#22c55e',
-    })),
+    })).sort((a, b) => b.value - a.value).slice(0, 10),
   },
   age_distribution: {
     label: 'Finding Age Distribution', group: 'Temporal', source: 'temporal', type: 'categories',
@@ -3470,13 +3470,18 @@ function GlobalTagFilterBar({ globalTags, setGlobalTags, globalTagLogic, setGlob
   const { t } = useTranslation()
   const [showSuggestions, setShowSuggestions] = useState(false)
   const lastWord = tagInputDraft.split(',').pop().trim()
+  const alreadySelected = tagInputDraft.split(',').map(s => s.trim()).filter(Boolean)
   const suggestions = lastWord.length >= 1
-    ? availableTags.filter(t => t.toLowerCase().includes(lastWord.toLowerCase()) && !tagInputDraft.split(',').map(s => s.trim()).includes(t))
-    : []
+    ? availableTags.filter(t => t.toLowerCase().includes(lastWord.toLowerCase()) && !alreadySelected.includes(t))
+    : availableTags.filter(t => !alreadySelected.includes(t))
 
   const applySuggestion = (tag) => {
     const parts = tagInputDraft.split(',').map(s => s.trim()).filter(Boolean)
-    parts[parts.length - 1] = tag
+    if (lastWord) {
+      parts[parts.length - 1] = tag
+    } else {
+      parts.push(tag)
+    }
     setTagInputDraft(parts.join(','))
     setShowSuggestions(false)
   }
