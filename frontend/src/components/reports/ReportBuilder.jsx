@@ -45,6 +45,7 @@ import {
   getEasmEvents,
   getEasmBreaches,
   getEasmSubsidiaries,
+  getControlAssessmentStats,
 } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast, useConfirm } from '../shared/ui.jsx'
 
@@ -137,6 +138,7 @@ const DATA_SOURCES = {
   inv_credentials:    (scanId, f) => getInventoryCredentials({ scan_id: scanId, credential_type: f?.credential_type, protocol: f?.protocol, severity: f?.severity, search: f?.search, page_size: 0 }),
   risk_grade:              (scanId, f) => getRiskGrade(scanId, f?.tags, f?.tag_logic),
   aggregated_solutions:    (scanId, f) => getAggregatedSolutions({ scan_id: scanId }),
+  control_assessment_stats: (scanId, f) => getControlAssessmentStats(),
   os_sw_summary:           (scanId, f) => getOsSoftwareSummary(scanId),
   easm_status:             (scanId, f) => getEasmStatus(),
   easm_assets:             (scanId, f) => getEasmAssets(),
@@ -277,6 +279,7 @@ const DATA_PRESETS = {
   inv_cleartext_credentials:  { label: 'Cleartext Credentials',   group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.cleartext_credentials ?? 0, color: '#ea580c' },
   inv_brute_forceable:        { label: 'Brute Forceable',         group: 'Inventory', source: 'inv_summary', type: 'metric', extract: d => d?.attack_surface?.brute_forceable ?? 0, color: '#f59e0b' },
 
+
   // ── EASM metrics ──
   easm_total_assets:    { label: 'Discovered Assets',    group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.total ?? 0, color: '#6366f1' },
   easm_with_open_ports: { label: 'With Open Ports',      group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_open_ports ?? 0, color: '#ea580c' },
@@ -284,6 +287,21 @@ const DATA_PRESETS = {
   easm_with_cdn:        { label: 'Behind CDN',           group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_cdn ?? 0, color: '#16a34a' },
   easm_expired_certs:   { label: 'Expired Certificates', group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_expired_cert ?? 0, color: '#dc2626' },
   easm_breach_count:    { label: 'Known Breaches',       group: 'EASM', source: 'easm_breaches', type: 'metric', extract: d => (Array.isArray(d) ? d : []).length, color: '#7c3aed' },
+
+  // ── Control Assessment metrics ──
+  ctrl_assessed:        { label: 'Assessed Findings',    group: 'Control Validation', source: 'control_assessment_stats', type: 'metric', extract: d => d?.assessed ?? 0, color: '#6366f1' },
+  ctrl_mitigated:       { label: 'Mitigated',            group: 'Control Validation', source: 'control_assessment_stats', type: 'metric', extract: d => d?.mitigated ?? 0, color: '#22c55e' },
+  ctrl_partial:         { label: 'Partially Mitigated',  group: 'Control Validation', source: 'control_assessment_stats', type: 'metric', extract: d => d?.partially_mitigated ?? 0, color: '#f59e0b' },
+  ctrl_not_mitigated:   { label: 'Not Mitigated',        group: 'Control Validation', source: 'control_assessment_stats', type: 'metric', extract: d => d?.not_mitigated ?? 0, color: '#dc2626' },
+  ctrl_coverage_pct:    { label: 'Assessment Coverage',  group: 'Control Validation', source: 'control_assessment_stats', type: 'metric', extract: d => d?.coverage_pct ?? 0, format: 'pct', color: '#6366f1' },
+  ctrl_validation_breakdown: {
+    label: 'Control Validation Status', group: 'Control Validation', source: 'control_assessment_stats', type: 'categories',
+    extract: d => [
+      { name: 'Mitigated', value: d?.mitigated ?? 0, color: '#22c55e' },
+      { name: 'Partial', value: d?.partially_mitigated ?? 0, color: '#f59e0b' },
+      { name: 'Not Mitigated', value: d?.not_mitigated ?? 0, color: '#dc2626' },
+    ].filter(v => v.value > 0),
+  },
 
   // ── EASM categories ──
   easm_asset_liveness: {

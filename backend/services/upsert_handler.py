@@ -78,6 +78,9 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
         # Accumulate source provenance
         _accumulate_source(existing, source_system)
 
+        # Side effect: create policy assignment if present
+        _handle_policy_assignment(db, record, existing.id, scan_id)
+
         return UpsertResult(action="updated" if updated else "skipped", id=existing.id)
     else:
         # Insert new asset
@@ -97,7 +100,49 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
         )
         db.add(asset)
         db.flush()
+
+        # Side effect: create policy assignment if present
+        _handle_policy_assignment(db, record, asset.id, scan_id)
+
         return UpsertResult(action="inserted", id=asset.id)
+
+
+def _handle_policy_assignment(db, record, asset_id, scan_id):
+    """Create SecurityControlPolicyAssignment if the record has policy data."""
+    policy_external_id = record.get("_prevention_policy_id")
+    if not policy_external_id:
+        return
+
+    from models.models import SecurityControlPolicy, SecurityControlPolicyAssignment, Scan
+
+    # Find the policy by external ID
+    scan = db.query(Scan).filter(Scan.id == scan_id).first() if scan_id else None
+    org_id = scan.org_id if scan else None
+    if not org_id:
+        return
+
+    policy = db.query(SecurityControlPolicy).filter(
+        SecurityControlPolicy.org_id == org_id,
+        SecurityControlPolicy.policy_external_id == policy_external_id,
+    ).first()
+    if not policy:
+        return
+
+    # Upsert assignment
+    existing_assignment = db.query(SecurityControlPolicyAssignment).filter(
+        SecurityControlPolicyAssignment.policy_id == policy.id,
+        SecurityControlPolicyAssignment.asset_id == asset_id,
+    ).first()
+    if not existing_assignment:
+        groups = record.get("_host_groups", [])
+        db.add(SecurityControlPolicyAssignment(
+            org_id=org_id,
+            policy_id=policy.id,
+            asset_id=asset_id,
+            assignment_source="host_group",
+            source_group_id=groups[0] if groups else None,
+            synced_at=datetime.utcnow(),
+        ))
 
 
 def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: str,

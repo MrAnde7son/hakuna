@@ -325,6 +325,7 @@ export default function FindingExplorer() {
     has_exception: { default: null, type: 'boolean' },
     has_ticket: { default: null, type: 'boolean' },
     ticket_status: { default: null },
+    control_status: { default: null },
     product: { default: null },
     cpe: { default: null },
     source: { default: null },
@@ -488,6 +489,7 @@ export default function FindingExplorer() {
       has_exception: hasException,
       has_ticket: hasTicket,
       ticket_status: ticketStatus,
+      control_mitigation_status: urlFilters.control_status || null,
       search: search || null,
       source: sourceFilter || null,
       product: productFilter || null,
@@ -1004,6 +1006,17 @@ export default function FindingExplorer() {
               { value: 'open', label: 'Ticket: Open' },
               { value: 'in_progress', label: 'Ticket: In Progress' },
               { value: 'resolved', label: 'Ticket: Resolved' },
+            ]}
+          />
+
+          <Select
+            value={urlFilters.control_status}
+            onChange={v => setFilter('control_status', v)}
+            placeholder="Control Status"
+            options={[
+              { value: 'mitigated', label: 'Mitigated' },
+              { value: 'partially_mitigated', label: 'Partially Mitigated' },
+              { value: 'not_mitigated', label: 'Not Mitigated' },
             ]}
           />
 

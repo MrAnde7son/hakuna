@@ -59,7 +59,7 @@ def finalize_scan(
         db, "Global exceptions", lambda: _apply_global_exceptions(db, scan_id)
     )
 
-    # 5. Solution aggregation
+    # 5b. Solution aggregation
     results["solutions"] = _step(
         db, "Solution aggregation", lambda: _aggregate_solutions(db, scan_id)
     )
@@ -98,7 +98,14 @@ def finalize_scan(
             lambda: _auto_vm_scan_for_easm(db, org_id, scan_id),
         )
 
-    # 12. Fire event-driven workflow triggers for new data
+    # 12. Security control validation (requires matched_ttps from step 7)
+    if org_id:
+        results["control_assessment"] = _step(
+            db, "Control assessment",
+            lambda: _run_control_assessment(db, org_id, scan_id),
+        )
+
+    # 13. Fire event-driven workflow triggers for new data
     results["workflows"] = _step(
         db, "Workflow triggers",
         lambda: _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids),
@@ -169,6 +176,18 @@ def _apply_global_exceptions(db, scan_id):
         logger.info("Applied %d global exceptions", applied)
         db.flush()
     return applied
+
+
+
+def _run_control_assessment(db, org_id, scan_id):
+    import services.control_assessment as control_assessment
+    result = control_assessment.assess_findings(db, org_id, scan_id=scan_id)
+    if result["assessed"]:
+        logger.info(
+            "Control assessment: %d assessed, %d mitigated, %d partial, %d not mitigated",
+            result["assessed"], result["mitigated"], result["partial"], result["not_mitigated"],
+        )
+    return result
 
 
 def _aggregate_solutions(db, scan_id):

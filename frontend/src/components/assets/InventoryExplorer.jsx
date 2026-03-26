@@ -6,7 +6,7 @@ import {
   LogIn, AlertTriangle, Key, UserCheck,
   Activity, Layers, Share2, Package, Lock, Monitor, FileText, Terminal, Eye, EyeOff, BrainCircuit,
   ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Download, Database, X,
-  Bot, User, Search, GitBranch, Globe, Building2, ShieldAlert, Image, ExternalLink
+  Bot, User, Search, GitBranch, Globe, Building2, ShieldAlert, Image, ExternalLink,
 } from 'lucide-react'
 import {
   Card, StatCard, Table, FilterBar, Select, Input,

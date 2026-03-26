@@ -1145,3 +1145,13 @@ export const getNewSinceCounts = (pages) => {
   const qs = Array.isArray(pages) ? pages.join(',') : pages
   return request(`/notifications/new-since?pages=${encodeURIComponent(qs)}`)
 }
+
+// ── Control Assessment ────────────────────────────────
+
+export const getFindingAssessments = (findingId) => request(`/control-assessments/finding/${findingId}`)
+export const getAssetPolicies = (assetId) => request(`/control-assessments/asset/${assetId}/policies`)
+export const runControlAssessment = (params = {}) => {
+  const qs = new URLSearchParams(params).toString()
+  return request(`/control-assessments/run${qs ? '?' + qs : ''}`, { method: 'POST' })
+}
+export const getControlAssessmentStats = () => request('/control-assessments/stats')

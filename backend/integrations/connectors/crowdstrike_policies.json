@@ -1,0 +1,59 @@
+{
+  "id": "crowdstrike_policies",
+  "name": "CrowdStrike Falcon — Prevention Policies",
+  "description": "Pull prevention policy configurations from CrowdStrike Falcon to assess control effectiveness",
+  "logo": "/logos/vendors/crowdstrike.svg",
+  "direction": "pull",
+  "entity": "security_control_policy",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.crowdstrike.com",
+    "method": "GET",
+    "path": "/policy/entities/prevention/v2",
+    "headers": {},
+    "query_params": {},
+    "pagination": {
+      "strategy": "none"
+    },
+    "pre_fetch": {
+      "path": "/policy/queries/prevention/v1",
+      "method": "GET",
+      "id_field": "resources",
+      "inject_as": "ids",
+      "inject_format": "repeated_param"
+    }
+  },
+  "records_path": "resources",
+  "credential_acquisition": {
+    "pattern": "client_credentials",
+    "token_url": "https://api.crowdstrike.com/oauth2/token",
+    "scopes": ["prevention-policies:read"],
+    "fields": [
+      { "field": "client_id", "label": "Client ID", "type": "text", "help": "From CrowdStrike API clients page" },
+      { "field": "client_secret", "label": "Client Secret", "type": "password", "help": "Generated when you created the API client" }
+    ]
+  },
+  "default_field_map": [
+    { "source": "id", "target": "policy_external_id" },
+    { "source": "name", "target": "policy_name" },
+    {
+      "source": "prevention_settings",
+      "target": "settings",
+      "transform": {
+        "type": "expression",
+        "expr": "{s['id'].lower(): {'enabled': s['value'].get('enabled', False), 'mode': s['value'].get('prevention', 'DISABLED')} for s in value} if isinstance(value, list) else value"
+      }
+    },
+    {
+      "source": "enabled",
+      "target": "policy_type",
+      "transform": { "type": "expression", "expr": "'prevention'" }
+    }
+  ],
+  "static_fields": {
+    "product_key": "crowdstrike_falcon",
+    "product_name": "CrowdStrike Falcon",
+    "vendor": "CrowdStrike"
+  },
+  "dedup_key": ["policy_external_id"]
+}

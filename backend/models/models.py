@@ -367,6 +367,10 @@ class Finding(Base):
     # ATT&CK TTP matching (populated by ttp_matcher)
     matched_ttps = Column(JSON, default=list)  # [{technique_id, name, tactic, mitre_url, match_reason, confidence}]
 
+    # Control validation (populated by control_assessment engine)
+    control_mitigation_status = Column(String, nullable=True)   # mitigated / partially_mitigated / not_mitigated / null
+    control_mitigation_summary = Column(String, nullable=True)  # "Mitigated by CrowdStrike (exploit prevention: BLOCK)"
+
     # Prioritization
     priority_score = Column(Float, default=0.0)
     effort_level = Column(String)  # quick_win / medium / complex
@@ -1340,6 +1344,7 @@ class FindingException(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
     __table_args__ = (
         Index("ix_exception_plugin_asset", "plugin_id", "asset_ip"),
     )
@@ -1763,3 +1768,91 @@ class IntegrationRun(Base):
     step_log = Column(JSON, nullable=False, default=list)
 
     integration = relationship("Integration", back_populates="runs")
+
+
+# ─────────────────────────────────────────────────────────
+# Security Control Validation
+# ─────────────────────────────────────────────────────────
+
+@importable(
+    slug="security_control_policy",
+    display_name="Security Control Policy",
+    category="inventory",
+    dedup_keys=["org_id", "product_key", "policy_external_id"],
+    required_fields=["product_key", "policy_external_id", "settings"],
+    description="Policy configurations from security products (EDR prevention, firewall rules, AV settings)",
+)
+class SecurityControlPolicy(Base):
+    """Actual policy config pulled from a security product API."""
+    __tablename__ = "security_control_policies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    product_key = Column(String, nullable=False, index=True)   # crowdstrike_falcon, ms_defender, palo_alto_ngfw
+    product_name = Column(String)                              # CrowdStrike Falcon
+    vendor = Column(String)
+    policy_external_id = Column(String, index=True)            # ID from source API
+    policy_name = Column(String)                               # "Default Prevention Policy"
+    policy_type = Column(String, index=True)                   # prevention, firewall, av_realtime, device_control
+    settings = Column(JSON, nullable=False)                    # product-specific config blob
+    raw_response = Column(JSON)                                # full API response for audit
+    source_integration_id = Column(String, ForeignKey("integrations.id"), nullable=True)
+    synced_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "product_key", "policy_external_id", name="uq_scp_org_product_policy"),
+        Index("ix_scp_org_product", "org_id", "product_key"),
+    )
+
+    assignments = relationship("SecurityControlPolicyAssignment", back_populates="policy", cascade="all, delete-orphan")
+    assessments = relationship("ControlAssessment", back_populates="policy", cascade="all, delete-orphan")
+
+
+class SecurityControlPolicyAssignment(Base):
+    """Maps a policy to an asset (resolved from host groups)."""
+    __tablename__ = "security_control_policy_assignments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    policy_id = Column(Integer, ForeignKey("security_control_policies.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    assignment_source = Column(String)          # host_group, direct, default_policy
+    source_group_id = Column(String)
+    source_group_name = Column(String)
+    synced_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("policy_id", "asset_id", name="uq_scpa_policy_asset"),
+        Index("ix_scpa_org_asset", "org_id", "asset_id"),
+    )
+
+    policy = relationship("SecurityControlPolicy", back_populates="assignments")
+
+
+class ControlAssessment(Base):
+    """Per-finding verdict: is this finding mitigated by a specific policy?"""
+    __tablename__ = "control_assessments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    finding_id = Column(Integer, ForeignKey("findings.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    policy_id = Column(Integer, ForeignKey("security_control_policies.id"), nullable=False, index=True)
+    verdict = Column(String, nullable=False)     # mitigated, partially_mitigated, not_mitigated, unknown
+    confidence = Column(String, nullable=False)  # high, medium, low
+    explanation = Column(Text, nullable=False)
+    matched_techniques = Column(JSON, default=list)
+    policy_settings_snapshot = Column(JSON)      # settings evaluated (audit trail)
+    assessed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("finding_id", "policy_id", name="uq_ca_finding_policy"),
+        Index("ix_ca_org_finding", "org_id", "finding_id"),
+        Index("ix_ca_org_asset", "org_id", "asset_id"),
+    )
+
+    policy = relationship("SecurityControlPolicy", back_populates="assessments")

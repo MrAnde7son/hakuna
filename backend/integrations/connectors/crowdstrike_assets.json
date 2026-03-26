@@ -58,6 +58,16 @@
       "transform": {
         "type": "datetime"
       }
+    },
+    {
+      "source": "device_policies.prevention.policy_id",
+      "target": "_prevention_policy_id",
+      "side_effect": "policy_assignment"
+    },
+    {
+      "source": "groups",
+      "target": "_host_groups",
+      "side_effect": "policy_assignment_context"
     }
   ],
   "dedup_key": [

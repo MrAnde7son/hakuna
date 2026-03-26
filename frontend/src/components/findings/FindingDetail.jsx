@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight, Layers, RefreshCw, Ticket } from 'lucide-react'
-import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign, syncFindingTickets } from '../../api.js'
+import { ArrowLeft, ExternalLink, Zap, Shield, ShieldCheck, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight, Layers, RefreshCw, Ticket } from 'lucide-react'
+import { getFinding, getFindingAssessments, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign, syncFindingTickets } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail, useToast, buildFindingBreakdown, useRiskWeights } from '../shared/ui.jsx'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -123,6 +123,16 @@ export default function FindingDetail() {
   const { t } = useTranslation()
   const { id } = useParams()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = searchParams.get('tab') || 'overview'
+  const setActiveTab = (tab) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (tab === 'overview') next.delete('tab')
+      else next.set('tab', tab)
+      return next
+    }, { replace: true })
+  }
   const toast = useToast()
   const riskWeights = useRiskWeights()
   const [finding, setFinding] = useState(null)
@@ -136,6 +146,7 @@ export default function FindingDetail() {
   const [exceptionReason, setExceptionReason] = useState('')
   const [ctxSaving, setCtxSaving] = useState(false)
   const [fetchError, setFetchError] = useState(null)
+  const [assessments, setAssessments] = useState([])
 
   const loadFinding = () => {
     setLoading(true)
@@ -147,6 +158,13 @@ export default function FindingDetail() {
   }
 
   useEffect(() => { loadFinding() }, [id])
+
+  useEffect(() => {
+    if (!finding) return
+    getFindingAssessments(finding.id)
+      .then(r => setAssessments(r.items || []))
+      .catch(() => {})
+  }, [finding?.id])
 
   const handleCreateCampaign = async () => {
     if (!finding) return
@@ -312,6 +330,35 @@ export default function FindingDetail() {
         )}
       </Card>
 
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
+        {[
+          { key: 'overview', icon: Zap, label: 'Overview' },
+          { key: 'context', icon: Eye, label: 'Context' },
+          { key: 'remediation', icon: Shield, label: 'Remediation' },
+          { key: 'technical', icon: Terminal, label: 'Technical' },
+        ].map(({ key, icon: Icon, label }) => {
+          const active = activeTab === key
+          return (
+            <button
+              key={key}
+              onClick={() => setActiveTab(key)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '10px 18px', background: 'none', border: 'none',
+                borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+                color: active ? 'var(--accent)' : 'var(--text-muted)',
+                fontSize: 13, fontWeight: 600, cursor: 'pointer', transition: 'color 0.15s',
+              }}
+            >
+              <Icon size={14} />
+              {label}
+            </button>
+          )
+        })}
+      </div>
+
+      {activeTab === 'overview' && (<>
       {/* Blast Radius */}
       {finding.asset_id && finding.scan_id && (
         <div style={{ marginBottom: 14 }}>
@@ -562,7 +609,9 @@ export default function FindingDetail() {
           </div>
         )}
       </Card>
+      </>)}
 
+      {activeTab === 'context' && (<>
       {/* Validated Context */}
       {(() => {
         const ctx = finding.context || {}
@@ -757,6 +806,66 @@ export default function FindingDetail() {
             </Section>
         )
       })()}
+      </>)}
+
+      {activeTab === 'remediation' && (<>
+
+      {/* Control Validation */}
+      {(finding.control_mitigation_status || assessments.length > 0) && (
+        <Card style={{ marginBottom: 14, border: `1px solid ${finding.control_mitigation_status === 'mitigated' ? '#22c55e40' : finding.control_mitigation_status === 'partially_mitigated' ? '#f59e0b40' : finding.control_mitigation_status === 'not_mitigated' ? '#dc262640' : 'var(--border)'}`, background: finding.control_mitigation_status === 'mitigated' ? '#22c55e08' : 'var(--bg-card)' }}>
+          <div style={{ padding: '14px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <ShieldCheck size={18} color={finding.control_mitigation_status === 'mitigated' ? '#22c55e' : finding.control_mitigation_status === 'partially_mitigated' ? '#f59e0b' : '#dc2626'} />
+              <span style={{
+                fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
+                color: finding.control_mitigation_status === 'mitigated' ? '#22c55e' : finding.control_mitigation_status === 'partially_mitigated' ? '#f59e0b' : '#dc2626',
+              }}>
+                {finding.control_mitigation_status === 'mitigated' ? 'Mitigated' : finding.control_mitigation_status === 'partially_mitigated' ? 'Partially Mitigated' : 'Not Mitigated'}
+              </span>
+            </div>
+            {finding.control_mitigation_summary && (
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 12 }}>
+                {finding.control_mitigation_summary}
+              </div>
+            )}
+            {assessments.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {assessments.map(a => (
+                  <div key={a.id} style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px',
+                    borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                  }}>
+                    <ShieldCheck size={14} color={a.verdict === 'mitigated' ? '#22c55e' : a.verdict === 'partially_mitigated' ? '#f59e0b' : '#dc2626'} style={{ marginTop: 2, flexShrink: 0 }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{a.policy?.product_name || a.policy?.product_key}</span>
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{a.policy?.policy_name}</span>
+                        <span style={{
+                          fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em',
+                          padding: '2px 6px', borderRadius: 4, marginLeft: 'auto',
+                          background: a.confidence === 'high' ? '#22c55e18' : a.confidence === 'medium' ? '#f59e0b18' : '#6b728018',
+                          color: a.confidence === 'high' ? '#22c55e' : a.confidence === 'medium' ? '#f59e0b' : '#6b7280',
+                        }}>{a.confidence}</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>{a.explanation}</div>
+                      {a.matched_techniques?.length > 0 && (
+                        <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
+                          {a.matched_techniques.map(t => (
+                            <span key={t} style={{
+                              fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4,
+                              background: 'var(--bg-muted)', border: '1px solid var(--border)', color: 'var(--text-muted)',
+                            }}>{t}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
 
       {/* Aggregated Solution Banner */}
       {finding.aggregated_solution && (
@@ -833,7 +942,9 @@ export default function FindingDetail() {
           </Button>
         </div>
       </Section>
+      </>)}
 
+      {activeTab === 'technical' && (<>
       {/* Description */}
       {finding.description && (
         <Section title={t('findingDetail.description')} icon={Info} defaultOpen={false}>
@@ -938,6 +1049,7 @@ export default function FindingDetail() {
           </div>
         )}
       </Section>
+      </>)}
 
     </div>
   )

@@ -82,6 +82,7 @@ from routes.billing_routes import router as billing_router
 from routes.copilot_routes import router as copilot_router
 from routes.workflow_routes import router as workflow_router
 from routes.notification_routes import router as notification_router
+from routes.control_assessment_routes import router as control_assessment_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -313,6 +314,8 @@ app.include_router(discovery_router)
 app.include_router(billing_router)
 app.include_router(workflow_router)
 app.include_router(notification_router)
+app.include_router(control_assessment_router)
+
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
@@ -1985,6 +1988,9 @@ def list_findings(
     _ticket_status = request.query_params.get("ticket_status")
     if _ticket_status:
         q = q.filter(Finding.tickets.any(FindingTicket.mapped_status == _ticket_status))
+    _control_status = request.query_params.get("control_mitigation_status")
+    if _control_status:
+        q = q.filter(Finding.control_mitigation_status == _control_status)
     if effort_level:
         q = q.filter(Finding.effort_level == effort_level)
     if auto_resolved is not None:
@@ -2347,6 +2353,8 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset:
         "ransomware_linked": f.ransomware_linked or False,
         "trending_in_news": f.trending_in_news or False,
         "matched_ttps": f.matched_ttps or [],
+        "control_mitigation_status": f.control_mitigation_status,
+        "control_mitigation_summary": f.control_mitigation_summary,
         "priority_score": f.priority_score,
         "effort_level": f.effort_level,
         "owner_suggestion": f.owner_suggestion,

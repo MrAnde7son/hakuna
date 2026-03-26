@@ -4,13 +4,15 @@ import { useTranslation } from 'react-i18next'
 import {
   ArrowLeft, Server, Bug, Database, Shield, Globe, Network, Users,
   ChevronDown, ChevronRight, AlertTriangle, Activity, Clock,
-  ExternalLink, Package, Lock, Layers, Copy, Check
+  ExternalLink, Package, Lock, Layers, Copy, Check,
+  Cloud, HardDrive, Router, Container
 } from 'lucide-react'
 import {
   getAsset, getAssetRiskBreakdown, getFindings, getBlastRadius,
   getInventoryUsers, getInventoryServices,
   getInventorySoftware, getInventoryNetconns, getInventoryPatches,
   getInventorySecurityControls, getInventoryCertificates,
+  getAssetPolicies,
 } from '../../api.js'
 import {
   Card, ScoreBar, Spinner, Button, Pill, SeverityBadge, Table,
@@ -172,6 +174,7 @@ const TABS = [
   { key: 'overview', icon: Server, labelKey: 'assetDetail.overview' },
   { key: 'findings', icon: Bug, labelKey: 'assetDetail.findings' },
   { key: 'inventory', icon: Database, labelKey: 'assetDetail.inventory' },
+  { key: 'policies', icon: Shield, label: 'Policies' },
 ]
 
 
@@ -296,6 +299,7 @@ function OverviewTab({ asset, blastRadius, onReload, riskComponents, assetRiskWe
           </KeyVal>
         )}
       </Section>
+
     </>
   )
 }
@@ -471,7 +475,91 @@ function InventoryTab({ asset }) {
   )
 }
 
+
 // ─── Main Component ───────────────────────────────────────
+// ─── Policies Tab ────────────────────────────────────────
+function PoliciesTab({ asset }) {
+  const [data, setData] = useState({ items: [] })
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    setLoading(true)
+    getAssetPolicies(asset.id)
+      .then(r => setData({ items: r.items || [] }))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [asset.id])
+
+  if (loading) return <div style={{ padding: 32, textAlign: 'center' }}><Spinner /></div>
+
+  if (!data.items.length) {
+    return <EmptyState icon={Shield} title="No Security Policies" sub="Connect a security product (e.g. CrowdStrike) via Integration Builder to see policy configurations." />
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+        Security product policies assigned to this asset
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {data.items.map(item => {
+          const p = item.policy
+          const stats = item.assessment_stats || {}
+          const total = (stats.mitigated || 0) + (stats.partially_mitigated || 0) + (stats.not_mitigated || 0) + (stats.unknown || 0)
+          return (
+            <Card key={item.id} style={{ padding: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{p?.product_name || p?.product_key}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                    {p?.policy_name} · {p?.policy_type} · {p?.vendor}
+                  </div>
+                </div>
+                {item.source_group_name && (
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', background: 'var(--bg-secondary)', padding: '3px 8px', borderRadius: 4 }}>
+                    {item.assignment_source}: {item.source_group_name}
+                  </span>
+                )}
+              </div>
+              {/* Policy settings preview */}
+              {p?.settings && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                  {Object.entries(p.settings).slice(0, 8).map(([key, val]) => {
+                    const mode = val?.mode || (val?.enabled ? 'enabled' : 'disabled')
+                    const isBlock = mode === 'block' || mode === 'AGGRESSIVE' || mode === 'MODERATE' || mode === 'CAUTIOUS'
+                    const isDetect = mode === 'detect' || mode === 'DISABLED'
+                    return (
+                      <span key={key} style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                        fontSize: 11, fontWeight: 500, padding: '3px 8px', borderRadius: 4,
+                        background: isBlock ? '#22c55e12' : isDetect ? '#f59e0b12' : '#6b728012',
+                        border: `1px solid ${isBlock ? '#22c55e30' : isDetect ? '#f59e0b30' : '#6b728030'}`,
+                        color: isBlock ? '#22c55e' : isDetect ? '#f59e0b' : '#6b7280',
+                      }}>
+                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: isBlock ? '#22c55e' : isDetect ? '#f59e0b' : '#6b7280' }} />
+                        {key.replace(/_/g, ' ')}
+                      </span>
+                    )
+                  })}
+                </div>
+              )}
+              {/* Assessment stats */}
+              {total > 0 && (
+                <div style={{ display: 'flex', gap: 12, fontSize: 12 }}>
+                  {stats.mitigated > 0 && <span style={{ color: '#22c55e', fontWeight: 600 }}>{stats.mitigated} mitigated</span>}
+                  {stats.partially_mitigated > 0 && <span style={{ color: '#f59e0b', fontWeight: 600 }}>{stats.partially_mitigated} partial</span>}
+                  {stats.not_mitigated > 0 && <span style={{ color: '#dc2626', fontWeight: 600 }}>{stats.not_mitigated} not mitigated</span>}
+                </div>
+              )}
+            </Card>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+
 export default function AssetDetail() {
   const { t } = useTranslation()
   const { id } = useParams()
@@ -601,9 +689,9 @@ export default function AssetDetail() {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
-        {TABS.map(({ key, icon: Icon, labelKey }) => {
+        {TABS.map(({ key, icon: Icon, labelKey, label: rawLabel }) => {
           const active = activeTab === key
-          const label = t(labelKey) + (key === 'findings' && findingTotal > 0 ? ` (${findingTotal})` : '')
+          const label = (labelKey ? t(labelKey) : rawLabel) + (key === 'findings' && findingTotal > 0 ? ` (${findingTotal})` : '')
           return (
             <button
               key={key}
@@ -627,6 +715,7 @@ export default function AssetDetail() {
       {activeTab === 'overview' && <OverviewTab asset={asset} blastRadius={blastRadius} onReload={load} riskComponents={riskComponents} assetRiskWeights={assetRiskWeights} />}
       {activeTab === 'findings' && <FindingsTab asset={asset} />}
       {activeTab === 'inventory' && <InventoryTab asset={asset} />}
+      {activeTab === 'policies' && <PoliciesTab asset={asset} />}
     </div>
   )
 }
