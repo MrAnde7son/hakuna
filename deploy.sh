@@ -10,7 +10,7 @@
 #   --scanners      Build & push scanner images (hakuna-scanner + vm-scanner)
 #   --frontend      Build React app and sync to GCS
 #   --infra         Run terraform apply (use for infra changes)
-#   --migrate       Run standalone Python migration scripts via Cloud SQL Auth Proxy
+#   --migrate       Run standalone Python migration scripts via IAP tunnel through scanner VM
 #   --help          Show this help
 #
 # Examples:
@@ -84,7 +84,7 @@ check_cmd gcloud
 check_cmd gsutil
 $DO_INFRA   && check_cmd terraform
 $DO_API     && check_cmd terraform
-$DO_MIGRATE && check_cmd cloud-sql-proxy
+# Migrations run as a Cloud Run Job — no local tools needed
 
 # Verify gcloud is authenticated and project is set
 ACTIVE_PROJECT=$(gcloud config get-value project 2>/dev/null || true)
@@ -269,49 +269,48 @@ if $DO_MIGRATE; then
   step "Running database migrations"
   cd "${SCRIPT_DIR}"
 
-  # Get Cloud SQL connection name from terraform
   SQL_CONN=$(tf_output cloud_sql_connection_name 2>/dev/null || true)
   if [[ -z "$SQL_CONN" ]]; then
     error "Could not read cloud_sql_connection_name from terraform output."
-    error "Make sure you've run terraform apply first, or set SQL_CONN manually."
     exit 1
   fi
 
-  info "Starting Cloud SQL Auth Proxy for: ${SQL_CONN}"
-  # Use --private-ip when running from within VPC (Cloud Run, scanner VM).
-  # From local machines, public IP must be temporarily enabled on the instance.
-  cloud-sql-proxy "${SQL_CONN}" --port=5432 &
-  PROXY_PID=$!
-  trap "kill ${PROXY_PID} 2>/dev/null || true" EXIT
-  sleep 3  # wait for proxy to be ready
+  # Build the migration command — runs all scripts in order (each is idempotent)
+  MIGRATE_CMD='cd /app && for f in migrations/[0-9]*.py; do [ -f "$f" ] && echo "Applying: $f" && python "$f"; done && echo "All migrations applied."'
 
+  # Fetch DB password from Secret Manager and build DATABASE_URL
   DB_PASS=$(gcloud secrets versions access latest --secret="hakuna-db-password")
-  # URL-encode the password to handle special characters (@, %, #, etc.)
   DB_PASS_ENCODED=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote_plus(sys.stdin.read().strip()))" <<< "${DB_PASS}")
-  # Use psycopg2 (sync) driver — migration scripts use SQLAlchemy sync engine
-  export DATABASE_URL="postgresql://hakuna:${DB_PASS_ENCODED}@127.0.0.1:5432/hakuna"
+  # Cloud Run Jobs expose Cloud SQL via Unix socket at /cloudsql/<connection_name>
+  DB_URL="postgresql://hakuna:${DB_PASS_ENCODED}@/hakuna?host=/cloudsql/${SQL_CONN}"
 
-  cd "${SCRIPT_DIR}/backend"
+  JOB_NAME="hakuna-migrate"
+  VPC_CONNECTOR="projects/${PROJECT_ID}/locations/${REGION}/connectors/hakuna-vpc-connector"
+  SERVICE_ACCOUNT="hakuna-api@${PROJECT_ID}.iam.gserviceaccount.com"
 
-  # Activate virtualenv if present
-  if [[ -f ".venv/bin/activate" ]]; then
-    source .venv/bin/activate
-  fi
+  info "Running migrations via Cloud Run job '${JOB_NAME}'"
+  # Delete any existing job, then create fresh with current image + env.
+  # The API image already contains migration scripts and all Python deps.
+  # Cloud SQL volume provides the cloud-sql-proxy sidecar on localhost:5432.
+  # VPC connector allows the proxy to reach Cloud SQL's private IP.
+  gcloud run jobs delete "${JOB_NAME}" --region="${REGION}" --quiet 2>/dev/null || true
 
-  # Run all migration scripts in order (idempotent — each checks before altering)
-  MIGRATION_COUNT=0
-  for migration in migrations/[0-9]*.py; do
-    if [[ -f "$migration" ]]; then
-      info "Applying: ${migration}"
-      python "${migration}"
-      MIGRATION_COUNT=$((MIGRATION_COUNT + 1))
-    fi
-  done
+  gcloud run jobs create "${JOB_NAME}" \
+    --region="${REGION}" \
+    --image="${API_IMAGE}" \
+    --command="sh" \
+    --args="-c,${MIGRATE_CMD}" \
+    --set-env-vars="DATABASE_URL=${DB_URL}" \
+    --vpc-connector="${VPC_CONNECTOR}" \
+    --vpc-egress=private-ranges-only \
+    --set-cloudsql-instances="${SQL_CONN}" \
+    --service-account="${SERVICE_ACCOUNT}" \
+    --max-retries=0 \
+    --task-timeout=300s \
+    --execute-now \
+    --wait
 
-  success "Migrations applied (${MIGRATION_COUNT} scripts run)"
-
-  kill "${PROXY_PID}" 2>/dev/null || true
-  trap - EXIT
+  success "Migrations applied via Cloud Run job"
   cd "${SCRIPT_DIR}"
 fi
 
