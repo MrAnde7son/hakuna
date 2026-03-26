@@ -5,6 +5,7 @@ import { ArrowLeft, ExternalLink, Zap, Shield, Terminal, Info, Crosshair, Clock,
 import { getFinding, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign, syncFindingTickets } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail, useToast, buildFindingBreakdown, useRiskWeights } from '../shared/ui.jsx'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import BlastRadiusPanel from '../campaigns/BlastRadiusPanel.jsx'
 
 function Section({ title, icon: Icon, children, defaultOpen = true }) {
@@ -774,7 +775,7 @@ export default function FindingDetail() {
               that share the same root cause. Instead of fixing each individually, apply the aggregated solution below.
             </div>
             <div style={{ marginTop: 10, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7, background: 'var(--bg-secondary)', padding: '12px 14px', borderRadius: 8 }}>
-              <ReactMarkdown>{finding.aggregated_solution.description}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{finding.aggregated_solution.description}</ReactMarkdown>
             </div>
             <div style={{ marginTop: 12 }}>
               <Button

@@ -6,6 +6,7 @@ import { Layers, ChevronDown, ChevronUp, ExternalLink, RefreshCw, ArrowRight, Mo
 import { useScan } from '../../App.jsx'
 import { getAggregatedSolutions, rebuildAggregatedSolutions } from '../../api.js'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { Card, PageHeader, Spinner, EmptyState, SeverityBadge, EffortBadge, Select, FilterBar, ErrorBanner, SkeletonCard } from '../shared/ui.jsx'
 
 const ROOT_CAUSE_KEYS = ['eol_software', 'deprecated_protocol', 'outdated_version', 'misconfiguration', 'missing_patch']
@@ -296,7 +297,7 @@ function RecommendationCard({ rec, highlighted }) {
             marginTop: 14, fontSize: 13, color: 'var(--text-secondary)',
             lineHeight: 1.7,
           }}>
-            <ReactMarkdown>{rec.description}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{rec.description}</ReactMarkdown>
           </div>
 
           {/* Affected hosts */}

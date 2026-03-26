@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { useTranslation } from 'react-i18next'
 import {
   X, Send, Plus, Trash2, MessageSquare, Bot, Loader2,
   ChevronDown, ChevronRight, Wrench, ShieldAlert, Zap,
   Clock, Globe, Bug, Target, Briefcase, Clipboard,
+  Copy, Check, RotateCcw, ThumbsUp, ThumbsDown,
+  Search,
 } from 'lucide-react'
 import {
   getCopilotConversations,
@@ -15,9 +18,45 @@ import {
   decideAgentApproval,
   getStoredToken,
   getOrgContext,
+  getBillingUsage,
 } from '../../api.js'
 
 const API_ORIGIN = import.meta.env.VITE_API_URL || ''
+
+// ── Relative time formatting ─────────────────────────────────────
+function formatRelativeTime(dateStr) {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  const now = new Date()
+  const diffMs = now - date
+  const diffMin = Math.floor(diffMs / 60000)
+  const diffHr = Math.floor(diffMs / 3600000)
+  const diffDay = Math.floor(diffMs / 86400000)
+
+  if (diffMin < 1) return 'Just now'
+  if (diffMin < 60) return `${diffMin}m ago`
+  if (diffHr < 24) return `${diffHr}h ago`
+  if (diffDay < 7) return `${diffDay}d ago`
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+function getDateGroup(dateStr) {
+  if (!dateStr) return 'Older'
+  const date = new Date(dateStr)
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1)
+  const weekAgo = new Date(today); weekAgo.setDate(today.getDate() - 7)
+
+  if (date >= today) return 'Today'
+  if (date >= yesterday) return 'Yesterday'
+  if (date >= weekAgo) return 'This week'
+  return 'Older'
+}
+
+const DEFAULT_PANEL_WIDTH = 480
+const MIN_PANEL_WIDTH = 360
+const MAX_PANEL_WIDTH_RATIO = 0.9 // 90% of viewport
 
 const ICON_MAP = {
   'shield-alert': ShieldAlert,
@@ -100,6 +139,36 @@ const CONTEXTUAL_PROMPTS = {
   '/settings': [
     { text: 'Analyze my latest scan upload and summarize what changed', icon: 'clipboard' },
     { text: 'How many scans have been uploaded this month?', icon: 'briefcase' },
+    { text: 'What integrations are configured?', icon: 'globe' },
+    { text: 'Check if all API keys and connections are healthy', icon: 'shield-alert' },
+  ],
+  '/agents': [
+    { text: 'Which agents have run recently and what did they find?', icon: 'clipboard' },
+    { text: 'Create a new agent to monitor for critical findings daily', icon: 'zap' },
+    { text: 'Show me the output from the last agent run', icon: 'target' },
+    { text: 'Which agents are scheduled and when do they next run?', icon: 'alarm' },
+  ],
+  '/workflows': [
+    { text: 'Which workflows are active and what do they automate?', icon: 'clipboard' },
+    { text: 'Create a workflow to auto-assign critical findings to the security team', icon: 'zap' },
+    { text: 'Show recent workflow execution history and failures', icon: 'alarm' },
+    { text: 'Suggest a workflow to automate our remediation process', icon: 'target' },
+  ],
+  '/workflows/': [
+    { text: 'Explain what this workflow does step by step', icon: 'clipboard' },
+    { text: 'Are there any errors in the recent runs of this workflow?', icon: 'bug' },
+    { text: 'Suggest improvements to this workflow', icon: 'zap' },
+  ],
+  '/docs': [
+    { text: 'How do I upload a Nessus scan file?', icon: 'clipboard' },
+    { text: 'How does the priority scoring algorithm work?', icon: 'shield-alert' },
+    { text: 'How do I set up Jira integration?', icon: 'globe' },
+    { text: 'What scan formats are supported?', icon: 'target' },
+  ],
+  '/profile': [
+    { text: 'What permissions does my role have?', icon: 'shield-alert' },
+    { text: 'Show my recent activity and actions', icon: 'clipboard' },
+    { text: 'How many findings have I resolved this month?', icon: 'target' },
   ],
 }
 
@@ -114,6 +183,7 @@ const PAGE_LABELS = {
   '/aggregated-solutions': 'Aggregated Solutions',
   '/tags': 'Tag Manager',
   '/agents': 'AI Agents',
+  '/workflows': 'Workflows',
   '/settings': 'Settings',
   '/profile': 'User Profile',
   '/docs': 'Documentation',
@@ -124,8 +194,12 @@ function getContextualPrompts(path) {
   // Exact match first (e.g., /findings, /assets, /campaigns)
   if (CONTEXTUAL_PROMPTS[path]) return CONTEXTUAL_PROMPTS[path]
   // Detail page match (e.g., /findings/123 → /findings/)
-  for (const key of Object.keys(CONTEXTUAL_PROMPTS)) {
-    if (key.endsWith('/') && path.startsWith(key)) return CONTEXTUAL_PROMPTS[key]
+  // Sort keys longest-first so /workflows/ matches before /
+  const prefixKeys = Object.keys(CONTEXTUAL_PROMPTS)
+    .filter(k => k.endsWith('/') && k !== '/')
+    .sort((a, b) => b.length - a.length)
+  for (const key of prefixKeys) {
+    if (path.startsWith(key)) return CONTEXTUAL_PROMPTS[key]
   }
   return null
 }
@@ -156,12 +230,65 @@ const mdComponents = {
   strong: ({ children }) => <strong style={{ fontWeight: 700, color: 'var(--text)' }}>{children}</strong>,
   code: ({ inline, children }) => inline
     ? <code style={{ background: 'var(--bg-secondary)', padding: '1px 4px', borderRadius: 3, fontSize: 11, fontFamily: 'monospace' }}>{children}</code>
-    : <pre style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, padding: 8, overflowX: 'auto', fontSize: 11, fontFamily: 'monospace', margin: '6px 0' }}><code>{children}</code></pre>,
+    : <pre style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, padding: 8, overflowX: 'auto', fontSize: 11, fontFamily: 'monospace', margin: '6px 0', color: 'var(--text)' }}><code>{children}</code></pre>,
   table: ({ children }) => <div style={{ overflowX: 'auto' }}><table style={{ borderCollapse: 'collapse', width: '100%', margin: '6px 0', fontSize: 11 }}>{children}</table></div>,
   th: ({ children }) => <th style={{ border: '1px solid var(--border)', padding: '4px 8px', background: 'var(--bg-secondary)', fontWeight: 600, textAlign: 'left' }}>{children}</th>,
   td: ({ children }) => <td style={{ border: '1px solid var(--border)', padding: '3px 8px' }}>{children}</td>,
   hr: () => <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '8px 0' }} />,
   blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid var(--accent)', paddingLeft: 10, margin: '6px 0', color: 'var(--text-muted)', fontStyle: 'italic' }}>{children}</blockquote>,
+}
+
+
+// ── Message action bar (copy, retry, feedback) ──────────────────────
+
+function MessageActions({ content, onRetry, messageIndex }) {
+  const [copied, setCopied] = useState(false)
+  const [feedback, setFeedback] = useState(null) // 'up' | 'down' | null
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {}
+  }
+
+  const actionBtnStyle = (active, color) => ({
+    background: 'none', border: 'none', cursor: 'pointer', padding: 4,
+    borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    color: active ? (color || 'var(--accent)') : 'var(--text-muted)',
+    opacity: active ? 1 : 0.6,
+    transition: 'opacity 0.15s, color 0.15s',
+  })
+
+  return (
+    <div style={{
+      display: 'flex', gap: 2, marginTop: 4, marginLeft: 34,
+    }}>
+      <button onClick={handleCopy} title="Copy message" style={actionBtnStyle(copied)}>
+        {copied ? <Check size={13} /> : <Copy size={13} />}
+      </button>
+      {onRetry && (
+        <button onClick={onRetry} title="Retry" style={actionBtnStyle(false)}>
+          <RotateCcw size={13} />
+        </button>
+      )}
+      <button
+        onClick={() => setFeedback(f => f === 'up' ? null : 'up')}
+        title="Helpful"
+        style={actionBtnStyle(feedback === 'up', '#22c55e')}
+      >
+        <ThumbsUp size={13} />
+      </button>
+      <button
+        onClick={() => setFeedback(f => f === 'down' ? null : 'down')}
+        title="Not helpful"
+        style={actionBtnStyle(feedback === 'down', '#ef4444')}
+      >
+        <ThumbsDown size={13} />
+      </button>
+    </div>
+  )
 }
 
 
@@ -193,7 +320,7 @@ function ToolCallEvent({ event }) {
       {expanded && event.input && (
         <pre style={{
           marginTop: 6, padding: 6, borderRadius: 4,
-          background: '#0f172a', color: '#94a3b8',
+          background: 'var(--bg-secondary)', color: 'var(--text-muted, #94a3b8)',
           fontSize: 10, fontFamily: 'monospace', overflowX: 'auto',
           maxHeight: 120,
         }}>
@@ -203,7 +330,7 @@ function ToolCallEvent({ event }) {
       {expanded && event.result && (
         <pre style={{
           marginTop: 4, padding: 6, borderRadius: 4,
-          background: '#0f172a', color: '#6ee7b7',
+          background: 'var(--bg-secondary)', color: 'var(--success, #6ee7b7)',
           fontSize: 10, fontFamily: 'monospace', overflowX: 'auto',
           maxHeight: 150,
         }}>
@@ -304,6 +431,33 @@ function ThinkingIndicator({ step }) {
 }
 
 
+// ── Token Usage Bar ─────────────────────────────────────────────────
+
+function TokenUsageBar({ usage }) {
+  if (!usage || usage.tier === 'free') return null
+  const pct = usage.percentage || 0
+  const used = usage.used || 0
+  const limit = usage.limit || 0
+  const barColor = usage.exceeded ? '#ef4444' : usage.warning ? '#f59e0b' : 'var(--accent)'
+  const formatTokens = (n) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(0)}K` : n
+
+  return (
+    <div style={{ padding: '6px 16px', fontSize: 11, color: 'var(--text-muted)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+        <span>AI tokens</span>
+        <span>{formatTokens(used)} / {formatTokens(limit)}</span>
+      </div>
+      <div style={{ height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: `${Math.min(pct, 100)}%`, background: barColor, borderRadius: 2, transition: 'width 0.3s ease' }} />
+      </div>
+      {usage.exceeded && (
+        <div style={{ color: '#ef4444', fontSize: 10, marginTop: 2 }}>Monthly quota exceeded</div>
+      )}
+    </div>
+  )
+}
+
+
 // ── Main Panel ──────────────────────────────────────────────────────
 
 export default function CopilotPanel({ open, onClose, currentPath }) {
@@ -317,16 +471,21 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
   const [streamText, setStreamText] = useState('')
   const [suggestedPrompts, setSuggestedPrompts] = useState([])
   const [showHistory, setShowHistory] = useState(false)
+  const [historySearch, setHistorySearch] = useState('')
+  const [panelW, setPanelW] = useState(DEFAULT_PANEL_WIDTH)
+  const [dragging, setDragging] = useState(false)
   const [thinkingStep, setThinkingStep] = useState(-1)
+  const [tokenUsage, setTokenUsage] = useState(null)
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
   const abortRef = useRef(null)
 
-  // Load conversations and suggested prompts on open
+  // Load conversations, suggested prompts, and token usage on open
   useEffect(() => {
     if (open) {
       getCopilotConversations().then(setConversations).catch(() => {})
       getCopilotSuggestedPrompts().then(setSuggestedPrompts).catch(() => {})
+      getBillingUsage().then(setTokenUsage).catch(() => {})
     }
   }, [open])
 
@@ -412,7 +571,20 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
 
     // Build context-enriched message for the backend
     const pageLabel = getPageLabel(currentPath)
-    const contextPrefix = pageLabel ? `[User is currently viewing: ${pageLabel}${currentPath?.match(/\/.+\/(.+)/) ? ` (ID: ${currentPath.match(/\/.+\/(.+)/)[1]})` : ''}]\n\n` : ''
+    const idMatch = currentPath?.match(/\/.+\/(\d+)/)
+    const entityId = idMatch ? idMatch[1] : null
+    let contextPrefix = ''
+    if (pageLabel) {
+      contextPrefix = `[User is currently viewing: ${pageLabel}${entityId ? ` (ID: ${entityId})` : ''}]`
+      // Add tool hints for detail pages so the agent knows which tool to call
+      if (entityId) {
+        if (currentPath.startsWith('/workflows/')) contextPrefix += `\n[Use get_workflow_detail with workflow_id=${entityId} to answer questions about this workflow]`
+        else if (currentPath.startsWith('/findings/')) contextPrefix += `\n[Use get_finding_detail with finding_id=${entityId} to answer questions about this finding]`
+        else if (currentPath.startsWith('/assets/')) contextPrefix += `\n[Use get_asset_profile with asset_id=${entityId} to answer questions about this asset]`
+        else if (currentPath.startsWith('/campaigns/')) contextPrefix += `\n[Use query_findings with campaign context to answer questions about this campaign]`
+      }
+      contextPrefix += '\n\n'
+    }
     const enrichedMsg = contextPrefix + msg
 
     try {
@@ -523,6 +695,7 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
       setStreaming(false)
       setThinkingStep(-1)
       abortRef.current = null
+      getBillingUsage().then(setTokenUsage).catch(() => {})
     }
   }, [input, streaming, activeConv])
 
@@ -538,6 +711,36 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
     setStreaming(false)
     setThinkingStep(-1)
   }
+
+  // Drag-to-resize logic
+  const dragRef = useRef(null)
+
+  const handleDragStart = useCallback((e) => {
+    e.preventDefault()
+    setDragging(true)
+    const startX = e.clientX
+    const startW = panelW
+
+    const onMove = (ev) => {
+      const delta = startX - ev.clientX
+      const maxW = window.innerWidth * MAX_PANEL_WIDTH_RATIO
+      setPanelW(Math.max(MIN_PANEL_WIDTH, Math.min(maxW, startW + delta)))
+    }
+    const onUp = () => {
+      setDragging(false)
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [panelW])
+
+  // Double-click to reset width
+  const handleDragDoubleClick = useCallback(() => {
+    setPanelW(DEFAULT_PANEL_WIDTH)
+  }, [])
+
+  const clampedWidth = Math.min(panelW, window.innerWidth - 20)
 
   if (!open) return null
 
@@ -557,15 +760,30 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
       {/* Panel */}
       <div style={{
         position: 'fixed', top: 0, right: 0, bottom: 0,
-        width: Math.min(480, window.innerWidth - 20),
+        width: clampedWidth,
         zIndex: 200,
         background: 'var(--bg)',
         borderLeft: '1px solid var(--border)',
         display: 'flex', flexDirection: 'column',
         boxShadow: '-4px 0 24px rgba(0,0,0,0.15)',
         transform: open ? 'translateX(0)' : 'translateX(100%)',
-        transition: 'transform 0.25s ease',
+        transition: dragging ? 'none' : 'transform 0.25s ease, width 0.2s ease',
       }}>
+        {/* Drag handle — left edge */}
+        <div
+          ref={dragRef}
+          onMouseDown={handleDragStart}
+          onDoubleClick={handleDragDoubleClick}
+          title="Drag to resize, double-click to reset"
+          style={{
+            position: 'absolute', top: 0, left: -3, bottom: 0, width: 6,
+            cursor: 'col-resize', zIndex: 210,
+            background: dragging ? 'var(--accent)' : 'transparent',
+            transition: 'background 0.15s',
+          }}
+          onMouseEnter={e => { if (!dragging) e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.opacity = '0.4' }}
+          onMouseLeave={e => { if (!dragging) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.opacity = '1' } }}
+        />
 
         {/* Header */}
         <div style={{
@@ -583,11 +801,14 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
             }}>Agent</span>
           </div>
           <button
-            onClick={() => setShowHistory(!showHistory)}
+            onClick={() => { setShowHistory(!showHistory); setHistorySearch('') }}
             title="Conversation history"
             style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: 'var(--text-muted)', padding: 4, borderRadius: 4,
+              background: showHistory ? 'var(--bg)' : 'none',
+              border: showHistory ? '1px solid var(--border)' : 'none',
+              cursor: 'pointer',
+              color: showHistory ? 'var(--accent)' : 'var(--text-muted)',
+              padding: 4, borderRadius: 4,
             }}
           >
             <MessageSquare size={16} />
@@ -613,44 +834,124 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
           </button>
         </div>
 
-        {/* Conversation history dropdown */}
-        {showHistory && (
-          <div style={{
-            borderBottom: '1px solid var(--border)', maxHeight: 250, overflowY: 'auto',
-            background: 'var(--bg-secondary)',
-          }}>
-            {conversations.length === 0 ? (
-              <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 12, textAlign: 'center' }}>
-                No conversations yet
+        {/* Conversation history panel */}
+        {showHistory && (() => {
+          const filtered = conversations.filter(c =>
+            !historySearch || (c.title || '').toLowerCase().includes(historySearch.toLowerCase())
+          )
+          const grouped = filtered.reduce((acc, conv) => {
+            const group = getDateGroup(conv.updated_at || conv.created_at)
+            if (!acc[group]) acc[group] = []
+            acc[group].push(conv)
+            return acc
+          }, {})
+          const groupOrder = ['Today', 'Yesterday', 'This week', 'Older']
+
+          return (
+            <div style={{
+              borderBottom: '1px solid var(--border)',
+              maxHeight: 350, overflowY: 'auto',
+              background: 'var(--bg)',
+            }}>
+              {/* Search bar */}
+              <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  background: 'var(--bg)', border: '1px solid var(--border)',
+                  borderRadius: 6, padding: '4px 8px',
+                }}>
+                  <Search size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                  <input
+                    value={historySearch}
+                    onChange={e => setHistorySearch(e.target.value)}
+                    placeholder="Search conversations..."
+                    style={{
+                      flex: 1, border: 'none', outline: 'none', background: 'transparent',
+                      color: 'var(--text)', fontSize: 11, fontFamily: 'inherit',
+                    }}
+                  />
+                  {historySearch && (
+                    <button
+                      onClick={() => setHistorySearch('')}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 0, display: 'flex' }}
+                    >
+                      <X size={10} />
+                    </button>
+                  )}
+                </div>
               </div>
-            ) : conversations.map(conv => (
-              <div
-                key={conv.id}
-                onClick={() => loadConversation(conv)}
-                style={{
-                  padding: '8px 16px', cursor: 'pointer', fontSize: 12,
-                  display: 'flex', alignItems: 'center', gap: 8,
-                  background: activeConv?.id === conv.id ? 'var(--bg)' : 'transparent',
-                  borderBottom: '1px solid var(--border)',
-                }}
-              >
-                <MessageSquare size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {conv.title || 'New conversation'}
-                </span>
-                <span style={{ color: 'var(--text-muted)', fontSize: 10, flexShrink: 0 }}>
-                  {conv.message_count || 0} msgs
-                </span>
-                <button
-                  onClick={(e) => deleteConv(conv.id, e)}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2 }}
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+
+              {filtered.length === 0 ? (
+                <div style={{ padding: '20px 16px', color: 'var(--text-muted)', fontSize: 12, textAlign: 'center' }}>
+                  {historySearch ? 'No matching conversations' : 'No conversations yet'}
+                </div>
+              ) : groupOrder.filter(g => grouped[g]).map(group => (
+                <div key={group}>
+                  <div style={{
+                    padding: '6px 14px', fontSize: 10, fontWeight: 600,
+                    color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5,
+                    background: 'var(--bg-secondary)',
+                    borderBottom: '1px solid var(--border)',
+                  }}>
+                    {group}
+                  </div>
+                  {grouped[group].map(conv => (
+                    <div
+                      key={conv.id}
+                      onClick={() => loadConversation(conv)}
+                      style={{
+                        padding: '10px 14px', cursor: 'pointer', fontSize: 12,
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        background: activeConv?.id === conv.id ? 'rgba(var(--accent-rgb, 99,102,241), 0.08)' : 'transparent',
+                        borderBottom: '1px solid var(--border)',
+                        borderLeft: activeConv?.id === conv.id ? '3px solid var(--accent)' : '3px solid transparent',
+                        transition: 'background 0.12s ease',
+                      }}
+                      onMouseEnter={e => { if (activeConv?.id !== conv.id) e.currentTarget.style.background = 'var(--bg-secondary)' }}
+                      onMouseLeave={e => { if (activeConv?.id !== conv.id) e.currentTarget.style.background = 'transparent' }}
+                    >
+                      <MessageSquare size={14} style={{
+                        color: activeConv?.id === conv.id ? 'var(--accent)' : 'var(--text-muted)',
+                        flexShrink: 0,
+                      }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          fontWeight: activeConv?.id === conv.id ? 600 : 400,
+                          color: activeConv?.id === conv.id ? 'var(--text)' : 'var(--text)',
+                        }}>
+                          {conv.title || 'New conversation'}
+                        </div>
+                        <div style={{
+                          fontSize: 10, color: 'var(--text-muted)', marginTop: 2,
+                          display: 'flex', alignItems: 'center', gap: 6,
+                        }}>
+                          <span>{conv.message_count || 0} messages</span>
+                          <span style={{ opacity: 0.4 }}>·</span>
+                          <span>{formatRelativeTime(conv.updated_at || conv.created_at)}</span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={(e) => deleteConv(conv.id, e)}
+                        style={{
+                          background: 'none', border: 'none', cursor: 'pointer',
+                          color: 'var(--text-muted)', padding: 4, borderRadius: 4,
+                          opacity: 0.4, transition: 'opacity 0.12s',
+                          display: 'flex', alignItems: 'center',
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.opacity = '1'}
+                        onMouseLeave={e => e.currentTarget.style.opacity = '0.4'}
+                        title="Delete conversation"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )
+        })()}
 
         {/* Messages area */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
@@ -735,22 +1036,37 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
                   Error: {msg.content}
                 </div>
               ) : (
-                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                  <div style={{
-                    width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
-                    background: 'var(--bg-secondary)', border: '1px solid var(--border)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    marginTop: 2,
-                  }}>
-                    <Bot size={14} style={{ color: 'var(--accent)' }} />
+                <>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                    <div style={{
+                      width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
+                      background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      marginTop: 2,
+                    }}>
+                      <Bot size={14} style={{ color: 'var(--accent)' }} />
+                    </div>
+                    <div style={{
+                      flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.6,
+                      color: 'var(--text)',
+                    }}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{msg.content}</ReactMarkdown>
+                    </div>
                   </div>
-                  <div style={{
-                    flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.6,
-                    color: 'var(--text)',
-                  }}>
-                    <ReactMarkdown components={mdComponents}>{msg.content}</ReactMarkdown>
-                  </div>
-                </div>
+                  {!streaming && (
+                    <MessageActions
+                      content={msg.content}
+                      messageIndex={i}
+                      onRetry={(() => {
+                        // Find the user message that preceded this assistant message
+                        for (let j = i - 1; j >= 0; j--) {
+                          if (messages[j].role === 'user') return () => sendMessage(messages[j].content)
+                        }
+                        return null
+                      })()}
+                    />
+                  )}
+                </>
               )}
             </div>
           ))}
@@ -790,7 +1106,7 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
                     <Bot size={14} style={{ color: 'var(--accent)' }} />
                   </div>
                   <div style={{ flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.6 }}>
-                    <ReactMarkdown components={mdComponents}>{streamText}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{streamText}</ReactMarkdown>
                   </div>
                 </div>
               )}
@@ -805,9 +1121,15 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input area */}
+        {/* Token usage + Input area */}
         <div style={{
-          padding: '12px 16px', borderTop: '1px solid var(--border)',
+          borderTop: '1px solid var(--border)',
+          background: 'var(--bg-secondary)',
+        }}>
+          <TokenUsageBar usage={tokenUsage} />
+        </div>
+        <div style={{
+          padding: '12px 16px',
           background: 'var(--bg-secondary)',
         }}>
           <div style={{

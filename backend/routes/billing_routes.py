@@ -64,7 +64,7 @@ PRO_FEATURES = [
     "Unlimited scans",
     "Unlimited users",
     "Unlimited campaigns",
-    "AI agents",
+    "AI agents & copilot (5M tokens/month)",
 ]
 
 
@@ -168,6 +168,17 @@ def billing_status(
         "current_period_end": org.current_period_end.isoformat() if org.current_period_end else None,
         "trial_ends_at": org.trial_ends_at.isoformat() if org.trial_ends_at else None,
     }
+
+
+@router.get("/usage")
+def billing_usage(
+    user: User = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Return the org's current AI token usage and quota."""
+    from core.token_quota import get_token_usage
+    org = _get_org(db, user)
+    return get_token_usage(org.id, db)
 
 
 @router.post("/webhook")

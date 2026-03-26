@@ -20,6 +20,8 @@ from models.models import (
     ScanComparison, Campaign, CampaignFinding,
     IntegrationConfig, AutoTagRule,
     Integration, IntegrationRun,
+    Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
+    Agent, AgentSchedule,
 )
 from models.threat_intel_models import (
     ThreatGroup, ThreatGroupTTP, TTP, ThreatCVE, ThreatCampaign,
@@ -100,15 +102,27 @@ def get_openai_tool_schemas(tool_names: list):
         "plugin_family": {"type": "string", "description": "Filter by plugin family substring"},
         "cve": {"type": "string", "description": "Search for a specific CVE ID"},
         "keyword": {"type": "string", "description": "Search plugin name, synopsis, or description"},
+        "status": {"type": "string", "description": "Filter by status: 'open' (unresolved), 'resolved', or 'all' (default: 'open')"},
         "limit": {"type": "integer", "description": "Max results (default 50)"},
     },
 )
 def query_findings(db: Session, params: dict):
     q = db.query(Finding)
+    if params.get("_org_id"):
+        q = q.filter(Finding.org_id == params["_org_id"])
     if params.get("scan_id"):
         q = q.filter(Finding.scan_id == params["scan_id"])
     if params.get("severity_min") is not None:
         q = q.filter(Finding.severity >= params["severity_min"])
+    # Default to open/unresolved findings unless explicitly asked for all
+    status = params.get("status", "open")
+    if status == "open":
+        q = q.filter(
+            (Finding.workflow_status == None)
+            | (~Finding.workflow_status.in_(["resolved", "accepted_risk", "false_positive"]))
+        )
+    elif status == "resolved":
+        q = q.filter(Finding.workflow_status == "resolved")
     if params.get("plugin_family"):
         q = q.filter(Finding.plugin_family.ilike(f"%{params['plugin_family']}%"))
     if params.get("cve"):
@@ -1917,4 +1931,254 @@ def call_integration_push(db: Session, params: dict):
         "records_skipped": run.records_skipped,
         "error_message": run.error_message,
         "duration_ms": run.duration_ms,
+    }
+
+
+# ── Workflow tools ───────────────────────────────────────────────────
+
+@agent_tool(
+    "list_workflows",
+    "List all automation workflows with their status, trigger type, and run count. "
+    "WHEN TO CALL: When the user asks about workflows, automation, or what's configured.",
+    {
+        "status": {"type": "string", "description": "Filter by status: draft, active, paused (optional)"},
+    },
+)
+def list_workflows_tool(db: Session, params: dict):
+    q = db.query(Workflow)
+    if params.get("_org_id"):
+        q = q.filter(Workflow.org_id == params["_org_id"])
+    if params.get("status"):
+        q = q.filter(Workflow.status == params["status"])
+    rows = q.order_by(Workflow.updated_at.desc()).limit(50).all()
+    results = []
+    for w in rows:
+        trigger_node = db.query(WorkflowNode).filter(
+            WorkflowNode.workflow_id == w.id, WorkflowNode.node_type == "trigger"
+        ).first()
+        results.append({
+            "id": w.id, "name": w.name, "description": w.description,
+            "status": w.status, "is_enabled": w.is_enabled,
+            "trigger_type": trigger_node.node_subtype if trigger_node else None,
+            "node_count": db.query(WorkflowNode).filter(WorkflowNode.workflow_id == w.id).count(),
+            "run_count": w.run_count, "last_run_at": w.last_run_at.isoformat() if w.last_run_at else None,
+            "campaign_id": w.campaign_id,
+        })
+    return results
+
+
+@agent_tool(
+    "get_workflow_detail",
+    "Get full details of a specific workflow including all nodes (triggers, conditions, actions), "
+    "edges (connections between nodes), and recent execution history. "
+    "WHEN TO CALL: When the user asks to explain a workflow, asks what a workflow does, "
+    "or is viewing a workflow detail page.",
+    {
+        "workflow_id": {"type": "integer", "description": "Workflow ID to look up"},
+    },
+)
+def get_workflow_detail(db: Session, params: dict):
+    wf_id = params.get("workflow_id")
+    if not wf_id:
+        return {"error": "workflow_id is required"}
+    wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
+    if not wf:
+        return {"error": f"Workflow {wf_id} not found"}
+
+    nodes = db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wf_id).all()
+    edges = db.query(WorkflowEdge).filter(WorkflowEdge.workflow_id == wf_id).all()
+
+    node_list = []
+    for n in nodes:
+        node_list.append({
+            "node_id": n.node_id, "type": n.node_type, "subtype": n.node_subtype,
+            "label": n.label, "config": n.config,
+        })
+
+    edge_list = []
+    for e in edges:
+        edge_list.append({
+            "from": e.source_node_id, "to": e.target_node_id,
+            "source_handle": e.source_handle, "label": e.label,
+        })
+
+    execs = db.query(WorkflowExecution).filter(
+        WorkflowExecution.workflow_id == wf_id
+    ).order_by(WorkflowExecution.started_at.desc()).limit(5).all()
+    exec_list = [{
+        "id": ex.id, "status": ex.status, "trigger_type": ex.trigger_type,
+        "started_at": ex.started_at.isoformat() if ex.started_at else None,
+        "completed_at": ex.completed_at.isoformat() if ex.completed_at else None,
+        "items_processed": ex.items_processed,
+        "error": ex.error,
+    } for ex in execs]
+
+    return {
+        "id": wf.id, "name": wf.name, "description": wf.description,
+        "status": wf.status, "is_enabled": wf.is_enabled,
+        "campaign_id": wf.campaign_id,
+        "run_count": wf.run_count,
+        "last_run_at": wf.last_run_at.isoformat() if wf.last_run_at else None,
+        "nodes": node_list, "edges": edge_list,
+        "recent_executions": exec_list,
+    }
+
+
+@agent_tool(
+    "get_workflow_execution",
+    "Get detailed logs for a specific workflow execution, showing what each node did. "
+    "WHEN TO CALL: When the user asks about a workflow run result, errors, or what happened.",
+    {
+        "execution_id": {"type": "integer", "description": "Execution ID to look up"},
+    },
+)
+def get_workflow_execution_tool(db: Session, params: dict):
+    exec_id = params.get("execution_id")
+    if not exec_id:
+        return {"error": "execution_id is required"}
+    ex = db.query(WorkflowExecution).filter(WorkflowExecution.id == exec_id).first()
+    if not ex:
+        return {"error": f"Execution {exec_id} not found"}
+
+    logs = db.query(WorkflowExecutionLog).filter(
+        WorkflowExecutionLog.execution_id == exec_id
+    ).order_by(WorkflowExecutionLog.executed_at).all()
+
+    return {
+        "id": ex.id, "workflow_id": ex.workflow_id,
+        "status": ex.status, "trigger_type": ex.trigger_type,
+        "started_at": ex.started_at.isoformat() if ex.started_at else None,
+        "completed_at": ex.completed_at.isoformat() if ex.completed_at else None,
+        "items_processed": ex.items_processed,
+        "error": ex.error,
+        "logs": [{
+            "node_id": l.node_id, "node_type": l.node_type, "node_subtype": l.node_subtype,
+            "status": l.status, "items_in": l.items_in, "items_out": l.items_out,
+            "error": l.error,
+            "executed_at": l.executed_at.isoformat() if l.executed_at else None,
+        } for l in logs],
+    }
+
+
+# ── Agent Management Tools ─────────────────────────────────────────────
+
+@agent_tool(
+    "list_agents",
+    "List all agents in the organization with their schedules and recent run info. "
+    "WHEN TO CALL: When the user asks about existing agents, wants to see what agents are available, "
+    "or before creating a schedule (to find the agent ID).",
+    {
+        "search": {"type": "string", "description": "Optional: filter agents by name or description"},
+    },
+)
+def list_agents_tool(db: Session, params: dict):
+    q = db.query(Agent).filter(Agent.name != "__copilot__")
+    search = params.get("search")
+    if search:
+        q = q.filter(
+            (Agent.name.ilike(f"%{search}%")) | (Agent.description.ilike(f"%{search}%"))
+        )
+    agents = q.order_by(Agent.created_at.desc()).limit(50).all()
+    result = []
+    for a in agents:
+        schedules = db.query(AgentSchedule).filter(AgentSchedule.agent_id == a.id).all()
+        result.append({
+            "id": a.id, "name": a.name, "description": a.description,
+            "model": a.model, "tools": a.tools,
+            "guardrails": a.guardrails,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "schedules": [{
+                "id": s.id, "cron_expression": s.cron_expression,
+                "is_enabled": s.is_enabled,
+                "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+            } for s in schedules],
+        })
+    return {"agents": result, "count": len(result)}
+
+
+@agent_tool(
+    "create_agent",
+    "Create a new AI agent with a name, instructions, selected tools, and optional guardrails. Write operation. "
+    "WHEN TO CALL: When the user wants to set up a new automated agent for tasks like daily triage, "
+    "compliance monitoring, or remediation tracking. Always confirm with the user before creating. "
+    "NEVER call this without setting confirmed=true after user approval.",
+    {
+        "name": {"type": "string", "description": "Agent name (e.g. 'Daily Triage Bot', 'Compliance Monitor')"},
+        "description": {"type": "string", "description": "Brief description of what the agent does"},
+        "system_prompt": {"type": "string", "description": "Instructions for the agent — what it should do when run"},
+        "tools": {"type": "array", "items": {"type": "string"}, "description": "List of tool names the agent can use (from the tool catalog)"},
+        "model": {"type": "string", "description": "Optional: LLM model to use (default: claude-sonnet-4-6)"},
+        "guardrails": {"type": "object", "description": "Optional: {max_steps: int, read_only: bool} — constraints on agent behavior"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved this action"},
+    },
+)
+def create_agent_tool(db: Session, params: dict):
+    name = params.get("name")
+    system_prompt = params.get("system_prompt")
+    if not name or not system_prompt:
+        return {"error": "name and system_prompt are required"}
+    tools = params.get("tools", [])
+    # Validate tool names
+    invalid = [t for t in tools if t not in TOOL_REGISTRY]
+    if invalid:
+        return {"error": f"Unknown tools: {invalid}. Use list_agents or get_tool_catalog to see available tools."}
+    agent = Agent(
+        name=name,
+        description=params.get("description", ""),
+        system_prompt=system_prompt,
+        tools=tools,
+        model=params.get("model", "claude-sonnet-4-6"),
+        guardrails=params.get("guardrails", {"max_steps": 15}),
+    )
+    db.add(agent)
+    db.commit()
+    db.refresh(agent)
+    return {
+        "id": agent.id, "name": agent.name, "description": agent.description,
+        "model": agent.model, "tools": agent.tools, "guardrails": agent.guardrails,
+        "message": f"Agent '{agent.name}' created successfully (ID: {agent.id}). You can now schedule it with create_agent_schedule.",
+    }
+
+
+@agent_tool(
+    "create_agent_schedule",
+    "Create a cron schedule for an existing agent so it runs automatically. Write operation. "
+    "WHEN TO CALL: After creating an agent or when the user wants to schedule an existing agent. "
+    "Always confirm with the user before creating. "
+    "NEVER call this without setting confirmed=true after user approval.",
+    {
+        "agent_id": {"type": "integer", "description": "ID of the agent to schedule (use list_agents to find it)"},
+        "cron_expression": {"type": "string", "description": "Cron schedule (e.g. '0 8 * * 1-5' for weekdays at 8am, '0 */6 * * *' for every 6 hours)"},
+        "input": {"type": "string", "description": "Default input/prompt for scheduled runs"},
+        "is_enabled": {"type": "boolean", "description": "Whether the schedule is active (default: true)"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved this action"},
+    },
+)
+def create_agent_schedule_tool(db: Session, params: dict):
+    agent_id = params.get("agent_id")
+    cron_expr = params.get("cron_expression")
+    if not agent_id or not cron_expr:
+        return {"error": "agent_id and cron_expression are required"}
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if not agent:
+        return {"error": f"Agent {agent_id} not found"}
+    schedule = AgentSchedule(
+        agent_id=agent_id,
+        cron_expression=cron_expr,
+        input_template=params.get("input", ""),
+        is_enabled=params.get("is_enabled", True),
+    )
+    db.add(schedule)
+    db.commit()
+    db.refresh(schedule)
+    # Notify scheduler to pick up new job
+    try:
+        from agents.agent_scheduler import sync_schedules
+        sync_schedules()
+    except Exception:
+        pass  # Scheduler may not be running in all environments
+    return {
+        "id": schedule.id, "agent_id": agent_id, "agent_name": agent.name,
+        "cron_expression": cron_expr, "is_enabled": schedule.is_enabled,
+        "message": f"Schedule created for agent '{agent.name}' — cron: {cron_expr}",
     }

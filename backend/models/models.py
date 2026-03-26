@@ -35,6 +35,10 @@ class Organization(Base):
     trial_ends_at = Column(DateTime, nullable=True)
     current_period_end = Column(DateTime, nullable=True)
 
+    # AI token quota (Pro plan)
+    ai_tokens_used = Column(Integer, default=0)
+    ai_tokens_reset_at = Column(DateTime, nullable=True)
+
     parent = relationship("Organization", remote_side=[id], backref="children")
     users = relationship("User", back_populates="organization")
 

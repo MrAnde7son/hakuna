@@ -1092,6 +1092,8 @@ export const getBillingPlans = () => request('/billing/plans')
 
 export const getBillingStatus = () => request('/billing/status')
 
+export const getBillingUsage = () => request('/billing/usage')
+
 export const createCheckoutSession = (data) => request('/billing/checkout', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from hakuna.utils.token_tracker import get_tracker
 from hakuna.utils.context_manager import rolling_context
+from core.token_quota import check_token_quota, increment_token_usage
 
 from models.models import Agent, AgentRun, AgentApproval, IntegrationConfig
 from agents.agent_tools import TOOL_REGISTRY, get_claude_tool_schemas, get_openai_tool_schemas
@@ -685,6 +686,7 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
             cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0),
             call_metadata={"function": "_run_anthropic", "step": step, "run_id": run.id},
         )
+        increment_token_usage(agent.org_id, response.usage.input_tokens + response.usage.output_tokens, db)
 
         # Log assistant response to trace
         assistant_content = []
@@ -799,6 +801,17 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
         choice = response.choices[0]
         msg = choice.message
 
+        # Token tracking + quota enforcement for OpenAI-compat providers
+        if hasattr(response, "usage") and response.usage:
+            _in = getattr(response.usage, "prompt_tokens", 0) or 0
+            _out = getattr(response.usage, "completion_tokens", 0) or 0
+            get_tracker().track_call(
+                agent_name=agent.name or "unknown", model=model,
+                input_tokens=_in, output_tokens=_out,
+                call_metadata={"function": "_run_openai_compat", "step": step, "run_id": run.id},
+            )
+            increment_token_usage(agent.org_id, _in + _out, db)
+
         # Log assistant response
         assistant_content = []
         if msg.content:
@@ -860,6 +873,40 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
     run.trace = trace
 
 
+def _gemini_upcase_types(schema: dict) -> dict:
+    """Recursively convert JSON Schema type values to uppercase for Gemini SDK.
+
+    Gemini's FunctionDeclaration expects OBJECT, STRING, INTEGER, NUMBER,
+    BOOLEAN, ARRAY — not the lowercase variants used by OpenAPI/JSON Schema.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    out = {}
+    for k, v in schema.items():
+        if k == "type" and isinstance(v, str):
+            out[k] = v.upper()
+        elif isinstance(v, dict):
+            out[k] = _gemini_upcase_types(v)
+        else:
+            out[k] = v
+    return out
+
+
+def _gemini_wrap_response(result_str: str) -> dict:
+    """Ensure tool result is a dict for Gemini's Part.from_function_response().
+
+    Gemini SDK validates that the response is a dict, but tools can return
+    lists, strings, or other JSON types.  Wrap non-dict values.
+    """
+    try:
+        parsed = json.loads(result_str)
+    except (json.JSONDecodeError, TypeError):
+        return {"result": result_str}
+    if isinstance(parsed, dict):
+        return parsed
+    return {"result": parsed}
+
+
 def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model: str):
     """Run agent using Google Gemini API (direct or Vertex AI)."""
     from google.genai import types as genai_types
@@ -876,7 +923,7 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
     else:
         cl = _get_gemini_client(db)
 
-    # Build Gemini tool declarations
+    # Build Gemini tool declarations (types must be UPPERCASE)
     tool_declarations = []
     for name in (agent.tools or []):
         t = TOOL_REGISTRY.get(name)
@@ -884,10 +931,10 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
             tool_declarations.append(genai_types.FunctionDeclaration(
                 name=t["name"],
                 description=t["description"],
-                parameters={
-                    "type": "object",
+                parameters=_gemini_upcase_types({
+                    "type": "OBJECT",
                     "properties": t["parameters"],
-                },
+                }),
             ))
 
     gemini_tools = [genai_types.Tool(function_declarations=tool_declarations)] if tool_declarations else []
@@ -904,6 +951,17 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
                 max_output_tokens=4096,
             ),
         )
+
+        # Token tracking + quota enforcement for Gemini
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            _in = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
+            _out = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
+            get_tracker().track_call(
+                agent_name=agent.name or "unknown", model=model,
+                input_tokens=_in, output_tokens=_out,
+                call_metadata={"function": "_run_gemini", "step": step, "run_id": run.id},
+            )
+            increment_token_usage(agent.org_id, _in + _out, db)
 
         # Parse response
         assistant_content = []
@@ -942,7 +1000,7 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
             result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
             function_responses.append(genai_types.Part.from_function_response(
                 name=fc.name,
-                response=json.loads(result_str),
+                response=_gemini_wrap_response(result_str),
             ))
 
         contents.append(genai_types.Content(role="user", parts=function_responses))
@@ -958,6 +1016,7 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
 
 def run_agent(agent: Agent, user_input: str, db: Session) -> AgentRun:
     """Execute an agent synchronously and return the completed AgentRun."""
+    check_token_quota(agent.org_id, db)
     run = AgentRun(
         agent_id=agent.id,
         input=user_input,
@@ -1015,6 +1074,7 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session):
     - 'done': run completed
     - 'error': run failed
     """
+    check_token_quota(agent.org_id, db)
     run = AgentRun(agent_id=agent.id, input=user_input, status="running")
     db.add(run)
     db.commit()
@@ -1105,6 +1165,7 @@ def _stream_anthropic(agent, user_input, db, run, model):
             cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0),
             call_metadata={"function": "_stream_anthropic", "step": step, "run_id": run.id},
         )
+        increment_token_usage(agent.org_id, response.usage.input_tokens + response.usage.output_tokens, db)
 
         assistant_content = []
         for block in response.content:
@@ -1272,7 +1333,7 @@ def _stream_gemini(agent, user_input, db, run, model):
         if t:
             tool_declarations.append(genai_types.FunctionDeclaration(
                 name=t["name"], description=t["description"],
-                parameters={"type": "object", "properties": t["parameters"]},
+                parameters=_gemini_upcase_types({"type": "OBJECT", "properties": t["parameters"]}),
             ))
     gemini_tools = [genai_types.Tool(function_declarations=tool_declarations)] if tool_declarations else []
     contents = [genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_input)])]
@@ -1310,7 +1371,7 @@ def _stream_gemini(agent, user_input, db, run, model):
             tool_input = dict(fc.args) if fc.args else {}
             result_str = _execute_tool(agent, db, fc.name, tool_input, step, trace)
             yield {"type": "tool_result", "name": fc.name, "result": result_str[:2000], "step": step}
-            function_responses.append(genai_types.Part.from_function_response(name=fc.name, response=json.loads(result_str)))
+            function_responses.append(genai_types.Part.from_function_response(name=fc.name, response=_gemini_wrap_response(result_str)))
 
         contents.append(genai_types.Content(role="user", parts=function_responses))
         run.steps_used = step + 1
@@ -1464,6 +1525,7 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
             cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0),
             call_metadata={"function": "_resume_anthropic", "step": step, "run_id": run.id},
         )
+        increment_token_usage(agent.org_id, response.usage.input_tokens + response.usage.output_tokens, db)
 
         assistant_content = []
         for block in response.content:

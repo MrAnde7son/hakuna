@@ -954,4 +954,52 @@ WORKFLOW_TEMPLATES = [
             {"edge_id": "e3", "source_node_id": "a1", "target_node_id": "a2", "source_handle": "output", "target_handle": "input"},
         ],
     },
+    {
+        "id": "multi_owner_ticketing",
+        "name": "Multi-Owner Ticket Routing",
+        "description": "Route findings to different ticketing systems (Jira, ServiceNow) based on finding ownership",
+        "category": "triage",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_campaign_run",
+             "label": "Campaign Runs", "config": {}, "position_x": 60, "position_y": 300},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "condition_filter",
+             "label": "Owner = Infra Team", "config": {
+                 "conditions": [{"field": "owner_name", "op": "eq", "value": "Infra Team"}],
+                 "logic": "AND"
+             }, "position_x": 360, "position_y": 180},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "create_ticket",
+             "label": "ServiceNow Ticket", "config": {
+                 "integration": "servicenow", "issue_type": "incident",
+                 "title_template": "[{{severity}}] {{plugin_name}} on {{asset_ip}}",
+                 "priority": "high"
+             }, "position_x": 720, "position_y": 100},
+            {"node_id": "f2", "node_type": "filter", "node_subtype": "condition_filter",
+             "label": "Owner = Dev Team", "config": {
+                 "conditions": [{"field": "owner_name", "op": "eq", "value": "Dev Team"}],
+                 "logic": "AND"
+             }, "position_x": 360, "position_y": 420},
+            {"node_id": "a2", "node_type": "action", "node_subtype": "create_ticket",
+             "label": "Jira Ticket", "config": {
+                 "integration": "jira", "issue_type": "bug",
+                 "title_template": "[{{severity}}] {{plugin_name}} on {{asset_ip}}",
+                 "priority": "high"
+             }, "position_x": 720, "position_y": 340},
+            {"node_id": "a3", "node_type": "action", "node_subtype": "change_status",
+             "label": "Mark In Progress", "config": {"status": "in_progress"},
+             "position_x": 720, "position_y": 500},
+            {"node_id": "a4", "node_type": "action", "node_subtype": "slack_notify",
+             "label": "Notify Unmatched", "config": {
+                 "message_template": "{{count}} findings have no matching owner for ticket routing — please assign owners"
+             }, "position_x": 720, "position_y": 620},
+        ],
+        "edges": [
+            {"edge_id": "e1", "source_node_id": "t1", "target_node_id": "f1", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e2", "source_node_id": "f1", "target_node_id": "a1", "source_handle": "output", "target_handle": "input", "label": "Infra Team"},
+            {"edge_id": "e3", "source_node_id": "f1", "target_node_id": "f2", "source_handle": "remainder", "target_handle": "input"},
+            {"edge_id": "e4", "source_node_id": "f2", "target_node_id": "a2", "source_handle": "output", "target_handle": "input", "label": "Dev Team"},
+            {"edge_id": "e5", "source_node_id": "a1", "target_node_id": "a3", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e6", "source_node_id": "a2", "target_node_id": "a3", "source_handle": "output", "target_handle": "input"},
+            {"edge_id": "e7", "source_node_id": "f2", "target_node_id": "a4", "source_handle": "remainder", "target_handle": "input", "label": "No match"},
+        ],
+    },
 ]

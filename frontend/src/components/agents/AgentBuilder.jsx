@@ -4,6 +4,7 @@
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { Card, ErrorBanner, useToast, useConfirm } from '../shared/ui.jsx'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -21,6 +22,7 @@ import {
   exportAgent, importAgent,
   getAgentDocuments, uploadAgentDocument, deleteAgentDocument,
   getAvailableModels, getAgentApprovals,
+  getBillingUsage,
 } from '../../api.js'
 import AgentApprovalQueue from './AgentApprovalQueue.jsx'
 
@@ -106,6 +108,9 @@ export default function AgentBuilder() {
   const importRef = useRef()
   const streamRef = useRef(null) // for aborting streams
   const [fetchError, setFetchError] = useState(null)
+  const [tokenUsage, setTokenUsage] = useState(null)
+
+  const refreshUsage = () => getBillingUsage().then(setTokenUsage).catch(() => {})
 
   const refresh = () => {
     setFetchError(null)
@@ -119,6 +124,7 @@ export default function AgentBuilder() {
     getAvailableModels().then(setAvailableModels).catch(() => {})
     getAgentSchedules().then(setSchedules).catch(() => {})
     getAgentApprovals('pending').then(a => setPendingApprovalCount(a.length)).catch(() => {})
+    refreshUsage()
   }, [])
 
   const selectAgent = (agent) => {
@@ -298,6 +304,7 @@ export default function AgentBuilder() {
       setActiveRun({ status: 'failed', error: e.message, trace: [] })
     } finally {
       setRunning(false)
+      refreshUsage()
     }
   }
 
@@ -325,6 +332,20 @@ export default function AgentBuilder() {
       <div style={{ width: 300, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ marginBottom: 4 }}>
           <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Agents</h2>
+          {tokenUsage && tokenUsage.tier === 'pro' && (
+            <div style={{ marginBottom: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                <span>AI tokens</span>
+                <span style={{ color: tokenUsage.exceeded ? '#ef4444' : tokenUsage.warning ? '#f59e0b' : 'var(--text-muted)' }}>
+                  {tokenUsage.used >= 1_000_000 ? `${(tokenUsage.used / 1_000_000).toFixed(1)}M` : tokenUsage.used >= 1_000 ? `${(tokenUsage.used / 1_000).toFixed(0)}K` : tokenUsage.used} / {tokenUsage.limit >= 1_000_000 ? `${(tokenUsage.limit / 1_000_000).toFixed(0)}M` : tokenUsage.limit}
+                </span>
+              </div>
+              <div style={{ height: 4, borderRadius: 2, background: 'var(--border)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${Math.min(tokenUsage.percentage, 100)}%`, background: tokenUsage.exceeded ? '#ef4444' : tokenUsage.warning ? '#f59e0b' : 'var(--accent)', borderRadius: 2, transition: 'width 0.3s ease' }} />
+              </div>
+              {tokenUsage.exceeded && <div style={{ color: '#ef4444', fontSize: 10, marginTop: 2 }}>Monthly quota exceeded</div>}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 4 }}>
             <button
               onClick={() => { setShowTemplates(v => !v); setShowApprovals(false); setSelected(null); setEditing(null) }}
@@ -401,7 +422,9 @@ export default function AgentBuilder() {
                   onClick={() => selectAgent(a)}
                   style={{
                     padding: '10px 12px', cursor: 'pointer',
-                    borderColor: selected?.id === a.id ? 'var(--accent)' : 'var(--border)',
+                    borderTopColor: selected?.id === a.id ? 'var(--accent)' : 'var(--border)',
+                    borderRightColor: selected?.id === a.id ? 'var(--accent)' : 'var(--border)',
+                    borderBottomColor: selected?.id === a.id ? 'var(--accent)' : 'var(--border)',
                     background: selected?.id === a.id ? 'var(--bg)' : 'var(--bg-card)',
                     borderLeft: `3px solid ${color}`,
                   }}
@@ -1306,7 +1329,7 @@ function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, runn
           {running && streamEvents.length > 0 && (
             <div style={{
               marginBottom: 12, padding: 10, borderRadius: 6,
-              background: '#0f172a', border: '1px solid #1e293b',
+              background: 'var(--bg-secondary)', border: '1px solid var(--border)',
               maxHeight: 150, overflowY: 'auto', fontSize: 12, fontFamily: 'monospace',
             }}>
               {streamEvents.map((ev, i) => (
@@ -1356,6 +1379,7 @@ function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, runn
               maxHeight: 500, overflowY: 'auto',
             }}>
               <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
                 components={{
                   h1: ({ children }) => <h1 style={{ fontSize: 18, fontWeight: 700, margin: '16px 0 8px', borderBottom: '1px solid var(--border)', paddingBottom: 6 }}>{children}</h1>,
                   h2: ({ children }) => <h2 style={{ fontSize: 16, fontWeight: 700, margin: '14px 0 6px', color: 'var(--accent)' }}>{children}</h2>,
@@ -1367,7 +1391,7 @@ function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, runn
                   strong: ({ children }) => <strong style={{ fontWeight: 700, color: 'var(--text)' }}>{children}</strong>,
                   code: ({ inline, children }) => inline
                     ? <code style={{ background: 'var(--bg-secondary)', padding: '1px 5px', borderRadius: 3, fontSize: 12, fontFamily: 'monospace' }}>{children}</code>
-                    : <pre style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 6, padding: 10, overflowX: 'auto', fontSize: 12, fontFamily: 'monospace', margin: '8px 0' }}><code>{children}</code></pre>,
+                    : <pre style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, padding: 10, overflowX: 'auto', fontSize: 12, fontFamily: 'monospace', margin: '8px 0', color: 'var(--text)' }}><code>{children}</code></pre>,
                   table: ({ children }) => <table style={{ borderCollapse: 'collapse', width: '100%', margin: '8px 0', fontSize: 12 }}>{children}</table>,
                   th: ({ children }) => <th style={{ border: '1px solid var(--border)', padding: '6px 10px', background: 'var(--bg-secondary)', fontWeight: 600, textAlign: 'left' }}>{children}</th>,
                   td: ({ children }) => <td style={{ border: '1px solid var(--border)', padding: '5px 10px' }}>{children}</td>,
