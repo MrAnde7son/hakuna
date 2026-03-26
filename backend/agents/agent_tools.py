@@ -16,7 +16,7 @@ from models.models import (
     InventoryPatch, InventoryLoggedOn, InventoryScheduledTask,
     InventorySoftware, InventorySecurityControl, InventoryCertificate,
     InventoryShare,
-    Tag, TagAssignment, SLAConfig, FindingException,
+    Tag, TagAssignment, SLAConfig, FindingException, FindingTicket,
     ScanComparison, Campaign, CampaignFinding,
     IntegrationConfig, AutoTagRule,
     Integration, IntegrationRun,
@@ -94,35 +94,79 @@ def get_openai_tool_schemas(tool_names: list):
 
 @agent_tool(
     "query_findings",
-    "Search findings by severity, plugin family, CVE, keyword, or scan. Returns up to 50 results. "
+    "Search and filter findings with the same options available in the Findings Explorer UI. "
+    "Returns up to 50 results sorted by priority score. "
     "WHEN TO CALL: When you need to find specific findings matching criteria. Use this instead of requesting bulk scan dumps.",
     {
         "scan_id": {"type": "integer", "description": "Filter by scan ID"},
+        "asset_id": {"type": "integer", "description": "Filter by asset ID"},
         "severity_min": {"type": "integer", "description": "Minimum severity (0=Info..4=Critical)"},
+        "severity": {"type": "integer", "description": "Exact severity (0=Info, 1=Low, 2=Medium, 3=High, 4=Critical)"},
         "plugin_family": {"type": "string", "description": "Filter by plugin family substring"},
         "cve": {"type": "string", "description": "Search for a specific CVE ID"},
         "keyword": {"type": "string", "description": "Search plugin name, synopsis, or description"},
-        "status": {"type": "string", "description": "Filter by status: 'open' (unresolved), 'resolved', or 'all' (default: 'open')"},
-        "limit": {"type": "integer", "description": "Max results (default 50)"},
+        "status": {"type": "string", "description": "Filter by status: 'open' (default), 'resolved', 'all'"},
+        "workflow_status": {"type": "string", "description": "Filter by workflow status: 'open', 'accepted_risk', 'false_positive', 'compensating_control', or 'excepted' (combines risk/fp/control)"},
+        "has_exploit": {"type": "boolean", "description": "Filter findings with known exploits"},
+        "is_kev": {"type": "boolean", "description": "Filter CISA Known Exploited Vulnerabilities"},
+        "ransomware_linked": {"type": "boolean", "description": "Filter ransomware-linked findings"},
+        "trending_in_news": {"type": "boolean", "description": "Filter findings trending in news"},
+        "has_ttps": {"type": "boolean", "description": "Filter findings with MITRE ATT&CK TTP mappings"},
+        "tactic": {"type": "string", "description": "Filter by MITRE ATT&CK tactic name"},
+        "technique_id": {"type": "string", "description": "Filter by MITRE ATT&CK technique ID (e.g. T1059)"},
+        "effort_level": {"type": "string", "description": "Filter by remediation effort: 'quick_win', 'medium', 'complex'"},
+        "sla_status": {"type": "string", "description": "Filter by SLA status: 'on_track', 'at_risk', 'breached', 'resolved', 'n/a'"},
+        "port": {"type": "string", "description": "Filter by port number"},
+        "source": {"type": "string", "description": "Filter by scanner source (e.g. 'nessus', 'qualys')"},
+        "has_exception": {"type": "boolean", "description": "Filter findings that have an active exception/waiver"},
+        "has_ticket": {"type": "boolean", "description": "Filter findings with linked tickets"},
+        "ticket_status": {"type": "string", "description": "Filter by ticket status: 'open', 'in_progress', 'resolved'"},
+        "control_status": {"type": "string", "description": "Filter by control mitigation: 'mitigated', 'partially_mitigated', 'not_mitigated'"},
+        "product": {"type": "string", "description": "Filter by SBOM product name"},
+        "cpe": {"type": "string", "description": "Filter by CPE string"},
+        "min_priority": {"type": "number", "description": "Minimum priority score (0-10)"},
+        "min_epss": {"type": "number", "description": "Minimum EPSS score (0-1)"},
+        "auto_resolved": {"type": "boolean", "description": "Filter auto-resolved findings (fixed in a later scan)"},
+        "tags": {"type": "string", "description": "Comma-separated tag filters (e.g. 'env:production,team:devops')"},
+        "tag_logic": {"type": "string", "description": "Tag filter logic: 'AND' (default) or 'OR'"},
+        "sort_by": {"type": "string", "description": "Sort field (default: 'priority_score'). Options: severity, plugin_name, cvss3_score, effort_level, sla_status, first_seen, last_seen"},
+        "order": {"type": "string", "description": "Sort order: 'desc' (default) or 'asc'"},
+        "limit": {"type": "integer", "description": "Max results (default 50, max 200)"},
     },
 )
 def query_findings(db: Session, params: dict):
     q = db.query(Finding)
     if params.get("_org_id"):
-        q = q.filter(Finding.org_id == params["_org_id"])
+        q = q.join(Scan, Finding.scan_id == Scan.id).filter(Scan.org_id == params["_org_id"])
     if params.get("scan_id"):
         q = q.filter(Finding.scan_id == params["scan_id"])
-    if params.get("severity_min") is not None:
+    if params.get("asset_id"):
+        q = q.filter(Finding.asset_id == params["asset_id"])
+
+    # Severity filters
+    if params.get("severity") is not None:
+        q = q.filter(Finding.severity == params["severity"])
+    elif params.get("severity_min") is not None:
         q = q.filter(Finding.severity >= params["severity_min"])
-    # Default to open/unresolved findings unless explicitly asked for all
-    status = params.get("status", "open")
-    if status == "open":
-        q = q.filter(
-            (Finding.workflow_status == None)
-            | (~Finding.workflow_status.in_(["resolved", "accepted_risk", "false_positive"]))
-        )
-    elif status == "resolved":
-        q = q.filter(Finding.workflow_status == "resolved")
+
+    # Status / workflow status
+    wf_status = params.get("workflow_status")
+    if wf_status:
+        if wf_status == "excepted":
+            q = q.filter(Finding.workflow_status.in_(["accepted_risk", "false_positive", "compensating_control"]))
+        else:
+            q = q.filter(Finding.workflow_status == wf_status)
+    else:
+        status = params.get("status", "open")
+        if status == "open":
+            q = q.filter(
+                (Finding.workflow_status == None)
+                | (~Finding.workflow_status.in_(["resolved", "accepted_risk", "false_positive"]))
+            )
+        elif status == "resolved":
+            q = q.filter(Finding.workflow_status == "resolved")
+
+    # Text filters
     if params.get("plugin_family"):
         q = q.filter(Finding.plugin_family.ilike(f"%{params['plugin_family']}%"))
     if params.get("cve"):
@@ -134,8 +178,112 @@ def query_findings(db: Session, params: dict):
             | (Finding.synopsis.ilike(kw))
             | (Finding.description.ilike(kw))
         )
+    if params.get("port"):
+        q = q.filter(Finding.port == str(params["port"]))
+
+    # Exploit & threat intel filters
+    if params.get("has_exploit") is not None:
+        q = q.filter(Finding.exploit_available == params["has_exploit"])
+    if params.get("is_kev") is not None:
+        q = q.filter(Finding.is_kev == params["is_kev"])
+    if params.get("ransomware_linked") is not None:
+        q = q.filter(Finding.ransomware_linked == params["ransomware_linked"])
+    if params.get("trending_in_news") is not None:
+        q = q.filter(Finding.trending_in_news == params["trending_in_news"])
+
+    # MITRE ATT&CK filters
+    if params.get("has_ttps") is not None:
+        if params["has_ttps"]:
+            q = q.filter(Finding.matched_ttps != None, Finding.matched_ttps != "[]")
+        else:
+            q = q.filter((Finding.matched_ttps == None) | (Finding.matched_ttps == "[]"))
+    if params.get("tactic"):
+        q = q.filter(Finding.matched_ttps.contains(params["tactic"]))
+    if params.get("technique_id"):
+        q = q.filter(Finding.matched_ttps.contains(params["technique_id"]))
+
+    # Prioritization & effort filters
+    if params.get("effort_level"):
+        q = q.filter(Finding.effort_level == params["effort_level"])
+    if params.get("sla_status"):
+        q = q.filter(Finding.sla_status == params["sla_status"])
+    if params.get("min_priority") is not None:
+        q = q.filter(Finding.priority_score >= params["min_priority"])
+    if params.get("min_epss") is not None:
+        q = q.filter(Finding.epss_score >= params["min_epss"])
+
+    # Source filter
+    if params.get("source"):
+        q = q.filter(Finding.source_type == params["source"])
+
+    # Control status
+    if params.get("control_status"):
+        q = q.filter(Finding.control_mitigation_status == params["control_status"])
+
+    # Auto-resolved
+    if params.get("auto_resolved") is not None:
+        q = q.filter(Finding.auto_resolved == params["auto_resolved"])
+
+    # Exception filter
+    if params.get("has_exception") is not None:
+        exception_finding_ids = db.query(FindingException.finding_id).filter(
+            FindingException.status == "approved"
+        ).subquery()
+        if params["has_exception"]:
+            q = q.filter(Finding.id.in_(exception_finding_ids))
+        else:
+            q = q.filter(~Finding.id.in_(exception_finding_ids))
+
+    # Ticket filter (tickets are in FindingTicket table)
+    if params.get("has_ticket") is not None or params.get("ticket_status"):
+        ticket_q = db.query(FindingTicket.finding_id)
+        if params.get("ticket_status"):
+            ticket_q = ticket_q.filter(FindingTicket.mapped_status == params["ticket_status"])
+        ticket_sub = ticket_q.subquery()
+        if params.get("has_ticket") is False:
+            q = q.filter(~Finding.id.in_(ticket_sub))
+        else:
+            q = q.filter(Finding.id.in_(ticket_sub))
+
+    # SBOM filters
+    if params.get("product"):
+        q = q.filter(Finding.plugin_name.ilike(f"%{params['product']}%"))
+    if params.get("cpe"):
+        q = q.join(Asset, Finding.asset_id == Asset.id).filter(
+            Asset.cpe.contains(params["cpe"])
+        )
+
+    # Tag filter
+    if params.get("tags"):
+        tag_values = [t.strip() for t in params["tags"].split(",") if t.strip()]
+        tag_logic = params.get("tag_logic", "AND").upper()
+        # Find asset IDs that have the requested tags
+        tag_q = db.query(TagAssignment.asset_id)
+        tag_ids = []
+        for tv in tag_values:
+            if ":" in tv:
+                cat, val = tv.split(":", 1)
+                matching = db.query(Tag.id).filter(Tag.category == cat, Tag.value == val).all()
+            else:
+                matching = db.query(Tag.id).filter(Tag.value == tv).all()
+            tag_ids.extend([m[0] for m in matching])
+        if tag_ids:
+            if tag_logic == "AND":
+                for tid in set(tag_ids):
+                    sub = db.query(TagAssignment.asset_id).filter(TagAssignment.tag_id == tid).subquery()
+                    q = q.filter(Finding.asset_id.in_(sub))
+            else:
+                sub = db.query(TagAssignment.asset_id).filter(TagAssignment.tag_id.in_(tag_ids)).subquery()
+                q = q.filter(Finding.asset_id.in_(sub))
+
+    # Sorting
+    sort_field = params.get("sort_by", "priority_score")
+    sort_order = params.get("order", "desc")
+    sort_col = getattr(Finding, sort_field, Finding.priority_score)
+    q = q.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
+
     limit = min(params.get("limit", 50), 200)
-    rows = q.order_by(Finding.priority_score.desc()).limit(limit).all()
+    rows = q.limit(limit).all()
     return [
         {
             "id": f.id, "plugin_id": f.plugin_id, "plugin_name": f.plugin_name,
@@ -143,6 +291,9 @@ def query_findings(db: Session, params: dict):
             "cvss3": f.cvss3_score, "vpr": f.vpr_score,
             "priority_score": f.priority_score, "effort": f.effort_level,
             "asset_id": f.asset_id, "cves": f.cves,
+            "port": f.port, "sla_status": f.sla_status,
+            "exploit_available": f.exploit_available, "is_kev": f.is_kev,
+            "workflow_status": f.workflow_status,
             "solution": (f.solution or "")[:500],
         }
         for f in rows
@@ -151,35 +302,152 @@ def query_findings(db: Session, params: dict):
 
 @agent_tool(
     "query_assets",
-    "Search assets by IP, hostname, OS, criticality, or scan. Returns up to 50 results. "
+    "Search and filter assets with the same options available in the Asset Inventory UI. "
+    "Returns up to 50 results sorted by risk score. "
     "WHEN TO CALL: When you need to find specific assets or get asset details for a filtered set.",
     {
         "scan_id": {"type": "integer", "description": "Filter by scan ID"},
         "ip": {"type": "string", "description": "Filter by IP substring"},
         "hostname": {"type": "string", "description": "Filter by hostname substring"},
+        "fqdn": {"type": "string", "description": "Filter by FQDN substring"},
         "os": {"type": "string", "description": "Filter by OS substring"},
+        "keyword": {"type": "string", "description": "Search across hostname, IP, FQDN, and OS"},
         "min_criticality": {"type": "integer", "description": "Minimum criticality (1-10)"},
-        "limit": {"type": "integer", "description": "Max results (default 50)"},
+        "criticality": {"type": "integer", "description": "Exact criticality value (1-10)"},
+        "environment": {"type": "string", "description": "Environment filter: 'internet', 'external', 'dmz', 'internal', 'cloud', 'development', 'production', 'staging', 'ot'"},
+        "min_risk": {"type": "number", "description": "Minimum risk score (0-10)"},
+        "max_risk": {"type": "number", "description": "Maximum risk score (0-10)"},
+        "min_critical": {"type": "integer", "description": "Minimum number of critical findings"},
+        "min_high": {"type": "integer", "description": "Minimum number of high findings"},
+        "has_findings": {"type": "boolean", "description": "Filter assets that have any findings"},
+        "server_role": {"type": "string", "description": "Filter by server role: 'web_server', 'dns_server', 'mail_server', 'database', 'ftp_server'"},
+        "source": {"type": "string", "description": "Filter by scanner source system"},
+        "min_sources": {"type": "integer", "description": "Minimum number of source systems that detected this asset"},
+        "asset_status": {"type": "string", "description": "Lifecycle status: 'active' or 'stale'"},
+        "is_internet_facing": {"type": "boolean", "description": "Filter internet-facing assets"},
+        "device_type": {"type": "string", "description": "Filter by device type: 'server', 'workstation', 'router', 'switch', 'firewall', 'printer', etc."},
+        "tags": {"type": "string", "description": "Comma-separated tag filters (e.g. 'env:production,team:devops')"},
+        "tag_logic": {"type": "string", "description": "Tag filter logic: 'AND' (default) or 'OR'"},
+        "sort_by": {"type": "string", "description": "Sort field (default: 'risk_score'). Options: hostname, ip, criticality, critical_count, os, environment_tag, first_seen, last_seen"},
+        "order": {"type": "string", "description": "Sort order: 'desc' (default) or 'asc'"},
+        "limit": {"type": "integer", "description": "Max results (default 50, max 200)"},
     },
 )
 def query_assets(db: Session, params: dict):
     q = db.query(Asset)
+    if params.get("_org_id"):
+        q = q.join(Scan, Asset.scan_id == Scan.id).filter(Scan.org_id == params["_org_id"])
     if params.get("scan_id"):
         q = q.filter(Asset.scan_id == params["scan_id"])
+
+    # Text search (keyword searches across multiple fields)
+    if params.get("keyword"):
+        kw = f"%{params['keyword']}%"
+        q = q.filter(
+            (Asset.hostname.ilike(kw))
+            | (Asset.ip.ilike(kw))
+            | (Asset.fqdn.ilike(kw))
+            | (Asset.os.ilike(kw))
+        )
     if params.get("ip"):
         q = q.filter(Asset.ip.ilike(f"%{params['ip']}%"))
     if params.get("hostname"):
         q = q.filter(Asset.hostname.ilike(f"%{params['hostname']}%"))
+    if params.get("fqdn"):
+        q = q.filter(Asset.fqdn.ilike(f"%{params['fqdn']}%"))
     if params.get("os"):
         q = q.filter(Asset.os.ilike(f"%{params['os']}%"))
-    if params.get("min_criticality"):
+
+    # Criticality
+    if params.get("criticality") is not None:
+        q = q.filter(Asset.criticality == params["criticality"])
+    elif params.get("min_criticality"):
         q = q.filter(Asset.criticality >= params["min_criticality"])
+
+    # Environment
+    if params.get("environment"):
+        q = q.filter(Asset.environment_tag == params["environment"])
+
+    # Risk score range
+    if params.get("min_risk") is not None:
+        q = q.filter(Asset.risk_score >= params["min_risk"])
+    if params.get("max_risk") is not None:
+        q = q.filter(Asset.risk_score <= params["max_risk"])
+
+    # Finding count filters
+    if params.get("min_critical") is not None:
+        q = q.filter(Asset.critical_count >= params["min_critical"])
+    if params.get("min_high") is not None:
+        q = q.filter(Asset.high_count >= params["min_high"])
+    if params.get("has_findings") is not None:
+        if params["has_findings"]:
+            q = q.filter(
+                (Asset.critical_count > 0) | (Asset.high_count > 0)
+                | (Asset.medium_count > 0) | (Asset.low_count > 0)
+            )
+        else:
+            q = q.filter(
+                Asset.critical_count == 0, Asset.high_count == 0,
+                Asset.medium_count == 0, Asset.low_count == 0
+            )
+
+    # Server role / device type
+    if params.get("server_role"):
+        q = q.filter(Asset.business_context.ilike(f"%{params['server_role']}%"))
+    if params.get("device_type"):
+        q = q.filter(Asset.device_type == params["device_type"])
+
+    # Source filter
+    if params.get("source"):
+        q = q.filter(Asset.source_systems.contains(params["source"]))
+    if params.get("min_sources") is not None:
+        # Filter assets seen by at least N sources
+        q = q.filter(Asset.times_seen >= params["min_sources"])
+
+    # Lifecycle
+    if params.get("asset_status"):
+        q = q.filter(Asset.asset_status == params["asset_status"])
+
+    # Internet-facing
+    if params.get("is_internet_facing") is not None:
+        q = q.filter(Asset.is_internet_facing == params["is_internet_facing"])
+
+    # Tag filter
+    if params.get("tags"):
+        tag_values = [t.strip() for t in params["tags"].split(",") if t.strip()]
+        tag_logic = params.get("tag_logic", "AND").upper()
+        tag_ids = []
+        for tv in tag_values:
+            if ":" in tv:
+                cat, val = tv.split(":", 1)
+                matching = db.query(Tag.id).filter(Tag.category == cat, Tag.value == val).all()
+            else:
+                matching = db.query(Tag.id).filter(Tag.value == tv).all()
+            tag_ids.extend([m[0] for m in matching])
+        if tag_ids:
+            if tag_logic == "AND":
+                for tid in set(tag_ids):
+                    sub = db.query(TagAssignment.asset_id).filter(TagAssignment.tag_id == tid).subquery()
+                    q = q.filter(Asset.id.in_(sub))
+            else:
+                sub = db.query(TagAssignment.asset_id).filter(TagAssignment.tag_id.in_(tag_ids)).subquery()
+                q = q.filter(Asset.id.in_(sub))
+
+    # Sorting
+    sort_field = params.get("sort_by", "risk_score")
+    sort_order = params.get("order", "desc")
+    sort_col = getattr(Asset, sort_field, Asset.risk_score)
+    q = q.order_by(sort_col.desc() if sort_order == "desc" else sort_col.asc())
+
     limit = min(params.get("limit", 50), 200)
-    rows = q.order_by(Asset.risk_score.desc()).limit(limit).all()
+    rows = q.limit(limit).all()
     return [
         {
             "id": a.id, "ip": a.ip, "hostname": a.hostname, "fqdn": a.fqdn,
             "os": a.os, "criticality": a.criticality, "risk_score": a.risk_score,
+            "environment": a.environment_tag, "device_type": a.device_type,
+            "asset_status": a.asset_status,
+            "is_internet_facing": a.is_internet_facing,
             "critical_count": a.critical_count, "high_count": a.high_count,
             "medium_count": a.medium_count, "low_count": a.low_count,
         }

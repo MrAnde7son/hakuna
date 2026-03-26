@@ -15,7 +15,7 @@ from models.models import (
     WorkflowExecution, WorkflowExecutionLog,
     Finding, Asset, Campaign, CampaignFinding,
     Tag, TagAssignment, FindingOwnership, AssetOwnership,
-    Agent,
+    Agent, AggregatedSolution,
 )
 
 logger = logging.getLogger(__name__)
@@ -319,7 +319,7 @@ def _load_campaign_findings(db: Session, campaign_id: int) -> list:
         .filter(CampaignFinding.campaign_id == campaign_id)
         .all()
     )
-    return [_finding_to_item(finding, asset, campaign_finding_id=cf.id)
+    return [_finding_to_item(finding, asset, campaign_finding_id=cf.id, db=db)
             for cf, finding, asset in rows]
 
 
@@ -332,7 +332,7 @@ def _load_scan_findings(db: Session, scan_id: int) -> list:
         .limit(5000)
         .all()
     )
-    return [_finding_to_item(f, asset) for f, asset in rows]
+    return [_finding_to_item(f, asset, db=db) for f, asset in rows]
 
 
 def _load_asset_items(db: Session, trigger_data: dict) -> list:
@@ -370,7 +370,7 @@ def _load_new_finding_items(db: Session, trigger_data: dict) -> list:
         .limit(5000)
         .all()
     )
-    return [_finding_to_item(f, asset) for f, asset in rows]
+    return [_finding_to_item(f, asset, db=db) for f, asset in rows]
 
 
 def _load_threat_intel_affected_findings(db: Session, trigger_data: dict) -> list:
@@ -390,12 +390,26 @@ def _load_threat_intel_affected_findings(db: Session, trigger_data: dict) -> lis
     items = []
     for finding, asset in rows:
         if finding.cves and any(c in new_cve_set for c in finding.cves):
-            items.append(_finding_to_item(finding, asset))
+            items.append(_finding_to_item(finding, asset, db=db))
     return items
 
 
-def _finding_to_item(finding: Finding, asset: Asset, campaign_finding_id: int = None) -> dict:
+def _finding_to_item(finding: Finding, asset: Asset, campaign_finding_id: int = None, db: Session = None) -> dict:
     """Convert a Finding + Asset to a workflow data item."""
+    # Use aggregated remediation when available — it provides richer,
+    # root-cause-grouped guidance compared to the per-finding solution text.
+    remediation = finding.solution or ""
+    agg_title = ""
+    agg_description = ""
+    if finding.aggregated_solution_id and db:
+        agg = db.query(AggregatedSolution).filter(
+            AggregatedSolution.id == finding.aggregated_solution_id
+        ).first()
+        if agg:
+            agg_title = agg.title or ""
+            agg_description = agg.description or ""
+            remediation = agg.description or finding.solution or ""
+
     return {
         "finding_id": finding.id,
         "campaign_finding_id": campaign_finding_id,
@@ -410,6 +424,9 @@ def _finding_to_item(finding: Finding, asset: Asset, campaign_finding_id: int = 
         "exploit_available": finding.exploit_available,
         "cves": finding.cves or [],
         "solution": finding.solution,
+        "remediation": remediation,
+        "aggregated_solution_title": agg_title,
+        "aggregated_solution_description": agg_description,
         "asset_id": finding.asset_id,
         "asset_ip": asset.ip if asset else None,
         "asset_hostname": asset.hostname if asset else None,

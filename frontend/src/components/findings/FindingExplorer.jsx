@@ -376,6 +376,10 @@ export default function FindingExplorer() {
   const [tagLogic, setTagLogic] = useState('AND')
   const [ownershipEdit, setOwnershipEdit] = useState(null) // { findingId, current }
 
+  // Advanced filters toggle (ticket, control status, etc.)
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(
+    () => !!(urlFilters.control_status || urlFilters.has_ticket || urlFilters.ticket_status)
+  )
   // Advanced rule-engine search
   const [advancedMode, setAdvancedMode] = useState(false)
   const [advancedConditions, setAdvancedConditions] = useState([])
@@ -511,7 +515,7 @@ export default function FindingExplorer() {
       })
       .catch(() => setFetchError('Failed to load findings.'))
       .finally(() => setLoading(false))
-  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, productFilter, cpeFilter2, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException, hasTicket, ticketStatus])
+  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, productFilter, cpeFilter2, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException, hasTicket, ticketStatus, urlFilters.control_status])
 
   useEffect(() => { if (!advancedMode) load() }, [load, advancedMode])
 
@@ -984,6 +988,48 @@ export default function FindingExplorer() {
           />
 
           <Select
+            value={groupBy}
+            onChange={v => setFilter('group', v)}
+            placeholder={t('findings.noGrouping')}
+            options={getGroupOptions(t)}
+          />
+
+          <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
+
+          <TagFilterBar
+            tags={tagFilter}
+            onChange={setTagFilter}
+            logic={tagLogic}
+            onLogicChange={setTagLogic}
+          />
+
+          <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
+
+          <ColumnSelector
+            columns={allColumns}
+            visible={colVis}
+            onChange={updateColVis}
+          />
+
+          <Button variant="ghost" size="sm" onClick={() => setShowAdvancedFilters(p => !p)} title={t('findings.advancedSearch')}>
+            <SlidersHorizontal size={13} /> {t('findings.advanced')}
+          </Button>
+
+          {hasActiveFilters && (
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setShowSaveAs(true)}>
+                <Bookmark size={13} /> {t('findings.saveAs')}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => { clearFilters(); setTagFilter([]) }}>{t('findings.clearAll')}</Button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Advanced filters row */}
+      {!advancedMode && showAdvancedFilters && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
+          <Select
             value={searchParams.get('has_ticket') || searchParams.get('ticket_status') || null}
             onChange={v => {
               setSearchParams(prev => {
@@ -1020,42 +1066,10 @@ export default function FindingExplorer() {
             ]}
           />
 
-          <Select
-            value={groupBy}
-            onChange={v => setFilter('group', v)}
-            placeholder={t('findings.noGrouping')}
-            options={getGroupOptions(t)}
-          />
-
-          <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
-
-          <TagFilterBar
-            tags={tagFilter}
-            onChange={setTagFilter}
-            logic={tagLogic}
-            onLogicChange={setTagLogic}
-          />
-
-          <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
-
-          <ColumnSelector
-            columns={allColumns}
-            visible={colVis}
-            onChange={updateColVis}
-          />
-
-          <Button variant="ghost" size="sm" onClick={enterAdvancedMode} title={t('findings.advancedSearch')}>
-            <SlidersHorizontal size={13} /> {t('findings.advanced')}
+          <div style={{ flex: 1 }} />
+          <Button variant="ghost" size="sm" onClick={enterAdvancedMode} title="Rule Builder">
+            <SlidersHorizontal size={13} /> Rule Builder
           </Button>
-
-          {hasActiveFilters && (
-            <>
-              <Button variant="ghost" size="sm" onClick={() => setShowSaveAs(true)}>
-                <Bookmark size={13} /> {t('findings.saveAs')}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => { clearFilters(); setTagFilter([]) }}>{t('findings.clearAll')}</Button>
-            </>
-          )}
         </div>
       )}
 

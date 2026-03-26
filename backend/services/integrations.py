@@ -86,7 +86,8 @@ def create_jira_ticket(db: Session, config: dict, items: list) -> dict:
             config.get("description_template",
                         "Remediation required for {count} finding(s).\n\n"
                         "Severity: {severity_label}\nPlugin: {plugin_name}\n"
-                        "Asset: {asset_ip} ({asset_hostname})\n\nSolution: {solution}"),
+                        "Asset: {asset_ip} ({asset_hostname})\n\n"
+                        "Recommended Remediation:\n{remediation}"),
             group_items[0], count=len(group_items))
 
         # Jira API v3 create issue
@@ -197,7 +198,8 @@ def create_servicenow_ticket(db: Session, config: dict, items: list) -> dict:
             config.get("description_template",
                         "Vulnerability remediation required.\n\n"
                         "Findings: {count}\nSeverity: {severity_label}\n"
-                        "Asset: {asset_ip}\nPlugin: {plugin_name}\n\nSolution: {solution}"),
+                        "Asset: {asset_ip}\nPlugin: {plugin_name}\n\n"
+                        "Recommended Remediation:\n{remediation}"),
             group_items[0], count=len(group_items))
 
         payload = {
@@ -610,6 +612,7 @@ def _render(template: str, item: dict, count: int = 0) -> str:
     # Standard item fields
     for key in ("severity_label", "plugin_name", "plugin_id", "plugin_family",
                 "asset_ip", "asset_hostname", "asset_os", "solution",
+                "remediation", "aggregated_solution_title", "aggregated_solution_description",
                 "severity", "cvss3_score", "vpr_score", "priority_score"):
         val = str(item.get(key, "")) if item else ""
         result = result.replace(f"{{{key}}}", val)
