@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { Layers, ChevronDown, ChevronUp, ExternalLink, RefreshCw, ArrowRight, Monitor, Shield, Zap, AlertTriangle, Info, CheckCircle } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getAggregatedSolutions, rebuildAggregatedSolutions } from '../../api.js'
+import ReactMarkdown from 'react-markdown'
 import { Card, PageHeader, Spinner, EmptyState, SeverityBadge, EffortBadge, Select, FilterBar, ErrorBanner, SkeletonCard } from '../shared/ui.jsx'
 
 const ROOT_CAUSE_KEYS = ['eol_software', 'deprecated_protocol', 'outdated_version', 'misconfiguration', 'missing_patch']
@@ -293,9 +294,9 @@ function RecommendationCard({ rec, highlighted }) {
           {/* Description */}
           <div style={{
             marginTop: 14, fontSize: 13, color: 'var(--text-secondary)',
-            lineHeight: 1.7, whiteSpace: 'pre-wrap',
+            lineHeight: 1.7,
           }}>
-            {rec.description}
+            <ReactMarkdown>{rec.description}</ReactMarkdown>
           </div>
 
           {/* Affected hosts */}
