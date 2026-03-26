@@ -1061,6 +1061,8 @@ function AppShell() {
               background: 'var(--bg-muted)',
               overflowY: 'auto',
               overflowX: 'hidden',
+              display: 'flex',
+              flexDirection: 'column',
             }}
           >
             <GettingStartedPanel />

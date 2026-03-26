@@ -4131,7 +4131,7 @@ export default function ReportBuilder() {
 
   if (activeReport) {
     return (
-      <div style={{ margin: '-24px', height: 'calc(100vh - 49px)', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ margin: '-24px', flex: 1, display: 'flex', flexDirection: 'column' }}>
         <Builder
           report={activeReport}
           onSave={saveReport}
@@ -4144,7 +4144,7 @@ export default function ReportBuilder() {
   }
 
   return (
-    <div style={{ margin: '-18px', display: 'flex', flexDirection: 'column', minHeight: 'calc(100vh - 32px)' }}>
+    <div style={{ margin: '-18px', display: 'flex', flexDirection: 'column', flex: 1 }}>
       <ErrorBanner error={fetchError} onRetry={loadFromApi} onDismiss={() => setFetchError(null)} />
       <TabBar active={activeTab} onChange={setActiveTab} />
       <div style={{ flex: 1, padding: 18, overflowY: 'auto' }}>
