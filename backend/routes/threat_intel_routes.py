@@ -69,6 +69,73 @@ def _fire_threat_intel_triggers(db, kev_result=None, epss_result=None, enrich_re
         logger.warning("Failed to fire threat intel workflow triggers: %s", e)
 
 
+def _notify_threat_intel(db, kev_result, enrich_result):
+    """Generate notifications for KEV updates. Broadcast to all orgs with scans."""
+    try:
+        from services.notifications import create_notification
+        new_kev = kev_result.get("added", 0)
+        if new_kev <= 0:
+            return
+        org_ids = [r[0] for r in db.query(Scan.org_id).distinct().all() if r[0]]
+        for oid in org_ids:
+            create_notification(db, oid, "kev_update",
+                f"{new_kev} new CVEs added to CISA KEV",
+                body=f"{enrich_result.get('enriched', 0)} of your findings were enriched",
+                link="/threat-intel/kev",
+                entity_type="threat_intel",
+                metadata={"added": new_kev, "enriched": enrich_result.get("enriched", 0)})
+        db.flush()
+    except Exception as e:
+        logger.warning("Failed to create KEV notifications: %s", e)
+
+
+def _sync_mitre_with_notification(db):
+    """Sync MITRE groups and notify if new groups found."""
+    try:
+        from models.threat_intel_models import ThreatGroup
+        before = db.query(func.count(ThreatGroup.id)).scalar() or 0
+        sync_engine.sync_mitre_groups_to_db(db)
+        after = db.query(func.count(ThreatGroup.id)).scalar() or 0
+        new_groups = after - before
+        if new_groups > 0:
+            from services.notifications import create_notification
+            org_ids = [r[0] for r in db.query(Scan.org_id).distinct().all() if r[0]]
+            for oid in org_ids:
+                create_notification(db, oid, "new_threat_groups",
+                    f"{new_groups} new threat groups identified",
+                    link="/threat-intel/groups",
+                    entity_type="threat_intel",
+                    metadata={"count": new_groups})
+            db.flush()
+    except Exception as e:
+        logger.warning("MITRE sync with notification failed: %s", e)
+
+
+def _sync_eol_with_notification(db):
+    """Sync product lifecycles and notify if new EOL products found."""
+    try:
+        from models.threat_intel_models import ProductLifecycle
+        before = db.query(func.count(ProductLifecycle.id)).filter(ProductLifecycle.is_eol == True).scalar() or 0
+        sync_fn = getattr(sync_engine, 'sync_product_lifecycles', None)
+        if not sync_fn:
+            return
+        sync_fn(db)
+        after = db.query(func.count(ProductLifecycle.id)).filter(ProductLifecycle.is_eol == True).scalar() or 0
+        new_eol = after - before
+        if new_eol > 0:
+            from services.notifications import create_notification
+            org_ids = [r[0] for r in db.query(Scan.org_id).distinct().all() if r[0]]
+            for oid in org_ids:
+                create_notification(db, oid, "eol_update",
+                    f"{new_eol} products reached end-of-life",
+                    link="/threat-intel/eol",
+                    entity_type="threat_intel",
+                    metadata={"count": new_eol})
+            db.flush()
+    except Exception as e:
+        logger.warning("EOL sync with notification failed: %s", e)
+
+
 def _run_with_fresh_db(sync_fn, *args, **kwargs):
     """Run a sync function with a fresh DB session.
 
@@ -1139,21 +1206,22 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
         enrich_result=enrich_result,
     )
 
+    # ── Notifications for new threat intel ──
+    _notify_threat_intel(db, kev_result, enrich_result)
+
     # NVD CVSS backfill — moderate speed (~3 req/s), run in background
     background_tasks.add_task(sync_engine.sync_nvd_scores, db)
 
-    # MITRE is slow (~30 MB download) — run in background
-    background_tasks.add_task(sync_engine.sync_mitre_groups_to_db, db)
+    # MITRE is slow (~30 MB download) — run in background with notifications
+    background_tasks.add_task(_sync_mitre_with_notification, db)
 
     # CISA advisories — fast RSS fetch, run in background so main sync stays quick
     advisory_sync_fn = getattr(sync_engine, 'sync_cisa_advisories_to_db', None)
     if advisory_sync_fn:
         background_tasks.add_task(advisory_sync_fn, db)
 
-    # endoflife.date product lifecycles — background
-    eol_sync_fn = getattr(sync_engine, 'sync_product_lifecycles', None)
-    if eol_sync_fn:
-        background_tasks.add_task(eol_sync_fn, db)
+    # endoflife.date product lifecycles — background with notifications
+    background_tasks.add_task(_sync_eol_with_notification, db)
 
     # New intel sources — each gets its own fresh DB session so a stale connection
     # from a previous long-running sync (e.g. SSVC) doesn't block the rest.

@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import {
   Target, Play, Plus, X, ChevronDown, ChevronRight, ChevronLeft,
   User, Users, Zap, AlertTriangle, CheckCircle, Edit2, Save, Eye,
-  RefreshCw, GitBranch, Trash2, Ticket, ExternalLink, Hash,
+  RefreshCw, GitBranch, Trash2, Ticket, ExternalLink, Hash, ShieldOff,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import {
@@ -13,9 +13,11 @@ import {
   getWorkflows, createWorkflowFromTemplate, createWorkflow, deleteWorkflow,
   executeWorkflow, getWorkflowTemplates, authListUsers,
   getCampaignTickets, syncFindingTickets, createCampaignSlackChannel,
+  createException,
 } from '../../api.js'
 import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill, ErrorBanner, SkeletonDetail, Table, buildFindingBreakdown, useRiskWeights } from '../shared/ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
+import NewSinceBanner from '../notifications/NewSinceBanner.jsx'
 
 // ─── Condition chip colors ───────────────────────────────
 const GROUP_COLORS = {
@@ -122,13 +124,201 @@ function OwnerChip({ role, name, team, editable, onEdit }) {
   )
 }
 
+// ─── Campaign Progress Bar ───────────────────────────────
+function CampaignProgressBar({ statusCounts, total }) {
+  const { t } = useTranslation()
+  if (!total) return null
+
+  const segments = [
+    { key: 'resolved', count: statusCounts?.resolved || 0, color: '#4ade80', label: t('campaigns.resolved') },
+    { key: 'wont_fix', count: statusCounts?.wont_fix || 0, color: '#fca5a5', label: t('campaigns.wontFix') },
+    { key: 'in_progress', count: statusCounts?.in_progress || 0, color: '#60a5fa', label: t('campaigns.inProgress') },
+    { key: 'open', count: statusCounts?.open || 0, color: '#a1a1aa', label: t('campaigns.open') },
+  ]
+
+  const completedCount = (statusCounts?.resolved || 0) + (statusCounts?.wont_fix || 0)
+  const pct = Math.round((completedCount / total) * 100)
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+          {t('campaigns.progress')}
+        </div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: pct === 100 ? '#4ade80' : 'var(--text-primary)' }}>
+          {pct}%
+        </div>
+      </div>
+      {/* Segmented bar */}
+      <div style={{
+        display: 'flex', height: 10, borderRadius: 6, overflow: 'hidden',
+        background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+      }}>
+        {segments.map(seg => {
+          const w = (seg.count / total) * 100
+          if (w === 0) return null
+          return (
+            <div
+              key={seg.key}
+              title={`${seg.label}: ${seg.count}`}
+              style={{ width: `${w}%`, background: seg.color, transition: 'width 0.3s ease' }}
+            />
+          )
+        })}
+      </div>
+      {/* Legend */}
+      <div style={{ display: 'flex', gap: 16, marginTop: 8, flexWrap: 'wrap' }}>
+        {segments.map(seg => (
+          seg.count > 0 && (
+            <div key={seg.key} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
+              <div style={{ width: 8, height: 8, borderRadius: 2, background: seg.color }} />
+              <span style={{ color: 'var(--text-muted)' }}>{seg.label}</span>
+              <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{seg.count}</span>
+            </div>
+          )
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Exception Reason Dialog ─────────────────────────────
+function ExceptionDialog({ finding, onConfirm, onCancel }) {
+  const { t } = useTranslation()
+  const [exceptionType, setExceptionType] = useState('accepted_risk')
+  const [reason, setReason] = useState('')
+  const [createGlobal, setCreateGlobal] = useState(false)
+
+  const EXCEPTION_TYPES = [
+    { value: 'accepted_risk', label: t('campaigns.acceptedRisk', 'Accepted Risk'), desc: t('campaigns.acceptedRiskDesc', 'Risk acknowledged and accepted by stakeholder') },
+    { value: 'false_positive', label: t('campaigns.falsePositive', 'False Positive'), desc: t('campaigns.falsePositiveDesc', 'Finding is incorrect or not applicable') },
+    { value: 'compensating_control', label: t('campaigns.compensatingControl', 'Compensating Control'), desc: t('campaigns.compensatingControlDesc', 'Risk mitigated by an existing control') },
+  ]
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 9999,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+    }} onClick={onCancel}>
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 14, padding: 24, width: 420, maxWidth: '90vw',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+          <div style={{
+            width: 36, height: 36, borderRadius: 8, background: '#450a0a44',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <ShieldOff size={18} color="#fca5a5" />
+          </div>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)' }}>
+              {t('campaigns.markWontFix', "Mark as Won't Fix")}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 1 }}>
+              {finding?.plugin_name}
+            </div>
+          </div>
+        </div>
+
+        {/* Exception type */}
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+            {t('campaigns.exceptionReason', 'Reason')}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {EXCEPTION_TYPES.map(et => (
+              <label
+                key={et.value}
+                style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px',
+                  background: exceptionType === et.value ? '#450a0a22' : 'var(--bg-secondary)',
+                  border: `1px solid ${exceptionType === et.value ? '#991b1b55' : 'var(--border)'}`,
+                  borderRadius: 8, cursor: 'pointer', transition: 'all 0.15s',
+                }}
+              >
+                <input
+                  type="radio" name="exception_type" value={et.value}
+                  checked={exceptionType === et.value}
+                  onChange={() => setExceptionType(et.value)}
+                  style={{ marginTop: 2 }}
+                />
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{et.label}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>{et.desc}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Justification */}
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+            {t('campaigns.justification', 'Justification')}
+          </div>
+          <textarea
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder={t('campaigns.justificationPlaceholder', 'Why is this finding being dismissed?')}
+            rows={2}
+            style={{
+              width: '100%', padding: '8px 10px', background: 'var(--bg-secondary)',
+              border: '1px solid var(--border)', borderRadius: 8, fontSize: 12,
+              color: 'var(--text-primary)', resize: 'vertical', boxSizing: 'border-box',
+            }}
+          />
+        </div>
+
+        {/* Create global exception */}
+        <label style={{
+          display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18,
+          padding: '8px 10px', background: 'var(--bg-secondary)',
+          border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer',
+        }}>
+          <input
+            type="checkbox" checked={createGlobal}
+            onChange={e => setCreateGlobal(e.target.checked)}
+          />
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
+              {t('campaigns.createGlobalException', 'Create global exception rule')}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              {t('campaigns.globalExceptionDesc', 'Auto-applies to all matching findings across scans')}
+            </div>
+          </div>
+        </label>
+
+        {/* Actions */}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <Button variant="ghost" size="sm" onClick={onCancel}>
+            {t('common.cancel')}
+          </Button>
+          <Button size="sm" onClick={() => onConfirm({ exceptionType, reason, createGlobal })}
+            style={{ background: '#991b1b', borderColor: '#991b1b' }}>
+            {t('campaigns.confirmWontFix', "Confirm Won't Fix")}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Finding Card (campaign context) ─────────────────────
-function CampaignFindingCard({ finding, campaignId, onOwnerUpdate, riskWeights }) {
+function CampaignFindingCard({ finding, campaignId, onOwnerUpdate, onStatusChange, riskWeights }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [expanded, setExpanded] = useState(false)
   const [editingOwner, setEditingOwner] = useState(false)
   const [status, setStatus] = useState(finding.campaign_status || 'open')
+  const [showExceptionDialog, setShowExceptionDialog] = useState(false)
 
   const sevColor = SEV_COLORS[finding.severity] || SEV_COLORS[0]
 
@@ -141,8 +331,32 @@ function CampaignFindingCard({ finding, campaignId, onOwnerUpdate, riskWeights }
   }
 
   const handleStatusChange = async (newStatus) => {
+    if (newStatus === 'wont_fix') {
+      setShowExceptionDialog(true)
+      return
+    }
     setStatus(newStatus)
     await updateCampaignFinding(campaignId, finding.campaign_finding_id, { status: newStatus })
+    onStatusChange?.()
+  }
+
+  const handleExceptionConfirm = async ({ exceptionType, reason, createGlobal }) => {
+    setStatus('wont_fix')
+    setShowExceptionDialog(false)
+    await updateCampaignFinding(campaignId, finding.campaign_finding_id, {
+      status: 'wont_fix',
+      exception_type: exceptionType,
+    })
+    if (createGlobal) {
+      await createException({
+        plugin_id: finding.plugin_id,
+        plugin_name: finding.plugin_name,
+        exception_type: exceptionType,
+        reason,
+        exclude_from_reports: true,
+      }).catch(() => {}) // best-effort
+    }
+    onStatusChange?.()
   }
 
   const STATUS_COLORS = {
@@ -271,12 +485,20 @@ function CampaignFindingCard({ finding, campaignId, onOwnerUpdate, riskWeights }
           </div>
         </div>
       )}
+
+      {showExceptionDialog && (
+        <ExceptionDialog
+          finding={finding}
+          onConfirm={handleExceptionConfirm}
+          onCancel={() => setShowExceptionDialog(false)}
+        />
+      )}
     </div>
   )
 }
 
 // ─── Owner Group Section ──────────────────────────────────
-function OwnerGroup({ group, campaignId, onOwnerUpdate, riskWeights, defaultExpanded = true }) {
+function OwnerGroup({ group, campaignId, onOwnerUpdate, onStatusChange, riskWeights, defaultExpanded = true }) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [editingGroup, setEditingGroup] = useState(false)
@@ -344,6 +566,7 @@ function OwnerGroup({ group, campaignId, onOwnerUpdate, riskWeights, defaultExpa
               finding={f}
               campaignId={campaignId}
               onOwnerUpdate={onOwnerUpdate}
+              onStatusChange={onStatusChange}
               riskWeights={riskWeights}
             />
           ))}
@@ -529,6 +752,8 @@ export default function CampaignDetail() {
         <span style={{ color: 'var(--text-muted)' }}>/</span>
         <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{campaign.name}</span>
       </div>
+
+      <NewSinceBanner pageKey={`campaigns:${id}`} labelKey="notifications.newCampaignFindings" />
 
       {/* Header */}
       <div style={{
@@ -817,6 +1042,9 @@ export default function CampaignDetail() {
                 </div>
               </div>
 
+              {/* Progress bar */}
+              <CampaignProgressBar statusCounts={campaign.status_counts} total={totalFindings} />
+
               {/* Owner groups */}
               {campaign.owner_groups.map((group, idx) => (
                 <OwnerGroup
@@ -824,6 +1052,7 @@ export default function CampaignDetail() {
                   group={group}
                   campaignId={campaign.id}
                   onOwnerUpdate={load}
+                  onStatusChange={load}
                   riskWeights={riskWeights}
                   defaultExpanded={idx === 0}
                 />

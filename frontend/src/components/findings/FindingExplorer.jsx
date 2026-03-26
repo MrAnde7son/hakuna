@@ -12,6 +12,7 @@ import {
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
 import NLPSearchBar from '../shared/NLPSearchBar.jsx'
+import NewSinceBanner from '../notifications/NewSinceBanner.jsx'
 
 const TACTIC_COLORS = {
   'credential-access':    '#dc2626',
@@ -872,6 +873,7 @@ export default function FindingExplorer() {
 
   return (
     <div>
+      <NewSinceBanner pageKey="findings" labelKey="notifications.newFindings" />
       <PageHeader
         title={t('findings.title')}
         subtitle={advancedMode ? t('findings.matchedFindings', { count: total.toLocaleString() }) : t('findings.totalFindings', { count: total.toLocaleString() })}

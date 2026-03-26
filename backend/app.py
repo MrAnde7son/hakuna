@@ -81,6 +81,7 @@ from routes.discovery_routes import router as discovery_router
 from routes.billing_routes import router as billing_router
 from routes.copilot_routes import router as copilot_router
 from routes.workflow_routes import router as workflow_router
+from routes.notification_routes import router as notification_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -311,6 +312,7 @@ app.include_router(integration_builder_router)
 app.include_router(discovery_router)
 app.include_router(billing_router)
 app.include_router(workflow_router)
+app.include_router(notification_router)
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
 
@@ -1192,6 +1194,34 @@ def _run_scan_ingest(
                   entity_name=scan.scan_name or filename,
                   changes={"filename": filename, "assets": total_assets, "findings": total_findings},
                   actor=mock_user)
+
+        # ── Notifications ──
+        from services.notifications import create_notification
+        create_notification(db, effective_org_id, "scan_complete",
+            f"Scan '{scan.scan_name or filename}' completed",
+            body=f"{total_assets} assets, {total_findings} findings processed",
+            link=f"/findings?scan_id={scan.id}",
+            entity_type="scan", entity_id=scan.id,
+            metadata={"assets": total_assets, "findings": total_findings, "scan_name": scan.scan_name or filename})
+        crit_high = db.query(Finding).filter(
+            Finding.scan_id == scan.id, Finding.severity >= 3
+        ).count()
+        if crit_high > 0:
+            create_notification(db, effective_org_id, "critical_findings",
+                f"{crit_high} critical/high findings in '{scan.scan_name or filename}'",
+                link=f"/findings?scan_id={scan.id}&severity=3,4",
+                entity_type="scan", entity_id=scan.id,
+                metadata={"count": crit_high, "scan_name": scan.scan_name or filename})
+        new_assets = db.query(Asset).filter(
+            Asset.scan_id == scan.id, Asset.times_seen == 1
+        ).count()
+        if new_assets > 0:
+            create_notification(db, effective_org_id, "new_assets",
+                f"{new_assets} new assets discovered in '{scan.scan_name or filename}'",
+                link=f"/assets?scan_id={scan.id}",
+                entity_type="scan", entity_id=scan.id,
+                metadata={"count": new_assets, "scan_name": scan.scan_name or filename})
+
         scan.status = "completed"
         db.commit()
 
@@ -4761,6 +4791,7 @@ class CampaignFindingUpdateBody(BaseModel):
     team: Optional[str] = None
     notes: Optional[str] = None
     status: Optional[str] = None
+    exception_type: Optional[str] = None  # accepted_risk / false_positive / compensating_control
 
 
 def _serialize_finding(f: Finding, asset: Asset = None) -> dict:
@@ -5048,6 +5079,15 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db), org_ids: Optio
     total_critical = sum(g["critical_count"] for g in owner_groups)
     total_exploit = sum(g["exploit_count"] for g in owner_groups)
 
+    # Status breakdown across all campaign findings
+    status_counts = {"open": 0, "in_progress": 0, "resolved": 0, "wont_fix": 0}
+    for cf in campaign.findings:
+        s = cf.status or "open"
+        if s in status_counts:
+            status_counts[s] += 1
+        else:
+            status_counts["open"] += 1
+
     owner = db.query(User).filter(User.id == campaign.owner_id).first() if campaign.owner_id else None
     return {
         "id": campaign.id,
@@ -5062,6 +5102,7 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db), org_ids: Optio
         "finding_count": total_findings,
         "critical_count": total_critical,
         "exploit_count": total_exploit,
+        "status_counts": status_counts,
         "owner_id": campaign.owner_id,
         "owner_name": (owner.display_name or owner.email) if owner else None,
         "owner_groups": owner_groups,
@@ -5143,6 +5184,15 @@ def run_campaign(campaign_id: int, db: Session = Depends(get_db)):
     campaign.last_run_at = datetime.utcnow()
     if campaign.status == "draft":
         campaign.status = "active"
+
+    if added > 0:
+        from services.notifications import create_notification
+        create_notification(db, campaign.org_id, "campaign_findings",
+            f"{added} findings matched in campaign '{campaign.name}'",
+            link=f"/campaigns/{campaign_id}",
+            entity_type="campaign", entity_id=campaign_id,
+            metadata={"count": added, "campaign_name": campaign.name})
+
     db.commit()
 
     return {"ok": True, "finding_count": added, "asset_count": len(results)}
@@ -5171,6 +5221,20 @@ def update_campaign_finding(
         cf.notes = body.notes
     if body.status is not None:
         cf.status = body.status
+        # Sync campaign status to the underlying finding's workflow_status
+        _STATUS_TO_WORKFLOW = {
+            "resolved": "resolved",
+            "in_progress": "in_progress",
+            "open": "open",
+            "wont_fix": "accepted_risk",
+        }
+        if cf.finding and body.status in _STATUS_TO_WORKFLOW:
+            cf.finding.workflow_status = _STATUS_TO_WORKFLOW[body.status]
+            cf.finding.status_changed_at = datetime.utcnow()
+    if body.exception_type is not None and cf.finding:
+        # Also set the more specific workflow_status from exception type
+        cf.finding.workflow_status = body.exception_type
+        cf.finding.status_changed_at = datetime.utcnow()
     db.commit()
     return {"ok": True}
 

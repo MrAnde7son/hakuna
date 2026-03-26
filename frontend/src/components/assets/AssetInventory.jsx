@@ -10,6 +10,7 @@ import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
 import BlastRadiusPanel, { BlastRadiusScore } from '../campaigns/BlastRadiusPanel.jsx'
 import NLPSearchBar from '../shared/NLPSearchBar.jsx'
+import NewSinceBanner from '../notifications/NewSinceBanner.jsx'
 
 function RiskScore({ score }) {
   const color = score >= 8 ? 'var(--critical)' : score >= 6 ? 'var(--high)' : score >= 4 ? 'var(--medium)' : 'var(--low)'
@@ -828,6 +829,7 @@ export default function AssetInventory() {
 
   return (
     <div>
+      <NewSinceBanner pageKey="assets" labelKey="notifications.newAssets" />
       <PageHeader
         title={t('assets.title')}
         subtitle={advancedMode ? t('assets.assetsMatched', { count: assets.length }) : t('assets.assetsDiscovered', { count: totalAssets })}

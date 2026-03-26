@@ -52,10 +52,12 @@ import Register from './components/auth/Register.jsx'
 import ForgotPassword from './components/auth/ForgotPassword.jsx'
 import ResetPassword from './components/auth/ResetPassword.jsx'
 import AcceptInvite from './components/auth/AcceptInvite.jsx'
+import VerifyEmail from './components/auth/VerifyEmail.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
 import SubscriptionBanner from './components/billing/SubscriptionBanner.jsx'
 import GettingStartedPanel from './components/onboarding/GettingStartedPanel.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
+import NotificationBell from './components/notifications/NotificationBell.jsx'
 import { getScans, setOrgContext, authUpdateLocale, getFindings, getAssets, getCampaigns } from './api.js'
 import { ErrorBoundary, ToastProvider, ConfirmProvider } from './components/shared/ui.jsx'
 
@@ -1091,6 +1093,7 @@ function AppShell() {
             </ErrorBoundary>
           </main>
         </div>
+        <NotificationBell />
         <HelpButton />
         <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} />
         <CopilotButton onClick={() => setCopilotOpen(true)} />
@@ -1115,6 +1118,7 @@ export default function App() {
                 <Route path="/forgot-password" element={<ForgotPassword />} />
                 <Route path="/reset-password" element={<ResetPassword />} />
                 <Route path="/accept-invite" element={<AcceptInvite />} />
+                <Route path="/verify-email" element={<VerifyEmail />} />
                 <Route path="/*" element={
                   <ProtectedRoute>
                     <AppShell />

@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { Card, Button, Spinner, EmptyState, StatCard, SeverityBadge, ScoreBar, SkeletonCard } from '../shared/ui.jsx'
+import NewSinceBanner from '../notifications/NewSinceBanner.jsx'
 import {
   getThreatIntelStats, getThreatCves, getThreatGroups, getThreatTtps,
   syncThreatIntel, getGroupExposure, getCisaAdvisories,
@@ -2205,6 +2206,7 @@ export default function ThreatIntelCenter() {
 
   return (
     <div style={{ padding: '24px 28px', maxWidth: 1400, margin: '0 auto' }}>
+      <NewSinceBanner pageKey="threat_intel" labelKey="notifications.newThreatIntel" />
       {/* Stats bar */}
       <StatsBar
         stats={stats}

@@ -174,6 +174,16 @@ export const authGoogleLogin = (credential) => request('/auth/google', {
 
 export const authMe = () => request('/auth/me')
 
+export const authVerifyEmail = (token) => request('/auth/verify-email', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ token }),
+})
+
+export const authResendVerification = () => request('/auth/resend-verification', {
+  method: 'POST',
+})
+
 export const authChangePassword = (data) => request('/auth/change-password', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
@@ -1111,3 +1121,27 @@ export const adminOverrideSubscription = (org_id, tier) => request('/billing/adm
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ org_id, tier, status: tier === 'pro' ? 'active' : 'canceled' }),
 })
+
+// ── Notifications ──────────────────────────────────────
+
+export const getNotifications = (params = {}) => {
+  const qs = new URLSearchParams(params).toString()
+  return request(`/notifications${qs ? '?' + qs : ''}`)
+}
+
+export const getUnreadNotificationCount = () => request('/notifications/unread-count')
+
+export const markNotificationRead = (id) => request(`/notifications/${id}/read`, { method: 'POST' })
+
+export const markAllNotificationsRead = () => request('/notifications/read-all', { method: 'POST' })
+
+export const recordPageVisit = (pageKey) => request('/notifications/page-visit', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ page_key: pageKey }),
+})
+
+export const getNewSinceCounts = (pages) => {
+  const qs = Array.isArray(pages) ? pages.join(',') : pages
+  return request(`/notifications/new-since?pages=${encodeURIComponent(qs)}`)
+}

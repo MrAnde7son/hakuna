@@ -941,5 +941,15 @@
       "apiReference": "API Reference",
       "keyboardTips": "Tips & Shortcuts"
     }
+  },
+  "notifications": {
+    "title": "Notifications",
+    "markAllRead": "Mark all read",
+    "noNotifications": "No notifications yet",
+    "newSince": "{{count}} new since your last visit",
+    "newFindings": "{{count}} new findings since your last visit",
+    "newAssets": "{{count}} new assets discovered since your last visit",
+    "newCampaignFindings": "{{count}} new findings added since your last visit",
+    "newThreatIntel": "{{count}} new threat intel entries since your last visit"
   }
 }
