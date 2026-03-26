@@ -73,7 +73,63 @@ def available_models(db: Session = Depends(get_db)):
 def list_agents(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     q = db.query(Agent).filter(Agent.name != "__copilot__").order_by(Agent.updated_at.desc())
     q = apply_org_filter(q, Agent, org_ids)
-    return [_agent_to_dict(a) for a in q.all()]
+    agents = q.all()
+    agent_ids = [a.id for a in agents]
+
+    # Gather last run per agent (status + timestamp + run_count)
+    from sqlalchemy import func, case
+    last_runs = {}
+    run_counts = {}
+    if agent_ids:
+        # Latest run per agent
+        subq = (
+            db.query(AgentRun.agent_id, func.max(AgentRun.id).label("max_id"))
+            .filter(AgentRun.agent_id.in_(agent_ids))
+            .group_by(AgentRun.agent_id)
+            .subquery()
+        )
+        latest = (
+            db.query(AgentRun)
+            .join(subq, AgentRun.id == subq.c.max_id)
+            .all()
+        )
+        for r in latest:
+            last_runs[r.agent_id] = {
+                "status": r.status,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "input": (r.input or "")[:100],
+            }
+        # Run count per agent
+        counts = (
+            db.query(AgentRun.agent_id, func.count(AgentRun.id))
+            .filter(AgentRun.agent_id.in_(agent_ids))
+            .group_by(AgentRun.agent_id)
+            .all()
+        )
+        run_counts = {aid: cnt for aid, cnt in counts}
+
+    # Active schedules per agent
+    schedule_map = {}
+    if agent_ids:
+        scheds = (
+            db.query(AgentSchedule)
+            .filter(AgentSchedule.agent_id.in_(agent_ids), AgentSchedule.is_enabled == True)
+            .all()
+        )
+        for s in scheds:
+            schedule_map.setdefault(s.agent_id, []).append({
+                "cron_expression": s.cron_expression,
+                "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+            })
+
+    result = []
+    for a in agents:
+        d = _agent_to_dict(a)
+        d["last_run"] = last_runs.get(a.id)
+        d["run_count"] = run_counts.get(a.id, 0)
+        d["schedules"] = schedule_map.get(a.id, [])
+        result.append(d)
+    return result
 
 
 @router.post("")

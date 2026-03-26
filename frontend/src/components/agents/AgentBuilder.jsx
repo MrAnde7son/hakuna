@@ -11,6 +11,7 @@ import {
   XCircle, Loader2, Settings2, MessageSquare, Wrench, Shield, Brain,
   Zap, Calendar, Copy, Clipboard, Briefcase, Target, Ticket, Radio, AlarmClock,
   Download, Upload, Tag, AlertCircle, FileText, Paperclip, ExternalLink, Search,
+  Activity, Timer, Hash,
 } from 'lucide-react'
 import {
   getAgents, createAgent, updateAgent, deleteAgent,
@@ -59,6 +60,25 @@ const TEMPLATE_ICONS = {
   zap: Zap, check: CheckCircle, settings: Settings2,
 }
 
+const AGENT_COLORS = [
+  '#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#ef4444', '#6366f1',
+]
+function agentColor(name) {
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0
+  return AGENT_COLORS[Math.abs(h) % AGENT_COLORS.length]
+}
+
+function timeAgo(iso) {
+  if (!iso) return null
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  if (s < 604800) return `${Math.floor(s / 86400)}d ago`
+  return new Date(iso).toLocaleDateString()
+}
+
 export default function AgentBuilder() {
   const navigate = useNavigate()
   const toast = useToast()
@@ -81,6 +101,7 @@ export default function AgentBuilder() {
   const [pendingApprovalCount, setPendingApprovalCount] = useState(0)
   const [schedules, setSchedules] = useState([])
   const [documents, setDocuments] = useState([])
+  const [agentSearch, setAgentSearch] = useState('')
   const inputRef = useRef()
   const importRef = useRef()
   const streamRef = useRef(null) // for aborting streams
@@ -301,7 +322,7 @@ export default function AgentBuilder() {
       <ErrorBanner error={fetchError} onRetry={refresh} onDismiss={() => setFetchError(null)} />
     <div style={{ display: 'flex', gap: 18, height: 'calc(100vh - 72px)' }}>
       {/* Left panel — agent list */}
-      <div style={{ width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ width: 300, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ marginBottom: 4 }}>
           <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Agents</h2>
           <div style={{ display: 'flex', gap: 4 }}>
@@ -341,28 +362,147 @@ export default function AgentBuilder() {
           </div>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {agents.map(a => (
-            <Card
-              key={a.id}
-              onClick={() => selectAgent(a)}
+        {/* Search */}
+        {agents.length > 0 && (
+          <div style={{ position: 'relative' }}>
+            <Search size={13} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <input
+              type="text"
+              placeholder="Filter agents..."
+              value={agentSearch}
+              onChange={e => setAgentSearch(e.target.value)}
               style={{
-                padding: '10px 12px', cursor: 'pointer',
-                borderColor: selected?.id === a.id ? 'var(--accent)' : 'var(--border)',
-                background: selected?.id === a.id ? 'var(--bg)' : 'var(--bg-card)',
+                width: '100%', padding: '6px 10px 6px 28px', borderRadius: 6,
+                border: '1px solid var(--border)', background: 'var(--bg)',
+                fontSize: 12, color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box',
               }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Bot size={16} color="var(--accent)" />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {a.description || 'No description'}
+            />
+          </div>
+        )}
+
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {(() => {
+            const filtered = agents.filter(a => {
+              if (!agentSearch.trim()) return true
+              const q = agentSearch.toLowerCase()
+              return a.name.toLowerCase().includes(q) || (a.description || '').toLowerCase().includes(q)
+            })
+            const scheduled = filtered.filter(a => a.schedules?.length > 0)
+            const manual = filtered.filter(a => !a.schedules?.length)
+
+            const renderCard = (a) => {
+              const color = agentColor(a.name)
+              const lr = a.last_run
+              const statusDot = lr ? (STATUS_ICON[lr.status]?.color || '#a3a3a3') : '#a3a3a3'
+              const dupeCount = agents.filter(x => x.name === a.name).length
+              return (
+                <Card
+                  key={a.id}
+                  onClick={() => selectAgent(a)}
+                  style={{
+                    padding: '10px 12px', cursor: 'pointer',
+                    borderColor: selected?.id === a.id ? 'var(--accent)' : 'var(--border)',
+                    background: selected?.id === a.id ? 'var(--bg)' : 'var(--bg-card)',
+                    borderLeft: `3px solid ${color}`,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                    <div style={{
+                      width: 32, height: 32, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: `${color}18`, flexShrink: 0, marginTop: 1,
+                    }}>
+                      <Bot size={16} color={color} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                          {a.name}
+                        </div>
+                        {/* Status dot */}
+                        <div style={{ width: 7, height: 7, borderRadius: '50%', background: statusDot, flexShrink: 0 }} title={lr ? `Last run: ${lr.status}` : 'Never run'} />
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {a.description || 'No description'}
+                      </div>
+                      {/* Metadata row */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, fontSize: 10, color: 'var(--text-muted)' }}>
+                        {lr ? (
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                            <Timer size={10} /> {timeAgo(lr.created_at)}
+                          </span>
+                        ) : (
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                            <Timer size={10} /> Never run
+                          </span>
+                        )}
+                        {a.run_count > 0 && (
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                            <Hash size={10} /> {a.run_count} runs
+                          </span>
+                        )}
+                        {a.schedules?.length > 0 && (
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: 'var(--accent)' }}>
+                            <Calendar size={10} /> Scheduled
+                          </span>
+                        )}
+                        {dupeCount > 1 && (
+                          <span style={{ opacity: 0.7 }}>
+                            #{agents.filter(x => x.name === a.name).indexOf(a) + 1}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {/* Quick run button */}
+                    {lr && (
+                      <button
+                        onClick={e => {
+                          e.stopPropagation()
+                          selectAgent(a)
+                          setRunInput(lr.input || '')
+                          setTimeout(() => inputRef.current?.focus(), 100)
+                        }}
+                        title="Re-run last prompt"
+                        style={{
+                          background: 'transparent', border: '1px solid var(--border)', borderRadius: 6,
+                          padding: '4px 6px', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex',
+                          alignItems: 'center', flexShrink: 0, marginTop: 1,
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)' }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}
+                      >
+                        <Play size={12} />
+                      </button>
+                    )}
                   </div>
+                </Card>
+              )
+            }
+
+            if (filtered.length === 0 && agentSearch) {
+              return (
+                <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--text-muted)', fontSize: 12 }}>
+                  No agents match "{agentSearch}"
                 </div>
-              </div>
-            </Card>
-          ))}
+              )
+            }
+
+            // Show groups only when there are both scheduled and manual agents
+            if (scheduled.length > 0 && manual.length > 0) {
+              return (
+                <>
+                  <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', padding: '6px 4px 2px' }}>
+                    Scheduled ({scheduled.length})
+                  </div>
+                  {scheduled.map(renderCard)}
+                  <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', padding: '10px 4px 2px' }}>
+                    Manual ({manual.length})
+                  </div>
+                  {manual.map(renderCard)}
+                </>
+              )
+            }
+            return filtered.map(renderCard)
+          })()}
           {agents.length === 0 && !showTemplates && (
             <div style={{ textAlign: 'center', padding: '32px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
               <div style={{
@@ -563,12 +703,7 @@ export default function AgentBuilder() {
       ) : agents.length === 0 ? (
         <TemplateGallery templates={templates} onCreate={handleFromTemplate} onClose={() => {}} hideClose />
       ) : (
-        <div style={{
-          flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: 'var(--text-muted)', fontSize: 14,
-        }}>
-          Select an agent to view runs and configuration.
-        </div>
+        <AgentDashboard agents={agents} schedules={schedules} onSelect={selectAgent} onNew={() => setShowTemplates(true)} />
       )}
     </div>
     </div>
@@ -718,6 +853,156 @@ function TemplateGallery({ templates, onCreate, onClose, hideClose }) {
           )
         })}
       </div>
+    </div>
+  )
+}
+
+
+// ── Agent Dashboard (empty-state replacement) ─────────────────────────
+
+function AgentDashboard({ agents, schedules, onSelect, onNew }) {
+  // Collect recent runs from all agents (already included via list_agents enrichment)
+  const recentRuns = agents
+    .filter(a => a.last_run)
+    .map(a => ({ ...a.last_run, agent_name: a.name, agent: a }))
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    .slice(0, 8)
+
+  const failedAgents = agents.filter(a => a.last_run?.status === 'failed')
+  const scheduledAgents = agents.filter(a => a.schedules?.length > 0)
+  const totalRuns = agents.reduce((sum, a) => sum + (a.run_count || 0), 0)
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '0 4px' }}>
+      <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Agent Overview</h2>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '0 0 20px' }}>
+        Select an agent from the sidebar, or get a quick look at recent activity below.
+      </p>
+
+      {/* Stats row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 20 }}>
+        {[
+          { label: 'Total Agents', value: agents.length, icon: Bot, color: '#3b82f6' },
+          { label: 'Total Runs', value: totalRuns, icon: Activity, color: '#8b5cf6' },
+          { label: 'Scheduled', value: scheduledAgents.length, icon: Calendar, color: '#10b981' },
+          { label: 'Needs Attention', value: failedAgents.length, icon: AlertCircle, color: failedAgents.length > 0 ? '#ef4444' : '#a3a3a3' },
+        ].map(s => (
+          <Card key={s.label} style={{ padding: '14px 16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{
+                width: 36, height: 36, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: `${s.color}15`,
+              }}>
+                <s.icon size={18} color={s.color} />
+              </div>
+              <div>
+                <div style={{ fontSize: 20, fontWeight: 700, lineHeight: 1 }}>{s.value}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{s.label}</div>
+              </div>
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      {/* Failed agents - needs attention */}
+      {failedAgents.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6, color: '#ef4444' }}>
+            <AlertCircle size={14} /> Needs Attention
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {failedAgents.map(a => (
+              <Card key={a.id} onClick={() => onSelect(a)} style={{ padding: '10px 14px', cursor: 'pointer', borderLeft: '3px solid #ef4444' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <XCircle size={14} color="#ef4444" />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{a.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      Last run failed {timeAgo(a.last_run.created_at)}
+                    </div>
+                  </div>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>View</span>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recent runs */}
+      {recentRuns.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-secondary)' }}>
+            <Clock size={14} /> Recent Activity
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {recentRuns.map((r, i) => {
+              const si = STATUS_ICON[r.status] || STATUS_ICON.pending
+              return (
+                <Card key={i} onClick={() => onSelect(r.agent)} style={{ padding: '8px 12px', cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                    <si.Icon size={13} color={si.color} />
+                    <span style={{ fontSize: 12, fontWeight: 600, flexShrink: 0 }}>{r.agent_name}</span>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r.input}
+                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
+                      {timeAgo(r.created_at)}
+                    </span>
+                  </div>
+                </Card>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Upcoming scheduled runs */}
+      {scheduledAgents.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-secondary)' }}>
+            <Calendar size={14} /> Upcoming Scheduled Runs
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {scheduledAgents.map(a => (
+              <Card key={a.id} onClick={() => onSelect(a)} style={{ padding: '8px 12px', cursor: 'pointer' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Calendar size={13} color="var(--accent)" />
+                  <span style={{ fontSize: 12, fontWeight: 600 }}>{a.name}</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                    {a.schedules[0].cron_expression}
+                  </span>
+                  {a.schedules[0].next_run_at && (
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                      Next: {new Date(a.schedules[0].next_run_at).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Quick create CTA */}
+      {agents.length < 3 && (
+        <Card style={{ padding: '20px 24px', textAlign: 'center', borderStyle: 'dashed' }}>
+          <Bot size={24} color="var(--accent)" style={{ marginBottom: 8 }} />
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Create more agents</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+            Automate patch analysis, daily triage, executive summaries, and more.
+          </div>
+          <button
+            onClick={onNew}
+            style={{
+              padding: '7px 20px', borderRadius: 6, border: 'none',
+              background: 'var(--accent)', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            Browse Templates
+          </button>
+        </Card>
+      )}
     </div>
   )
 }

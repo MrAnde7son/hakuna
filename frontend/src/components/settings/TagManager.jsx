@@ -415,7 +415,7 @@ function TagAssetsPanel({ tag, onClose }) {
   }
 
   const tabStyle = (active) => ({
-    background: 'none', border: 'none', cursor: 'pointer',
+    border: 'none', cursor: 'pointer',
     padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
     color: active ? 'var(--text-primary)' : 'var(--text-muted)',
     background: active ? 'var(--bg-hover)' : 'none',
