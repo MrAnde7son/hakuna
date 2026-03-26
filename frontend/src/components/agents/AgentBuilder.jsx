@@ -1139,6 +1139,45 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
               }}
             />
           </label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+            <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>Execution mode</span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {[
+                { value: 'auto', label: 'Fully Autonomous', icon: Zap, desc: 'Executes all tools without pausing' },
+                { value: 'hitl', label: 'Human-in-the-Loop', icon: Shield, desc: 'Pauses for approval before write actions' },
+              ].map(mode => {
+                const selected = (editing.guardrails?.approval_mode ?? 'auto') === mode.value
+                return (
+                  <button
+                    key={mode.value}
+                    onClick={() => updateGuardrail('approval_mode', mode.value)}
+                    style={{
+                      flex: 1, display: 'flex', flexDirection: 'column', gap: 4,
+                      padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
+                      border: selected ? '2px solid #3b82f6' : '1px solid var(--border)',
+                      background: selected ? 'rgba(59,130,246,0.08)' : 'var(--bg)',
+                      color: 'var(--text-primary)', textAlign: 'left',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <mode.icon size={14} color={selected ? '#3b82f6' : 'var(--text-muted)'} />
+                      <span style={{ fontSize: 13, fontWeight: 600, color: selected ? '#3b82f6' : 'var(--text-primary)' }}>
+                        {mode.label}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                      {mode.desc}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+            {(editing.guardrails?.approval_mode ?? 'auto') === 'hitl' && (
+              <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '2px 0 0', lineHeight: 1.5 }}>
+                Write tools (Jira, Slack, email, campaigns, tagging) will require your approval before executing. View pending approvals in the Runs tab.
+              </p>
+            )}
+          </div>
         </div>
       </Section>
 
