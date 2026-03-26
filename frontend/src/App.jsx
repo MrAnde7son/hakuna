@@ -54,6 +54,7 @@ import ResetPassword from './components/auth/ResetPassword.jsx'
 import AcceptInvite from './components/auth/AcceptInvite.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
 import SubscriptionBanner from './components/billing/SubscriptionBanner.jsx'
+import GettingStartedPanel from './components/onboarding/GettingStartedPanel.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
 import { getScans, setOrgContext, authUpdateLocale, getFindings, getAssets, getCampaigns } from './api.js'
 import { ErrorBoundary, ToastProvider, ConfirmProvider } from './components/shared/ui.jsx'
@@ -1060,6 +1061,7 @@ function AppShell() {
               overflowX: 'hidden',
             }}
           >
+            <GettingStartedPanel />
             <SubscriptionBanner />
             <ErrorBoundary fullPage title="Page failed to load">
             <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: 'var(--muted)' }}>Loading...</div>}>
@@ -1093,7 +1095,7 @@ function AppShell() {
         <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} />
         <CopilotButton onClick={() => setCopilotOpen(true)} />
         <Suspense fallback={null}>
-          <CopilotPanel open={copilotOpen} onClose={() => setCopilotOpen(false)} />
+          <CopilotPanel open={copilotOpen} onClose={() => setCopilotOpen(false)} currentPath={location.pathname} />
         </Suspense>
       </div>
     </ScanContext.Provider>

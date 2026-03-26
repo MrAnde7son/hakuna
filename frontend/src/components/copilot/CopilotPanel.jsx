@@ -30,6 +30,119 @@ const ICON_MAP = {
   'briefcase': Briefcase,
 }
 
+// ── Context-aware suggested prompts by page ────────────────────────
+const CONTEXTUAL_PROMPTS = {
+  '/findings': [
+    { text: 'Show me the most critical unresolved findings', icon: 'shield-alert' },
+    { text: 'Which findings have known exploits in the wild?', icon: 'bug' },
+    { text: 'Find findings that are past their SLA deadline', icon: 'alarm' },
+    { text: 'Group findings by solution and show quick wins', icon: 'zap' },
+  ],
+  '/findings/': [
+    { text: 'Explain this finding and its impact', icon: 'shield-alert' },
+    { text: 'What is the recommended remediation for this?', icon: 'target' },
+    { text: 'Are there other assets affected by this same vulnerability?', icon: 'globe' },
+    { text: 'Create a campaign to fix this finding across all affected assets', icon: 'zap' },
+  ],
+  '/assets': [
+    { text: 'Which assets have the most critical vulnerabilities?', icon: 'shield-alert' },
+    { text: 'Find internet-facing assets with open critical findings', icon: 'globe' },
+    { text: 'Show assets that haven\'t been scanned in over 30 days', icon: 'alarm' },
+    { text: 'List assets with the highest risk scores', icon: 'target' },
+  ],
+  '/assets/': [
+    { text: 'Summarize the risk posture of this asset', icon: 'shield-alert' },
+    { text: 'What are the open findings on this asset?', icon: 'bug' },
+    { text: 'Has this asset been scanned recently?', icon: 'alarm' },
+    { text: 'Create a remediation campaign for this asset\'s critical findings', icon: 'target' },
+  ],
+  '/campaigns': [
+    { text: 'Which campaigns are falling behind schedule?', icon: 'alarm' },
+    { text: 'Create a new campaign for all critical unresolved findings', icon: 'target' },
+    { text: 'Show campaign completion rates across teams', icon: 'briefcase' },
+    { text: 'Find findings not covered by any campaign', icon: 'shield-alert' },
+  ],
+  '/campaigns/': [
+    { text: 'How is this campaign progressing?', icon: 'clipboard' },
+    { text: 'Which findings in this campaign are still open?', icon: 'bug' },
+    { text: 'Notify the team about overdue items in this campaign', icon: 'alarm' },
+    { text: 'Suggest additional findings that should be in this campaign', icon: 'zap' },
+  ],
+  '/': [
+    { text: 'Give me an executive summary of our security posture', icon: 'briefcase' },
+    { text: 'What changed since the last scan?', icon: 'clipboard' },
+    { text: 'Find the top 10 risks I should focus on today', icon: 'shield-alert' },
+    { text: 'Check for SLA breaches and escalate overdue findings', icon: 'alarm' },
+  ],
+  '/inventory': [
+    { text: 'Which software has known CVEs?', icon: 'bug' },
+    { text: 'Show end-of-life software still running in the environment', icon: 'alarm' },
+    { text: 'List the most common software across all assets', icon: 'clipboard' },
+    { text: 'Find assets running outdated versions of critical software', icon: 'shield-alert' },
+  ],
+  '/threat-intel': [
+    { text: 'Are any of my findings linked to active threat campaigns?', icon: 'shield-alert' },
+    { text: 'Show findings that match CISA KEV entries', icon: 'bug' },
+    { text: 'Map my top risks to MITRE ATT&CK techniques', icon: 'target' },
+    { text: 'Which exploitable findings should I prioritize?', icon: 'zap' },
+  ],
+  '/aggregated-solutions': [
+    { text: 'Which solution would fix the most findings?', icon: 'zap' },
+    { text: 'Create a campaign from the top solution group', icon: 'target' },
+    { text: 'Show solutions grouped by effort vs impact', icon: 'briefcase' },
+    { text: 'How many findings would be resolved by patching the top 5 solutions?', icon: 'clipboard' },
+  ],
+  '/tags': [
+    { text: 'Show tag distribution across assets', icon: 'clipboard' },
+    { text: 'Which tags have the most critical findings?', icon: 'shield-alert' },
+    { text: 'Suggest auto-tag rules based on current asset patterns', icon: 'zap' },
+  ],
+  '/settings': [
+    { text: 'Analyze my latest scan upload and summarize what changed', icon: 'clipboard' },
+    { text: 'How many scans have been uploaded this month?', icon: 'briefcase' },
+  ],
+}
+
+// Get the page label for context injection
+const PAGE_LABELS = {
+  '/': 'Dashboard / Reports',
+  '/findings': 'Findings list',
+  '/assets': 'Asset Inventory',
+  '/campaigns': 'Campaigns',
+  '/inventory': 'Software Inventory',
+  '/threat-intel': 'Threat Intelligence',
+  '/aggregated-solutions': 'Aggregated Solutions',
+  '/tags': 'Tag Manager',
+  '/agents': 'AI Agents',
+  '/settings': 'Settings',
+  '/profile': 'User Profile',
+  '/docs': 'Documentation',
+}
+
+function getContextualPrompts(path) {
+  if (!path) return null
+  // Exact match first (e.g., /findings, /assets, /campaigns)
+  if (CONTEXTUAL_PROMPTS[path]) return CONTEXTUAL_PROMPTS[path]
+  // Detail page match (e.g., /findings/123 → /findings/)
+  for (const key of Object.keys(CONTEXTUAL_PROMPTS)) {
+    if (key.endsWith('/') && path.startsWith(key)) return CONTEXTUAL_PROMPTS[key]
+  }
+  return null
+}
+
+function getPageLabel(path) {
+  if (!path) return null
+  if (PAGE_LABELS[path]) return PAGE_LABELS[path]
+  // Detail pages
+  if (path.startsWith('/findings/')) return 'Finding detail'
+  if (path.startsWith('/assets/')) return 'Asset detail'
+  if (path.startsWith('/campaigns/')) return 'Campaign detail'
+  if (path.startsWith('/workflows/')) return 'Workflow builder'
+  if (path.startsWith('/reports/')) return 'Report detail'
+  if (path.startsWith('/threat-intel')) return 'Threat Intelligence'
+  return null
+}
+
 // ── Markdown components (matches AgentBuilder pattern) ──────────────
 
 const mdComponents = {
@@ -193,7 +306,7 @@ function ThinkingIndicator({ step }) {
 
 // ── Main Panel ──────────────────────────────────────────────────────
 
-export default function CopilotPanel({ open, onClose }) {
+export default function CopilotPanel({ open, onClose, currentPath }) {
   const { t } = useTranslation()
   const [conversations, setConversations] = useState([])
   const [activeConv, setActiveConv] = useState(null)
@@ -293,9 +406,14 @@ export default function CopilotPanel({ open, onClose }) {
     setStreamEvents([])
     setThinkingStep(0)
 
-    // Add user message to local state
+    // Add user message to local state (show original text in chat bubble)
     const userMsg = { role: 'user', content: msg, timestamp: new Date().toISOString() }
     setMessages(prev => [...prev, userMsg])
+
+    // Build context-enriched message for the backend
+    const pageLabel = getPageLabel(currentPath)
+    const contextPrefix = pageLabel ? `[User is currently viewing: ${pageLabel}${currentPath?.match(/\/.+\/(.+)/) ? ` (ID: ${currentPath.match(/\/.+\/(.+)/)[1]})` : ''}]\n\n` : ''
+    const enrichedMsg = contextPrefix + msg
 
     try {
       const token = getStoredToken()
@@ -310,7 +428,7 @@ export default function CopilotPanel({ open, onClose }) {
       const resp = await fetch(`${API_ORIGIN}/api/copilot/conversations/${conv.id}/message`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ message: msg }),
+        body: JSON.stringify({ message: enrichedMsg }),
         signal: abortController.signal,
       })
 
@@ -549,8 +667,10 @@ export default function CopilotPanel({ open, onClose }) {
               <div style={{ textAlign: 'center' }}>
                 <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Security Copilot</div>
                 <div style={{ color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.5, maxWidth: 320 }}>
-                  Your autonomous security agent. It queries your scan data,
-                  analyzes risk, creates campaigns, opens tickets, and notifies your team — all in one conversation.
+                  {getPageLabel(currentPath)
+                    ? <>You're on <strong style={{ color: 'var(--text)' }}>{getPageLabel(currentPath)}</strong>. Ask me anything about what you see, or try a suggestion below.</>
+                    : 'Your autonomous security agent. It queries your scan data, analyzes risk, creates campaigns, opens tickets, and notifies your team — all in one conversation.'
+                  }
                 </div>
               </div>
 
@@ -567,7 +687,7 @@ export default function CopilotPanel({ open, onClose }) {
                 ))}
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center', maxWidth: 380 }}>
-                {suggestedPrompts.map((p, i) => {
+                {(getContextualPrompts(currentPath) || suggestedPrompts).map((p, i) => {
                   const SIcon = ICON_MAP[p.icon] || ShieldAlert
                   return (
                     <button

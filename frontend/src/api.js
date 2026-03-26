@@ -978,9 +978,18 @@ export const rescanVmScan = (scanId) => request(`/vm/rescan/${scanId}`, { method
 
 export const getVmHealth = () => request('/vm/health').catch(() => null)
 
-export const getEasmAssets = () => request('/easm/assets')
-export const getEasmBreaches = () => request('/easm/breaches')
-export const getEasmSubsidiaries = () => request('/easm/corporate/subsidiaries')
+export const getEasmAssets = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/easm/assets${q.toString() ? '?' + q : ''}`)
+}
+export const getEasmBreaches = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/easm/breaches${q.toString() ? '?' + q : ''}`)
+}
+export const getEasmSubsidiaries = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/easm/corporate/subsidiaries${q.toString() ? '?' + q : ''}`)
+}
 
 // ── Integration Builder API ──────────────────────────────
 

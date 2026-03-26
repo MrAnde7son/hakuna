@@ -95,8 +95,6 @@ SLA_PATTERNS = [
 # Known aliases: input keyword → normalized source_systems value
 SOURCE_ALIASES: dict[str, str] = {
     "nessus": "nessus",
-    "tenable": "nessus",
-    "tenable io": "nessus",
     "vm": "vm_scanner",
     "vm scan": "vm_scanner",
     "vm scanner": "vm_scanner",
@@ -536,7 +534,7 @@ def parse_nlp_query(query: str) -> dict:
         r"plugin\s*(?:id)?|nid|port|priority|greater|vpr|"
         r"most|newest|latest|recent|oldest|earliest|worst|quickest|highest|likely|affected|"
         r"epss|cvss|cve-\d{4}-\d{4,7}|t\d{4}(?:\.\d{3})?|"
-        r"nessus|tenable(?:\s*io)?|vm\s*scan(?:ner)?|qualys|rapid\s*7|openvas|nexpose|"
+        r"nessus|vm\s*scan(?:ner)?|qualys|rapid\s*7|openvas|nexpose|"
         r"easm|external\s+attack\s+surface|attack\s+surface\s+management|"
         r"source(?:\s+is)?|scanned?\s+by|found\s+by|discovered?\s+by)\b",
         " ", residual, flags=re.IGNORECASE

@@ -23,6 +23,7 @@ resource "google_project_iam_member" "api_roles" {
     "roles/cloudtrace.agent",             # write traces to Cloud Trace
     "roles/logging.logWriter",            # write structured logs
     "roles/monitoring.metricWriter",      # write custom metrics
+    "roles/aiplatform.user",              # Vertex AI — invoke Gemini models (no API key needed)
   ])
 
   project = var.project_id

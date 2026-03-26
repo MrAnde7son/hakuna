@@ -1,7 +1,8 @@
 """
 Mini Agent Execution Engine — runs user-defined agents using multiple LLM providers with tool use.
 
-Supported providers: Anthropic (Claude), OpenAI (GPT), Google (Gemini), Groq (Llama/Mixtral).
+Supported providers: Anthropic (Claude), OpenAI (GPT), Google (Gemini), Groq (Llama/Mixtral),
+Ollama (local models), Google Vertex AI (GCP-native Gemini).
 """
 import os
 import json
@@ -45,6 +46,10 @@ PROVIDER_FOR_MODEL = {
     "llama-3.1-8b-instant": "groq",
     "mixtral-8x7b-32768": "groq",
     "deepseek-r1-distill-llama-70b": "groq",
+    # Vertex AI (GCP-native Gemini — uses ADC, no API key needed)
+    "vertex/gemini-2.5-flash": "vertex_ai",
+    "vertex/gemini-2.5-pro": "vertex_ai",
+    "vertex/gemini-2.0-flash": "vertex_ai",
 }
 
 
@@ -52,6 +57,10 @@ def detect_provider(model: str) -> str:
     """Detect provider from model name."""
     if model in PROVIDER_FOR_MODEL:
         return PROVIDER_FOR_MODEL[model]
+    if model.startswith("vertex/"):
+        return "vertex_ai"
+    if model.startswith("ollama/"):
+        return "ollama"
     if model.startswith("claude"):
         return "anthropic"
     if model.startswith("gpt") or model.startswith("o3") or model.startswith("o1"):
@@ -116,6 +125,40 @@ def _get_groq_client(db: Session):
     return _get_cached_client(f"groq:{api_key[:12]}", lambda: Groq(api_key=api_key))
 
 
+def _get_ollama_client(db: Session):
+    """Get OpenAI-compatible client pointing at local Ollama server."""
+    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "ollama").first()
+    base_url = "http://localhost:11434/v1"
+    if cfg and cfg.config:
+        base_url = cfg.config.get("base_url", base_url).rstrip("/")
+        if not base_url.endswith("/v1"):
+            base_url = base_url.rstrip("/") + "/v1"
+    from openai import OpenAI
+    return _get_cached_client(f"ollama:{base_url}", lambda: OpenAI(base_url=base_url, api_key="ollama"))
+
+
+def _get_vertex_client(db: Session):
+    """Get Gemini client configured for Vertex AI (uses Application Default Credentials)."""
+    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "vertex_ai").first()
+    project = None
+    location = "us-central1"
+    if cfg and cfg.config:
+        project = cfg.config.get("project_id") or None
+        location = cfg.config.get("location") or "us-central1"
+    if not project:
+        project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT")
+    if not project:
+        raise RuntimeError(
+            "Vertex AI requires a GCP project. Set GOOGLE_CLOUD_PROJECT env var "
+            "or configure it in Settings > Integrations."
+        )
+    from google import genai
+    return _get_cached_client(
+        f"vertex:{project}:{location}",
+        lambda: genai.Client(vertexai=True, project=project, location=location),
+    )
+
+
 def get_available_providers(db: Session) -> list:
     """Return list of providers that have an API key configured, with their models."""
     _PROVIDER_INFO = {
@@ -139,19 +182,72 @@ def get_available_providers(db: Session) -> list:
             "display": "Google Gemini",
             "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
         },
+        "ollama": {
+            "env_var": None,  # No API key — just needs a reachable server
+            "display": "Ollama (Local)",
+            "models": [],  # populated dynamically
+        },
+        "vertex_ai": {
+            "env_var": "GOOGLE_CLOUD_PROJECT",  # presence of project = configured
+            "display": "Google Vertex AI",
+            "models": ["vertex/gemini-2.5-flash", "vertex/gemini-2.5-pro", "vertex/gemini-2.0-flash"],
+        },
     }
     result = []
     for provider, info in _PROVIDER_INFO.items():
         cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
-        has_key = bool((cfg and cfg.config and cfg.config.get("api_key")) or os.environ.get(info["env_var"]))
-        if has_key:
-            result.append({
-                "provider": provider,
-                "display": info["display"],
-                "models": info["models"],
-                "configured": True,
-            })
+
+        if provider == "ollama":
+            # Ollama is "configured" if explicitly enabled in integrations
+            is_configured = bool(cfg and cfg.is_enabled)
+            if is_configured:
+                # Try to fetch available models from Ollama server
+                models = _get_ollama_models(cfg)
+                result.append({
+                    "provider": provider,
+                    "display": info["display"],
+                    "models": models,
+                    "configured": True,
+                })
+        elif provider == "vertex_ai":
+            # Vertex AI is configured if project ID is set (DB config or env var)
+            has_project = bool(
+                (cfg and cfg.config and cfg.config.get("project_id"))
+                or os.environ.get("GOOGLE_CLOUD_PROJECT")
+                or os.environ.get("GCLOUD_PROJECT")
+            )
+            if has_project:
+                result.append({
+                    "provider": provider,
+                    "display": info["display"],
+                    "models": info["models"],
+                    "configured": True,
+                })
+        else:
+            has_key = bool((cfg and cfg.config and cfg.config.get("api_key")) or os.environ.get(info["env_var"]))
+            if has_key:
+                result.append({
+                    "provider": provider,
+                    "display": info["display"],
+                    "models": info["models"],
+                    "configured": True,
+                })
     return result
+
+
+def _get_ollama_models(cfg) -> list:
+    """Fetch available model names from Ollama server, returning ollama/ prefixed names."""
+    base_url = "http://localhost:11434"
+    if cfg and cfg.config:
+        base_url = cfg.config.get("base_url", base_url).rstrip("/")
+    try:
+        import urllib.request
+        req = urllib.request.Request(f"{base_url}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read())
+        return [f"ollama/{m['name']}" for m in data.get("models", [])]
+    except Exception:
+        return ["ollama/llama3", "ollama/mistral", "ollama/codellama"]  # sensible defaults
 
 
 # ── Default model per provider ────────────────────────────────────────
@@ -162,6 +258,8 @@ _PROVIDER_DEFAULTS = [
     ("groq", "GROQ_API_KEY", "llama-3.3-70b-versatile"),
     ("openai", "OPENAI_API_KEY", "gpt-4o"),
     ("google_gemini", "GOOGLE_API_KEY", "gemini-2.5-flash"),
+    ("vertex_ai", "GOOGLE_CLOUD_PROJECT", "vertex/gemini-2.5-flash"),
+    ("ollama", None, "ollama/llama3"),
 ]
 
 
@@ -178,6 +276,19 @@ def get_default_model(db: Session) -> str:
     # Otherwise, pick the first provider that has an API key
     for provider, env_var, fallback_model in _PROVIDER_DEFAULTS:
         cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
+        if provider == "ollama":
+            if cfg and cfg.is_enabled:
+                return fallback_model
+            continue
+        if provider == "vertex_ai":
+            has_project = (
+                (cfg and cfg.config and cfg.config.get("project_id"))
+                or os.environ.get("GOOGLE_CLOUD_PROJECT")
+                or os.environ.get("GCLOUD_PROJECT")
+            )
+            if has_project:
+                return fallback_model
+            continue
         has_key = (cfg and cfg.config and cfg.config.get("api_key")) or os.environ.get(env_var)
         if has_key:
             return fallback_model
@@ -194,8 +305,37 @@ _MAX_INPUT_CHARS = {
     "openai": 80_000,
     "anthropic": 150_000,
     "google_gemini": 150_000,
+    "vertex_ai": 150_000,    # Same Gemini models, same context limits
+    "ollama": 30_000,        # Conservative — depends on model and available VRAM
 }
 _TRUNCATION_NOTICE = "\n\n[Note: Input was truncated to fit model context limits.]"
+
+
+def _validate_provider_configured(db: Session, provider: str):
+    """Check that a provider is configured. Raises RuntimeError if not."""
+    _ENV_VARS = {
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "google_gemini": "GOOGLE_API_KEY",
+        "groq": "GROQ_API_KEY",
+    }
+    if provider == "ollama":
+        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "ollama").first()
+        if not (cfg and cfg.is_enabled):
+            raise RuntimeError("Ollama not enabled. Go to Settings > Integrations to configure it.")
+        return
+    if provider == "vertex_ai":
+        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "vertex_ai").first()
+        has_project = (
+            (cfg and cfg.config and cfg.config.get("project_id"))
+            or os.environ.get("GOOGLE_CLOUD_PROJECT")
+            or os.environ.get("GCLOUD_PROJECT")
+        )
+        if not has_project:
+            raise RuntimeError("Vertex AI not configured. Set GOOGLE_CLOUD_PROJECT or configure in Settings > Integrations.")
+        return
+    env_var = _ENV_VARS.get(provider, "")
+    _get_api_key(db, provider, env_var)
 
 
 def _truncate_user_input(user_input: str, provider: str) -> str:
@@ -219,7 +359,7 @@ def _compress_openai_messages(messages: list, provider: str) -> list:
     An exchange = one assistant turn + its tool result messages.
     We always start at an assistant message to avoid splitting mid-exchange.
     """
-    keep = 3 if provider == "groq" else 5  # exchanges to keep verbatim
+    keep = 3 if provider in ("groq", "ollama") else 5  # exchanges to keep verbatim
     keep_msgs = keep * 2  # rough estimate: 1 assistant + 1 tool per exchange
 
     if len(messages) <= keep_msgs + 2:  # +2 for system + initial user
@@ -609,7 +749,7 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
 
 
 def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun, model: str, provider: str):
-    """Run agent using OpenAI-compatible API (OpenAI, Groq)."""
+    """Run agent using OpenAI-compatible API (OpenAI, Groq, Ollama)."""
     trace = []
     user_input = _truncate_user_input(user_input, provider)
     system = _build_system_prompt(agent)
@@ -618,6 +758,9 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
 
     if provider == "groq":
         cl = _get_groq_client(db)
+    elif provider == "ollama":
+        cl = _get_ollama_client(db)
+        model = model.removeprefix("ollama/")  # Ollama expects bare model name
     else:
         cl = _get_openai_client(db)
 
@@ -718,15 +861,20 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
 
 
 def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model: str):
-    """Run agent using Google Gemini API."""
+    """Run agent using Google Gemini API (direct or Vertex AI)."""
     from google.genai import types as genai_types
 
     trace = []
-    user_input = _truncate_user_input(user_input, "google_gemini")
+    provider = detect_provider(model)
+    user_input = _truncate_user_input(user_input, provider)
     system = _build_system_prompt(agent)
     max_steps = (agent.guardrails or {}).get("max_steps", 15)
 
-    cl = _get_gemini_client(db)
+    if provider == "vertex_ai":
+        cl = _get_vertex_client(db)
+        model = model.removeprefix("vertex/")  # Vertex uses bare Gemini model names
+    else:
+        cl = _get_gemini_client(db)
 
     # Build Gemini tool declarations
     tool_declarations = []
@@ -825,12 +973,7 @@ def run_agent(agent: Agent, user_input: str, db: Session) -> AgentRun:
     model = agent.model or get_default_model(db)
     provider = detect_provider(model)
     try:
-        _get_api_key(db, provider, {
-            "anthropic": "ANTHROPIC_API_KEY",
-            "openai": "OPENAI_API_KEY",
-            "google_gemini": "GOOGLE_API_KEY",
-            "groq": "GROQ_API_KEY",
-        }.get(provider, ""))
+        _validate_provider_configured(db, provider)
     except RuntimeError:
         # Configured model's provider has no key — fall back to default
         model = get_default_model(db)
@@ -839,9 +982,9 @@ def run_agent(agent: Agent, user_input: str, db: Session) -> AgentRun:
     try:
         if provider == "anthropic":
             _run_anthropic(agent, user_input, db, run, model)
-        elif provider in ("openai", "groq"):
+        elif provider in ("openai", "groq", "ollama"):
             _run_openai_compat(agent, user_input, db, run, model, provider)
-        elif provider == "google_gemini":
+        elif provider in ("google_gemini", "vertex_ai"):
             _run_gemini(agent, user_input, db, run, model)
         else:
             raise RuntimeError(f"Unsupported provider: {provider}")
@@ -883,12 +1026,7 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session):
     provider = detect_provider(model)
     # If the agent's model requires an API key that isn't configured, fall back
     try:
-        _get_api_key(db, provider, {
-            "anthropic": "ANTHROPIC_API_KEY",
-            "openai": "OPENAI_API_KEY",
-            "google_gemini": "GOOGLE_API_KEY",
-            "groq": "GROQ_API_KEY",
-        }.get(provider, ""))
+        _validate_provider_configured(db, provider)
     except RuntimeError:
         model = get_default_model(db)
         provider = detect_provider(model)
@@ -896,9 +1034,9 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session):
     try:
         if provider == "anthropic":
             yield from _stream_anthropic(agent, user_input, db, run, model)
-        elif provider in ("openai", "groq"):
+        elif provider in ("openai", "groq", "ollama"):
             yield from _stream_openai_compat(agent, user_input, db, run, model, provider)
-        elif provider == "google_gemini":
+        elif provider in ("google_gemini", "vertex_ai"):
             yield from _stream_gemini(agent, user_input, db, run, model)
         else:
             raise RuntimeError(f"Unsupported provider: {provider}")
@@ -1022,7 +1160,13 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider):
     system = _build_system_prompt(agent)
     tools = get_openai_tool_schemas(agent.tools or [])
     max_steps = (agent.guardrails or {}).get("max_steps", 15)
-    cl = _get_groq_client(db) if provider == "groq" else _get_openai_client(db)
+    if provider == "groq":
+        cl = _get_groq_client(db)
+    elif provider == "ollama":
+        cl = _get_ollama_client(db)
+        model = model.removeprefix("ollama/")
+    else:
+        cl = _get_openai_client(db)
 
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user_input}]
 
@@ -1109,13 +1253,18 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider):
 
 
 def _stream_gemini(agent, user_input, db, run, model):
-    """Streaming variant of _run_gemini."""
+    """Streaming variant of _run_gemini (direct Gemini or Vertex AI)."""
     from google.genai import types as genai_types
 
     trace = []
     system = _build_system_prompt(agent)
     max_steps = (agent.guardrails or {}).get("max_steps", 15)
-    cl = _get_gemini_client(db)
+    provider = detect_provider(model)
+    if provider == "vertex_ai":
+        cl = _get_vertex_client(db)
+        model = model.removeprefix("vertex/")
+    else:
+        cl = _get_gemini_client(db)
 
     tool_declarations = []
     for name in (agent.tools or []):

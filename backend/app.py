@@ -1071,7 +1071,8 @@ def _run_scan_ingest(
                                          "share_name", "share_type", "comment", "path",
                                          "max_users", "acl", "is_writeable", "is_default_share"]),
             "software": (InventorySoftware, ["scan_id", "asset_id", "source_plugin",
-                                              "name", "version", "installed_on", "vendor", "category"]),
+                                              "name", "version", "installed_on", "vendor", "category",
+                                              "auto_update_status"]),
             "security_controls": (InventorySecurityControl, ["scan_id", "asset_id", "source_plugin",
                                                               "control_type", "product_name", "vendor",
                                                               "version", "is_enabled", "is_up_to_date",
@@ -3555,6 +3556,7 @@ def list_inventory_software(
     asset_id: Optional[int] = None,
     search: Optional[str] = None,
     category: Optional[str] = None,
+    auto_update: Optional[str] = None,
     sort_by: str = "name",
     order: str = "asc",
     page: int = 1,
@@ -3575,6 +3577,13 @@ def list_inventory_software(
             q = q.filter(InventorySoftware.category.is_(None))
         else:
             q = q.filter(InventorySoftware.category == category)
+    if auto_update:
+        if auto_update == "disabled":
+            q = q.filter(InventorySoftware.auto_update_status == "disabled")
+        elif auto_update == "enabled":
+            q = q.filter(InventorySoftware.auto_update_status == "enabled")
+        elif auto_update == "unknown":
+            q = q.filter(InventorySoftware.auto_update_status.in_(["unknown", None]))
     q = _apply_sort(q, InventorySoftware, sort_by, order, InventorySoftware.name)
     total = q.count()
     if page_size == 0:
@@ -3588,7 +3597,9 @@ def list_inventory_software(
         "asset_ip": (assets.get(s.asset_id) or {}).get("ip"),
         "asset_env": (assets.get(s.asset_id) or {}).get("environment_tag"),
         "name": s.name, "version": s.version, "installed_on": s.installed_on,
-        "vendor": s.vendor, "category": s.category, "source_plugin": s.source_plugin,
+        "vendor": s.vendor, "category": s.category,
+        "auto_update_status": s.auto_update_status,
+        "source_plugin": s.source_plugin,
     } for s in software]}
 
 
@@ -7322,6 +7333,23 @@ INTEGRATION_SCHEMAS = {
             {"key": "default_model", "label": "Default Model", "type": "select", "options": [
                 "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama-3.1-70b-versatile",
                 "mixtral-8x7b-32768", "gemma2-9b-it",
+            ]},
+        ],
+    },
+    "ollama": {
+        "display_name": "Ollama (Local)",
+        "fields": [
+            {"key": "base_url", "label": "Ollama Server URL", "type": "string", "placeholder": "http://localhost:11434"},
+            {"key": "default_model", "label": "Default Model", "type": "string", "placeholder": "llama3"},
+        ],
+    },
+    "vertex_ai": {
+        "display_name": "Google Vertex AI",
+        "fields": [
+            {"key": "project_id", "label": "GCP Project ID", "type": "string", "placeholder": "my-gcp-project"},
+            {"key": "location", "label": "Region", "type": "string", "placeholder": "us-central1"},
+            {"key": "default_model", "label": "Default Model", "type": "select", "options": [
+                "vertex/gemini-2.5-flash", "vertex/gemini-2.5-pro", "vertex/gemini-2.0-flash",
             ]},
         ],
     },

@@ -727,6 +727,43 @@ def _test_groq(cfg: dict) -> dict:
         return {"status": "error", "detail": str(e)}
 
 
+def _test_ollama(cfg: dict) -> dict:
+    """Test Ollama connectivity by listing available models."""
+    base_url = cfg.get("base_url", "http://localhost:11434").rstrip("/")
+    try:
+        import urllib.request, json as _json
+        req = urllib.request.Request(f"{base_url}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read())
+        models = [m["name"] for m in data.get("models", [])]
+        if not models:
+            return {"status": "ok", "detail": "Connected but no models pulled. Run: ollama pull llama3"}
+        return {"status": "ok", "detail": f"Connected — {len(models)} model(s): {', '.join(models[:5])}"}
+    except Exception as e:
+        return {"status": "error", "detail": f"Cannot reach Ollama at {base_url}: {e}"}
+
+
+def _test_vertex_ai(cfg: dict) -> dict:
+    """Test Vertex AI connectivity using Application Default Credentials."""
+    import os
+    project_id = cfg.get("project_id") or os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT")
+    if not project_id:
+        return {"status": "error", "detail": "No GCP project configured"}
+    location = cfg.get("location") or "us-central1"
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+        client = genai.Client(vertexai=True, project=project_id, location=location)
+        resp = client.models.generate_content(
+            model=cfg.get("default_model", "gemini-2.0-flash").removeprefix("vertex/"),
+            contents="Hi",
+            config=genai_types.GenerateContentConfig(max_output_tokens=10),
+        )
+        return {"status": "ok", "detail": f"Connected — Vertex AI ({project_id}/{location})"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 # ─────────────────────────────────────────────
 # Provider test dispatch registry (OCP)
 # ─────────────────────────────────────────────
@@ -741,4 +778,6 @@ _INTEGRATION_TESTERS: dict = {
     "openai": _test_openai,
     "google_gemini": _test_google_gemini,
     "groq": _test_groq,
+    "ollama": _test_ollama,
+    "vertex_ai": _test_vertex_ai,
 }

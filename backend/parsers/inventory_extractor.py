@@ -1454,6 +1454,126 @@ def extract_installed_software(plugin_output: str, asset_id: int, scan_id: int) 
 
 
 # ─────────────────────────────────────────────────────────
+# Auto-update status enrichment (correlates services ↔ software)
+# ─────────────────────────────────────────────────────────
+
+# Maps service name patterns → (software name keywords, vendor).
+# If the service exists and is automatic → "enabled"; disabled → "disabled".
+_UPDATER_SERVICE_MAP = [
+    # Google Chrome / Google products
+    (["googleupdater", "googleupdate", "gupdate", "gupdatem"],
+     ["chrome", "google earth", "google drive"],
+     "Google"),
+    # Mozilla Firefox
+    (["mozillamaintenance"],
+     ["firefox", "thunderbird"],
+     "Mozilla"),
+    # Windows Update (wuauserv) — covers OS-level patching
+    (["wuauserv", "waasmedicsvc", "usosvc"],
+     ["windows"],
+     "Microsoft"),
+    # Adobe updater
+    (["adobearmservice", "adobeupdateservice", "armsvc"],
+     ["acrobat", "adobe reader", "adobe creative", "photoshop", "illustrator"],
+     "Adobe"),
+    # Brave browser
+    (["brave update service", "braveupdateservice"],
+     ["brave"],
+     "Brave"),
+    # Microsoft Edge
+    (["edgeupdate", "microsoftedgeupdate"],
+     ["edge"],
+     "Microsoft"),
+    # Zoom
+    (["zoomupdater"],
+     ["zoom"],
+     "Zoom"),
+    # TeamViewer
+    (["teamviewerupdater"],
+     ["teamviewer"],
+     "TeamViewer"),
+]
+
+
+def enrich_software_auto_update(
+    software_records: list[dict],
+    service_records: list[dict],
+) -> list[dict]:
+    """Correlate updater services with installed software to set auto_update_status.
+
+    For each asset, checks whether known updater services are present and
+    what their startup_type is:
+      - Service present + automatic → "enabled"
+      - Service present + disabled/manual → "disabled"
+      - No matching service found → left as None (unknown)
+
+    Mutates software_records in place and returns them.
+    """
+    if not software_records or not service_records:
+        return software_records
+
+    # Build per-asset service index: {asset_id: {service_name_lower: startup_type}}
+    asset_services: dict[int, dict[str, str]] = {}
+    for svc in service_records:
+        aid = svc.get("asset_id")
+        if aid is None:
+            continue
+        svc_name = (svc.get("service_name") or "").lower()
+        if not svc_name:
+            continue
+        if aid not in asset_services:
+            asset_services[aid] = {}
+        # Prefer records with startup_type set (from plugin 44401 over 10456)
+        existing = asset_services[aid].get(svc_name)
+        startup = (svc.get("startup_type") or "").lower()
+        if existing is None or startup:
+            asset_services[aid][svc_name] = startup
+
+    _AUTO_TYPES = {"automatic", "auto_start", "auto", "delayed-start", "automatic (delayed start)"}
+    _DISABLED_TYPES = {"disabled", "manual", "demand_start"}
+
+    for sw in software_records:
+        aid = sw.get("asset_id")
+        if aid not in asset_services:
+            continue
+
+        svcs = asset_services[aid]
+        sw_name_lower = (sw.get("name") or "").lower()
+        if not sw_name_lower:
+            continue
+
+        for svc_patterns, sw_keywords, _vendor in _UPDATER_SERVICE_MAP:
+            # Does this software match any keyword for this updater?
+            if not any(kw in sw_name_lower for kw in sw_keywords):
+                continue
+
+            # Check if any of the updater services exist for this asset
+            for svc_pattern in svc_patterns:
+                # Match by substring since service names may have version suffixes
+                matched_startup = None
+                for svc_name, startup in svcs.items():
+                    if svc_pattern in svc_name:
+                        matched_startup = startup
+                        break
+
+                if matched_startup is not None:
+                    if matched_startup in _AUTO_TYPES or not matched_startup:
+                        # Running or automatic = enabled (no startup_type often
+                        # means it was found running via plugin 10456)
+                        sw["auto_update_status"] = "enabled"
+                    elif matched_startup in _DISABLED_TYPES:
+                        sw["auto_update_status"] = "disabled"
+                    else:
+                        sw["auto_update_status"] = "unknown"
+                    break
+            else:
+                continue
+            break  # Found a match for this software, move to next
+
+    return software_records
+
+
+# ─────────────────────────────────────────────────────────
 # Plugin 131023 / 16193 — Windows Defender / AV
 # ─────────────────────────────────────────────────────────
 
@@ -2557,6 +2677,13 @@ def extract_inventory_from_findings(findings: list[dict], dispatch: dict = None)
             findings, findings[0].get("scan_id") if findings else 0)
     except Exception as e:
         logger.warning(f"Credential extraction failed: {e}")
+
+    # Enrich software with auto-update status from correlated services
+    if result["software"] and result["services"]:
+        try:
+            enrich_software_auto_update(result["software"], result["services"])
+        except Exception as e:
+            logger.warning(f"Auto-update enrichment failed: {e}")
 
     return result
 

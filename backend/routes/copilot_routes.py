@@ -31,10 +31,13 @@ MAX_CONTEXT_TURNS = 10  # Last N exchanges to include as conversation context
 # Groq/Llama generates <function=name>{args}</function> text instead of proper
 # tool_use blocks, and tries to nest tool references inside parameters —
 # fundamentally incompatible with multi-step agentic workflows.
+# Ollama models vary in tool-use quality — we include it as a last resort.
 _COPILOT_MODEL_PREFERENCE = [
     ("anthropic", "claude-sonnet-4-6"),
     ("openai", "gpt-4o"),
     ("google_gemini", "gemini-2.5-flash"),
+    ("vertex_ai", "vertex/gemini-2.5-flash"),
+    ("ollama", None),  # model resolved dynamically from Ollama config
 ]
 
 
@@ -49,14 +52,24 @@ class MessageRequest(BaseModel):
 def _pick_copilot_model(db: Session) -> str:
     """Pick the best model for the copilot based on available providers.
 
-    The copilot requires structured tool-use (Anthropic, OpenAI, or Gemini).
+    The copilot requires structured tool-use (Anthropic, OpenAI, Gemini, or Vertex AI).
     Groq/Llama is excluded — it generates text-based function calls that break
-    multi-step agentic workflows.
+    multi-step agentic workflows. Ollama is a last resort (tool-use quality varies).
     """
-    available = {p["provider"] for p in get_available_providers(db)}
+    available_providers = get_available_providers(db)
+    available_map = {p["provider"]: p for p in available_providers}
     for provider, model in _COPILOT_MODEL_PREFERENCE:
-        if provider in available:
-            return model
+        if provider in available_map:
+            if model is not None:
+                return model
+            # Ollama: pick default_model from config, or first available model
+            from models.models import IntegrationConfig
+            cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "ollama").first()
+            if cfg and cfg.config and cfg.config.get("default_model"):
+                m = cfg.config["default_model"]
+                return m if m.startswith("ollama/") else f"ollama/{m}"
+            models = available_map[provider].get("models", [])
+            return models[0] if models else None
     return None
 
 
@@ -66,7 +79,8 @@ def _get_or_create_copilot_agent(db: Session, org_id: Optional[int]) -> Agent:
     if not best_model:
         raise HTTPException(
             400,
-            "Security Copilot requires an Anthropic, OpenAI, or Google Gemini API key. "
+            "Security Copilot requires a provider with structured tool-use: "
+            "Anthropic, OpenAI, Google Gemini, Vertex AI, or Ollama. "
             "Groq is not supported for agentic workflows. "
             "Go to Settings > Integrations to configure a provider."
         )

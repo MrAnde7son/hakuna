@@ -675,6 +675,7 @@ class InventorySoftware(Base):
     installed_on = Column(String)       # Date string
     vendor = Column(String)
     category = Column(String, index=True)  # dev_tools, collaboration, security, etc.
+    auto_update_status = Column(String, index=True)  # enabled, disabled, unknown, null=not_detected
     source_plugin = Column(String)
 
 

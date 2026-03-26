@@ -11,7 +11,7 @@ const STEPS = [
     description: 'Prioritized by real-world risk, not just CVSS.',
     cta: 'View Findings',
     path: '/findings?sort_by=priority_score&order=desc',
-    emoji: '🔍',
+    emoji: '\u{1F50D}',
   },
   {
     id: 'campaign',
@@ -19,7 +19,7 @@ const STEPS = [
     description: 'Start with a template like "Quick Wins" or "Patch Tuesday".',
     cta: 'Create Campaign',
     path: '/campaigns',
-    emoji: '🎯',
+    emoji: '\u{1F3AF}',
   },
   {
     id: 'assets',
@@ -27,7 +27,7 @@ const STEPS = [
     description: 'Tag servers so risk scores reflect your real priorities.',
     cta: 'View Assets',
     path: '/assets',
-    emoji: '🏷️',
+    emoji: '\u{1F3F7}\uFE0F',
   },
   {
     id: 'integration',
@@ -35,7 +35,7 @@ const STEPS = [
     description: 'Push findings to Jira or ServiceNow automatically.',
     cta: 'Set up',
     path: '/settings?tab=integrations',
-    emoji: '🔗',
+    emoji: '\u{1F517}',
   },
   {
     id: 'team',
@@ -43,7 +43,7 @@ const STEPS = [
     description: 'Add analysts and stakeholders to assign findings.',
     cta: 'Invite',
     path: '/settings?tab=team',
-    emoji: '👥',
+    emoji: '\u{1F465}',
   },
 ]
 
@@ -84,7 +84,6 @@ function ProgressRing({ pct, done }) {
 export default function GettingStartedPanel() {
   const navigate = useNavigate()
   const [state, setState] = useState(loadState)
-  // Start expanded if nothing completed yet, else collapsed
   const [collapsed, setCollapsed] = useState(() => loadState().completed.length > 0)
 
   if (state.dismissed) return null
@@ -109,11 +108,11 @@ export default function GettingStartedPanel() {
 
   return (
     <div style={{
-      marginBottom: 20,
-      borderRadius: 16,
-      overflow: 'hidden',
-      boxShadow: '0 4px 24px rgba(0,0,0,0.12)',
-      border: '1px solid rgba(99,102,241,0.15)',
+      position: 'sticky',
+      top: 0,
+      zIndex: 50,
+      margin: '-18px -18px 16px -18px',
+      boxShadow: '0 4px 24px rgba(0,0,0,0.18)',
     }}>
       {/* ── Gradient header ────────────────────────────────── */}
       <div
@@ -122,7 +121,7 @@ export default function GettingStartedPanel() {
           background: allDone
             ? 'linear-gradient(135deg, #15803d, #16a34a)'
             : 'linear-gradient(135deg, #4f46e5, #7c3aed)',
-          padding: '14px 20px',
+          padding: '12px 20px',
           cursor: 'pointer',
           display: 'flex', alignItems: 'center', gap: 14,
         }}
@@ -142,7 +141,7 @@ export default function GettingStartedPanel() {
         {/* Title */}
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 700, fontSize: 15, color: '#fff', marginBottom: 2 }}>
-            {allDone ? 'You\'re all set! 🎉' : 'Get started with Hakuna'}
+            {allDone ? 'You\'re all set!' : 'Get started with Hakuna'}
           </div>
           <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)' }}>
             {allDone
@@ -180,9 +179,8 @@ export default function GettingStartedPanel() {
       {/* ── Steps grid ─────────────────────────────────────── */}
       {!collapsed && (
         <div style={{
-          background: 'var(--bg-primary)',
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+          gridTemplateColumns: 'repeat(5, 1fr)',
           gap: 1,
           backgroundColor: 'var(--border)',
         }}>
@@ -275,7 +273,7 @@ function StepCard({ step, done, onCheck, onCta }) {
       {/* Done indicator */}
       {done && (
         <div style={{ fontSize: 12, color: '#16a34a', fontWeight: 600 }}>
-          ✓ Done
+          Done
         </div>
       )}
     </div>

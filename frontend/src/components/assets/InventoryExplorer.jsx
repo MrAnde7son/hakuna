@@ -1485,6 +1485,22 @@ function CveBadge({ count, maxSeverity }) {
   )
 }
 
+function AutoUpdateBadge({ status }) {
+  if (!status) return <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>—</span>
+  const cfg = {
+    enabled:  { color: '#22c55e', label: 'Auto-update' },
+    disabled: { color: '#ef4444', label: 'No auto-update' },
+    unknown:  { color: '#94a3b8', label: 'Unknown' },
+  }
+  const { color, label } = cfg[status] || cfg.unknown
+  return (
+    <span style={{
+      display: 'inline-block', fontSize: 10, fontWeight: 600, padding: '1px 7px',
+      borderRadius: 9999, background: color + '18', color, whiteSpace: 'nowrap',
+    }}>{label}</span>
+  )
+}
+
 const TYPE_BADGE_COLORS = {
   application: '#3b82f6', library: '#8b5cf6', runtime: '#10b981', os: '#f59e0b', firmware: '#64748b',
 }
@@ -1602,6 +1618,7 @@ function SoftwareTab({ scanId, assetId }) {
   const [sortOrder, setSortOrder]     = useState('asc')
   const [expandedRow, setExpandedRow] = useState(null)
   const [sbomFilter, setSbomFilter]   = useState('')  // '' | 'has_cves' | 'eol' | 'running_vuln'
+  const [autoUpdateFilter, setAutoUpdateFilter] = useState('')  // '' | 'enabled' | 'disabled'
 
   // SBOM data
   const [sbomComps, setSbomComps]     = useState([])
@@ -1612,14 +1629,14 @@ function SoftwareTab({ scanId, assetId }) {
     else { setSortBy(key); setSortOrder('asc') }
   }
 
-  useEffect(() => { setPage(1) }, [scanId, assetId, search, category, sbomFilter])
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, category, sbomFilter, autoUpdateFilter])
 
   // Fetch software inventory
   const load = useCallback(() => {
     setLoading(true)
-    getInventorySoftware({ scan_id: scanId, asset_id: assetId || null, search: search || null, category: category || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
+    getInventorySoftware({ scan_id: scanId, asset_id: assetId || null, search: search || null, category: category || null, auto_update: autoUpdateFilter || null, sort_by: sortBy, order: sortOrder, page, page_size: INV_PAGE_SIZE })
       .then(data => { setRows(data.software); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
-  }, [scanId, assetId, search, category, sortBy, sortOrder, page])
+  }, [scanId, assetId, search, category, autoUpdateFilter, sortBy, sortOrder, page])
 
   useEffect(() => { load() }, [load])
 
@@ -1707,7 +1724,10 @@ function SoftwareTab({ scanId, assetId }) {
     { key: 'priority', label: 'Priority', width: '7%',
       render: (_, r) => r.sbom ? <PriorityBadge tier={r.sbom.priority_tier} /> : null
     },
-    { key: 'asset_label', label: 'Asset', width: '18%',
+    { key: 'auto_update_status', label: 'Auto Update', width: '9%',
+      render: v => <AutoUpdateBadge status={v} />
+    },
+    { key: 'asset_label', label: 'Asset', width: '15%',
       render: (v, r) => <>{v}<EnvPill env={r.asset_env} /></>
     },
   ]
@@ -1769,6 +1789,11 @@ function SoftwareTab({ scanId, assetId }) {
       )}
       <FilterBar>
         <Input value={search} onChange={setSearch} placeholder="Search software name…" style={{ width: 260 }} />
+        <Select value={autoUpdateFilter} onChange={setAutoUpdateFilter} options={[
+          { value: '', label: 'All update status' },
+          { value: 'enabled', label: 'Auto-update enabled' },
+          { value: 'disabled', label: 'Auto-update disabled' },
+        ]} />
         <Select value={sbomFilter} onChange={setSbomFilter} options={[
           { value: '', label: 'All Software' },
           { value: 'has_cves', label: 'Has SBOM findings' },
@@ -3082,7 +3107,7 @@ function ProcessesTab({ scanId, assetId }) {
 
 // ─── Root ──────────────────────────────────────────────────
 // ─── EASM Assets tab ──────────────────────────────────────
-function EasmAssetsTab() {
+function EasmAssetsTab({ assetId }) {
   const { t } = useTranslation()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -3100,11 +3125,11 @@ function EasmAssetsTab() {
   useEffect(() => {
     setLoading(true)
     setError(null)
-    getEasmAssets()
+    getEasmAssets({ asset_id: assetId || null })
       .then(data => setRows(Array.isArray(data) ? data : []))
       .catch(() => setError(t('inventory.easmLoadError')))
       .finally(() => setLoading(false))
-  }, [])
+  }, [assetId])
 
   const filtered = useMemo(() => {
     let list = rows
@@ -3323,7 +3348,7 @@ function EasmAssetsTab() {
 
 
 // ─── EASM Breaches tab ────────────────────────────────────
-function EasmBreachesTab() {
+function EasmBreachesTab({ assetId }) {
   const { t } = useTranslation()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -3340,11 +3365,11 @@ function EasmBreachesTab() {
   useEffect(() => {
     setLoading(true)
     setError(null)
-    getEasmBreaches()
+    getEasmBreaches({ asset_id: assetId || null })
       .then(data => setRows(Array.isArray(data) ? data : []))
       .catch(() => setError('Failed to load breach data. Ensure HIBP sync has been run.'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [assetId])
 
   const filtered = useMemo(() => {
     let list = rows
@@ -3444,7 +3469,7 @@ function EasmBreachesTab() {
 
 
 // ─── EASM Corporate / M&A tab ─────────────────────────────
-function EasmCorporateTab() {
+function EasmCorporateTab({ assetId }) {
   const { t } = useTranslation()
   const [subsidiaries, setSubsidiaries] = useState([])
   const [loading, setLoading] = useState(true)
@@ -3455,11 +3480,11 @@ function EasmCorporateTab() {
   useEffect(() => {
     setLoading(true)
     setError(null)
-    getEasmSubsidiaries()
+    getEasmSubsidiaries({ asset_id: assetId || null })
       .then(data => setSubsidiaries(Array.isArray(data) ? data : []))
       .catch(() => setError('Failed to load corporate structure.'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [assetId])
 
   const filtered = useMemo(() => {
     if (!search) return subsidiaries
@@ -3657,9 +3682,9 @@ export default function InventoryExplorer() {
     aitools:   <AIToolsTab           scanId={activeScanId} assetId={assetId} />,
     processes: <ProcessesTab         scanId={activeScanId} assetId={assetId} />,
     credentials: <CredentialsTab    scanId={activeScanId} assetId={assetId} />,
-    easm_assets:    <EasmAssetsTab />,
-    easm_breaches:  <EasmBreachesTab />,
-    easm_corporate: <EasmCorporateTab />,
+    easm_assets:    <EasmAssetsTab assetId={assetId} />,
+    easm_breaches:  <EasmBreachesTab assetId={assetId} />,
+    easm_corporate: <EasmCorporateTab assetId={assetId} />,
   }
 
   return (

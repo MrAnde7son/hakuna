@@ -1,7 +1,6 @@
 import { useState, useRef } from 'react'
 import ReportBuilder from './ReportBuilder.jsx'
 import FirstScanOnboarding from '../onboarding/FirstScanOnboarding.jsx'
-import GettingStartedPanel from '../onboarding/GettingStartedPanel.jsx'
 import { useScan } from '../../App.jsx'
 
 export default function Reports() {
@@ -26,10 +25,5 @@ export default function Reports() {
     return <FirstScanOnboarding onComplete={() => setOnboardingMode(false)} />
   }
 
-  return (
-    <>
-      <GettingStartedPanel />
-      <ReportBuilder />
-    </>
-  )
+  return <ReportBuilder />
 }

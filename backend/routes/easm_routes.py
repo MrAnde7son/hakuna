@@ -39,6 +39,28 @@ def _get_org(db: Session, user: User) -> Organization:
     return org
 
 
+def _get_easm_domains_for_asset(db: Session, asset_id: int) -> list[str]:
+    """Return EASM domains from the same scan as the given asset."""
+    parent = db.query(Asset.scan_id).filter(Asset.id == asset_id).first()
+    if not parent:
+        return []
+    easm_assets = (
+        db.query(Asset.fqdn, Asset.hostname)
+        .filter(Asset.scan_id == parent.scan_id, Asset.easm_data.isnot(None))
+        .all()
+    )
+    domains = set()
+    for a in easm_assets:
+        if a.fqdn:
+            # Extract root domain (e.g., "mx.example.com" → "example.com")
+            parts = a.fqdn.rsplit(".", 2)
+            domains.add(".".join(parts[-2:]) if len(parts) >= 2 else a.fqdn)
+        elif a.hostname:
+            parts = a.hostname.rsplit(".", 2)
+            domains.add(".".join(parts[-2:]) if len(parts) >= 2 else a.hostname)
+    return list(domains)
+
+
 def _require_easm_org_id(db: Session, org: Organization) -> str:
     """Return easm_org_id, recovering it from scan metadata if missing from the org record."""
     if org.easm_org_id:
@@ -223,6 +245,7 @@ async def scan_status(
 def list_easm_assets(
     limit: int = Query(100, le=1000),
     offset: int = Query(0, ge=0),
+    asset_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     org_ids: list = Depends(get_accessible_org_ids),
 ):
@@ -234,6 +257,13 @@ def list_easm_assets(
     )
     if org_ids is not None:  # None means superadmin — sees all orgs
         query = query.filter(Scan.org_id.in_(org_ids))
+    if asset_id:
+        # Filter to EASM assets from the same scan as the given asset
+        parent = db.query(Asset.scan_id).filter(Asset.id == asset_id).first()
+        if parent:
+            query = query.filter(Asset.scan_id == parent.scan_id)
+        else:
+            query = query.filter(False)  # asset not found → empty result
     assets = query.order_by(Asset.last_seen.desc()).offset(offset).limit(limit).all()
 
     result = []
@@ -393,6 +423,7 @@ def check_domain_breaches_endpoint(
 @router.get("/breaches")
 def list_domain_breaches(
     domain: Optional[str] = Query(None),
+    asset_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
 ):
@@ -403,6 +434,12 @@ def list_domain_breaches(
     query = db.query(DomainBreach).filter(DomainBreach.org_id == org.id)
     if domain:
         query = query.filter(DomainBreach.domain == domain)
+    if asset_id:
+        domains = _get_easm_domains_for_asset(db, asset_id)
+        if domains:
+            query = query.filter(DomainBreach.domain.in_(domains))
+        else:
+            return []
     domain_breaches = query.order_by(DomainBreach.checked_at.desc()).all()
 
     results = []
@@ -458,13 +495,21 @@ def sync_corporate_structure(
 
 @router.get("/corporate/subsidiaries")
 def list_subsidiaries(
+    asset_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
 ):
     """List known subsidiaries for the current org."""
     from threat_intel.gleif_sync import get_subsidiaries_for_org
     org = _get_org(db, user)
-    return get_subsidiaries_for_org(db, org.id)
+    results = get_subsidiaries_for_org(db, org.id)
+    if asset_id:
+        domains = _get_easm_domains_for_asset(db, asset_id)
+        if domains:
+            results = [r for r in results if any(d in domains for d in (r.get("associated_domains") or []))]
+        else:
+            return []
+    return results
 
 
 @router.get("/corporate/search")

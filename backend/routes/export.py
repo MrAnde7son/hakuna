@@ -468,6 +468,7 @@ def export_inv_software(
             "Version": s.version,
             "Vendor": s.vendor,
             "Install Date": s.installed_on,
+            "Auto Update": s.auto_update_status or "",
             "Asset": _al(info),
             "Asset IP": (info or {}).get("ip"),
         }
