@@ -1,7 +1,7 @@
 variable "project_id" {
   type        = string
   description = "GCP project ID"
-  default     = "hakuna-prod"
+  default     = "hakuna-prod-2026"
 }
 
 variable "region" {

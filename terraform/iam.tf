@@ -29,6 +29,8 @@ resource "google_project_iam_member" "api_roles" {
   project = var.project_id
   role    = each.value
   member  = "serviceAccount:${google_service_account.api.email}"
+
+  depends_on = [google_project_service.aiplatform]
 }
 
 # Required for generating GCS V4 signed URLs from Cloud Run.
