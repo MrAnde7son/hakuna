@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, createContext, useContext, Suspense } from 'react'
+import * as Sentry from '@sentry/react'
 import { createPortal } from 'react-dom'
 
 function HakunaLogo({ size = 28, style }) {
@@ -1109,28 +1110,33 @@ function AppShell() {
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <ToastProvider>
-        <ConfirmProvider>
-          <BrowserRouter>
-            <AuthProvider>
-              <Routes>
-                <Route path="/login" element={<Login />} />
-                <Route path="/register" element={<Register />} />
-                <Route path="/forgot-password" element={<ForgotPassword />} />
-                <Route path="/reset-password" element={<ResetPassword />} />
-                <Route path="/accept-invite" element={<AcceptInvite />} />
-                <Route path="/verify-email" element={<VerifyEmail />} />
-                <Route path="/*" element={
-                  <ProtectedRoute>
-                    <AppShell />
-                  </ProtectedRoute>
-                } />
-              </Routes>
-            </AuthProvider>
-          </BrowserRouter>
-        </ConfirmProvider>
-      </ToastProvider>
-    </ThemeProvider>
+    <Sentry.ErrorBoundary fallback={<div style={{ padding: 40, textAlign: 'center' }}>
+      <h2>Something went wrong</h2>
+      <p>The error has been reported. Please refresh the page.</p>
+    </div>}>
+      <ThemeProvider>
+        <ToastProvider>
+          <ConfirmProvider>
+            <BrowserRouter>
+              <AuthProvider>
+                <Routes>
+                  <Route path="/login" element={<Login />} />
+                  <Route path="/register" element={<Register />} />
+                  <Route path="/forgot-password" element={<ForgotPassword />} />
+                  <Route path="/reset-password" element={<ResetPassword />} />
+                  <Route path="/accept-invite" element={<AcceptInvite />} />
+                  <Route path="/verify-email" element={<VerifyEmail />} />
+                  <Route path="/*" element={
+                    <ProtectedRoute>
+                      <AppShell />
+                    </ProtectedRoute>
+                  } />
+                </Routes>
+              </AuthProvider>
+            </BrowserRouter>
+          </ConfirmProvider>
+        </ToastProvider>
+      </ThemeProvider>
+    </Sentry.ErrorBoundary>
   )
 }

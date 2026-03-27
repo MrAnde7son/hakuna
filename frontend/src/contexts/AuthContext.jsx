@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import * as Sentry from '@sentry/react'
 import { useTranslation } from 'react-i18next'
 import {
   authMe, authLogin, authRegister, authGoogleLogin,
@@ -33,6 +34,7 @@ export function AuthProvider({ children }) {
         setAccessibleOrgs(data.accessible_orgs || [data.org])
         setEffectivePermissions(data.effective_permissions || {})
         setIsAuthenticated(true)
+        Sentry.setUser({ id: data.id, email: data.email })
         // Sync UI language with user's stored locale preference
         if (data.locale && data.locale !== i18n.language) {
           i18n.changeLanguage(data.locale)
@@ -100,6 +102,7 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(() => {
     clearStoredToken()
+    Sentry.setUser(null)
     setUser(null)
     setOrg(null)
     setAccessibleOrgs([])
