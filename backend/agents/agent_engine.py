@@ -211,13 +211,12 @@ def get_available_providers(db: Session) -> list:
                     "configured": True,
                 })
         elif provider == "vertex_ai":
-            # Vertex AI is configured if project ID is set (DB config or env var)
-            has_project = bool(
-                (cfg and cfg.config and cfg.config.get("project_id"))
-                or os.environ.get("GOOGLE_CLOUD_PROJECT")
-                or os.environ.get("GCLOUD_PROJECT")
-            )
-            if has_project:
+            # Vertex AI requires explicit opt-in via DB config (IntegrationConfig).
+            # GOOGLE_CLOUD_PROJECT alone is NOT enough — it's auto-set in every
+            # Cloud Run service, but doesn't mean the service account has
+            # aiplatform.endpoints.predict permission.
+            has_explicit_config = bool(cfg and cfg.is_enabled and cfg.config and cfg.config.get("project_id"))
+            if has_explicit_config:
                 result.append({
                     "provider": provider,
                     "display": info["display"],
@@ -282,12 +281,10 @@ def get_default_model(db: Session) -> str:
                 return fallback_model
             continue
         if provider == "vertex_ai":
-            has_project = (
-                (cfg and cfg.config and cfg.config.get("project_id"))
-                or os.environ.get("GOOGLE_CLOUD_PROJECT")
-                or os.environ.get("GCLOUD_PROJECT")
-            )
-            if has_project:
+            # Require explicit DB config — GOOGLE_CLOUD_PROJECT is auto-set
+            # in Cloud Run and doesn't imply Vertex AI permissions.
+            has_explicit_config = (cfg and cfg.is_enabled and cfg.config and cfg.config.get("project_id"))
+            if has_explicit_config:
                 return fallback_model
             continue
         has_key = (cfg and cfg.config and cfg.config.get("api_key")) or os.environ.get(env_var)
@@ -327,13 +324,12 @@ def _validate_provider_configured(db: Session, provider: str):
         return
     if provider == "vertex_ai":
         cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "vertex_ai").first()
-        has_project = (
-            (cfg and cfg.config and cfg.config.get("project_id"))
-            or os.environ.get("GOOGLE_CLOUD_PROJECT")
-            or os.environ.get("GCLOUD_PROJECT")
-        )
-        if not has_project:
-            raise RuntimeError("Vertex AI not configured. Set GOOGLE_CLOUD_PROJECT or configure in Settings > Integrations.")
+        has_explicit_config = (cfg and cfg.is_enabled and cfg.config and cfg.config.get("project_id"))
+        if not has_explicit_config:
+            raise RuntimeError(
+                "Vertex AI not configured. Enable it in Settings > Integrations and set a project ID. "
+                "The service account must have the aiplatform.endpoints.predict permission."
+            )
         return
     env_var = _ENV_VARS.get(provider, "")
     _get_api_key(db, provider, env_var)
