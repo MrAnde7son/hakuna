@@ -215,6 +215,13 @@ if $DO_FRONTEND; then
   fi
   export VITE_GOOGLE_CLIENT_ID
 
+  # Sentry DSN for frontend error tracking
+  if [[ -z "${VITE_SENTRY_DSN:-}" ]]; then
+    VITE_SENTRY_DSN=$(gcloud secrets versions access latest --secret="sentry-dsn-frontend" 2>/dev/null || true)
+  fi
+  export VITE_SENTRY_DSN
+  export VITE_ENVIRONMENT="${VITE_ENVIRONMENT:-production}"
+
   npm ci --silent
   npm run build
   success "Frontend built → frontend/dist"

@@ -298,6 +298,22 @@ def get_default_model(db: Session) -> str:
     return SONNET  # ultimate fallback
 
 
+def _find_fallback_model(db: Session, exclude_providers: set) -> Optional[tuple]:
+    """Find an alternative model/provider, skipping the excluded providers.
+
+    Returns (model, provider) or None if no fallback is available.
+    """
+    for provider, env_var, fallback_model in _PROVIDER_DEFAULTS:
+        if provider in exclude_providers:
+            continue
+        try:
+            _validate_provider_configured(db, provider)
+            return fallback_model, provider
+        except RuntimeError:
+            continue
+    return None
+
+
 # ── Shared helpers ────────────────────────────────────────────────────
 
 # Max user input chars per provider (leave room for system prompt + tools schema)
@@ -1038,23 +1054,41 @@ def run_agent(agent: Agent, user_input: str, db: Session) -> AgentRun:
         model = get_default_model(db)
         provider = detect_provider(model)
 
-    try:
-        if provider == "anthropic":
-            _run_anthropic(agent, user_input, db, run, model)
-        elif provider in ("openai", "groq", "ollama"):
-            _run_openai_compat(agent, user_input, db, run, model, provider)
-        elif provider in ("google_gemini", "vertex_ai"):
-            _run_gemini(agent, user_input, db, run, model)
+    def _dispatch(m, p):
+        if p == "anthropic":
+            _run_anthropic(agent, user_input, db, run, m)
+        elif p in ("openai", "groq", "ollama"):
+            _run_openai_compat(agent, user_input, db, run, m, p)
+        elif p in ("google_gemini", "vertex_ai"):
+            _run_gemini(agent, user_input, db, run, m)
         else:
-            raise RuntimeError(f"Unsupported provider: {provider}")
+            raise RuntimeError(f"Unsupported provider: {p}")
+
+    try:
+        _dispatch(model, provider)
     except ApprovalRequired:
         # HITL pause — run already set to awaiting_approval and committed
         db.refresh(run)
         return run
     except Exception as e:
-        logger.exception("Agent run failed")
-        run.status = "failed"
-        run.error = str(e)
+        # Runtime failure (e.g. permission denied) — try a different provider
+        fallback = _find_fallback_model(db, exclude_providers={provider})
+        if fallback:
+            fb_model, fb_provider = fallback
+            logger.warning("Provider %s failed (%s), falling back to %s/%s", provider, e, fb_provider, fb_model)
+            try:
+                _dispatch(fb_model, fb_provider)
+            except ApprovalRequired:
+                db.refresh(run)
+                return run
+            except Exception as e2:
+                logger.exception("Fallback provider %s also failed", fb_provider)
+                run.status = "failed"
+                run.error = str(e2)
+        else:
+            logger.exception("Agent run failed (no fallback available)")
+            run.status = "failed"
+            run.error = str(e)
 
     run.finished_at = datetime.utcnow()
     db.commit()
@@ -1091,15 +1125,18 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session):
         model = get_default_model(db)
         provider = detect_provider(model)
 
-    try:
-        if provider == "anthropic":
-            yield from _stream_anthropic(agent, user_input, db, run, model)
-        elif provider in ("openai", "groq", "ollama"):
-            yield from _stream_openai_compat(agent, user_input, db, run, model, provider)
-        elif provider in ("google_gemini", "vertex_ai"):
-            yield from _stream_gemini(agent, user_input, db, run, model)
+    def _dispatch_stream(m, p):
+        if p == "anthropic":
+            return _stream_anthropic(agent, user_input, db, run, m)
+        elif p in ("openai", "groq", "ollama"):
+            return _stream_openai_compat(agent, user_input, db, run, m, p)
+        elif p in ("google_gemini", "vertex_ai"):
+            return _stream_gemini(agent, user_input, db, run, m)
         else:
-            raise RuntimeError(f"Unsupported provider: {provider}")
+            raise RuntimeError(f"Unsupported provider: {p}")
+
+    try:
+        yield from _dispatch_stream(model, provider)
     except ApprovalRequired as e:
         # HITL pause — emit event so frontend can show approval UI
         db.refresh(run)
@@ -1111,10 +1148,33 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session):
         }
         return
     except Exception as e:
-        logger.exception("Agent run failed")
-        run.status = "failed"
-        run.error = str(e)
-        yield {"type": "error", "error": str(e)}
+        # Runtime failure (e.g. permission denied) — try a different provider
+        fallback = _find_fallback_model(db, exclude_providers={provider})
+        if fallback:
+            fb_model, fb_provider = fallback
+            logger.warning("Provider %s failed (%s), falling back to %s/%s", provider, e, fb_provider, fb_model)
+            yield {"type": "thinking", "step": 0, "fallback": True, "detail": f"Retrying with {fb_provider}"}
+            try:
+                yield from _dispatch_stream(fb_model, fb_provider)
+            except ApprovalRequired as e2:
+                db.refresh(run)
+                yield {
+                    "type": "approval_required",
+                    "run_id": run.id,
+                    "approval_id": e2.approval_id,
+                    "tool_name": e2.tool_name,
+                }
+                return
+            except Exception as e2:
+                logger.exception("Fallback provider %s also failed", fb_provider)
+                run.status = "failed"
+                run.error = str(e2)
+                yield {"type": "error", "error": str(e2)}
+        else:
+            logger.exception("Agent run failed (no fallback available)")
+            run.status = "failed"
+            run.error = str(e)
+            yield {"type": "error", "error": str(e)}
 
     run.finished_at = datetime.utcnow()
     db.commit()
