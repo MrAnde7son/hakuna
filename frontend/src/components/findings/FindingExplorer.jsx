@@ -2,8 +2,8 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import useURLFilters from '../../hooks/useURLFilters.js'
 import { useTranslation } from 'react-i18next'
-import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon, Zap } from 'lucide-react'
-import { useScan } from '../../App.jsx'
+import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon, Zap, Filter } from 'lucide-react'
+import { useScan, useIsMobile } from '../../App.jsx'
 import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign } from '../../api.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select,
@@ -375,6 +375,8 @@ export default function FindingExplorer() {
   const [tagFilter, setTagFilter] = useState([])
   const [tagLogic, setTagLogic] = useState('AND')
   const [ownershipEdit, setOwnershipEdit] = useState(null) // { findingId, current }
+  const isMobile = useIsMobile()
+  const [showMobileFilters, setShowMobileFilters] = useState(false)
 
   // Advanced filters toggle (ticket, control status, etc.)
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(
@@ -574,6 +576,7 @@ export default function FindingExplorer() {
 
 
   const hasActiveFilters = severity !== null || family || hasExploit !== null || isKev !== null || ransomwareLinked !== null || trendingInNews !== null || hasTtps !== null || tacticFilter || techniqueFilter || threatGroupId || slaStatus || effortLevel || cveFilter || search || groupBy || assetId || tagFilter.length > 0 || workflowStatus || hasException !== null || productFilter || cpeFilter2
+  const activeFilterCount = [severity !== null, family, hasExploit !== null, isKev !== null, ransomwareLinked !== null, trendingInNews !== null, hasTtps !== null, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, groupBy, assetId, tagFilter.length > 0, workflowStatus, hasException !== null, productFilter, cpeFilter2, sourceFilter].filter(Boolean).length
 
   const saveAsConditions = useMemo(
     () => advancedMode
@@ -946,7 +949,7 @@ export default function FindingExplorer() {
       {/* Filters */}
       {!advancedMode && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'flex-start' }}>
-          <div style={{ flex: '1 1 280px', minWidth: 280, maxWidth: 480 }}>
+          <div style={{ flex: '1 1 280px', minWidth: isMobile ? 0 : 280, maxWidth: 480 }}>
             <NLPSearchBar
               scanId={activeScanId}
               onResult={applyNlpFilters}
@@ -954,75 +957,91 @@ export default function FindingExplorer() {
             />
           </div>
 
-          <Select
-            value={severity !== null ? String(severity) : null}
-            onChange={v => setFilter('severity', v)}
-            placeholder={t('findings.allSeverities')}
-            options={getSevOptions(t)}
-          />
-
-          <Select
-            value={family}
-            onChange={v => setFilter('family', v)}
-            placeholder={t('findings.allFamilies')}
-            options={families.map(f => ({ value: f, label: f }))}
-          />
-
-          <Select
-            value={hasExploit !== null ? String(hasExploit) : null}
-            onChange={v => setFilter('exploit', v)}
-            placeholder={t('findings.exploit')}
-            options={[{ value: 'true', label: t('findings.hasExploit') }, { value: 'false', label: t('findings.noExploit') }]}
-          />
-
-          <Select
-            value={assetId}
-            onChange={v => setFilter('asset_id', v)}
-            placeholder={t('findings.allAssets')}
-            options={assets.map(a => ({ value: String(a.id), label: a.hostname || a.ip }))}
-          />
-
-          <SourceFilter
-            value={sourceFilter}
-            onChange={v => setFilter('source', v)}
-          />
-
-          <Select
-            value={groupBy}
-            onChange={v => setFilter('group', v)}
-            placeholder={t('findings.noGrouping')}
-            options={getGroupOptions(t)}
-          />
-
-          <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
-
-          <TagFilterBar
-            tags={tagFilter}
-            onChange={setTagFilter}
-            logic={tagLogic}
-            onLogicChange={setTagLogic}
-          />
-
-          <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />
-
-          <ColumnSelector
-            columns={allColumns}
-            visible={colVis}
-            onChange={updateColVis}
-          />
-
-          <Button variant="ghost" size="sm" onClick={() => setShowAdvancedFilters(p => !p)} title={t('findings.advancedSearch')}>
-            <SlidersHorizontal size={13} /> {t('findings.advanced')}
-          </Button>
-
-          {hasActiveFilters && (
-            <>
-              <Button variant="ghost" size="sm" onClick={() => setShowSaveAs(true)}>
-                <Bookmark size={13} /> {t('findings.saveAs')}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => { clearFilters(); setTagFilter([]) }}>{t('findings.clearAll')}</Button>
-            </>
+          {isMobile && (
+            <Button size="sm" variant="ghost" onClick={() => setShowMobileFilters(p => !p)} style={{ position: 'relative' }}>
+              <Filter size={14} />
+              {showMobileFilters ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              {activeFilterCount > 0 && (
+                <span style={{
+                  position: 'absolute', top: -4, right: -4, background: 'var(--primary)',
+                  color: '#fff', borderRadius: '50%', width: 16, height: 16, fontSize: 10,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600,
+                }}>{activeFilterCount}</span>
+              )}
+            </Button>
           )}
+
+          {(!isMobile || showMobileFilters) && <>
+            <Select
+              value={severity !== null ? String(severity) : null}
+              onChange={v => setFilter('severity', v)}
+              placeholder={t('findings.allSeverities')}
+              options={getSevOptions(t)}
+            />
+
+            <Select
+              value={family}
+              onChange={v => setFilter('family', v)}
+              placeholder={t('findings.allFamilies')}
+              options={families.map(f => ({ value: f, label: f }))}
+            />
+
+            <Select
+              value={hasExploit !== null ? String(hasExploit) : null}
+              onChange={v => setFilter('exploit', v)}
+              placeholder={t('findings.exploit')}
+              options={[{ value: 'true', label: t('findings.hasExploit') }, { value: 'false', label: t('findings.noExploit') }]}
+            />
+
+            <Select
+              value={assetId}
+              onChange={v => setFilter('asset_id', v)}
+              placeholder={t('findings.allAssets')}
+              options={assets.map(a => ({ value: String(a.id), label: a.hostname || a.ip }))}
+            />
+
+            <SourceFilter
+              value={sourceFilter}
+              onChange={v => setFilter('source', v)}
+            />
+
+            <Select
+              value={groupBy}
+              onChange={v => setFilter('group', v)}
+              placeholder={t('findings.noGrouping')}
+              options={getGroupOptions(t)}
+            />
+
+            {!isMobile && <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />}
+
+            <TagFilterBar
+              tags={tagFilter}
+              onChange={setTagFilter}
+              logic={tagLogic}
+              onLogicChange={setTagLogic}
+            />
+
+            {!isMobile && <div style={{ width: 1, background: 'var(--border)', margin: '0 4px', alignSelf: 'stretch' }} />}
+
+            <ColumnSelector
+              columns={allColumns}
+              visible={colVis}
+              onChange={updateColVis}
+            />
+
+            <Button variant="ghost" size="sm" onClick={() => setShowAdvancedFilters(p => !p)} title={t('findings.advancedSearch')}>
+              <SlidersHorizontal size={13} /> {t('findings.advanced')}
+            </Button>
+
+            {hasActiveFilters && (
+              <>
+                <Button variant="ghost" size="sm" onClick={() => setShowSaveAs(true)}>
+                  <Bookmark size={13} /> {t('findings.saveAs')}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => { clearFilters(); setTagFilter([]) }}>{t('findings.clearAll')}</Button>
+              </>
+            )}
+          </>}
         </div>
       )}
 

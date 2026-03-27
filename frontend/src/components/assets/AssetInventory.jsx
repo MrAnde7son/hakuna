@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import useURLFilters from '../../hooks/useURLFilters.js'
-import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight, Zap, Radar } from 'lucide-react'
-import { useScan } from '../../App.jsx'
+import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight, Zap, Radar, Filter, ChevronDown, ChevronUp } from 'lucide-react'
+import { useScan, useIsMobile } from '../../App.jsx'
 import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags, createCampaign, startVmScan } from '../../api.js'
 import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
@@ -359,6 +359,8 @@ export default function AssetInventory() {
   const [contextEdit, setContextEdit] = useState(null) // { assetId, field, currentValue }
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
+  const isMobile = useIsMobile()
+  const [showMobileFilters, setShowMobileFilters] = useState(false)
 
   // Sync tagFilter from URL ?tags= param on mount
   const tagsSynced = useRef(false)
@@ -908,7 +910,7 @@ export default function AssetInventory() {
 
       {/* Filters */}
       <div style={{ display: advancedMode ? 'none' : 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'flex-start' }}>
-        <div style={{ flex: '1 1 280px', minWidth: 280, maxWidth: 480 }}>
+        <div style={{ flex: '1 1 280px', minWidth: isMobile ? 0 : 280, maxWidth: 480 }}>
           <NLPSearchBar
             scanId={activeScanId}
             onResult={({ asset_filters, sort }) => {
@@ -931,88 +933,103 @@ export default function AssetInventory() {
           />
         </div>
 
-        <Select
-          value={filters.env}
-          onChange={v => setFilter('env', v)}
-          placeholder={t('assets.allEnvironments')}
-          options={[
-            { value: 'internet', label: t('assets.envOptions.internet') },
-            { value: 'external', label: t('assets.envOptions.external') },
-            { value: 'dmz', label: t('assets.envOptions.dmz') },
-            { value: 'internal', label: t('assets.envOptions.internal') },
-            { value: 'cloud', label: t('assets.envOptions.cloud') },
-            { value: 'development', label: t('assets.envOptions.development') },
-            { value: 'production', label: t('assets.envOptions.production') },
-            { value: 'staging', label: t('assets.envOptions.staging') },
-            { value: 'ot', label: t('assets.envOptions.ot') },
-          ]}
-        />
-
-        <SourceFilter
-          value={filters.source}
-          onChange={v => setFilter('source', v)}
-        />
-
-        <Select
-          value={filters.criticality}
-          onChange={v => setFilter('criticality', v)}
-          placeholder={t('assets.anyCriticality')}
-          options={[1,2,3,4,5,6,7,8,9,10].map(n => ({ value: String(n), label: `${n} – ${CRITICALITY_LABELS[n]}` }))}
-        />
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t('assets.risk')}</span>
-          <input
-            type="number" min={0} max={10} step={0.1}
-            value={filters.minRisk}
-            onChange={e => setFilter('minRisk', e.target.value)}
-            placeholder={t('assets.min')}
-            style={{
-              width: 60, background: 'var(--bg-card)', border: '1px solid var(--border)',
-              color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
-            }}
-          />
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>–</span>
-          <input
-            type="number" min={0} max={10} step={0.1}
-            value={filters.maxRisk}
-            onChange={e => setFilter('maxRisk', e.target.value)}
-            placeholder={t('assets.max')}
-            style={{
-              width: 60, background: 'var(--bg-card)', border: '1px solid var(--border)',
-              color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
-            }}
-          />
-        </div>
-
-
-        <TagFilterBar
-          tags={tagFilter}
-          onChange={setTagFilter}
-          logic={tagLogic}
-          onLogicChange={setTagLogic}
-        />
-
-        <ColumnSelector
-          columns={allColumns}
-          visible={colVis}
-          onChange={updateColVis}
-        />
-
-        <Button size="sm" variant="ghost" onClick={enterAdvancedMode} title="Switch to rule-engine query builder">
-          <SlidersHorizontal size={13} /> {t('assets.advanced')}
-        </Button>
-
-        {(activeFilterCount > 0 || tagFilter.length > 0) && (
-          <>
-            <Button size="sm" variant="ghost" onClick={() => setShowSaveAs(true)}>
-              <Bookmark size={13} /> {t('assets.saveAs')}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => { clearFilters(); setTagFilter([]); setTagLogic('AND') }}>
-              <X size={13} /> {t('assets.clear')}
-            </Button>
-          </>
+        {isMobile && (
+          <Button size="sm" variant="ghost" onClick={() => setShowMobileFilters(p => !p)} style={{ position: 'relative' }}>
+            <Filter size={14} />
+            {showMobileFilters ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            {(activeFilterCount > 0 || tagFilter.length > 0) && (
+              <span style={{
+                position: 'absolute', top: -4, right: -4, background: 'var(--primary)',
+                color: '#fff', borderRadius: '50%', width: 16, height: 16, fontSize: 10,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600,
+              }}>{activeFilterCount + (tagFilter.length > 0 ? 1 : 0)}</span>
+            )}
+          </Button>
         )}
+
+        {(!isMobile || showMobileFilters) && <>
+          <Select
+            value={filters.env}
+            onChange={v => setFilter('env', v)}
+            placeholder={t('assets.allEnvironments')}
+            options={[
+              { value: 'internet', label: t('assets.envOptions.internet') },
+              { value: 'external', label: t('assets.envOptions.external') },
+              { value: 'dmz', label: t('assets.envOptions.dmz') },
+              { value: 'internal', label: t('assets.envOptions.internal') },
+              { value: 'cloud', label: t('assets.envOptions.cloud') },
+              { value: 'development', label: t('assets.envOptions.development') },
+              { value: 'production', label: t('assets.envOptions.production') },
+              { value: 'staging', label: t('assets.envOptions.staging') },
+              { value: 'ot', label: t('assets.envOptions.ot') },
+            ]}
+          />
+
+          <SourceFilter
+            value={filters.source}
+            onChange={v => setFilter('source', v)}
+          />
+
+          <Select
+            value={filters.criticality}
+            onChange={v => setFilter('criticality', v)}
+            placeholder={t('assets.anyCriticality')}
+            options={[1,2,3,4,5,6,7,8,9,10].map(n => ({ value: String(n), label: `${n} – ${CRITICALITY_LABELS[n]}` }))}
+          />
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{t('assets.risk')}</span>
+            <input
+              type="number" min={0} max={10} step={0.1}
+              value={filters.minRisk}
+              onChange={e => setFilter('minRisk', e.target.value)}
+              placeholder={t('assets.min')}
+              style={{
+                width: 60, background: 'var(--bg-card)', border: '1px solid var(--border)',
+                color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
+              }}
+            />
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>–</span>
+            <input
+              type="number" min={0} max={10} step={0.1}
+              value={filters.maxRisk}
+              onChange={e => setFilter('maxRisk', e.target.value)}
+              placeholder={t('assets.max')}
+              style={{
+                width: 60, background: 'var(--bg-card)', border: '1px solid var(--border)',
+                color: 'var(--text-primary)', borderRadius: 6, padding: '7px 8px', fontSize: 13, outline: 'none',
+              }}
+            />
+          </div>
+
+          <TagFilterBar
+            tags={tagFilter}
+            onChange={setTagFilter}
+            logic={tagLogic}
+            onLogicChange={setTagLogic}
+          />
+
+          <ColumnSelector
+            columns={allColumns}
+            visible={colVis}
+            onChange={updateColVis}
+          />
+
+          <Button size="sm" variant="ghost" onClick={enterAdvancedMode} title="Switch to rule-engine query builder">
+            <SlidersHorizontal size={13} /> {t('assets.advanced')}
+          </Button>
+
+          {(activeFilterCount > 0 || tagFilter.length > 0) && (
+            <>
+              <Button size="sm" variant="ghost" onClick={() => setShowSaveAs(true)}>
+                <Bookmark size={13} /> {t('assets.saveAs')}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => { clearFilters(); setTagFilter([]); setTagLogic('AND') }}>
+                <X size={13} /> {t('assets.clear')}
+              </Button>
+            </>
+          )}
+        </>}
       </div>
 
       <ErrorBanner error={fetchError} onRetry={load} onDismiss={() => setFetchError(null)} />
