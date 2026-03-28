@@ -50,7 +50,9 @@ ENV_PATTERNS = [
 # ── Workflow status ───────────────────────────────────────────────────────────
 
 WORKFLOW_PATTERNS = [
-    (r"\bopen\s*(?:findings?|vulns?)?\b", "open"),
+    (r"(?<!\w)open\s+(?:findings?|vulns?|issues?|tickets?)\b", "open"),
+    (r"\ball\s+open\b", "open"),
+    (r"(?:^|(?<=\s))open(?:\s*$|(?=\s+(?:and|or|with|in|on|sorted|by)\b))", "open"),
     (r"\bin.progress\b|\bbeing\s*worked\b|\bassigned\b", "in_progress"),
     (r"\baccepted?\s*risk\b|\brisk\s*accepted?\b", "accepted_risk"),
     (r"\bfalse\s*positives?\b|\bfp\b", "false_positive"),
