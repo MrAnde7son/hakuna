@@ -2,7 +2,7 @@
  * Mini Agent Builder — create, configure, and run user-defined agents.
  * Features: templates gallery, streaming output, cron schedules.
  */
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Card, ErrorBanner, useToast, useConfirm } from '../shared/ui.jsx'
@@ -686,6 +686,8 @@ export default function AgentBuilder() {
             ) : (
               <SchedulePanel
                 agentId={selected.id}
+                agent={selected}
+                templates={templates}
                 schedules={schedules.filter(s => s.agent_id === selected.id)}
                 onRefresh={() => getAgentSchedules().then(setSchedules).catch(() => {})}
               />
@@ -1491,12 +1493,26 @@ const CRON_PRESETS = [
   { label: 'First of month 9 AM', cron: '0 9 1 * *' },
 ]
 
-function SchedulePanel({ agentId, schedules, onRefresh }) {
+function SchedulePanel({ agentId, agent, templates, schedules, onRefresh }) {
   const toast = useToast()
   const confirm = useConfirm()
   const [cronExpr, setCronExpr] = useState('0 8 * * 1-5')
-  const [schedInput, setSchedInput] = useState('Run the daily triage for the latest scan.')
+
+  // Derive a default message from the matching template's suggested_input, or from the agent name
+  const defaultMessage = useMemo(() => {
+    if (templates && agent) {
+      const match = templates.find(t => t.name === agent.name)
+      if (match?.suggested_input) return match.suggested_input
+    }
+    if (agent?.name) return `Run ${agent.name} for the latest scan.`
+    return 'Run the agent for the latest scan.'
+  }, [agent, templates])
+
+  const [schedInput, setSchedInput] = useState(defaultMessage)
   const [creating, setCreating] = useState(false)
+
+  // Reset the input when switching agents
+  useEffect(() => { setSchedInput(defaultMessage) }, [defaultMessage])
 
   const handleCreate = async () => {
     if (!cronExpr || !schedInput.trim()) return
