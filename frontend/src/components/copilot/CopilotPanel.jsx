@@ -476,6 +476,7 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
   const [dragging, setDragging] = useState(false)
   const [thinkingStep, setThinkingStep] = useState(-1)
   const [tokenUsage, setTokenUsage] = useState(null)
+  const [recommendations, setRecommendations] = useState([])
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
   const abortRef = useRef(null)
@@ -508,6 +509,7 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
       setMessages([])
       setStreamEvents([])
       setStreamText('')
+      setRecommendations([])
       setShowHistory(false)
       setConversations(prev => [conv, ...prev])
     } catch (e) {
@@ -522,6 +524,7 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
       setMessages(full.messages || [])
       setStreamEvents([])
       setStreamText('')
+      setRecommendations([])
       setShowHistory(false)
     } catch (e) {
       console.error('Failed to load conversation:', e)
@@ -564,6 +567,7 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
     setStreamText('')
     setStreamEvents([])
     setThinkingStep(0)
+    setRecommendations([])
 
     // Add user message to local state (show original text in chat bubble)
     const userMsg = { role: 'user', content: msg, timestamp: new Date().toISOString() }
@@ -656,6 +660,8 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
                 content: event.output || textAccum,
                 timestamp: new Date().toISOString(),
               }])
+            } else if (event.type === 'recommendations') {
+              setRecommendations(event.recommendations || [])
             } else if (event.type === 'error') {
               setMessages(prev => [...prev, {
                 role: 'error',
@@ -1115,6 +1121,40 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
               {thinkingStep >= 0 && (
                 <ThinkingIndicator step={thinkingStep} />
               )}
+            </div>
+          )}
+
+          {/* Context-aware follow-up recommendations */}
+          {!streaming && recommendations.length > 0 && messages.length > 0 && (
+            <div style={{
+              display: 'flex', flexDirection: 'column', gap: 6,
+              padding: '8px 0', marginLeft: 34,
+            }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, letterSpacing: 0.3, textTransform: 'uppercase' }}>
+                Suggested follow-ups
+              </span>
+              {recommendations.map((rec, i) => {
+                const SIcon = ICON_MAP[rec.icon] || Zap
+                return (
+                  <button
+                    key={i}
+                    onClick={() => sendMessage(rec.text)}
+                    style={{
+                      padding: '6px 10px', borderRadius: 8, fontSize: 11,
+                      border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+                      color: 'var(--text)', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', gap: 6,
+                      transition: 'border-color 0.15s ease, background 0.15s ease',
+                      textAlign: 'left', lineHeight: 1.3,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.background = 'var(--bg)' }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--bg-secondary)' }}
+                  >
+                    <SIcon size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                    {rec.text}
+                  </button>
+                )
+              })}
             </div>
           )}
 

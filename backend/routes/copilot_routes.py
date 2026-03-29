@@ -6,8 +6,11 @@ then reuses the existing agent engine for streaming execution.
 """
 import json
 import asyncio
+import logging
 from typing import Optional, List
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
@@ -19,7 +22,11 @@ from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from core.subscription import require_pro
 from models.models import Agent, CopilotConversation, User
 from agents.agent_tools import TOOL_REGISTRY
-from agents.agent_engine import run_agent_streaming, get_default_model, get_available_providers
+from agents.agent_engine import (
+    run_agent_streaming, get_default_model, get_available_providers,
+    PROVIDER_FOR_MODEL, _get_anthropic_client, _get_openai_client,
+    _get_gemini_client, _get_ollama_client, _get_vertex_client,
+)
 from agents.copilot_prompt import COPILOT_SYSTEM_PROMPT
 
 router = APIRouter(prefix="/api/copilot", tags=["copilot"], dependencies=[Depends(require_pro)])
@@ -305,11 +312,126 @@ async def send_message(
                     c.updated_at = datetime.utcnow()
                     stream_db.commit()
 
+                    # Generate context-aware follow-up recommendations
+                    try:
+                        recs = _generate_recommendations(stream_db, ag.model, msgs)
+                        if recs:
+                            yield f"data: {json.dumps({'type': 'recommendations', 'recommendations': recs})}\n\n"
+                            await asyncio.sleep(0)
+                    except Exception as e:
+                        logger.warning(f"Recommendation generation failed: {e}")
+
             yield "data: [DONE]\n\n"
         finally:
             stream_db.close()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ── Context-aware follow-up recommendations ─────────────────────────
+
+_RECOMMENDATION_PROMPT = """Based on the conversation below, suggest exactly 3 short follow-up questions the user might want to ask next. The questions should be:
+- Directly relevant to what was just discussed
+- Actionable (lead to a useful next step)
+- Diverse (cover different angles — e.g. drill down, take action, explore related)
+- Short (under 60 characters each)
+
+Respond ONLY with a JSON array of 3 strings. No other text.
+
+Example: ["Create a campaign for these findings?", "Which assets are most affected?", "Show exploit details for the top CVE"]"""
+
+_RECOMMENDATION_ICONS = ["zap", "target", "clipboard"]
+
+
+def _generate_recommendations(db: Session, model: str, messages: list) -> list:
+    """Generate 3 context-aware follow-up recommendations using a fast LLM call."""
+    if not messages or len(messages) < 2:
+        return []
+
+    # Build a compact conversation summary (last 3 exchanges max)
+    recent = messages[-6:]
+    summary_parts = []
+    for msg in recent:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        if content:
+            label = "User" if role == "user" else "Assistant"
+            # Keep content brief
+            if len(content) > 500:
+                content = content[:500] + "..."
+            summary_parts.append(f"{label}: {content}")
+
+    if not summary_parts:
+        return []
+
+    conversation_text = "\n".join(summary_parts)
+    full_prompt = f"{_RECOMMENDATION_PROMPT}\n\nConversation:\n{conversation_text}"
+
+    provider = PROVIDER_FOR_MODEL.get(model, "")
+
+    try:
+        if provider == "anthropic":
+            client = _get_anthropic_client(db)
+            resp = client.messages.create(
+                model=model,
+                max_tokens=200,
+                messages=[{"role": "user", "content": full_prompt}],
+            )
+            text = resp.content[0].text.strip()
+        elif provider == "openai":
+            client = _get_openai_client(db)
+            resp = client.chat.completions.create(
+                model=model,
+                max_tokens=200,
+                messages=[{"role": "user", "content": full_prompt}],
+            )
+            text = resp.choices[0].message.content.strip()
+        elif provider == "google_gemini":
+            client = _get_gemini_client(db)
+            resp = client.models.generate_content(
+                model=f"models/{model}",
+                contents=full_prompt,
+                config={"max_output_tokens": 200},
+            )
+            text = resp.text.strip()
+        elif provider == "vertex_ai":
+            client = _get_vertex_client(db)
+            base_model = model.replace("vertex/", "")
+            resp = client.models.generate_content(
+                model=f"models/{base_model}",
+                contents=full_prompt,
+                config={"max_output_tokens": 200},
+            )
+            text = resp.text.strip()
+        elif model and model.startswith("ollama/"):
+            client = _get_ollama_client(db)
+            resp = client.chat.completions.create(
+                model=model.replace("ollama/", ""),
+                max_tokens=200,
+                messages=[{"role": "user", "content": full_prompt}],
+            )
+            text = resp.choices[0].message.content.strip()
+        else:
+            return []
+
+        # Parse JSON array from response (handle markdown code blocks)
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        recommendations = json.loads(text)
+        if isinstance(recommendations, list) and len(recommendations) >= 1:
+            return [
+                {"text": str(q)[:80], "icon": _RECOMMENDATION_ICONS[i % 3]}
+                for i, q in enumerate(recommendations[:3])
+            ]
+    except Exception as e:
+        logger.warning(f"Failed to generate recommendations: {e}")
+
+    return []
 
 
 # ── Suggested prompts ────────────────────────────────────────────────
