@@ -691,6 +691,7 @@ export default function AgentBuilder() {
                 streamEvents={streamEvents}
                 running={running}
                 navigate={navigate}
+                onRerun={(input) => handleRun(selected, input)}
               />
             ) : (
               <SchedulePanel
@@ -1355,7 +1356,7 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
 
 // ── Runs Panel (with streaming) ──────────────────────────────────────
 
-function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, running, navigate }) {
+function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, running, navigate, onRerun }) {
   const loadRun = async (run) => {
     try {
       const full = await getAgentRun(selected.id, run.id)
@@ -1373,6 +1374,20 @@ function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, runn
             <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
               {activeRun.steps_used ?? 0} steps
             </span>
+            {!running && activeRun.input && (
+              <button
+                onClick={() => onRerun(activeRun.input)}
+                title="Re-run with same input"
+                style={{
+                  marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4,
+                  padding: '3px 10px', borderRadius: 5, border: '1px solid var(--border)',
+                  background: 'transparent', color: 'var(--accent)', fontSize: 11,
+                  cursor: 'pointer', fontWeight: 500,
+                }}
+              >
+                <Play size={11} /> Re-run
+              </button>
+            )}
           </div>
 
           {/* Streaming events (live tool call feed) */}
@@ -1476,6 +1491,19 @@ function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, runn
             <div style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {r.input}
             </div>
+            {!running && r.input && (
+              <button
+                onClick={e => { e.stopPropagation(); onRerun(r.input) }}
+                title="Re-run with same input"
+                style={{
+                  display: 'flex', alignItems: 'center', padding: '2px 5px', borderRadius: 4,
+                  border: '1px solid var(--border)', background: 'transparent',
+                  color: 'var(--text-muted)', cursor: 'pointer', flexShrink: 0,
+                }}
+              >
+                <Play size={11} />
+              </button>
+            )}
             <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
               {r.created_at ? new Date(r.created_at).toLocaleString() : ''}
             </span>
