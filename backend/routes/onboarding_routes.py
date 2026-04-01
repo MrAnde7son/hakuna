@@ -76,11 +76,11 @@ async def get_onboarding_options():
 @router.get("/status")
 async def get_onboarding_status(
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),
 ):
     """Check if onboarding has been completed for the current org."""
-    org_id = org_ids[0] if org_ids else current_user.get("org_id")
+    org_id = org_ids[0] if org_ids else current_user.org_id
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -97,7 +97,7 @@ async def get_onboarding_status(
 @router.post("/recommend")
 async def recommend_packages(
     body: RecommendRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Return recommended packages based on the user's profile and objectives."""
     result = get_recommendations(
@@ -112,12 +112,12 @@ async def recommend_packages(
 async def apply_onboarding_packages(
     body: ApplyRequest,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),
 ):
     """Apply selected onboarding packages — provisions all entities."""
-    org_id = org_ids[0] if org_ids else current_user.get("org_id")
-    user_id = current_user["id"]
+    org_id = org_ids[0] if org_ids else current_user.org_id
+    user_id = current_user.id
 
     # Use selected_packages if provided, otherwise use all objectives
     objectives = body.selected_packages if body.selected_packages else body.objectives
@@ -149,13 +149,13 @@ async def apply_onboarding_packages(
 @router.get("/domain-info")
 async def lookup_domain_info(
     email: str | None = None,
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """
     Attempt to extract org info from a corporate email domain.
     Returns basic domain info — does NOT call external APIs.
     """
-    target_email = email or current_user.get("email", "")
+    target_email = email or (current_user.email or "")
     if not target_email or "@" not in target_email:
         return {"enriched": False}
 

@@ -635,18 +635,24 @@ def apply_packages(
     # ── Create SLA configs ───────────────────────────────────
     sla_rows = SLA_PRESETS.get(sla_preset, SLA_PRESETS["standard"])
     for sla_data in sla_rows:
+        # Match by org_id first, then fall back to global (org_id=NULL) rows
         existing = db.query(SLAConfig).filter(
             SLAConfig.org_id == org_id,
             SLAConfig.severity == sla_data["severity"],
         ).first()
+        if not existing:
+            existing = db.query(SLAConfig).filter(
+                SLAConfig.org_id.is_(None),
+                SLAConfig.severity == sla_data["severity"],
+            ).first()
         if existing:
-            # Update if already exists
+            existing.org_id = org_id
             existing.days_to_remediate = sla_data["days_to_remediate"]
             existing.warn_days_before = sla_data["warn_days_before"]
             existing.is_enabled = sla_data["is_enabled"]
         else:
             db.add(SLAConfig(org_id=org_id, **sla_data))
-            created["sla_configs"] += 1
+        created["sla_configs"] += 1
 
     # ── Create campaigns ─────────────────────────────────────
     for cmp_id in campaign_ids:
