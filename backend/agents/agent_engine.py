@@ -982,6 +982,11 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
         # Parse response
         assistant_content = []
         function_calls = []
+        candidates = getattr(response, "candidates", None)
+        if not candidates or not candidates[0].content or not candidates[0].content.parts:
+            run.output = "Gemini returned an empty response (possibly blocked by safety filters)."
+            run.status = "error"
+            break
         for part in response.candidates[0].content.parts:
             if part.text:
                 assistant_content.append({"type": "text", "text": part.text})
