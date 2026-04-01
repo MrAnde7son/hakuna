@@ -1,17 +1,19 @@
 import { useState, useRef } from 'react'
+import { useParams } from 'react-router-dom'
 import ReportBuilder from './ReportBuilder.jsx'
 import FirstScanOnboarding from '../onboarding/FirstScanOnboarding.jsx'
 import { useScan } from '../../App.jsx'
 
 export default function Reports() {
-  const { scans, scansLoaded } = useScan()
+  const { scans, scansLoaded, scansFailed } = useScan()
+  const { reportId } = useParams()
   // Track whether we started in onboarding mode — set once, never flipped back by refreshScans()
   const initializedRef = useRef(false)
   const [onboardingMode, setOnboardingMode] = useState(false)
 
   if (scansLoaded && !initializedRef.current) {
     initializedRef.current = true
-    if (scans.length === 0) setOnboardingMode(true)
+    if (scans.length === 0 && !scansFailed && !reportId) setOnboardingMode(true)
   }
 
   if (!scansLoaded) return (

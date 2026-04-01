@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   X, Send, Plus, Trash2, MessageSquare, Bot, Loader2,
@@ -217,9 +218,67 @@ function getPageLabel(path) {
   return null
 }
 
+// ── Human-readable filter labels for context injection ──────────────
+const FILTER_LABELS = {
+  // Findings
+  severity: 'Severity', family: 'Plugin family', exploit: 'Has exploit', has_exploit: 'Has exploit',
+  group: 'Group by', asset_id: 'Asset ID', sla_status: 'SLA status',
+  effort_level: 'Effort level', cve: 'CVE', is_kev: 'CISA KEV',
+  ransomware: 'Ransomware-linked', trending: 'Trending', has_ttps: 'Has TTPs',
+  tactic: 'MITRE tactic', technique_id: 'MITRE technique', threat_group_id: 'Threat group',
+  workflow_status: 'Workflow status', has_exception: 'Has exception',
+  has_ticket: 'Has ticket', ticket_status: 'Ticket status',
+  control_status: 'Control status', product: 'Product', cpe: 'CPE', source: 'Source',
+  // Assets
+  env: 'Environment', criticality: 'Criticality', minRisk: 'Min risk score',
+  maxRisk: 'Max risk score', minCritical: 'Min critical findings',
+  minHigh: 'Min high findings', serverRole: 'Server role', minSources: 'Min sources',
+  // Shared
+  search: 'Search', sort: 'Sort by', order: 'Sort order', page: 'Page',
+  // Remediation
+  effort: 'Effort', owner: 'Owner', min_severity: 'Min severity',
+  root_cause: 'Root cause', highlight: 'Highlighted solution',
+  // Inventory
+  tab: 'Tab', asset_name: 'Asset name',
+}
+
+function describeActiveFilters(searchStr) {
+  if (!searchStr) return null
+  const params = new URLSearchParams(searchStr)
+  const parts = []
+  for (const [key, value] of params.entries()) {
+    if (!value) continue
+    if (key === 'page' && value === '1') continue
+    const label = FILTER_LABELS[key] || key
+    parts.push(`${label}: ${value}`)
+  }
+  return parts.length > 0 ? parts.join(', ') : null
+}
+
+// ── App route map for copilot link generation ───────────────────────
+const APP_ROUTES_CONTEXT = `
+Available app pages and their URL query parameters:
+- /findings — Findings list. Filters: severity (Critical|High|Medium|Low|Info), search, family, exploit (true), sla_status (breached|at_risk|on_track), effort_level (low|medium|high), cve, is_kev (true), ransomware (true), trending (true), has_ttps (true), tactic, technique_id, threat_group_id, workflow_status, has_exception (true|false), has_ticket (true|false), ticket_status, control_status, product, cpe, source, asset_id, group (solution|family|asset), sort, order (asc|desc), page
+- /findings/:id — Finding detail page
+- /assets — Asset Inventory. Filters: search, env, criticality (critical|high|medium|low), minRisk, maxRisk, minCritical, minHigh, serverRole, source, minSources, sort, order, page
+- /assets/:id — Asset detail page
+- /campaigns — Campaigns list
+- /campaigns/:id — Campaign detail
+- /inventory — Software Inventory. Params: tab, asset_id, asset_name
+- /threat-intel — Threat Intelligence (tabs: overview, cves, groups, campaigns, ttps)
+- /aggregated-solutions — Aggregated Solutions. Filters: root_cause, sort, highlight
+- /workflows — Workflows list
+- /workflows/:id — Workflow builder
+- /agents — AI Agents
+- /tags — Tag Manager
+- / — Dashboard / Reports
+
+When suggesting navigation, provide markdown links like: [View critical findings](/findings?severity=Critical)
+When referencing currently filtered data, acknowledge the active filters.`
+
 // ── Markdown components (matches AgentBuilder pattern) ──────────────
 
-const mdComponents = {
+const baseMdComponents = {
   h1: ({ children }) => <h1 style={{ fontSize: 16, fontWeight: 700, margin: '12px 0 6px', borderBottom: '1px solid var(--border)', paddingBottom: 4 }}>{children}</h1>,
   h2: ({ children }) => <h2 style={{ fontSize: 14, fontWeight: 700, margin: '10px 0 4px', color: 'var(--accent)' }}>{children}</h2>,
   h3: ({ children }) => <h3 style={{ fontSize: 13, fontWeight: 600, margin: '8px 0 3px' }}>{children}</h3>,
@@ -460,7 +519,7 @@ function TokenUsageBar({ usage }) {
 
 // ── Main Panel ──────────────────────────────────────────────────────
 
-export default function CopilotPanel({ open, onClose, currentPath }) {
+export default function CopilotPanel({ open, onClose, currentPath, currentSearch }) {
   const { t } = useTranslation()
   const [conversations, setConversations] = useState([])
   const [activeConv, setActiveConv] = useState(null)
@@ -480,6 +539,30 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
   const abortRef = useRef(null)
+  const navigate = useNavigate()
+
+  // Markdown components with SPA-aware link handling for internal routes
+  const mdComponents = useMemo(() => ({
+    ...baseMdComponents,
+    a: ({ href, children }) => {
+      const isInternal = href && href.startsWith('/')
+      if (isInternal) {
+        return (
+          <a
+            href={href}
+            onClick={(e) => {
+              e.preventDefault()
+              navigate(href)
+            }}
+            style={{ color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer' }}
+          >
+            {children}
+          </a>
+        )
+      }
+      return <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>{children}</a>
+    },
+  }), [navigate])
 
   // Load conversations, suggested prompts, and token usage on open
   useEffect(() => {
@@ -580,14 +663,21 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
     let contextPrefix = ''
     if (pageLabel) {
       contextPrefix = `[User is currently viewing: ${pageLabel}${entityId ? ` (ID: ${entityId})` : ''}]`
+      // Add active filter context from URL search params
+      const filterDesc = describeActiveFilters(currentSearch)
+      if (filterDesc) {
+        contextPrefix += `\n[Active filters: ${filterDesc}]`
+        contextPrefix += `\n[Current URL: ${currentPath}${currentSearch}]`
+      }
       // Add tool hints for detail pages so the agent knows which tool to call
       if (entityId) {
         if (currentPath.startsWith('/workflows/')) contextPrefix += `\n[Use get_workflow_detail with workflow_id=${entityId} to answer questions about this workflow]`
         else if (currentPath.startsWith('/findings/')) contextPrefix += `\n[Use get_finding_detail with finding_id=${entityId} to answer questions about this finding]`
         else if (currentPath.startsWith('/assets/')) contextPrefix += `\n[Use get_asset_profile with asset_id=${entityId} to answer questions about this asset]`
         else if (currentPath.startsWith('/campaigns/')) contextPrefix += `\n[Use query_findings with campaign context to answer questions about this campaign]`
+        else if (currentPath.startsWith('/reports/')) contextPrefix += `\n[This is a saved report/dashboard. There is no report lookup tool — use query_findings, get_top_risky_assets, get_exploit_findings, get_quick_wins, get_sla_status, and other analysis tools to answer questions about the organization's security posture. Do NOT attempt to fetch a report by ID.]`
       }
-      contextPrefix += '\n\n'
+      contextPrefix += `\n${APP_ROUTES_CONTEXT}\n\n`
     }
     const enrichedMsg = contextPrefix + msg
 
@@ -975,7 +1065,9 @@ export default function CopilotPanel({ open, onClose, currentPath }) {
                 <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Security Copilot</div>
                 <div style={{ color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.5, maxWidth: 320 }}>
                   {getPageLabel(currentPath)
-                    ? <>You're on <strong style={{ color: 'var(--text)' }}>{getPageLabel(currentPath)}</strong>. Ask me anything about what you see, or try a suggestion below.</>
+                    ? <>You're on <strong style={{ color: 'var(--text)' }}>{getPageLabel(currentPath)}</strong>
+                      {describeActiveFilters(currentSearch) && <> with filters: <em style={{ color: 'var(--text)' }}>{describeActiveFilters(currentSearch)}</em></>}
+                      . Ask me anything about what you see, or try a suggestion below.</>
                     : 'Your autonomous security agent. It queries your scan data, analyzes risk, creates campaigns, opens tickets, and notifies your team — all in one conversation.'
                   }
                 </div>

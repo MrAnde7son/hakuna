@@ -11,7 +11,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case, distinct
 from models.models import (
-    Asset, Finding, Scan,
+    Asset, Finding, Scan, User,
     InventoryUser, InventoryGroup, InventoryService, InventoryNetConn,
     InventoryPatch, InventoryLoggedOn, InventoryScheduledTask,
     InventorySoftware, InventorySecurityControl, InventoryCertificate,
@@ -23,6 +23,7 @@ from models.models import (
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
     Agent, AgentSchedule,
 )
+from services.ownership_inference import resolve_finding_owner
 from models.threat_intel_models import (
     ThreatGroup, ThreatGroupTTP, TTP, ThreatCVE, ThreatCampaign,
 )
@@ -284,8 +285,11 @@ def query_findings(db: Session, params: dict):
 
     limit = min(params.get("limit", 50), 200)
     rows = q.limit(limit).all()
-    return [
-        {
+    results = []
+    for f in rows:
+        asset = f.asset if f.asset_id else None
+        owner = resolve_finding_owner(f, asset, db)
+        results.append({
             "id": f.id, "plugin_id": f.plugin_id, "plugin_name": f.plugin_name,
             "severity": f.severity, "severity_label": f.severity_label,
             "cvss3": f.cvss3_score, "vpr": f.vpr_score,
@@ -294,10 +298,14 @@ def query_findings(db: Session, params: dict):
             "port": f.port, "sla_status": f.sla_status,
             "exploit_available": f.exploit_available, "is_kev": f.is_kev,
             "workflow_status": f.workflow_status,
+            "workflow_assigned_to": f.workflow_assigned_to,
+            "owner_name": owner.get("owner_name"),
+            "owner_role": owner.get("owner_role"),
+            "owner_team": owner.get("owner_team"),
+            "ownership_source": owner.get("source"),
             "solution": (f.solution or "")[:500],
-        }
-        for f in rows
-    ]
+        })
+    return results
 
 
 @agent_tool(
@@ -1554,6 +1562,134 @@ def create_campaign(db: Session, params: dict):
         added += 1
     db.commit()
     return {"campaign_id": campaign.id, "name": campaign.name, "findings_added": added}
+
+
+@agent_tool(
+    "list_campaigns",
+    "List remediation campaigns with their status, owner, and finding counts. "
+    "WHEN TO CALL: When you need to see existing campaigns, check campaign progress, or find campaigns for a specific scan.",
+    {
+        "scan_id": {"type": "integer", "description": "Filter campaigns by scan ID (optional)"},
+        "status": {"type": "string", "description": "Filter by status: draft, active, completed, paused (optional)"},
+        "limit": {"type": "integer", "description": "Max results (default 50, max 200)"},
+    },
+)
+def list_campaigns(db: Session, params: dict):
+    org_id = params.get("_org_id")
+    org_ids = params.get("_org_ids", [org_id] if org_id else [])
+    q = db.query(Campaign).filter(Campaign.org_id.in_(org_ids))
+
+    if params.get("scan_id"):
+        q = q.filter((Campaign.scan_id == params["scan_id"]) | (Campaign.scan_id == None))
+    if params.get("status"):
+        q = q.filter(Campaign.status == params["status"])
+
+    limit = min(params.get("limit", 50), 200)
+    campaigns = q.order_by(Campaign.created_at.desc()).limit(limit).all()
+
+    owner_ids = {c.owner_id for c in campaigns if c.owner_id}
+    owners = {u.id: u for u in db.query(User).filter(User.id.in_(owner_ids)).all()} if owner_ids else {}
+
+    return [
+        {
+            "id": c.id,
+            "name": c.name,
+            "description": c.description,
+            "status": c.status,
+            "scan_id": c.scan_id,
+            "finding_count": c.finding_count,
+            "owner_id": c.owner_id,
+            "owner_name": (owners[c.owner_id].display_name or owners[c.owner_id].email) if c.owner_id and c.owner_id in owners else None,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "last_run_at": c.last_run_at.isoformat() if c.last_run_at else None,
+        }
+        for c in campaigns
+    ]
+
+
+@agent_tool(
+    "get_campaign",
+    "Get detailed campaign information including findings grouped by owner with ownership resolution. "
+    "WHEN TO CALL: When you need to see who owns findings in a campaign, check remediation progress by owner, or review campaign details.",
+    {
+        "campaign_id": {"type": "integer", "description": "Campaign ID to retrieve"},
+    },
+)
+def get_campaign(db: Session, params: dict):
+    campaign_id = params.get("campaign_id")
+    if not campaign_id:
+        return {"error": "campaign_id is required"}
+
+    org_id = params.get("_org_id")
+    org_ids = params.get("_org_ids", [org_id] if org_id else [])
+    campaign = db.query(Campaign).filter(
+        Campaign.id == campaign_id,
+        Campaign.org_id.in_(org_ids),
+    ).first()
+    if not campaign:
+        return {"error": "Campaign not found"}
+
+    owner = db.query(User).filter(User.id == campaign.owner_id).first() if campaign.owner_id else None
+
+    # Build findings with ownership resolution
+    status_counts = {"open": 0, "in_progress": 0, "resolved": 0, "wont_fix": 0}
+    owner_groups = {}
+    for cf in campaign.findings:
+        f = cf.finding
+        if f is None:
+            continue
+        asset = f.asset if f else None
+        s = cf.status or "open"
+        status_counts[s] = status_counts.get(s, 0) + 1
+
+        # Resolve ownership: campaign override > full resolution chain
+        if cf.owner_role:
+            owner_key = cf.owner_role
+            o_name = cf.owner_name or cf.owner_role
+            o_role = cf.owner_role
+            o_team = cf.team
+        elif f:
+            resolved = resolve_finding_owner(f, asset, db)
+            o_role = resolved.get("owner_role") or "Unassigned"
+            o_name = resolved.get("owner_name") or o_role
+            owner_key = o_role
+            o_team = resolved.get("owner_team")
+        else:
+            owner_key = "Unassigned"
+            o_name = "Unassigned"
+            o_role = "Unassigned"
+            o_team = None
+
+        if owner_key not in owner_groups:
+            owner_groups[owner_key] = {
+                "owner_name": o_name, "owner_role": o_role, "team": o_team,
+                "findings": [], "open": 0, "resolved": 0,
+            }
+        grp = owner_groups[owner_key]
+        grp["findings"].append({
+            "id": f.id, "plugin_name": f.plugin_name, "severity": f.severity,
+            "priority_score": f.priority_score, "campaign_status": cf.status,
+            "workflow_status": f.workflow_status,
+        })
+        if s == "resolved":
+            grp["resolved"] += 1
+        elif s == "open":
+            grp["open"] += 1
+
+    total_findings = sum(len(g["findings"]) for g in owner_groups.values())
+    return {
+        "id": campaign.id,
+        "name": campaign.name,
+        "description": campaign.description,
+        "status": campaign.status,
+        "scan_id": campaign.scan_id,
+        "owner_name": (owner.display_name or owner.email) if owner else None,
+        "finding_count": total_findings,
+        "status_counts": status_counts,
+        "created_at": campaign.created_at.isoformat() if campaign.created_at else None,
+        "last_run_at": campaign.last_run_at.isoformat() if campaign.last_run_at else None,
+        "owner_groups": list(owner_groups.values()),
+    }
 
 
 @agent_tool(
