@@ -710,8 +710,8 @@ function CopilotButton({ onClick }) {
   return (
     <button
       onClick={onClick}
-      title="Security Copilot Agent"
-      aria-label="Security Copilot Agent"
+      title="Neo AI Agent"
+      aria-label="Neo AI Agent"
       style={{
         position: 'fixed', bottom: 20, right: 20, zIndex: 90,
         width: 48, height: 48, borderRadius: 14,

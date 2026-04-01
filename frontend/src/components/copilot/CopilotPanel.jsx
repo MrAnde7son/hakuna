@@ -1021,7 +1021,7 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
         }}>
           <Bot size={20} style={{ color: 'var(--accent)' }} />
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontWeight: 700, fontSize: 15 }}>Security Copilot</span>
+            <span style={{ fontWeight: 700, fontSize: 15 }}>Neo AI</span>
             <span style={{
               fontSize: 9, color: 'var(--accent)', fontWeight: 700, letterSpacing: 0.5,
               background: 'rgba(var(--accent-rgb, 99,102,241), 0.1)',
@@ -1261,7 +1261,7 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
                 <Bot size={28} style={{ color: 'var(--accent)' }} />
               </div>
               <div style={{ textAlign: 'center' }}>
-                <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Security Copilot</div>
+                <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Neo AI</div>
                 <div style={{ color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.5, maxWidth: 320 }}>
                   {getPageLabel(currentPath, currentSearch)
                     ? <>You're on <strong style={{ color: 'var(--text)' }}>{getPageLabel(currentPath, currentSearch)}</strong>
