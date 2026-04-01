@@ -942,6 +942,7 @@ function AppShell() {
   const [activeScanId, setActiveScanId] = useState(null)
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [scansLoaded, setScansLoaded] = useState(false)
+  const [scansFailed, setScansFailed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [copilotOpen, setCopilotOpen] = useState(false)
   const [cmdkOpen, setCmdkOpen] = useState(false)
@@ -965,7 +966,7 @@ function AppShell() {
     getScans().then(data => {
       setScans(data)
       setScansLoaded(true)
-    }).catch(() => { setScansLoaded(true) })
+    }).catch(() => { setScansFailed(true); setScansLoaded(true) })
   }, [])
 
   // Close mobile drawer on route change
@@ -976,12 +977,13 @@ function AppShell() {
   const refreshScans = () => {
     getScans().then(data => {
       setScans(data)
+      setScansFailed(false)
       setScansLoaded(true)
     }).catch(() => {})
   }
 
   return (
-    <ScanContext.Provider value={{ activeScanId, setActiveScanId, scans, scansLoaded, refreshScans }}>
+    <ScanContext.Provider value={{ activeScanId, setActiveScanId, scans, scansLoaded, scansFailed, refreshScans }}>
       <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-muted)' }}>
         {/* Mobile backdrop overlay */}
         {isMobile && mobileOpen && (
@@ -1101,7 +1103,7 @@ function AppShell() {
         <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} />
         <CopilotButton onClick={() => setCopilotOpen(true)} />
         <Suspense fallback={null}>
-          <CopilotPanel open={copilotOpen} onClose={() => setCopilotOpen(false)} currentPath={location.pathname} />
+          <CopilotPanel open={copilotOpen} onClose={() => setCopilotOpen(false)} currentPath={location.pathname} currentSearch={location.search} />
         </Suspense>
       </div>
     </ScanContext.Provider>
