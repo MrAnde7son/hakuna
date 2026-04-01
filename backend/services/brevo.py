@@ -174,6 +174,45 @@ def send_email_verification(to: str, display_name: str, token: str) -> None:
     send_email(to, subject, body_text, body_html)
 
 
+def send_user_invite(to: str, display_name: str, org_name: str, token: str) -> None:
+    """Send an invite email to a new user so they can set their password."""
+    activate_url = f"{APP_URL}/reset-password?token={token}"
+    subject = f"You've been invited to {org_name} on Hakuna"
+
+    body_text = (
+        f"Hello {display_name},\n\n"
+        f"You've been invited to join {org_name} on Hakuna.\n\n"
+        f"Click the link below to set your password and activate your account (expires in 24 hours):\n"
+        f"{activate_url}\n\n"
+        f"— The Hakuna Team"
+    )
+
+    body_html = f"""<html>
+<body style="font-family:sans-serif;color:#1a1a1a;max-width:480px;margin:auto;padding:32px">
+  <h2 style="margin-bottom:8px">You've been invited to Hakuna</h2>
+  <p>Hello <strong>{display_name}</strong>,</p>
+  <p>You've been invited to join <strong>{org_name}</strong> on Hakuna's vulnerability management platform.</p>
+  <p style="margin:24px 0">
+    <a href="{activate_url}"
+       style="background:#590202;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">
+      Set Password &amp; Get Started
+    </a>
+  </p>
+  <p style="font-size:13px;color:#71717a">
+    This link expires in 24 hours. If you didn't expect this, you can safely ignore this email.
+  </p>
+  <p style="font-size:13px;color:#71717a">
+    Or copy and paste this URL into your browser:<br/>
+    <a href="{activate_url}" style="color:#590202">{activate_url}</a>
+  </p>
+  <hr style="border:none;border-top:1px solid #e4e4e7;margin:24px 0"/>
+  <p style="font-size:12px;color:#a1a1aa">The Hakuna Team</p>
+</body>
+</html>"""
+
+    send_email(to, subject, body_text, body_html)
+
+
 def send_client_invite(to: str, mssp_org_name: str, invite_url: str, client_org_name: str = None) -> None:
     """Send an MSSP client onboarding invite email."""
     subject = f"You've been invited to join {mssp_org_name} on Hakuna"

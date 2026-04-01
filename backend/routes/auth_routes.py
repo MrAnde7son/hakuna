@@ -48,7 +48,7 @@ class InviteRequest(BaseModel):
     email: str
     display_name: Optional[str] = None
     role: str = "analyst"  # org_admin | analyst | viewer
-    password: str  # Initial password (in prod, use invite token + email flow)
+    password: Optional[str] = None  # If omitted, sends activation email instead
 
 class CreateOrgRequest(BaseModel):
     name: str
@@ -514,34 +514,66 @@ async def invite_user(
     user: User = Depends(require_role("superadmin", "org_admin")),
     db: Session = Depends(get_db),
 ):
-    """Invite a new user to the current user's organization."""
+    """Invite a new user to the current user's organization.
+
+    If password is provided, user is created with that password.
+    If password is omitted, an activation email is sent so the user can set their own password.
+    """
+    from services.brevo import send_user_invite, is_configured as brevo_configured
+
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(400, "Email already registered")
 
     if body.role not in ("org_admin", "analyst", "viewer", "custom"):
         raise HTTPException(400, "Invalid role. Use: org_admin, analyst, viewer, custom")
 
-    if len(body.password) < 8:
+    if body.password and len(body.password) < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
 
-    new_user = User(
+    if not body.password and not brevo_configured():
+        raise HTTPException(400, "Email service not configured. Please provide an initial password.")
+
+    org = db.query(Organization).filter(Organization.id == user.org_id).first()
+    display_name = body.display_name or body.email.split("@")[0]
+
+    user_kwargs = dict(
         email=body.email,
-        hashed_password=hash_password(body.password),
-        display_name=body.display_name or body.email.split("@")[0],
+        display_name=display_name,
         org_id=user.org_id,
         role=body.role,
     )
+
+    email_sent = False
+    if body.password:
+        user_kwargs["hashed_password"] = hash_password(body.password)
+    else:
+        # Generate unusable placeholder password and activation token
+        token = secrets.token_urlsafe(32)
+        user_kwargs["hashed_password"] = hash_password(secrets.token_hex(32))
+        user_kwargs["password_reset_token"] = token
+        user_kwargs["password_reset_expires"] = datetime.utcnow() + timedelta(hours=24)
+
+    new_user = User(**user_kwargs)
     db.add(new_user)
     db.flush()
     log_audit(db, "create", "user", new_user.id,
               entity_name=new_user.email,
               changes={"email": new_user.email, "role": new_user.role, "display_name": new_user.display_name},
               actor=user)
+
+    if not body.password:
+        try:
+            send_user_invite(body.email, display_name, org.name if org else "your organization", token)
+            email_sent = True
+        except Exception as e:
+            logger.error(f"Failed to send invite email to {body.email}: {e}")
+
     db.commit()
     db.refresh(new_user)
 
-    org = db.query(Organization).filter(Organization.id == user.org_id).first()
-    return _user_response(new_user, org)
+    result = _user_response(new_user, org)
+    result["invite_email_sent"] = email_sent
+    return result
 
 
 @router.get("/users")

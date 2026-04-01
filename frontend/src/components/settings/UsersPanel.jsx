@@ -81,9 +81,11 @@ export default function UsersPanel() {
     setError('')
     setLoading(true)
     try {
-      const newUser = await authInviteUser(inviteForm)
+      const payload = { ...inviteForm }
+      if (!payload.password) delete payload.password
+      const newUser = await authInviteUser(payload)
       setUsers(prev => [newUser, ...prev])
-      toast.success('User invited')
+      toast.success(newUser.invite_email_sent ? 'Activation email sent to user' : 'User invited')
       setShowInvite(false)
       setInviteForm({ email: '', display_name: '', role: 'analyst', password: '' })
     } catch (err) {
@@ -173,8 +175,8 @@ export default function UsersPanel() {
             </select>
           </div>
           <div>
-            <label style={{ fontSize: 12, fontWeight: 500 }}>Initial Password *</label>
-            <input type="password" value={inviteForm.password} onChange={e => setInviteForm(p => ({ ...p, password: e.target.value }))} required minLength={8} style={inputStyle} />
+            <label style={{ fontSize: 12, fontWeight: 500 }}>Initial Password</label>
+            <input type="password" value={inviteForm.password} onChange={e => setInviteForm(p => ({ ...p, password: e.target.value }))} minLength={8} style={inputStyle} placeholder="Leave empty to send activation email" />
           </div>
           <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button type="button" onClick={() => setShowInvite(false)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', fontSize: 13, cursor: 'pointer' }}>Cancel</button>
