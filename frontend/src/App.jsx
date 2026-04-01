@@ -59,7 +59,7 @@ import SubscriptionBanner from './components/billing/SubscriptionBanner.jsx'
 import GettingStartedPanel from './components/onboarding/GettingStartedPanel.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
 import NotificationBell from './components/notifications/NotificationBell.jsx'
-import { getScans, setOrgContext, authUpdateLocale, getFindings, getAssets, getCampaigns } from './api.js'
+import { getScans, setOrgContext, authUpdateLocale, getFindings, getAssets, getCampaigns, getOnboardingStatus } from './api.js'
 import { ErrorBoundary, ToastProvider, ConfirmProvider } from './components/shared/ui.jsx'
 
 // Lazy-loaded route components (code-split per page)
@@ -949,6 +949,18 @@ function AppShell() {
   const [cmdkOpen, setCmdkOpen] = useState(false)
   const isMobile = useIsMobile()
   const location = useLocation()
+  const navigate = useNavigate()
+
+  // Redirect to onboarding if not completed
+  useEffect(() => {
+    getOnboardingStatus()
+      .then(status => {
+        if (status && !status.completed) {
+          navigate('/onboarding', { replace: true })
+        }
+      })
+      .catch(() => {}) // Silently ignore — don't block the app
+  }, [])
   const { t } = useTranslation()
 
   // Cmd+K shortcut
