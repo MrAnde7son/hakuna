@@ -805,16 +805,24 @@ export const backfillTemporalAll = () =>
   request('/scans/backfill-temporal-all', { method: 'POST' })
 
 // Export (CSV / JSON download)
-export const exportDownload = (entity, params = {}, fmt = 'csv') => {
+export const exportDownload = async (entity, params = {}, fmt = 'csv') => {
   const p = new URLSearchParams(Object.entries({ ...params, fmt }).filter(([, v]) => v != null && v !== ''))
-  const url = `${API_ORIGIN}/api/export/${entity}?${p}`
-  // Trigger browser download
+  const headers = {}
+  const token = getStoredToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const orgContext = getOrgContext()
+  if (orgContext) headers['X-Org-Context'] = orgContext
+  const res = await fetch(`${BASE}/export/${entity}?${p}`, { headers })
+  if (!res.ok) throw new Error('Export failed')
+  const blob = await res.blob()
+  const blobUrl = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  a.href = url
-  a.download = ''
+  a.href = blobUrl
+  a.download = `${entity.replace(/\//g, '_')}.${fmt}`
   document.body.appendChild(a)
   a.click()
   a.remove()
+  URL.revokeObjectURL(blobUrl)
 }
 
 // Config Portability (export/import)
