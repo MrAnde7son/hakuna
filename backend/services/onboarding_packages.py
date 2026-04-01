@@ -585,8 +585,8 @@ def apply_packages(
     all_tags.extend(_team_tags(org_id, team_functions))
 
     for tag_data in all_tags:
+        # UniqueConstraint is on (category, value) — not org-scoped
         existing = db.query(Tag).filter(
-            Tag.org_id == org_id,
             Tag.category == tag_data["category"],
             Tag.value == tag_data["value"],
         ).first()
@@ -603,7 +603,6 @@ def apply_packages(
             continue
         # Find or create the tag for this rule
         tag = db.query(Tag).filter(
-            Tag.org_id == org_id,
             Tag.category == rule_def["tag_category"],
             Tag.value == rule_def["tag_value"],
         ).first()
