@@ -305,6 +305,7 @@ function ExceptionModal({ initial, onSave, onClose, saving }) {
               <input
                 value={form.asset_ip}
                 onChange={e => set('asset_ip', e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && canSave) handleSave() }}
                 placeholder="Asset IP address"
                 list="exc-asset-ips"
                 style={inputStyle}
@@ -319,6 +320,7 @@ function ExceptionModal({ initial, onSave, onClose, saving }) {
               <input
                 value={form.scope_tags_str}
                 onChange={e => set('scope_tags_str', e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && canSave) handleSave() }}
                 placeholder="e.g. env:prod, net:dmz"
                 list="exc-tag-labels"
                 style={inputStyle}
@@ -389,6 +391,7 @@ function ExceptionModal({ initial, onSave, onClose, saving }) {
             <input
               value={form.approved_by}
               onChange={e => set('approved_by', e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && canSave) handleSave() }}
               placeholder="Name or email"
               style={inputStyle}
             />

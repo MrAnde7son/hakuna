@@ -82,7 +82,7 @@ function OwnershipRuleForm({ rule, onSave, onCancel }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px', gap: 10 }}>
         <div>
           <label style={labelStyle}>Rule name</label>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Assign DMZ assets to SecOps" style={inputStyle} />
+          <input value={name} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="e.g. Assign DMZ assets to SecOps" style={inputStyle} />
         </div>
         <div>
           <label style={labelStyle}>Priority</label>
@@ -124,11 +124,11 @@ function OwnershipRuleForm({ rule, onSave, onCancel }) {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <div>
             <label style={labelStyle}>Owner name</label>
-            <input value={ownerName} onChange={e => setOwnerName(e.target.value)} placeholder="e.g. John Smith" style={inputStyle} />
+            <input value={ownerName} onChange={e => setOwnerName(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="e.g. John Smith" style={inputStyle} />
           </div>
           <div>
             <label style={labelStyle}>Owner email</label>
-            <input value={ownerEmail} onChange={e => setOwnerEmail(e.target.value)} placeholder="e.g. john@company.com" style={inputStyle} />
+            <input value={ownerEmail} onChange={e => setOwnerEmail(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="e.g. john@company.com" style={inputStyle} />
           </div>
           <div>
             <label style={labelStyle}>Role / team type</label>
@@ -139,12 +139,12 @@ function OwnershipRuleForm({ rule, onSave, onCancel }) {
           </div>
           <div>
             <label style={labelStyle}>Team</label>
-            <input value={team} onChange={e => setTeam(e.target.value)} placeholder="e.g. Infrastructure" style={inputStyle} />
+            <input value={team} onChange={e => setTeam(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="e.g. Infrastructure" style={inputStyle} />
           </div>
         </div>
         <div style={{ marginTop: 10 }}>
           <label style={labelStyle}>Notes</label>
-          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional note added to ownership record" style={inputStyle} />
+          <input value={notes} onChange={e => setNotes(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="Optional note added to ownership record" style={inputStyle} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
           <input type="checkbox" id="overwrite" checked={overwrite} onChange={e => setOverwrite(e.target.checked)} style={{ cursor: 'pointer' }} />

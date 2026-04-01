@@ -5,7 +5,7 @@ import json
 import asyncio
 import os
 from typing import Optional, List, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
@@ -632,6 +632,14 @@ def list_runs(agent_id: int, limit: int = 20, db: Session = Depends(get_db)):
         .limit(limit)
         .all()
     )
+    # Auto-expire stale "running" runs (stuck due to disconnected streams)
+    stale_cutoff = datetime.utcnow() - timedelta(minutes=10)
+    for r in runs:
+        if r.status == "running" and r.created_at and r.created_at < stale_cutoff:
+            r.status = "failed"
+            r.error = "Run timed out (stream disconnected)"
+            r.finished_at = datetime.utcnow()
+    db.commit()
     return [_run_to_dict(r, include_trace=False) for r in runs]
 
 

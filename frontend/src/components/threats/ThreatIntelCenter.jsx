@@ -628,6 +628,7 @@ function AdvisoriesPanel({ onSearchCve }) {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); fetchAdvisories() } }}
             placeholder={t('threats.searchAdvisories')}
             style={{
               background: 'var(--bg-card)', border: '1px solid var(--border)',
@@ -784,6 +785,7 @@ function NewsroomTab({ cves, loading, onSearchCve }) {
             <input
               value={search}
               onChange={e => { setSearch(e.target.value); setPage(0) }}
+              onKeyDown={e => { if (e.key === 'Enter') e.preventDefault() }}
               placeholder={t('threats.searchCve')}
               style={{
                 width: '100%', boxSizing: 'border-box',
@@ -1182,6 +1184,7 @@ function CveIntelTab({ initialSearch = '', initialKevOnly = false, initialMinEps
         <input
           value={search}
           onChange={e => { setSearch(e.target.value); setPage(0) }}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); fetchCves() } }}
           placeholder={t('threats.searchCveKeyword')}
           style={{
             background: 'none', border: 'none', outline: 'none',
@@ -1746,6 +1749,7 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); fetchGroups() } }}
           placeholder={t('threats.searchThreatGroups')}
           style={{
             background: 'none', border: 'none', outline: 'none',
@@ -1907,6 +1911,7 @@ function ProductsTab() {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') e.preventDefault() }}
             placeholder="Search products..."
             style={{
               width: '100%', padding: '7px 12px 7px 30px', borderRadius: 6,

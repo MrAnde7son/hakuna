@@ -228,19 +228,22 @@ export default function AgentBuilder() {
   }
 
   // ── Streaming run ────────────────────────────────────────────────
-  const handleRun = async () => {
-    if (!selected || !runInput.trim() || running) return
+  const handleRun = async (overrideAgent, overrideInput) => {
+    const agent = overrideAgent || selected
+    const rawInput = overrideInput || runInput
+    if (!agent || !rawInput.trim() || running) return
+    if (!overrideAgent && !selected) return
     setRunning(true)
     setTab('runs')
     setActiveRun({ status: 'running', output: '', trace: [] })
     setStreamEvents([])
 
-    const input = runInput.trim()
+    const input = rawInput.trim()
     setRunInput('')
 
     try {
       // Try streaming first
-      const resp = await fetch(`/api/agents/${selected.id}/run/stream`, {
+      const resp = await fetch(`/api/agents/${agent.id}/run/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ input }),
@@ -248,9 +251,9 @@ export default function AgentBuilder() {
 
       if (!resp.ok || !resp.body) {
         // Fall back to non-streaming
-        const result = await runAgent(selected.id, input)
+        const result = await runAgent(agent.id, input)
         setActiveRun(result)
-        getAgentRuns(selected.id).then(setRuns).catch(() => {})
+        getAgentRuns(agent.id).then(setRuns).catch(() => {})
         setRunning(false)
         return
       }
@@ -299,7 +302,7 @@ export default function AgentBuilder() {
         }
       }
 
-      getAgentRuns(selected.id).then(setRuns).catch(() => {})
+      getAgentRuns(agent.id).then(setRuns).catch(() => {})
     } catch (e) {
       setActiveRun({ status: 'failed', error: e.message, trace: [] })
     } finally {
@@ -326,6 +329,7 @@ export default function AgentBuilder() {
 
   return (
     <div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
       <ErrorBanner error={fetchError} onRetry={refresh} onDismiss={() => setFetchError(null)} />
     <div style={{ display: 'flex', gap: 18, height: 'calc(100vh - 72px)' }}>
       {/* Left panel — agent list */}
@@ -481,8 +485,13 @@ export default function AgentBuilder() {
                         onClick={e => {
                           e.stopPropagation()
                           selectAgent(a)
-                          setRunInput(lr.input || '')
-                          setTimeout(() => inputRef.current?.focus(), 100)
+                          const lastInput = lr.input || ''
+                          if (lastInput.trim()) {
+                            handleRun(a, lastInput)
+                          } else {
+                            setRunInput('')
+                            setTimeout(() => inputRef.current?.focus(), 100)
+                          }
                         }}
                         title="Re-run last prompt"
                         style={{
@@ -1730,7 +1739,7 @@ function StatusBadge({ status }) {
   const { Icon, color } = STATUS_ICON[status] || STATUS_ICON.pending
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color, fontSize: 12, fontWeight: 600 }}>
-      <Icon size={14} /> {status}
+      <Icon size={14} style={status === 'running' ? { animation: 'spin 1s linear infinite' } : undefined} /> {status}
     </span>
   )
 }

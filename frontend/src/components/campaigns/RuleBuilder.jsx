@@ -13,6 +13,7 @@
  *   showLogic    bool — show AND/OR toggle (default true)
  *   addLabel     string — label for the Add Condition button (default "Add Condition")
  *   compact      bool — tighter layout for inline use (default false)
+ *   onSubmit     () => void — called when Enter is pressed in a value input
  */
 import React, { useState, useEffect } from 'react'
 import { Plus, Minus } from 'lucide-react'
@@ -40,7 +41,7 @@ const OP_LABELS = {
 }
 
 // ─── Single condition row ─────────────────────────────────────────────────────
-function ConditionRow({ cond, catalog, allConditions, onChange, onRemove, showRemove, compact }) {
+function ConditionRow({ cond, catalog, allConditions, onChange, onRemove, showRemove, compact, onSubmit }) {
   const field    = cond.field || ''
   const meta     = allConditions.find(c => c.field === field) || null
   const availOps = meta?.ops || ['eq']
@@ -122,6 +123,7 @@ function ConditionRow({ cond, catalog, allConditions, onChange, onRemove, showRe
             value={cond.value ?? ''}
             placeholder={meta.placeholder || 'value'}
             onChange={e => onChange({ ...cond, value: e.target.value })}
+            onKeyDown={e => { if (e.key === 'Enter' && onSubmit) { e.preventDefault(); onSubmit() } }}
             style={inp}
           />
         )
@@ -161,6 +163,7 @@ export default function RuleBuilder({
   showLogic = true,
   addLabel = 'Add Condition',
   compact = false,
+  onSubmit = null,
 }) {
   const [catalog, setCatalog] = useState(catalogProp)
 
@@ -241,6 +244,7 @@ export default function RuleBuilder({
           onRemove={() => remove(i)}
           showRemove={conditions.length > 1}
           compact={compact}
+          onSubmit={onSubmit}
         />
       ))}
 

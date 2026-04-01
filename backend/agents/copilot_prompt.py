@@ -46,7 +46,7 @@ discovery, triage, analysis, remediation planning, ticketing, notifications, and
 - `create_campaign` — Start a remediation campaign
 - `create_jira_ticket`, `create_servicenow_ticket` — Open tickets
 - `send_slack_message`, `send_teams_message`, `send_email_alert` — Notify teams
-- `tag_assets`, `bulk_tag_findings`, `create_tag`, `run_auto_tag_rules` — Organize and classify
+- `tag_assets`, `bulk_tag_findings`, `create_tag`, `create_auto_tag_rule`, `run_auto_tag_rules` — Organize and classify
 - `update_finding_status` — Update finding states
 - `create_exception` — Create risk exceptions
 - `send_webhook` — Trigger external webhooks

@@ -383,10 +383,12 @@ export default function AssetInventory() {
     }).catch(() => {})
   }, [searchParams])
 
-  // Advanced rule-engine search
-  const [advancedMode, setAdvancedMode] = useState(false)
-  const [advancedConditions, setAdvancedConditions] = useState([])
-  const [advancedLogic, setAdvancedLogic] = useState('AND')
+  // Advanced rule-engine search — restore from URL params if present
+  const [advancedMode, setAdvancedMode] = useState(() => !!searchParams.get('q'))
+  const [advancedConditions, setAdvancedConditions] = useState(() => {
+    try { return JSON.parse(searchParams.get('q')) || [] } catch { return [] }
+  })
+  const [advancedLogic, setAdvancedLogic] = useState(() => searchParams.get('q_logic') || 'AND')
   const [advancedLoading, setAdvancedLoading] = useState(false)
   const [fetchError, setFetchError] = useState(null)
   const [colVis, setColVis] = useState(() => {
@@ -442,7 +444,7 @@ export default function AssetInventory() {
             .then(results => setBlastMap(Object.assign({}, ...results)))
             .catch(err => console.error('Blast radius bulk fetch failed:', err))
           // Fetch SBOM risk per asset
-          Promise.all(scanIds.map(sid => getSBOMComponents({ scan_id: sid, page_size: 0 })))
+          Promise.all(scanIds.map(sid => getSBOMComponents({ scan_id: sid, page_size: 5000 })))
             .then(results => {
               const riskMap = {}
               for (const data of results) {
@@ -473,6 +475,15 @@ export default function AssetInventory() {
     return () => clearTimeout(debounceRef.current)
   }, [activeScanId, sortBy, sortOrder, tagFilter, tagLogic, filters, advancedMode, page])
 
+  // Auto-run advanced search if restored from URL params
+  const advancedRestoredRef = useRef(false)
+  useEffect(() => {
+    if (advancedMode && advancedConditions.length && !advancedRestoredRef.current) {
+      advancedRestoredRef.current = true
+      runAdvancedSearch()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // EASM sync is intentionally NOT auto-triggered on mount — it runs the full import
   // pipeline (N+1 queries + finalize_scan) and caused 20s+ page loads. Sync is
   // triggered manually or via scheduled tasks instead.
@@ -480,6 +491,13 @@ export default function AssetInventory() {
   const runAdvancedSearch = () => {
     if (!advancedConditions.length) return
     setAdvancedLoading(true)
+    // Sync conditions to URL params
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.set('q', JSON.stringify(advancedConditions))
+      next.set('q_logic', advancedLogic)
+      return next
+    }, { replace: true })
     advancedSearch({
       query: advancedConditions,
       query_logic: advancedLogic,
@@ -500,6 +518,13 @@ export default function AssetInventory() {
     setAdvancedMode(false)
     setAdvancedConditions([])
     setAssets([])
+    // Clear advanced params from URL
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete('q')
+      next.delete('q_logic')
+      return next
+    }, { replace: true })
   }
 
   const toggleSelect = (id) => {
@@ -886,6 +911,7 @@ export default function AssetInventory() {
             onChange={(conds, lgc) => { setAdvancedConditions(conds); setAdvancedLogic(lgc) }}
             showLogic
             addLabel="Add condition"
+            onSubmit={() => advancedConditions.length && runAdvancedSearch()}
           />
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12 }}>
             <Button

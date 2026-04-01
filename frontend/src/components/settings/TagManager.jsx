@@ -132,12 +132,12 @@ function TagForm({ tag, allTags, onSave, onCancel }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <div>
           <label style={labelStyle}>Category</label>
-          <input value={category} onChange={e => setCategory(e.target.value)} list="tag-categories" placeholder="e.g. network" style={inputStyle} />
+          <input value={category} onChange={e => setCategory(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} list="tag-categories" placeholder="e.g. network" style={inputStyle} />
           <datalist id="tag-categories">{categories.map(c => <option key={c} value={c} />)}</datalist>
         </div>
         <div>
           <label style={labelStyle}>Value</label>
-          <input value={value} onChange={e => setValue(e.target.value)} placeholder="e.g. dmz" style={inputStyle} />
+          <input value={value} onChange={e => setValue(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="e.g. dmz" style={inputStyle} />
         </div>
       </div>
 
@@ -165,7 +165,7 @@ function TagForm({ tag, allTags, onSave, onCancel }) {
 
       <div>
         <label style={labelStyle}>Description</label>
-        <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Optional description" style={inputStyle} />
+        <input value={description} onChange={e => setDescription(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="Optional description" style={inputStyle} />
       </div>
 
       {(category || value) && (
@@ -242,7 +242,7 @@ function AutoTagRuleForm({ rule, allTags, onSave, onCancel }) {
 
       <div>
         <label style={labelStyle}>Rule name</label>
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Tag critical findings p0" style={inputStyle} />
+        <input value={name} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="e.g. Tag critical findings p0" style={inputStyle} />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>

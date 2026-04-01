@@ -97,16 +97,16 @@ const CONTEXTUAL_PROMPTS = {
     { text: 'Create a remediation campaign for this asset\'s critical findings', icon: 'target' },
   ],
   '/campaigns': [
-    { text: 'Which campaigns are falling behind schedule?', icon: 'alarm' },
+    { text: 'Show campaign progress and completion percentages', icon: 'alarm' },
     { text: 'Create a new campaign for all critical unresolved findings', icon: 'target' },
-    { text: 'Show campaign completion rates across teams', icon: 'briefcase' },
+    { text: 'Which campaign owners have the most open findings?', icon: 'briefcase' },
     { text: 'Find findings not covered by any campaign', icon: 'shield-alert' },
   ],
   '/campaigns/': [
     { text: 'How is this campaign progressing?', icon: 'clipboard' },
     { text: 'Which findings in this campaign are still open?', icon: 'bug' },
-    { text: 'Notify the team about overdue items in this campaign', icon: 'alarm' },
-    { text: 'Suggest additional findings that should be in this campaign', icon: 'zap' },
+    { text: 'Send a Slack update on this campaign\'s progress', icon: 'alarm' },
+    { text: 'Which owners in this campaign have the most open items?', icon: 'zap' },
   ],
   '/': [
     { text: 'Give me an executive summary of our security posture', icon: 'briefcase' },
@@ -116,9 +116,9 @@ const CONTEXTUAL_PROMPTS = {
   ],
   '/inventory': [
     { text: 'Which software has known CVEs?', icon: 'bug' },
-    { text: 'Show end-of-life software still running in the environment', icon: 'alarm' },
+    { text: 'Show missing patches with the most affected vulnerabilities', icon: 'alarm' },
     { text: 'List the most common software across all assets', icon: 'clipboard' },
-    { text: 'Find assets running outdated versions of critical software', icon: 'shield-alert' },
+    { text: 'Which assets have expiring or self-signed certificates?', icon: 'shield-alert' },
   ],
   '/threat-intel': [
     { text: 'Are any of my findings linked to active threat campaigns?', icon: 'shield-alert' },
@@ -129,19 +129,19 @@ const CONTEXTUAL_PROMPTS = {
   '/aggregated-solutions': [
     { text: 'Which solution would fix the most findings?', icon: 'zap' },
     { text: 'Create a campaign from the top solution group', icon: 'target' },
-    { text: 'Show solutions grouped by effort vs impact', icon: 'briefcase' },
+    { text: 'Which solutions fix the most critical findings?', icon: 'briefcase' },
     { text: 'How many findings would be resolved by patching the top 5 solutions?', icon: 'clipboard' },
   ],
   '/tags': [
     { text: 'Show tag distribution across assets', icon: 'clipboard' },
     { text: 'Which tags have the most critical findings?', icon: 'shield-alert' },
-    { text: 'Suggest auto-tag rules based on current asset patterns', icon: 'zap' },
+    { text: 'Run auto-tag rules and show what was tagged', icon: 'zap' },
   ],
   '/settings': [
     { text: 'Analyze my latest scan upload and summarize what changed', icon: 'clipboard' },
-    { text: 'How many scans have been uploaded this month?', icon: 'briefcase' },
+    { text: 'List all scans and show finding counts by severity', icon: 'briefcase' },
     { text: 'What integrations are configured?', icon: 'globe' },
-    { text: 'Check if all API keys and connections are healthy', icon: 'shield-alert' },
+    { text: 'Show the last integration sync status for each connector', icon: 'shield-alert' },
   ],
   '/agents': [
     { text: 'Which agents have run recently and what did they find?', icon: 'clipboard' },
@@ -151,9 +151,9 @@ const CONTEXTUAL_PROMPTS = {
   ],
   '/workflows': [
     { text: 'Which workflows are active and what do they automate?', icon: 'clipboard' },
-    { text: 'Create a workflow to auto-assign critical findings to the security team', icon: 'zap' },
     { text: 'Show recent workflow execution history and failures', icon: 'alarm' },
-    { text: 'Suggest a workflow to automate our remediation process', icon: 'target' },
+    { text: 'Are any workflows failing or stuck?', icon: 'bug' },
+    { text: 'What does each workflow trigger on?', icon: 'target' },
   ],
   '/workflows/': [
     { text: 'Explain what this workflow does step by step', icon: 'clipboard' },
@@ -167,9 +167,9 @@ const CONTEXTUAL_PROMPTS = {
     { text: 'What scan formats are supported?', icon: 'target' },
   ],
   '/profile': [
-    { text: 'What permissions does my role have?', icon: 'shield-alert' },
-    { text: 'Show my recent activity and actions', icon: 'clipboard' },
-    { text: 'How many findings have I resolved this month?', icon: 'target' },
+    { text: 'Give me an executive summary of our security posture', icon: 'shield-alert' },
+    { text: 'What are the top risks I should focus on?', icon: 'clipboard' },
+    { text: 'Show SLA breaches across all severity levels', icon: 'target' },
   ],
 }
 

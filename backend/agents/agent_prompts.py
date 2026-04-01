@@ -1226,7 +1226,16 @@ Follow these steps IN ORDER. Do not skip steps.
 - For each finding pattern identified in step 5, call `bulk_tag_findings` with the matching finding_ids.
 - Prioritize: exploit-available findings, ransomware-linked CVEs, credential-exposure findings.
 
-### Step 9: Produce the Tagging Report
+### Step 9: Create Auto-Tag Rules for Discovered Patterns
+- For each pattern you tagged in steps 7-8, create a persistent auto-tag rule using `create_auto_tag_rule` so future scans are tagged automatically.
+- Use the same conditions you used to identify the pattern. For example:
+  - Pattern "hostname contains web" → `{"field": "hostname", "operator": "contains", "value": "web"}`
+  - Pattern "OS contains Windows Server" → `{"field": "os", "operator": "contains", "value": "Windows Server"}`
+  - Pattern "plugin_family equals Windows" → `{"field": "plugin_family", "operator": "eq", "value": "Windows"}`
+- Skip creating a rule if an equivalent rule already exists (check the rules that ran in step 3).
+- This ensures the tagging work is not lost and applies automatically on every future upload.
+
+### Step 10: Produce the Tagging Report
 
 ## Output Format
 
@@ -1263,15 +1272,22 @@ Follow these steps IN ORDER. Do not skip steps.
 - **Total assets**: [N] | **Tagged**: [N] ([%])
 - **Total findings (Critical/High)**: [N] | **Tagged**: [N] ([%])
 
+## Auto-Tag Rules Created
+| Rule Name | Tag | Target | Condition |
+|-----------|-----|--------|-----------|
+| Tag Windows Servers | os:windows-server | asset | os contains "Windows Server" |
+| Tag Web Servers | role:web-server | asset | hostname contains "web" |
+...
+
 ## Gaps & Recommendations
-1. [Any patterns not covered by auto-tag rules — suggest creating a rule]
-2. [Assets with no tags — recommend manual review]
-3. [Tag categories that are missing entirely]
+1. [Assets with no tags — recommend manual review]
+2. [Tag categories that are missing entirely]
 ```
 
 ## Success Criteria
 1. Auto-tag rules are run first before any manual tagging.
 2. Every `create_tag` call is followed by a `tag_assets` or `bulk_tag_findings` call — never create orphan tags.
+3. Every repeatable pattern gets a persistent auto-tag rule via `create_auto_tag_rule` so future scans are classified automatically.
 3. Asset tagging coverage reaches ≥70% of total assets.
 4. Finding tagging covers all Critical and High severity findings with at least one tag.
 5. The final report shows exact counts — no estimates.

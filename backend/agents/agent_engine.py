@@ -489,7 +489,7 @@ def _check_guardrails(agent: Agent, tool_name: str, step: int):
         "create_jira_ticket", "create_servicenow_ticket",
         "send_slack_message", "send_teams_message", "send_email_alert",
         "create_campaign", "create_exception", "create_tag",
-        "run_auto_tag_rules", "send_webhook",
+        "create_auto_tag_rule", "run_auto_tag_rules", "send_webhook",
     }
     if read_only and tool_name in write_tools:
         raise ValueError(f"Tool '{tool_name}' is a write operation but agent is read-only")
@@ -588,7 +588,7 @@ CONFIRMATION_REQUIRED_TOOLS = {
 
 # Tools gated by HITL approval (superset of confirmation-required tools)
 HITL_TOOLS = CONFIRMATION_REQUIRED_TOOLS | {
-    "tag_assets", "bulk_tag_findings", "create_tag", "run_auto_tag_rules",
+    "tag_assets", "bulk_tag_findings", "create_tag", "create_auto_tag_rule", "run_auto_tag_rules",
 }
 
 

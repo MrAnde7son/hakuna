@@ -87,7 +87,7 @@ function SourceForm({ source, onSave, onCancel }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <div>
           <label style={labelStyle}>{t('threats.sourceName')}</label>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. ServiceNow CMDB" style={inputStyle} />
+          <input value={name} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="e.g. ServiceNow CMDB" style={inputStyle} />
         </div>
         <div>
           <label style={labelStyle}>{t('threats.sourceType')}</label>
@@ -107,7 +107,7 @@ function SourceForm({ source, onSave, onCancel }) {
         <>
           <div>
             <label style={labelStyle}>{t('threats.apiUrl')}</label>
-            <input value={apiUrl} onChange={e => setApiUrl(e.target.value)} placeholder="https://your-instance.service-now.com" style={inputStyle} />
+            <input value={apiUrl} onChange={e => setApiUrl(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="https://your-instance.service-now.com" style={inputStyle} />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div>
@@ -121,33 +121,33 @@ function SourceForm({ source, onSave, onCancel }) {
               <>
                 <div>
                   <label style={labelStyle}>Username</label>
-                  <input value={username} onChange={e => setUsername(e.target.value)} style={inputStyle} />
+                  <input value={username} onChange={e => setUsername(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} style={inputStyle} />
                 </div>
                 <div>
                   <label style={labelStyle}>Password</label>
-                  <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder={source ? '(unchanged)' : ''} style={inputStyle} />
+                  <input type="password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder={source ? '(unchanged)' : ''} style={inputStyle} />
                 </div>
               </>
             ) : (
               <div>
                 <label style={labelStyle}>Token</label>
-                <input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder={source ? '(unchanged)' : ''} style={inputStyle} />
+                <input type="password" value={token} onChange={e => setToken(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder={source ? '(unchanged)' : ''} style={inputStyle} />
               </div>
             )}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div>
               <label style={labelStyle}>Asset identifier field</label>
-              <input value={idField} onChange={e => setIdField(e.target.value)} placeholder="ip_address" style={inputStyle} />
+              <input value={idField} onChange={e => setIdField(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="ip_address" style={inputStyle} />
             </div>
             <div>
               <label style={labelStyle}>Tag field</label>
-              <input value={tagField} onChange={e => setTagField(e.target.value)} placeholder="sys_tags" style={inputStyle} />
+              <input value={tagField} onChange={e => setTagField(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="sys_tags" style={inputStyle} />
             </div>
             {type === 'servicenow' && (
               <div>
                 <label style={labelStyle}>CMDB Table</label>
-                <input value={table} onChange={e => setTable(e.target.value)} placeholder="cmdb_ci_computer" style={inputStyle} />
+                <input value={table} onChange={e => setTable(e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="cmdb_ci_computer" style={inputStyle} />
               </div>
             )}
           </div>
@@ -218,7 +218,7 @@ function TagMapRow({ sourceId, map, allTags, onSaved, onDelete }) {
     <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-hover)' }}>
       <td colSpan={4} style={{ padding: 8 }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input value={extTag} onChange={e => setExtTag(e.target.value)} placeholder='External tag (e.g. "network:dmz")' style={{ ...inputStyle, width: 220, fontFamily: 'monospace' }} />
+          <input value={extTag} onChange={e => setExtTag(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && extTag.trim()) handleSave() }} placeholder='External tag (e.g. "network:dmz")' style={{ ...inputStyle, width: 220, fontFamily: 'monospace' }} />
           <ArrowRight size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
           <select value={intTagId} onChange={e => setIntTagId(e.target.value)} style={{ ...inputStyle, width: 200 }}>
             <option value="">— Auto-create from name —</option>

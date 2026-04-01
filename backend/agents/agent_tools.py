@@ -21,7 +21,7 @@ from models.models import (
     IntegrationConfig, AutoTagRule,
     Integration, IntegrationRun,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
-    Agent, AgentSchedule,
+    Agent, AgentRun, AgentSchedule,
 )
 from services.ownership_inference import resolve_finding_owner
 from models.threat_intel_models import (
@@ -128,6 +128,7 @@ def get_openai_tool_schemas(tool_names: list):
         "min_priority": {"type": "number", "description": "Minimum priority score (0-10)"},
         "min_epss": {"type": "number", "description": "Minimum EPSS score (0-1)"},
         "auto_resolved": {"type": "boolean", "description": "Filter auto-resolved findings (fixed in a later scan)"},
+        "not_in_campaign": {"type": "boolean", "description": "If true, only return findings NOT assigned to any campaign"},
         "tags": {"type": "string", "description": "Comma-separated tag filters (e.g. 'env:production,team:devops')"},
         "tag_logic": {"type": "string", "description": "Tag filter logic: 'AND' (default) or 'OR'"},
         "sort_by": {"type": "string", "description": "Sort field (default: 'priority_score'). Options: severity, plugin_name, cvss3_score, effort_level, sla_status, first_seen, last_seen"},
@@ -246,6 +247,11 @@ def query_findings(db: Session, params: dict):
         else:
             q = q.filter(Finding.id.in_(ticket_sub))
 
+    # Campaign membership filter
+    if params.get("not_in_campaign"):
+        campaign_finding_ids = db.query(CampaignFinding.finding_id).subquery()
+        q = q.filter(~Finding.id.in_(campaign_finding_ids))
+
     # SBOM filters
     if params.get("product"):
         q = q.filter(Finding.plugin_name.ilike(f"%{params['product']}%"))
@@ -336,6 +342,8 @@ def query_findings(db: Session, params: dict):
         "device_type": {"type": "string", "description": "Filter by device type: 'server', 'workstation', 'router', 'switch', 'firewall', 'printer', etc."},
         "tags": {"type": "string", "description": "Comma-separated tag filters (e.g. 'env:production,team:devops')"},
         "tag_logic": {"type": "string", "description": "Tag filter logic: 'AND' (default) or 'OR'"},
+        "last_seen_before": {"type": "string", "description": "Filter assets not scanned since this date (ISO format, e.g. '2026-03-01'). Useful for finding stale assets."},
+        "last_seen_after": {"type": "string", "description": "Filter assets scanned after this date (ISO format, e.g. '2026-03-01')"},
         "sort_by": {"type": "string", "description": "Sort field (default: 'risk_score'). Options: hostname, ip, criticality, critical_count, os, environment_tag, first_seen, last_seen"},
         "order": {"type": "string", "description": "Sort order: 'desc' (default) or 'asc'"},
         "limit": {"type": "integer", "description": "Max results (default 50, max 200)"},
@@ -420,6 +428,20 @@ def query_assets(db: Session, params: dict):
     if params.get("is_internet_facing") is not None:
         q = q.filter(Asset.is_internet_facing == params["is_internet_facing"])
 
+    # Last seen date filters
+    if params.get("last_seen_before"):
+        try:
+            cutoff = datetime.fromisoformat(params["last_seen_before"])
+            q = q.filter(Asset.last_seen < cutoff)
+        except (ValueError, TypeError):
+            pass
+    if params.get("last_seen_after"):
+        try:
+            cutoff = datetime.fromisoformat(params["last_seen_after"])
+            q = q.filter(Asset.last_seen >= cutoff)
+        except (ValueError, TypeError):
+            pass
+
     # Tag filter
     if params.get("tags"):
         tag_values = [t.strip() for t in params["tags"].split(",") if t.strip()]
@@ -458,6 +480,7 @@ def query_assets(db: Session, params: dict):
             "is_internet_facing": a.is_internet_facing,
             "critical_count": a.critical_count, "high_count": a.high_count,
             "medium_count": a.medium_count, "low_count": a.low_count,
+            "last_seen": a.last_seen.isoformat() if a.last_seen else None,
         }
         for a in rows
     ]
@@ -657,6 +680,62 @@ def list_tags(db: Session, params: dict):
         {"id": t.id, "category": t.category, "value": t.value, "color": t.color}
         for t in tags
     ]
+
+
+@agent_tool(
+    "get_tag_stats",
+    "Get tag distribution statistics: how many assets and findings each tag covers, "
+    "plus severity breakdown per tag. "
+    "WHEN TO CALL: When the user asks about tag usage, distribution, or which tags have the most critical findings.",
+    {
+        "scan_id": {"type": "integer", "description": "Optional: filter to a specific scan"},
+        "limit": {"type": "integer", "description": "Max tags to return (default 30)"},
+    },
+)
+def get_tag_stats(db: Session, params: dict):
+    org_id = params.get("_org_id")
+    org_ids = params.get("_org_ids", [org_id] if org_id else [])
+
+    # Get all tags with their assignment counts
+    tags = db.query(Tag).all()
+    results = []
+    for tag in tags:
+        # Count assets with this tag
+        asset_q = db.query(func.count(distinct(TagAssignment.asset_id))).filter(
+            TagAssignment.tag_id == tag.id
+        )
+        asset_count = asset_q.scalar() or 0
+        if asset_count == 0:
+            continue
+
+        # Count findings on tagged assets, with severity breakdown
+        tagged_assets = db.query(TagAssignment.asset_id).filter(TagAssignment.tag_id == tag.id).subquery()
+        finding_q = db.query(
+            func.count(Finding.id),
+            func.sum(case((Finding.severity == 4, 1), else_=0)),
+            func.sum(case((Finding.severity == 3, 1), else_=0)),
+            func.sum(case((Finding.severity == 2, 1), else_=0)),
+        ).filter(Finding.asset_id.in_(tagged_assets))
+
+        if params.get("scan_id"):
+            finding_q = finding_q.filter(Finding.scan_id == params["scan_id"])
+
+        row = finding_q.one()
+        results.append({
+            "tag_id": tag.id,
+            "category": tag.category,
+            "value": tag.value,
+            "color": tag.color,
+            "asset_count": asset_count,
+            "finding_count": row[0] or 0,
+            "critical_count": row[1] or 0,
+            "high_count": row[2] or 0,
+            "medium_count": row[3] or 0,
+        })
+
+    results.sort(key=lambda x: x["critical_count"], reverse=True)
+    limit = min(params.get("limit", 30), 100)
+    return results[:limit]
 
 
 @agent_tool(
@@ -1677,6 +1756,19 @@ def get_campaign(db: Session, params: dict):
             grp["open"] += 1
 
     total_findings = sum(len(g["findings"]) for g in owner_groups.values())
+    resolved_count = status_counts.get("resolved", 0)
+    completion_pct = round(resolved_count / total_findings * 100, 1) if total_findings > 0 else 0
+
+    # Per-owner progress summary (without individual findings for overview)
+    owner_progress = [
+        {
+            "owner_name": g["owner_name"], "owner_role": g["owner_role"], "team": g["team"],
+            "total": len(g["findings"]), "open": g["open"], "resolved": g["resolved"],
+            "completion_pct": round(g["resolved"] / len(g["findings"]) * 100, 1) if g["findings"] else 0,
+        }
+        for g in owner_groups.values()
+    ]
+
     return {
         "id": campaign.id,
         "name": campaign.name,
@@ -1685,7 +1777,9 @@ def get_campaign(db: Session, params: dict):
         "scan_id": campaign.scan_id,
         "owner_name": (owner.display_name or owner.email) if owner else None,
         "finding_count": total_findings,
+        "completion_pct": completion_pct,
         "status_counts": status_counts,
+        "owner_progress": owner_progress,
         "created_at": campaign.created_at.isoformat() if campaign.created_at else None,
         "last_run_at": campaign.last_run_at.isoformat() if campaign.last_run_at else None,
         "owner_groups": list(owner_groups.values()),
@@ -1784,6 +1878,48 @@ def bulk_tag_findings(db: Session, params: dict):
             added += 1
     db.commit()
     return {"tagged": added, "tag": f"{tag.category}:{tag.value}"}
+
+
+@agent_tool(
+    "create_auto_tag_rule",
+    "Create a persistent auto-tag rule that automatically applies a tag to assets or findings on every future scan upload. Write operation.",
+    {
+        "name": {"type": "string", "description": "Rule name (e.g. 'Tag Windows Servers')"},
+        "tag_id": {"type": "integer", "description": "ID of the tag to apply when conditions match"},
+        "target_type": {"type": "string", "description": "What to tag: 'asset', 'finding', or 'both'"},
+        "conditions": {"type": "array", "description": "List of condition objects, e.g. [{\"field\": \"os\", \"operator\": \"contains\", \"value\": \"Windows Server\"}]"},
+        "condition_logic": {"type": "string", "description": "How to combine conditions: 'AND' or 'OR' (default: AND)"},
+        "description": {"type": "string", "description": "Optional description of what this rule does"},
+    },
+)
+def create_auto_tag_rule(db: Session, params: dict):
+    tag_id = params.get("tag_id")
+    name = params.get("name")
+    conditions = params.get("conditions", [])
+    if not name:
+        return {"error": "name is required"}
+    if not tag_id:
+        return {"error": "tag_id is required"}
+    if not conditions:
+        return {"error": "conditions are required"}
+
+    tag = db.query(Tag).filter(Tag.id == tag_id).first()
+    if not tag:
+        return {"error": f"Tag {tag_id} not found"}
+
+    rule = AutoTagRule(
+        org_id=params.get("_org_id"),
+        name=name,
+        description=params.get("description"),
+        tag_id=tag_id,
+        target_type=params.get("target_type", "asset"),
+        conditions=conditions,
+        condition_logic=params.get("condition_logic", "AND"),
+        is_enabled=True,
+    )
+    db.add(rule)
+    db.commit()
+    return {"rule_id": rule.id, "name": name, "tag": f"{tag.category}:{tag.value}", "conditions_count": len(conditions)}
 
 
 @agent_tool(
@@ -2486,7 +2622,14 @@ def list_agents_tool(db: Session, params: dict):
     result = []
     for a in agents:
         schedules = db.query(AgentSchedule).filter(AgentSchedule.agent_id == a.id).all()
-        result.append({
+        # Get the most recent run for this agent
+        last_run = (
+            db.query(AgentRun)
+            .filter(AgentRun.agent_id == a.id)
+            .order_by(AgentRun.created_at.desc())
+            .first()
+        )
+        entry = {
             "id": a.id, "name": a.name, "description": a.description,
             "model": a.model, "tools": a.tools,
             "guardrails": a.guardrails,
@@ -2496,8 +2639,57 @@ def list_agents_tool(db: Session, params: dict):
                 "is_enabled": s.is_enabled,
                 "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
             } for s in schedules],
-        })
+        }
+        if last_run:
+            entry["last_run_timestamp"] = last_run.created_at.isoformat() if last_run.created_at else None
+            entry["last_run_status"] = last_run.status
+            entry["last_run_output"] = (last_run.output[:500] if last_run.output else None)
+        result.append(entry)
     return {"agents": result, "count": len(result)}
+
+
+@agent_tool(
+    "get_agent_run",
+    "Get the full output and trace from a specific agent run, or the latest run for an agent. "
+    "WHEN TO CALL: When the user asks to see what an agent found, wants to review agent output, "
+    "or asks about the results of the last agent execution.",
+    {
+        "agent_id": {"type": "integer", "description": "Agent ID to get the latest run for"},
+        "run_id": {"type": "integer", "description": "Specific run ID (if omitted, returns the latest run)"},
+    },
+)
+def get_agent_run(db: Session, params: dict):
+    agent_id = params.get("agent_id")
+    run_id = params.get("run_id")
+
+    if run_id:
+        run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
+    elif agent_id:
+        run = (
+            db.query(AgentRun)
+            .filter(AgentRun.agent_id == agent_id)
+            .order_by(AgentRun.created_at.desc())
+            .first()
+        )
+    else:
+        return {"error": "Either agent_id or run_id is required"}
+
+    if not run:
+        return {"error": "No runs found"}
+
+    agent = db.query(Agent).filter(Agent.id == run.agent_id).first()
+    return {
+        "run_id": run.id,
+        "agent_id": run.agent_id,
+        "agent_name": agent.name if agent else None,
+        "status": run.status,
+        "input": run.input,
+        "output": run.output,
+        "error": run.error,
+        "steps_used": run.steps_used,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+    }
 
 
 @agent_tool(

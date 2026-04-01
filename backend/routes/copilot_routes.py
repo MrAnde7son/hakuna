@@ -335,6 +335,26 @@ _RECOMMENDATION_PROMPT = """Based on the conversation below, suggest exactly 3 s
 - Actionable (lead to a useful next step)
 - Diverse (cover different angles — e.g. drill down, take action, explore related)
 - Short (under 60 characters each)
+- ONLY suggest questions the agent can actually answer using the capabilities listed below
+
+Agent capabilities (only suggest questions that use these):
+- Query/filter findings by severity, status, port, plugin, asset, CVE, tags, SLA, exploit status, campaign membership
+- Query/filter assets by IP, hostname, OS, criticality, tags, last scan date, internet-facing
+- List scans, compare scans, get scan summaries
+- Get finding details, asset profiles
+- List campaigns and get campaign details with completion %, per-owner progress
+- Risk analysis: top risky assets, exploit findings, quick wins, regressions, SLA breaches
+- Remediation grouping, internet-facing risk, owner workload
+- Inventory: users, services, network connections, patches, software, certificates, shares, OS breakdown
+- Threat intel: threat groups, CVEs, campaigns, TTPs, CVE-finding correlation
+- Tag statistics: asset/finding counts per tag, severity breakdown by tag
+- Agent management: list agents, get agent run output, create agents, schedule agents
+- Workflow inspection: list workflows, get workflow details/execution logs
+- Actions: create campaigns, create tickets (Jira/ServiceNow), send notifications (Slack/Teams/Email), tag assets/findings, run auto-tag rules
+- Integration status: list integrations, trigger fetch/push syncs
+- Plugin family statistics
+
+Do NOT suggest questions about: time-series trends over arbitrary periods, prediction/forecasting, creating workflows, user permissions/activity, or health checks on API keys.
 
 Respond ONLY with a JSON array of 3 strings. No other text.
 

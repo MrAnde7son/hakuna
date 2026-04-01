@@ -91,11 +91,11 @@ function TagMappingRow({ mapping, catalog, onSave, onDelete }) {
             ))}
           </select>
           {field === '__custom__' && (
-            <input value={customField} onChange={e => setCustomField(e.target.value)} placeholder="field name" style={{ ...inputStyle, width: 140 }} />
+            <input value={customField} onChange={e => setCustomField(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && effectiveField) handleSave() }} placeholder="field name" style={{ ...inputStyle, width: 140 }} />
           )}
           <ArrowRight size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <input value={prefix} onChange={e => setPrefix(e.target.value)} placeholder="prefix (e.g. env)" style={{ ...inputStyle, width: 140 }} />
+            <input value={prefix} onChange={e => setPrefix(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && effectiveField) handleSave() }} placeholder="prefix (e.g. env)" style={{ ...inputStyle, width: 140 }} />
             <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>:&lt;field value&gt;</span>
           </div>
           <select value={target} onChange={e => setTarget(e.target.value)} style={{ ...inputStyle, width: 130 }}>

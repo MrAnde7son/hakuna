@@ -89,6 +89,30 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+# ─── Simple TTL cache for heavy dashboard endpoints ───
+import time as _time
+
+_endpoint_cache: dict[str, tuple[float, any]] = {}
+_CACHE_TTL = 30  # seconds
+
+def _cache_get(key: str):
+    """Return cached value if still valid, else None."""
+    entry = _endpoint_cache.get(key)
+    if entry and (_time.monotonic() - entry[0]) < _CACHE_TTL:
+        return entry[1]
+    return None
+
+def _cache_set(key: str, value):
+    """Store value in cache with current timestamp."""
+    _endpoint_cache[key] = (_time.monotonic(), value)
+
+def _cache_invalidate_prefix(prefix: str):
+    """Invalidate all cache entries matching a prefix (call after scan upload/delete)."""
+    keys_to_remove = [k for k in _endpoint_cache if k.startswith(prefix)]
+    for k in keys_to_remove:
+        del _endpoint_cache[k]
+
+
 def _is_public_ip(ip_str: str) -> bool:
     """Return True if the IP is a routable public address."""
     if not ip_str:
@@ -1228,6 +1252,7 @@ def _run_scan_ingest(
 
         scan.status = "completed"
         db.commit()
+        _endpoint_cache.clear()
 
     except Exception as e:
         logger.exception(f"Background scan processing failed for scan {scan_id}: {e}")
@@ -1475,6 +1500,7 @@ def delete_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[L
     _delete_scan_cascade(db, scan)
     log_audit(db, "delete", "scan", scan_id, entity_name=_scan_name, org_id=_scan_org)
     db.commit()
+    _endpoint_cache.clear()
     return {"message": "Scan deleted"}
 
 
@@ -2451,6 +2477,10 @@ def get_remediation_queue(
 @app.get("/api/reports/summary")
 def get_summary(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_logic: str = "AND", db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Return summary statistics for the dashboard."""
+    _ck = f"summary:{scan_id}:{tags}:{tag_logic}:{sorted(org_ids or [])}"
+    cached = _cache_get(_ck)
+    if cached is not None:
+        return cached
     asset_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
     finding_q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
     asset_q = apply_scan_org_filter(asset_q, org_ids)
@@ -2531,9 +2561,15 @@ def get_summary(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_l
         .limit(5)
         .all()
     )
+    # Batch load assets for quick wins
+    qw_asset_ids = {f.asset_id for f in quick_wins_q if f.asset_id}
+    qw_assets = {}
+    if qw_asset_ids:
+        qw_assets = {a.id: a for a in db.query(Asset).filter(Asset.id.in_(qw_asset_ids)).all()}
+
     quick_wins = []
     for f in quick_wins_q:
-        asset = db.query(Asset).filter(Asset.id == f.asset_id).first()
+        asset = qw_assets.get(f.asset_id)
         quick_wins.append({
             "id": f.id,
             "plugin_name": f.plugin_name,
@@ -2550,7 +2586,7 @@ def get_summary(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_l
     with_auth_run = asset_q.filter(Asset.last_auth_run.isnot(None)).count()
     coverage_pct = round((credentialed_count / total_assets) * 100) if total_assets > 0 else 0
 
-    return {
+    result = {
         "total_assets": total_assets,
         "total_findings": total_findings,
         "excepted_findings": excepted_count,
@@ -2579,6 +2615,8 @@ def get_summary(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_l
         "high_priority_count": high_priority_count,
         "quick_wins": quick_wins,
     }
+    _cache_set(_ck, result)
+    return result
 
 
 @app.get("/api/reports/risk-grade")
@@ -2767,24 +2805,39 @@ def get_plugin_families(scan_id: Optional[int] = None, tags: Optional[str] = Non
 @app.get("/api/reports/trending")
 def get_trending(db: Session = Depends(get_db)):
     """Return per-scan summary for trend view."""
+    cached = _cache_get("trending")
+    if cached is not None:
+        return cached
+    from sqlalchemy import case as sa_case
     scans = db.query(Scan).order_by(Scan.created_at).all()
+    scan_ids = [s.id for s in scans]
+
+    # Single aggregation query instead of 5 COUNT queries per scan
+    rows = db.query(
+        Finding.scan_id,
+        func.count(sa_case((Finding.severity == 4, 1))).label("critical"),
+        func.count(sa_case((Finding.severity == 3, 1))).label("high"),
+        func.count(sa_case((Finding.severity == 2, 1))).label("medium"),
+        func.count(sa_case((Finding.severity == 1, 1))).label("low"),
+        func.count(sa_case((Finding.severity == 0, 1))).label("info_count"),
+    ).filter(Finding.scan_id.in_(scan_ids)).group_by(Finding.scan_id).all()
+
+    counts_map = {r.scan_id: r for r in rows}
+
     result = []
     for s in scans:
-        counts = {}
-        for sev in range(5):
-            counts[sev] = db.query(func.count(Finding.id)).filter(
-                Finding.scan_id == s.id, Finding.severity == sev
-            ).scalar()
+        c = counts_map.get(s.id)
         result.append({
             "scan_id": s.id,
             "scan_name": s.scan_name,
             "scan_date": s.scan_date or s.created_at.isoformat(),
-            "critical": counts[4],
-            "high": counts[3],
-            "medium": counts[2],
-            "low": counts[1],
-            "info": counts[0],
+            "critical": c.critical if c else 0,
+            "high": c.high if c else 0,
+            "medium": c.medium if c else 0,
+            "low": c.low if c else 0,
+            "info": c.info_count if c else 0,
         })
+    _cache_set("trending", result)
     return result
 
 
@@ -2793,76 +2846,115 @@ def get_metrics_timeline(db: Session = Depends(get_db), org_ids: Optional[List[i
     """Return per-scan metrics for a configurable timeline widget.
     Each scan gets a snapshot of: severity counts, total findings/assets,
     exploit counts, SLA stats, workflow status breakdown, MTTR, and risk scores."""
+    _ck = f"metrics_timeline:{sorted(org_ids or [])}"
+    cached = _cache_get(_ck)
+    if cached is not None:
+        return cached
     from sqlalchemy import case as sa_case
     scans = apply_org_filter(db.query(Scan), Scan, org_ids).order_by(Scan.created_at).all()
+    if not scans:
+        return []
+
+    scan_ids = [s.id for s in scans]
+
+    # --- 1) Finding aggregation: severity, exploit, SLA, workflow counts in ONE query ---
+    sev_agg_rows = db.query(
+        Finding.scan_id,
+        func.count(Finding.id).label("total"),
+        func.count(sa_case((Finding.severity == 4, 1))).label("critical"),
+        func.count(sa_case((Finding.severity == 3, 1))).label("high"),
+        func.count(sa_case((Finding.severity == 2, 1))).label("medium"),
+        func.count(sa_case((Finding.severity == 1, 1))).label("low"),
+        func.count(sa_case((Finding.severity == 0, 1))).label("info_count"),
+        func.count(sa_case((Finding.exploit_available == True, 1))).label("exploit_count"),
+        # SLA
+        func.count(sa_case((Finding.sla_status == "on_track", 1))).label("sla_on_track"),
+        func.count(sa_case((Finding.sla_status == "at_risk", 1))).label("sla_at_risk"),
+        func.count(sa_case((Finding.sla_status == "breached", 1))).label("sla_breached"),
+        func.count(sa_case((Finding.sla_status == "resolved", 1))).label("sla_resolved"),
+        # Workflow
+        func.count(sa_case((or_(Finding.workflow_status == "open", Finding.workflow_status == None), 1))).label("ws_open"),
+        func.count(sa_case((Finding.workflow_status == "in_progress", 1))).label("ws_in_progress"),
+        func.count(sa_case((Finding.workflow_status == "resolved", 1))).label("ws_resolved"),
+        func.count(sa_case((Finding.workflow_status.in_(["accepted_risk", "false_positive", "compensating_control"]), 1))).label("ws_excepted"),
+        func.count(sa_case((Finding.workflow_status == "technical_debt", 1))).label("ws_tech_debt"),
+    ).filter(Finding.scan_id.in_(scan_ids)).group_by(Finding.scan_id).all()
+
+    finding_stats = {row.scan_id: row for row in sev_agg_rows}
+
+    # --- 2) Asset aggregation: count, avg/max risk_score in ONE query ---
+    asset_agg_rows = db.query(
+        Asset.scan_id,
+        func.count(Asset.id).label("total_assets"),
+        func.avg(sa_case((Asset.risk_score > 0, Asset.risk_score))).label("avg_risk"),
+        func.max(sa_case((Asset.risk_score > 0, Asset.risk_score))).label("max_risk"),
+    ).filter(Asset.scan_id.in_(scan_ids)).group_by(Asset.scan_id).all()
+
+    asset_stats = {row.scan_id: row for row in asset_agg_rows}
+
+    # --- 3) MTTR: join Finding with Scan to avoid N+1 ---
+    mttr_rows = db.query(
+        Finding.scan_id, Finding.resolved_at, Scan.created_at
+    ).join(Scan, Finding.scan_id == Scan.id).filter(
+        Finding.resolved_at != None,
+        Finding.sla_due_date != None,
+        Finding.scan_id.in_(scan_ids),
+    ).all()
+
+    mttr_by_scan: dict = {}
+    for scan_id, resolved_at, created_at in mttr_rows:
+        if resolved_at and created_at:
+            days = (resolved_at - created_at).total_seconds() / 86400
+            if days >= 0:
+                mttr_by_scan.setdefault(scan_id, []).append(days)
+
+    # --- 4) Build result from pre-computed maps ---
     result = []
-    sev_labels = {0: "info", 1: "low", 2: "medium", 3: "high", 4: "critical"}
-
     for s in scans:
-        findings_q = db.query(Finding).filter(Finding.scan_id == s.id)
-        assets_q = db.query(Asset).filter(Asset.scan_id == s.id)
+        fs = finding_stats.get(s.id)
+        ast = asset_stats.get(s.id)
 
-        total_findings = findings_q.count()
-        total_assets = assets_q.count()
+        total = fs.total if fs else 0
+        critical = fs.critical if fs else 0
+        high = fs.high if fs else 0
+        medium = fs.medium if fs else 0
+        low = fs.low if fs else 0
+        info = fs.info_count if fs else 0
+        exploit_count = fs.exploit_count if fs else 0
 
-        # Severity counts
-        sev_counts = {}
-        for sev in range(5):
-            sev_counts[sev_labels[sev]] = findings_q.filter(Finding.severity == sev).count()
-
-        # Exploitable
-        exploit_count = findings_q.filter(Finding.exploit_available == True).count()
-
-        # SLA stats
-        sla_on_track = findings_q.filter(Finding.sla_status == "on_track").count()
-        sla_at_risk = findings_q.filter(Finding.sla_status == "at_risk").count()
-        sla_breached = findings_q.filter(Finding.sla_status == "breached").count()
-        sla_resolved = findings_q.filter(Finding.sla_status == "resolved").count()
+        sla_on_track = fs.sla_on_track if fs else 0
+        sla_at_risk = fs.sla_at_risk if fs else 0
+        sla_breached = fs.sla_breached if fs else 0
+        sla_resolved = fs.sla_resolved if fs else 0
         total_with_sla = sla_on_track + sla_at_risk + sla_breached + sla_resolved
         sla_compliance = round(((sla_on_track + sla_resolved) / total_with_sla * 100) if total_with_sla else 0, 1)
 
-        # Workflow status
-        ws_open = findings_q.filter((Finding.workflow_status == "open") | (Finding.workflow_status == None)).count()
-        ws_in_progress = findings_q.filter(Finding.workflow_status == "in_progress").count()
-        ws_resolved = findings_q.filter(Finding.workflow_status == "resolved").count()
-        ws_excepted = findings_q.filter(Finding.workflow_status.in_(["accepted_risk", "false_positive", "compensating_control"])).count()
-        ws_tech_debt = findings_q.filter(Finding.workflow_status == "technical_debt").count()
+        ws_open = fs.ws_open if fs else 0
+        ws_in_progress = fs.ws_in_progress if fs else 0
+        ws_resolved = fs.ws_resolved if fs else 0
+        ws_excepted = fs.ws_excepted if fs else 0
+        ws_tech_debt = fs.ws_tech_debt if fs else 0
 
-        # MTTR for resolved findings in this scan
-        resolved_findings = findings_q.filter(Finding.resolved_at != None, Finding.sla_due_date != None).all()
-        if resolved_findings:
-            mttrs = []
-            for f in resolved_findings:
-                scan_obj = db.query(Scan).filter(Scan.id == f.scan_id).first()
-                if scan_obj and scan_obj.created_at and f.resolved_at:
-                    days = (f.resolved_at - scan_obj.created_at).total_seconds() / 86400
-                    if days >= 0:
-                        mttrs.append(days)
-            avg_mttr = round(sum(mttrs) / len(mttrs), 1) if mttrs else None
-        else:
-            avg_mttr = None
+        total_assets = ast.total_assets if ast else 0
+        avg_risk = round(ast.avg_risk, 2) if ast and ast.avg_risk else 0
+        max_risk = round(ast.max_risk, 2) if ast and ast.max_risk else 0
 
-        # Average risk score across assets
-        risk_scores = [a.risk_score for a in assets_q.all() if a.risk_score is not None and a.risk_score > 0]
-        avg_risk = round(sum(risk_scores) / len(risk_scores), 2) if risk_scores else 0
-        max_risk = round(max(risk_scores), 2) if risk_scores else 0
-
-        # Non-info findings (actionable)
-        actionable = total_findings - sev_counts["info"]
+        mttrs = mttr_by_scan.get(s.id)
+        avg_mttr = round(sum(mttrs) / len(mttrs), 1) if mttrs else None
 
         result.append({
             "scan_id": s.id,
             "scan_name": s.scan_name or s.filename,
             "scan_date": s.scan_date or (s.created_at.isoformat() if s.created_at else None),
             # Severity
-            "critical": sev_counts["critical"],
-            "high": sev_counts["high"],
-            "medium": sev_counts["medium"],
-            "low": sev_counts["low"],
-            "info": sev_counts["info"],
+            "critical": critical,
+            "high": high,
+            "medium": medium,
+            "low": low,
+            "info": info,
             # Totals
-            "total_findings": total_findings,
-            "actionable_findings": actionable,
+            "total_findings": total,
+            "actionable_findings": total - info,
             "total_assets": total_assets,
             "exploit_count": exploit_count,
             # SLA
@@ -2883,6 +2975,7 @@ def get_metrics_timeline(db: Session = Depends(get_db), org_ids: Optional[List[i
             # MTTR
             "avg_mttr_days": avg_mttr,
         })
+    _cache_set(_ck, result)
     return result
 
 
@@ -7183,6 +7276,10 @@ def get_sla_summary(
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Return SLA compliance stats and MTTR for a scan (or all scans)."""
+    _ck = f"sla_summary:{scan_id}:{sorted(org_ids or [])}"
+    cached = _cache_get(_ck)
+    if cached is not None:
+        return cached
     _ensure_sla_defaults(db)
     q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
     q = apply_scan_org_filter(q, org_ids)
@@ -7195,31 +7292,42 @@ def get_sla_summary(
     ]
     q = q.filter(Finding.severity.in_(enabled_sevs))
 
-    findings = q.all()
+    # Counts via SQL aggregation instead of loading all findings into memory
+    from sqlalchemy import case as sa_case
+    count_rows = q.with_entities(
+        func.count(sa_case((Finding.sla_status == "on_track", 1))).label("on_track"),
+        func.count(sa_case((Finding.sla_status == "at_risk", 1))).label("at_risk"),
+        func.count(sa_case((Finding.sla_status == "breached", 1))).label("breached"),
+        func.count(sa_case((Finding.sla_status == "resolved", 1))).label("resolved"),
+    ).first()
+    counts = {
+        "on_track": count_rows.on_track,
+        "at_risk": count_rows.at_risk,
+        "breached": count_rows.breached,
+        "resolved": count_rows.resolved,
+    }
 
-    counts = {"on_track": 0, "at_risk": 0, "breached": 0, "resolved": 0, "n/a": 0}
-    breached_by_sev = {4: 0, 3: 0, 2: 0, 1: 0, 0: 0}
+    # Breached by severity via SQL
+    breached_rows = q.filter(Finding.sla_status == "breached").with_entities(
+        Finding.severity, func.count(Finding.id)
+    ).group_by(Finding.severity).all()
+    breached_by_sev = {sev: cnt for sev, cnt in breached_rows}
 
-    # MTTR: days from observation date to resolved_at.
-    # observation_date = sla_due_date - days_to_remediate (already computed using
-    # asset.scan_start / scan.scan_date, so this is accurate to the Nessus data).
-    mttr_by_sev: dict[int, list[float]] = {4: [], 3: [], 2: [], 1: [], 0: []}
-
+    # MTTR: only load resolved findings with SLA data (small subset), not ALL findings
     cfg_map = {c.severity: c for c in db.query(SLAConfig).all()}
+    mttr_findings = q.filter(
+        Finding.resolved_at != None, Finding.sla_due_date != None
+    ).with_entities(Finding.severity, Finding.resolved_at, Finding.sla_due_date).all()
 
-    for f in findings:
-        status = f.sla_status or "n/a"
-        counts[status] = counts.get(status, 0) + 1
-        if status == "breached":
-            breached_by_sev[f.severity] = breached_by_sev.get(f.severity, 0) + 1
-        if f.resolved_at and f.sla_due_date:
-            cfg = cfg_map.get(f.severity)
-            if cfg:
-                from datetime import timedelta
-                obs_date = f.sla_due_date - timedelta(days=cfg.days_to_remediate)
-                days = (f.resolved_at - obs_date).total_seconds() / 86400
-                if days >= 0:
-                    mttr_by_sev[f.severity].append(days)
+    mttr_by_sev: dict[int, list[float]] = {4: [], 3: [], 2: [], 1: [], 0: []}
+    for sev, resolved_at, sla_due_date in mttr_findings:
+        cfg = cfg_map.get(sev)
+        if cfg:
+            from datetime import timedelta
+            obs_date = sla_due_date - timedelta(days=cfg.days_to_remediate)
+            days = (resolved_at - obs_date).total_seconds() / 86400
+            if days >= 0:
+                mttr_by_sev[sev].append(days)
 
     avg_mttr = {}
     sev_labels = {4: "critical", 3: "high", 2: "medium", 1: "low", 0: "info"}
@@ -7232,7 +7340,7 @@ def get_sla_summary(
         (counts["on_track"] + counts["resolved"]) / total_with_sla * 100, 1
     ) if total_with_sla else 0
 
-    return {
+    result = {
         "on_track": counts["on_track"],
         "at_risk": counts["at_risk"],
         "breached": counts["breached"],
@@ -7242,6 +7350,8 @@ def get_sla_summary(
         "avg_mttr_days": avg_mttr,
         "breached_by_severity": {sev_labels[k]: v for k, v in breached_by_sev.items() if v > 0},
     }
+    _cache_set(_ck, result)
+    return result
 
 
 @app.patch("/api/findings/{finding_id}/resolve")
@@ -7253,6 +7363,7 @@ def resolve_finding(finding_id: int, db: Session = Depends(get_db)):
     finding.resolved_at = datetime.utcnow()
     finding.sla_status = "resolved"
     db.commit()
+    _endpoint_cache.clear()
     return {"ok": True, "finding_id": finding_id, "resolved_at": finding.resolved_at.isoformat()}
 
 
@@ -7270,6 +7381,7 @@ def unresolve_finding(finding_id: int, db: Session = Depends(get_db)):
     warn = cfg.warn_days_before if cfg else 7
     finding.sla_status = _compute_sla_status(finding.sla_due_date, None, warn)
     db.commit()
+    _endpoint_cache.clear()
     return {"ok": True, "finding_id": finding_id, "sla_status": finding.sla_status}
 
 

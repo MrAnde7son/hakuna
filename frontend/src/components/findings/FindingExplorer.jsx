@@ -378,10 +378,12 @@ export default function FindingExplorer() {
   const isMobile = useIsMobile()
   const [showMobileFilters, setShowMobileFilters] = useState(false)
 
-  // Advanced rule-engine search
-  const [advancedMode, setAdvancedMode] = useState(false)
-  const [advancedConditions, setAdvancedConditions] = useState([])
-  const [advancedLogic, setAdvancedLogic] = useState('AND')
+  // Advanced rule-engine search — restore from URL params if present
+  const [advancedMode, setAdvancedMode] = useState(() => !!searchParams.get('q'))
+  const [advancedConditions, setAdvancedConditions] = useState(() => {
+    try { return JSON.parse(searchParams.get('q')) || [] } catch { return [] }
+  })
+  const [advancedLogic, setAdvancedLogic] = useState(() => searchParams.get('q_logic') || 'AND')
   const [advancedLoading, setAdvancedLoading] = useState(false)
   const [fetchError, setFetchError] = useState(null)
 
@@ -517,9 +519,26 @@ export default function FindingExplorer() {
 
   useEffect(() => { if (!advancedMode) load() }, [load, advancedMode])
 
+  // Auto-run advanced search if restored from URL params
+  const advancedRestoredRef = useRef(false)
+  useEffect(() => {
+    if (advancedMode && advancedConditions.length && !advancedRestoredRef.current) {
+      advancedRestoredRef.current = true
+      runAdvancedSearch(1)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const runAdvancedSearch = useCallback((page = 1) => {
     if (!advancedConditions.length) return
     setAdvancedLoading(true)
+    // Sync conditions to URL params
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.set('q', JSON.stringify(advancedConditions))
+      next.set('q_logic', advancedLogic)
+      next.delete('page')
+      return next
+    }, { replace: true })
     advancedSearch({
       query: advancedConditions,
       query_logic: advancedLogic,
@@ -532,7 +551,7 @@ export default function FindingExplorer() {
       setTotal(data.total)
     }).catch(() => setFetchError('Advanced search failed.'))
       .finally(() => setAdvancedLoading(false))
-  }, [advancedConditions, advancedLogic, activeScanId, pageSize])
+  }, [advancedConditions, advancedLogic, activeScanId, pageSize, setSearchParams])
 
   const enterAdvancedMode = () => {
     // Pre-populate from current simple filters
@@ -547,6 +566,13 @@ export default function FindingExplorer() {
     setAdvancedConditions([])
     setFindings([])
     setTotal(0)
+    // Clear advanced params from URL
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete('q')
+      next.delete('q_logic')
+      return next
+    }, { replace: true })
   }
 
   useEffect(() => {
@@ -554,7 +580,7 @@ export default function FindingExplorer() {
   }, [activeScanId])
 
   useEffect(() => {
-    getAssets({ scan_id: activeScanId, page_size: 0 }).then(data => setAssets(data.assets ?? data)).catch(() => {})
+    getAssets({ scan_id: activeScanId, page_size: 500 }).then(data => setAssets(data.assets ?? data)).catch(() => {})
   }, [activeScanId])
 
 
@@ -920,6 +946,7 @@ export default function FindingExplorer() {
             onChange={(conds, lgc) => { setAdvancedConditions(conds); setAdvancedLogic(lgc) }}
             showLogic
             addLabel={t('findings.addCondition')}
+            onSubmit={() => advancedConditions.length && runAdvancedSearch(1)}
           />
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12 }}>
             <Button
