@@ -29,6 +29,7 @@ const ROUTES = [
   { path: '/settings', name: 'Settings' },
   { path: '/profile', name: 'Profile' },
   { path: '/docs', name: 'Docs' },
+  { path: '/onboarding', name: 'Onboarding Wizard' },
 ]
 
 // Public routes (no auth required).

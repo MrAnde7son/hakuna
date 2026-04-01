@@ -81,6 +81,7 @@ const AggregatedSolutions = React.lazy(() => import('./components/remediation/Ag
 const UserManagement = React.lazy(() => import('./components/settings/UserManagement.jsx'))
 const UserDocs = React.lazy(() => import('./components/docs/UserDocs.jsx'))
 const CopilotPanel = React.lazy(() => import('./components/copilot/CopilotPanel.jsx'))
+const OnboardingWizard = React.lazy(() => import('./components/onboarding/OnboardingWizard.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
@@ -1128,6 +1129,13 @@ export default function App() {
                   <Route path="/reset-password" element={<ResetPassword />} />
                   <Route path="/accept-invite" element={<AcceptInvite />} />
                   <Route path="/verify-email" element={<VerifyEmail />} />
+                  <Route path="/onboarding" element={
+                    <ProtectedRoute>
+                      <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: 'var(--muted)' }}>Loading...</div>}>
+                        <OnboardingWizard />
+                      </Suspense>
+                    </ProtectedRoute>
+                  } />
                   <Route path="/*" element={
                     <ProtectedRoute>
                       <AppShell />

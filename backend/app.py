@@ -84,6 +84,7 @@ from routes.copilot_routes import router as copilot_router
 from routes.workflow_routes import router as workflow_router
 from routes.notification_routes import router as notification_router
 from routes.control_assessment_routes import router as control_assessment_router
+from routes.onboarding_routes import router as onboarding_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -340,6 +341,7 @@ app.include_router(billing_router)
 app.include_router(workflow_router)
 app.include_router(notification_router)
 app.include_router(control_assessment_router)
+app.include_router(onboarding_router)
 
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
