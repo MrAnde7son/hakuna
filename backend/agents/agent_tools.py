@@ -3362,6 +3362,138 @@ def create_agent_schedule_tool(db: Session, params: dict):
     }
 
 
+# ── EASM Scanning ───────────────────────────────────────────────────
+
+def _run_async(coro):
+    """Run an async coroutine from sync code, even when an event loop is already running."""
+    import asyncio
+    import concurrent.futures
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        # We're inside an async context (FastAPI) — run in a new thread with its own loop
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result(timeout=60)
+    else:
+        return asyncio.run(coro)
+
+
+@agent_tool(
+    "trigger_easm_scan",
+    "Trigger an External Attack Surface Management (EASM) scan for a domain. "
+    "This discovers internet-facing assets, subdomains, open ports, certificates, and tech stack. "
+    "The scan runs asynchronously — assets are imported when it completes. "
+    "WHEN TO CALL: When the user asks to scan a domain, run an EASM scan, discover external assets, "
+    "or map their attack surface. NEVER call without confirmed=true.",
+    {
+        "domain": {"type": "string", "description": "The domain to scan (e.g., 'example.com')"},
+        "scan_type": {"type": "string", "description": "'full' (default), 'discovery' (find assets only), or 'enrichment' (enrich known assets)"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved"},
+    },
+)
+def trigger_easm_scan_tool(db: Session, params: dict):
+    domain = params.get("domain")
+    if not domain:
+        return {"error": "domain is required (e.g., 'example.com')"}
+    if not params.get("confirmed"):
+        return {"error": f"Confirm: trigger an EASM scan for '{domain}'? This will discover internet-facing assets."}
+    scan_type = params.get("scan_type", "full")
+    if scan_type not in ("full", "discovery", "enrichment"):
+        return {"error": "scan_type must be 'full', 'discovery', or 'enrichment'"}
+
+    org_id = params.get("_org_id")
+    org = db.query(Organization).filter(Organization.id == org_id).first() if org_id else None
+    if not org:
+        return {"error": "Organization context required. Make sure an org is selected."}
+
+    if not org.easm_org_id:
+        # Try to set up EASM for this org first
+        try:
+            from services.easm import create_easm_org, add_easm_domain
+            easm_org_id = _run_async(create_easm_org(org.name or domain))
+            if easm_org_id:
+                org.easm_org_id = easm_org_id
+                org.easm_domain = domain
+                db.commit()
+            else:
+                return {"error": "Failed to initialize EASM — the hakuna-scanner service may be unavailable. Check Settings > EASM."}
+        except Exception as e:
+            return {"error": f"Failed to initialize EASM: {str(e)}"}
+
+    try:
+        from services.easm import scan_domain
+        result = _run_async(scan_domain(db, org, domain, scan_type))
+        if result is None:
+            return {"error": "Failed to trigger scan — hakuna-scanner may be unavailable."}
+        return {
+            "message": f"EASM scan triggered for '{domain}' (type: {scan_type}). Assets will be imported when the scan completes.",
+            "scan_id": result.get("scan_id"),
+            "run_id": result.get("run_id"),
+            "domain": domain,
+            "status": result.get("status", "running"),
+            "next_step": "The scan runs in the background. Use list_scans to check status, or I can check back later.",
+        }
+    except Exception as e:
+        return {"error": f"Failed to trigger EASM scan: {str(e)}"}
+
+
+@agent_tool(
+    "check_easm_scan_status",
+    "Check the status of a running EASM scan and import discovered assets if complete. "
+    "WHEN TO CALL: When the user asks about EASM scan progress, or to refresh/import EASM results.",
+    {
+        "scan_id": {"type": "integer", "description": "ID of the EASM scan to check"},
+    },
+)
+def check_easm_scan_status(db: Session, params: dict):
+    scan_id = params.get("scan_id")
+    if not scan_id:
+        return {"error": "scan_id is required"}
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        return {"error": f"Scan {scan_id} not found"}
+    if not scan.raw_metadata or not scan.raw_metadata.get("hakuna_org_id"):
+        return {"error": f"Scan {scan_id} is not an EASM scan"}
+
+    org_id = params.get("_org_id")
+    org = db.query(Organization).filter(Organization.id == org_id).first() if org_id else None
+    if not org:
+        return {"error": "Organization context required."}
+
+    try:
+        from services.easm import refresh_easm_scan
+        result = _run_async(refresh_easm_scan(db, org, scan_id))
+        return result or {"status": "unknown", "message": "Could not determine scan status."}
+    except Exception as e:
+        return {"error": f"Failed to check scan status: {str(e)}"}
+
+
+@agent_tool(
+    "list_easm_domains",
+    "List the domains configured for EASM scanning in this organization. "
+    "WHEN TO CALL: When the user asks about their EASM configuration, monitored domains, or attack surface scope.",
+    {},
+)
+def list_easm_domains(db: Session, params: dict):
+    org_id = params.get("_org_id")
+    org = db.query(Organization).filter(Organization.id == org_id).first() if org_id else None
+    if not org:
+        return {"error": "Organization context required."}
+    if not org.easm_org_id:
+        return {
+            "domains": [],
+            "message": "EASM is not configured for this organization. Use trigger_easm_scan with a domain to get started.",
+        }
+    try:
+        from services.easm import get_easm_domains
+        domains = _run_async(get_easm_domains(org.easm_org_id))
+        return {"domains": domains or [], "easm_org_id": org.easm_org_id}
+    except Exception as e:
+        return {"error": f"Failed to fetch EASM domains: {str(e)}"}
+
+
 # ── Settings Tools ──────────────────────────────────────────────────
 
 # ── Scan Management ─────────────────────────────────────────────────

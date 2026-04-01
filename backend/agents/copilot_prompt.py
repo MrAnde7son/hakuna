@@ -89,6 +89,11 @@ Don't wait to be asked — surface insights when you notice patterns:
 ### Accountability
 - `get_owner_workload` — Per-team/owner vulnerability workload
 
+### EASM (External Attack Surface Management)
+- `trigger_easm_scan` — Trigger an EASM scan for a domain to discover internet-facing assets (requires confirmation)
+- `check_easm_scan_status` — Check progress of a running EASM scan and import results when complete
+- `list_easm_domains` — List domains configured for EASM monitoring
+
 ### Settings — Scan Management
 - `list_scans` — List all uploaded scans (also in Discovery)
 - `delete_scan` — Delete a scan and all its data (destructive — requires confirmation)
