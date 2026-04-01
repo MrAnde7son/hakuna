@@ -73,6 +73,7 @@ def run_query(db: Session, conditions: list, logic: str, scan_id) -> list:
             "medium_count": asset.medium_count or 0,
             "low_count": asset.low_count or 0,
             "info_count": asset.info_count or 0,
+            "source_systems": asset.source_systems or [],
         }
 
         # Gather matched condition labels for display

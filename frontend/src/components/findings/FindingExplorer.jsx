@@ -378,10 +378,6 @@ export default function FindingExplorer() {
   const isMobile = useIsMobile()
   const [showMobileFilters, setShowMobileFilters] = useState(false)
 
-  // Advanced filters toggle (ticket, control status, etc.)
-  const [showAdvancedFilters, setShowAdvancedFilters] = useState(
-    () => !!(urlFilters.control_status || urlFilters.has_ticket || urlFilters.ticket_status)
-  )
   // Advanced rule-engine search
   const [advancedMode, setAdvancedMode] = useState(false)
   const [advancedConditions, setAdvancedConditions] = useState([])
@@ -1029,7 +1025,7 @@ export default function FindingExplorer() {
               onChange={updateColVis}
             />
 
-            <Button variant="ghost" size="sm" onClick={() => setShowAdvancedFilters(p => !p)} title={t('findings.advancedSearch')}>
+            <Button variant="ghost" size="sm" onClick={enterAdvancedMode} title={t('findings.advancedSearch')}>
               <SlidersHorizontal size={13} /> {t('findings.advanced')}
             </Button>
 
@@ -1045,52 +1041,7 @@ export default function FindingExplorer() {
         </div>
       )}
 
-      {/* Advanced filters row */}
-      {!advancedMode && showAdvancedFilters && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
-          <Select
-            value={searchParams.get('has_ticket') || searchParams.get('ticket_status') || null}
-            onChange={v => {
-              setSearchParams(prev => {
-                const next = new URLSearchParams(prev)
-                next.delete('has_ticket')
-                next.delete('ticket_status')
-                next.delete('page')
-                if (v === 'true' || v === 'false') {
-                  next.set('has_ticket', v)
-                } else if (v) {
-                  next.set('ticket_status', v)
-                }
-                return next
-              }, { replace: true })
-            }}
-            placeholder="Tickets"
-            options={[
-              { value: 'true', label: 'Has Ticket' },
-              { value: 'false', label: 'No Ticket' },
-              { value: 'open', label: 'Ticket: Open' },
-              { value: 'in_progress', label: 'Ticket: In Progress' },
-              { value: 'resolved', label: 'Ticket: Resolved' },
-            ]}
-          />
-
-          <Select
-            value={urlFilters.control_status}
-            onChange={v => setFilter('control_status', v)}
-            placeholder="Control Status"
-            options={[
-              { value: 'mitigated', label: 'Mitigated' },
-              { value: 'partially_mitigated', label: 'Partially Mitigated' },
-              { value: 'not_mitigated', label: 'Not Mitigated' },
-            ]}
-          />
-
-          <div style={{ flex: 1 }} />
-          <Button variant="ghost" size="sm" onClick={enterAdvancedMode} title="Rule Builder">
-            <SlidersHorizontal size={13} /> Rule Builder
-          </Button>
-        </div>
-      )}
+      {/* Advanced filters row removed — Tickets & Control Status moved to main filter bar, Advanced button opens Rule Builder directly */}
 
       <ErrorBanner error={fetchError} onRetry={advancedMode ? runAdvancedSearch : load} onDismiss={() => setFetchError(null)} />
       {(loading || advancedLoading) ? <SkeletonTable rows={10} columns={6} /> : (

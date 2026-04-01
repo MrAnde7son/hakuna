@@ -1038,6 +1038,7 @@ def get_matching_assets(
                 "medium_count": a.medium_count or 0,
                 "low_count": a.low_count or 0,
                 "info_count": a.info_count or 0,
+                "source_systems": a.source_systems or [],
             },
             db=db, asset_id=a.id, scan_id=scan_id,
         )
