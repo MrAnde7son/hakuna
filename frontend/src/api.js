@@ -982,6 +982,8 @@ export const createCopilotConversation = () => request('/copilot/conversations',
 export const getCopilotConversation = (id) => request(`/copilot/conversations/${id}`)
 export const deleteCopilotConversation = (id) => request(`/copilot/conversations/${id}`, { method: 'DELETE' })
 export const getCopilotSuggestedPrompts = () => request('/copilot/suggested-prompts')
+export const getCopilotAutonomy = () => request('/copilot/autonomy')
+export const setCopilotAutonomy = (level) => request('/copilot/autonomy', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level }) })
 
 // ── VM Scanner API (via main backend) ─────────────────────
 export const startVmScan = (data) => request('/vm/scan', {

@@ -113,7 +113,7 @@ const DATA_SOURCES = {
   velocity:           (scanId, f) => getRemediationVelocity(f?.period || 'month'),
   temporal:           (scanId, f) => getTemporalSummary(scanId),
   assets:             (scanId, f) => getAssets({ scan_id: scanId, search: f?.search, min_risk: f?.min_risk, max_risk: f?.max_risk, environment: f?.environment, min_critical: f?.min_critical, min_high: f?.min_high, has_findings: f?.has_findings, sort_by: f?.sort_by || 'risk_score', order: f?.order || 'desc', tags: f?.tags, tag_logic: f?.tag_logic, page_size: 0 }),
-  findings:           (scanId, f) => getFindings({ scan_id: scanId, severity: f?.severity, plugin_family: f?.plugin_family, has_exploit: f?.has_exploit, effort_level: f?.effort_level, sla_status: f?.sla_status, search: f?.search, sort_by: f?.sort_by || 'priority_score', order: f?.order || 'desc', page_size: f?.page_size || 50, tags: f?.tags, tag_logic: f?.tag_logic }),
+  findings:           (scanId, f) => getFindings({ scan_id: scanId, severity: f?.severity, plugin_family: f?.plugin_family, has_exploit: f?.has_exploit, effort_level: f?.effort_level, sla_status: f?.sla_status, search: f?.search, ransomware_linked: f?.ransomware_linked, is_kev: f?.is_kev, trending_in_news: f?.trending_in_news, sort_by: f?.sort_by || 'priority_score', order: f?.order || 'desc', page_size: f?.page_size || 50, tags: f?.tags, tag_logic: f?.tag_logic }),
   remediation_queue:  (scanId, f) => getRemediationQueue({ scan_id: scanId, effort: f?.effort, owner: f?.owner, min_severity: f?.min_severity, limit: f?.limit || 20 }),
   automation_wishlist:(scanId, f) => getAutomateClicks(),
   risk_by_tags:       (scanId, f) => getRiskByTags({ scan_id: scanId, category: f?.category }),
@@ -155,6 +155,9 @@ const SOURCE_FILTERS = {
     { key: 'effort_level', label: 'Effort', type: 'select', options: [{ value: '', label: 'All' }, { value: 'quick_win', label: 'Quick Win' }, { value: 'medium', label: 'Medium' }, { value: 'complex', label: 'Complex' }] },
     { key: 'sla_status', label: 'SLA Status', type: 'select', options: [{ value: '', label: 'All' }, { value: 'on_track', label: 'On Track' }, { value: 'at_risk', label: 'At Risk' }, { value: 'breached', label: 'Breached' }] },
     { key: 'plugin_family', label: 'Plugin Family', type: 'text', placeholder: 'e.g. Windows' },
+    { key: 'ransomware_linked', label: 'Ransomware', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }] },
+    { key: 'is_kev', label: 'CISA KEV', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }] },
+    { key: 'trending_in_news', label: 'Trending', type: 'select', options: [{ value: '', label: 'All' }, { value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }] },
     { key: 'search', label: 'Search', type: 'text', placeholder: 'Keyword...' },
   ],
   assets: [
@@ -1799,11 +1802,8 @@ const DRILL_DOWN = {
   inv_user_type_breakdown: name => `/inventory?tab=users&user_type=${name.replace(/\s+/g, '_')}`,
   inv_netconn_states: name => `/inventory?tab=netconns&state=${name}`,
   inv_ai_tool_categories: name => `/inventory?tab=ai-tools&category=${encodeURIComponent(name)}`,
-  severity_breakdown_filtered: name => {
-    const map = { Critical: 4, High: 3, Medium: 2, Low: 1, Info: 0 }
-    const sev = map[name]
-    return sev != null ? `/findings?severity=${sev}&family=Artificial+Intelligence` : '/findings?family=Artificial+Intelligence'
-  },
+  // severity_breakdown_filtered drill-down is handled dynamically via autoDrillUrl
+  // (builds URL from widget's config.filters instead of hardcoding a family)
 }
 
 // ─── Benchmark overlay for existing widgets ──────────────────────────────────
@@ -1980,15 +1980,26 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
 
   const drillDown = DRILL_DOWN[cfg.preset]
   // Auto-build drill-down for filtered findings presets (e.g. finding_count_filtered with plugin_family)
-  const autoDrillUrl = !drillDown && preset?.source === 'findings' && cfg.filters
-    ? '/findings?' + new URLSearchParams(Object.entries(cfg.filters).filter(([k, v]) => v && !['sort_by', 'order', 'page_size'].includes(k)).map(([k, v]) => [k === 'plugin_family' ? 'family' : k, v])).toString()
-    : null
+  const buildFilteredUrl = (extraParams) => {
+    if (!preset?.source || preset.source !== 'findings' || !cfg.filters) return null
+    const params = Object.entries(cfg.filters)
+      .filter(([k, v]) => v && !['sort_by', 'order', 'page_size'].includes(k))
+      .map(([k, v]) => [k === 'plugin_family' ? 'family' : k, v])
+    if (extraParams) Object.entries(extraParams).forEach(([k, v]) => { if (v != null) params.push([k, v]) })
+    return '/findings?' + new URLSearchParams(params).toString()
+  }
+  const autoDrillUrl = !drillDown ? buildFilteredUrl() : null
   const handleCardClick = (drillDown || autoDrillUrl) ? () => {
     const url = drillDown ? (typeof drillDown === 'function' ? drillDown() : drillDown) : autoDrillUrl
     navigate(url)
   } : null
   const handleSliceClick = (entry) => {
     if (drillDown && typeof drillDown === 'function') { navigate(drillDown(entry?.name)); return }
+    // For severity breakdown slices, add severity param to the drill-down URL
+    const sevMap = { Critical: 4, High: 3, Medium: 2, Low: 1, Info: 0 }
+    const sevParam = entry?.name && sevMap[entry.name] != null ? { severity: sevMap[entry.name] } : null
+    const sliceUrl = buildFilteredUrl(sevParam)
+    if (sliceUrl) { navigate(sliceUrl); return }
     if (autoDrillUrl) { navigate(autoDrillUrl); return }
   }
 

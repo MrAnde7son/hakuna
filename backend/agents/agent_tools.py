@@ -11,17 +11,18 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case, distinct
 from models.models import (
-    Asset, Finding, Scan, User,
+    Asset, Finding, Scan, User, Organization,
     InventoryUser, InventoryGroup, InventoryService, InventoryNetConn,
     InventoryPatch, InventoryLoggedOn, InventoryScheduledTask,
     InventorySoftware, InventorySecurityControl, InventoryCertificate,
     InventoryShare,
     Tag, TagAssignment, SLAConfig, FindingException, FindingTicket,
     ScanComparison, Campaign, CampaignFinding,
-    IntegrationConfig, AutoTagRule,
+    IntegrationConfig, AutoTagRule, OwnershipRule,
     Integration, IntegrationRun,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
     Agent, AgentRun, AgentSchedule,
+    CustomRole, ExternalTagSource,
 )
 from services.ownership_inference import resolve_finding_owner
 from models.threat_intel_models import (
@@ -2698,6 +2699,581 @@ def get_agent_run(db: Session, params: dict):
     }
 
 
+# ── Advanced Analysis Tools (Hexa-inspired) ────────────────────────
+
+@agent_tool(
+    "analyze_attack_surface",
+    "Combine internet-facing assets, network connections, privileged users, and exploitable findings "
+    "to produce an attack surface risk narrative with attack path analysis. "
+    "WHEN TO CALL: When the user asks about overall exposure, attack paths, attack surface risk, "
+    "or when you discover internet-facing assets with exploitable vulnerabilities.",
+    {
+        "scan_id": {"type": "integer", "description": "Filter by scan ID (optional)"},
+        "limit": {"type": "integer", "description": "Max assets to analyze (default 20)"},
+    },
+)
+def analyze_attack_surface(db: Session, params: dict):
+    scan_id = params.get("scan_id")
+    limit = min(params.get("limit", 20), 50)
+
+    # 1. Internet-facing assets with vulnerabilities
+    inet_q = db.query(Asset).filter(Asset.is_internet_facing == True)
+    if scan_id:
+        inet_q = inet_q.filter(Asset.scan_id == scan_id)
+    inet_assets = inet_q.order_by(Asset.risk_score.desc()).limit(limit).all()
+
+    # 2. Get exploitable findings on internet-facing assets
+    inet_ids = [a.id for a in inet_assets]
+    exploit_findings = []
+    if inet_ids:
+        exploit_findings = (
+            db.query(Finding)
+            .filter(
+                Finding.asset_id.in_(inet_ids),
+                Finding.exploit_available == True,
+            )
+            .order_by(Finding.priority_score.desc())
+            .limit(50)
+            .all()
+        )
+
+    # 3. Privileged users on those assets
+    priv_users = []
+    if inet_ids:
+        priv_users = (
+            db.query(InventoryUser)
+            .filter(
+                InventoryUser.asset_id.in_(inet_ids),
+                InventoryUser.privilege_level.in_(["admin", "root", "domain_admin", "Administrator"]),
+            )
+            .limit(50)
+            .all()
+        )
+
+    # 4. Listening services on internet-facing assets
+    services = []
+    if inet_ids:
+        services = (
+            db.query(InventoryService)
+            .filter(InventoryService.asset_id.in_(inet_ids))
+            .limit(100)
+            .all()
+        )
+
+    # 5. Network connections showing lateral movement paths
+    net_conns = []
+    if inet_ids:
+        net_conns = (
+            db.query(InventoryNetConn)
+            .filter(
+                InventoryNetConn.asset_id.in_(inet_ids),
+                InventoryNetConn.state == "ESTABLISHED",
+            )
+            .limit(50)
+            .all()
+        )
+
+    # 6. KEV / ransomware-linked findings
+    kev_findings = []
+    if inet_ids:
+        kev_findings = (
+            db.query(Finding)
+            .filter(
+                Finding.asset_id.in_(inet_ids),
+                Finding.is_kev == True,
+            )
+            .limit(30)
+            .all()
+        )
+
+    # Build attack path narratives per asset
+    asset_profiles = []
+    for a in inet_assets:
+        asset_exploits = [f for f in exploit_findings if f.asset_id == a.id]
+        asset_kev = [f for f in kev_findings if f.asset_id == a.id]
+        asset_priv = [u for u in priv_users if u.asset_id == a.id]
+        asset_services = [s for s in services if s.asset_id == a.id]
+        asset_conns = [c for c in net_conns if c.asset_id == a.id]
+
+        # Determine risk tier
+        risk_tier = "LOW"
+        if asset_kev:
+            risk_tier = "CRITICAL"
+        elif asset_exploits and asset_priv:
+            risk_tier = "CRITICAL"
+        elif asset_exploits:
+            risk_tier = "HIGH"
+        elif a.critical_count > 0:
+            risk_tier = "HIGH"
+
+        # Build attack path description
+        paths = []
+        if asset_exploits:
+            top_exploit = asset_exploits[0]
+            path = f"External attacker exploits {top_exploit.plugin_name} (CVE: {top_exploit.cve or 'N/A'})"
+            if asset_priv:
+                path += f" → escalates to {asset_priv[0].username} ({asset_priv[0].privilege_level})"
+            if asset_conns:
+                internal_targets = set(c.remote_addr for c in asset_conns if c.remote_addr)
+                if internal_targets:
+                    path += f" → lateral movement to {len(internal_targets)} internal hosts"
+            paths.append(path)
+
+        asset_profiles.append({
+            "asset_id": a.id,
+            "ip": a.ip,
+            "hostname": a.hostname,
+            "os": a.os,
+            "risk_score": a.risk_score,
+            "risk_tier": risk_tier,
+            "critical_findings": a.critical_count,
+            "high_findings": a.high_count,
+            "exploitable_count": len(asset_exploits),
+            "kev_count": len(asset_kev),
+            "privileged_users": [{"username": u.username, "level": u.privilege_level} for u in asset_priv],
+            "exposed_services": [{"name": s.name, "port": s.port} for s in asset_services[:10]],
+            "internal_connections": len(asset_conns),
+            "attack_paths": paths,
+        })
+
+    # Summary stats
+    total_exploitable = len(set(f.id for f in exploit_findings))
+    total_kev = len(set(f.id for f in kev_findings))
+    critical_assets = len([a for a in asset_profiles if a["risk_tier"] == "CRITICAL"])
+
+    return {
+        "summary": {
+            "internet_facing_assets": len(inet_assets),
+            "critical_risk_assets": critical_assets,
+            "total_exploitable_findings": total_exploitable,
+            "total_kev_findings": total_kev,
+            "total_privileged_accounts_exposed": len(priv_users),
+            "total_exposed_services": len(services),
+        },
+        "attack_surface": asset_profiles,
+    }
+
+
+@agent_tool(
+    "suggest_tagging_schema",
+    "Analyze asset metadata (OS, environment, hostnames, IPs, services) and suggest an organized "
+    "tagging strategy. Returns recommended tag categories, values, and which assets they apply to. "
+    "WHEN TO CALL: When the user asks about organizing assets, or when you notice many untagged assets.",
+    {
+        "scan_id": {"type": "integer", "description": "Filter by scan ID (optional)"},
+        "limit": {"type": "integer", "description": "Max assets to analyze (default 100)"},
+    },
+)
+def suggest_tagging_schema(db: Session, params: dict):
+    scan_id = params.get("scan_id")
+    limit = min(params.get("limit", 100), 500)
+
+    q = db.query(Asset)
+    if scan_id:
+        q = q.filter(Asset.scan_id == scan_id)
+    assets = q.order_by(Asset.risk_score.desc()).limit(limit).all()
+
+    if not assets:
+        return {"error": "No assets found to analyze"}
+
+    # Existing tags
+    existing_tags = db.query(Tag).all()
+    existing_categories = set(t.category for t in existing_tags)
+
+    # Tagged asset count
+    tagged_asset_ids = set(
+        r[0] for r in db.query(TagAssignment.asset_id).distinct().all()
+    )
+    total = len(assets)
+    untagged = len([a for a in assets if a.id not in tagged_asset_ids])
+
+    suggestions = []
+
+    # 1. Environment-based tagging (from environment_tag field)
+    env_groups = {}
+    for a in assets:
+        env = a.environment_tag or "unclassified"
+        env_groups.setdefault(env, []).append(a.id)
+    if len(env_groups) > 1 and "env" not in existing_categories:
+        suggestions.append({
+            "category": "env",
+            "rationale": "Segment assets by environment for risk-based prioritization",
+            "values": [
+                {"value": env, "asset_count": len(ids), "sample_assets": ids[:5]}
+                for env, ids in sorted(env_groups.items(), key=lambda x: -len(x[1]))
+            ],
+        })
+
+    # 2. OS-based tagging
+    os_groups = {}
+    for a in assets:
+        if a.os:
+            os_family = "windows" if "windows" in a.os.lower() else \
+                        "linux" if "linux" in a.os.lower() else \
+                        "macos" if "mac" in a.os.lower() or "darwin" in a.os.lower() else \
+                        "network" if any(k in a.os.lower() for k in ["cisco", "juniper", "fortinet", "palo alto"]) else \
+                        "other"
+            os_groups.setdefault(os_family, []).append(a.id)
+    if len(os_groups) > 1 and "os" not in existing_categories:
+        suggestions.append({
+            "category": "os",
+            "rationale": "Group by OS family for targeted patching and remediation routing",
+            "values": [
+                {"value": os_fam, "asset_count": len(ids), "sample_assets": ids[:5]}
+                for os_fam, ids in sorted(os_groups.items(), key=lambda x: -len(x[1]))
+            ],
+        })
+
+    # 3. Criticality-based tagging
+    crit_groups = {}
+    for a in assets:
+        crit = a.criticality or "unset"
+        crit_groups.setdefault(crit, []).append(a.id)
+    if len(crit_groups) > 1 and "criticality" not in existing_categories:
+        suggestions.append({
+            "category": "criticality",
+            "rationale": "Ensure SLA and remediation priority aligns with business criticality",
+            "values": [
+                {"value": c, "asset_count": len(ids), "sample_assets": ids[:5]}
+                for c, ids in sorted(crit_groups.items(), key=lambda x: -len(x[1]))
+            ],
+        })
+
+    # 4. Network segment tagging (from IP subnets)
+    subnet_groups = {}
+    for a in assets:
+        if a.ip:
+            parts = a.ip.split(".")
+            if len(parts) == 4:
+                subnet = f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
+                subnet_groups.setdefault(subnet, []).append(a.id)
+    significant_subnets = {k: v for k, v in subnet_groups.items() if len(v) >= 3}
+    if significant_subnets and "network" not in existing_categories:
+        suggestions.append({
+            "category": "network",
+            "rationale": "Identify network segments for zone-based security policies and blast radius analysis",
+            "values": [
+                {"value": subnet, "asset_count": len(ids), "sample_assets": ids[:5]}
+                for subnet, ids in sorted(significant_subnets.items(), key=lambda x: -len(x[1]))[:10]
+            ],
+        })
+
+    # 5. Internet-facing tagging
+    inet_assets = [a for a in assets if a.is_internet_facing]
+    if inet_assets and "exposure" not in existing_categories:
+        suggestions.append({
+            "category": "exposure",
+            "rationale": "Distinguish internet-facing assets for prioritized remediation and stricter SLAs",
+            "values": [
+                {"value": "internet-facing", "asset_count": len(inet_assets), "sample_assets": [a.id for a in inet_assets[:5]]},
+                {"value": "internal-only", "asset_count": total - len(inet_assets), "sample_assets": [a.id for a in assets if not a.is_internet_facing][:5]},
+            ],
+        })
+
+    # 6. Server role tagging (from hostname patterns)
+    role_patterns = {
+        "database": ["db", "sql", "mysql", "postgres", "mongo", "oracle", "redis"],
+        "web-server": ["web", "www", "apache", "nginx", "iis", "httpd"],
+        "domain-controller": ["dc", "ad", "ldap", "kdc"],
+        "mail-server": ["mail", "smtp", "exchange", "mx"],
+        "file-server": ["file", "nas", "nfs", "smb", "share"],
+    }
+    role_groups = {}
+    for a in assets:
+        name = (a.hostname or "").lower()
+        for role, keywords in role_patterns.items():
+            if any(kw in name for kw in keywords):
+                role_groups.setdefault(role, []).append(a.id)
+                break
+    if role_groups and "role" not in existing_categories:
+        suggestions.append({
+            "category": "role",
+            "rationale": "Tag by server role for team-based remediation routing and impact assessment",
+            "values": [
+                {"value": role, "asset_count": len(ids), "sample_assets": ids[:5]}
+                for role, ids in sorted(role_groups.items(), key=lambda x: -len(x[1]))
+            ],
+        })
+
+    return {
+        "total_assets": total,
+        "untagged_assets": untagged,
+        "untagged_pct": round(untagged / total * 100) if total else 0,
+        "existing_tag_categories": list(existing_categories),
+        "suggestions": suggestions,
+    }
+
+
+@agent_tool(
+    "recommend_agents",
+    "Analyze the org's vulnerability data and recommend pre-built agent templates the user should deploy. "
+    "Matches data patterns to relevant agent templates (daily triage, patch Tuesday, compliance, etc.). "
+    "WHEN TO CALL: When the user asks about automation, agents, or you notice repetitive analysis patterns.",
+    {
+        "scan_id": {"type": "integer", "description": "Filter by scan ID (optional)"},
+    },
+)
+def recommend_agents(db: Session, params: dict):
+    org_id = params.get("_org_id")
+    scan_id = params.get("scan_id")
+
+    # Check what's already deployed
+    existing_agents = db.query(Agent).filter(Agent.org_id == org_id).all()
+    existing_names = set((a.name or "").lower() for a in existing_agents)
+    existing_scheduled = set()
+    for a in existing_agents:
+        schedules = db.query(AgentSchedule).filter(AgentSchedule.agent_id == a.id, AgentSchedule.is_enabled == True).first()
+        if schedules:
+            existing_scheduled.add(a.name.lower() if a.name else "")
+
+    # Analyze the org's data to determine which agents would be valuable
+    recommendations = []
+
+    # Count key metrics
+    finding_q = db.query(Finding)
+    asset_q = db.query(Asset)
+    if scan_id:
+        finding_q = finding_q.filter(Finding.scan_id == scan_id)
+        asset_q = asset_q.filter(Asset.scan_id == scan_id)
+
+    total_findings = finding_q.count()
+    critical_findings = finding_q.filter(Finding.severity == 4).count()
+    exploit_findings = finding_q.filter(Finding.exploit_available == True).count()
+    sla_breached = finding_q.filter(Finding.sla_status == "breached").count()
+    inet_assets = asset_q.filter(Asset.is_internet_facing == True).count()
+    total_assets = asset_q.count()
+
+    # Check for patches
+    patch_count = db.query(InventoryPatch).count()
+
+    # Check for campaigns
+    campaign_count = db.query(Campaign).filter(Campaign.org_id == org_id).count()
+
+    # 1. Daily Triage — always valuable if there are findings
+    if total_findings > 0 and "daily triage" not in existing_scheduled:
+        recommendations.append({
+            "template": "daily_triage",
+            "name": "Daily Triage Bot",
+            "reason": f"You have {total_findings:,} findings and {critical_findings:,} critical. "
+                      "A daily triage agent surfaces the top risks every morning so nothing slips through.",
+            "suggested_schedule": "0 8 * * 1-5",
+            "schedule_description": "Weekdays at 8:00 AM",
+            "priority": "high" if critical_findings > 10 else "medium",
+            "tools": ["list_scans", "get_scan_summary", "get_sla_status", "get_top_risky_assets",
+                       "get_regression_findings", "get_quick_wins", "get_exploit_findings",
+                       "get_plugin_family_stats", "write_scratchpad"],
+        })
+
+    # 2. Patch Tuesday — if there are missing patches
+    if patch_count > 0 and "patch tuesday" not in existing_scheduled:
+        recommendations.append({
+            "template": "patch_tuesday",
+            "name": "Patch Tuesday Planner",
+            "reason": f"You have {patch_count:,} missing patches tracked. "
+                      "A monthly Patch Tuesday agent builds a prioritized deployment plan automatically.",
+            "suggested_schedule": "0 9 * * 3#2",
+            "schedule_description": "Second Wednesday of each month at 9:00 AM",
+            "priority": "high" if patch_count > 50 else "medium",
+            "tools": ["list_scans", "get_scan_summary", "get_missing_patches", "get_exploit_findings",
+                       "get_os_breakdown", "get_remediation_grouping", "get_internet_facing_risk",
+                       "query_assets", "write_scratchpad"],
+        })
+
+    # 3. SLA Monitor — if SLA breaches exist
+    if sla_breached > 0 and "sla monitor" not in existing_scheduled:
+        recommendations.append({
+            "template": "sla_monitor",
+            "name": "SLA Compliance Monitor",
+            "reason": f"You have {sla_breached:,} SLA breaches right now. "
+                      "An SLA monitor agent alerts you before breaches happen and escalates overdue items.",
+            "suggested_schedule": "0 7 * * *",
+            "schedule_description": "Every day at 7:00 AM",
+            "priority": "high",
+            "tools": ["get_sla_status", "query_findings", "get_owner_workload",
+                       "send_slack_message", "send_email_alert", "write_scratchpad"],
+        })
+
+    # 4. Exploit Watch — if exploitable findings exist
+    if exploit_findings > 10 and "exploit watch" not in existing_scheduled:
+        recommendations.append({
+            "template": "exploit_watch",
+            "name": "Exploit Intelligence Watch",
+            "reason": f"You have {exploit_findings:,} findings with known exploits. "
+                      "This agent monitors for new exploit activity and escalates emerging threats.",
+            "suggested_schedule": "0 */6 * * *",
+            "schedule_description": "Every 6 hours",
+            "priority": "high" if exploit_findings > 50 else "medium",
+            "tools": ["get_exploit_findings", "get_threat_cves", "get_threat_campaigns",
+                       "correlate_cves_with_findings", "query_findings", "write_scratchpad"],
+        })
+
+    # 5. Internet Exposure Monitor — if internet-facing assets exist
+    if inet_assets > 0 and "exposure monitor" not in existing_scheduled:
+        recommendations.append({
+            "template": "exposure_monitor",
+            "name": "Internet Exposure Monitor",
+            "reason": f"You have {inet_assets:,} internet-facing assets. "
+                      "This agent continuously monitors your external attack surface for new risks.",
+            "suggested_schedule": "0 */4 * * *",
+            "schedule_description": "Every 4 hours",
+            "priority": "high" if inet_assets > 5 else "medium",
+            "tools": ["get_internet_facing_risk", "analyze_attack_surface", "get_exploit_findings",
+                       "query_findings", "query_assets", "write_scratchpad"],
+        })
+
+    # 6. Campaign Progress Tracker — if campaigns exist
+    if campaign_count > 0 and "campaign tracker" not in existing_scheduled:
+        recommendations.append({
+            "template": "campaign_tracker",
+            "name": "Campaign Progress Tracker",
+            "reason": f"You have {campaign_count:,} remediation campaigns. "
+                      "This agent checks progress daily and alerts owners who are falling behind.",
+            "suggested_schedule": "0 9 * * 1-5",
+            "schedule_description": "Weekdays at 9:00 AM",
+            "priority": "medium",
+            "tools": ["list_campaigns", "get_campaign", "get_owner_workload",
+                       "send_slack_message", "send_email_alert", "write_scratchpad"],
+        })
+
+    # Sort by priority
+    priority_order = {"high": 0, "medium": 1, "low": 2}
+    recommendations.sort(key=lambda r: priority_order.get(r["priority"], 2))
+
+    return {
+        "existing_agents": len(existing_agents),
+        "existing_scheduled": len(existing_scheduled),
+        "recommendations": recommendations,
+        "note": "Use create_agent and create_agent_schedule to deploy any of these. "
+                "I can set them up for you — just say which ones you'd like.",
+    }
+
+
+@agent_tool(
+    "build_report",
+    "Create a saved report/dashboard template with properly configured widgets. Write operation. "
+    "WHEN TO CALL: When the user asks for a dashboard, report, or recurring summary view. "
+    "Always confirm with the user before creating. "
+    "NEVER call this without setting confirmed=true after user approval.\n\n"
+    "WIDGET FORMAT: Each widget needs type, title, width, and config with a preset.\n"
+    "TYPES: card, bar_chart, line_chart, pie_chart, table, heatmap, gauge, radar, treemap, "
+    "risk_grade, funnel, header, divider\n"
+    "WIDTHS: quarter (25%), third (33%), half (50%), two-thirds (66%), full (100%)\n\n"
+    "GLOBAL PRESETS (show all data, no filtering):\n"
+    "- Cards: critical_count, high_count, medium_count, low_count, total_findings, total_assets, "
+    "exploit_count, sla_compliance, sla_breached, quick_wins, regression_count\n"
+    "- Pie/bar: severity_breakdown, effort_breakdown, sla_status, family_breakdown, owner_breakdown\n"
+    "- Tables: top_assets, quick_wins_table, remediation_queue_data, aggregated_solutions_table\n"
+    "- Time series: preset='custom_series' with metrics=['critical','high','medium','low'], time_group='scan'\n"
+    "- Special: risk_grade, gauge_sla_compliance, radar_risk_dimensions, treemap_family_severity\n\n"
+    "FILTERED PRESETS (for topic-specific reports — ransomware, plugin family, exploits, etc.):\n"
+    "- finding_count_filtered — card showing count of findings matching filters\n"
+    "- severity_breakdown_filtered — pie/bar chart showing severity breakdown of filtered findings\n"
+    "- findings_list — table listing individual filtered findings (supports limit)\n"
+    "Filters go in config.filters: ransomware_linked, plugin_family, has_exploit, is_kev, severity, "
+    "sla_status, effort_level, search, sort_by, order, page_size\n\n"
+    "IMPORTANT: For any topic-specific report (ransomware, a plugin family, exploits, KEV, etc.) "
+    "use the FILTERED presets with appropriate filters, NOT the global presets.\n\n"
+    "EXAMPLE — Ransomware report:\n"
+    '[{"type":"card","title":"Ransomware Findings","width":"quarter","config":{"preset":"finding_count_filtered","filters":{"ransomware_linked":"true"}}}, '
+    '{"type":"pie_chart","title":"By Severity","width":"half","config":{"preset":"severity_breakdown_filtered","filters":{"ransomware_linked":"true"}}}, '
+    '{"type":"table","title":"Top Findings","width":"full","config":{"preset":"findings_list","limit":20,"filters":{"ransomware_linked":"true","sort_by":"priority_score","order":"desc"}}}]\n\n'
+    "EXAMPLE — Global overview:\n"
+    '[{"type":"card","title":"Critical","width":"quarter","config":{"preset":"critical_count"}}, '
+    '{"type":"pie_chart","title":"Severity","width":"half","config":{"preset":"severity_breakdown","donut":true}}, '
+    '{"type":"table","title":"Riskiest Assets","width":"full","config":{"preset":"top_assets","limit":10}}]',
+    {
+        "name": {"type": "string", "description": "Report name (e.g. 'Executive Risk Summary')"},
+        "description": {"type": "string", "description": "What the report should show"},
+        "widgets": {
+            "type": "array",
+            "description": "List of widget objects. Each must have: type, title, width, config (with preset).",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "description": "Widget type: card, bar_chart, line_chart, pie_chart, table, heatmap, gauge, radar, treemap, risk_grade, funnel, header, divider"},
+                    "title": {"type": "string", "description": "Widget display title"},
+                    "width": {"type": "string", "description": "Layout width: quarter, third, half, two-thirds, full"},
+                    "config": {"type": "object", "description": "Widget config with preset and type-specific options"},
+                },
+            },
+        },
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved this action"},
+    },
+)
+def build_report(db: Session, params: dict):
+    from models.models import ReportTemplate
+    import uuid
+
+    name = params.get("name")
+    if not name:
+        return {"error": "Report name is required"}
+
+    widgets = params.get("widgets", [])
+    if not widgets:
+        return {"error": "At least one widget is required. See the tool description for the exact format."}
+
+    valid_types = {
+        "card", "bar_chart", "line_chart", "pie_chart", "table", "heatmap",
+        "gauge", "radar", "treemap", "risk_grade", "funnel", "header", "divider", "image",
+    }
+    valid_widths = {"quarter", "third", "half", "two-thirds", "full"}
+
+    normalized = []
+    for i, w in enumerate(widgets):
+        wtype = w.get("type", "card")
+        if wtype not in valid_types:
+            return {"error": f"Widget {i+1}: invalid type '{wtype}'. Valid: {sorted(valid_types)}"}
+
+        width = w.get("width", "half")
+        if width not in valid_widths:
+            width = "half"
+
+        config = w.get("config", {})
+        widget_id = f"ai_{uuid.uuid4().hex[:6]}"
+
+        normalized.append({
+            "id": widget_id,
+            "type": wtype,
+            "title": w.get("title", f"Widget {i+1}"),
+            "width": width,
+            "config": config,
+        })
+
+    # Check for existing report with same name
+    existing = db.query(ReportTemplate).filter(
+        ReportTemplate.name == name,
+        ReportTemplate.org_id == params.get("_org_id"),
+    ).first()
+    if existing:
+        existing.config = {"widgets": normalized}
+        existing.description = params.get("description", "")
+        db.commit()
+        return {
+            "report_id": existing.id,
+            "name": name,
+            "widget_count": len(normalized),
+            "updated": True,
+            "message": f"Report '{name}' updated with {len(normalized)} widgets.",
+        }
+
+    template = ReportTemplate(
+        org_id=params.get("_org_id"),
+        name=name,
+        description=params.get("description", ""),
+        config={"widgets": normalized},
+    )
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+    return {
+        "report_id": template.id,
+        "name": name,
+        "widget_count": len(normalized),
+        "message": f"Report '{name}' created with {len(normalized)} widgets. "
+                   f"View it at /reports/{template.id}",
+    }
+
+
 @agent_tool(
     "create_agent",
     "Create a new AI agent with a name, instructions, selected tools, and optional guardrails. Write operation. "
@@ -2784,3 +3360,953 @@ def create_agent_schedule_tool(db: Session, params: dict):
         "cron_expression": cron_expr, "is_enabled": schedule.is_enabled,
         "message": f"Schedule created for agent '{agent.name}' — cron: {cron_expr}",
     }
+
+
+# ── Settings Tools ──────────────────────────────────────────────────
+
+# ── Scan Management ─────────────────────────────────────────────────
+
+@agent_tool(
+    "delete_scan",
+    "Delete a scan and all its associated findings, assets, and inventory data. "
+    "This is a destructive operation — all data from this scan will be permanently removed. "
+    "WHEN TO CALL: When the user wants to remove a test scan, duplicate upload, or old scan data. "
+    "NEVER call without confirmed=true after user approval.",
+    {
+        "scan_id": {"type": "integer", "description": "ID of the scan to delete"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved this destructive action"},
+    },
+)
+def delete_scan(db: Session, params: dict):
+    scan_id = params.get("scan_id")
+    if not scan_id:
+        return {"error": "scan_id is required"}
+    if not params.get("confirmed"):
+        return {"error": "This is a destructive action. Describe what will be deleted and ask the user to confirm first."}
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        return {"error": f"Scan {scan_id} not found"}
+    scan_name = scan.filename or f"Scan #{scan_id}"
+    # Count what will be deleted
+    finding_count = db.query(Finding).filter(Finding.scan_id == scan_id).count()
+    asset_count = db.query(Asset).filter(Asset.scan_id == scan_id).count()
+    # Delete related data
+    db.query(Finding).filter(Finding.scan_id == scan_id).delete()
+    db.query(Asset).filter(Asset.scan_id == scan_id).delete()
+    db.delete(scan)
+    db.commit()
+    return {
+        "message": f"Scan '{scan_name}' deleted along with {finding_count} findings and {asset_count} assets.",
+        "deleted": {"scan_id": scan_id, "findings": finding_count, "assets": asset_count},
+    }
+
+
+@agent_tool(
+    "rename_scan",
+    "Rename a scan's display name. "
+    "WHEN TO CALL: When the user wants to rename or relabel a scan for better organization.",
+    {
+        "scan_id": {"type": "integer", "description": "ID of the scan to rename"},
+        "new_name": {"type": "string", "description": "New name/label for the scan"},
+        "confirmed": {"type": "boolean", "description": "Set to true after user approval"},
+    },
+)
+def rename_scan(db: Session, params: dict):
+    scan_id = params.get("scan_id")
+    new_name = params.get("new_name")
+    if not scan_id or not new_name:
+        return {"error": "scan_id and new_name are required"}
+    if not params.get("confirmed"):
+        return {"error": "Describe the rename and ask the user to confirm."}
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        return {"error": f"Scan {scan_id} not found"}
+    old_name = scan.filename
+    scan.filename = new_name
+    db.commit()
+    return {"message": f"Scan renamed from '{old_name}' to '{new_name}'", "scan_id": scan_id}
+
+
+# ── Deduplication Settings ──────────────────────────────────────────
+
+@agent_tool(
+    "get_dedup_config",
+    "Retrieve the current deduplication configuration including strategies and key fields for assets, findings, and inventory. "
+    "WHEN TO CALL: When the user asks about dedup settings, how duplicates are handled, or wants to review/change dedup config. "
+    "Always call this before updating dedup config to show the user what will change.",
+    {},
+)
+def get_dedup_config(db: Session, params: dict):
+    from services.dedup import load_config
+    config = load_config()
+    return {
+        "config": config,
+        "help": {
+            "strategies": "keep_first (oldest wins), keep_last (newest wins), merge (combine fields)",
+            "key_fields": "Fields used to identify duplicates. E.g., assets match on ip+hostname, findings match on plugin_id+asset_id+port.",
+        },
+    }
+
+
+@agent_tool(
+    "update_dedup_config",
+    "Update the deduplication configuration. You can change the strategy (keep_first, keep_last, merge) "
+    "and key fields used to match duplicates for assets, findings, and inventory. "
+    "WHEN TO CALL: When the user wants to change how duplicates are detected or resolved. "
+    "ALWAYS call get_dedup_config first to show current settings. NEVER call without confirmed=true.",
+    {
+        "asset_config": {"type": "object", "description": "Optional: {strategy: 'keep_first'|'keep_last'|'merge', key_fields: ['ip','hostname',...]}"},
+        "findings_config": {"type": "object", "description": "Optional: {strategy: 'keep_first'|'keep_last'|'merge', key_fields: ['plugin_id','asset_id','port',...]}"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def update_dedup_config(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Show the user what will change and ask for confirmation first."}
+    from services.dedup import load_config, save_config
+    config = load_config()
+    if params.get("asset_config"):
+        ac = params["asset_config"]
+        if "strategy" in ac:
+            config.setdefault("assets", {})["strategy"] = ac["strategy"]
+        if "key_fields" in ac:
+            config.setdefault("assets", {})["key_fields"] = ac["key_fields"]
+    if params.get("findings_config"):
+        fc = params["findings_config"]
+        if "strategy" in fc:
+            config.setdefault("findings", {})["strategy"] = fc["strategy"]
+        if "key_fields" in fc:
+            config.setdefault("findings", {})["key_fields"] = fc["key_fields"]
+    save_config(config)
+    return {"message": "Dedup configuration updated.", "config": config}
+
+
+@agent_tool(
+    "run_dedup",
+    "Run deduplication on-demand for assets, findings, or inventory. "
+    "WHEN TO CALL: When the user wants to deduplicate data after changing config or after a scan upload. "
+    "NEVER call without confirmed=true.",
+    {
+        "entity_type": {"type": "string", "description": "'assets', 'findings', or 'inventory'"},
+        "scan_id": {"type": "integer", "description": "Optional: limit dedup to a specific scan"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def run_dedup(db: Session, params: dict):
+    entity_type = params.get("entity_type", "assets")
+    if not params.get("confirmed"):
+        return {"error": "Describe what will be deduplicated and ask for confirmation."}
+    from services.dedup import run_db_dedup
+    result = run_db_dedup(db, entity_type, scan_id=params.get("scan_id"))
+    return {"message": f"Dedup completed for {entity_type}.", "result": result}
+
+
+# ── Risk Scoring Settings ───────────────────────────────────────────
+
+@agent_tool(
+    "get_risk_config",
+    "Retrieve the current risk scoring configuration including formula weights, severity scores, "
+    "and criticality auto-rules. "
+    "WHEN TO CALL: When the user asks about risk scoring, how priority scores are calculated, "
+    "or wants to review/change risk configuration.",
+    {},
+)
+def get_risk_config(db: Session, params: dict):
+    from core.risk_config import load_config
+    config = load_config()
+    return {
+        "config": config,
+        "help": {
+            "formula_weights": "Weights for each factor in the 0-10 priority score: severity, exploitability, intel, criticality, controls, reachability. Must sum to ~1.0.",
+            "severity_scores": "Base score (0-10) for each severity level: critical, high, medium, low, info.",
+            "criticality_rules": "Auto-rules that assign asset criticality (critical/high/medium/low) based on conditions like hostname patterns, IP ranges, tags, etc.",
+            "resolution_mode": "How multiple matching rules resolve: first_match, last_match, or max.",
+        },
+    }
+
+
+@agent_tool(
+    "update_risk_config",
+    "Update risk scoring weights or severity base scores. "
+    "WHEN TO CALL: When the user wants to tune how priority scores are calculated. "
+    "ALWAYS call get_risk_config first. NEVER call without confirmed=true.",
+    {
+        "formula_weights": {"type": "object", "description": "Optional: {severity: 0.35, exploitability: 0.25, intel: 0.15, criticality: 0.15, controls: 0.05, reachability: 0.05}"},
+        "severity_scores": {"type": "object", "description": "Optional: {critical: 10, high: 8, medium: 5, low: 2, info: 0}"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def update_risk_config(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Show the user what will change and ask for confirmation first."}
+    from core.risk_config import load_config, save_config
+    config = load_config()
+    if params.get("formula_weights"):
+        config["formula_weights"] = {**config.get("formula_weights", {}), **params["formula_weights"]}
+    if params.get("severity_scores"):
+        config["severity_scores"] = {**config.get("severity_scores", {}), **params["severity_scores"]}
+    save_config(config)
+    return {"message": "Risk scoring configuration updated. Run recalculate_risk_scores to apply to existing data.", "config": config}
+
+
+@agent_tool(
+    "manage_criticality_rules",
+    "List, create, update, or delete criticality auto-rules that assign asset criticality levels "
+    "based on conditions (hostname patterns, IP ranges, tags, OS, etc.). "
+    "WHEN TO CALL: When the user wants to configure how assets are classified as critical/high/medium/low. "
+    "For create/update/delete, NEVER call without confirmed=true.",
+    {
+        "action": {"type": "string", "description": "'list', 'create', 'update', or 'delete'"},
+        "rule": {"type": "object", "description": "For create/update: {name, criticality: 'critical'|'high'|'medium'|'low', conditions: [{field, op, value}], condition_logic: 'AND'|'OR', priority: int}"},
+        "rule_index": {"type": "integer", "description": "For update/delete: index of the rule in the list"},
+        "confirmed": {"type": "boolean", "description": "Required for create/update/delete"},
+    },
+)
+def manage_criticality_rules(db: Session, params: dict):
+    action = params.get("action", "list")
+    from core.risk_config import load_config, save_config
+    config = load_config()
+    rules = config.get("criticality_rules", [])
+
+    if action == "list":
+        return {
+            "rules": rules,
+            "resolution_mode": config.get("resolution_mode", "first_match"),
+            "help": "Rules assign criticality to assets based on conditions. Fields: hostname, fqdn, ip, os, netbios_name, has_tag. Ops: eq, neq, contains, regex, cidr, starts_with, ends_with.",
+        }
+    if not params.get("confirmed"):
+        return {"error": "Describe the change and ask for confirmation first."}
+    if action == "create":
+        rule = params.get("rule", {})
+        if not rule.get("name") or not rule.get("criticality"):
+            return {"error": "Rule must have name and criticality"}
+        rules.append(rule)
+        config["criticality_rules"] = rules
+        save_config(config)
+        return {"message": f"Criticality rule '{rule['name']}' created.", "rules": rules}
+    elif action == "update":
+        idx = params.get("rule_index")
+        if idx is None or idx >= len(rules):
+            return {"error": f"Invalid rule_index. There are {len(rules)} rules (0-indexed)."}
+        rules[idx] = {**rules[idx], **params.get("rule", {})}
+        config["criticality_rules"] = rules
+        save_config(config)
+        return {"message": f"Criticality rule at index {idx} updated.", "rules": rules}
+    elif action == "delete":
+        idx = params.get("rule_index")
+        if idx is None or idx >= len(rules):
+            return {"error": f"Invalid rule_index. There are {len(rules)} rules (0-indexed)."}
+        removed = rules.pop(idx)
+        config["criticality_rules"] = rules
+        save_config(config)
+        return {"message": f"Criticality rule '{removed.get('name', idx)}' deleted.", "rules": rules}
+    return {"error": f"Unknown action '{action}'. Use list, create, update, or delete."}
+
+
+@agent_tool(
+    "recalculate_risk_scores",
+    "Recompute risk scores for all assets and findings based on current risk configuration. "
+    "Optionally re-apply criticality rules before recalculating. "
+    "WHEN TO CALL: After updating risk config or criticality rules. NEVER call without confirmed=true.",
+    {
+        "scan_id": {"type": "integer", "description": "Optional: limit to a specific scan"},
+        "apply_criticality_rules": {"type": "boolean", "description": "Whether to re-evaluate criticality rules first (default true)"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def recalculate_risk_scores(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "This will recalculate scores for all data. Ask for confirmation."}
+    from core.risk_config import load_config, evaluate_criticality_rules
+    config = load_config()
+    scan_id = params.get("scan_id")
+    apply_crit = params.get("apply_criticality_rules", True)
+
+    q = db.query(Asset)
+    if scan_id:
+        q = q.filter(Asset.scan_id == scan_id)
+    assets = q.all()
+
+    if apply_crit:
+        rules = config.get("criticality_rules", [])
+        if rules:
+            for asset in assets:
+                result = evaluate_criticality_rules(asset, rules, config.get("resolution_mode", "first_match"))
+                if result:
+                    asset.criticality = result
+
+    # Recalculate risk scores using the prioritizer
+    from services.prioritizer import calculate_priority_score
+    updated_assets = 0
+    for asset in assets:
+        findings = db.query(Finding).filter(Finding.asset_id == asset.id).all()
+        for f in findings:
+            f.priority_score = calculate_priority_score(f, asset)
+        asset.risk_score = max((f.priority_score for f in findings), default=0)
+        updated_assets += 1
+
+    db.commit()
+    return {"message": f"Risk scores recalculated for {updated_assets} assets.", "scan_id": scan_id}
+
+
+# ── SLA Settings ────────────────────────────────────────────────────
+
+@agent_tool(
+    "get_sla_config",
+    "Retrieve the current SLA configuration: remediation deadlines and warning thresholds per severity level. "
+    "WHEN TO CALL: When the user asks about SLA policies, deadlines, or wants to review/change SLA settings.",
+    {},
+)
+def get_sla_config(db: Session, params: dict):
+    configs = db.query(SLAConfig).order_by(SLAConfig.severity.desc()).all()
+    if not configs:
+        return {
+            "configs": [],
+            "message": "No SLA configuration found. Default SLAs will be used: Critical=15d, High=30d, Medium=90d, Low=180d.",
+        }
+    return {
+        "configs": [
+            {
+                "id": c.id,
+                "severity": c.severity,
+                "severity_label": {4: "Critical", 3: "High", 2: "Medium", 1: "Low", 0: "Info"}.get(c.severity, str(c.severity)),
+                "days_to_remediate": c.days_to_remediate,
+                "warn_days_before": c.warn_days_before,
+                "is_enabled": c.is_enabled,
+            }
+            for c in configs
+        ],
+    }
+
+
+@agent_tool(
+    "update_sla_config",
+    "Update SLA deadlines and warning thresholds for one or more severity levels. "
+    "WHEN TO CALL: When the user wants to change remediation deadlines. "
+    "ALWAYS call get_sla_config first. NEVER call without confirmed=true.",
+    {
+        "configs": {
+            "type": "array",
+            "description": "Array of {severity: int (4=Critical,3=High,2=Medium,1=Low,0=Info), days_to_remediate: int, warn_days_before: int, is_enabled: bool}",
+        },
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def update_sla_config(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Show the user what will change and ask for confirmation first."}
+    configs = params.get("configs", [])
+    if not configs:
+        return {"error": "Provide at least one SLA config entry."}
+    results = []
+    for entry in configs:
+        sev = entry.get("severity")
+        if sev is None:
+            continue
+        existing = db.query(SLAConfig).filter(SLAConfig.severity == sev).first()
+        if existing:
+            if "days_to_remediate" in entry:
+                existing.days_to_remediate = entry["days_to_remediate"]
+            if "warn_days_before" in entry:
+                existing.warn_days_before = entry["warn_days_before"]
+            if "is_enabled" in entry:
+                existing.is_enabled = entry["is_enabled"]
+        else:
+            existing = SLAConfig(
+                severity=sev,
+                days_to_remediate=entry.get("days_to_remediate", 30),
+                warn_days_before=entry.get("warn_days_before", 7),
+                is_enabled=entry.get("is_enabled", True),
+            )
+            db.add(existing)
+        results.append({"severity": sev, "days_to_remediate": existing.days_to_remediate})
+    db.commit()
+    return {"message": f"SLA configuration updated for {len(results)} severity levels.", "updated": results}
+
+
+@agent_tool(
+    "recalculate_sla",
+    "Recompute SLA due dates and status for all findings based on current SLA configuration. "
+    "WHEN TO CALL: After updating SLA config. NEVER call without confirmed=true.",
+    {
+        "scan_id": {"type": "integer", "description": "Optional: limit to a specific scan"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def recalculate_sla(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Ask for confirmation before recalculating SLA for all findings."}
+    from services.sla_engine import recalculate_sla_for_scan
+    scan_id = params.get("scan_id")
+    if scan_id:
+        result = recalculate_sla_for_scan(db, scan_id)
+        return {"message": f"SLA recalculated for scan {scan_id}.", "result": result}
+    # Recalculate for all scans
+    scans = db.query(Scan).all()
+    total = 0
+    for scan in scans:
+        result = recalculate_sla_for_scan(db, scan.id)
+        total += result.get("updated", 0) if isinstance(result, dict) else 0
+    return {"message": f"SLA recalculated across {len(scans)} scans ({total} findings updated)."}
+
+
+# ── Exception / Waiver Management ───────────────────────────────────
+
+@agent_tool(
+    "list_exceptions",
+    "List all global exceptions/waivers with their type, scope, and status. "
+    "WHEN TO CALL: When the user asks about exceptions, waivers, risk acceptances, false positives, or compensating controls.",
+    {
+        "exception_type": {"type": "string", "description": "Optional filter: 'false_positive', 'accepted_risk', 'compensating_control', 'technical_debt', 'severity_override'"},
+        "active_only": {"type": "boolean", "description": "Only show non-expired exceptions (default true)"},
+    },
+)
+def list_exceptions(db: Session, params: dict):
+    q = db.query(FindingException)
+    if params.get("exception_type"):
+        q = q.filter(FindingException.exception_type == params["exception_type"])
+    if params.get("active_only", True):
+        q = q.filter(
+            (FindingException.expires_at == None) |
+            (FindingException.expires_at > datetime.utcnow())
+        )
+    exceptions = q.order_by(FindingException.created_at.desc()).limit(50).all()
+    return {
+        "total": q.count(),
+        "exceptions": [
+            {
+                "id": e.id,
+                "plugin_id": e.plugin_id,
+                "plugin_name": e.plugin_name,
+                "asset_ip": e.asset_ip,
+                "exception_type": e.exception_type,
+                "reason": e.reason,
+                "approved_by": e.approved_by,
+                "expires_at": e.expires_at.isoformat() if e.expires_at else None,
+                "exclude_from_reports": e.exclude_from_reports,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in exceptions
+        ],
+    }
+
+
+@agent_tool(
+    "manage_exception",
+    "Create, update, or delete a global exception/waiver. Supports types: false_positive, accepted_risk, "
+    "compensating_control, technical_debt, severity_override. "
+    "WHEN TO CALL: When the user wants to manage exceptions from the settings page. "
+    "NEVER call without confirmed=true.",
+    {
+        "action": {"type": "string", "description": "'create', 'update', or 'delete'"},
+        "exception_id": {"type": "integer", "description": "For update/delete: the exception ID"},
+        "plugin_id": {"type": "string", "description": "For create: Nessus plugin ID to exempt"},
+        "plugin_name": {"type": "string", "description": "For create: plugin name for reference"},
+        "asset_ip": {"type": "string", "description": "For create: scope to specific asset IP (optional, omit for global)"},
+        "exception_type": {"type": "string", "description": "false_positive, accepted_risk, compensating_control, technical_debt, severity_override"},
+        "reason": {"type": "string", "description": "Justification for the exception"},
+        "approved_by": {"type": "string", "description": "Name of the approver"},
+        "expires_at": {"type": "string", "description": "ISO date when exception expires (optional)"},
+        "exclude_from_reports": {"type": "boolean", "description": "Whether to hide matched findings from reports (default false)"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def manage_exception(db: Session, params: dict):
+    action = params.get("action", "create")
+    if not params.get("confirmed"):
+        return {"error": "Describe the exception and ask for confirmation first."}
+    if action == "create":
+        if not params.get("plugin_id") or not params.get("exception_type"):
+            return {"error": "plugin_id and exception_type are required"}
+        exc = FindingException(
+            plugin_id=params["plugin_id"],
+            plugin_name=params.get("plugin_name", ""),
+            asset_ip=params.get("asset_ip"),
+            exception_type=params["exception_type"],
+            reason=params.get("reason", ""),
+            approved_by=params.get("approved_by", ""),
+            exclude_from_reports=params.get("exclude_from_reports", False),
+        )
+        if params.get("expires_at"):
+            try:
+                exc.expires_at = datetime.fromisoformat(params["expires_at"].replace("Z", "+00:00"))
+            except ValueError:
+                return {"error": "Invalid expires_at format. Use ISO format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS"}
+        db.add(exc)
+        db.commit()
+        db.refresh(exc)
+        return {"message": f"Exception created (ID: {exc.id}) for plugin {exc.plugin_id}.", "id": exc.id}
+    elif action == "update":
+        exc_id = params.get("exception_id")
+        if not exc_id:
+            return {"error": "exception_id is required for update"}
+        exc = db.query(FindingException).filter(FindingException.id == exc_id).first()
+        if not exc:
+            return {"error": f"Exception {exc_id} not found"}
+        for field in ["exception_type", "reason", "approved_by", "exclude_from_reports", "asset_ip"]:
+            if field in params:
+                setattr(exc, field, params[field])
+        if "expires_at" in params:
+            try:
+                exc.expires_at = datetime.fromisoformat(params["expires_at"].replace("Z", "+00:00")) if params["expires_at"] else None
+            except ValueError:
+                return {"error": "Invalid expires_at format"}
+        db.commit()
+        return {"message": f"Exception {exc_id} updated."}
+    elif action == "delete":
+        exc_id = params.get("exception_id")
+        if not exc_id:
+            return {"error": "exception_id is required for delete"}
+        exc = db.query(FindingException).filter(FindingException.id == exc_id).first()
+        if not exc:
+            return {"error": f"Exception {exc_id} not found"}
+        db.delete(exc)
+        db.commit()
+        return {"message": f"Exception {exc_id} deleted."}
+    return {"error": f"Unknown action '{action}'."}
+
+
+# ── Ownership Rules ─────────────────────────────────────────────────
+
+@agent_tool(
+    "list_ownership_rules",
+    "List all ownership rules that auto-assign owners to assets/findings based on conditions. "
+    "WHEN TO CALL: When the user asks about ownership rules, who owns what, or how ownership is assigned.",
+    {},
+)
+def list_ownership_rules(db: Session, params: dict):
+    rules = db.query(OwnershipRule).order_by(OwnershipRule.priority).all()
+    return {
+        "rules": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "target_type": r.target_type,
+                "conditions": r.conditions,
+                "condition_logic": r.condition_logic,
+                "priority": r.priority,
+                "owner_name": r.owner_name,
+                "owner_email": r.owner_email,
+                "owner_role": r.owner_role,
+                "team": r.team,
+                "is_enabled": r.is_enabled,
+            }
+            for r in rules
+        ],
+        "help": "Rules are evaluated in priority order (lower number = higher priority). Conditions use the same operators as auto-tag rules.",
+    }
+
+
+@agent_tool(
+    "manage_ownership_rule",
+    "Create, update, or delete an ownership rule that auto-assigns owners to assets/findings. "
+    "WHEN TO CALL: When the user wants to set up or modify ownership assignment rules. "
+    "NEVER call without confirmed=true.",
+    {
+        "action": {"type": "string", "description": "'create', 'update', or 'delete'"},
+        "rule_id": {"type": "integer", "description": "For update/delete: the rule ID"},
+        "name": {"type": "string", "description": "Rule name"},
+        "description": {"type": "string", "description": "Rule description"},
+        "target_type": {"type": "string", "description": "'asset', 'finding', or 'both'"},
+        "conditions": {"type": "array", "description": "Array of {field, op, value} condition objects"},
+        "condition_logic": {"type": "string", "description": "'AND' or 'OR'"},
+        "priority": {"type": "integer", "description": "Priority (lower = evaluated first)"},
+        "owner_name": {"type": "string", "description": "Owner name to assign"},
+        "owner_email": {"type": "string", "description": "Owner email to assign"},
+        "owner_role": {"type": "string", "description": "Owner role: IT, DevOps, SecOps, AppSec, etc."},
+        "team": {"type": "string", "description": "Team name to assign"},
+        "is_enabled": {"type": "boolean", "description": "Whether the rule is active"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def manage_ownership_rule(db: Session, params: dict):
+    action = params.get("action", "create")
+    if not params.get("confirmed"):
+        return {"error": "Describe the rule and ask for confirmation first."}
+    if action == "create":
+        if not params.get("name"):
+            return {"error": "name is required"}
+        rule = OwnershipRule(
+            name=params["name"],
+            description=params.get("description", ""),
+            target_type=params.get("target_type", "asset"),
+            conditions=params.get("conditions", []),
+            condition_logic=params.get("condition_logic", "AND"),
+            priority=params.get("priority", 100),
+            owner_name=params.get("owner_name"),
+            owner_email=params.get("owner_email"),
+            owner_role=params.get("owner_role"),
+            team=params.get("team"),
+            is_enabled=params.get("is_enabled", True),
+        )
+        db.add(rule)
+        db.commit()
+        db.refresh(rule)
+        return {"message": f"Ownership rule '{rule.name}' created (ID: {rule.id}).", "id": rule.id}
+    elif action == "update":
+        rule_id = params.get("rule_id")
+        if not rule_id:
+            return {"error": "rule_id is required for update"}
+        rule = db.query(OwnershipRule).filter(OwnershipRule.id == rule_id).first()
+        if not rule:
+            return {"error": f"Ownership rule {rule_id} not found"}
+        for field in ["name", "description", "target_type", "conditions", "condition_logic", "priority",
+                       "owner_name", "owner_email", "owner_role", "team", "is_enabled"]:
+            if field in params:
+                setattr(rule, field, params[field])
+        db.commit()
+        return {"message": f"Ownership rule '{rule.name}' updated."}
+    elif action == "delete":
+        rule_id = params.get("rule_id")
+        if not rule_id:
+            return {"error": "rule_id is required for delete"}
+        rule = db.query(OwnershipRule).filter(OwnershipRule.id == rule_id).first()
+        if not rule:
+            return {"error": f"Ownership rule {rule_id} not found"}
+        name = rule.name
+        db.delete(rule)
+        db.commit()
+        return {"message": f"Ownership rule '{name}' deleted."}
+    return {"error": f"Unknown action '{action}'."}
+
+
+@agent_tool(
+    "run_ownership_rules",
+    "Apply all enabled ownership rules to assign owners to assets/findings. "
+    "WHEN TO CALL: After creating/updating ownership rules or when the user wants to re-apply ownership. "
+    "NEVER call without confirmed=true.",
+    {
+        "scan_id": {"type": "integer", "description": "Optional: limit to a specific scan"},
+        "overwrite": {"type": "boolean", "description": "Whether to overwrite existing ownership (default false)"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def run_ownership_rules(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Ask for confirmation before applying ownership rules."}
+    from services.tags import run_all_ownership_rules
+    result = run_all_ownership_rules(
+        db,
+        scan_id=params.get("scan_id"),
+        overwrite=params.get("overwrite", False),
+    )
+    return {"message": "Ownership rules applied.", "result": result}
+
+
+# ── RBAC — Custom Roles ────────────────────────────────────────────
+
+@agent_tool(
+    "list_custom_roles",
+    "List all custom roles defined for the organization, including their permissions. "
+    "WHEN TO CALL: When the user asks about roles, permissions, RBAC, or access control.",
+    {},
+)
+def list_custom_roles(db: Session, params: dict):
+    roles = db.query(CustomRole).filter(CustomRole.is_active == True).all()
+    return {
+        "roles": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "base_permissions": r.base_permissions,
+                "deny_permissions": r.deny_permissions,
+            }
+            for r in roles
+        ],
+        "available_permissions": [
+            "read", "write", "delete", "export",
+            "manage_campaigns", "manage_sla", "manage_risk_config",
+            "manage_dedup", "manage_exceptions", "manage_ownership",
+            "manage_ownership_rules", "manage_tags", "manage_auto_tag_rules",
+            "manage_reports", "export_reports",
+        ],
+    }
+
+
+@agent_tool(
+    "manage_custom_role",
+    "Create, update, or delete a custom RBAC role with granular permissions. "
+    "WHEN TO CALL: When the user wants to create or modify roles and permissions. "
+    "NEVER call without confirmed=true.",
+    {
+        "action": {"type": "string", "description": "'create', 'update', or 'delete'"},
+        "role_id": {"type": "integer", "description": "For update/delete: the role ID"},
+        "name": {"type": "string", "description": "Role name"},
+        "description": {"type": "string", "description": "Role description"},
+        "base_permissions": {"type": "object", "description": "Permission flags: {read: true, write: true, manage_tags: false, ...}"},
+        "deny_permissions": {"type": "object", "description": "Deny flags (override allow): {delete: true, ...}"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def manage_custom_role(db: Session, params: dict):
+    action = params.get("action", "create")
+    if not params.get("confirmed"):
+        return {"error": "Describe the role and permissions and ask for confirmation first."}
+    if action == "create":
+        if not params.get("name"):
+            return {"error": "name is required"}
+        role = CustomRole(
+            name=params["name"],
+            description=params.get("description", ""),
+            base_permissions=params.get("base_permissions", {}),
+            deny_permissions=params.get("deny_permissions", {}),
+        )
+        db.add(role)
+        db.commit()
+        db.refresh(role)
+        return {"message": f"Custom role '{role.name}' created (ID: {role.id}).", "id": role.id}
+    elif action == "update":
+        role_id = params.get("role_id")
+        if not role_id:
+            return {"error": "role_id is required for update"}
+        role = db.query(CustomRole).filter(CustomRole.id == role_id).first()
+        if not role:
+            return {"error": f"Role {role_id} not found"}
+        for field in ["name", "description", "base_permissions", "deny_permissions"]:
+            if field in params:
+                setattr(role, field, params[field])
+        db.commit()
+        return {"message": f"Role '{role.name}' updated."}
+    elif action == "delete":
+        role_id = params.get("role_id")
+        if not role_id:
+            return {"error": "role_id is required for delete"}
+        role = db.query(CustomRole).filter(CustomRole.id == role_id).first()
+        if not role:
+            return {"error": f"Role {role_id} not found"}
+        name = role.name
+        role.is_active = False  # Soft delete
+        db.commit()
+        return {"message": f"Role '{name}' deactivated."}
+    return {"error": f"Unknown action '{action}'."}
+
+
+# ── Integration Builder ─────────────────────────────────────────────
+
+@agent_tool(
+    "list_integration_builder_connectors",
+    "List available out-of-the-box connector templates and active integrations in the integration builder. "
+    "WHEN TO CALL: When the user asks about integration builder, connectors, data import/export pipelines, "
+    "or wants to set up a new integration.",
+    {},
+)
+def list_integration_builder_connectors(db: Session, params: dict):
+    # Active integrations
+    integrations = db.query(Integration).order_by(Integration.created_at.desc()).all()
+    return {
+        "integrations": [
+            {
+                "id": i.id,
+                "name": i.name,
+                "direction": i.direction,
+                "entity": i.entity,
+                "transport_type": i.transport_type,
+                "enabled": i.enabled,
+                "schedule": i.schedule,
+                "last_run_at": i.last_run_at.isoformat() if i.last_run_at else None,
+                "last_run_status": i.last_run_status,
+            }
+            for i in integrations
+        ],
+        "help": {
+            "directions": "pull (import data into Hakuna) or push (export data from Hakuna)",
+            "transport_types": "api (REST API), sql (database query), file (CSV/JSON upload)",
+            "entities": "finding, asset, action — the Hakuna data type to import/export",
+            "link": "Navigate to [Integration Builder](/settings?tab=integration-builder) to visually configure connectors.",
+        },
+    }
+
+
+@agent_tool(
+    "manage_integration",
+    "Enable, disable, delete, or trigger a run for an existing integration in the integration builder. "
+    "WHEN TO CALL: When the user wants to manage an existing integration. "
+    "NEVER call without confirmed=true.",
+    {
+        "action": {"type": "string", "description": "'enable', 'disable', 'delete', or 'run'"},
+        "integration_id": {"type": "integer", "description": "ID of the integration to manage"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def manage_integration(db: Session, params: dict):
+    action = params.get("action")
+    integration_id = params.get("integration_id")
+    if not action or not integration_id:
+        return {"error": "action and integration_id are required"}
+    if not params.get("confirmed"):
+        return {"error": "Describe the action and ask for confirmation first."}
+
+    integ = db.query(Integration).filter(Integration.id == integration_id).first()
+    if not integ:
+        return {"error": f"Integration {integration_id} not found"}
+
+    if action == "enable":
+        integ.enabled = True
+        db.commit()
+        return {"message": f"Integration '{integ.name}' enabled."}
+    elif action == "disable":
+        integ.enabled = False
+        db.commit()
+        return {"message": f"Integration '{integ.name}' disabled."}
+    elif action == "delete":
+        name = integ.name
+        db.delete(integ)
+        db.commit()
+        return {"message": f"Integration '{name}' deleted."}
+    elif action == "run":
+        integ.last_run_at = datetime.utcnow()
+        integ.last_run_status = "running"
+        db.commit()
+        try:
+            from services.integration_scheduler import run_integration_now
+            result = run_integration_now(db, integration_id)
+            return {"message": f"Integration '{integ.name}' triggered.", "result": result}
+        except ImportError:
+            return {"message": f"Integration '{integ.name}' marked for execution. The scheduler will pick it up."}
+    return {"error": f"Unknown action '{action}'. Use enable, disable, delete, or run."}
+
+
+@agent_tool(
+    "get_integration_runs",
+    "Get recent run history for an integration showing status, record counts, and errors. "
+    "WHEN TO CALL: When the user asks about integration sync status, run history, or troubleshooting.",
+    {
+        "integration_id": {"type": "integer", "description": "ID of the integration"},
+        "limit": {"type": "integer", "description": "Max runs to return (default 10)"},
+    },
+)
+def get_integration_runs(db: Session, params: dict):
+    integration_id = params.get("integration_id")
+    if not integration_id:
+        return {"error": "integration_id is required"}
+    limit = min(params.get("limit", 10), 50)
+    integ = db.query(Integration).filter(Integration.id == integration_id).first()
+    if not integ:
+        return {"error": f"Integration {integration_id} not found"}
+    runs = (
+        db.query(IntegrationRun)
+        .filter(IntegrationRun.integration_id == integration_id)
+        .order_by(IntegrationRun.started_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "integration": integ.name,
+        "runs": [
+            {
+                "id": r.id,
+                "status": r.status,
+                "started_at": r.started_at.isoformat() if r.started_at else None,
+                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+                "records_processed": r.records_processed,
+                "records_created": r.records_created,
+                "records_updated": r.records_updated,
+                "errors": r.errors,
+            }
+            for r in runs
+        ],
+    }
+
+
+# ── Tag Management (extended) ───────────────────────────────────────
+
+@agent_tool(
+    "manage_tag",
+    "Update or delete an existing tag. Use create_tag for new tags. "
+    "WHEN TO CALL: When the user wants to rename, recolor, reparent, or delete a tag. "
+    "NEVER call without confirmed=true.",
+    {
+        "action": {"type": "string", "description": "'update' or 'delete'"},
+        "tag_id": {"type": "integer", "description": "ID of the tag to manage"},
+        "category": {"type": "string", "description": "For update: new category"},
+        "value": {"type": "string", "description": "For update: new value/name"},
+        "color": {"type": "string", "description": "For update: new color hex code"},
+        "description": {"type": "string", "description": "For update: new description"},
+        "parent_id": {"type": "integer", "description": "For update: new parent tag ID (for hierarchical tags)"},
+        "delete_strategy": {"type": "string", "description": "For delete: 'reparent' (move children up) or 'cascade' (delete children too)"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def manage_tag(db: Session, params: dict):
+    action = params.get("action")
+    tag_id = params.get("tag_id")
+    if not action or not tag_id:
+        return {"error": "action and tag_id are required"}
+    if not params.get("confirmed"):
+        return {"error": "Describe the change and ask for confirmation first."}
+
+    tag = db.query(Tag).filter(Tag.id == tag_id).first()
+    if not tag:
+        return {"error": f"Tag {tag_id} not found"}
+
+    if action == "update":
+        for field in ["category", "value", "color", "description", "parent_id"]:
+            if field in params:
+                setattr(tag, field, params[field])
+        db.commit()
+        return {"message": f"Tag '{tag.category}:{tag.value}' updated."}
+    elif action == "delete":
+        strategy = params.get("delete_strategy", "reparent")
+        name = f"{tag.category}:{tag.value}"
+        # Handle children
+        children = db.query(Tag).filter(Tag.parent_id == tag_id).all()
+        if strategy == "cascade":
+            for child in children:
+                db.query(TagAssignment).filter(TagAssignment.tag_id == child.id).delete()
+                db.delete(child)
+        else:  # reparent
+            for child in children:
+                child.parent_id = tag.parent_id
+        # Remove assignments and delete
+        db.query(TagAssignment).filter(TagAssignment.tag_id == tag_id).delete()
+        db.delete(tag)
+        db.commit()
+        return {"message": f"Tag '{name}' deleted ({strategy} strategy, {len(children)} children handled)."}
+    return {"error": f"Unknown action '{action}'."}
+
+
+@agent_tool(
+    "manage_auto_tag_rule",
+    "Update, delete, enable, or disable an existing auto-tag rule. Use create_auto_tag_rule for new rules. "
+    "WHEN TO CALL: When the user wants to modify or remove an auto-tag rule. "
+    "NEVER call without confirmed=true.",
+    {
+        "action": {"type": "string", "description": "'update', 'delete', 'enable', or 'disable'"},
+        "rule_id": {"type": "integer", "description": "ID of the auto-tag rule"},
+        "name": {"type": "string", "description": "For update: new name"},
+        "tag_id": {"type": "integer", "description": "For update: new tag to assign"},
+        "conditions": {"type": "array", "description": "For update: new conditions [{field, op, value}]"},
+        "condition_logic": {"type": "string", "description": "For update: 'AND' or 'OR'"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def manage_auto_tag_rule(db: Session, params: dict):
+    action = params.get("action")
+    rule_id = params.get("rule_id")
+    if not action or not rule_id:
+        return {"error": "action and rule_id are required"}
+    if not params.get("confirmed"):
+        return {"error": "Describe the change and ask for confirmation first."}
+
+    rule = db.query(AutoTagRule).filter(AutoTagRule.id == rule_id).first()
+    if not rule:
+        return {"error": f"Auto-tag rule {rule_id} not found"}
+
+    if action == "update":
+        for field in ["name", "description", "tag_id", "target_type", "conditions", "condition_logic"]:
+            if field in params:
+                setattr(rule, field, params[field])
+        db.commit()
+        return {"message": f"Auto-tag rule '{rule.name}' updated."}
+    elif action in ("enable", "disable"):
+        rule.is_enabled = (action == "enable")
+        db.commit()
+        return {"message": f"Auto-tag rule '{rule.name}' {'enabled' if rule.is_enabled else 'disabled'}."}
+    elif action == "delete":
+        name = rule.name
+        db.delete(rule)
+        db.commit()
+        return {"message": f"Auto-tag rule '{name}' deleted."}
+    return {"error": f"Unknown action '{action}'."}

@@ -584,12 +584,41 @@ CONFIRMATION_REQUIRED_TOOLS = {
     "create_campaign", "send_webhook",
     "update_finding_status", "create_exception",
     "call_integration_fetch", "call_integration_push",
+    "build_report", "create_agent", "create_agent_schedule",
 }
 
 # Tools gated by HITL approval (superset of confirmation-required tools)
 HITL_TOOLS = CONFIRMATION_REQUIRED_TOOLS | {
     "tag_assets", "bulk_tag_findings", "create_tag", "create_auto_tag_rule", "run_auto_tag_rules",
 }
+
+# Low-risk write tools that can be auto-approved in "standard" autonomy mode
+LOW_RISK_WRITE_TOOLS = {
+    "tag_assets", "bulk_tag_findings", "create_tag", "create_auto_tag_rule",
+    "run_auto_tag_rules", "update_finding_status", "build_report",
+}
+
+# Adaptive autonomy levels:
+# - conservative: HITL approval for ALL write tools (current default)
+# - standard: auto-approve low-risk writes (tagging, status updates, reports),
+#             HITL for high-risk (tickets, notifications, campaigns, integrations)
+# - autonomous: auto-approve everything except external integrations
+#               (Jira, ServiceNow, Slack, Teams, Email, webhooks)
+EXTERNAL_TOOLS = {
+    "create_jira_ticket", "create_servicenow_ticket",
+    "send_slack_message", "send_teams_message", "send_email_alert",
+    "send_webhook", "call_integration_fetch", "call_integration_push",
+}
+
+
+def get_hitl_tools_for_autonomy(autonomy_level: str) -> set:
+    """Return the set of tools requiring HITL approval for the given autonomy level."""
+    if autonomy_level == "autonomous":
+        return EXTERNAL_TOOLS
+    elif autonomy_level == "standard":
+        return HITL_TOOLS - LOW_RISK_WRITE_TOOLS
+    else:  # conservative (default)
+        return HITL_TOOLS
 
 
 class ApprovalRequired(Exception):
@@ -731,13 +760,15 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
         # Process tool calls — serialize content to plain dicts to avoid
         # unsupported properties (e.g. 'annotations') from the SDK objects
         approval_mode = (agent.guardrails or {}).get("approval_mode", "auto")
+        autonomy_level = (agent.guardrails or {}).get("autonomy_level", "conservative")
+        effective_hitl_tools = get_hitl_tools_for_autonomy(autonomy_level)
         messages.append({"role": "assistant", "content": assistant_content})
         tool_results = []
         for block in response.content:
             if block.type != "tool_use":
                 continue
             # HITL: pause before any write tool that needs human approval
-            if approval_mode == "hitl" and block.name in HITL_TOOLS:
+            if approval_mode == "hitl" and block.name in effective_hitl_tools:
                 approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=block.name, tool_input=block.input or {},
@@ -851,6 +882,8 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
         # Process tool calls — build clean message dict to avoid SDK-injected
         # fields like 'annotations', 'audio', 'refusal' that APIs reject
         approval_mode = (agent.guardrails or {}).get("approval_mode", "auto")
+        autonomy_level = (agent.guardrails or {}).get("autonomy_level", "conservative")
+        effective_hitl_tools = get_hitl_tools_for_autonomy(autonomy_level)
         assistant_msg = {"role": "assistant", "content": msg.content or ""}
         if msg.tool_calls:
             assistant_msg["tool_calls"] = [
@@ -861,7 +894,7 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
         for tc in msg.tool_calls:
             tool_input = json.loads(tc.function.arguments) if tc.function.arguments else {}
             # HITL: pause before write tool
-            if approval_mode == "hitl" and tc.function.name in HITL_TOOLS:
+            if approval_mode == "hitl" and tc.function.name in effective_hitl_tools:
                 approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=tc.function.name, tool_input=tool_input,
@@ -1249,12 +1282,14 @@ def _stream_anthropic(agent, user_input, db, run, model):
             break
 
         approval_mode = (agent.guardrails or {}).get("approval_mode", "auto")
+        autonomy_level = (agent.guardrails or {}).get("autonomy_level", "conservative")
+        effective_hitl_tools = get_hitl_tools_for_autonomy(autonomy_level)
         messages.append({"role": "assistant", "content": assistant_content})
         tool_results = []
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            if approval_mode == "hitl" and block.name in HITL_TOOLS:
+            if approval_mode == "hitl" and block.name in effective_hitl_tools:
                 approval = _create_approval(
                     agent=agent, run=run, db=db,
                     tool_name=block.name, tool_input=block.input or {},

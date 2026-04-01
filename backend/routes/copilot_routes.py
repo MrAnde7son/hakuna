@@ -28,6 +28,7 @@ from agents.agent_engine import (
     _get_gemini_client, _get_ollama_client, _get_vertex_client,
 )
 from agents.copilot_prompt import COPILOT_SYSTEM_PROMPT
+from models.models import Organization
 
 router = APIRouter(prefix="/api/copilot", tags=["copilot"], dependencies=[Depends(require_pro)])
 
@@ -52,6 +53,7 @@ _COPILOT_MODEL_PREFERENCE = [
 
 class MessageRequest(BaseModel):
     message: str
+    context: Optional[str] = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -99,6 +101,15 @@ def _get_or_create_copilot_agent(db: Session, org_id: Optional[int]) -> Agent:
 
     all_tools = list(TOOL_REGISTRY.keys())
 
+    # Read org autonomy level from org settings
+    autonomy_level = "conservative"
+    if org_id:
+        org = db.query(Organization).filter(Organization.id == org_id).first()
+        if org and org.settings:
+            autonomy_level = org.settings.get("copilot_autonomy", "conservative")
+
+    guardrails = {"max_steps": 25, "approval_mode": "hitl", "autonomy_level": autonomy_level}
+
     if agent:
         changed = False
         if set(agent.tools or []) != set(all_tools):
@@ -106,6 +117,10 @@ def _get_or_create_copilot_agent(db: Session, org_id: Optional[int]) -> Agent:
             changed = True
         if agent.model != best_model:
             agent.model = best_model
+            changed = True
+        current_autonomy = (agent.guardrails or {}).get("autonomy_level", "conservative")
+        if current_autonomy != autonomy_level:
+            agent.guardrails = {**(agent.guardrails or {}), "autonomy_level": autonomy_level}
             changed = True
         if changed:
             db.commit()
@@ -117,7 +132,7 @@ def _get_or_create_copilot_agent(db: Session, org_id: Optional[int]) -> Agent:
         description="Security Copilot — conversational vulnerability management assistant",
         system_prompt=COPILOT_SYSTEM_PROMPT,
         tools=all_tools,
-        guardrails={"max_steps": 25, "approval_mode": "hitl"},
+        guardrails=guardrails,
         model=best_model,
     )
     db.add(agent)
@@ -266,7 +281,7 @@ async def send_message(
     effective_org_id = int(x_org_context) if x_org_context else (current_user.org_id if current_user else None)
     copilot_agent = _get_or_create_copilot_agent(db, effective_org_id)
 
-    # Append user message to conversation
+    # Append user message to conversation (store clean message without context metadata)
     user_msg = {"role": "user", "content": body.message, "timestamp": datetime.utcnow().isoformat()}
     messages = list(conv.messages or [])
     messages.append(user_msg)
@@ -280,7 +295,9 @@ async def send_message(
     db.commit()
 
     # Build contextual input with conversation history
-    user_input = _build_contextual_input(messages[:-1], body.message)
+    # Prepend page context (if provided) to the LLM input only, not stored in history
+    llm_message = (body.context + "\n\n" + body.message) if body.context else body.message
+    user_input = _build_contextual_input(messages[:-1], llm_message)
     agent_id = copilot_agent.id
     conv_id = conv.id
     user_id = current_user.id
@@ -353,6 +370,11 @@ Agent capabilities (only suggest questions that use these):
 - Actions: create campaigns, create tickets (Jira/ServiceNow), send notifications (Slack/Teams/Email), tag assets/findings, run auto-tag rules
 - Integration status: list integrations, trigger fetch/push syncs
 - Plugin family statistics
+- Settings: dedup config (view/update/run), risk scoring (view/update weights, criticality rules, recalculate), SLA (view/update deadlines, recalculate), exceptions (list/create/update/delete), ownership rules (list/create/update/delete/run), RBAC roles (list/create/update), integration builder (list/enable/disable/run/history), scan management (delete/rename)
+- Attack surface analysis: combine internet-facing assets, network connections, privileged users, and exploits into attack path narratives
+- Tagging strategy: suggest organized tagging schemas based on asset metadata
+- Agent recommendations: analyze data and recommend pre-built agent templates to deploy
+- Report/dashboard building: create saved report templates with configurable widgets
 
 Do NOT suggest questions about: time-series trends over arbitrary periods, prediction/forecasting, creating workflows, user permissions/activity, or health checks on API keys.
 
@@ -457,14 +479,14 @@ def _generate_recommendations(db: Session, model: str, messages: list) -> list:
 # ── Suggested prompts ────────────────────────────────────────────────
 
 SUGGESTED_PROMPTS = [
-    {"text": "Find the riskiest gaps and triage them", "icon": "shield-alert"},
-    {"text": "Check SLA breaches and escalate overdue findings", "icon": "alarm"},
-    {"text": "Find quick wins and create a campaign to fix them", "icon": "zap"},
-    {"text": "Analyze my latest scan and summarize what changed", "icon": "clipboard"},
-    {"text": "Find internet-facing assets with critical vulns and open tickets", "icon": "globe"},
-    {"text": "Identify exploitable findings and assign to owners", "icon": "bug"},
-    {"text": "Build a remediation campaign for the top 10 risks", "icon": "target"},
-    {"text": "Generate an executive summary and send it to Slack", "icon": "briefcase"},
+    {"text": "Analyze my attack surface and prioritize the biggest risks", "icon": "shield-alert"},
+    {"text": "Find critical gaps, create a campaign, assign owners, and open tickets", "icon": "zap"},
+    {"text": "Check SLA breaches, escalate overdue items, and notify owners", "icon": "alarm"},
+    {"text": "Suggest a tagging strategy and organize my assets", "icon": "tags"},
+    {"text": "Find internet-facing risks, open Jira tickets, and alert the team on Slack", "icon": "globe"},
+    {"text": "Recommend agents I should deploy to automate my VM program", "icon": "bot"},
+    {"text": "Build an executive risk dashboard I can share with leadership", "icon": "layout-dashboard"},
+    {"text": "Analyze my latest scan, find regressions, and create a fix campaign", "icon": "clipboard"},
 ]
 
 
@@ -472,3 +494,76 @@ SUGGESTED_PROMPTS = [
 def suggested_prompts():
     """Return suggested prompts for the copilot."""
     return SUGGESTED_PROMPTS
+
+
+# ── Autonomy level management ─────────────────────────────────────
+
+VALID_AUTONOMY_LEVELS = {"conservative", "standard", "autonomous"}
+
+AUTONOMY_DESCRIPTIONS = {
+    "conservative": "Approve every write action (default). Safest option — the copilot asks before creating tickets, tags, campaigns, or sending notifications.",
+    "standard": "Auto-approve low-risk actions (tagging, status updates, reports). Still requires approval for tickets, notifications, campaigns, and external integrations.",
+    "autonomous": "Auto-approve all internal actions. Only requires approval for external-facing actions (Jira, ServiceNow, Slack, Teams, Email, webhooks).",
+}
+
+
+@router.get("/autonomy")
+def get_autonomy_level(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    """Get the current copilot autonomy level for this org."""
+    effective_org_id = int(x_org_context) if x_org_context else (current_user.org_id if current_user else None)
+    level = "conservative"
+    if effective_org_id:
+        org = db.query(Organization).filter(Organization.id == effective_org_id).first()
+        if org and org.settings:
+            level = org.settings.get("copilot_autonomy", "conservative")
+    return {
+        "level": level,
+        "description": AUTONOMY_DESCRIPTIONS.get(level, ""),
+        "available_levels": [
+            {"level": k, "description": v} for k, v in AUTONOMY_DESCRIPTIONS.items()
+        ],
+    }
+
+
+class AutonomyRequest(BaseModel):
+    level: str
+
+
+@router.put("/autonomy")
+def set_autonomy_level(
+    body: AutonomyRequest,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    """Set the copilot autonomy level for this org. Requires admin role."""
+    if current_user.role not in ("superadmin", "org_admin"):
+        raise HTTPException(403, "Only admins can change the copilot autonomy level")
+    if body.level not in VALID_AUTONOMY_LEVELS:
+        raise HTTPException(400, f"Invalid autonomy level. Must be one of: {VALID_AUTONOMY_LEVELS}")
+
+    effective_org_id = int(x_org_context) if x_org_context else (current_user.org_id if current_user else None)
+    if not effective_org_id:
+        # Superadmin with "All Organizations" — fall back to home org
+        effective_org_id = current_user.org_id if current_user else None
+    if not effective_org_id:
+        raise HTTPException(400, "Organization context required — select a specific org")
+
+    org = db.query(Organization).filter(Organization.id == effective_org_id).first()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+
+    settings = dict(org.settings or {})
+    settings["copilot_autonomy"] = body.level
+    org.settings = settings
+    db.commit()
+
+    return {
+        "level": body.level,
+        "description": AUTONOMY_DESCRIPTIONS[body.level],
+        "message": f"Copilot autonomy set to '{body.level}'. Changes take effect on next conversation message.",
+    }

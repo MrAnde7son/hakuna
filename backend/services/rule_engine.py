@@ -583,8 +583,10 @@ def _eval_finding_row(cond: dict, finding) -> bool:
     if sub == "cve":
         cves = [c.upper() for c in (finding.cves or [])]
         val  = str(value or "").upper()
-        if op == "eq":       return val in cves
-        if op == "contains": return any(val in c for c in cves)
+        # Support comma-separated bulk CVE search
+        vals = [v.strip() for v in val.split(",") if v.strip()]
+        if op == "eq":       return any(v in cves for v in vals)
+        if op == "contains": return any(v in c for v in vals for c in cves)
         return False
     if sub == "effort":
         return _str_op(finding.effort_level or "", op, value)

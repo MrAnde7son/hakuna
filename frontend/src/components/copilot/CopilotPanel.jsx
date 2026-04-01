@@ -8,7 +8,7 @@ import {
   ChevronDown, ChevronRight, Wrench, ShieldAlert, Zap,
   Clock, Globe, Bug, Target, Briefcase, Clipboard,
   Copy, Check, RotateCcw, ThumbsUp, ThumbsDown,
-  Search,
+  Search, Tags, LayoutDashboard, Settings,
 } from 'lucide-react'
 import {
   getCopilotConversations,
@@ -16,6 +16,8 @@ import {
   getCopilotConversation,
   deleteCopilotConversation,
   getCopilotSuggestedPrompts,
+  getCopilotAutonomy,
+  setCopilotAutonomy,
   decideAgentApproval,
   getStoredToken,
   getOrgContext,
@@ -68,6 +70,15 @@ const ICON_MAP = {
   'bug': Bug,
   'target': Target,
   'briefcase': Briefcase,
+  'tags': Tags,
+  'bot': Bot,
+  'layout-dashboard': LayoutDashboard,
+}
+
+const AUTONOMY_LABELS = {
+  conservative: { label: 'Conservative', desc: 'Approve every action', color: '#16a34a' },
+  standard: { label: 'Standard', desc: 'Auto-approve low-risk actions', color: '#d97706' },
+  autonomous: { label: 'Autonomous', desc: 'Only approve external actions', color: '#dc2626' },
 }
 
 // ── Context-aware suggested prompts by page ────────────────────────
@@ -138,10 +149,70 @@ const CONTEXTUAL_PROMPTS = {
     { text: 'Run auto-tag rules and show what was tagged', icon: 'zap' },
   ],
   '/settings': [
-    { text: 'Analyze my latest scan upload and summarize what changed', icon: 'clipboard' },
-    { text: 'List all scans and show finding counts by severity', icon: 'briefcase' },
+    { text: 'Walk me through the current configuration on this page', icon: 'clipboard' },
+    { text: 'What should I configure first for a new deployment?', icon: 'zap' },
+    { text: 'Are there any settings I should optimize based on my data?', icon: 'target' },
     { text: 'What integrations are configured?', icon: 'globe' },
-    { text: 'Show the last integration sync status for each connector', icon: 'shield-alert' },
+  ],
+  '/settings?tab=upload': [
+    { text: 'List all scans and show finding counts by severity', icon: 'clipboard' },
+    { text: 'Delete old or test scans to clean up data', icon: 'target' },
+    { text: 'Compare my two most recent scans', icon: 'zap' },
+    { text: 'Which scan has the most critical findings?', icon: 'shield-alert' },
+  ],
+  '/settings?tab=dedup': [
+    { text: 'Show me the current dedup configuration', icon: 'clipboard' },
+    { text: 'Explain the difference between keep_first, keep_last, and merge', icon: 'target' },
+    { text: 'Change the dedup strategy for assets to merge', icon: 'zap' },
+    { text: 'Run deduplication on all assets now', icon: 'shield-alert' },
+  ],
+  '/settings?tab=risk': [
+    { text: 'Show the current risk scoring formula and weights', icon: 'clipboard' },
+    { text: 'List all criticality auto-rules', icon: 'target' },
+    { text: 'Create a criticality rule for production servers', icon: 'zap' },
+    { text: 'Recalculate risk scores with current config', icon: 'shield-alert' },
+  ],
+  '/settings?tab=tags': [
+    { text: 'Suggest a tagging strategy based on my assets', icon: 'zap' },
+    { text: 'List all auto-tag rules and their status', icon: 'clipboard' },
+    { text: 'Create an auto-tag rule for Windows servers', icon: 'target' },
+    { text: 'Run all auto-tag rules now', icon: 'shield-alert' },
+  ],
+  '/settings?tab=sla': [
+    { text: 'Show current SLA deadlines by severity', icon: 'clipboard' },
+    { text: 'Change the critical SLA deadline to 7 days', icon: 'zap' },
+    { text: 'How many findings are currently breaching SLA?', icon: 'shield-alert' },
+    { text: 'Recalculate SLA status for all findings', icon: 'target' },
+  ],
+  '/settings?tab=exceptions': [
+    { text: 'List all active exceptions and waivers', icon: 'clipboard' },
+    { text: 'Create a false positive exception for a specific plugin', icon: 'zap' },
+    { text: 'Show exceptions expiring in the next 30 days', icon: 'alarm' },
+    { text: 'How many findings are covered by exceptions?', icon: 'target' },
+  ],
+  '/settings?tab=ownership': [
+    { text: 'List all ownership rules', icon: 'clipboard' },
+    { text: 'Create an ownership rule for the DevOps team', icon: 'zap' },
+    { text: 'Show the current workload distribution by owner', icon: 'target' },
+    { text: 'Run all ownership rules to assign owners', icon: 'shield-alert' },
+  ],
+  '/settings?tab=roles': [
+    { text: 'List all custom roles and their permissions', icon: 'clipboard' },
+    { text: 'Create a read-only analyst role', icon: 'zap' },
+    { text: 'What permissions are available for custom roles?', icon: 'target' },
+    { text: 'Create a role for team leads with campaign management', icon: 'shield-alert' },
+  ],
+  '/settings?tab=integrations': [
+    { text: 'What integrations are currently configured?', icon: 'clipboard' },
+    { text: 'Trigger a sync for all pull integrations', icon: 'zap' },
+    { text: 'Show the last sync status for each integration', icon: 'target' },
+    { text: 'Send a test Slack notification', icon: 'globe' },
+  ],
+  '/settings?tab=integration-builder': [
+    { text: 'List all active integration pipelines', icon: 'clipboard' },
+    { text: 'Show run history for recent integrations', icon: 'target' },
+    { text: 'Which integrations have failed recently?', icon: 'shield-alert' },
+    { text: 'Trigger a manual run for an integration', icon: 'zap' },
   ],
   '/agents': [
     { text: 'Which agents have run recently and what did they find?', icon: 'clipboard' },
@@ -190,9 +261,42 @@ const PAGE_LABELS = {
   '/docs': 'Documentation',
 }
 
-function getContextualPrompts(path) {
+// Settings tab labels for richer context injection
+const SETTINGS_TAB_LABELS = {
+  'upload': 'Scan Management',
+  'dedup': 'Deduplication Settings',
+  'risk': 'Risk Scoring Configuration',
+  'tags': 'Tag Manager',
+  'sla': 'SLA Configuration',
+  'exceptions': 'Exceptions & Waivers',
+  'ownership': 'Ownership Rules',
+  'roles': 'RBAC / Custom Roles',
+  'users': 'User Management',
+  'integrations': 'Integrations',
+  'integration-builder': 'Integration Builder',
+  'audit-log': 'Audit Log',
+  'orgs': 'Organization Management',
+}
+
+function _getSettingsTab(path, search) {
+  if (!path || !path.startsWith('/settings')) return null
+  // Check search params for tab
+  if (search) {
+    const params = new URLSearchParams(search)
+    return params.get('tab') || 'upload'
+  }
+  return 'upload'
+}
+
+function getContextualPrompts(path, search) {
   if (!path) return null
-  // Exact match first (e.g., /findings, /assets, /campaigns)
+  // Settings with tab query param — try exact tab match first
+  if (path === '/settings' && search) {
+    const tab = _getSettingsTab(path, search)
+    const tabKey = `/settings?tab=${tab}`
+    if (CONTEXTUAL_PROMPTS[tabKey]) return CONTEXTUAL_PROMPTS[tabKey]
+  }
+  // Exact match (e.g., /findings, /assets, /campaigns)
   if (CONTEXTUAL_PROMPTS[path]) return CONTEXTUAL_PROMPTS[path]
   // Detail page match (e.g., /findings/123 → /findings/)
   // Sort keys longest-first so /workflows/ matches before /
@@ -205,8 +309,13 @@ function getContextualPrompts(path) {
   return null
 }
 
-function getPageLabel(path) {
+function getPageLabel(path, search) {
   if (!path) return null
+  // Settings with tab
+  if (path === '/settings') {
+    const tab = _getSettingsTab(path, search)
+    return SETTINGS_TAB_LABELS[tab] || 'Settings'
+  }
   if (PAGE_LABELS[path]) return PAGE_LABELS[path]
   // Detail pages
   if (path.startsWith('/findings/')) return 'Finding detail'
@@ -272,6 +381,7 @@ Available app pages and their URL query parameters:
 - /agents — AI Agents
 - /tags — Tag Manager
 - / — Dashboard / Reports
+- /settings — Settings. Tabs (via ?tab= param): upload (Scan Management), dedup (Deduplication), risk (Risk Scoring), tags (Tag Manager), sla (SLA Config), exceptions (Exceptions/Waivers), ownership (Ownership Rules), roles (RBAC Roles), users (User Management), integrations (Integrations), integration-builder (Integration Builder), audit-log (Audit Log)
 
 When suggesting navigation, provide markdown links like: [View critical findings](/findings?severity=Critical)
 When referencing currently filtered data, acknowledge the active filters.`
@@ -536,6 +646,8 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
   const [thinkingStep, setThinkingStep] = useState(-1)
   const [tokenUsage, setTokenUsage] = useState(null)
   const [recommendations, setRecommendations] = useState([])
+  const [autonomy, setAutonomy] = useState(null)
+  const [showAutonomy, setShowAutonomy] = useState(false)
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
   const abortRef = useRef(null)
@@ -566,12 +678,13 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
     },
   }), [navigate])
 
-  // Load conversations, suggested prompts, and token usage on open
+  // Load conversations, suggested prompts, token usage, and autonomy on open
   useEffect(() => {
     if (open) {
       getCopilotConversations().then(setConversations).catch(() => {})
       getCopilotSuggestedPrompts().then(setSuggestedPrompts).catch(() => {})
       getBillingUsage().then(setTokenUsage).catch(() => {})
+      getCopilotAutonomy().then(setAutonomy).catch(() => {})
     }
   }, [open])
 
@@ -633,6 +746,7 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
   const sendMessage = useCallback(async (text) => {
     const msg = (text || input).trim()
     if (!msg || streaming) return
+    setShowAutonomy(false)
 
     // Auto-create conversation if none active
     let conv = activeConv
@@ -659,9 +773,10 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
     setMessages(prev => [...prev, userMsg])
 
     // Build context-enriched message for the backend
-    const pageLabel = getPageLabel(currentPath)
+    const pageLabel = getPageLabel(currentPath, currentSearch)
     const idMatch = currentPath?.match(/\/.+\/(\d+)/)
     const entityId = idMatch ? idMatch[1] : null
+    const settingsTab = _getSettingsTab(currentPath, currentSearch)
     let contextPrefix = ''
     if (pageLabel) {
       contextPrefix = `[User is currently viewing: ${pageLabel}${entityId ? ` (ID: ${entityId})` : ''}]`
@@ -671,17 +786,32 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
         contextPrefix += `\n[Active filters: ${filterDesc}]`
         contextPrefix += `\n[Current URL: ${currentPath}${currentSearch}]`
       }
+      // Add tool hints for settings tabs
+      if (currentPath === '/settings' && settingsTab) {
+        const tabHints = {
+          'upload': '[Use list_scans, get_scan_summary, delete_scan, rename_scan to help manage scans on this page]',
+          'dedup': '[Use get_dedup_config, update_dedup_config, run_dedup to help configure deduplication on this page]',
+          'risk': '[Use get_risk_config, update_risk_config, manage_criticality_rules, recalculate_risk_scores to help configure risk scoring on this page]',
+          'tags': '[Use create_tag, manage_tag, create_auto_tag_rule, manage_auto_tag_rule, run_auto_tag_rules, suggest_tagging_schema to help manage tags on this page]',
+          'sla': '[Use get_sla_config, update_sla_config, recalculate_sla, get_sla_status to help configure SLA deadlines on this page]',
+          'exceptions': '[Use list_exceptions, manage_exception, create_exception to help manage exceptions/waivers on this page]',
+          'ownership': '[Use list_ownership_rules, manage_ownership_rule, run_ownership_rules, get_owner_workload to help configure ownership on this page]',
+          'roles': '[Use list_custom_roles, manage_custom_role to help manage RBAC roles and permissions on this page]',
+          'integrations': '[Use list_integrations, call_integration_fetch, call_integration_push to help manage integrations on this page]',
+          'integration-builder': '[Use list_integration_builder_connectors, manage_integration, get_integration_runs to help manage integration pipelines on this page]',
+        }
+        if (tabHints[settingsTab]) contextPrefix += `\n${tabHints[settingsTab]}`
+      }
       // Add tool hints for detail pages so the agent knows which tool to call
-      if (entityId) {
+      else if (entityId) {
         if (currentPath.startsWith('/workflows/')) contextPrefix += `\n[Use get_workflow_detail with workflow_id=${entityId} to answer questions about this workflow]`
         else if (currentPath.startsWith('/findings/')) contextPrefix += `\n[Use get_finding_detail with finding_id=${entityId} to answer questions about this finding]`
         else if (currentPath.startsWith('/assets/')) contextPrefix += `\n[Use get_asset_profile with asset_id=${entityId} to answer questions about this asset]`
         else if (currentPath.startsWith('/campaigns/')) contextPrefix += `\n[Use query_findings with campaign context to answer questions about this campaign]`
         else if (currentPath.startsWith('/reports/')) contextPrefix += `\n[This is a saved report/dashboard. There is no report lookup tool — use query_findings, get_top_risky_assets, get_exploit_findings, get_quick_wins, get_sla_status, and other analysis tools to answer questions about the organization's security posture. Do NOT attempt to fetch a report by ID.]`
       }
-      contextPrefix += `\n${APP_ROUTES_CONTEXT}\n\n`
+      contextPrefix += `\n${APP_ROUTES_CONTEXT}`
     }
-    const enrichedMsg = contextPrefix + msg
 
     try {
       const token = getStoredToken()
@@ -696,7 +826,7 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
       const resp = await fetch(`${API_ORIGIN}/api/copilot/conversations/${conv.id}/message`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ message: enrichedMsg }),
+        body: JSON.stringify({ message: msg, context: contextPrefix || undefined }),
         signal: abortController.signal,
       })
 
@@ -911,6 +1041,73 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
           >
             <MessageSquare size={16} />
           </button>
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={() => setShowAutonomy(!showAutonomy)}
+              title="Autonomy level"
+              style={{
+                background: showAutonomy ? 'var(--bg)' : 'none',
+                border: showAutonomy ? '1px solid var(--border)' : 'none',
+                cursor: 'pointer',
+                color: showAutonomy ? 'var(--accent)' : 'var(--text-muted)',
+                padding: 4, borderRadius: 4, display: 'flex', alignItems: 'center', gap: 4,
+              }}
+            >
+              <Settings size={16} />
+              {autonomy && (
+                <span style={{
+                  width: 6, height: 6, borderRadius: '50%',
+                  background: AUTONOMY_LABELS[autonomy.level]?.color || '#6b7280',
+                  flexShrink: 0,
+                }} />
+              )}
+            </button>
+            {showAutonomy && (
+              <div style={{
+                position: 'absolute', top: '100%', right: 0, marginTop: 4,
+                background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                borderRadius: 8, padding: 8, width: 240, zIndex: 100,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 6, padding: '0 4px' }}>
+                  AUTONOMY LEVEL
+                </div>
+                {Object.entries(AUTONOMY_LABELS).map(([key, { label, desc, color }]) => (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      setCopilotAutonomy(key).then(r => {
+                        setAutonomy({ ...autonomy, level: key })
+                        setShowAutonomy(false)
+                      }).catch(err => {
+                        console.error('Failed to set autonomy:', err)
+                        alert(err?.detail || err?.message || 'Failed to update autonomy level')
+                      })
+                    }}
+                    style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 8,
+                      width: '100%', padding: '8px', borderRadius: 6,
+                      border: autonomy?.level === key ? `1px solid ${color}` : '1px solid transparent',
+                      background: autonomy?.level === key ? `${color}10` : 'none',
+                      cursor: 'pointer', textAlign: 'left',
+                    }}
+                    onMouseEnter={e => { if (autonomy?.level !== key) e.currentTarget.style.background = 'var(--bg)' }}
+                    onMouseLeave={e => { if (autonomy?.level !== key) e.currentTarget.style.background = 'none' }}
+                  >
+                    <span style={{
+                      width: 8, height: 8, borderRadius: '50%', background: color,
+                      flexShrink: 0, marginTop: 3,
+                    }} />
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{label}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.3 }}>{desc}</div>
+                    </div>
+                    {autonomy?.level === key && <Check size={14} style={{ color, flexShrink: 0, marginTop: 1, marginLeft: 'auto' }} />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             onClick={startNewConversation}
             title="New conversation"
@@ -1066,8 +1263,8 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
               <div style={{ textAlign: 'center' }}>
                 <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Security Copilot</div>
                 <div style={{ color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.5, maxWidth: 320 }}>
-                  {getPageLabel(currentPath)
-                    ? <>You're on <strong style={{ color: 'var(--text)' }}>{getPageLabel(currentPath)}</strong>
+                  {getPageLabel(currentPath, currentSearch)
+                    ? <>You're on <strong style={{ color: 'var(--text)' }}>{getPageLabel(currentPath, currentSearch)}</strong>
                       {describeActiveFilters(currentSearch) && <> with filters: <em style={{ color: 'var(--text)' }}>{describeActiveFilters(currentSearch)}</em></>}
                       . Ask me anything about what you see, or try a suggestion below.</>
                     : 'Your autonomous security agent. It queries your scan data, analyzes risk, creates campaigns, opens tickets, and notifies your team — all in one conversation.'
@@ -1077,7 +1274,7 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
 
               {/* Capability badges */}
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center', maxWidth: 360 }}>
-                {['Discover risks', 'Triage & prioritize', 'Create campaigns', 'Open tickets', 'Notify teams'].map(cap => (
+                {['Analyze attack surface', 'Build reports', 'Orchestrate actions', 'Open tickets', 'Deploy agents'].map(cap => (
                   <span key={cap} style={{
                     padding: '3px 10px', borderRadius: 20, fontSize: 10, fontWeight: 600,
                     background: 'var(--bg-secondary)', border: '1px solid var(--border)',
@@ -1088,7 +1285,7 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
                 ))}
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center', maxWidth: 380 }}>
-                {(getContextualPrompts(currentPath) || suggestedPrompts).map((p, i) => {
+                {(getContextualPrompts(currentPath, currentSearch) || suggestedPrompts).map((p, i) => {
                   const SIcon = ICON_MAP[p.icon] || ShieldAlert
                   return (
                     <button
