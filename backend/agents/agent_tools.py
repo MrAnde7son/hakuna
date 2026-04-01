@@ -656,8 +656,14 @@ def tag_assets(db: Session, params: dict):
     tag = db.query(Tag).filter(Tag.id == tag_id).first()
     if not tag:
         return {"error": f"Tag {tag_id} not found"}
+    capped_ids = asset_ids[:100]  # cap at 100
+    valid_ids = set(
+        r[0] for r in db.query(Asset.id).filter(Asset.id.in_(capped_ids)).all()
+    )
     created = 0
-    for aid in asset_ids[:100]:  # cap at 100
+    for aid in capped_ids:
+        if aid not in valid_ids:
+            continue
         exists = db.query(TagAssignment).filter(
             TagAssignment.tag_id == tag_id,
             TagAssignment.asset_id == aid,
