@@ -1664,7 +1664,7 @@ def run_auto_tag_rules(db: Session, params: dict):
 
     import services.tags as tag_engine
     results = tag_engine.run_all_auto_tag_rules(db, scan_id)
-    return {"scan_id": scan_id, "rules_executed": len(results), "results": results[:20]}
+    return {"scan_id": scan_id, "rules_executed": len(results), "results": dict(list(results.items())[:20])}
 
 
 @agent_tool(

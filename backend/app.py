@@ -57,6 +57,7 @@ import services.tags as tag_engine
 import services.rule_engine as rule_engine
 import services.workflow_engine as workflow_engine
 from services.nlp_search import parse_nlp_query
+from services.nlp_filters import apply_asset_nlp_filters, apply_finding_nlp_filters, severity_breakdown_grouped
 import services.integrations as integ_module
 import services.ownership_inference as ownership_inference
 from services.easm import enrich_assets_from_easm
@@ -1552,25 +1553,7 @@ def nlp_search(
             aq = aq.filter(or_(Asset.scan_id == scan_id, Asset.id.in_(_vm_asset_ids)))
         else:
             aq = aq.filter(Asset.scan_id == scan_id)
-    if af.get("min_critical") is not None:
-        aq = aq.filter(Asset.critical_count >= af["min_critical"])
-    if af.get("min_high") is not None:
-        aq = aq.filter(Asset.high_count >= af["min_high"])
-    if af.get("min_risk") is not None:
-        aq = aq.filter(Asset.risk_score >= af["min_risk"])
-    if af.get("environment"):
-        aq = aq.filter(Asset.environment_tag == af["environment"])
-    if af.get("search"):
-        from sqlalchemy import or_
-        pat = f"%{af['search']}%"
-        aq = aq.filter(or_(
-            Asset.hostname.ilike(pat), Asset.ip.ilike(pat),
-            Asset.fqdn.ilike(pat), Asset.os.ilike(pat),
-        ))
-    if af.get("source"):
-        aq = aq.filter(cast(Asset.source_systems, Text).ilike(f'%"{af["source"]}"%'))
-    if af.get("exclude_source"):
-        aq = aq.filter(~cast(Asset.source_systems, Text).ilike(f'%"{af["exclude_source"]}"%'))
+    aq = apply_asset_nlp_filters(aq, af, db)
     asset_count = aq.count()
 
     # ── Count matching findings ────────────────────────────────────────────────
@@ -1578,45 +1561,7 @@ def nlp_search(
     fq = apply_scan_org_filter(fq, org_ids)
     if scan_id:
         fq = fq.filter(Finding.scan_id == scan_id)
-    if ff.get("severity") is not None:
-        fq = fq.filter(Finding.severity == ff["severity"])
-    if ff.get("has_exploit"):
-        fq = fq.filter(Finding.exploit_available == True)
-    if ff.get("is_kev"):
-        fq = fq.filter(Finding.is_kev == True)
-    if ff.get("ransomware_linked"):
-        fq = fq.filter(Finding.ransomware_linked == True)
-    if ff.get("trending_in_news"):
-        fq = fq.filter(Finding.trending_in_news == True)
-    if ff.get("min_epss") is not None:
-        fq = fq.filter(Finding.epss_score >= ff["min_epss"])
-    if ff.get("effort_level"):
-        fq = fq.filter(Finding.effort_level == ff["effort_level"])
-    if ff.get("sla_status"):
-        fq = fq.filter(Finding.sla_status == ff["sla_status"])
-    if ff.get("cve"):
-        fq = fq.filter(Finding.cves.ilike(f"%{ff['cve']}%"))
-    if ff.get("plugin_family"):
-        fq = fq.filter(Finding.plugin_family == ff["plugin_family"])
-    if ff.get("min_cvss") is not None:
-        fq = fq.filter(
-            (Finding.cvss3_base_score >= ff["min_cvss"]) |
-            (Finding.cvss2_base_score >= ff["min_cvss"])
-        )
-    if ff.get("min_priority") is not None:
-        fq = fq.filter(Finding.priority_score >= ff["min_priority"])
-    if ff.get("port"):
-        fq = fq.filter(Finding.port == ff["port"])
-    if ff.get("search"):
-        fq = fq.filter(
-            Finding.plugin_name.ilike(f"%{ff['search']}%") |
-            Finding.synopsis.ilike(f"%{ff['search']}%") |
-            Finding.plugin_id.ilike(f"%{ff['search']}%")
-        )
-    if ff.get("source"):
-        fq = fq.filter(cast(Finding.source_systems, Text).ilike(f'%"{ff["source"]}"%'))
-    if ff.get("exclude_source"):
-        fq = fq.filter(~cast(Finding.source_systems, Text).ilike(f'%"{ff["exclude_source"]}"%'))
+    fq = apply_finding_nlp_filters(fq, ff, db)
     finding_count = fq.count()
 
     return {
@@ -8960,36 +8905,7 @@ def nlp_report_query(
     aq = apply_scan_org_filter(aq, org_ids)
     if scan_id:
         aq = aq.filter(Asset.scan_id == scan_id)
-    if af.get("search"):
-        pat = f"%{af['search']}%"
-        aq = aq.filter(
-            Asset.hostname.ilike(pat) | Asset.ip.ilike(pat) |
-            Asset.os.ilike(pat) | Asset.fqdn.ilike(pat)
-        )
-    if af.get("environment"):
-        aq = aq.filter(Asset.environment_tag.ilike(f"%{af['environment']}%"))
-    if af.get("min_risk") is not None:
-        aq = aq.filter(Asset.risk_score >= float(af["min_risk"]))
-    if af.get("max_risk") is not None:
-        aq = aq.filter(Asset.risk_score <= float(af["max_risk"]))
-    if af.get("min_critical") is not None:
-        aq = aq.filter(Asset.critical_count >= int(af["min_critical"]))
-    if af.get("min_high") is not None:
-        aq = aq.filter(Asset.high_count >= int(af["min_high"]))
-    if af.get("criticality") is not None:
-        aq = aq.filter(Asset.criticality >= int(af["criticality"]))
-    if af.get("asset_status"):
-        aq = aq.filter(Asset.asset_status == af["asset_status"])
-    if af.get("is_internet_facing"):
-        aq = aq.filter(Asset.is_internet_facing == True)
-    if af.get("tags"):
-        tag_list = [t.strip() for t in af["tags"].split(",")]
-        from models.models import TagAssignment, Tag
-        tag_subq = db.query(TagAssignment.asset_id).join(Tag, TagAssignment.tag_id == Tag.id).filter(
-            TagAssignment.asset_id.isnot(None),
-            or_(*[Tag.value.ilike(f"%{t}%") for t in tag_list])
-        )
-        aq = aq.filter(Asset.id.in_(tag_subq))
+    aq = apply_asset_nlp_filters(aq, af, db)
     aq = aq.order_by(desc(Asset.risk_score))
     total_assets = aq.count()
     assets = aq.limit(20).all()
@@ -8999,80 +8915,11 @@ def nlp_report_query(
     fq = apply_scan_org_filter(fq, org_ids)
     if scan_id:
         fq = fq.filter(Finding.scan_id == scan_id)
-    if ff.get("severity") is not None:
-        fq = fq.filter(Finding.severity == int(ff["severity"]))
-    elif ff.get("severity_list"):
-        fq = fq.filter(Finding.severity.in_([int(s) for s in ff["severity_list"]]))
-    if ff.get("has_exploit"):
-        fq = fq.filter(Finding.exploit_available == True)
-    if ff.get("is_kev"):
-        fq = fq.filter(Finding.is_kev == True)
-    if ff.get("ransomware_linked"):
-        fq = fq.filter(Finding.ransomware_linked == True)
-    if ff.get("trending_in_news"):
-        fq = fq.filter(Finding.trending_in_news == True)
-    if ff.get("zero_day"):
-        fq = fq.filter(Finding.zero_day == True)
-    if ff.get("is_regression"):
-        fq = fq.filter(Finding.is_regression == True)
-    if ff.get("auto_resolved"):
-        fq = fq.filter(Finding.auto_resolved == True)
-    if ff.get("min_epss") is not None:
-        fq = fq.filter(Finding.epss_score >= float(ff["min_epss"]))
-    if ff.get("min_cvss") is not None:
-        fq = fq.filter(
-            or_(Finding.cvss3_score >= float(ff["min_cvss"]),
-                Finding.cvss2_score >= float(ff["min_cvss"]))
-        )
-    if ff.get("min_vpr") is not None:
-        fq = fq.filter(Finding.vpr_score >= float(ff["min_vpr"]))
-    if ff.get("min_priority") is not None:
-        fq = fq.filter(Finding.priority_score >= float(ff["min_priority"]))
-    if ff.get("sla_status"):
-        fq = fq.filter(Finding.sla_status == ff["sla_status"])
-    if ff.get("effort_level"):
-        fq = fq.filter(Finding.effort_level == ff["effort_level"])
-    if ff.get("workflow_status"):
-        wf_val = ff["workflow_status"]
-        if wf_val == "excepted":
-            fq = fq.filter(Finding.exception_id.isnot(None))
-        else:
-            fq = fq.filter(Finding.workflow_status == wf_val)
-    if ff.get("plugin_family"):
-        fq = fq.filter(Finding.plugin_family.ilike(f"%{ff['plugin_family']}%"))
-    if ff.get("cve"):
-        fq = fq.filter(cast(Finding.cves, Text).ilike(f"%{ff['cve']}%"))
-    if ff.get("port"):
-        fq = fq.filter(Finding.port == ff["port"])
-    if ff.get("has_ttps"):
-        fq = fq.filter(Finding.matched_ttps.isnot(None), cast(Finding.matched_ttps, Text) != "[]")
-    if ff.get("tactic"):
-        fq = fq.filter(cast(Finding.matched_ttps, Text).ilike(f"%{ff['tactic']}%"))
-    if ff.get("technique_id"):
-        fq = fq.filter(cast(Finding.matched_ttps, Text).ilike(f"%{ff['technique_id']}%"))
-    if ff.get("tags"):
-        tag_list = [t.strip() for t in ff["tags"].split(",")]
-        from models.models import TagAssignment, Tag
-        tag_subq = db.query(TagAssignment.finding_id).join(Tag, TagAssignment.tag_id == Tag.id).filter(
-            TagAssignment.finding_id.isnot(None),
-            or_(*[Tag.value.ilike(f"%{t}%") for t in tag_list])
-        )
-        fq = fq.filter(Finding.id.in_(tag_subq))
-    if ff.get("search"):
-        pat = f"%{ff['search']}%"
-        fq = fq.filter(
-            Finding.plugin_name.ilike(pat) | Finding.synopsis.ilike(pat) |
-            Finding.plugin_id.ilike(pat)
-        )
+    fq = apply_finding_nlp_filters(fq, ff, db)
     # If asset filters produced an asset set, scope findings to those assets
     if af and total_assets > 0:
-        asset_ids = [a.id for a in assets]
-        if len(asset_ids) < total_assets:
-            # Get all matching asset IDs for scoping
-            all_asset_ids = [r[0] for r in aq.with_entities(Asset.id).limit(500).all()]
-            fq = fq.filter(Finding.asset_id.in_(all_asset_ids))
-        else:
-            fq = fq.filter(Finding.asset_id.in_(asset_ids))
+        asset_id_subq = aq.with_entities(Asset.id).subquery()
+        fq = fq.filter(Finding.asset_id.in_(asset_id_subq))
 
     sort_col = Finding.priority_score
     if parsed.get("sort"):
@@ -9088,15 +8935,8 @@ def nlp_report_query(
     total_findings = fq.count()
     findings = fq.limit(50).all()
 
-    # ── Severity breakdown ─────────────────────────────────
-    sev_labels = {4: "critical", 3: "high", 2: "medium", 1: "low", 0: "info"}
-    by_severity = {}
-    for sev_int, sev_label in sev_labels.items():
-        by_severity[sev_label] = fq.filter(Finding.severity == sev_int).count()
-
-    # Reset filter chain for sev counts on the already-filtered query
-    # Re-run with the same base query to get severity breakdown
-    sev_breakdown = {sev_labels[s]: fq.filter(Finding.severity == s).count() for s in sev_labels}
+    # ── Severity breakdown (single GROUP BY) ───────────────
+    sev_breakdown = severity_breakdown_grouped(fq)
 
     # ── Serialise ──────────────────────────────────────────
     def _finding(f):
