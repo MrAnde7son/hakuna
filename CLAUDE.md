@@ -2,7 +2,7 @@
 
 ## What is Hakuna?
 
-Multi-tenant vulnerability management and remediation platform. Ingests scan data (Nessus, Qualys, Rapid7, OpenVAS), deduplicates and prioritizes findings, tracks remediation campaigns, and integrates with ticketing/chat systems. Supports MSSP parent-child tenancy, AI agents, workflow automation, and threat intelligence enrichment.
+Multi-tenant exposure management platform. Ingests scan data (Nessus, Qualys, Rapid7, OpenVAS), deduplicates and prioritizes findings, tracks remediation campaigns, and integrates with ticketing/chat systems. Supports MSSP parent-child tenancy, AI agents, workflow automation, and threat intelligence enrichment.
 
 ## Tech Stack
 

@@ -1,5 +1,5 @@
 """
-Hakuna Remediation Platform — FastAPI backend
+Hakuna Exposure Management Platform — FastAPI backend
 """
 import os
 import sys
@@ -309,7 +309,7 @@ if _sentry_dsn:
         profile_lifecycle="trace",
     )
 
-app = FastAPI(title="Hakuna Remediation Platform", version="1.0.0", docs_url="/api/docs", redoc_url="/api/redoc", openapi_url="/openapi.json")
+app = FastAPI(title="Hakuna Exposure Management Platform", version="1.0.0", docs_url="/api/docs", redoc_url="/api/redoc", openapi_url="/openapi.json")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)

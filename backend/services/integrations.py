@@ -498,7 +498,7 @@ def _test_slack(cfg: dict) -> dict:
     webhook_url = cfg.get("webhook_url")
     if not webhook_url:
         return {"status": "error", "detail": "No webhook URL"}
-    r = requests.post(webhook_url, json={"text": "Hakuna Remediation Platform — connection test"}, timeout=10)
+    r = requests.post(webhook_url, json={"text": "Hakuna Exposure Management Platform — connection test"}, timeout=10)
     r.raise_for_status()
     return {"status": "ok"}
 
@@ -558,7 +558,7 @@ def _test_teams(cfg: dict) -> dict:
         "@type": "MessageCard",
         "@context": "http://schema.org/extensions",
         "summary": "Connection test",
-        "sections": [{"text": "Hakuna Remediation Platform — connection test"}],
+        "sections": [{"text": "Hakuna Exposure Management Platform — connection test"}],
     }
     r = requests.post(webhook_url, json=card, timeout=10)
     r.raise_for_status()

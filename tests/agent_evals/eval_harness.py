@@ -342,7 +342,7 @@ def results_to_json(results: List[EvalResult]) -> str:
 
 if __name__ == "__main__":
     print("""
-Agent Evaluation Harness — Hakuna Remediation Platform
+Agent Evaluation Harness — Hakuna Exposure Management Platform
 =======================================================
 
 Usage:

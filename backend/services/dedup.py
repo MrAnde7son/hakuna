@@ -1,5 +1,5 @@
 """
-Configurable deduplication engine for Hakuna Remediation Platform.
+Configurable deduplication engine for Hakuna Exposure Management Platform.
 
 Supports three strategies per entity type:
   keep_first  — on duplicate key, keep the record already in DB / seen first

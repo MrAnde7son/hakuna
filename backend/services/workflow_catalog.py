@@ -539,7 +539,7 @@ WORKFLOW_TEMPLATES = [
             {"node_id": "a1", "node_type": "action", "node_subtype": "send_email",
              "label": "Email Security Team", "config": {
                  "subject": "Remediation Required: {{count}} High/Critical Findings",
-                 "body_template": "Hello,\n\nA campaign run has identified {{count}} high or critical findings across {{assets}} asset(s) that require remediation.\n\nPlease review the findings table below and coordinate remediation with the appropriate teams.\n\nRegards,\Hakuna Remediation Platform",
+                 "body_template": "Hello,\n\nA campaign run has identified {{count}} high or critical findings across {{assets}} asset(s) that require remediation.\n\nPlease review the findings table below and coordinate remediation with the appropriate teams.\n\nRegards,\Hakuna Exposure Management Platform",
                  "include_findings_table": True
              }, "position_x": 660, "position_y": 200},
         ],
