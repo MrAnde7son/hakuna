@@ -108,7 +108,7 @@ def get_openai_tool_schemas(tool_names: list):
         "keyword": {"type": "string", "description": "Search plugin name, synopsis, or description"},
         "status": {"type": "string", "description": "Filter by status: 'open' (default), 'resolved', 'all'"},
         "workflow_status": {"type": "string", "description": "Filter by workflow status: 'open', 'accepted_risk', 'false_positive', 'compensating_control', or 'excepted' (combines risk/fp/control)"},
-        "has_exploit": {"type": "boolean", "description": "Filter findings with known exploits"},
+        "exploit": {"type": "boolean", "description": "Filter findings with known exploits"},
         "is_kev": {"type": "boolean", "description": "Filter CISA Known Exploited Vulnerabilities"},
         "ransomware_linked": {"type": "boolean", "description": "Filter ransomware-linked findings"},
         "trending_in_news": {"type": "boolean", "description": "Filter findings trending in news"},
@@ -183,8 +183,8 @@ def query_findings(db: Session, params: dict):
         q = q.filter(Finding.port == str(params["port"]))
 
     # Exploit & threat intel filters
-    if params.get("has_exploit") is not None:
-        q = q.filter(Finding.exploit_available == params["has_exploit"])
+    if params.get("exploit") is not None:
+        q = q.filter(Finding.exploit_available == params["exploit"])
     if params.get("is_kev") is not None:
         q = q.filter(Finding.is_kev == params["is_kev"])
     if params.get("ransomware_linked") is not None:

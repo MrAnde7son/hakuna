@@ -547,12 +547,14 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
     a: ({ href, children }) => {
       const isInternal = href && href.startsWith('/')
       if (isInternal) {
+        // Normalize copilot tool param names to frontend URL param names
+        const normalizedHref = href.replace(/([?&])has_exploit(=)/g, '$1exploit$2')
         return (
           <a
-            href={href}
+            href={normalizedHref}
             onClick={(e) => {
               e.preventDefault()
-              navigate(href)
+              navigate(normalizedHref)
             }}
             style={{ color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer' }}
           >
