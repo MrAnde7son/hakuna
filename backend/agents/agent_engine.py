@@ -298,13 +298,20 @@ def get_default_model(db: Session) -> str:
     return SONNET  # ultimate fallback
 
 
-def _find_fallback_model(db: Session, exclude_providers: set) -> Optional[tuple]:
+def _find_fallback_model(db: Session, exclude_providers: set, *, tool_count: int = 0) -> Optional[tuple]:
     """Find an alternative model/provider, skipping the excluded providers.
 
     Returns (model, provider) or None if no fallback is available.
+
+    When tool_count is high (e.g. copilot with 50+ tools), Groq is excluded
+    because the tool schemas alone exceed Groq's on-demand TPM limits.
     """
     for provider, env_var, fallback_model in _PROVIDER_DEFAULTS:
         if provider in exclude_providers:
+            continue
+        # Groq's on-demand tier has strict per-request token limits (~12K TPM).
+        # Agents with many tools generate tool schemas that exceed this limit.
+        if provider == "groq" and tool_count > 10:
             continue
         try:
             _validate_provider_configured(db, provider)
@@ -1110,7 +1117,7 @@ def run_agent(agent: Agent, user_input: str, db: Session) -> AgentRun:
         return run
     except Exception as e:
         # Runtime failure (e.g. permission denied) — try a different provider
-        fallback = _find_fallback_model(db, exclude_providers={provider})
+        fallback = _find_fallback_model(db, exclude_providers={provider}, tool_count=len(agent.tools or []))
         if fallback:
             fb_model, fb_provider = fallback
             logger.warning("Provider %s failed (%s), falling back to %s/%s", provider, e, fb_provider, fb_model)
@@ -1187,7 +1194,7 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session):
         return
     except Exception as e:
         # Runtime failure (e.g. permission denied) — try a different provider
-        fallback = _find_fallback_model(db, exclude_providers={provider})
+        fallback = _find_fallback_model(db, exclude_providers={provider}, tool_count=len(agent.tools or []))
         if fallback:
             fb_model, fb_provider = fallback
             logger.warning("Provider %s failed (%s), falling back to %s/%s", provider, e, fb_provider, fb_model)

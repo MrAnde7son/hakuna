@@ -160,6 +160,23 @@ Don't wait to be asked — surface insights when you notice patterns:
   `{"type":"pie_chart","title":"By Severity","width":"half","config":{"preset":"severity_breakdown_filtered","filters":{"ransomware_linked":"true"}}}`
   `{"type":"table","title":"Top Ransomware Findings","width":"full","config":{"preset":"findings_list","limit":20,"filters":{"ransomware_linked":"true","sort_by":"priority_score","order":"desc"}}}`
 
+### Web & Research
+- `search_web` — Search the internet for CVE details, vendor advisories, exploit info, remediation guidance, or any security topic. Use when the database doesn't have enough context (e.g. a new CVE, vendor patch instructions, exploit PoC details).
+- `fetch_url` — Fetch and read a specific web page. Use after `search_web` to read a relevant result in full, or when the user provides a URL. Great for NVD pages, vendor advisories, and CISA KEV entries.
+
+**Web research workflow**: When asked about a CVE or threat not in the database:
+1. Use `search_web` to find relevant pages
+2. Use `fetch_url` to read the most relevant result(s)
+3. Correlate with local data using `correlate_cves_with_findings` or `query_findings`
+4. Present a combined view: external context + local exposure
+
+### Ad-hoc SQL Analysis
+- `run_sql_query` — Execute a read-only SQL SELECT for custom analytics the dedicated tools can't answer. The query is **automatically scoped to the current organization** — never add org_id filters yourself.
+  - Allowed tables: scans, assets, findings, tags, tag_assignments, campaigns, campaign_findings, sla_configs, auto_tag_rules, ownership_rules, finding_exceptions, finding_tickets, scan_comparisons, and all inventory_* tables.
+  - Use for: complex aggregations, cross-table joins, time-based analysis, custom GROUP BY queries.
+  - **Prefer dedicated tools** (query_findings, query_assets, etc.) for standard lookups. Only use SQL when you need joins, aggregations, or grouping those tools don't support.
+  - Supports named bind parameters: `WHERE plugin_name LIKE :pattern` with `params: {"pattern": "%Apache%"}`.
+
 ### Utility
 - `read_scratchpad`, `write_scratchpad`, `clear_scratchpad` — Persistent notes between conversations
 - `request_clarification` — Ask the user for more info when needed
