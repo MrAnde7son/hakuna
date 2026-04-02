@@ -12,10 +12,20 @@ import {
 import StepAuthenticate from './steps/StepAuthenticate.jsx'
 import StepFieldMapper from './steps/StepFieldMapper.jsx'
 
-const STEPS = [
+const STEPS_API = [
   { key: 'source', label: 'Choose Source' },
   { key: 'auth', label: 'Authenticate' },
   { key: 'configure', label: 'Connect' },
+  { key: 'records', label: 'Pick Records' },
+  { key: 'target', label: 'Pick Target' },
+  { key: 'map', label: 'Map Fields' },
+  { key: 'preview', label: 'Preview' },
+  { key: 'save', label: 'Save' },
+]
+const STEPS_FILE = [
+  { key: 'source', label: 'Choose Source' },
+  { key: 'auth', label: 'Configure' },
+  { key: 'configure', label: 'Upload File' },
   { key: 'records', label: 'Pick Records' },
   { key: 'target', label: 'Pick Target' },
   { key: 'map', label: 'Map Fields' },
@@ -52,6 +62,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [connectedUser, setConnectedUser] = useState(null)
   const [transportConfig, setTransportConfig] = useState({})
   const [transportType, setTransportType] = useState('api')
+  const STEPS = transportType === 'file' ? STEPS_FILE : STEPS_API
   const [recordsPath, setRecordsPath] = useState('')
   const [rawResponse, setRawResponse] = useState(null)
   const [sampleRecords, setSampleRecords] = useState([])
@@ -275,7 +286,11 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         setRecordsPath(result.detected_records_path)
       }
 
-      setStep(3) // advance to records picker
+      // For file transports with flat record arrays (PDF, DOCX, CSV, .nessus),
+      // skip the records picker — records are already extracted
+      const isFlat = transportType === 'file' && (result.sample_records || []).length > 0
+        && !result.detected_records_path
+      setStep(isFlat ? 4 : 3) // skip to Pick Target if records are flat
     } catch (e) {
       setConnectError(e.message)
     } finally {
@@ -582,7 +597,9 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   // ── Step 2: Configure + inline auth + connect ──
   const renderConfigure = () => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Connect to API</h3>
+      <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
+        {transportType === 'file' ? 'Upload File' : transportType === 'sql' ? 'Connect to Database' : transportType === 'mcp' ? 'Connect to MCP Server' : 'Connect to API'}
+      </h3>
 
       {/* Direction selector (only for custom builds, templates pre-set this) */}
       {!selectedConnector && (
@@ -907,12 +924,12 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
               Drop a file here or click to browse
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-              Supports .csv, .json, .xml, .yaml, .nessus — any structured data
+              Supports .csv, .json, .xml, .yaml, .nessus, .pdf, .docx
             </div>
             <input
               id="file-upload-input"
               type="file"
-              accept=".nessus,.csv,.json,.xml,.yaml,.yml,.html,.txt"
+              accept=".nessus,.csv,.json,.xml,.yaml,.yml,.html,.txt,.pdf,.docx"
               style={{ display: 'none' }}
               onChange={async e => {
                 const file = e.target.files[0]
@@ -1209,10 +1226,35 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         </div>
       )}
 
+      {transportType === 'file' && loading && ['pdf', 'docx'].includes(transportConfig.format) && (
+        <div style={{
+          padding: 16, borderRadius: 8, background: 'var(--accent-bg, #3b82f610)',
+          border: '1px solid var(--accent-border, #3b82f630)',
+          display: 'flex', flexDirection: 'column', gap: 8,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <InlineSpinner />
+            <span style={{ fontSize: 13, fontWeight: 600 }}>Extracting findings with AI...</span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            The document is being analyzed by AI to extract structured findings. This typically takes 30–90 seconds depending on report size.
+          </div>
+          <div style={{
+            height: 3, borderRadius: 2, background: 'var(--border)', overflow: 'hidden', marginTop: 4,
+          }}>
+            <div style={{
+              height: '100%', borderRadius: 2, background: 'var(--accent)',
+              animation: 'indeterminate 1.5s ease-in-out infinite',
+              width: '40%',
+            }} />
+          </div>
+          <style>{`@keyframes indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }`}</style>
+        </div>
+      )}
       <Button onClick={handleConnect}
         disabled={loading || (transportType === 'api' && !transportConfig.base_url) || (transportType === 'file' && !transportConfig.path) || (transportType === 'sql' && !transportConfig.query) || (transportType === 'mcp' && !transportConfig.server_url)}
         style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-        {loading ? <><InlineSpinner /> Connecting...</> : <>Connect & Fetch Response <ArrowRight size={14} /></>}
+        {loading ? <><InlineSpinner /> {transportType === 'file' ? 'Parsing...' : 'Connecting...'}</> : <>{transportType === 'file' ? 'Parse File' : 'Connect & Fetch Response'} <ArrowRight size={14} /></>}
       </Button>
     </div>
   )

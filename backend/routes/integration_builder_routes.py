@@ -284,7 +284,7 @@ async def live_connect(body: ConnectRequest, db: Session = Depends(get_db),
         if body.records_path:
             config["records_path"] = body.records_path
 
-        transport = transport_cls()
+        transport = transport_cls(db=db) if body.transport_type == "file" else transport_cls()
         result = await transport.connect(config, credentials)
 
         if not result.success:
@@ -350,7 +350,7 @@ async def preview_mapping(body: PreviewRequest, db: Session = Depends(get_db),
         if body.records_path:
             config["records_path"] = body.records_path
 
-        transport = transport_cls()
+        transport = transport_cls(db=db) if body.transport_type == "file" else transport_cls()
         result = await transport.connect(config, credentials)
         if not result.success:
             raise HTTPException(400, result.error)

@@ -1048,6 +1048,7 @@ export const deleteCredential = (id) => request(`${IB}/credentials/${id}`, { met
 
 export const integrationConnect = (data) => request(`${IB}/connect`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  timeout: data.transport_type === 'file' ? 180_000 : undefined, // PDF/DOCX LLM extraction can take minutes
 })
 export const integrationPreview = (data) => request(`${IB}/preview`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),

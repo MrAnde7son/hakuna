@@ -62,7 +62,7 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
         transport_cls = TRANSPORTS.get(integration.transport_type)
         if not transport_cls:
             raise ValueError(f"Unknown transport type: {integration.transport_type}")
-        transport = transport_cls()
+        transport = transport_cls(db=db) if integration.transport_type == "file" else transport_cls()
 
         config = integration.transport_config or {}
         config["records_path"] = integration.records_path
