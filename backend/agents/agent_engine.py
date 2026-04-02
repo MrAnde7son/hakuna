@@ -256,10 +256,10 @@ def _get_ollama_models(cfg) -> list:
 # Provider → (env var, default model)
 _PROVIDER_DEFAULTS = [
     ("anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-4-6"),
-    ("groq", "GROQ_API_KEY", "llama-3.3-70b-versatile"),
     ("openai", "OPENAI_API_KEY", "gpt-4o"),
     ("google_gemini", "GOOGLE_API_KEY", "gemini-2.5-flash"),
     ("vertex_ai", "GOOGLE_CLOUD_PROJECT", "vertex/gemini-2.5-flash"),
+    ("groq", "GROQ_API_KEY", "llama-3.3-70b-versatile"),
     ("ollama", None, "ollama/llama3"),
 ]
 
