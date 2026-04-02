@@ -866,7 +866,7 @@ export default function OnboardingWizard() {
                 <ArrowRight size={14} />
               </button>
             )}
-            {step === 5 && !applying && (
+            {step === 5 && !applying && !error && (
               <button
                 onClick={handleFinish}
                 style={{
@@ -880,6 +880,22 @@ export default function OnboardingWizard() {
                 }}
               >
                 Go to Dashboard <ChevronRight size={14} />
+              </button>
+            )}
+            {step === 5 && !applying && error && (
+              <button
+                onClick={() => { setStep(4); setError(null) }}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '10px 22px', borderRadius: 8,
+                  border: 'none',
+                  background: 'var(--accent)',
+                  color: '#fff',
+                  fontWeight: 700, fontSize: 13,
+                  cursor: 'pointer',
+                }}
+              >
+                <ArrowLeft size={14} /> Try Again
               </button>
             )}
           </div>

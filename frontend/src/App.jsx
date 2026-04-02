@@ -947,10 +947,12 @@ function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [copilotOpen, setCopilotOpen] = useState(false)
   const [cmdkOpen, setCmdkOpen] = useState(false)
+  const [onboardingChecked, setOnboardingChecked] = useState(false)
   const isMobile = useIsMobile()
   const location = useLocation()
   const { isPro } = useAuth()
   const navigate = useNavigate()
+  const { t } = useTranslation()
 
   // Redirect to onboarding if not completed
   useEffect(() => {
@@ -958,11 +960,12 @@ function AppShell() {
       .then(status => {
         if (status && !status.completed) {
           navigate('/onboarding', { replace: true })
+        } else {
+          setOnboardingChecked(true)
         }
       })
-      .catch(() => {}) // Silently ignore — don't block the app
+      .catch(() => { setOnboardingChecked(true) }) // Don't block the app on error
   }, [])
-  const { t } = useTranslation()
 
   // Cmd+K shortcut
   useEffect(() => {
@@ -977,11 +980,12 @@ function AppShell() {
   }, [])
 
   useEffect(() => {
+    if (!onboardingChecked) return
     getScans().then(data => {
       setScans(data)
       setScansLoaded(true)
     }).catch(() => { setScansFailed(true); setScansLoaded(true) })
-  }, [])
+  }, [onboardingChecked])
 
   // Close mobile drawer on route change
   useEffect(() => {
