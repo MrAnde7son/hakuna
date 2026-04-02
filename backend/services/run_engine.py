@@ -6,7 +6,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from models.models import Integration, IntegrationRun
+from models.models import Integration, IntegrationRun, Scan
 from services.field_mapper import map_record, render_template
 from services.upsert_handler import upsert, upsert_batch
 from services import credential_vault
@@ -71,8 +71,9 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
         config = integration.transport_config or {}
         config["records_path"] = integration.records_path
 
+        pull_scan_id = None
         if integration.direction == "pull":
-            await _execute_pull(
+            pull_scan_id = await _execute_pull(
                 db, transport, config, credentials, integration, run, progress
             )
         elif integration.direction == "push":
@@ -83,7 +84,7 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
         # Run full post-ingest pipeline on pulled data
         if integration.direction == "pull":
             from services.post_ingest import finalize_scan
-            finalize_scan(db, scan_id=None, org_id=integration.org_id)
+            finalize_scan(db, scan_id=pull_scan_id, org_id=integration.org_id)
 
         # Mark success
         run.status = "success" if not run.errors else "partial"
@@ -157,6 +158,17 @@ async def _execute_pull(db, transport, config, credentials, integration, run, pr
     entity = integration.entity
     source_system = integration.template_id or "custom"
 
+    # Create a placeholder scan so assets/findings have a valid scan_id FK
+    placeholder_scan = Scan(
+        org_id=integration.org_id,
+        filename=f"integration:{integration.name or integration.id}",
+        source_type=source_system,
+        status="completed",
+    )
+    db.add(placeholder_scan)
+    db.flush()
+    scan_id = placeholder_scan.id
+
     batch = []
     batch_size = 500
     total_fetched = 0
@@ -186,7 +198,7 @@ async def _execute_pull(db, transport, config, credentials, integration, run, pr
         batch.append(mapped)
 
         if len(batch) >= batch_size:
-            counts = upsert_batch(db, entity, batch, dedup_key, integration.id)
+            counts = upsert_batch(db, entity, batch, dedup_key, integration.id, scan_id=scan_id)
             total_inserted += counts["inserted"]
             total_updated += counts["updated"]
             total_skipped += counts["skipped"]
@@ -203,7 +215,7 @@ async def _execute_pull(db, transport, config, credentials, integration, run, pr
 
     # Final batch
     if batch:
-        counts = upsert_batch(db, entity, batch, dedup_key, integration.id)
+        counts = upsert_batch(db, entity, batch, dedup_key, integration.id, scan_id=scan_id)
         total_inserted += counts["inserted"]
         total_updated += counts["updated"]
         total_skipped += counts["skipped"]
@@ -216,6 +228,8 @@ async def _execute_pull(db, transport, config, credentials, integration, run, pr
     run.records_skipped = total_skipped
     run.errors = errors[:100]  # cap stored errors
     run.step_log = progress.events
+
+    return scan_id
 
 
 async def _execute_push(db, transport, config, credentials, integration, run, progress):

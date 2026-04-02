@@ -326,6 +326,7 @@ def upsert_batch(db: Session, entity_type: str, mapped_records: list, dedup_key:
             if result.errors:
                 counts["errors"].extend(result.errors)
         except Exception as e:
+            db.rollback()
             counts["errors"].append(str(e))
             counts["skipped"] += 1
     try:
