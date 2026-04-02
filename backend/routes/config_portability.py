@@ -17,12 +17,15 @@ import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
 
+from core.auth import require_auth
 from core.database import get_db
 from models.models import (
-    Tag, AutoTagRule, ReportTemplate,
+    User, Tag, AutoTagRule, ReportTemplate,
     Campaign, Workflow, WorkflowNode, WorkflowEdge,
 )
 import core.risk_config as rc
@@ -112,16 +115,28 @@ def _find_or_create_tag(spec: dict, db: Session, conflict: str) -> Tag:
 # ─────────────────────────────────────────────
 
 @router.get("/config/export/risk_config")
-def export_risk_config():
-    cfg = rc.load_config()
+def export_risk_config(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    org_id = int(x_org_context) if x_org_context else user.org_id
+    cfg = rc.load_config_for_org(db, org_id)
+    cfg.pop("is_org_override", None)
     return _envelope("risk_config", cfg)
 
 
 @router.post("/config/import/risk_config")
-async def import_risk_config(file: UploadFile = File(...)):
+async def import_risk_config(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    org_id = int(x_org_context) if x_org_context else user.org_id
     payload = await _read_json_upload(file)
     data = _validate_envelope(payload, "risk_config")
-    rc.save_config(data)
+    rc.save_config_for_org(db, org_id, data)
     return {"status": "ok", "message": "Risk config imported successfully"}
 
 
