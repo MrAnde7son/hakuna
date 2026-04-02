@@ -4799,3 +4799,234 @@ def manage_auto_tag_rule(db: Session, params: dict):
         db.commit()
         return {"message": f"Auto-tag rule '{name}' deleted."}
     return {"error": f"Unknown action '{action}'."}
+
+
+# ── Web & SQL tools ─────────────────────────────────────────────────
+
+@agent_tool(
+    "search_web",
+    "Search the internet for security advisories, CVE details, vendor patches, exploit information, or remediation guidance. "
+    "Returns top results with titles, URLs, and snippets. "
+    "WHEN TO CALL: When you need real-time threat intel, CVE context not in the database, vendor advisory links, or remediation steps from external sources.",
+    {
+        "query": {"type": "string", "description": "Search query (e.g. 'CVE-2024-3400 PAN-OS exploit mitigation')"},
+        "max_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"},
+    },
+)
+def search_web(db: Session, params: dict):
+    query = params.get("query", "").strip()
+    if not query:
+        return {"error": "query is required"}
+    max_results = min(int(params.get("max_results", 5)), 10)
+    try:
+        from ddgs import DDGS
+        with DDGS() as ddgs:
+            raw = list(ddgs.text(query, max_results=max_results))
+        results = [
+            {"title": r.get("title", ""), "url": r.get("href", ""), "snippet": r.get("body", "")}
+            for r in raw
+        ]
+        return {"query": query, "results": results, "count": len(results)}
+    except Exception as e:
+        logger.exception("search_web failed")
+        return {"error": f"Web search failed: {str(e)}"}
+
+
+@agent_tool(
+    "fetch_url",
+    "Fetch the content of a web page and extract its main text. Useful for reading CVE advisories, vendor patches, "
+    "NVD entries, CISA KEV details, or documentation pages. Returns extracted text (up to 8000 chars). "
+    "WHEN TO CALL: When you have a specific URL from a search result or the user and need to read its content.",
+    {
+        "url": {"type": "string", "description": "Full URL to fetch (e.g. 'https://nvd.nist.gov/vuln/detail/CVE-2024-3400')"},
+    },
+)
+def fetch_url(db: Session, params: dict):
+    import httpx
+    from bs4 import BeautifulSoup
+
+    url = params.get("url", "").strip()
+    if not url:
+        return {"error": "url is required"}
+    if not url.startswith(("http://", "https://")):
+        return {"error": "url must start with http:// or https://"}
+
+    try:
+        resp = httpx.get(url, timeout=15, follow_redirects=True, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; HakunaCopilot/1.0)"
+        })
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        return {"error": f"HTTP {e.response.status_code} fetching {url}"}
+    except Exception as e:
+        return {"error": f"Failed to fetch URL: {str(e)}"}
+
+    content_type = resp.headers.get("content-type", "")
+    if "html" not in content_type and "text" not in content_type:
+        return {"error": f"Unsupported content type: {content_type}"}
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    # Remove noise
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form"]):
+        tag.decompose()
+    text = soup.get_text(separator="\n", strip=True)
+    # Collapse blank lines
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    text = "\n".join(lines)
+
+    max_chars = 8000
+    truncated = len(text) > max_chars
+    return {
+        "url": url,
+        "title": soup.title.string.strip() if soup.title and soup.title.string else "",
+        "content": text[:max_chars],
+        "truncated": truncated,
+        "length": len(text),
+    }
+
+
+# Table → org_id filter mapping for run_sql_query
+# "direct" = table has org_id column; "via_scan" = filter through scan_id → scans.org_id
+_SQL_TABLE_ORG_FILTER = {
+    "scans":               "direct",
+    "assets":              "via_scan",
+    "findings":            "via_scan",
+    "tags":                "direct",
+    "tag_assignments":     None,       # safe — joins to tags/findings which are filtered
+    "campaigns":           "direct",
+    "campaign_findings":   None,       # joins to campaigns
+    "sla_configs":         "direct",
+    "auto_tag_rules":      "direct",
+    "ownership_rules":     "direct",
+    "finding_exceptions":  "direct",
+    "finding_tickets":     None,       # joins to findings
+    "scan_comparisons":    "direct",
+    "inventory_users":     "via_scan",
+    "inventory_groups":    "via_scan",
+    "inventory_services":  "via_scan",
+    "inventory_net_conns": "via_scan",
+    "inventory_patches":   "via_scan",
+    "inventory_logged_on": "via_scan",
+    "inventory_scheduled_tasks": "via_scan",
+    "inventory_software":  "via_scan",
+    "inventory_security_controls": "via_scan",
+    "inventory_certificates": "via_scan",
+    "inventory_shares":    "via_scan",
+}
+
+_BLOCKED_SQL_KEYWORDS = {
+    "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE",
+    "REPLACE", "GRANT", "REVOKE", "EXEC", "EXECUTE", "MERGE", "UPSERT",
+    "ATTACH", "DETACH", "PRAGMA", "VACUUM", "REINDEX",
+}
+
+
+@agent_tool(
+    "run_sql_query",
+    "Execute a read-only SQL SELECT query against the database for ad-hoc analysis that existing tools can't answer. "
+    "The query is automatically scoped to the current organization — you do NOT need to add org_id filters. "
+    "Returns up to 200 rows. Use standard SQL; both SQLite and PostgreSQL are supported. "
+    "WHEN TO CALL: When the user asks an analytical question that requires custom aggregation, joins, or grouping "
+    "that no existing tool directly supports (e.g. 'which assets have the most critical findings older than 30 days?'). "
+    "Prefer dedicated query tools (query_findings, query_assets, etc.) for standard lookups.",
+    {
+        "sql": {"type": "string", "description": "SQL SELECT query. Do NOT include org_id filters — they are injected automatically."},
+        "params": {"type": "object", "description": "Optional named bind parameters (e.g. {\"cve\": \"CVE-2024-3400\"})"},
+    },
+)
+def run_sql_query(db: Session, params: dict):
+    import sqlglot
+    from sqlglot import exp
+    from sqlalchemy import text
+
+    sql = params.get("sql", "").strip()
+    bind_params = params.get("params") or {}
+    org_id = params.get("_org_id")
+    if not sql:
+        return {"error": "sql is required"}
+    if not org_id:
+        return {"error": "Organization context is required"}
+
+    # ── 1. Block non-SELECT statements ──────────────────────────────
+    first_keyword = sql.strip().split()[0].upper() if sql.strip() else ""
+    if first_keyword in _BLOCKED_SQL_KEYWORDS:
+        return {"error": f"Only SELECT queries are allowed. Got: {first_keyword}"}
+
+    # ── 2. Parse with sqlglot ───────────────────────────────────────
+    try:
+        parsed = sqlglot.parse(sql)
+    except Exception as e:
+        return {"error": f"SQL parse error: {str(e)}"}
+
+    if not parsed or len(parsed) != 1:
+        return {"error": "Provide exactly one SQL statement"}
+
+    stmt = parsed[0]
+    if not isinstance(stmt, exp.Select):
+        return {"error": "Only SELECT queries are allowed"}
+
+    # Check for subquery DML
+    for node in stmt.walk():
+        if isinstance(node, (exp.Insert, exp.Update, exp.Delete, exp.Drop, exp.Create, exp.Alter)):
+            return {"error": "Only SELECT queries are allowed — no DML/DDL in subqueries"}
+
+    # ── 3. Validate tables against allowlist ────────────────────────
+    referenced_tables = set()
+    for table_node in stmt.find_all(exp.Table):
+        table_name = table_node.name.lower()
+        referenced_tables.add(table_name)
+
+    disallowed = referenced_tables - set(_SQL_TABLE_ORG_FILTER.keys())
+    if disallowed:
+        return {
+            "error": f"Tables not allowed: {', '.join(sorted(disallowed))}",
+            "allowed_tables": sorted(_SQL_TABLE_ORG_FILTER.keys()),
+        }
+
+    # ── 4. Inject org_id filters ────────────────────────────────────
+    org_conditions = []
+    for table_name in referenced_tables:
+        filter_type = _SQL_TABLE_ORG_FILTER.get(table_name)
+        if filter_type == "direct":
+            org_conditions.append(f"{table_name}.org_id = :_org_id")
+        elif filter_type == "via_scan":
+            org_conditions.append(
+                f"{table_name}.scan_id IN (SELECT id FROM scans WHERE scans.org_id = :_org_id)"
+            )
+
+    # Append org filters to the original query
+    if org_conditions:
+        org_where = " AND ".join(org_conditions)
+        if " WHERE " in sql.upper():
+            final_sql = f"{sql} AND {org_where}"
+        else:
+            final_sql = f"{sql} WHERE {org_where}"
+    else:
+        final_sql = sql
+
+    # Add row limit
+    final_sql = f"SELECT * FROM ({final_sql}) AS _limited LIMIT 200"
+
+    # ── 5. Execute ──────────────────────────────────────────────────
+    bind_params["_org_id"] = org_id
+    try:
+        result = db.execute(text(final_sql), bind_params)
+        columns = list(result.keys())
+        rows = [dict(zip(columns, row)) for row in result.fetchall()]
+
+        # Serialize datetime objects
+        for row in rows:
+            for k, v in row.items():
+                if isinstance(v, datetime):
+                    row[k] = v.isoformat()
+
+        return {
+            "columns": columns,
+            "rows": rows,
+            "row_count": len(rows),
+            "truncated": len(rows) == 200,
+            "sql_executed": final_sql,
+        }
+    except Exception as e:
+        db.rollback()
+        return {"error": f"Query execution failed: {str(e)}"}
