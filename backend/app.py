@@ -823,7 +823,7 @@ def _run_scan_ingest(
         db.flush()
 
         # Load configs once (used throughout the upload)
-        risk_cfg = risk_engine.load_config()
+        risk_cfg = risk_engine.load_config_for_org(db, effective_org_id)
         dedup_cfg = dedup_engine.load_config()
 
         # Within-scan asset dedup: collapse duplicate hosts before creating DB records
@@ -4513,17 +4513,45 @@ def run_dedup(body: RunDedupBody, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────
 
 @app.get("/api/risk/config")
-def get_risk_config():
-    """Return the current risk scoring configuration."""
-    return risk_engine.load_config()
+def get_risk_config(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    """Return the risk scoring configuration (org-specific if override exists, else global)."""
+    org_id = int(x_org_context) if x_org_context else user.org_id
+    cfg = risk_engine.load_config_for_org(db, org_id)
+    cfg["is_org_override"] = risk_engine.has_org_override(db, org_id)
+    return cfg
 
 
 @app.put("/api/risk/config")
-async def save_risk_config(request: Request):
-    """Save risk scoring configuration."""
+async def save_risk_config(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    """Save risk scoring configuration for the current org."""
+    org_id = int(x_org_context) if x_org_context else user.org_id
     body = await request.json()
-    risk_engine.save_config(body)
+    body.pop("is_org_override", None)  # strip read-only field
+    risk_engine.save_config_for_org(db, org_id, body)
     return {"message": "Risk config saved"}
+
+
+@app.delete("/api/risk/config/org-override")
+def delete_risk_config_override(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    """Remove the org-level risk config override, reverting to global defaults."""
+    org_id = int(x_org_context) if x_org_context else user.org_id
+    removed = risk_engine.delete_config_for_org(db, org_id)
+    if removed:
+        return {"message": "Org risk config override removed. Global defaults will be used."}
+    return {"message": "No org-specific override existed. Already using global defaults."}
 
 
 class RecalculateBody(BaseModel):
@@ -4533,9 +4561,15 @@ class RecalculateBody(BaseModel):
 
 
 @app.post("/api/risk/recalculate")
-def recalculate_risk(body: RecalculateBody, db: Session = Depends(get_db)):
+def recalculate_risk(
+    body: RecalculateBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
     """Recompute risk scores (and optionally criticality + finding priorities) for all or one scan."""
-    cfg = risk_engine.load_config()
+    org_id = int(x_org_context) if x_org_context else user.org_id
+    cfg = risk_engine.load_config_for_org(db, org_id)
     intel = load_intel_json(str(INTEL_PATH)) if INTEL_PATH.exists() else {}
 
     asset_q = db.query(Asset)

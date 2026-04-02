@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from models.models import (
     Organization, Tag, AutoTagRule, OwnershipRule, SLAConfig,
     Campaign, Agent, ReportTemplate, FindingException, CustomRole,
+    Workflow, WorkflowNode, WorkflowEdge,
 )
 
 logger = logging.getLogger(__name__)
@@ -101,8 +102,312 @@ OBJECTIVES = [
     },
 ]
 
+# ── Notification preference options ─────────────────────────────
+
+NOTIFICATION_OPTIONS = [
+    {"id": "in_app", "label": "In-app notifications", "description": "Alerts within Hakuna's dashboard"},
+    {"id": "email_digest", "label": "Daily email digest", "description": "Summary of new findings and SLA status every morning"},
+    {"id": "email_realtime", "label": "Real-time email alerts", "description": "Immediate email for critical findings and SLA breaches"},
+    {"id": "slack", "label": "Slack notifications", "description": "Post alerts to a Slack channel"},
+    {"id": "teams", "label": "Microsoft Teams", "description": "Post alerts to a Teams channel"},
+]
+
+# ── Industry-specific configuration ────────────────────────────
+
+INDUSTRY_CONFIG: dict[str, dict[str, Any]] = {
+    "financial_services": {
+        "compliance_frameworks": ["PCI DSS", "SOX", "GLBA", "FFIEC"],
+        "tags": [
+            {"category": "compliance", "value": "PCI DSS", "color": "#a855f7"},
+            {"category": "compliance", "value": "SOX", "color": "#6366f1"},
+            {"category": "data_class", "value": "Cardholder Data", "color": "#ef4444"},
+            {"category": "data_class", "value": "Financial Records", "color": "#f97316"},
+        ],
+        "auto_tag_rules": [
+            {
+                "name": "Flag PCI-relevant findings",
+                "target_type": "finding",
+                "conditions": [{"field": "finding.plugin_family", "op": "contains", "value": "Web"}],
+                "condition_logic": "AND",
+                "tag_category": "compliance",
+                "tag_value": "PCI DSS",
+                "tag_color": "#a855f7",
+            },
+        ],
+        "campaigns": [
+            {
+                "name": "PCI Compliance Gaps",
+                "description": "Findings affecting systems in PCI scope that must be remediated for compliance.",
+                "query": [{"field": "finding.severity", "op": "gte", "value": 2}],
+                "query_logic": "AND",
+                "status": "draft",
+            },
+        ],
+        "exceptions": [
+            {
+                "plugin_id": "51192",
+                "plugin_name": "SSL Certificate — Informational (Internal CA)",
+                "exception_type": "false_positive",
+                "reason": "Internal CA-signed certificates on non-public services are expected in financial environments.",
+                "conditions": [
+                    {"field": "finding.plugin_family", "op": "eq", "value": "General"},
+                    {"field": "finding.severity", "op": "eq", "value": 0},
+                ],
+                "condition_logic": "AND",
+            },
+        ],
+        "benchmarks": {
+            "mttr_critical_days": 7,
+            "mttr_high_days": 21,
+            "sla_compliance_pct": 92,
+            "findings_per_asset_avg": 12.5,
+            "patch_coverage_pct": 88,
+            "label": "Financial Services",
+        },
+        "agent_context": (
+            "This organization is in financial services. Prioritize PCI DSS and SOX compliance. "
+            "Flag any findings affecting cardholder data environments, payment processing, or financial reporting systems. "
+            "Reference FFIEC and GLBA guidelines when relevant."
+        ),
+    },
+    "healthcare": {
+        "compliance_frameworks": ["HIPAA", "HITECH", "FDA 21 CFR Part 11"],
+        "tags": [
+            {"category": "compliance", "value": "HIPAA", "color": "#ef4444"},
+            {"category": "compliance", "value": "HITECH", "color": "#f97316"},
+            {"category": "data_class", "value": "PHI", "color": "#dc2626"},
+            {"category": "data_class", "value": "ePHI", "color": "#ef4444"},
+        ],
+        "auto_tag_rules": [
+            {
+                "name": "Flag findings on healthcare systems",
+                "target_type": "finding",
+                "conditions": [{"field": "finding.severity", "op": "gte", "value": 3}],
+                "condition_logic": "AND",
+                "tag_category": "compliance",
+                "tag_value": "HIPAA",
+                "tag_color": "#ef4444",
+            },
+        ],
+        "campaigns": [
+            {
+                "name": "HIPAA Critical Systems",
+                "description": "High-severity findings on systems handling protected health information.",
+                "query": [{"field": "finding.severity", "op": "gte", "value": 3}],
+                "query_logic": "AND",
+                "status": "draft",
+            },
+        ],
+        "exceptions": [],
+        "benchmarks": {
+            "mttr_critical_days": 10,
+            "mttr_high_days": 30,
+            "sla_compliance_pct": 89,
+            "findings_per_asset_avg": 14.2,
+            "patch_coverage_pct": 85,
+            "label": "Healthcare",
+        },
+        "agent_context": (
+            "This organization is in healthcare. Prioritize HIPAA and HITECH compliance. "
+            "Flag findings on systems handling PHI/ePHI. Consider FDA 21 CFR Part 11 for medical devices. "
+            "Patient safety and data privacy are paramount."
+        ),
+    },
+    "technology": {
+        "compliance_frameworks": ["SOC 2", "ISO 27001", "GDPR"],
+        "tags": [
+            {"category": "compliance", "value": "SOC 2", "color": "#3b82f6"},
+            {"category": "compliance", "value": "ISO 27001", "color": "#6366f1"},
+            {"category": "data_class", "value": "Customer Data", "color": "#ef4444"},
+            {"category": "data_class", "value": "Source Code", "color": "#f59e0b"},
+        ],
+        "auto_tag_rules": [],
+        "campaigns": [
+            {
+                "name": "Customer-Facing Service Risks",
+                "description": "Findings on production systems that serve customer traffic.",
+                "query": [{"field": "finding.severity", "op": "gte", "value": 3}],
+                "query_logic": "AND",
+                "status": "draft",
+            },
+        ],
+        "exceptions": [],
+        "benchmarks": {
+            "mttr_critical_days": 5,
+            "mttr_high_days": 14,
+            "sla_compliance_pct": 94,
+            "findings_per_asset_avg": 8.3,
+            "patch_coverage_pct": 92,
+            "label": "Technology",
+        },
+        "agent_context": (
+            "This organization is in technology/SaaS. Prioritize SOC 2 and ISO 27001 controls. "
+            "Focus on customer-facing services, API security, CI/CD pipeline risks, and cloud infrastructure. "
+            "Speed of remediation is critical for customer trust."
+        ),
+    },
+    "government": {
+        "compliance_frameworks": ["NIST 800-53", "FISMA", "CMMC", "FedRAMP"],
+        "tags": [
+            {"category": "compliance", "value": "NIST 800-53", "color": "#1e40af"},
+            {"category": "compliance", "value": "CMMC", "color": "#3b82f6"},
+            {"category": "compliance", "value": "FedRAMP", "color": "#6366f1"},
+            {"category": "data_class", "value": "CUI", "color": "#ef4444"},
+        ],
+        "auto_tag_rules": [],
+        "campaigns": [
+            {
+                "name": "CMMC Compliance Gaps",
+                "description": "Findings that could impact CMMC certification status.",
+                "query": [{"field": "finding.severity", "op": "gte", "value": 2}],
+                "query_logic": "AND",
+                "status": "draft",
+            },
+        ],
+        "exceptions": [],
+        "benchmarks": {
+            "mttr_critical_days": 14,
+            "mttr_high_days": 30,
+            "sla_compliance_pct": 87,
+            "findings_per_asset_avg": 16.8,
+            "patch_coverage_pct": 82,
+            "label": "Government",
+        },
+        "agent_context": (
+            "This organization is in the government sector. Reference NIST 800-53, FISMA, and CMMC frameworks. "
+            "Prioritize CUI protection, ensure findings are mapped to NIST controls, and consider FedRAMP impact levels."
+        ),
+    },
+    "retail": {
+        "compliance_frameworks": ["PCI DSS", "GDPR", "CCPA"],
+        "tags": [
+            {"category": "compliance", "value": "PCI DSS", "color": "#a855f7"},
+            {"category": "compliance", "value": "GDPR", "color": "#3b82f6"},
+            {"category": "data_class", "value": "Payment Data", "color": "#ef4444"},
+            {"category": "data_class", "value": "Customer PII", "color": "#f97316"},
+        ],
+        "auto_tag_rules": [],
+        "campaigns": [],
+        "exceptions": [],
+        "benchmarks": {
+            "mttr_critical_days": 10,
+            "mttr_high_days": 25,
+            "sla_compliance_pct": 88,
+            "findings_per_asset_avg": 11.0,
+            "patch_coverage_pct": 86,
+            "label": "Retail & E-commerce",
+        },
+        "agent_context": (
+            "This organization is in retail/e-commerce. Prioritize PCI DSS for payment systems and "
+            "GDPR/CCPA for customer data protection. Focus on web application security and point-of-sale systems."
+        ),
+    },
+    "manufacturing": {
+        "compliance_frameworks": ["IEC 62443", "NIST CSF", "ISO 27001"],
+        "tags": [
+            {"category": "compliance", "value": "IEC 62443", "color": "#f59e0b"},
+            {"category": "compliance", "value": "NIST CSF", "color": "#3b82f6"},
+            {"category": "asset_type", "value": "OT/ICS", "color": "#ef4444"},
+            {"category": "asset_type", "value": "SCADA", "color": "#dc2626"},
+        ],
+        "auto_tag_rules": [],
+        "campaigns": [],
+        "exceptions": [],
+        "benchmarks": {
+            "mttr_critical_days": 14,
+            "mttr_high_days": 45,
+            "sla_compliance_pct": 83,
+            "findings_per_asset_avg": 18.5,
+            "patch_coverage_pct": 78,
+            "label": "Manufacturing",
+        },
+        "agent_context": (
+            "This organization is in manufacturing. Consider OT/ICS and SCADA system risks. "
+            "Reference IEC 62443 for industrial control systems. Patching windows may be constrained by production schedules."
+        ),
+    },
+    "energy": {
+        "compliance_frameworks": ["NERC CIP", "NIST CSF", "IEC 62443"],
+        "tags": [
+            {"category": "compliance", "value": "NERC CIP", "color": "#ef4444"},
+            {"category": "compliance", "value": "NIST CSF", "color": "#3b82f6"},
+            {"category": "asset_type", "value": "OT/ICS", "color": "#ef4444"},
+            {"category": "asset_type", "value": "Critical Infrastructure", "color": "#dc2626"},
+        ],
+        "auto_tag_rules": [],
+        "campaigns": [],
+        "exceptions": [],
+        "benchmarks": {
+            "mttr_critical_days": 15,
+            "mttr_high_days": 45,
+            "sla_compliance_pct": 85,
+            "findings_per_asset_avg": 20.1,
+            "patch_coverage_pct": 76,
+            "label": "Energy & Utilities",
+        },
+        "agent_context": (
+            "This organization is in energy/utilities. Reference NERC CIP for critical infrastructure protection. "
+            "Consider OT/ICS risks and constrained maintenance windows. Uptime and safety are paramount."
+        ),
+    },
+    "education": {
+        "compliance_frameworks": ["FERPA", "NIST CSF", "GDPR"],
+        "tags": [
+            {"category": "compliance", "value": "FERPA", "color": "#6366f1"},
+            {"category": "data_class", "value": "Student Records", "color": "#ef4444"},
+        ],
+        "auto_tag_rules": [],
+        "campaigns": [],
+        "exceptions": [],
+        "benchmarks": {
+            "mttr_critical_days": 14,
+            "mttr_high_days": 45,
+            "sla_compliance_pct": 80,
+            "findings_per_asset_avg": 15.0,
+            "patch_coverage_pct": 79,
+            "label": "Education",
+        },
+        "agent_context": (
+            "This organization is in education. Prioritize FERPA compliance for student data. "
+            "Consider the diverse IT environment typical of educational institutions."
+        ),
+    },
+    "telecom": {
+        "compliance_frameworks": ["SOC 2", "ISO 27001", "GDPR", "CPNI"],
+        "tags": [
+            {"category": "compliance", "value": "SOC 2", "color": "#3b82f6"},
+            {"category": "data_class", "value": "CPNI", "color": "#ef4444"},
+            {"category": "data_class", "value": "Subscriber Data", "color": "#f97316"},
+        ],
+        "auto_tag_rules": [],
+        "campaigns": [],
+        "exceptions": [],
+        "benchmarks": {
+            "mttr_critical_days": 7,
+            "mttr_high_days": 21,
+            "sla_compliance_pct": 91,
+            "findings_per_asset_avg": 13.2,
+            "patch_coverage_pct": 87,
+            "label": "Telecommunications",
+        },
+        "agent_context": (
+            "This organization is in telecommunications. Protect CPNI and subscriber data. "
+            "Focus on network infrastructure, service availability, and SOC 2 compliance."
+        ),
+    },
+}
+
+# Default benchmarks for industries without specific data
+DEFAULT_BENCHMARKS = {
+    "mttr_critical_days": 12,
+    "mttr_high_days": 30,
+    "sla_compliance_pct": 86,
+    "findings_per_asset_avg": 13.0,
+    "patch_coverage_pct": 84,
+    "label": "All Industries",
+}
+
 # ── Package definitions ─────────────────────────────────────────
-# Each package maps to an objective and defines what gets created.
 
 def _base_tags(org_id: int) -> list[dict]:
     """Tags every org should have."""
@@ -156,6 +461,15 @@ def _team_tags(org_id: int, functions: list[str]) -> list[dict]:
     return tags
 
 
+def _industry_tags(org_id: int, industry: str | None) -> list[dict]:
+    """Industry-specific compliance and data classification tags."""
+    cfg = INDUSTRY_CONFIG.get(industry or "", {})
+    tags = []
+    for tag_def in cfg.get("tags", []):
+        tags.append({"org_id": org_id, **tag_def})
+    return tags
+
+
 # ── SLA presets by org maturity ─────────────────────────────────
 
 SLA_PRESETS = {
@@ -190,8 +504,8 @@ CAMPAIGN_TEMPLATES = {
         "name": "Quick Wins",
         "description": "Low-effort, high-impact findings that can be remediated quickly.",
         "query": [
-            {"field": "severity", "operator": "gte", "value": 3},
-            {"field": "exploit_available", "operator": "eq", "value": True},
+            {"field": "finding.severity", "op": "gte", "value": 3},
+            {"field": "finding.exploit", "op": "is_true"},
         ],
         "query_logic": "AND",
         "status": "draft",
@@ -200,7 +514,7 @@ CAMPAIGN_TEMPLATES = {
         "name": "Critical Path",
         "description": "Critical and high severity findings on business-critical assets.",
         "query": [
-            {"field": "severity", "operator": "gte", "value": 4},
+            {"field": "finding.severity", "op": "gte", "value": 4},
         ],
         "query_logic": "AND",
         "status": "draft",
@@ -209,7 +523,7 @@ CAMPAIGN_TEMPLATES = {
         "name": "SLA Breaches",
         "description": "Findings that have exceeded their remediation SLA deadline.",
         "query": [
-            {"field": "sla_status", "operator": "eq", "value": "breached"},
+            {"field": "finding.sla_status", "op": "eq", "value": "breached"},
         ],
         "query_logic": "AND",
         "status": "draft",
@@ -218,8 +532,8 @@ CAMPAIGN_TEMPLATES = {
         "name": "Patch Tuesday",
         "description": "Findings addressable by applying latest vendor patches.",
         "query": [
-            {"field": "solution", "operator": "contains", "value": "patch"},
-            {"field": "severity", "operator": "gte", "value": 2},
+            {"field": "finding.solution", "op": "contains", "value": "patch"},
+            {"field": "finding.severity", "op": "gte", "value": 2},
         ],
         "query_logic": "AND",
         "status": "draft",
@@ -238,7 +552,7 @@ AGENT_TEMPLATES = {
             "explain the risk in plain language, assess exploitability, recommend priority, "
             "and suggest remediation steps. Reference CVSS, EPSS, and known exploits when available."
         ),
-        "tools": ["search_findings", "search_assets", "get_finding_detail", "search_cves", "web_search"],
+        "tools": ["query_findings", "query_assets", "get_finding_detail", "get_threat_cves", "get_exploit_findings"],
         "model": "claude-sonnet-4-6",
     },
     "remediation_advisor": {
@@ -249,7 +563,7 @@ AGENT_TEMPLATES = {
             "Draft step-by-step instructions, suggest patch commands, identify dependencies, "
             "and recommend testing procedures. Group related findings for efficient bulk remediation."
         ),
-        "tools": ["search_findings", "search_assets", "get_finding_detail", "list_campaigns", "web_search"],
+        "tools": ["query_findings", "query_assets", "get_finding_detail", "list_campaigns", "get_remediation_grouping"],
         "model": "claude-sonnet-4-6",
     },
     "threat_intel_analyst": {
@@ -260,7 +574,7 @@ AGENT_TEMPLATES = {
             "Check for active exploitation, map to MITRE ATT&CK techniques, assess threat actor interest, "
             "and provide context on exploit availability and weaponization."
         ),
-        "tools": ["search_findings", "search_cves", "search_threat_intel", "web_search"],
+        "tools": ["query_findings", "get_threat_cves", "get_threat_groups", "get_threat_campaigns"],
         "model": "claude-sonnet-4-6",
     },
     "report_writer": {
@@ -272,7 +586,7 @@ AGENT_TEMPLATES = {
             "Use clear business language, avoid jargon, and provide actionable recommendations. "
             "Include metrics like mean time to remediate, finding age, and risk score trends."
         ),
-        "tools": ["search_findings", "search_assets", "list_campaigns", "get_stats"],
+        "tools": ["query_findings", "query_assets", "list_campaigns", "get_sla_status", "get_owner_workload"],
         "model": "claude-sonnet-4-6",
     },
 }
@@ -285,12 +599,15 @@ REPORT_TEMPLATES = {
         "name": "Executive Summary",
         "config": {
             "widgets": [
-                {"type": "risk_score_gauge", "title": "Overall Risk Score", "size": "sm"},
-                {"type": "severity_breakdown", "title": "Findings by Severity", "size": "sm"},
-                {"type": "trend_chart", "title": "Risk Trend (30 days)", "size": "md"},
-                {"type": "sla_compliance", "title": "SLA Compliance", "size": "sm"},
-                {"type": "top_findings", "title": "Top 10 Critical Findings", "size": "lg"},
-                {"type": "remediation_velocity", "title": "Remediation Velocity", "size": "md"},
+                {"id": "ob-es1", "type": "risk_grade", "title": "Organization Risk Grade", "width": "half", "config": {"preset": "risk_grade", "show_benchmark": True}},
+                {"id": "ob-es2", "type": "pie_chart", "title": "Severity Distribution", "width": "half", "config": {"preset": "severity_breakdown", "donut": True}},
+                {"id": "ob-es3", "type": "card", "title": "Critical", "width": "quarter", "config": {"preset": "critical_count"}},
+                {"id": "ob-es4", "type": "card", "title": "High", "width": "quarter", "config": {"preset": "high_count"}},
+                {"id": "ob-es5", "type": "card", "title": "With Exploit", "width": "quarter", "config": {"preset": "exploit_count"}},
+                {"id": "ob-es6", "type": "card", "title": "Mean Time to Remediate", "width": "quarter", "config": {"preset": "mttr_overall", "label": "days"}},
+                {"id": "ob-es7", "type": "pie_chart", "title": "SLA Status", "width": "half", "config": {"preset": "sla_status", "donut": True}},
+                {"id": "ob-es8", "type": "bar_chart", "title": "Top 10 by Severity", "width": "half", "config": {"preset": "top_findings_by_severity", "limit": 10}},
+                {"id": "ob-es9", "type": "table", "title": "Top Critical Findings", "width": "full", "config": {"preset": "findings_list", "filters": {"severity": "4", "order": "desc", "sort_by": "priority_score"}, "limit": 10}},
             ]
         },
         "is_default": False,
@@ -299,11 +616,15 @@ REPORT_TEMPLATES = {
         "name": "Team Dashboard",
         "config": {
             "widgets": [
-                {"type": "findings_by_owner", "title": "Findings by Owner", "size": "md"},
-                {"type": "campaign_progress", "title": "Campaign Progress", "size": "md"},
-                {"type": "sla_status", "title": "SLA Status by Team", "size": "md"},
-                {"type": "severity_breakdown", "title": "Open by Severity", "size": "sm"},
-                {"type": "recent_activity", "title": "Recent Activity", "size": "lg"},
+                {"id": "ob-td1", "type": "card", "title": "Total Findings", "width": "quarter", "config": {"preset": "total_findings"}},
+                {"id": "ob-td2", "type": "card", "title": "Critical", "width": "quarter", "config": {"preset": "critical_count"}},
+                {"id": "ob-td3", "type": "card", "title": "SLA Breached", "width": "quarter", "config": {"preset": "sla_breached_count"}},
+                {"id": "ob-td4", "type": "card", "title": "With Exploit", "width": "quarter", "config": {"preset": "exploit_count"}},
+                {"id": "ob-td5", "type": "pie_chart", "title": "Findings by Severity", "width": "half", "config": {"preset": "severity_breakdown", "donut": True}},
+                {"id": "ob-td6", "type": "pie_chart", "title": "SLA Status", "width": "half", "config": {"preset": "sla_status", "donut": True}},
+                {"id": "ob-td7", "type": "bar_chart", "title": "Findings by Owner", "width": "half", "config": {"preset": "findings_by_owner"}},
+                {"id": "ob-td8", "type": "bar_chart", "title": "Findings by Family", "width": "half", "config": {"preset": "findings_by_family", "limit": 10}},
+                {"id": "ob-td9", "type": "table", "title": "Top Findings to Fix", "width": "full", "config": {"preset": "findings_list", "filters": {"order": "desc", "sort_by": "priority_score"}, "limit": 15}},
             ]
         },
         "is_default": False,
@@ -312,16 +633,33 @@ REPORT_TEMPLATES = {
         "name": "Compliance & Audit Report",
         "config": {
             "widgets": [
-                {"type": "sla_compliance", "title": "SLA Compliance Rate", "size": "sm"},
-                {"type": "exception_summary", "title": "Active Exceptions", "size": "sm"},
-                {"type": "findings_age", "title": "Finding Age Distribution", "size": "md"},
-                {"type": "severity_breakdown", "title": "Open Findings", "size": "sm"},
-                {"type": "remediation_velocity", "title": "Mean Time to Remediate", "size": "md"},
-                {"type": "audit_trail", "title": "Recent Changes", "size": "lg"},
+                {"id": "ob-cr1", "type": "risk_grade", "title": "Organization Risk Grade", "width": "half", "config": {"preset": "risk_grade"}},
+                {"id": "ob-cr2", "type": "pie_chart", "title": "SLA Compliance", "width": "half", "config": {"preset": "sla_status", "donut": True}},
+                {"id": "ob-cr3", "type": "card", "title": "SLA Breached", "width": "quarter", "config": {"preset": "sla_breached_count"}},
+                {"id": "ob-cr4", "type": "card", "title": "Mean Time to Remediate", "width": "quarter", "config": {"preset": "mttr_overall", "label": "days"}},
+                {"id": "ob-cr5", "type": "card", "title": "Active Exceptions", "width": "quarter", "config": {"preset": "exception_count"}},
+                {"id": "ob-cr6", "type": "card", "title": "Total Findings", "width": "quarter", "config": {"preset": "total_findings"}},
+                {"id": "ob-cr7", "type": "pie_chart", "title": "Severity Distribution", "width": "half", "config": {"preset": "severity_breakdown", "donut": True}},
+                {"id": "ob-cr8", "type": "bar_chart", "title": "Findings by Age", "width": "half", "config": {"preset": "findings_by_age"}},
+                {"id": "ob-cr9", "type": "table", "title": "SLA Breaches", "width": "full", "config": {"preset": "findings_list", "filters": {"sla_status": "breached", "order": "desc", "sort_by": "priority_score"}, "limit": 20}},
             ]
         },
         "is_default": False,
     },
+}
+
+# ── Team-function → default dashboard mapping ──────────────────
+
+FUNCTION_DEFAULT_DASHBOARD = {
+    "secops": "executive_summary",
+    "vuln_mgmt": "team_dashboard",
+    "it_ops": "team_dashboard",
+    "devops": "team_dashboard",
+    "appsec": "team_dashboard",
+    "grc": "compliance_report",
+    "executive": "executive_summary",
+    "network": "team_dashboard",
+    "helpdesk": "team_dashboard",
 }
 
 
@@ -331,7 +669,7 @@ AUTO_TAG_RULES = {
     "windows_servers": {
         "name": "Auto-tag Windows Servers",
         "target_type": "asset",
-        "conditions": [{"field": "os", "operator": "contains", "value": "Windows Server"}],
+        "conditions": [{"field": "os", "op": "contains", "value": "Windows Server"}],
         "condition_logic": "AND",
         "tag_category": "os_family",
         "tag_value": "Windows Server",
@@ -340,7 +678,7 @@ AUTO_TAG_RULES = {
     "linux_servers": {
         "name": "Auto-tag Linux Servers",
         "target_type": "asset",
-        "conditions": [{"field": "os", "operator": "contains", "value": "Linux"}],
+        "conditions": [{"field": "os", "op": "contains", "value": "Linux"}],
         "condition_logic": "AND",
         "tag_category": "os_family",
         "tag_value": "Linux",
@@ -349,11 +687,167 @@ AUTO_TAG_RULES = {
     "exploitable_findings": {
         "name": "Flag Exploitable Findings",
         "target_type": "finding",
-        "conditions": [{"field": "exploit_available", "operator": "eq", "value": True}],
+        "conditions": [{"field": "finding.exploit", "op": "is_true"}],
         "condition_logic": "AND",
         "tag_category": "risk",
         "tag_value": "Exploitable",
         "tag_color": "#ef4444",
+    },
+}
+
+
+# ── Ownership rule templates ───────────────────────────────────
+
+OWNERSHIP_RULES = {
+    "secops": {
+        "name": "Route critical findings to SecOps",
+        "description": "Automatically assign critical/high severity findings to Security Operations team.",
+        "target_type": "finding",
+        "conditions": [{"field": "finding.severity", "op": "gte", "value": 4}],
+        "condition_logic": "AND",
+        "priority": 10,
+        "team": "Security Operations",
+        "owner_role": "SecOps",
+    },
+    "it_ops": {
+        "name": "Route OS patches to IT Operations",
+        "description": "Assign OS-level patch findings to IT Operations.",
+        "target_type": "finding",
+        "conditions": [{"field": "finding.plugin_family", "op": "contains", "value": "Windows"}],
+        "condition_logic": "AND",
+        "priority": 50,
+        "team": "IT Operations",
+        "owner_role": "IT Ops",
+    },
+    "devops": {
+        "name": "Route container/cloud findings to DevOps",
+        "description": "Assign container and cloud infrastructure findings to DevOps.",
+        "target_type": "finding",
+        "conditions": [{"field": "finding.plugin_family", "op": "contains", "value": "Web"}],
+        "condition_logic": "AND",
+        "priority": 40,
+        "team": "DevOps",
+        "owner_role": "DevOps",
+    },
+    "appsec": {
+        "name": "Route web app findings to AppSec",
+        "description": "Assign web application and code-level findings to Application Security.",
+        "target_type": "finding",
+        "conditions": [{"field": "finding.plugin_family", "op": "contains", "value": "CGI"}],
+        "condition_logic": "AND",
+        "priority": 30,
+        "team": "Application Security",
+        "owner_role": "AppSec",
+    },
+    "network": {
+        "name": "Route network findings to Network Engineering",
+        "description": "Assign network device and firewall findings to Network Engineering.",
+        "target_type": "finding",
+        "conditions": [{"field": "finding.plugin_family", "op": "contains", "value": "Firewalls"}],
+        "condition_logic": "AND",
+        "priority": 40,
+        "team": "Network Engineering",
+        "owner_role": "Network",
+    },
+    "grc": {
+        "name": "Flag compliance findings for GRC review",
+        "description": "Route compliance-related findings to GRC team for review.",
+        "target_type": "finding",
+        "conditions": [{"field": "finding.plugin_family", "op": "contains", "value": "Policy Compliance"}],
+        "condition_logic": "AND",
+        "priority": 60,
+        "team": "GRC / Compliance",
+        "owner_role": "GRC",
+    },
+}
+
+
+# ── Workflow templates ──────────────────────────────────────────
+
+WORKFLOW_TEMPLATES = {
+    "notify_critical": {
+        "name": "Notify on Critical Findings",
+        "description": "Send an alert when new critical severity findings are discovered in a scan.",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_upload",
+             "label": "Scan Uploaded", "config": {}, "position_x": 60, "position_y": 200},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "severity_filter",
+             "label": "Critical only", "config": {"operator": "gte", "value": "4"}, "position_x": 300, "position_y": 200},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "send_email",
+             "label": "Email alert", "config": {"to": "", "subject": "Critical findings detected in {{scan.name}}", "body": "{{count}} critical findings were found. Review immediately."},
+             "position_x": 540, "position_y": 200},
+        ],
+        "edges": [
+            {"edge_id": "e-1", "source_node_id": "t1", "target_node_id": "f1"},
+            {"edge_id": "e-2", "source_node_id": "f1", "target_node_id": "a1"},
+        ],
+    },
+    "auto_assign_exploitable": {
+        "name": "Auto-assign Exploitable Findings",
+        "description": "Automatically assign findings with known exploits to the security team for triage.",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "on_upload",
+             "label": "Scan Uploaded", "config": {}, "position_x": 60, "position_y": 200},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "exploit_filter",
+             "label": "Has exploit", "config": {"has_exploit": "true"}, "position_x": 300, "position_y": 200},
+            {"node_id": "f2", "node_type": "filter", "node_subtype": "severity_filter",
+             "label": "High+", "config": {"operator": "gte", "value": "3"}, "position_x": 480, "position_y": 200},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "assign_owner",
+             "label": "Assign to SecOps", "config": {"team": "Security Operations", "owner_role": "SecOps"},
+             "position_x": 660, "position_y": 200},
+        ],
+        "edges": [
+            {"edge_id": "e-1", "source_node_id": "t1", "target_node_id": "f1"},
+            {"edge_id": "e-2", "source_node_id": "f1", "target_node_id": "f2"},
+            {"edge_id": "e-3", "source_node_id": "f2", "target_node_id": "a1"},
+        ],
+    },
+    "sla_breach_escalation": {
+        "name": "SLA Breach Escalation",
+        "description": "Escalate findings that breach their SLA deadline to management.",
+        "nodes": [
+            {"node_id": "t1", "node_type": "trigger", "node_subtype": "schedule",
+             "label": "Daily at 8 AM", "config": {"schedule_mode": "cron", "cron_expr": "0 8 * * *"}, "position_x": 60, "position_y": 200},
+            {"node_id": "f1", "node_type": "filter", "node_subtype": "condition_filter",
+             "label": "SLA Breached", "config": {"conditions": [{"field": "finding.sla_status", "op": "eq", "value": "breached"}], "logic": "AND"},
+             "position_x": 300, "position_y": 200},
+            {"node_id": "a1", "node_type": "action", "node_subtype": "send_email",
+             "label": "Email escalation", "config": {"to": "", "subject": "SLA Breach Alert — {{count}} overdue findings", "body": "The following findings have breached their SLA deadline and require immediate attention."},
+             "position_x": 540, "position_y": 200},
+        ],
+        "edges": [
+            {"edge_id": "e-1", "source_node_id": "t1", "target_node_id": "f1"},
+            {"edge_id": "e-2", "source_node_id": "f1", "target_node_id": "a1"},
+        ],
+    },
+}
+
+
+# ── Common false-positive exception templates ──────────────────
+
+EXCEPTION_TEMPLATES = {
+    "ssl_self_signed_internal": {
+        "plugin_id": "57582",
+        "plugin_name": "Self-signed SSL Certificate (Internal)",
+        "exception_type": "false_positive",
+        "reason": "Self-signed certificates on internal-only services are expected and do not pose external risk.",
+        "conditions": [
+            {"field": "finding.plugin_family", "op": "eq", "value": "General"},
+            {"field": "finding.severity", "op": "lte", "value": 1},
+            {"field": "finding.plugin_name", "op": "contains", "value": "Self-Signed"},
+        ],
+        "condition_logic": "AND",
+    },
+    "info_disclosure_internal": {
+        "plugin_id": "22964",
+        "plugin_name": "Informational Service Detection (Internal)",
+        "exception_type": "accepted_risk",
+        "reason": "Informational service detection findings on internal networks are low risk and create noise.",
+        "conditions": [
+            {"field": "finding.severity", "op": "eq", "value": 0},
+            {"field": "finding.plugin_family", "op": "eq", "value": "Service detection"},
+        ],
+        "condition_logic": "AND",
     },
 }
 
@@ -404,6 +898,7 @@ ROLE_TEMPLATES = {
 
 
 # ── Objective → package mapping ─────────────────────────────────
+# Each package maps to an objective and defines what gets created.
 
 OBJECTIVE_PACKAGES: dict[str, dict[str, Any]] = {
     "prioritize_vulns": {
@@ -419,13 +914,15 @@ OBJECTIVE_PACKAGES: dict[str, dict[str, Any]] = {
     },
     "drive_remediation": {
         "label": "Remediation Workflows",
-        "description": "Campaigns, ownership rules, SLA policies, and team-based tracking",
+        "description": "Campaigns, ownership rules, SLA policies, workflows, and team-based tracking",
         "provisions": {
             "tags": ["base"],
             "sla_preset": "standard",
             "campaigns": ["quick_wins", "critical_path", "sla_breaches", "patch_tuesday"],
             "roles": ["it_remediation"],
             "reports": ["team_dashboard"],
+            "ownership_rules": True,
+            "workflows": ["notify_critical", "auto_assign_exploitable", "sla_breach_escalation"],
         },
     },
     "ai_agents": {
@@ -458,18 +955,19 @@ OBJECTIVE_PACKAGES: dict[str, dict[str, Any]] = {
         "label": "Integration Hub",
         "description": "Pre-configured integration templates for ticketing and chat tools",
         "provisions": {
-            # Integrations require credentials, so we just set up tags/roles
             "tags": ["base"],
+            "workflows": ["notify_critical"],
         },
     },
     "compliance": {
         "label": "Compliance & Audit",
-        "description": "SLA enforcement, exception tracking, and audit-ready reporting",
+        "description": "SLA enforcement, exception tracking, compliance tags, and audit-ready reporting",
         "provisions": {
             "sla_preset": "aggressive",
             "reports": ["compliance_report", "executive_summary"],
             "roles": ["compliance_auditor"],
             "campaigns": ["sla_breaches"],
+            "exceptions": True,
         },
     },
     "mssp": {
@@ -487,7 +985,12 @@ OBJECTIVE_PACKAGES: dict[str, dict[str, Any]] = {
 
 # ── Provisioning engine ─────────────────────────────────────────
 
-def get_recommendations(objectives: list[str], team_functions: list[str], team_size: str) -> dict:
+def get_recommendations(
+    objectives: list[str],
+    team_functions: list[str],
+    team_size: str,
+    industry: str | None = None,
+) -> dict:
     """Return package recommendations based on user selections."""
     packages = {}
     for obj_id in objectives:
@@ -506,9 +1009,32 @@ def get_recommendations(objectives: list[str], team_functions: list[str], team_s
     elif team_size in ("50-100", "100+"):
         sla_note = "Aggressive SLA timelines recommended for larger, mature teams."
 
+    # Industry-specific additions
+    industry_cfg = INDUSTRY_CONFIG.get(industry or "", {})
+    industry_additions = None
+    if industry_cfg:
+        extras = []
+        if industry_cfg.get("tags"):
+            extras.append(f"{len(industry_cfg['tags'])} compliance tags")
+        if industry_cfg.get("auto_tag_rules"):
+            extras.append(f"{len(industry_cfg['auto_tag_rules'])} auto-tag rules")
+        if industry_cfg.get("campaigns"):
+            extras.append(f"{len(industry_cfg['campaigns'])} campaigns")
+        if extras:
+            industry_additions = {
+                "label": f"{industry_cfg.get('benchmarks', {}).get('label', 'Industry')} Pack",
+                "description": f"Industry-specific: {', '.join(extras)}",
+                "frameworks": industry_cfg.get("compliance_frameworks", []),
+            }
+
+    # Industry benchmarks
+    benchmarks = industry_cfg.get("benchmarks", DEFAULT_BENCHMARKS)
+
     return {
         "packages": packages,
         "sla_note": sla_note,
+        "industry_additions": industry_additions,
+        "benchmarks": benchmarks,
     }
 
 
@@ -520,11 +1046,14 @@ def apply_packages(
     team_functions: list[str],
     team_size: str,
     profile: dict,
+    notification_prefs: list[str] | None = None,
 ) -> dict:
     """
     Apply selected packages — create all the entities for the org.
     Returns a summary of what was created.
     """
+    industry = profile.get("industry")
+
     created = {
         "tags": 0,
         "auto_tag_rules": 0,
@@ -533,6 +1062,9 @@ def apply_packages(
         "agents": 0,
         "reports": 0,
         "roles": 0,
+        "ownership_rules": 0,
+        "workflows": 0,
+        "exceptions": 0,
     }
 
     # Collect what to provision (deduplicated)
@@ -542,6 +1074,9 @@ def apply_packages(
     agent_ids: set[str] = set()
     report_ids: set[str] = set()
     role_ids: set[str] = set()
+    workflow_ids: set[str] = set()
+    provision_ownership = False
+    provision_exceptions = False
     sla_preset = None
 
     for obj_id in objectives:
@@ -561,6 +1096,12 @@ def apply_packages(
             report_ids.add(r)
         for r in provisions.get("roles", []):
             role_ids.add(r)
+        for w in provisions.get("workflows", []):
+            workflow_ids.add(w)
+        if provisions.get("ownership_rules"):
+            provision_ownership = True
+        if provisions.get("exceptions"):
+            provision_exceptions = True
         if provisions.get("sla_preset"):
             # Use the most aggressive preset if multiple objectives set it
             preset = provisions["sla_preset"]
@@ -583,6 +1124,8 @@ def apply_packages(
     if "network" in tag_sets:
         all_tags.extend(_network_tags(org_id))
     all_tags.extend(_team_tags(org_id, team_functions))
+    # Industry-specific tags
+    all_tags.extend(_industry_tags(org_id, industry))
 
     for tag_data in all_tags:
         # UniqueConstraint is on (category, value) — not org-scoped
@@ -597,54 +1140,25 @@ def apply_packages(
     db.flush()
 
     # ── Create auto-tag rules ────────────────────────────────
+    # Standard rules
     for rule_id in auto_tag_rule_ids:
         rule_def = AUTO_TAG_RULES.get(rule_id)
         if not rule_def:
             continue
-        # Find or create the tag for this rule
-        tag = db.query(Tag).filter(
-            Tag.category == rule_def["tag_category"],
-            Tag.value == rule_def["tag_value"],
-        ).first()
-        if not tag:
-            tag = Tag(
-                org_id=org_id,
-                category=rule_def["tag_category"],
-                value=rule_def["tag_value"],
-                color=rule_def.get("tag_color", "#6366f1"),
-            )
-            db.add(tag)
-            db.flush()
+        created["auto_tag_rules"] += _create_auto_tag_rule(db, org_id, rule_def)
 
-        existing = db.query(AutoTagRule).filter(
-            AutoTagRule.org_id == org_id,
-            AutoTagRule.name == rule_def["name"],
-        ).first()
-        if not existing:
-            db.add(AutoTagRule(
-                org_id=org_id,
-                name=rule_def["name"],
-                tag_id=tag.id,
-                target_type=rule_def["target_type"],
-                conditions=rule_def["conditions"],
-                condition_logic=rule_def["condition_logic"],
-                is_enabled=True,
-            ))
-            created["auto_tag_rules"] += 1
+    # Industry-specific auto-tag rules
+    industry_cfg = INDUSTRY_CONFIG.get(industry or "", {})
+    for rule_def in industry_cfg.get("auto_tag_rules", []):
+        created["auto_tag_rules"] += _create_auto_tag_rule(db, org_id, rule_def)
 
     # ── Create SLA configs ───────────────────────────────────
     sla_rows = SLA_PRESETS.get(sla_preset, SLA_PRESETS["standard"])
     for sla_data in sla_rows:
-        # Match by org_id first, then fall back to global (org_id=NULL) rows
+        # UniqueConstraint on severity (global) — check by severity alone
         existing = db.query(SLAConfig).filter(
-            SLAConfig.org_id == org_id,
             SLAConfig.severity == sla_data["severity"],
         ).first()
-        if not existing:
-            existing = db.query(SLAConfig).filter(
-                SLAConfig.org_id.is_(None),
-                SLAConfig.severity == sla_data["severity"],
-            ).first()
         if existing:
             existing.org_id = org_id
             existing.days_to_remediate = sla_data["days_to_remediate"]
@@ -671,7 +1185,22 @@ def apply_packages(
             ))
             created["campaigns"] += 1
 
-    # ── Create agents ────────────────────────────────────────
+    # Industry-specific campaigns
+    for cmp_def in industry_cfg.get("campaigns", []):
+        existing = db.query(Campaign).filter(
+            Campaign.org_id == org_id,
+            Campaign.name == cmp_def["name"],
+        ).first()
+        if not existing:
+            db.add(Campaign(
+                org_id=org_id,
+                owner_id=user_id,
+                **cmp_def,
+            ))
+            created["campaigns"] += 1
+
+    # ── Create agents (with industry context) ────────────────
+    agent_industry_ctx = industry_cfg.get("agent_context", "")
     for agent_id in agent_ids:
         agent_def = AGENT_TEMPLATES.get(agent_id)
         if not agent_def:
@@ -681,33 +1210,47 @@ def apply_packages(
             Agent.name == agent_def["name"],
         ).first()
         if not existing:
+            system_prompt = agent_def["system_prompt"]
+            if agent_industry_ctx:
+                system_prompt = f"{system_prompt}\n\nIndustry context: {agent_industry_ctx}"
             db.add(Agent(
                 org_id=org_id,
                 name=agent_def["name"],
                 description=agent_def.get("description", ""),
-                system_prompt=agent_def["system_prompt"],
+                system_prompt=system_prompt,
                 tools=agent_def["tools"],
                 model=agent_def.get("model", "claude-sonnet-4-6"),
             ))
             created["agents"] += 1
 
     # ── Create report templates ──────────────────────────────
+    # Determine default dashboard from primary team function
+    primary_fn = team_functions[0] if team_functions else None
+    default_dashboard_id = FUNCTION_DEFAULT_DASHBOARD.get(primary_fn, "executive_summary")
+
     for rpt_id in report_ids:
         rpt_def = REPORT_TEMPLATES.get(rpt_id)
         if not rpt_def:
             continue
+        # UniqueConstraint on name (not org-scoped) — check globally
         existing = db.query(ReportTemplate).filter(
-            ReportTemplate.org_id == org_id,
             ReportTemplate.name == rpt_def["name"],
         ).first()
-        if not existing:
+        if existing:
+            # Ensure it's associated with this org and set default if needed
+            if existing.org_id is None:
+                existing.org_id = org_id
+            if rpt_id == default_dashboard_id:
+                existing.is_default = True
+        else:
+            is_default = (rpt_id == default_dashboard_id)
             db.add(ReportTemplate(
                 org_id=org_id,
                 name=rpt_def["name"],
                 config=rpt_def["config"],
-                is_default=rpt_def.get("is_default", False),
+                is_default=is_default,
             ))
-            created["reports"] += 1
+        created["reports"] += 1
 
     # ── Create custom roles ──────────────────────────────────
     for role_id in role_ids:
@@ -727,10 +1270,113 @@ def apply_packages(
             ))
             created["roles"] += 1
 
+    # ── Create ownership rules ───────────────────────────────
+    if provision_ownership and team_functions:
+        for fn_id in team_functions:
+            rule_def = OWNERSHIP_RULES.get(fn_id)
+            if not rule_def:
+                continue
+            existing = db.query(OwnershipRule).filter(
+                OwnershipRule.org_id == org_id,
+                OwnershipRule.name == rule_def["name"],
+            ).first()
+            if not existing:
+                db.add(OwnershipRule(
+                    org_id=org_id,
+                    name=rule_def["name"],
+                    description=rule_def.get("description", ""),
+                    target_type=rule_def["target_type"],
+                    conditions=rule_def["conditions"],
+                    condition_logic=rule_def["condition_logic"],
+                    priority=rule_def.get("priority", 100),
+                    team=rule_def.get("team"),
+                    owner_role=rule_def.get("owner_role"),
+                    is_enabled=True,
+                ))
+                created["ownership_rules"] += 1
+
+    # ── Create workflows ─────────────────────────────────────
+    for wf_id in workflow_ids:
+        wf_def = WORKFLOW_TEMPLATES.get(wf_id)
+        if not wf_def:
+            continue
+        existing = db.query(Workflow).filter(
+            Workflow.org_id == org_id,
+            Workflow.name == wf_def["name"],
+        ).first()
+        if not existing:
+            wf = Workflow(
+                org_id=org_id,
+                name=wf_def["name"],
+                description=wf_def.get("description", ""),
+                status="draft",
+                is_enabled=False,
+            )
+            db.add(wf)
+            db.flush()
+
+            for node_def in wf_def["nodes"]:
+                db.add(WorkflowNode(workflow_id=wf.id, **node_def))
+
+            for edge_def in wf_def["edges"]:
+                db.add(WorkflowEdge(
+                    workflow_id=wf.id,
+                    edge_id=edge_def["edge_id"],
+                    source_node_id=edge_def["source_node_id"],
+                    target_node_id=edge_def["target_node_id"],
+                    source_handle=edge_def.get("source_handle", "output"),
+                    target_handle=edge_def.get("target_handle", "input"),
+                ))
+
+            created["workflows"] += 1
+
+    # ── Create exception rules ───────────────────────────────
+    if provision_exceptions:
+        # Common exceptions
+        for exc_def in EXCEPTION_TEMPLATES.values():
+            existing = db.query(FindingException).filter(
+                FindingException.org_id == org_id,
+                FindingException.plugin_id == exc_def["plugin_id"],
+            ).first()
+            if not existing:
+                db.add(FindingException(
+                    org_id=org_id,
+                    plugin_id=exc_def["plugin_id"],
+                    plugin_name=exc_def["plugin_name"],
+                    exception_type=exc_def["exception_type"],
+                    reason=exc_def["reason"],
+                    conditions=exc_def.get("conditions"),
+                    condition_logic=exc_def.get("condition_logic", "AND"),
+                    is_active=True,
+                    exclude_from_reports=True,
+                ))
+                created["exceptions"] += 1
+
+        # Industry-specific exceptions
+        for exc_def in industry_cfg.get("exceptions", []):
+            existing = db.query(FindingException).filter(
+                FindingException.org_id == org_id,
+                FindingException.plugin_id == exc_def["plugin_id"],
+            ).first()
+            if not existing:
+                db.add(FindingException(
+                    org_id=org_id,
+                    plugin_id=exc_def["plugin_id"],
+                    plugin_name=exc_def["plugin_name"],
+                    exception_type=exc_def["exception_type"],
+                    reason=exc_def["reason"],
+                    conditions=exc_def.get("conditions"),
+                    condition_logic=exc_def.get("condition_logic", "AND"),
+                    is_active=True,
+                    exclude_from_reports=True,
+                ))
+                created["exceptions"] += 1
+
     # ── Save onboarding profile to org settings ──────────────
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if org:
         settings = org.settings or {}
+        benchmarks = industry_cfg.get("benchmarks", DEFAULT_BENCHMARKS)
         settings["onboarding"] = {
             "completed": True,
             "profile": profile,
@@ -738,7 +1384,11 @@ def apply_packages(
             "team_functions": team_functions,
             "team_size": team_size,
             "packages_applied": list(objectives),
+            "industry_benchmarks": benchmarks,
+            "default_dashboard": default_dashboard_id,
         }
+        if notification_prefs:
+            settings["notification_preferences"] = notification_prefs
         org.settings = settings
         # Force SQLAlchemy to detect the change on JSON column
         from sqlalchemy.orm.attributes import flag_modified
@@ -747,3 +1397,37 @@ def apply_packages(
     db.commit()
     logger.info("Onboarding packages applied for org %s: %s", org_id, created)
     return created
+
+
+def _create_auto_tag_rule(db: Session, org_id: int, rule_def: dict) -> int:
+    """Create a single auto-tag rule, returning 1 if created, 0 if exists."""
+    tag = db.query(Tag).filter(
+        Tag.category == rule_def["tag_category"],
+        Tag.value == rule_def["tag_value"],
+    ).first()
+    if not tag:
+        tag = Tag(
+            org_id=org_id,
+            category=rule_def["tag_category"],
+            value=rule_def["tag_value"],
+            color=rule_def.get("tag_color", "#6366f1"),
+        )
+        db.add(tag)
+        db.flush()
+
+    existing = db.query(AutoTagRule).filter(
+        AutoTagRule.org_id == org_id,
+        AutoTagRule.name == rule_def["name"],
+    ).first()
+    if not existing:
+        db.add(AutoTagRule(
+            org_id=org_id,
+            name=rule_def["name"],
+            tag_id=tag.id,
+            target_type=rule_def["target_type"],
+            conditions=rule_def["conditions"],
+            condition_logic=rule_def["condition_logic"],
+            is_enabled=True,
+        ))
+        return 1
+    return 0

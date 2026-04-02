@@ -287,6 +287,7 @@ export const applyOnboardingPackages = (data) => request('/onboarding/apply', {
   body: JSON.stringify(data),
 })
 export const getOnboardingDomainInfo = (email) => request(`/onboarding/domain-info?email=${encodeURIComponent(email)}`)
+export const skipOnboarding = () => request('/onboarding/skip', { method: 'POST' })
 
 // Scans
 export const getScans = () => request('/scans')

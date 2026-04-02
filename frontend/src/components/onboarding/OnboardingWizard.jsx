@@ -4,7 +4,8 @@ import { useTranslation } from 'react-i18next'
 import {
   Building2, Users, Target, Wrench, Bot, Route, BarChart3, Link,
   ShieldCheck, ArrowRight, ArrowLeft, Check, Loader2, Sparkles,
-  ChevronRight, Globe,
+  ChevronRight, Globe, Bell, TrendingUp, Shield,
+  Mail, MessageSquare,
 } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import {
@@ -13,6 +14,7 @@ import {
   getOnboardingRecommendations,
   applyOnboardingPackages,
   getOnboardingDomainInfo,
+  skipOnboarding,
 } from '../../api.js'
 
 // ── Icon map for objectives ─────────────────────────────────────
@@ -27,6 +29,14 @@ const ICON_MAP = {
   building: Building2,
 }
 
+const NOTIF_ICONS = {
+  in_app: Bell,
+  email_digest: Mail,
+  email_realtime: Mail,
+  slack: MessageSquare,
+  teams: MessageSquare,
+}
+
 // ── Step indicator ──────────────────────────────────────────────
 function StepIndicator({ steps, current }) {
   return (
@@ -36,7 +46,7 @@ function StepIndicator({ steps, current }) {
         const active = i === current
         return (
           <React.Fragment key={s.id}>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, minWidth: 80 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, minWidth: 72 }}>
               <div style={{
                 width: 32, height: 32, borderRadius: '50%',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -48,7 +58,7 @@ function StepIndicator({ steps, current }) {
                 {done ? <Check size={15} /> : i + 1}
               </div>
               <span style={{
-                fontSize: 11, fontWeight: active ? 700 : 500,
+                fontSize: 10, fontWeight: active ? 700 : 500,
                 color: active ? 'var(--text-primary)' : 'var(--text-muted)',
               }}>
                 {s.label}
@@ -56,7 +66,7 @@ function StepIndicator({ steps, current }) {
             </div>
             {i < steps.length - 1 && (
               <div style={{
-                flex: 1, height: 2, maxWidth: 60,
+                flex: 1, height: 2, maxWidth: 40,
                 background: done ? '#16a34a' : 'var(--border)',
                 marginBottom: 22,
                 transition: 'background 0.2s',
@@ -111,7 +121,7 @@ function StepOrgProfile({ data, onChange, options, domainInfo }) {
         Tell us about your organization
       </h2>
       <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 24 }}>
-        This helps us tailor Hakuna to your needs.
+        This helps us tailor Hakuna to your industry's compliance needs and benchmarks.
       </p>
 
       {domainInfo?.enriched && (
@@ -197,7 +207,7 @@ function StepTeamProfile({ data, onChange, options }) {
         Tell us about your team
       </h2>
       <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 24 }}>
-        We'll set up roles, tags, and ownership rules to match your team structure.
+        We'll set up roles, ownership rules, and routing to match your team structure.
       </p>
 
       <div style={{ marginBottom: 20 }}>
@@ -292,10 +302,75 @@ function StepObjectives({ data, onChange, options }) {
   )
 }
 
-// ── Step 4: Package Recommendations ─────────────────────────────
+// ── Step 4: Notifications ───────────────────────────────────────
+function StepNotifications({ data, onChange, options }) {
+  const toggleNotif = (notifId) => {
+    const prefs = data.notification_prefs || ['in_app']
+    const next = prefs.includes(notifId) ? prefs.filter(n => n !== notifId) : [...prefs, notifId]
+    onChange({ ...data, notification_prefs: next })
+  }
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 4, color: 'var(--text-primary)' }}>
+        How do you want to stay informed?
+      </h2>
+      <p style={{ color: 'var(--text-muted)', fontSize: 14, marginBottom: 24 }}>
+        Choose how you'd like to receive alerts for critical findings, SLA breaches, and scan results.
+        You can change these later in Settings.
+      </p>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 10 }}>
+        {(options?.notification_options || []).map(opt => {
+          const Icon = NOTIF_ICONS[opt.id] || Bell
+          const selected = (data.notification_prefs || ['in_app']).includes(opt.id)
+          const isDefault = opt.id === 'in_app'
+          return (
+            <SelectCard
+              key={opt.id}
+              selected={selected}
+              onClick={() => toggleNotif(opt.id)}
+              style={{ padding: '16px 18px' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                <div style={{
+                  width: 36, height: 36, borderRadius: 8,
+                  background: selected ? 'var(--accent)' : 'var(--bg-secondary)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  flexShrink: 0, transition: 'background 0.15s',
+                }}>
+                  <Icon size={18} color={selected ? '#fff' : 'var(--text-muted)'} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 2, color: 'var(--text-primary)' }}>
+                    {opt.label}
+                    {isDefault && (
+                      <span style={{
+                        marginLeft: 6, fontSize: 10, fontWeight: 600,
+                        padding: '2px 6px', borderRadius: 4,
+                        background: 'var(--bg-secondary)', color: 'var(--text-muted)',
+                      }}>Default</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                    {opt.description}
+                  </div>
+                </div>
+              </div>
+            </SelectCard>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── Step 5: Package Recommendations ─────────────────────────────
 function StepPackages({ recommendations, selectedPkgs, onToggle }) {
   const pkgs = recommendations?.packages || {}
   const entries = Object.entries(pkgs)
+  const industryAdditions = recommendations?.industry_additions
+  const benchmarks = recommendations?.benchmarks
 
   const provisionLabels = {
     tags: 'Tags',
@@ -305,6 +380,9 @@ function StepPackages({ recommendations, selectedPkgs, onToggle }) {
     agents: 'AI Agents',
     reports: 'Report templates',
     roles: 'RBAC roles',
+    ownership_rules: 'Ownership rules',
+    workflows: 'Workflows',
+    exceptions: 'Exception rules',
   }
 
   if (entries.length === 0) {
@@ -330,11 +408,79 @@ function StepPackages({ recommendations, selectedPkgs, onToggle }) {
       </p>
       {recommendations?.sla_note && (
         <div style={{
-          padding: '10px 14px', borderRadius: 8, marginBottom: 16,
+          padding: '10px 14px', borderRadius: 8, marginBottom: 12,
           background: 'color-mix(in srgb, var(--accent) 10%, var(--bg-secondary))',
           fontSize: 13, color: 'var(--text-secondary)',
         }}>
           {recommendations.sla_note}
+        </div>
+      )}
+
+      {/* Industry additions banner */}
+      {industryAdditions && (
+        <div style={{
+          padding: '12px 16px', borderRadius: 8, marginBottom: 12,
+          background: 'color-mix(in srgb, #a855f7 10%, var(--bg-secondary))',
+          border: '1px solid color-mix(in srgb, #a855f7 30%, var(--border))',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <Shield size={16} color="#a855f7" />
+            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
+              {industryAdditions.label}
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+            {industryAdditions.description}
+          </div>
+          {industryAdditions.frameworks?.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {industryAdditions.frameworks.map(fw => (
+                <span key={fw} style={{
+                  fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
+                  background: 'color-mix(in srgb, #a855f7 15%, var(--bg-primary))',
+                  color: '#a855f7',
+                }}>
+                  {fw}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Industry benchmarks */}
+      {benchmarks && (
+        <div style={{
+          padding: '12px 16px', borderRadius: 8, marginBottom: 16,
+          background: 'var(--bg-secondary)',
+          border: '1px solid var(--border)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <TrendingUp size={16} color="var(--accent)" />
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+              {benchmarks.label} Benchmarks
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              — how you'll compare after setup
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+            {[
+              { label: 'MTTR Critical', value: `${benchmarks.mttr_critical_days}d`, sub: 'industry avg' },
+              { label: 'MTTR High', value: `${benchmarks.mttr_high_days}d`, sub: 'industry avg' },
+              { label: 'SLA Compliance', value: `${benchmarks.sla_compliance_pct}%`, sub: 'industry avg' },
+              { label: 'Patch Coverage', value: `${benchmarks.patch_coverage_pct}%`, sub: 'industry avg' },
+            ].map(b => (
+              <div key={b.label} style={{
+                flex: '1 1 100px', padding: '8px 12px', borderRadius: 8,
+                background: 'var(--bg-primary)', textAlign: 'center',
+              }}>
+                <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--accent)' }}>{b.value}</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)' }}>{b.label}</div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{b.sub}</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -382,7 +528,7 @@ function StepPackages({ recommendations, selectedPkgs, onToggle }) {
   )
 }
 
-// ── Step 5: Applying / Done ─────────────────────────────────────
+// ── Step 6: Applying / Done ─────────────────────────────────────
 function StepApply({ applying, result, error }) {
   if (error) {
     return (
@@ -401,7 +547,7 @@ function StepApply({ applying, result, error }) {
           Setting up your workspace...
         </h2>
         <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>
-          Creating tags, campaigns, agents, reports, and more.
+          Creating tags, campaigns, agents, workflows, reports, and more.
         </p>
         <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
       </div>
@@ -417,6 +563,9 @@ function StepApply({ applying, result, error }) {
       { label: 'AI Agents', count: result.agents },
       { label: 'Reports', count: result.reports },
       { label: 'Roles', count: result.roles },
+      { label: 'Ownership rules', count: result.ownership_rules },
+      { label: 'Workflows', count: result.workflows },
+      { label: 'Exceptions', count: result.exceptions },
     ].filter(i => i.count > 0)
 
     return (
@@ -453,6 +602,10 @@ function StepApply({ applying, result, error }) {
             ))}
           </div>
         )}
+
+        <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+          Upload your first scan to see everything in action.
+        </p>
       </div>
     )
   }
@@ -467,6 +620,7 @@ const STEPS = [
   { id: 'org', label: 'Organization' },
   { id: 'team', label: 'Team' },
   { id: 'objectives', label: 'Objectives' },
+  { id: 'notifications', label: 'Alerts' },
   { id: 'packages', label: 'Setup' },
   { id: 'done', label: 'Done' },
 ]
@@ -493,6 +647,7 @@ export default function OnboardingWizard() {
     team_size: null,
     team_functions: [],
     objectives: [],
+    notification_prefs: ['in_app'],
   })
 
   // Load options + check status + domain info on mount
@@ -534,13 +689,13 @@ export default function OnboardingWizard() {
   }, [data])
 
   const handleNext = async () => {
-    if (step === 2) {
-      // Moving from objectives → packages: fetch recommendations
+    if (step === 3) {
+      // Moving from notifications → packages: fetch recommendations
       await fetchRecommendations()
     }
-    if (step === 3) {
+    if (step === 4) {
       // Apply packages
-      setStep(4)
+      setStep(5)
       setApplying(true)
       setError(null)
       try {
@@ -550,6 +705,7 @@ export default function OnboardingWizard() {
           team_size: data.team_size,
           team_functions: data.team_functions,
           objectives: data.objectives,
+          notification_prefs: data.notification_prefs || ['in_app'],
           selected_packages: selectedPkgs,
         })
         setResult(res.created)
@@ -567,6 +723,11 @@ export default function OnboardingWizard() {
 
   const handleFinish = () => navigate('/', { replace: true })
 
+  const handleSkip = async () => {
+    try { await skipOnboarding() } catch {}
+    navigate('/', { replace: true })
+  }
+
   const togglePkg = (id) => {
     setSelectedPkgs(prev => prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id])
   }
@@ -575,7 +736,8 @@ export default function OnboardingWizard() {
     if (step === 0) return true // org profile is optional
     if (step === 1) return true // team profile is optional
     if (step === 2) return (data.objectives || []).length > 0
-    if (step === 3) return selectedPkgs.length > 0
+    if (step === 3) return true // notifications is optional
+    if (step === 4) return selectedPkgs.length > 0
     return false
   }
 
@@ -635,13 +797,16 @@ export default function OnboardingWizard() {
           <StepObjectives data={data} onChange={setData} options={options} />
         )}
         {step === 3 && (
+          <StepNotifications data={data} onChange={setData} options={options} />
+        )}
+        {step === 4 && (
           <StepPackages
             recommendations={recommendations}
             selectedPkgs={selectedPkgs}
             onToggle={togglePkg}
           />
         )}
-        {step === 4 && (
+        {step === 5 && (
           <StepApply applying={applying} result={result} error={error} />
         )}
 
@@ -652,7 +817,7 @@ export default function OnboardingWizard() {
           paddingTop: 20, borderTop: '1px solid var(--border)',
         }}>
           <div>
-            {step > 0 && step < 4 && (
+            {step > 0 && step < 5 && (
               <button
                 onClick={handleBack}
                 style={{
@@ -668,7 +833,7 @@ export default function OnboardingWizard() {
             )}
             {step === 0 && (
               <button
-                onClick={() => navigate('/', { replace: true })}
+                onClick={handleSkip}
                 style={{
                   padding: '10px 18px', borderRadius: 8,
                   border: '1px solid var(--border)', background: 'var(--bg-primary)',
@@ -682,7 +847,7 @@ export default function OnboardingWizard() {
           </div>
 
           <div>
-            {step < 4 && (
+            {step < 5 && (
               <button
                 onClick={handleNext}
                 disabled={!canNext()}
@@ -697,11 +862,11 @@ export default function OnboardingWizard() {
                   transition: 'all 0.15s',
                 }}
               >
-                {step === 3 ? 'Apply & Set Up' : 'Continue'}
+                {step === 4 ? 'Apply & Set Up' : 'Continue'}
                 <ArrowRight size={14} />
               </button>
             )}
-            {step === 4 && !applying && (
+            {step === 5 && !applying && (
               <button
                 onClick={handleFinish}
                 style={{

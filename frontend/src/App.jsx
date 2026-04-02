@@ -949,6 +949,7 @@ function AppShell() {
   const [cmdkOpen, setCmdkOpen] = useState(false)
   const isMobile = useIsMobile()
   const location = useLocation()
+  const { isPro } = useAuth()
   const navigate = useNavigate()
 
   // Redirect to onboarding if not completed
@@ -1114,10 +1115,12 @@ function AppShell() {
         <NotificationBell />
         <HelpButton />
         <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} />
-        <CopilotButton onClick={() => setCopilotOpen(true)} />
-        <Suspense fallback={null}>
-          <CopilotPanel open={copilotOpen} onClose={() => setCopilotOpen(false)} currentPath={location.pathname} currentSearch={location.search} />
-        </Suspense>
+        {isPro && <CopilotButton onClick={() => setCopilotOpen(true)} />}
+        {isPro && (
+          <Suspense fallback={null}>
+            <CopilotPanel open={copilotOpen} onClose={() => setCopilotOpen(false)} currentPath={location.pathname} currentSearch={location.search} />
+          </Suspense>
+        )}
       </div>
     </ScanContext.Provider>
   )

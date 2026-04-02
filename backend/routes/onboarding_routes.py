@@ -21,7 +21,7 @@ from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
 from models.models import Organization
 from services.onboarding_packages import (
-    INDUSTRIES, TEAM_FUNCTIONS, OBJECTIVES,
+    INDUSTRIES, TEAM_FUNCTIONS, OBJECTIVES, NOTIFICATION_OPTIONS,
     get_recommendations, apply_packages,
 )
 
@@ -44,6 +44,7 @@ class ApplyRequest(BaseModel):
     team_size: str | None = None
     team_functions: list[str] = []
     objectives: list[str] = []
+    notification_prefs: list[str] = []
     # Allow user to deselect specific packages
     selected_packages: list[str] | None = None
 
@@ -57,6 +58,7 @@ async def get_onboarding_options():
         "industries": INDUSTRIES,
         "team_functions": TEAM_FUNCTIONS,
         "objectives": OBJECTIVES,
+        "notification_options": NOTIFICATION_OPTIONS,
         "org_sizes": [
             {"id": "1-50", "label": "1-50 employees"},
             {"id": "51-200", "label": "51-200 employees"},
@@ -104,6 +106,7 @@ async def recommend_packages(
         objectives=body.objectives,
         team_functions=body.team_functions,
         team_size=body.team_size or "6-15",
+        industry=body.industry,
     )
     return result
 
@@ -138,12 +141,37 @@ async def apply_onboarding_packages(
         team_functions=body.team_functions,
         team_size=body.team_size or "6-15",
         profile=profile,
+        notification_prefs=body.notification_prefs or None,
     )
 
     return {
         "success": True,
         "created": created,
     }
+
+
+@router.post("/skip")
+async def skip_onboarding(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Mark onboarding as skipped so the wizard won't show again."""
+    org_id = org_ids[0] if org_ids else current_user.org_id
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    settings = org.settings or {}
+    settings["onboarding"] = {
+        "completed": True,
+        "skipped": True,
+    }
+    org.settings = settings
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(org, "settings")
+    db.commit()
+    return {"success": True}
 
 
 @router.get("/domain-info")

@@ -210,9 +210,9 @@ const CONTEXTUAL_PROMPTS = {
   ],
   '/settings?tab=integration-builder': [
     { text: 'List all active integration pipelines', icon: 'clipboard' },
-    { text: 'Show run history for recent integrations', icon: 'target' },
+    { text: 'Set up a new integration to pull assets from our CMDB', icon: 'zap' },
     { text: 'Which integrations have failed recently?', icon: 'shield-alert' },
-    { text: 'Trigger a manual run for an integration', icon: 'zap' },
+    { text: 'Show available connector templates', icon: 'globe' },
   ],
   '/agents': [
     { text: 'Which agents have run recently and what did they find?', icon: 'clipboard' },
@@ -798,7 +798,7 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
           'ownership': '[Use list_ownership_rules, manage_ownership_rule, run_ownership_rules, get_owner_workload to help configure ownership on this page]',
           'roles': '[Use list_custom_roles, manage_custom_role to help manage RBAC roles and permissions on this page]',
           'integrations': '[Use list_integrations, call_integration_fetch, call_integration_push to help manage integrations on this page]',
-          'integration-builder': '[Use list_integration_builder_connectors, manage_integration, get_integration_runs to help manage integration pipelines on this page]',
+          'integration-builder': '[Use list_integration_builder_connectors, get_integration_builder_connector_detail, get_integration_builder_targets, list_integration_credentials, create_integration_credential, create_integration, update_integration, get_integration_detail, suggest_field_mapping, manage_integration, get_integration_runs to help build and manage integration pipelines on this page]',
         }
         if (tabHints[settingsTab]) contextPrefix += `\n${tabHints[settingsTab]}`
       }
