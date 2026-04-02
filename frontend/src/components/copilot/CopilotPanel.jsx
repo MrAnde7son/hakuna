@@ -10,6 +10,7 @@ import {
   Copy, Check, RotateCcw, ThumbsUp, ThumbsDown,
   Search, Tags, LayoutDashboard, Settings,
 } from 'lucide-react'
+import { tryRenderRichBlock } from './RichBlockRenderer.jsx'
 import {
   getCopilotConversations,
   createCopilotConversation,
@@ -397,9 +398,15 @@ const baseMdComponents = {
   ol: ({ children }) => <ol style={{ margin: '3px 0', paddingLeft: 18 }}>{children}</ol>,
   li: ({ children }) => <li style={{ margin: '1px 0' }}>{children}</li>,
   strong: ({ children }) => <strong style={{ fontWeight: 700, color: 'var(--text)' }}>{children}</strong>,
-  code: ({ inline, children }) => inline
-    ? <code style={{ background: 'var(--bg-secondary)', padding: '1px 4px', borderRadius: 3, fontSize: 11, fontFamily: 'monospace' }}>{children}</code>
-    : <pre style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, padding: 8, overflowX: 'auto', fontSize: 11, fontFamily: 'monospace', margin: '6px 0', color: 'var(--text)' }}><code>{children}</code></pre>,
+  code: ({ inline, className, children }) => {
+    if (inline) return <code style={{ background: 'var(--bg-secondary)', padding: '1px 4px', borderRadius: 3, fontSize: 11, fontFamily: 'monospace' }}>{children}</code>
+    // Detect richblock fenced code blocks (```richblock or ```richblock:type)
+    const lang = className ? className.replace('language-', '') : ''
+    const raw = String(children).replace(/\n$/, '')
+    const rich = tryRenderRichBlock(lang, raw)
+    if (rich) return rich
+    return <pre style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, padding: 8, overflowX: 'auto', fontSize: 11, fontFamily: 'monospace', margin: '6px 0', color: 'var(--text)' }}><code>{children}</code></pre>
+  },
   table: ({ children }) => <div style={{ overflowX: 'auto' }}><table style={{ borderCollapse: 'collapse', width: '100%', margin: '6px 0', fontSize: 11 }}>{children}</table></div>,
   th: ({ children }) => <th style={{ border: '1px solid var(--border)', padding: '4px 8px', background: 'var(--bg-secondary)', fontWeight: 600, textAlign: 'left' }}>{children}</th>,
   td: ({ children }) => <td style={{ border: '1px solid var(--border)', padding: '3px 8px' }}>{children}</td>,
