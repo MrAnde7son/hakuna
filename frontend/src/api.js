@@ -1053,6 +1053,9 @@ export const integrationConnect = (data) => request(`${IB}/connect`, {
 export const integrationPreview = (data) => request(`${IB}/preview`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
 })
+export const integrationAutoSuggest = (data) => request(`${IB}/auto-suggest`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
 
 export const ibGetIntegrations = () => request(`${IB}/integrations`)
 export const ibCreateIntegration = (data) => request(`${IB}/integrations`, {

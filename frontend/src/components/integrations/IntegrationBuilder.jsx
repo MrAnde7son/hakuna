@@ -5,6 +5,7 @@ import { Card, Button, useToast } from '../shared/ui.jsx'
 import {
   getConnectors, getConnector, getIntegrationSchema, getAcquisitionFlow,
   validateCredentials, createCredential, integrationConnect, integrationPreview,
+  integrationAutoSuggest,
   ibCreateIntegration, ibUpdateIntegration, ibGetIntegration,
   discoverApi, parseDocs, uploadIntegrationFile, discoverMcpTools, mcpOAuthStart,
   getTargetModels, getTargetSchema, oauthClientCredentials, discoverOAuth,
@@ -340,22 +341,17 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     }
   }
 
-  // ── Step 4: Auto-suggest ──
+  // ── Step 4: Auto-suggest (lightweight — no transport re-run) ──
   const handleAutoSuggest = async () => {
     setLoading(true)
     try {
-      const result = await integrationPreview({
-        transport_type: transportType,
-        transport_config: transportConfig,
-        credentials_id: credentialsId,
-        records_path: recordsPath || undefined,
-        field_map: [],
-        auto_suggest_flag: true,
-        entity,
+      const suggestions = await integrationAutoSuggest({
+        source_paths: detectedPaths,
+        entity: entity || 'finding',
       })
-      if (result.suggestions) {
-        setSuggestions(result.suggestions)
-        setFieldMap(result.suggestions)
+      if (suggestions && suggestions.length) {
+        setSuggestions(suggestions)
+        setFieldMap(suggestions)
       }
     } catch (e) {
       console.error('Auto-suggest failed:', e)

@@ -17,6 +17,7 @@ _REGISTRY: dict[str, "ImportableModel"] = {}
 # Columns that are auto-managed and should not appear as mapping targets
 _AUTO_COLUMNS = frozenset([
     "id", "created_at", "updated_at",
+    "org_id", "scan_id",  # Set by the upsert engine, not user-mapped
 ])
 
 
@@ -56,7 +57,7 @@ def importable(
         if parent_hint:
             hint = ParentHint(**parent_hint)
 
-        columns = _introspect_columns(cls)
+        columns = _introspect_columns(cls, parent_fk=hint.field if hint else None)
         meta = ImportableModel(
             model_class=cls,
             slug=slug,
@@ -94,13 +95,16 @@ def _sqla_type_to_str(col_type) -> str:
     return "string"
 
 
-def _introspect_columns(model_cls) -> list[dict]:
+def _introspect_columns(model_cls, parent_fk: str | None = None) -> list[dict]:
     """Read writable column metadata from a SQLAlchemy model."""
     columns = []
     table = model_cls.__table__
 
     for col in table.columns:
         if col.name in _AUTO_COLUMNS:
+            continue
+        # Skip FK resolved via parent_hint (e.g. asset_id)
+        if parent_fk and col.name == parent_fk:
             continue
         # Skip primary key (usually 'id', but just in case)
         if col.primary_key:

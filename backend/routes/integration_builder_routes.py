@@ -69,6 +69,20 @@ def get_target_fields(slug: str):
     return schema
 
 
+class AutoSuggestRequest(BaseModel):
+    source_paths: list[dict]   # [{path, sample_value, inferred_type}, ...]
+    entity: str = "finding"    # target model slug
+
+
+@router.post("/auto-suggest")
+def auto_suggest_fields(body: AutoSuggestRequest, user: User = Depends(require_auth)):
+    """Lightweight auto-suggest — no transport re-run, just string matching."""
+    schema = get_target_schema(body.entity) or get_schema(body.entity)
+    if not schema:
+        raise HTTPException(404, f"Unknown target entity '{body.entity}'")
+    return auto_suggest(body.source_paths, schema)
+
+
 @router.get("/connectors")
 def list_connectors():
     """Return all OOTB connector templates (summary)."""
