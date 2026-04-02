@@ -31,10 +31,13 @@ Asset criticality auto-rules:
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy.orm import Session
 
 import services.rule_engine as engine
 
@@ -134,6 +137,92 @@ def load_config() -> dict:
 def save_config(cfg: dict) -> None:
     with open(RISK_CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
+
+
+# ─────────────────────────────────────────────
+# Org-aware Config I/O (per-tenant overrides)
+# ─────────────────────────────────────────────
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Shallow-merge top-level sections (same logic as load_config)."""
+    merged = dict(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(merged.get(k), dict):
+            merged[k] = {**merged[k], **v}
+        else:
+            merged[k] = v
+    return merged
+
+
+def load_config_for_org(db: Session, org_id: int | None) -> dict:
+    """Load risk config with per-org overrides merged on top of the global config.
+
+    Falls back to the global file-based config when no org override exists.
+    """
+    global_cfg = load_config()
+    if org_id is None:
+        return global_cfg
+
+    from models.models import Organization
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        return global_cfg
+
+    settings = org.settings or {}
+    org_risk_cfg = settings.get("risk_config")
+    if not org_risk_cfg:
+        return global_cfg
+
+    return _deep_merge(global_cfg, org_risk_cfg)
+
+
+def save_config_for_org(db: Session, org_id: int | None, cfg: dict) -> None:
+    """Save risk config. If org_id is provided, stores as an org-level override.
+    If org_id is None, saves to the global file.
+    """
+    if org_id is None:
+        save_config(cfg)
+        return
+
+    from models.models import Organization
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        raise ValueError(f"Organization {org_id} not found")
+
+    settings = copy.deepcopy(org.settings or {})
+    settings["risk_config"] = cfg
+    org.settings = settings
+    db.commit()
+
+
+def delete_config_for_org(db: Session, org_id: int) -> bool:
+    """Remove the org-level risk config override, reverting to global defaults.
+    Returns True if an override was removed, False if none existed.
+    """
+    from models.models import Organization
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        return False
+
+    settings = copy.deepcopy(org.settings or {})
+    if "risk_config" not in settings:
+        return False
+
+    del settings["risk_config"]
+    org.settings = settings
+    db.commit()
+    return True
+
+
+def has_org_override(db: Session, org_id: int | None) -> bool:
+    """Check whether an org has a custom risk config override."""
+    if org_id is None:
+        return False
+    from models.models import Organization
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        return False
+    return bool((org.settings or {}).get("risk_config"))
 
 
 # ─────────────────────────────────────────────

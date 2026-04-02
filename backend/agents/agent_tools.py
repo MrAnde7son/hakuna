@@ -3644,8 +3644,10 @@ def run_dedup(db: Session, params: dict):
     {},
 )
 def get_risk_config(db: Session, params: dict):
-    from core.risk_config import load_config
-    config = load_config()
+    from core.risk_config import load_config_for_org, has_org_override
+    org_id = params.get("_org_id")
+    config = load_config_for_org(db, org_id)
+    config["is_org_override"] = has_org_override(db, org_id)
     return {
         "config": config,
         "help": {
@@ -3671,13 +3673,15 @@ def get_risk_config(db: Session, params: dict):
 def update_risk_config(db: Session, params: dict):
     if not params.get("confirmed"):
         return {"error": "Show the user what will change and ask for confirmation first."}
-    from core.risk_config import load_config, save_config
-    config = load_config()
+    from core.risk_config import load_config_for_org, save_config_for_org
+    org_id = params.get("_org_id")
+    config = load_config_for_org(db, org_id)
+    config.pop("is_org_override", None)
     if params.get("formula_weights"):
         config["formula_weights"] = {**config.get("formula_weights", {}), **params["formula_weights"]}
     if params.get("severity_scores"):
         config["severity_scores"] = {**config.get("severity_scores", {}), **params["severity_scores"]}
-    save_config(config)
+    save_config_for_org(db, org_id, config)
     return {"message": "Risk scoring configuration updated. Run recalculate_risk_scores to apply to existing data.", "config": config}
 
 
@@ -3696,8 +3700,10 @@ def update_risk_config(db: Session, params: dict):
 )
 def manage_criticality_rules(db: Session, params: dict):
     action = params.get("action", "list")
-    from core.risk_config import load_config, save_config
-    config = load_config()
+    from core.risk_config import load_config_for_org, save_config_for_org
+    org_id = params.get("_org_id")
+    config = load_config_for_org(db, org_id)
+    config.pop("is_org_override", None)
     rules = config.get("criticality_rules", [])
 
     if action == "list":
@@ -3714,7 +3720,7 @@ def manage_criticality_rules(db: Session, params: dict):
             return {"error": "Rule must have name and criticality"}
         rules.append(rule)
         config["criticality_rules"] = rules
-        save_config(config)
+        save_config_for_org(db, org_id, config)
         return {"message": f"Criticality rule '{rule['name']}' created.", "rules": rules}
     elif action == "update":
         idx = params.get("rule_index")
@@ -3722,7 +3728,7 @@ def manage_criticality_rules(db: Session, params: dict):
             return {"error": f"Invalid rule_index. There are {len(rules)} rules (0-indexed)."}
         rules[idx] = {**rules[idx], **params.get("rule", {})}
         config["criticality_rules"] = rules
-        save_config(config)
+        save_config_for_org(db, org_id, config)
         return {"message": f"Criticality rule at index {idx} updated.", "rules": rules}
     elif action == "delete":
         idx = params.get("rule_index")
@@ -3730,7 +3736,7 @@ def manage_criticality_rules(db: Session, params: dict):
             return {"error": f"Invalid rule_index. There are {len(rules)} rules (0-indexed)."}
         removed = rules.pop(idx)
         config["criticality_rules"] = rules
-        save_config(config)
+        save_config_for_org(db, org_id, config)
         return {"message": f"Criticality rule '{removed.get('name', idx)}' deleted.", "rules": rules}
     return {"error": f"Unknown action '{action}'. Use list, create, update, or delete."}
 
@@ -3749,8 +3755,9 @@ def manage_criticality_rules(db: Session, params: dict):
 def recalculate_risk_scores(db: Session, params: dict):
     if not params.get("confirmed"):
         return {"error": "This will recalculate scores for all data. Ask for confirmation."}
-    from core.risk_config import load_config, evaluate_criticality_rules
-    config = load_config()
+    from core.risk_config import load_config_for_org, evaluate_criticality_rules
+    org_id = params.get("_org_id")
+    config = load_config_for_org(db, org_id)
     scan_id = params.get("scan_id")
     apply_crit = params.get("apply_criticality_rules", True)
 
@@ -4342,6 +4349,356 @@ def get_integration_runs(db: Session, params: dict):
     }
 
 
+@agent_tool(
+    "get_integration_builder_targets",
+    "List all importable data model targets (e.g. finding, asset, software, certificate) with their "
+    "field schemas. Use this to understand what entities can be imported and what fields they accept. "
+    "WHEN TO CALL: When the user wants to create a new integration and needs to know which entity "
+    "types are available or what fields a target entity has.",
+    {
+        "target_slug": {
+            "type": "string",
+            "description": "Optional: specific target slug (e.g. 'finding', 'asset', 'software') to get its field schema. "
+            "Omit to list all available targets.",
+        },
+    },
+)
+def get_integration_builder_targets(db: Session, params: dict):
+    from integrations.model_registry import list_targets as list_registry_targets, get_target_schema
+    from integrations.schema import get_schema
+
+    slug = params.get("target_slug")
+    if slug:
+        schema = get_target_schema(slug) or get_schema(slug)
+        if not schema:
+            return {"error": f"Target '{slug}' not found. Use this tool without target_slug to list all."}
+        return {"target": slug, "schema": schema}
+    return list_registry_targets()
+
+
+@agent_tool(
+    "get_integration_builder_connector_detail",
+    "Get full details for a specific connector template including authentication requirements, "
+    "default transport config, and credential acquisition flow. "
+    "WHEN TO CALL: When the user wants to set up a new integration and you need the connector's "
+    "auth requirements and config structure.",
+    {
+        "connector_id": {
+            "type": "string",
+            "description": "The connector template ID (e.g. 'jira', 'servicenow', 'qualys', 'tenable-io')",
+        },
+    },
+)
+def get_integration_builder_connector_detail(db: Session, params: dict):
+    from integrations.connector_loader import get_connector
+    connector_id = params.get("connector_id")
+    if not connector_id:
+        return {"error": "connector_id is required"}
+    c = get_connector(connector_id)
+    if not c:
+        return {"error": f"Connector '{connector_id}' not found. Use list_integration_builder_connectors to see available connectors."}
+    return c
+
+
+@agent_tool(
+    "list_integration_credentials",
+    "List saved credentials (metadata only, never secrets) for the current organization. "
+    "WHEN TO CALL: When the user wants to create an integration and you need to find existing "
+    "credentials to reuse, or to check what credentials are available.",
+    {},
+)
+def list_integration_credentials(db: Session, params: dict):
+    from models.models import IntegrationCredential
+    creds = db.query(IntegrationCredential).all()
+    return [
+        {
+            "id": c.id,
+            "name": c.name,
+            "connector_id": c.connector_id,
+            "auth_type": c.auth_type,
+            "instance_url": c.instance_url,
+            "connected_user": c.connected_user,
+            "created_at": str(c.created_at) if c.created_at else None,
+        }
+        for c in creds
+    ]
+
+
+@agent_tool(
+    "create_integration_credential",
+    "Store new credentials for use with an integration. The credential values are encrypted at rest. "
+    "WHEN TO CALL: When the user provides API keys, tokens, or other auth details for a new integration. "
+    "NEVER call without confirmed=true. NEVER log or echo back the credential values.",
+    {
+        "name": {"type": "string", "description": "Human-readable name (e.g. 'Jira Cloud - Production')"},
+        "connector_id": {"type": "string", "description": "Connector template ID (e.g. 'jira', 'servicenow')"},
+        "auth_type": {"type": "string", "description": "Auth type: 'api_key', 'basic', 'bearer', 'oauth2'"},
+        "values": {"type": "object", "description": "Credential key-value pairs (e.g. {\"api_key\": \"...\", \"email\": \"...\"})"},
+        "instance_url": {"type": "string", "description": "Optional: base URL of the external system (e.g. 'https://company.atlassian.net')"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def create_integration_credential(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Describe the action and ask for confirmation first."}
+    from models.models import IntegrationCredential
+    from services import credential_vault
+
+    name = params.get("name")
+    connector_id = params.get("connector_id")
+    auth_type = params.get("auth_type")
+    values = params.get("values")
+    if not all([name, connector_id, auth_type, values]):
+        return {"error": "name, connector_id, auth_type, and values are all required"}
+
+    try:
+        encrypted = credential_vault.encrypt(values)
+    except Exception as e:
+        return {"error": f"Failed to encrypt credentials: {e}"}
+
+    cred = IntegrationCredential(
+        name=name,
+        connector_id=connector_id,
+        auth_type=auth_type,
+        encrypted_values=encrypted,
+        instance_url=params.get("instance_url"),
+    )
+    db.add(cred)
+    db.commit()
+    db.refresh(cred)
+    return {"id": cred.id, "name": cred.name, "message": "Credential saved securely."}
+
+
+@agent_tool(
+    "create_integration",
+    "Create a new integration pipeline in the integration builder. This configures a pull (import) or "
+    "push (export) data pipeline between Hakuna and an external system. "
+    "WHEN TO CALL: When the user wants to set up a new integration after you have gathered the "
+    "connector details, credentials, entity type, and field mapping. "
+    "NEVER call without confirmed=true.",
+    {
+        "name": {"type": "string", "description": "Integration name (e.g. 'Jira Cloud — Import Tickets')"},
+        "direction": {"type": "string", "description": "'pull' (import into Hakuna) or 'push' (export from Hakuna)"},
+        "entity": {"type": "string", "description": "Target entity type (e.g. 'finding', 'asset', 'software')"},
+        "transport_type": {"type": "string", "description": "'api', 'sql', 'file', or 'mcp'"},
+        "transport_config": {"type": "object", "description": "Transport configuration (URL, method, headers, etc.)"},
+        "credentials_id": {"type": "string", "description": "Optional: ID of saved credentials to use"},
+        "records_path": {"type": "string", "description": "Optional: JSONPath to the records array in API responses"},
+        "field_map": {"type": "array", "description": "Field mapping rules: [{\"source\": \"api.field\", \"target\": \"hakuna_field\", \"transform\": ...}]"},
+        "dedup_key": {"type": "array", "description": "Optional: fields used for deduplication (e.g. ['plugin_id', 'asset_id'])"},
+        "schedule": {"type": "string", "description": "Optional: cron expression (e.g. '0 */6 * * *' for every 6 hours)"},
+        "enabled": {"type": "boolean", "description": "Whether to enable immediately (default false)"},
+        "template_id": {"type": "string", "description": "Optional: connector template ID this was built from"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def create_integration(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Describe the integration config and ask for confirmation first."}
+
+    name = params.get("name")
+    direction = params.get("direction")
+    entity = params.get("entity")
+    transport_type = params.get("transport_type")
+    if not all([name, direction, entity, transport_type]):
+        return {"error": "name, direction, entity, and transport_type are required"}
+    if direction not in ("pull", "push"):
+        return {"error": "direction must be 'pull' or 'push'"}
+    if transport_type not in ("api", "sql", "file", "mcp"):
+        return {"error": "transport_type must be 'api', 'sql', 'file', or 'mcp'"}
+
+    from integrations.model_registry import get_registry
+    valid_entities = set(get_registry().keys()) | {"action"}
+    if entity not in valid_entities:
+        return {"error": f"entity must be one of: {sorted(valid_entities)}"}
+
+    from integrations.connector_loader import get_connector as _get_connector
+    logo_url = None
+    template_id = params.get("template_id")
+    if template_id:
+        tpl = _get_connector(template_id)
+        if tpl:
+            logo_url = tpl.get("logo")
+
+    integration = Integration(
+        name=name,
+        direction=direction,
+        entity=entity,
+        transport_type=transport_type,
+        transport_config=params.get("transport_config", {}),
+        credentials_id=params.get("credentials_id"),
+        records_path=params.get("records_path"),
+        field_map=params.get("field_map", []),
+        dedup_key=params.get("dedup_key", []),
+        params=params.get("params", {}),
+        schedule=params.get("schedule"),
+        enabled=params.get("enabled", False),
+        template_id=template_id,
+        logo_url=logo_url,
+    )
+    db.add(integration)
+    db.commit()
+    db.refresh(integration)
+
+    if integration.enabled and integration.schedule:
+        try:
+            from services.integration_scheduler import register_integration
+            register_integration(integration.id, integration.schedule)
+        except ImportError:
+            pass
+
+    return {
+        "id": integration.id,
+        "name": integration.name,
+        "direction": integration.direction,
+        "entity": integration.entity,
+        "enabled": integration.enabled,
+        "message": f"Integration '{integration.name}' created successfully.",
+        "next_step": "Use manage_integration with action='run' to trigger a test run, or action='enable' to activate it.",
+    }
+
+
+@agent_tool(
+    "update_integration",
+    "Update an existing integration's configuration (field mapping, schedule, transport config, etc.). "
+    "WHEN TO CALL: When the user wants to modify an existing integration's settings. "
+    "NEVER call without confirmed=true.",
+    {
+        "integration_id": {"type": "integer", "description": "ID of the integration to update"},
+        "name": {"type": "string", "description": "Optional: new name"},
+        "transport_config": {"type": "object", "description": "Optional: updated transport configuration"},
+        "credentials_id": {"type": "string", "description": "Optional: new credentials ID"},
+        "records_path": {"type": "string", "description": "Optional: updated records path"},
+        "field_map": {"type": "array", "description": "Optional: updated field mapping rules"},
+        "dedup_key": {"type": "array", "description": "Optional: updated dedup key fields"},
+        "schedule": {"type": "string", "description": "Optional: updated cron schedule"},
+        "enabled": {"type": "boolean", "description": "Optional: enable or disable"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},
+    },
+)
+def update_integration(db: Session, params: dict):
+    if not params.get("confirmed"):
+        return {"error": "Describe the changes and ask for confirmation first."}
+    integration_id = params.get("integration_id")
+    if not integration_id:
+        return {"error": "integration_id is required"}
+
+    integ = db.query(Integration).filter(Integration.id == integration_id).first()
+    if not integ:
+        return {"error": f"Integration {integration_id} not found"}
+
+    updatable = ["name", "transport_config", "credentials_id", "records_path",
+                 "field_map", "dedup_key", "schedule", "enabled"]
+    changed = []
+    for field in updatable:
+        val = params.get(field)
+        if val is not None:
+            setattr(integ, field, val)
+            changed.append(field)
+
+    if not changed:
+        return {"error": "No fields to update. Provide at least one field to change."}
+
+    db.commit()
+    db.refresh(integ)
+
+    # Update scheduler
+    try:
+        from services.integration_scheduler import register_integration, deregister_integration
+        if integ.enabled and integ.schedule:
+            register_integration(integ.id, integ.schedule)
+        else:
+            deregister_integration(integ.id)
+    except ImportError:
+        pass
+
+    return {
+        "id": integ.id,
+        "name": integ.name,
+        "updated_fields": changed,
+        "enabled": integ.enabled,
+        "message": f"Integration '{integ.name}' updated ({', '.join(changed)}).",
+    }
+
+
+@agent_tool(
+    "get_integration_detail",
+    "Get the full configuration of an integration including transport config, field mapping, "
+    "credentials reference, and schedule. "
+    "WHEN TO CALL: When you need to inspect or troubleshoot an existing integration's setup.",
+    {
+        "integration_id": {"type": "integer", "description": "ID of the integration"},
+    },
+)
+def get_integration_detail(db: Session, params: dict):
+    integration_id = params.get("integration_id")
+    if not integration_id:
+        return {"error": "integration_id is required"}
+    integ = db.query(Integration).filter(Integration.id == integration_id).first()
+    if not integ:
+        return {"error": f"Integration {integration_id} not found"}
+    return {
+        "id": integ.id,
+        "name": integ.name,
+        "direction": integ.direction,
+        "entity": integ.entity,
+        "transport_type": integ.transport_type,
+        "transport_config": integ.transport_config,
+        "credentials_id": integ.credentials_id,
+        "records_path": integ.records_path,
+        "field_map": integ.field_map,
+        "dedup_key": integ.dedup_key,
+        "params": integ.params,
+        "schedule": integ.schedule,
+        "enabled": integ.enabled,
+        "template_id": integ.template_id,
+        "logo_url": integ.logo_url,
+        "last_run_at": str(integ.last_run_at) if integ.last_run_at else None,
+        "last_run_status": integ.last_run_status,
+        "created_at": str(integ.created_at) if integ.created_at else None,
+    }
+
+
+@agent_tool(
+    "suggest_field_mapping",
+    "Auto-suggest field mappings between source data fields and a Hakuna target entity. "
+    "Provide sample source field names and the target entity to get intelligent mapping suggestions. "
+    "WHEN TO CALL: When building a new integration and you need to map external fields to Hakuna fields.",
+    {
+        "source_fields": {
+            "type": "array",
+            "description": "List of field names/paths from the source data (e.g. ['ip_address', 'hostname', 'os_name'])",
+        },
+        "target_entity": {
+            "type": "string",
+            "description": "Hakuna target entity slug (e.g. 'asset', 'finding', 'software')",
+        },
+    },
+)
+def suggest_field_mapping(db: Session, params: dict):
+    from services.field_mapper import auto_suggest
+    from integrations.model_registry import get_target_schema
+    from integrations.schema import get_schema
+
+    source_fields = params.get("source_fields")
+    target_entity = params.get("target_entity")
+    if not source_fields or not target_entity:
+        return {"error": "source_fields and target_entity are required"}
+
+    schema = get_target_schema(target_entity) or get_schema(target_entity)
+    if not schema:
+        return {"error": f"Target entity '{target_entity}' not found"}
+
+    # Build pseudo-paths list matching detect_paths output format
+    paths = [{"path": f, "type": "string", "sample": ""} for f in source_fields]
+    suggestions = auto_suggest(paths, schema)
+    return {
+        "target_entity": target_entity,
+        "suggestions": suggestions,
+        "note": "Review and adjust these suggestions before creating the integration.",
+    }
+
+
 # ── Tag Management (extended) ───────────────────────────────────────
 
 @agent_tool(
@@ -4442,3 +4799,234 @@ def manage_auto_tag_rule(db: Session, params: dict):
         db.commit()
         return {"message": f"Auto-tag rule '{name}' deleted."}
     return {"error": f"Unknown action '{action}'."}
+
+
+# ── Web & SQL tools ─────────────────────────────────────────────────
+
+@agent_tool(
+    "search_web",
+    "Search the internet for security advisories, CVE details, vendor patches, exploit information, or remediation guidance. "
+    "Returns top results with titles, URLs, and snippets. "
+    "WHEN TO CALL: When you need real-time threat intel, CVE context not in the database, vendor advisory links, or remediation steps from external sources.",
+    {
+        "query": {"type": "string", "description": "Search query (e.g. 'CVE-2024-3400 PAN-OS exploit mitigation')"},
+        "max_results": {"type": "integer", "description": "Number of results to return (default 5, max 10)"},
+    },
+)
+def search_web(db: Session, params: dict):
+    query = params.get("query", "").strip()
+    if not query:
+        return {"error": "query is required"}
+    max_results = min(int(params.get("max_results", 5)), 10)
+    try:
+        from ddgs import DDGS
+        with DDGS() as ddgs:
+            raw = list(ddgs.text(query, max_results=max_results))
+        results = [
+            {"title": r.get("title", ""), "url": r.get("href", ""), "snippet": r.get("body", "")}
+            for r in raw
+        ]
+        return {"query": query, "results": results, "count": len(results)}
+    except Exception as e:
+        logger.exception("search_web failed")
+        return {"error": f"Web search failed: {str(e)}"}
+
+
+@agent_tool(
+    "fetch_url",
+    "Fetch the content of a web page and extract its main text. Useful for reading CVE advisories, vendor patches, "
+    "NVD entries, CISA KEV details, or documentation pages. Returns extracted text (up to 8000 chars). "
+    "WHEN TO CALL: When you have a specific URL from a search result or the user and need to read its content.",
+    {
+        "url": {"type": "string", "description": "Full URL to fetch (e.g. 'https://nvd.nist.gov/vuln/detail/CVE-2024-3400')"},
+    },
+)
+def fetch_url(db: Session, params: dict):
+    import httpx
+    from bs4 import BeautifulSoup
+
+    url = params.get("url", "").strip()
+    if not url:
+        return {"error": "url is required"}
+    if not url.startswith(("http://", "https://")):
+        return {"error": "url must start with http:// or https://"}
+
+    try:
+        resp = httpx.get(url, timeout=15, follow_redirects=True, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; HakunaCopilot/1.0)"
+        })
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        return {"error": f"HTTP {e.response.status_code} fetching {url}"}
+    except Exception as e:
+        return {"error": f"Failed to fetch URL: {str(e)}"}
+
+    content_type = resp.headers.get("content-type", "")
+    if "html" not in content_type and "text" not in content_type:
+        return {"error": f"Unsupported content type: {content_type}"}
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    # Remove noise
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form"]):
+        tag.decompose()
+    text = soup.get_text(separator="\n", strip=True)
+    # Collapse blank lines
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    text = "\n".join(lines)
+
+    max_chars = 8000
+    truncated = len(text) > max_chars
+    return {
+        "url": url,
+        "title": soup.title.string.strip() if soup.title and soup.title.string else "",
+        "content": text[:max_chars],
+        "truncated": truncated,
+        "length": len(text),
+    }
+
+
+# Table → org_id filter mapping for run_sql_query
+# "direct" = table has org_id column; "via_scan" = filter through scan_id → scans.org_id
+_SQL_TABLE_ORG_FILTER = {
+    "scans":               "direct",
+    "assets":              "via_scan",
+    "findings":            "via_scan",
+    "tags":                "direct",
+    "tag_assignments":     None,       # safe — joins to tags/findings which are filtered
+    "campaigns":           "direct",
+    "campaign_findings":   None,       # joins to campaigns
+    "sla_configs":         "direct",
+    "auto_tag_rules":      "direct",
+    "ownership_rules":     "direct",
+    "finding_exceptions":  "direct",
+    "finding_tickets":     None,       # joins to findings
+    "scan_comparisons":    "direct",
+    "inventory_users":     "via_scan",
+    "inventory_groups":    "via_scan",
+    "inventory_services":  "via_scan",
+    "inventory_net_conns": "via_scan",
+    "inventory_patches":   "via_scan",
+    "inventory_logged_on": "via_scan",
+    "inventory_scheduled_tasks": "via_scan",
+    "inventory_software":  "via_scan",
+    "inventory_security_controls": "via_scan",
+    "inventory_certificates": "via_scan",
+    "inventory_shares":    "via_scan",
+}
+
+_BLOCKED_SQL_KEYWORDS = {
+    "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE",
+    "REPLACE", "GRANT", "REVOKE", "EXEC", "EXECUTE", "MERGE", "UPSERT",
+    "ATTACH", "DETACH", "PRAGMA", "VACUUM", "REINDEX",
+}
+
+
+@agent_tool(
+    "run_sql_query",
+    "Execute a read-only SQL SELECT query against the database for ad-hoc analysis that existing tools can't answer. "
+    "The query is automatically scoped to the current organization — you do NOT need to add org_id filters. "
+    "Returns up to 200 rows. Use standard SQL; both SQLite and PostgreSQL are supported. "
+    "WHEN TO CALL: When the user asks an analytical question that requires custom aggregation, joins, or grouping "
+    "that no existing tool directly supports (e.g. 'which assets have the most critical findings older than 30 days?'). "
+    "Prefer dedicated query tools (query_findings, query_assets, etc.) for standard lookups.",
+    {
+        "sql": {"type": "string", "description": "SQL SELECT query. Do NOT include org_id filters — they are injected automatically."},
+        "params": {"type": "object", "description": "Optional named bind parameters (e.g. {\"cve\": \"CVE-2024-3400\"})"},
+    },
+)
+def run_sql_query(db: Session, params: dict):
+    import sqlglot
+    from sqlglot import exp
+    from sqlalchemy import text
+
+    sql = params.get("sql", "").strip()
+    bind_params = params.get("params") or {}
+    org_id = params.get("_org_id")
+    if not sql:
+        return {"error": "sql is required"}
+    if not org_id:
+        return {"error": "Organization context is required"}
+
+    # ── 1. Block non-SELECT statements ──────────────────────────────
+    first_keyword = sql.strip().split()[0].upper() if sql.strip() else ""
+    if first_keyword in _BLOCKED_SQL_KEYWORDS:
+        return {"error": f"Only SELECT queries are allowed. Got: {first_keyword}"}
+
+    # ── 2. Parse with sqlglot ───────────────────────────────────────
+    try:
+        parsed = sqlglot.parse(sql)
+    except Exception as e:
+        return {"error": f"SQL parse error: {str(e)}"}
+
+    if not parsed or len(parsed) != 1:
+        return {"error": "Provide exactly one SQL statement"}
+
+    stmt = parsed[0]
+    if not isinstance(stmt, exp.Select):
+        return {"error": "Only SELECT queries are allowed"}
+
+    # Check for subquery DML
+    for node in stmt.walk():
+        if isinstance(node, (exp.Insert, exp.Update, exp.Delete, exp.Drop, exp.Create, exp.Alter)):
+            return {"error": "Only SELECT queries are allowed — no DML/DDL in subqueries"}
+
+    # ── 3. Validate tables against allowlist ────────────────────────
+    referenced_tables = set()
+    for table_node in stmt.find_all(exp.Table):
+        table_name = table_node.name.lower()
+        referenced_tables.add(table_name)
+
+    disallowed = referenced_tables - set(_SQL_TABLE_ORG_FILTER.keys())
+    if disallowed:
+        return {
+            "error": f"Tables not allowed: {', '.join(sorted(disallowed))}",
+            "allowed_tables": sorted(_SQL_TABLE_ORG_FILTER.keys()),
+        }
+
+    # ── 4. Inject org_id filters ────────────────────────────────────
+    org_conditions = []
+    for table_name in referenced_tables:
+        filter_type = _SQL_TABLE_ORG_FILTER.get(table_name)
+        if filter_type == "direct":
+            org_conditions.append(f"{table_name}.org_id = :_org_id")
+        elif filter_type == "via_scan":
+            org_conditions.append(
+                f"{table_name}.scan_id IN (SELECT id FROM scans WHERE scans.org_id = :_org_id)"
+            )
+
+    # Append org filters to the original query
+    if org_conditions:
+        org_where = " AND ".join(org_conditions)
+        if " WHERE " in sql.upper():
+            final_sql = f"{sql} AND {org_where}"
+        else:
+            final_sql = f"{sql} WHERE {org_where}"
+    else:
+        final_sql = sql
+
+    # Add row limit
+    final_sql = f"SELECT * FROM ({final_sql}) AS _limited LIMIT 200"
+
+    # ── 5. Execute ──────────────────────────────────────────────────
+    bind_params["_org_id"] = org_id
+    try:
+        result = db.execute(text(final_sql), bind_params)
+        columns = list(result.keys())
+        rows = [dict(zip(columns, row)) for row in result.fetchall()]
+
+        # Serialize datetime objects
+        for row in rows:
+            for k, v in row.items():
+                if isinstance(v, datetime):
+                    row[k] = v.isoformat()
+
+        return {
+            "columns": columns,
+            "rows": rows,
+            "row_count": len(rows),
+            "truncated": len(rows) == 200,
+            "sql_executed": final_sql,
+        }
+    except Exception as e:
+        db.rollback()
+        return {"error": f"Query execution failed: {str(e)}"}

@@ -42,7 +42,7 @@ export default function Register() {
       if (data?.user?.email_verified === false) {
         navigate('/verify-email')
       } else {
-        navigate('/')
+        navigate('/onboarding')
       }
     } catch (err) {
       setError(err.message || t('auth.registrationFailed'))

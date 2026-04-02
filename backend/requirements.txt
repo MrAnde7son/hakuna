@@ -24,3 +24,5 @@ pypdf>=4.0.0
 python-docx>=1.0.0
 stripe>=7.0.0
 slowapi>=0.1.9
+ddgs>=6.0.0
+sqlglot>=26.0.0

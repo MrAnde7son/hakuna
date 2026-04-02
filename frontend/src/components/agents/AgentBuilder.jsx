@@ -14,6 +14,7 @@ import {
   Download, Upload, Tag, AlertCircle, FileText, Paperclip, ExternalLink, Search,
   Activity, Timer, Hash,
 } from 'lucide-react'
+import { tryRenderRichBlock } from '../copilot/RichBlockRenderer.jsx'
 import {
   getAgents, createAgent, updateAgent, deleteAgent,
   runAgent, getAgentRuns, getAgentRun, getAgentToolCatalog,
@@ -1454,9 +1455,14 @@ function RunsPanel({ runs, activeRun, setActiveRun, selected, streamEvents, runn
                   ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: 20 }}>{children}</ol>,
                   li: ({ children }) => <li style={{ margin: '2px 0' }}>{children}</li>,
                   strong: ({ children }) => <strong style={{ fontWeight: 700, color: 'var(--text)' }}>{children}</strong>,
-                  code: ({ inline, children }) => inline
-                    ? <code style={{ background: 'var(--bg-secondary)', padding: '1px 5px', borderRadius: 3, fontSize: 12, fontFamily: 'monospace' }}>{children}</code>
-                    : <pre style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, padding: 10, overflowX: 'auto', fontSize: 12, fontFamily: 'monospace', margin: '8px 0', color: 'var(--text)' }}><code>{children}</code></pre>,
+                  code: ({ inline, className, children }) => {
+                    if (inline) return <code style={{ background: 'var(--bg-secondary)', padding: '1px 5px', borderRadius: 3, fontSize: 12, fontFamily: 'monospace' }}>{children}</code>
+                    const lang = className ? className.replace('language-', '') : ''
+                    const raw = String(children).replace(/\n$/, '')
+                    const rich = tryRenderRichBlock(lang, raw)
+                    if (rich) return rich
+                    return <pre style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, padding: 10, overflowX: 'auto', fontSize: 12, fontFamily: 'monospace', margin: '8px 0', color: 'var(--text)' }}><code>{children}</code></pre>
+                  },
                   table: ({ children }) => <table style={{ borderCollapse: 'collapse', width: '100%', margin: '8px 0', fontSize: 12 }}>{children}</table>,
                   th: ({ children }) => <th style={{ border: '1px solid var(--border)', padding: '6px 10px', background: 'var(--bg-secondary)', fontWeight: 600, textAlign: 'left' }}>{children}</th>,
                   td: ({ children }) => <td style={{ border: '1px solid var(--border)', padding: '5px 10px' }}>{children}</td>,

@@ -59,7 +59,7 @@ import SubscriptionBanner from './components/billing/SubscriptionBanner.jsx'
 import GettingStartedPanel from './components/onboarding/GettingStartedPanel.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
 import NotificationBell from './components/notifications/NotificationBell.jsx'
-import { getScans, setOrgContext, authUpdateLocale, getFindings, getAssets, getCampaigns } from './api.js'
+import { getScans, setOrgContext, authUpdateLocale, getFindings, getAssets, getCampaigns, getOnboardingStatus } from './api.js'
 import { ErrorBoundary, ToastProvider, ConfirmProvider } from './components/shared/ui.jsx'
 
 // Lazy-loaded route components (code-split per page)
@@ -81,6 +81,7 @@ const AggregatedSolutions = React.lazy(() => import('./components/remediation/Ag
 const UserManagement = React.lazy(() => import('./components/settings/UserManagement.jsx'))
 const UserDocs = React.lazy(() => import('./components/docs/UserDocs.jsx'))
 const CopilotPanel = React.lazy(() => import('./components/copilot/CopilotPanel.jsx'))
+const OnboardingWizard = React.lazy(() => import('./components/onboarding/OnboardingWizard.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
@@ -946,9 +947,25 @@ function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [copilotOpen, setCopilotOpen] = useState(false)
   const [cmdkOpen, setCmdkOpen] = useState(false)
+  const [onboardingChecked, setOnboardingChecked] = useState(false)
   const isMobile = useIsMobile()
   const location = useLocation()
+  const { isPro } = useAuth()
+  const navigate = useNavigate()
   const { t } = useTranslation()
+
+  // Redirect to onboarding if not completed
+  useEffect(() => {
+    getOnboardingStatus()
+      .then(status => {
+        if (status && !status.completed) {
+          navigate('/onboarding', { replace: true })
+        } else {
+          setOnboardingChecked(true)
+        }
+      })
+      .catch(() => { setOnboardingChecked(true) }) // Don't block the app on error
+  }, [])
 
   // Cmd+K shortcut
   useEffect(() => {
@@ -963,11 +980,12 @@ function AppShell() {
   }, [])
 
   useEffect(() => {
+    if (!onboardingChecked) return
     getScans().then(data => {
       setScans(data)
       setScansLoaded(true)
     }).catch(() => { setScansFailed(true); setScansLoaded(true) })
-  }, [])
+  }, [onboardingChecked])
 
   // Close mobile drawer on route change
   useEffect(() => {
@@ -1101,10 +1119,12 @@ function AppShell() {
         <NotificationBell />
         <HelpButton />
         <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} />
-        <CopilotButton onClick={() => setCopilotOpen(true)} />
-        <Suspense fallback={null}>
-          <CopilotPanel open={copilotOpen} onClose={() => setCopilotOpen(false)} currentPath={location.pathname} currentSearch={location.search} />
-        </Suspense>
+        {isPro && <CopilotButton onClick={() => setCopilotOpen(true)} />}
+        {isPro && (
+          <Suspense fallback={null}>
+            <CopilotPanel open={copilotOpen} onClose={() => setCopilotOpen(false)} currentPath={location.pathname} currentSearch={location.search} />
+          </Suspense>
+        )}
       </div>
     </ScanContext.Provider>
   )
@@ -1128,6 +1148,13 @@ export default function App() {
                   <Route path="/reset-password" element={<ResetPassword />} />
                   <Route path="/accept-invite" element={<AcceptInvite />} />
                   <Route path="/verify-email" element={<VerifyEmail />} />
+                  <Route path="/onboarding" element={
+                    <ProtectedRoute>
+                      <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: 'var(--muted)' }}>Loading...</div>}>
+                        <OnboardingWizard />
+                      </Suspense>
+                    </ProtectedRoute>
+                  } />
                   <Route path="/*" element={
                     <ProtectedRoute>
                       <AppShell />

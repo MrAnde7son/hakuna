@@ -10,6 +10,7 @@ import {
   Copy, Check, RotateCcw, ThumbsUp, ThumbsDown,
   Search, Tags, LayoutDashboard, Settings,
 } from 'lucide-react'
+import { tryRenderRichBlock } from './RichBlockRenderer.jsx'
 import {
   getCopilotConversations,
   createCopilotConversation,
@@ -210,9 +211,9 @@ const CONTEXTUAL_PROMPTS = {
   ],
   '/settings?tab=integration-builder': [
     { text: 'List all active integration pipelines', icon: 'clipboard' },
-    { text: 'Show run history for recent integrations', icon: 'target' },
+    { text: 'Set up a new integration to pull assets from our CMDB', icon: 'zap' },
     { text: 'Which integrations have failed recently?', icon: 'shield-alert' },
-    { text: 'Trigger a manual run for an integration', icon: 'zap' },
+    { text: 'Show available connector templates', icon: 'globe' },
   ],
   '/agents': [
     { text: 'Which agents have run recently and what did they find?', icon: 'clipboard' },
@@ -397,9 +398,15 @@ const baseMdComponents = {
   ol: ({ children }) => <ol style={{ margin: '3px 0', paddingLeft: 18 }}>{children}</ol>,
   li: ({ children }) => <li style={{ margin: '1px 0' }}>{children}</li>,
   strong: ({ children }) => <strong style={{ fontWeight: 700, color: 'var(--text)' }}>{children}</strong>,
-  code: ({ inline, children }) => inline
-    ? <code style={{ background: 'var(--bg-secondary)', padding: '1px 4px', borderRadius: 3, fontSize: 11, fontFamily: 'monospace' }}>{children}</code>
-    : <pre style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, padding: 8, overflowX: 'auto', fontSize: 11, fontFamily: 'monospace', margin: '6px 0', color: 'var(--text)' }}><code>{children}</code></pre>,
+  code: ({ inline, className, children }) => {
+    if (inline) return <code style={{ background: 'var(--bg-secondary)', padding: '1px 4px', borderRadius: 3, fontSize: 11, fontFamily: 'monospace' }}>{children}</code>
+    // Detect richblock fenced code blocks (```richblock or ```richblock:type)
+    const lang = className ? className.replace('language-', '') : ''
+    const raw = String(children).replace(/\n$/, '')
+    const rich = tryRenderRichBlock(lang, raw)
+    if (rich) return rich
+    return <pre style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, padding: 8, overflowX: 'auto', fontSize: 11, fontFamily: 'monospace', margin: '6px 0', color: 'var(--text)' }}><code>{children}</code></pre>
+  },
   table: ({ children }) => <div style={{ overflowX: 'auto' }}><table style={{ borderCollapse: 'collapse', width: '100%', margin: '6px 0', fontSize: 11 }}>{children}</table></div>,
   th: ({ children }) => <th style={{ border: '1px solid var(--border)', padding: '4px 8px', background: 'var(--bg-secondary)', fontWeight: 600, textAlign: 'left' }}>{children}</th>,
   td: ({ children }) => <td style={{ border: '1px solid var(--border)', padding: '3px 8px' }}>{children}</td>,
@@ -798,7 +805,7 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
           'ownership': '[Use list_ownership_rules, manage_ownership_rule, run_ownership_rules, get_owner_workload to help configure ownership on this page]',
           'roles': '[Use list_custom_roles, manage_custom_role to help manage RBAC roles and permissions on this page]',
           'integrations': '[Use list_integrations, call_integration_fetch, call_integration_push to help manage integrations on this page]',
-          'integration-builder': '[Use list_integration_builder_connectors, manage_integration, get_integration_runs to help manage integration pipelines on this page]',
+          'integration-builder': '[Use list_integration_builder_connectors, get_integration_builder_connector_detail, get_integration_builder_targets, list_integration_credentials, create_integration_credential, create_integration, update_integration, get_integration_detail, suggest_field_mapping, manage_integration, get_integration_runs to help build and manage integration pipelines on this page]',
         }
         if (tabHints[settingsTab]) contextPrefix += `\n${tabHints[settingsTab]}`
       }
