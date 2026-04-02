@@ -1,4 +1,4 @@
-"""File Transport — parse any structured file: CSV, JSON, XML, YAML, .nessus."""
+"""File Transport — parse any structured file: CSV, JSON, XML, YAML, .nessus, PDF, DOCX."""
 
 import csv
 import json
@@ -10,6 +10,39 @@ from xml.etree import ElementTree
 from .base import BaseTransport, ConnectResult
 
 logger = logging.getLogger(__name__)
+
+# LLM extraction prompt for unstructured pentest reports (PDF/DOCX)
+_PENTEST_EXTRACT_PROMPT = """Extract ALL vulnerability findings from this penetration test report.
+
+Return ONLY a valid JSON array of finding objects. No preamble, no markdown fences.
+
+Each finding object must have these fields (omit a field only if truly not mentioned):
+{
+  "finding_id": "string — the finding ID or number from the report (e.g. PT-001, #1)",
+  "title": "string — vulnerability title",
+  "severity": "critical | high | medium | low | info",
+  "cvss_score": number or null,
+  "cvss_vector": "string or null",
+  "cve_id": "CVE-XXXX-XXXXX or null",
+  "affected_host": "IP address or hostname of affected system",
+  "hostname": "hostname if available",
+  "port": "port number or null",
+  "protocol": "tcp/udp or null",
+  "description": "full technical description of the vulnerability",
+  "evidence": "proof of concept, reproduction steps, or observed output",
+  "recommendation": "remediation recommendation",
+  "references": "external references or URLs",
+  "exploit_available": true/false or null
+}
+
+Important:
+- Extract EVERY finding, not just a summary
+- Preserve technical details and evidence verbatim
+- Map severity consistently (Critical/High/Medium/Low/Info)
+- If the report has a findings table or summary, also look for detailed sections
+
+Report text:
+"""
 
 
 class FileTransport(BaseTransport):
@@ -54,6 +87,12 @@ class FileTransport(BaseTransport):
         if fmt == "auto":
             fmt = self._detect_format(file_path)
 
+        # PDF and DOCX need special handling (binary + LLM extraction)
+        if fmt == "pdf":
+            return self._parse_pentest_document(file_path, "pdf")
+        elif fmt == "docx":
+            return self._parse_pentest_document(file_path, "docx")
+
         with open(file_path, "rb") as f:
             content = f.read()
 
@@ -89,6 +128,10 @@ class FileTransport(BaseTransport):
             return "xml"
         if path_lower.endswith((".yaml", ".yml")):
             return "yaml"
+        if path_lower.endswith(".pdf"):
+            return "pdf"
+        if path_lower.endswith(".docx"):
+            return "docx"
         return "auto"
 
     def _parse_nessus(self, content: bytes, filename: str) -> list:
@@ -203,3 +246,108 @@ class FileTransport(BaseTransport):
                 return records if isinstance(records, list) else [data]
             return [data]
         return [{"value": data}]
+
+    # ─────────────────────────────────────────────────────────
+    # PDF / DOCX — extract text, then use LLM to structure findings
+    # ─────────────────────────────────────────────────────────
+
+    def _extract_text_from_pdf(self, file_path: str) -> str:
+        """Extract text from a PDF file using pypdf."""
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            raise ValueError(
+                "pypdf is not installed. Install it with: pip install pypdf"
+            )
+
+        reader = PdfReader(file_path)
+        pages = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                pages.append(text)
+        if not pages:
+            raise ValueError("Could not extract any text from the PDF file")
+        return "\n\n".join(pages)
+
+    def _extract_text_from_docx(self, file_path: str) -> str:
+        """Extract text from a DOCX file using python-docx."""
+        try:
+            from docx import Document
+        except ImportError:
+            raise ValueError(
+                "python-docx is not installed. Install it with: pip install python-docx"
+            )
+
+        doc = Document(file_path)
+        paragraphs = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                paragraphs.append(para.text)
+
+        # Also extract text from tables (pentest reports often use tables)
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cells:
+                    paragraphs.append(" | ".join(cells))
+
+        if not paragraphs:
+            raise ValueError("Could not extract any text from the DOCX file")
+        return "\n".join(paragraphs)
+
+    def _parse_pentest_document(self, file_path: str, fmt: str) -> list:
+        """Extract text from PDF/DOCX, then use LLM to extract structured findings."""
+        # Step 1: Extract raw text
+        if fmt == "pdf":
+            text = self._extract_text_from_pdf(file_path)
+        else:
+            text = self._extract_text_from_docx(file_path)
+
+        logger.info("Extracted %d chars from %s file for LLM parsing", len(text), fmt)
+
+        # Step 2: Send to LLM for structured extraction
+        return self._extract_findings_with_llm(text)
+
+    def _extract_findings_with_llm(self, text: str) -> list:
+        """Use Claude to extract structured findings from unstructured report text."""
+        import re
+
+        try:
+            import anthropic
+        except ImportError:
+            raise ValueError(
+                "anthropic SDK is not installed. Install it with: pip install anthropic"
+            )
+
+        client = anthropic.Anthropic()
+
+        # Truncate to fit context window — keep first 150k chars
+        truncated = text[:150_000]
+
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=8000,
+            messages=[{
+                "role": "user",
+                "content": _PENTEST_EXTRACT_PROMPT + truncated,
+            }],
+        )
+
+        response_text = message.content[0].text.strip()
+
+        # Strip markdown fences if present
+        if response_text.startswith("```"):
+            response_text = re.sub(r'^```\w*\n?', '', response_text)
+            response_text = re.sub(r'\n?```$', '', response_text)
+
+        findings = json.loads(response_text)
+
+        if not isinstance(findings, list):
+            raise ValueError("LLM returned non-array response")
+
+        if not findings:
+            raise ValueError("LLM could not extract any findings from the document")
+
+        logger.info("LLM extracted %d findings from pentest document", len(findings))
+        return findings

@@ -709,6 +709,10 @@ def _detect_format(filename: str) -> str:
         return "xml"
     if fn.endswith((".yaml", ".yml")):
         return "yaml"
+    if fn.endswith(".pdf"):
+        return "pdf"
+    if fn.endswith(".docx"):
+        return "docx"
     return "auto"
 
 
