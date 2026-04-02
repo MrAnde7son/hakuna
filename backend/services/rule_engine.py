@@ -375,14 +375,39 @@ def _resolve_source_options(db, org_ids=None):
     """Build source options from scans + integration source_systems in the DB."""
     if db is None:
         return [{"label": v, "value": k} for k, v in _SOURCE_LABELS.items()]
-    from models.models import Scan
+    from sqlalchemy import or_
+    from models.models import Scan, Finding, Integration
+
+    # Collect source_type values from scans
     q = db.query(Scan.source_type).distinct()
     if org_ids:
-        from sqlalchemy import or_
         q = q.filter(or_(Scan.org_id.in_(org_ids), Scan.org_id.is_(None)))
-    rows = q.all()
-    sources = sorted(set(r[0] for r in rows if r[0]))
-    return [{"label": _SOURCE_LABELS.get(s, s), "value": s} for s in sources]
+    scan_sources = {r[0] for r in q.all() if r[0]}
+
+    # Collect source_type values from findings (covers integration builder data)
+    fq = db.query(Finding.source_type).distinct()
+    if org_ids:
+        fq = fq.filter(Finding.org_id.in_(org_ids))
+    finding_sources = {r[0] for r in fq.all() if r[0]}
+
+    # Build a label map from integration names (template_id/custom → friendly name)
+    integration_labels = {}
+    try:
+        iq = db.query(Integration.template_id, Integration.name).filter(
+            Integration.direction == "pull",
+            Integration.template_id.isnot(None),
+        )
+        if org_ids:
+            iq = iq.filter(or_(Integration.org_id.in_(org_ids), Integration.org_id.is_(None)))
+        for tmpl_id, name in iq.all():
+            if tmpl_id and name:
+                integration_labels[tmpl_id] = name
+    except Exception:
+        pass
+
+    all_sources = sorted(scan_sources | finding_sources)
+    combined_labels = {**_SOURCE_LABELS, **integration_labels}
+    return [{"label": combined_labels.get(s, s), "value": s} for s in all_sources]
 
 
 # ─────────────────────────────────────────────────────────

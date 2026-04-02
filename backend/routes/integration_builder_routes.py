@@ -5,7 +5,7 @@ Prefix: /api/integration-builder
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -340,6 +340,7 @@ class PreviewRequest(BaseModel):
     field_map: list = []
     auto_suggest_flag: bool = False
     entity: Optional[str] = None  # target model slug for auto-suggest
+    sample_records: list[dict] | None = None  # Pass cached records to skip transport re-run
 
 
 @router.post("/preview")
@@ -358,21 +359,26 @@ async def preview_mapping(body: PreviewRequest, db: Session = Depends(get_db),
         raise HTTPException(400, f"Unsupported transport: {body.transport_type}")
 
     try:
-        credentials = await _load_credentials(db, body.credentials_id, user.org_id) if body.credentials_id else {}
+        # Use cached sample records if provided, otherwise re-run transport
+        if body.sample_records:
+            samples = body.sample_records
+        else:
+            credentials = await _load_credentials(db, body.credentials_id, user.org_id) if body.credentials_id else {}
 
-        config = body.transport_config
-        if body.records_path:
-            config["records_path"] = body.records_path
+            config = body.transport_config
+            if body.records_path:
+                config["records_path"] = body.records_path
 
-        transport = transport_cls(db=db) if body.transport_type == "file" else transport_cls()
-        result = await transport.connect(config, credentials)
-        if not result.success:
-            raise HTTPException(400, result.error)
+            transport = transport_cls(db=db) if body.transport_type == "file" else transport_cls()
+            result = await transport.connect(config, credentials)
+            if not result.success:
+                raise HTTPException(400, result.error)
+            samples = result.sample_records
 
         # If auto-suggest requested, generate suggestions
         suggestions = None
-        if body.auto_suggest_flag and result.sample_records:
-            paths = detect_paths(result.sample_records[0])
+        if body.auto_suggest_flag and samples:
+            paths = detect_paths(samples[0])
             target_slug = body.entity or "finding"
             schema = get_target_schema(target_slug) or get_schema("finding")
             suggestions = auto_suggest(paths, schema)
@@ -381,7 +387,7 @@ async def preview_mapping(body: PreviewRequest, db: Session = Depends(get_db),
 
         # Map up to 5 sample records
         preview_records = []
-        for raw in result.sample_records[:5]:
+        for raw in samples[:5]:
             mapped_result = map_record(raw, field_map)
             preview_records.append({
                 "raw": raw,
@@ -392,7 +398,7 @@ async def preview_mapping(body: PreviewRequest, db: Session = Depends(get_db),
         return {
             "records": preview_records,
             "suggestions": suggestions,
-            "total_sample": len(result.sample_records),
+            "total_sample": len(samples),
         }
     except HTTPException:
         raise
@@ -567,18 +573,50 @@ def disable_integration(integration_id: str, db: Session = Depends(get_db),
 # ─────────────────────────────────────────────────────────
 
 @router.post("/integrations/{integration_id}/run")
-async def run_integration(integration_id: str, db: Session = Depends(get_db),
+async def run_integration(integration_id: str, background_tasks: BackgroundTasks = None,
+                           db: Session = Depends(get_db),
                            user: User = Depends(require_auth)):
-    """Trigger an integration run."""
-    i = _get_integration_or_404(db, integration_id, user.org_id)
+    """Trigger an integration run (executes in background)."""
+    import asyncio
     from services.run_engine import execute
-    run_id = await execute(db, integration_id, triggered_by="manual")
-    run = db.query(IntegrationRun).filter(IntegrationRun.id == run_id).first()
+
+    i = _get_integration_or_404(db, integration_id, user.org_id)
+
+    # Create a pending run record so we can return the run_id immediately
+    run = IntegrationRun(
+        integration_id=integration_id,
+        status="running",
+        triggered_by="manual",
+        records_fetched=0, records_inserted=0, records_updated=0, records_skipped=0,
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    run_id = run.id
+
+    # Execute in background
+    async def _bg_execute(integration_id, run_id):
+        from core.database import SessionLocal
+        bg_db = SessionLocal()
+        try:
+            await execute(bg_db, integration_id, triggered_by="manual", run_id=run_id)
+        except Exception as e:
+            logger.exception(f"Background run {run_id} failed: {e}")
+            bg_run = bg_db.query(IntegrationRun).filter(IntegrationRun.id == run_id).first()
+            if bg_run and bg_run.status == "running":
+                bg_run.status = "error"
+                bg_run.error_message = str(e)
+                bg_db.commit()
+        finally:
+            bg_db.close()
+
+    asyncio.ensure_future(_bg_execute(integration_id, run_id))
+
     return {
         "run_id": run_id,
-        "status": run.status if run else "unknown",
-        "records_fetched": run.records_fetched if run else 0,
-        "records_inserted": run.records_inserted if run else 0,
+        "status": "running",
+        "records_fetched": 0,
+        "records_inserted": 0,
     }
 
 

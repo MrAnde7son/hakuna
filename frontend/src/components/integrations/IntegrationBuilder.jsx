@@ -331,6 +331,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         records_path: recordsPath || undefined,
         field_map: fieldMap,
         auto_suggest_flag: false,
+        sample_records: sampleRecords.length ? sampleRecords : undefined,
       })
       setPreviewRecords(result.records || [])
       setStep(6)
@@ -386,10 +387,12 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       }
 
       if (andRun && result.id) {
-        await import('../../api.js').then(api => api.ibRunIntegration(result.id))
+        // Fire run in background — don't block the UI
+        import('../../api.js').then(api => api.ibRunIntegration(result.id)).catch(() => {})
+        toast.success('Integration saved — run started in background')
+      } else {
+        toast.success('Integration saved')
       }
-
-      toast.success('Integration saved')
       goDone()
     } catch (e) {
       toast.error('Save failed: ' + e.message)

@@ -37,17 +37,21 @@ class RunProgress:
         logger.info("Run event: %s", event)
 
 
-async def execute(db: Session, integration_id: str, triggered_by: str = "manual") -> str:
+async def execute(db: Session, integration_id: str, triggered_by: str = "manual", run_id: str = None) -> str:
     """Execute an integration run. Returns run_id."""
     integration = db.query(Integration).filter(Integration.id == integration_id).first()
     if not integration:
         raise ValueError(f"Integration {integration_id} not found")
 
-    # Create run record
-    run = IntegrationRun(integration_id=integration.id, status="running", triggered_by=triggered_by)
-    db.add(run)
-    db.commit()
-    db.refresh(run)
+    # Reuse pre-created run record or create a new one
+    run = None
+    if run_id:
+        run = db.query(IntegrationRun).filter(IntegrationRun.id == run_id).first()
+    if not run:
+        run = IntegrationRun(integration_id=integration.id, status="running", triggered_by=triggered_by)
+        db.add(run)
+        db.commit()
+        db.refresh(run)
 
     progress = RunProgress()
 
