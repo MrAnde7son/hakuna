@@ -273,6 +273,22 @@ export const authAssignCustomRole = (userId, roleId) =>
 export const authUnassignCustomRole = (userId, roleId) =>
   request(`/auth/users/${userId}/custom-roles/${roleId}`, { method: 'DELETE' })
 
+// Onboarding
+export const getOnboardingOptions = () => request('/onboarding/options')
+export const getOnboardingStatus = () => request('/onboarding/status')
+export const getOnboardingRecommendations = (data) => request('/onboarding/recommend', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const applyOnboardingPackages = (data) => request('/onboarding/apply', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const getOnboardingDomainInfo = (email) => request(`/onboarding/domain-info?email=${encodeURIComponent(email)}`)
+export const skipOnboarding = () => request('/onboarding/skip', { method: 'POST' })
+
 // Scans
 export const getScans = () => request('/scans')
 export const deleteScan = (id) => request(`/scans/${id}`, { method: 'DELETE' })
