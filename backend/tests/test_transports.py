@@ -101,7 +101,7 @@ class TestFileTransport:
 
         from services.transports.file_transport import FileTransport
         transport = FileTransport()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             transport.connect({"path": str(csv_file), "format": "csv"}, {})
         )
         assert result.success
@@ -114,7 +114,7 @@ class TestFileTransport:
 
         from services.transports.file_transport import FileTransport
         transport = FileTransport()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             transport.connect({"path": str(json_file), "format": "json"}, {})
         )
         assert result.success
@@ -126,7 +126,7 @@ class TestFileTransport:
 
         from services.transports.file_transport import FileTransport
         transport = FileTransport()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             transport.connect({"path": str(json_file), "format": "json"}, {})
         )
         assert result.success
@@ -138,7 +138,7 @@ class TestFileTransport:
 
         from services.transports.file_transport import FileTransport
         transport = FileTransport()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             transport.connect({"path": str(csv_file), "format": "auto"}, {})
         )
         assert result.success
@@ -146,7 +146,7 @@ class TestFileTransport:
     def test_missing_file(self):
         from services.transports.file_transport import FileTransport
         transport = FileTransport()
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             transport.connect({"path": "/nonexistent.json", "format": "json"}, {})
         )
         assert not result.success
@@ -165,5 +165,5 @@ class TestFileTransport:
                 records.append(r)
             return records
 
-        records = asyncio.get_event_loop().run_until_complete(collect())
+        records = asyncio.run(collect())
         assert len(records) == 5
