@@ -3,6 +3,7 @@ Shared audit logging helpers.
 Extracted here to avoid circular imports between app.py and auth_routes.py.
 """
 import logging
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -10,6 +11,8 @@ from sqlalchemy.orm import Session
 from models.models import AuditLog
 
 logger = logging.getLogger(__name__)
+
+AUDIT_LOG_RETENTION_DAYS = 90
 
 
 def log_audit(
@@ -39,6 +42,28 @@ def log_audit(
         db.flush()
     except Exception as e:
         logger.warning(f"audit log write failed: {e}")
+
+
+def purge_expired_audit_logs() -> int:
+    """Delete audit log entries older than AUDIT_LOG_RETENTION_DAYS.
+
+    Runs as a scheduled background job.  Returns the number of rows deleted.
+    """
+    from core.database import SessionLocal
+
+    cutoff = datetime.utcnow() - timedelta(days=AUDIT_LOG_RETENTION_DAYS)
+    db: Session = SessionLocal()
+    try:
+        count = db.query(AuditLog).filter(AuditLog.created_at < cutoff).delete()
+        db.commit()
+        logger.info("Purged %d audit log entries older than %s days", count, AUDIT_LOG_RETENTION_DAYS)
+        return count
+    except Exception as e:
+        db.rollback()
+        logger.warning("Audit log purge failed: %s", e)
+        return 0
+    finally:
+        db.close()
 
 
 def diff(old: dict, new: dict) -> dict:

@@ -86,6 +86,7 @@ from routes.workflow_routes import router as workflow_router
 from routes.notification_routes import router as notification_router
 from routes.control_assessment_routes import router as control_assessment_router
 from routes.onboarding_routes import router as onboarding_router
+from routes.saml_routes import router as saml_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -364,6 +365,7 @@ app.include_router(workflow_router)
 app.include_router(notification_router)
 app.include_router(control_assessment_router)
 app.include_router(onboarding_router)
+app.include_router(saml_router)
 
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"
@@ -408,6 +410,13 @@ def _deferred_startup():
     _intel_scheduler.add_job(update_intel, _IntervalTrigger(hours=24), id="intel_update", replace_existing=True)
     _intel_scheduler.start()
     logger.info("Intel auto-update scheduled (every 24h)")
+    # Schedule audit log retention purge (90-day TTL, runs daily)
+    from core.audit import purge_expired_audit_logs
+    _audit_scheduler = _BGScheduler()
+    _audit_scheduler.add_job(purge_expired_audit_logs, _IntervalTrigger(hours=24), id="audit_log_purge", replace_existing=True)
+    _audit_scheduler.start()
+    purge_expired_audit_logs()  # run once at startup
+    logger.info("Audit log retention purge scheduled (every 24h, 90-day TTL)")
     # Seed SLA defaults and backfill any scans that have no SLA due dates yet
     try:
         from core.database import SessionLocal as _SL
@@ -9344,6 +9353,7 @@ def get_audit_log(
         ],
         "entity_types": [r[0] for r in db.query(AuditLog.entity_type).distinct().all()],
         "actions": [r[0] for r in db.query(AuditLog.action).distinct().all()],
+        "retention_days": 90,
     }
 
 
