@@ -248,26 +248,38 @@ def _cross_scan_dedup(db, org_id):
 def _easm_enrich(db, org_id, scan_id):
     from models.models import Organization
     from services.easm import enrich_assets_from_easm
+    from core.database import SessionLocal
     import asyncio
 
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org or not org.easm_org_id:
         return None
 
-    # enrich_assets_from_easm is async — bridge to sync context
+    # enrich_assets_from_easm is async — bridge to sync context.
+    # IMPORTANT: use a dedicated session so the caller's session isn't
+    # accessed concurrently or after the request context closes.
+    async def _enrich_with_own_session():
+        enrich_db = SessionLocal()
+        try:
+            enrich_org = enrich_db.query(Organization).filter(Organization.id == org_id).first()
+            await enrich_assets_from_easm(enrich_db, enrich_org, scan_id)
+        except Exception:
+            logger.exception("EASM enrichment failed for scan %s", scan_id)
+        finally:
+            enrich_db.close()
+
     try:
         loop = asyncio.get_running_loop()
-        # Already in an async context (FastAPI) — schedule as a task
-        loop.create_task(enrich_assets_from_easm(db, org, scan_id))
+        loop.create_task(_enrich_with_own_session())
     except RuntimeError:
-        # No running loop — run directly
-        asyncio.run(enrich_assets_from_easm(db, org, scan_id))
+        asyncio.run(_enrich_with_own_session())
     return True
 
 
 def _auto_vm_scan_for_easm(db, org_id, scan_id):
     """Trigger a VM scan on high-value assets when an EASM scan completes."""
     from models.models import Scan, Organization
+    from core.database import SessionLocal
     import asyncio
 
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
@@ -284,11 +296,23 @@ def _auto_vm_scan_for_easm(db, org_id, scan_id):
 
     from services.vm_scanner import trigger_vm_scan_for_easm_assets
 
+    # Use a dedicated session so the caller's session isn't accessed
+    # concurrently or after the request context closes.
+    async def _trigger_with_own_session():
+        vm_db = SessionLocal()
+        try:
+            vm_org = vm_db.query(Organization).filter(Organization.id == org_id).first()
+            await trigger_vm_scan_for_easm_assets(vm_db, vm_org, scan_id, domain)
+        except Exception:
+            logger.exception("Auto VM scan trigger failed for scan %s", scan_id)
+        finally:
+            vm_db.close()
+
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(trigger_vm_scan_for_easm_assets(db, org, scan_id, domain))
+        loop.create_task(_trigger_with_own_session())
     except RuntimeError:
-        asyncio.run(trigger_vm_scan_for_easm_assets(db, org, scan_id, domain))
+        asyncio.run(_trigger_with_own_session())
     return {"triggered": True, "domain": domain}
 
 

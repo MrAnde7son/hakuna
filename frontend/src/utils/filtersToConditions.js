@@ -42,8 +42,11 @@ export function filtersToConditions(filters, type) {
     const { search, severity, family, hasExploit, cveFilter, effortLevel, tagFilter, productFilter, cpeFilter } = filters
 
     if (search)               conds.push({ field: 'finding.plugin_name',   op: 'contains', value: search })
-    if (severity !== null && severity !== undefined)
-                              conds.push({ field: 'finding.severity',       op: 'eq',       value: Number(severity) })
+    if (severity !== null && severity !== undefined) {
+      const parts = String(severity).split(',').map(Number).filter(n => !isNaN(n))
+      if (parts.length === 1) conds.push({ field: 'finding.severity', op: 'eq', value: parts[0] })
+      else if (parts.length > 1) conds.push({ field: 'finding.severity', op: 'in', value: parts })
+    }
     if (family)               conds.push({ field: 'finding.plugin_family',  op: 'eq',       value: family })
     if (hasExploit === true)  conds.push({ field: 'finding.exploit',        op: 'is_true',  value: null })
     if (cveFilter)            conds.push({ field: 'finding.cve',            op: 'contains', value: cveFilter })

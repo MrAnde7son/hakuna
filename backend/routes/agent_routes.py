@@ -574,16 +574,30 @@ def delete_agent(agent_id: int, db: Session = Depends(get_db), org_ids: Optional
 
 # ── Run agent ────────────────────────────────────────────────────────
 
-@router.post("/{agent_id}/run")
+@router.post("/{agent_id}/run", status_code=202)
 @limiter.limit("10/minute")
 def run_agent_endpoint(agent_id: int, body: AgentRunRequest, request: Request, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    from services.job_manager import dispatch
+
     q = db.query(Agent).filter(Agent.id == agent_id)
     q = apply_org_filter(q, Agent, org_ids)
     agent = q.first()
     if not agent:
         raise HTTPException(404, "Agent not found")
-    result = run_agent(agent, body.input, db)
-    return _run_to_dict(result)
+
+    user_input = body.input
+
+    def _run():
+        bg_db = SessionLocal()
+        try:
+            ag = bg_db.query(Agent).filter(Agent.id == agent_id).first()
+            result = run_agent(ag, user_input, bg_db)
+            return _run_to_dict(result)
+        finally:
+            bg_db.close()
+
+    job = dispatch(f"agent_run_{agent_id}", _run)
+    return {"job_id": job.id, "status": job.status.value, "poll_url": f"/api/jobs/{job.id}/status"}
 
 
 # ── Streaming run (SSE) ──────────────────────────────────────────────

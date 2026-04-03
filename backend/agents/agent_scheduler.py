@@ -20,31 +20,56 @@ _started = False
 
 
 def _run_scheduled_agent(schedule_id: int):
-    """Execute a single scheduled agent run."""
+    """Execute a single scheduled agent run.
+
+    Uses short-lived DB sessions: one to load schedule/agent metadata,
+    a second passed to run_agent for its own queries, and a third to
+    record completion.  This avoids holding a connection idle for the
+    full duration of an LLM-heavy agent run (potentially 5-10+ min).
+    """
+    # 1. Load schedule + agent metadata, then release the connection.
     db = SessionLocal()
     try:
         schedule = db.query(AgentSchedule).filter(AgentSchedule.id == schedule_id).first()
         if not schedule or not schedule.is_enabled:
             return
 
-        agent = db.query(Agent).filter(Agent.id == schedule.agent_id).first()
+        agent_id = schedule.agent_id
+        input_template = schedule.input_template or ""
+    except Exception:
+        logger.exception(f"Scheduled agent run failed loading schedule {schedule_id}")
+        return
+    finally:
+        db.close()
+
+    # 2. Execute the agent with its own session.
+    logger.info(f"Running scheduled agent (schedule {schedule_id}, agent {agent_id})")
+    run_db = SessionLocal()
+    try:
+        from agents.agent_engine import run_agent
+        agent = run_db.query(Agent).filter(Agent.id == agent_id).first()
         if not agent:
-            logger.warning(f"Schedule {schedule_id}: agent {schedule.agent_id} not found")
+            logger.warning(f"Schedule {schedule_id}: agent {agent_id} not found")
             return
 
-        logger.info(f"Running scheduled agent '{agent.name}' (schedule {schedule_id})")
-
-        from agents.agent_engine import run_agent
-        run = run_agent(agent, schedule.input_template or "", db)
-
-        schedule.last_run_at = datetime.utcnow()
-        db.commit()
-
+        run = run_agent(agent, input_template, run_db)
         logger.info(f"Scheduled run completed: agent={agent.name}, status={run.status}, steps={run.steps_used}")
     except Exception:
         logger.exception(f"Scheduled agent run failed (schedule {schedule_id})")
     finally:
-        db.close()
+        run_db.close()
+
+    # 3. Record last_run_at in a short-lived session.
+    ts_db = SessionLocal()
+    try:
+        sched = ts_db.query(AgentSchedule).filter(AgentSchedule.id == schedule_id).first()
+        if sched:
+            sched.last_run_at = datetime.utcnow()
+            ts_db.commit()
+    except Exception:
+        logger.exception(f"Failed to update last_run_at for schedule {schedule_id}")
+    finally:
+        ts_db.close()
 
 
 def sync_schedules():

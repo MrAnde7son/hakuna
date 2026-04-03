@@ -24,9 +24,10 @@ export default function useURLFilters(schema, { pageKey = 'page' } = {}) {
     for (const [key, def] of Object.entries(schema)) {
       const raw = searchParams.get(key)
       if (raw === null || raw === '') {
-        out[key] = def.default ?? (def.type === 'number' ? null : def.type === 'boolean' ? null : '')
+        out[key] = 'default' in def ? def.default : (def.type === 'number' ? null : def.type === 'boolean' ? null : '')
       } else if (def.type === 'number') {
-        out[key] = Number(raw)
+        const num = Number(raw)
+        out[key] = Number.isNaN(num) ? raw : num
       } else if (def.type === 'boolean') {
         out[key] = raw === 'true'
       } else {

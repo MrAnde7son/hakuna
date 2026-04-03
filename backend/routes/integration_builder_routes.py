@@ -594,23 +594,27 @@ async def run_integration(integration_id: str, background_tasks: BackgroundTasks
     db.refresh(run)
     run_id = run.id
 
-    # Execute in background
-    async def _bg_execute(integration_id, run_id):
+    # Execute in background with its own DB session.
+    # Wrapped in create_task (preferred over ensure_future) with error logging.
+    async def _bg_execute(bg_integration_id, bg_run_id):
         from core.database import SessionLocal
         bg_db = SessionLocal()
         try:
-            await execute(bg_db, integration_id, triggered_by="manual", run_id=run_id)
+            await execute(bg_db, bg_integration_id, triggered_by="manual", run_id=bg_run_id)
         except Exception as e:
-            logger.exception(f"Background run {run_id} failed: {e}")
-            bg_run = bg_db.query(IntegrationRun).filter(IntegrationRun.id == run_id).first()
-            if bg_run and bg_run.status == "running":
-                bg_run.status = "error"
-                bg_run.error_message = str(e)
-                bg_db.commit()
+            logger.exception(f"Background run {bg_run_id} failed: {e}")
+            try:
+                bg_run = bg_db.query(IntegrationRun).filter(IntegrationRun.id == bg_run_id).first()
+                if bg_run and bg_run.status == "running":
+                    bg_run.status = "error"
+                    bg_run.error_message = str(e)[:2000]
+                    bg_db.commit()
+            except Exception:
+                logger.exception(f"Failed to record error for run {bg_run_id}")
         finally:
             bg_db.close()
 
-    asyncio.ensure_future(_bg_execute(integration_id, run_id))
+    asyncio.get_running_loop().create_task(_bg_execute(integration_id, run_id))
 
     return {
         "run_id": run_id,
