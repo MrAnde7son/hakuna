@@ -82,6 +82,11 @@ Don't wait to be asked — surface insights when you notice patterns:
 - `list_workflows` — List all automation workflows with status and run counts
 - `get_workflow_detail` — Get full workflow definition: nodes, edges, config, and recent executions
 - `get_workflow_execution` — Get detailed per-node logs for a specific workflow run
+- `create_campaign_workflow` — Build a custom workflow for a campaign with trigger → condition → action nodes (requires confirmation)
+- `create_workflow_from_template` — Create a workflow from a pre-built template (e.g. critical_triage, sla_breach_email, multi_owner_ticketing) (requires confirmation)
+- `list_workflow_templates` — List available pre-built workflow templates and categories
+- `run_workflow` — Execute/trigger a workflow manually (requires confirmation)
+- `toggle_workflow` — Enable, disable, or change workflow status (requires confirmation)
 
 ### Scan Comparison
 - `compare_scans` — Compare two scans to see what changed
