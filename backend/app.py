@@ -860,17 +860,10 @@ def _run_scan_ingest(
         # Within-scan asset dedup: collapse duplicate hosts before creating DB records
         parsed_assets = parsed["assets"]
         if dedup_cfg.get("enabled") and dedup_cfg.get("apply_on_upload"):
-            asset_dcfg = dedup_cfg.get("assets", {})
-            if asset_dcfg.get("enabled"):
-                before = len(parsed_assets)
-                parsed_assets = dedup_engine.dedup_records(
-                    parsed_assets,
-                    asset_dcfg.get("key_fields", ["ip"]),
-                    asset_dcfg.get("strategy", "merge"),
-                    key_mode=asset_dcfg.get("key_mode", "and"),
-                )
-                if len(parsed_assets) < before:
-                    logger.info(f"Within-scan asset dedup: {before} → {len(parsed_assets)} assets")
+            before = len(parsed_assets)
+            parsed_assets = dedup_engine.dedup_asset_records(parsed_assets, dedup_cfg)
+            if len(parsed_assets) < before:
+                logger.info(f"Within-scan asset dedup: {before} → {len(parsed_assets)} assets")
 
         # Create Asset records
         asset_map = {}  # hostname/ip → Asset (populated with both keys for reliable lookup)
@@ -914,6 +907,15 @@ def _run_scan_ingest(
                 environment_tag=ctx["environment_tag"],
                 business_context=ctx["business_context"],
                 source_systems=[source_parser.source_type],
+                asset_type=asset_data.get("asset_type", "host"),
+                asset_identity=asset_data.get("asset_identity") or {
+                    k: v for k, v in {
+                        "ip": asset_data.get("ip"),
+                        "hostname": asset_data.get("hostname"),
+                        "fqdn": asset_data.get("fqdn"),
+                    }.items() if v
+                },
+                asset_attributes=asset_data.get("asset_attributes", {}),
             )
             db.add(asset)
             db.flush()
@@ -1700,6 +1702,7 @@ def list_assets(
     tags: Optional[str] = None,
     tag_logic: str = "AND",
     expand_children: bool = False,
+    asset_type: Optional[str] = None,
     sort_by: str = "risk_score",
     order: str = "desc",
     page: int = 1,
@@ -1737,6 +1740,8 @@ def list_assets(
         q = q.filter(Asset.environment_tag == environment)
     if criticality is not None:
         q = q.filter(Asset.criticality == criticality)
+    if asset_type:
+        q = q.filter(Asset.asset_type == asset_type)
     if search:
         pattern = f"%{search}%"
         from sqlalchemy import or_
@@ -1745,6 +1750,7 @@ def list_assets(
             Asset.ip.ilike(pattern),
             Asset.fqdn.ilike(pattern),
             Asset.os.ilike(pattern),
+            cast(Asset.asset_identity, Text).ilike(pattern),
         ))
     if min_critical is not None:
         q = q.filter(Asset.critical_count >= min_critical)
@@ -1945,6 +1951,10 @@ def _asset_to_dict(a: Asset) -> dict:
         "easm_data": a.easm_data,
         # Multi-source provenance
         "source_systems": a.source_systems or [],
+        # Multi-type asset identity
+        "asset_type": a.asset_type or "host",
+        "asset_identity": a.asset_identity or {},
+        "asset_attributes": a.asset_attributes or {},
     }
 
 
@@ -6603,6 +6613,16 @@ def get_os_software_summary(
     dt_q = dt_q.filter(Asset.device_type.isnot(None)).group_by(Asset.device_type).order_by(sqla_func.count(Asset.id).desc())
     device_types = [{"name": r.device_type, "count": r.count} for r in dt_q.all()]
 
+    # Asset type distribution
+    at_q = db.query(Asset.asset_type, sqla_func.count(Asset.id).label("count")).join(
+        Scan, Asset.scan_id == Scan.id
+    )
+    at_q = apply_scan_org_filter(at_q, org_ids)
+    if scan_id:
+        at_q = at_q.filter(Asset.scan_id == scan_id)
+    at_q = at_q.group_by(Asset.asset_type).order_by(sqla_func.count(Asset.id).desc())
+    asset_types = [{"name": r.asset_type or "host", "count": r.count} for r in at_q.all()]
+
     # ── Riskiest OS families (OS → assets → findings severity rollup) ──
     from sqlalchemy import case as sa_case2
     os_risk_q = (
@@ -6690,6 +6710,7 @@ def get_os_software_summary(
         "software": software,
         "software_categories": software_categories,
         "device_types": device_types,
+        "asset_types": asset_types,
         "os_risk": os_risk,
         "software_risk": sw_risk,
         "family_risk": family_risk,

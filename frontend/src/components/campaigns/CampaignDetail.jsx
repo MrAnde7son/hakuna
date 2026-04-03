@@ -7,6 +7,7 @@ import {
   RefreshCw, GitBranch, Trash2, Ticket, ExternalLink, Hash, ShieldOff,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
+import { getFindingAssetDisplay } from '../../utils/assetDisplay.js'
 import {
   getCampaign, updateCampaign, runCampaign,
   previewCampaignQuery, updateCampaignFinding,
@@ -412,7 +413,7 @@ function CampaignFindingCard({ finding, campaignId, onOwnerUpdate, onStatusChang
             {finding.plugin_name}
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            {finding.asset_hostname || finding.asset_ip}
+            {getFindingAssetDisplay(finding)}
             {finding.plugin_family && ` · ${finding.plugin_family}`}
             {finding.port && ` · :${finding.port}`}
           </div>

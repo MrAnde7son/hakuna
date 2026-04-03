@@ -100,6 +100,9 @@ def _migrate_add_columns():
             ("cpe", "JSON"),
             ("os_confidence", "INTEGER"),
             ("source_systems", "JSON"),
+            ("asset_type", "VARCHAR DEFAULT 'host'"),
+            ("asset_identity", "JSON"),
+            ("asset_attributes", "JSON"),
         ],
         "findings": [
             ("first_seen", "TIMESTAMP"),

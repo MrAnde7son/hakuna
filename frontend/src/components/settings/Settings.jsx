@@ -21,7 +21,14 @@ import SSOSettings from './SSOSettings.jsx'
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const KEY_FIELD_OPTIONS = {
-  assets: ['ip', 'hostname', 'fqdn', 'netbios_name'],
+  'assets.host': ['ip', 'hostname', 'fqdn', 'netbios_name'],
+  'assets.web_app': ['url', 'domain'],
+  'assets.cloud_instance': ['cloud_provider', 'instance_id', 'account_id', 'region'],
+  'assets.api_endpoint': ['method', 'url'],
+  'assets.identity': ['provider', 'principal_id', 'tenant_id'],
+  'assets.container_image': ['registry', 'repository', 'tag', 'digest'],
+  'assets.code_repo': ['provider', 'org', 'repo'],
+  'assets.k8s_workload': ['cluster', 'namespace', 'kind', 'name'],
   findings: ['plugin_id', 'asset_id', 'port', 'protocol', 'cve'],
   users: ['username', 'domain', 'sid'],
   groups: ['group_name', 'domain', 'sid'],
@@ -41,7 +48,14 @@ const KEY_FIELD_OPTIONS = {
 }
 
 const ENTITY_LABELS = {
-  assets: 'Assets',
+  'assets.host': 'Host',
+  'assets.web_app': 'Web App',
+  'assets.cloud_instance': 'Cloud Instance',
+  'assets.api_endpoint': 'API Endpoint',
+  'assets.identity': 'Identity',
+  'assets.container_image': 'Container Image',
+  'assets.code_repo': 'Code Repo',
+  'assets.k8s_workload': 'K8s Workload',
   findings: 'Findings',
   users: 'Users',
   groups: 'Groups',
@@ -84,7 +98,7 @@ function Toggle({ checked, onChange, label }) {
   )
 }
 
-function EntityCard({ entityKey, cfg, onChange }) {
+function EntityCard({ entityKey, label, cfg, onChange, runEntityKey }) {
   const [runResult, setRunResult] = useState(null)
   const [running, setRunning] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -102,7 +116,7 @@ function EntityCard({ entityKey, cfg, onChange }) {
     setRunning(true)
     setRunResult(null)
     try {
-      const result = await runDedup(entityKey)
+      const result = await runDedup(runEntityKey || entityKey)
       setRunResult(result)
     } catch (e) {
       setRunResult({ error: e.message })
@@ -127,7 +141,7 @@ function EntityCard({ entityKey, cfg, onChange }) {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ color: 'var(--text)', fontWeight: 500, fontSize: 14 }}>
-            {ENTITY_LABELS[entityKey] || entityKey}
+            {label || ENTITY_LABELS[entityKey] || entityKey}
           </span>
           <span style={{
             fontSize: 11, padding: '1px 7px', borderRadius: 10,
@@ -502,26 +516,47 @@ export default function Settings() {
         </div>
       </Card>
 
-      {/* Assets & Findings */}
+      {/* Asset Types */}
       <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 10 }}>
-        Assets &amp; Findings
+        Asset Types
       </div>
       <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-        Cross-scan dedup can merge the same host seen in multiple uploads into a single asset record.
-        Findings dedup is disabled by default (same vulnerability can legitimately recur across scans).
+        Configure deduplication per asset type. Cross-scan dedup can merge the same record seen in multiple uploads into a single asset.
       </div>
-      {['assets', 'findings'].map(key => {
-        const entityCfg = cfg[key]
-        if (!entityCfg) return null
+      {Object.keys(cfg.assets || {}).map(assetType => {
+        const typeCfg = cfg.assets[assetType]
+        if (!typeCfg || typeof typeCfg !== 'object') return null
+        const entityKey = `assets.${assetType}`
         return (
           <EntityCard
-            key={key}
-            entityKey={key}
-            cfg={entityCfg}
-            onChange={(next) => setCfg(p => ({ ...p, [key]: next }))}
+            key={entityKey}
+            entityKey={entityKey}
+            label={ENTITY_LABELS[entityKey] || assetType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+            cfg={typeCfg}
+            runEntityKey="assets"
+            onChange={(next) => setCfg(p => ({
+              ...p,
+              assets: { ...p.assets, [assetType]: next },
+            }))}
           />
         )
       })}
+
+      {/* Findings */}
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 10, marginTop: 20 }}>
+        Findings
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+        Findings dedup is disabled by default (same vulnerability can legitimately recur across scans).
+      </div>
+      {cfg.findings && (
+        <EntityCard
+          key="findings"
+          entityKey="findings"
+          cfg={cfg.findings}
+          onChange={(next) => setCfg(p => ({ ...p, findings: next }))}
+        />
+      )}
 
       {/* Inventory Entities */}
       <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 10, marginTop: 20 }}>

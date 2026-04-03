@@ -7,6 +7,7 @@ import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOw
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import BlastRadiusPanel from '../campaigns/BlastRadiusPanel.jsx'
+import { getFindingAssetDisplay } from '../../utils/assetDisplay.js'
 
 function Section({ title, icon: Icon, children, defaultOpen = true }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -750,7 +751,7 @@ export default function FindingDetail() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                   <Briefcase size={14} color="var(--text-muted)" />
                   <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Business Context</span>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— {finding.asset_hostname || finding.asset_ip}</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— {getFindingAssetDisplay(finding)}</span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
                   <div>

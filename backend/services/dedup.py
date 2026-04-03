@@ -19,11 +19,29 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent.parent / "config" / "dedup_config.json"
 
+
+def _unpack_entity_map(entry: tuple) -> tuple:
+    """Unpack ENTITY_MODEL_MAP entry into (Model, list_fields, bool_fields, dict_fields).
+    Handles both 3-element (legacy) and 4-element tuples."""
+    if len(entry) == 4:
+        return entry[0], entry[1], entry[2], entry[3]
+    return entry[0], entry[1], entry[2], []
+
 # ─────────────────────────────────────────────
 # Key field options per entity type
 # ─────────────────────────────────────────────
 
 KEY_FIELD_OPTIONS: dict[str, list[str]] = {
+    # Per-asset-type key field options (keys inside asset_identity for non-host types)
+    "assets.host": ["ip", "hostname", "fqdn", "netbios_name"],
+    "assets.web_app": ["url", "domain"],
+    "assets.cloud_instance": ["cloud_provider", "instance_id", "account_id", "region"],
+    "assets.api_endpoint": ["method", "url"],
+    "assets.identity": ["provider", "principal_id", "tenant_id"],
+    "assets.container_image": ["registry", "repository", "tag", "digest"],
+    "assets.code_repo": ["provider", "org", "repo"],
+    "assets.k8s_workload": ["cluster", "namespace", "kind", "name"],
+    # Legacy flat key (backward compat for old UI / config references)
     "assets": ["ip", "hostname", "fqdn", "netbios_name"],
     "findings": ["plugin_id", "asset_id", "port", "protocol", "cve"],
     "users": ["username", "domain", "sid"],
@@ -52,11 +70,62 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": True,
     "apply_on_upload": True,
     "assets": {
-        "enabled": True,
-        "key_fields": ["ip"],
-        "key_mode": "or",
-        "strategy": "merge",
-        "scope": "cross_scan",
+        "host": {
+            "enabled": True,
+            "key_fields": ["ip", "fqdn"],
+            "key_mode": "or",
+            "strategy": "merge",
+            "scope": "cross_scan",
+        },
+        "web_app": {
+            "enabled": True,
+            "key_fields": ["url"],
+            "key_mode": "and",
+            "strategy": "keep_last",
+            "scope": "cross_scan",
+        },
+        "cloud_instance": {
+            "enabled": True,
+            "key_fields": ["cloud_provider", "instance_id"],
+            "key_mode": "and",
+            "strategy": "merge",
+            "scope": "cross_scan",
+        },
+        "api_endpoint": {
+            "enabled": True,
+            "key_fields": ["method", "url"],
+            "key_mode": "and",
+            "strategy": "keep_last",
+            "scope": "cross_scan",
+        },
+        "identity": {
+            "enabled": True,
+            "key_fields": ["provider", "principal_id"],
+            "key_mode": "and",
+            "strategy": "merge",
+            "scope": "cross_scan",
+        },
+        "container_image": {
+            "enabled": True,
+            "key_fields": ["registry", "repository", "digest"],
+            "key_mode": "and",
+            "strategy": "keep_last",
+            "scope": "cross_scan",
+        },
+        "code_repo": {
+            "enabled": True,
+            "key_fields": ["provider", "org", "repo"],
+            "key_mode": "and",
+            "strategy": "merge",
+            "scope": "cross_scan",
+        },
+        "k8s_workload": {
+            "enabled": True,
+            "key_fields": ["cluster", "namespace", "kind", "name"],
+            "key_mode": "and",
+            "strategy": "merge",
+            "scope": "cross_scan",
+        },
     },
     "findings": {
         "enabled": False,
@@ -180,6 +249,100 @@ def save_config(cfg: dict) -> None:
     """Persist dedup config to disk."""
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
+
+
+# ─────────────────────────────────────────────
+# Per-asset-type config helpers
+# ─────────────────────────────────────────────
+
+_LEGACY_FLAT_ASSET_CONFIG = {"enabled", "key_fields", "key_mode", "strategy", "scope"}
+
+
+def _is_legacy_asset_config(assets_cfg: dict) -> bool:
+    """Detect old flat config format (pre per-type): has key_fields at top level."""
+    return bool(assets_cfg and _LEGACY_FLAT_ASSET_CONFIG & set(assets_cfg.keys()))
+
+
+def get_asset_type_config(cfg: dict, asset_type: str) -> dict:
+    """Get dedup config for a specific asset type, with fallback chain:
+    1. cfg["assets"][asset_type]  (per-type config)
+    2. cfg["assets"]["host"]     (host fallback for unknown types)
+    3. Legacy flat cfg["assets"] (backward compat for old config files)
+    """
+    assets_cfg = cfg.get("assets", {})
+    # Legacy flat config (pre per-type migration)
+    if _is_legacy_asset_config(assets_cfg):
+        return assets_cfg
+    # Per-type lookup
+    if asset_type in assets_cfg:
+        return assets_cfg[asset_type]
+    # Unknown custom type — use reasonable defaults
+    return {
+        "enabled": True,
+        "key_fields": list((cfg.get("assets", {}).get(asset_type) or {}).get("key_fields", [])),
+        "key_mode": "and",
+        "strategy": "merge",
+        "scope": "cross_scan",
+    }
+
+
+def _get_asset_field(asset_or_dict, field: str):
+    """Resolve a field value from an asset: try model column first, then asset_identity dict.
+    For host-type fields (ip, hostname, fqdn, netbios_name) the column is authoritative.
+    For non-host type fields (url, instance_id, etc.) they live inside asset_identity.
+    """
+    if isinstance(asset_or_dict, dict):
+        val = asset_or_dict.get(field)
+        if val is None:
+            val = (asset_or_dict.get("asset_identity") or {}).get(field)
+        return val
+    else:
+        # SQLAlchemy model
+        val = getattr(asset_or_dict, field, None)
+        if val is None:
+            identity = asset_or_dict.asset_identity or {}
+            val = identity.get(field)
+        return val
+
+
+def dedup_asset_records(records: list[dict], cfg: dict) -> list[dict]:
+    """Deduplicate asset records using per-type config.
+    Groups records by asset_type, applies type-specific dedup settings, returns merged list.
+    """
+    if not records:
+        return records
+
+    from collections import defaultdict
+    by_type: dict[str, list[dict]] = defaultdict(list)
+    for r in records:
+        by_type[r.get("asset_type", "host")].append(r)
+
+    result = []
+    for atype, recs in by_type.items():
+        type_cfg = get_asset_type_config(cfg, atype)
+        if not type_cfg.get("enabled", True):
+            result.extend(recs)
+            continue
+        key_fields = type_cfg.get("key_fields", [])
+        if not key_fields:
+            result.extend(recs)
+            continue
+
+        # For non-host types, key fields reference asset_identity keys.
+        # Lift them to top-level dict so _make_keys can find them.
+        if atype != "host":
+            for r in recs:
+                identity = r.get("asset_identity") or {}
+                for kf in key_fields:
+                    if kf not in r and kf in identity:
+                        r[kf] = identity[kf]
+
+        deduped = dedup_records(
+            recs, key_fields, type_cfg.get("strategy", "merge"),
+            key_mode=type_cfg.get("key_mode", "and"),
+        )
+        result.extend(deduped)
+    return result
 
 
 # ─────────────────────────────────────────────
@@ -399,8 +562,10 @@ def dedup_inventory(inventory: dict, cfg: dict) -> dict:
 # DB-level dedup (on-demand)
 # ─────────────────────────────────────────────
 
-def _merge_model_row(existing, incoming, strategy: str, list_fields: set[str], bool_fields: set[str]):
+def _merge_model_row(existing, incoming, strategy: str, list_fields: set[str], bool_fields: set[str],
+                     dict_fields: set[str] | None = None):
     """Apply merge strategy to two SQLAlchemy model instances (in-place on existing)."""
+    dict_fields = dict_fields or set()
     if strategy == "keep_first":
         return  # nothing to do
     for col in incoming.__table__.columns:
@@ -421,6 +586,10 @@ def _merge_model_row(existing, incoming, strategy: str, list_fields: set[str], b
                     if key not in seen_set:
                         merged.append(item)
                         seen_set.add(key)
+                setattr(existing, attr, merged)
+            elif attr in dict_fields and isinstance(old_val, dict) and isinstance(new_val, dict):
+                # Deep merge: existing keys preserved, new keys added, new values win on conflict
+                merged = {**old_val, **new_val}
                 setattr(existing, attr, merged)
             elif attr in bool_fields and isinstance(old_val, bool) and isinstance(new_val, bool):
                 setattr(existing, attr, old_val or new_val)
@@ -475,9 +644,10 @@ def _reassign_asset_children(db, old_asset_id: int, new_asset_id: int, ENTITY_MO
             db.delete(ta)
         else:
             ta.asset_id = new_asset_id
-    for entity_type, (Model, _, _) in ENTITY_MODEL_MAP.items():
+    for entity_type, entry in ENTITY_MODEL_MAP.items():
         if entity_type in ("assets", "findings"):
             continue
+        Model = entry[0]
         if getattr(Model, "asset_id", None) is not None:
             db.query(Model).filter(Model.asset_id == old_asset_id).update(
                 {"asset_id": new_asset_id}, synchronize_session=False
@@ -493,9 +663,10 @@ def _dedup_inventory_on_assets(db, asset_ids: set, cfg: dict, ENTITY_MODEL_MAP: 
     inv_cfg = cfg.get("inventory", {})
     total_removed = 0
 
-    for entity_type, (Model, list_fields_list, bool_fields_list) in ENTITY_MODEL_MAP.items():
+    for entity_type, entry in ENTITY_MODEL_MAP.items():
         if entity_type in ("assets", "findings"):
             continue
+        Model, list_fields_list, bool_fields_list, dict_fields_list = _unpack_entity_map(entry)
         if not hasattr(Model, "asset_id"):
             continue
 
@@ -508,6 +679,7 @@ def _dedup_inventory_on_assets(db, asset_ids: set, cfg: dict, ENTITY_MODEL_MAP: 
         strategy = entity_cfg.get("strategy", "keep_first")
         list_fields = set(list_fields_list)
         bool_fields = set(bool_fields_list)
+        dict_fields = set(dict_fields_list)
 
         for asset_id in asset_ids:
             asset_id_col = getattr(Model, "asset_id", None)
@@ -536,9 +708,9 @@ def _dedup_inventory_on_assets(db, asset_ids: set, cfg: dict, ENTITY_MODEL_MAP: 
                 if key in seen:
                     survivor = seen[key]
                     if strategy == "merge":
-                        _merge_model_row(survivor, row, strategy, list_fields, bool_fields)
+                        _merge_model_row(survivor, row, strategy, list_fields, bool_fields, dict_fields)
                     elif strategy == "keep_last":
-                        _merge_model_row(survivor, row, strategy, list_fields, bool_fields)
+                        _merge_model_row(survivor, row, strategy, list_fields, bool_fields, dict_fields)
                     db.delete(row)
                     total_removed += 1
                 else:
@@ -552,25 +724,20 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
     Cross-scan asset dedup: within each org, find duplicate assets (same key_fields
     across different scans) and merge them into the most-recent scan's asset.
 
+    Partitions assets by asset_type and applies per-type dedup config.
+
     - org_id: restrict to one org; None = all orgs (superadmin / on-demand run)
     - Survivor: asset from the highest scan_id (most recent upload)
     - Older duplicates: findings + inventory reassigned to survivor, then deleted
     """
     from models.models import Asset, Scan
 
-    asset_cfg = cfg.get("assets", {})
-    if not asset_cfg.get("enabled", True):
-        return {"skipped": True, "reason": "asset dedup disabled in config"}
-
-    key_fields: list[str] = asset_cfg.get("key_fields", ["ip"])
-    strategy: str = asset_cfg.get("strategy", "merge")
-
-    if not key_fields:
-        return {"skipped": True, "reason": "no key_fields configured"}
-
-    _, list_fields_list, bool_fields_list = ENTITY_MODEL_MAP.get("assets", (None, [], []))
+    _, list_fields_list, bool_fields_list, dict_fields_list = _unpack_entity_map(
+        ENTITY_MODEL_MAP.get("assets", (None, [], [], []))
+    )
     list_fields = set(list_fields_list)
     bool_fields = set(bool_fields_list)
+    dict_fields = set(dict_fields_list)
 
     # Load all assets joined with their scan, oldest scan first so the latest
     # scan's asset ends up as the final value in `seen` (the survivor).
@@ -585,57 +752,86 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
 
     rows = q.all()  # list of (Asset, scan_org_id)
 
+    # Partition by asset_type
+    from collections import defaultdict
+    by_type: dict[str, list] = defaultdict(list)
+    for asset, scan_org_id in rows:
+        atype = asset.asset_type or "host"
+        by_type[atype].append((asset, scan_org_id))
+
     # group_key → current survivor Asset (the most-recent-scan asset seen so far)
     seen: dict[tuple, Asset] = {}
     to_delete: list[tuple] = []  # (old_asset, survivor_asset)
 
-    for asset, scan_org_id in rows:
-        # Build OR-style keys: one per non-null key field, namespaced by org.
-        # When caller passes org_id, use it as the namespace (treats None-org scans as same).
-        # When caller passes org_id=None (dev/no-auth), treat all scans as same org.
-        effective_org = str(org_id) if org_id is not None else "0"
-        asset_keys = []
-        for field in key_fields:
-            val = getattr(asset, field, None)
-            if val is not None and val != "":
-                asset_keys.append((effective_org, field, str(val)))
-        if not asset_keys:
+    for atype, type_rows in by_type.items():
+        type_cfg = get_asset_type_config(cfg, atype)
+        if not type_cfg.get("enabled", True):
+            continue
+        key_fields = type_cfg.get("key_fields", ["ip"] if atype == "host" else [])
+        strategy = type_cfg.get("strategy", "merge")
+        key_mode = type_cfg.get("key_mode", "or" if atype == "host" else "and")
+        if not key_fields:
             continue
 
-        # Check if any key matches an existing survivor
-        existing = None
-        for k in asset_keys:
-            if k in seen:
-                existing = seen[k]
-                break
+        type_seen: dict[tuple, Asset] = {}
 
-        if existing is None:
-            # New asset — register all its keys
+        for asset, scan_org_id in type_rows:
+            effective_org = str(org_id) if org_id is not None else "0"
+            asset_keys = []
+
+            if key_mode == "or":
+                # OR-style: each non-null field is its own key
+                for field in key_fields:
+                    val = _get_asset_field(asset, field)
+                    if val is not None and val != "":
+                        asset_keys.append((effective_org, atype, field, str(val)))
+            else:
+                # AND-style: composite key from all fields
+                parts = [effective_org, atype]
+                has_any = False
+                for field in key_fields:
+                    val = _get_asset_field(asset, field)
+                    if val is not None and val != "":
+                        parts.append(str(val))
+                        has_any = True
+                    else:
+                        parts.append("")
+                if has_any:
+                    asset_keys = [tuple(parts)]
+
+            if not asset_keys:
+                continue
+
+            # Check if any key matches an existing survivor
+            existing = None
             for k in asset_keys:
-                seen[k] = asset
-        else:
-            # Duplicate — apply strategy
-            if strategy == "keep_first":
-                to_delete.append((asset, existing))
-                # Point new keys to existing survivor too
+                if k in type_seen:
+                    existing = type_seen[k]
+                    break
+
+            if existing is None:
                 for k in asset_keys:
-                    seen[k] = existing
-            elif strategy == "keep_last":
-                to_delete.append((existing, asset))
-                # Re-point all keys that referenced old survivor to new one
-                for k, v in list(seen.items()):
-                    if v is existing:
-                        seen[k] = asset
-                for k in asset_keys:
-                    seen[k] = asset
-            else:  # merge
-                _merge_model_row(asset, existing, "merge", list_fields, bool_fields)
-                to_delete.append((existing, asset))
-                for k, v in list(seen.items()):
-                    if v is existing:
-                        seen[k] = asset
-                for k in asset_keys:
-                    seen[k] = asset
+                    type_seen[k] = asset
+            else:
+                if strategy == "keep_first":
+                    to_delete.append((asset, existing))
+                    for k in asset_keys:
+                        type_seen[k] = existing
+                elif strategy == "keep_last":
+                    to_delete.append((existing, asset))
+                    for k, v in list(type_seen.items()):
+                        if v is existing:
+                            type_seen[k] = asset
+                    for k in asset_keys:
+                        type_seen[k] = asset
+                else:  # merge
+                    _merge_model_row(asset, existing, "merge", list_fields, bool_fields, dict_fields)
+                    to_delete.append((existing, asset))
+                    for k, v in list(type_seen.items()):
+                        if v is existing:
+                            type_seen[k] = asset
+                    for k in asset_keys:
+                        type_seen[k] = asset
 
     removed = len(to_delete)
     survivor_ids = set()
@@ -671,12 +867,13 @@ def run_db_dedup(db, entity_type: str, scan_id: int | None, cfg: dict, ENTITY_MO
 
     # Cross-scan asset dedup requires org-aware grouping — delegate to dedicated function
     if entity_type == "assets" and not scan_id:
-        asset_cfg = cfg.get("assets", {})
-        if asset_cfg.get("scope", "cross_scan") == "cross_scan":
-            return run_cross_scan_asset_dedup(db, org_id=None, cfg=cfg, ENTITY_MODEL_MAP=ENTITY_MODEL_MAP)
+        return run_cross_scan_asset_dedup(db, org_id=None, cfg=cfg, ENTITY_MODEL_MAP=ENTITY_MODEL_MAP)
 
     # assets and findings live at the root config level; inventory types live under "inventory"
-    if entity_type in ("assets", "findings"):
+    if entity_type == "assets":
+        # Per-type asset config — for within-scan dedup, use host config as default
+        entity_cfg = get_asset_type_config(cfg, "host")
+    elif entity_type == "findings":
         entity_cfg = cfg.get(entity_type, {})
     else:
         inv_cfg = cfg.get("inventory", {})
@@ -684,7 +881,7 @@ def run_db_dedup(db, entity_type: str, scan_id: int | None, cfg: dict, ENTITY_MO
     if not entity_cfg.get("enabled", True):
         return {"skipped": True, "reason": "disabled in config"}
 
-    Model, list_fields, bool_fields = ENTITY_MODEL_MAP[entity_type]
+    Model, list_fields, bool_fields, dict_fields = _unpack_entity_map(ENTITY_MODEL_MAP[entity_type])
     key_fields: list[str] = entity_cfg.get("key_fields", [])
     strategy: str = entity_cfg.get("strategy", "keep_first")
 
@@ -738,9 +935,9 @@ def run_db_dedup(db, entity_type: str, scan_id: int | None, cfg: dict, ENTITY_MO
                 seen[k] = row
         else:
             if strategy == "merge":
-                _merge_model_row(existing, row, strategy, set(list_fields), set(bool_fields))
+                _merge_model_row(existing, row, strategy, set(list_fields), set(bool_fields), set(dict_fields))
             elif strategy == "keep_last":
-                _merge_model_row(existing, row, strategy, set(list_fields), set(bool_fields))
+                _merge_model_row(existing, row, strategy, set(list_fields), set(bool_fields), set(dict_fields))
             # Point all new keys to the survivor too
             for k in keys:
                 seen[k] = existing

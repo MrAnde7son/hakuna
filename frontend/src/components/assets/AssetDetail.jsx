@@ -20,6 +20,7 @@ import {
   buildAssetBreakdown, useAssetRiskWeights
 } from '../shared/ui.jsx'
 import { useScan } from '../../App.jsx'
+import { getAssetDisplayName, getAssetSecondaryInfo } from '../../utils/assetDisplay.js'
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -431,7 +432,7 @@ function InventoryTab({ asset }) {
   }, [asset.id])
 
   const inventoryUrl = (tab) =>
-    `/inventory?asset_id=${asset.id}&asset_name=${encodeURIComponent(asset.hostname || asset.ip)}${tab ? '&tab=' + tab : ''}`
+    `/inventory?asset_id=${asset.id}&asset_name=${encodeURIComponent(getAssetDisplayName(asset))}${tab ? '&tab=' + tab : ''}`
 
   if (loading) return <div style={{ padding: 32, textAlign: 'center' }}><Spinner /></div>
 
@@ -606,7 +607,7 @@ export default function AssetDetail() {
   if (fetchError) return <ErrorBanner error={fetchError} onRetry={load} />
   if (!asset) return <div style={{ color: 'var(--text-muted)', padding: 32 }}>{t('assetDetail.notFound')}</div>
 
-  const displayName = asset.hostname || asset.ip || `Asset #${asset.id}`
+  const displayName = getAssetDisplayName(asset)
   const findingTotal = (asset.critical_count || 0) + (asset.high_count || 0) + (asset.medium_count || 0) + (asset.low_count || 0) + (asset.info_count || 0)
 
   return (
@@ -638,8 +639,7 @@ export default function AssetDetail() {
 
             {/* Subtitle */}
             <div style={{ fontSize: 13, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              {asset.ip && asset.ip !== asset.hostname && <span>{asset.ip}</span>}
-              {asset.fqdn && asset.fqdn !== asset.hostname && <span>· {asset.fqdn}</span>}
+              {getAssetSecondaryInfo(asset).map((info, i) => <span key={i}>{i > 0 ? '· ' : ''}{info}</span>)}
               {asset.os && <span>· {asset.os}</span>}
             </div>
 

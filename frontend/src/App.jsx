@@ -62,6 +62,7 @@ import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
 import NotificationBell from './components/notifications/NotificationBell.jsx'
 import { getScans, setOrgContext, authUpdateLocale, getFindings, getAssets, getCampaigns, getOnboardingStatus } from './api.js'
 import { ErrorBoundary, ToastProvider, ConfirmProvider } from './components/shared/ui.jsx'
+import { getAssetDisplayName, getFindingAssetDisplay } from './utils/assetDisplay.js'
 
 // Lazy-loaded route components (code-split per page)
 const AssetInventory = React.lazy(() => import('./components/assets/AssetInventory.jsx'))
@@ -774,10 +775,10 @@ function CommandPalette({ open, onClose }) {
         ])
         const items = []
         for (const f of (findingsRes.items || [])) {
-          items.push({ type: 'finding', label: f.plugin_name, sub: f.asset_hostname || f.asset_ip, path: `/findings/${f.id}`, severity: f.severity })
+          items.push({ type: 'finding', label: f.plugin_name, sub: getFindingAssetDisplay(f), path: `/findings/${f.id}`, severity: f.severity })
         }
         for (const a of (assetsRes.items || [])) {
-          items.push({ type: 'asset', label: a.hostname || a.ip || a.fqdn, sub: a.os || '', path: `/assets/${a.id}` })
+          items.push({ type: 'asset', label: getAssetDisplayName(a), sub: a.os || '', path: `/assets/${a.id}` })
         }
         setResults(items)
       } catch { setResults([]) }

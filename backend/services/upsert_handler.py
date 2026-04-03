@@ -63,6 +63,9 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
             "hostname": "hostname", "ip_address": "ip", "fqdn": "fqdn",
             "os": "os", "environment": "environment_tag",
             "last_seen": "last_seen", "criticality": "criticality",
+            "asset_type": "asset_type",
+            "asset_identity": "asset_identity",
+            "asset_attributes": "asset_attributes",
         }
         for src_field, db_field in field_mapping.items():
             value = record.get(src_field)
@@ -97,6 +100,9 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
             source_systems=[source_system] if source_system else [],
             first_seen=datetime.utcnow(),
             last_seen=datetime.utcnow(),
+            asset_type=record.get("asset_type", "host"),
+            asset_identity=record.get("asset_identity", {}),
+            asset_attributes=record.get("asset_attributes", {}),
         )
         db.add(asset)
         db.flush()

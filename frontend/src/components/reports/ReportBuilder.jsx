@@ -367,7 +367,7 @@ const DATA_PRESETS = {
       { key: 'open_ports', label: 'Ports', render: v => (v || []).join(', ') },
     ],
     extract: d => (Array.isArray(d) ? d : (d?.assets ?? [])).slice(0, 50),
-    rowDrillDown: row => row?.hostname ? `/inventory?tab=easm_assets&search=${encodeURIComponent(row.hostname)}` : '/inventory?tab=easm_assets',
+    rowDrillDown: row => { const name = row?.hostname || row?.ip || row?.fqdn; return name ? `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}` : '/inventory?tab=easm_assets' },
   },
   easm_events_table: {
     label: 'Recent Changes', group: 'EASM', source: 'easm_events', type: 'table',
@@ -377,7 +377,7 @@ const DATA_PRESETS = {
       { key: 'payload', label: 'Details', render: v => typeof v === 'object' ? JSON.stringify(v).slice(0, 80) : '' },
     ],
     extract: d => (Array.isArray(d) ? d : (d?.events ?? [])).slice(0, 30),
-    rowDrillDown: row => row?.hostname ? `/inventory?tab=easm_assets&search=${encodeURIComponent(row.hostname)}` : '/inventory?tab=easm_assets',
+    rowDrillDown: row => { const name = row?.hostname || row?.ip || row?.fqdn; return name ? `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}` : '/inventory?tab=easm_assets' },
   },
   easm_breaches_table: {
     label: 'Breach Exposure', group: 'EASM', source: 'easm_breaches', type: 'table',

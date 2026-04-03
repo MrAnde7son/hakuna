@@ -250,9 +250,9 @@ class Scan(Base):
     slug="asset",
     display_name="Asset",
     category="core",
-    dedup_keys=["source_system", "source_id"],
-    required_fields=["ip", "hostname"],
-    description="Network assets — hosts, servers, endpoints, cloud instances",
+    dedup_keys=["source_system", "source_id", "asset_type"],
+    required_fields=[],
+    description="Assets — hosts, web apps, cloud instances, APIs, identities, containers, and custom types",
 )
 class Asset(Base):
     __tablename__ = "assets"
@@ -289,6 +289,11 @@ class Asset(Base):
     is_credentialed = Column(Boolean, default=False)  # Was the scan authenticated?
     last_auth_run = Column(String)                     # LastAuthenticatedResults timestamp
     system_type = Column(String)                        # e.g. "web_application" for WAS scans
+
+    # Multi-type asset identity
+    asset_type = Column(String, default="host", index=True)   # host, web_app, cloud_instance, api_endpoint, identity, container_image, code_repo, k8s_workload, or any custom type
+    asset_identity = Column(JSON, default=dict)                # structured identity keys per type (e.g. {"url": "..."} for web_app, {"instance_id": "..."} for cloud)
+    asset_attributes = Column(JSON, default=dict)              # type-specific metadata overflow
 
     # OS / device enrichment (from plugins 11936, 45590)
     device_type = Column(String)                        # server, workstation, router, switch, firewall, printer, hypervisor, wap, voip, storage, unknown
