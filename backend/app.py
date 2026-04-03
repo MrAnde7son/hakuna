@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc, distinct, or_, cast, Text
 
 from core.database import get_db, init_db
+from core.query_guards import set_statement_timeout, check_row_count, MAX_PAGE_SIZE
 from core.limiter import limiter
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -324,6 +325,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Global page_size guard middleware ────────────────────────────────────
+# Clamp page_size query parameter to MAX_PAGE_SIZE across all endpoints.
+from urllib.parse import urlencode
+
+@app.middleware("http")
+async def clamp_page_size_middleware(request: Request, call_next):
+    if "page_size" in request.query_params:
+        try:
+            raw = int(request.query_params["page_size"])
+            clamped = max(1, min(raw, MAX_PAGE_SIZE))
+            if clamped != raw:
+                # Rebuild query string with clamped value
+                params = dict(request.query_params)
+                params["page_size"] = str(clamped)
+                scope = request.scope
+                scope["query_string"] = urlencode(params).encode("utf-8")
+        except (ValueError, TypeError):
+            pass
+    return await call_next(request)
+
 
 app.include_router(auth_router)
 app.include_router(threat_intel_router)
@@ -1420,6 +1442,36 @@ def health_check():
     return {"status": "ok"}
 
 
+@app.get("/api/health/db")
+def health_db():
+    """DB connectivity check with connection pool metrics."""
+    from core.database import check_db_health
+    result = check_db_health()
+    status_code = 200 if result["status"] == "ok" else 503
+    return JSONResponse(content=result, status_code=status_code)
+
+
+# ─────────────────────────────────────────────
+# Background job status tracking
+# ─────────────────────────────────────────────
+
+@app.get("/api/jobs/{job_id}/status")
+def get_job_status(job_id: str):
+    """Return status of a background job."""
+    from services.job_manager import get_job
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return job.to_dict()
+
+
+@app.get("/api/jobs")
+def list_jobs(limit: int = 50):
+    """List recent background jobs."""
+    from services.job_manager import list_jobs as _list_jobs
+    return _list_jobs(limit=limit)
+
+
 # ─────────────────────────────────────────────
 # Sources (parser registry)
 # ─────────────────────────────────────────────
@@ -2495,6 +2547,7 @@ def get_summary(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_l
     cached = _cache_get(_ck)
     if cached is not None:
         return cached
+    set_statement_timeout(db)
     asset_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
     finding_q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
     asset_q = apply_scan_org_filter(asset_q, org_ids)
@@ -2864,6 +2917,7 @@ def get_metrics_timeline(db: Session = Depends(get_db), org_ids: Optional[List[i
     cached = _cache_get(_ck)
     if cached is not None:
         return cached
+    set_statement_timeout(db)
     from sqlalchemy import case as sa_case
     scans = apply_org_filter(db.query(Scan), Scan, org_ids).order_by(Scan.created_at).all()
     if not scans:
@@ -4512,12 +4566,25 @@ class RunDedupBody(BaseModel):
     scan_id: Optional[int] = None
 
 
-@app.post("/api/dedup/run")
-def run_dedup(body: RunDedupBody, db: Session = Depends(get_db)):
-    """Run dedup on-demand for a given entity type."""
-    cfg = dedup_engine.load_config()
-    result = dedup_engine.run_db_dedup(db, body.entity_type, body.scan_id, cfg, ENTITY_MODEL_MAP)
-    return result
+@app.post("/api/dedup/run", status_code=202)
+def run_dedup(body: RunDedupBody):
+    """Dispatch dedup as a background job. Returns job_id immediately."""
+    from services.job_manager import dispatch
+    from core.database import SessionLocal
+
+    entity_type = body.entity_type
+    scan_id = body.scan_id
+
+    def _run_dedup():
+        db = SessionLocal()
+        try:
+            cfg = dedup_engine.load_config()
+            return dedup_engine.run_db_dedup(db, entity_type, scan_id, cfg, ENTITY_MODEL_MAP)
+        finally:
+            db.close()
+
+    job = dispatch(f"dedup_{entity_type}", _run_dedup)
+    return {"job_id": job.id, "status": job.status.value, "poll_url": f"/api/jobs/{job.id}/status"}
 
 
 # ─────────────────────────────────────────────
@@ -4572,21 +4639,40 @@ class RecalculateBody(BaseModel):
     recalculate_findings: bool = False
 
 
-@app.post("/api/risk/recalculate")
+@app.post("/api/risk/recalculate", status_code=202)
 def recalculate_risk(
     body: RecalculateBody,
-    db: Session = Depends(get_db),
     user: User = Depends(require_auth),
     x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
 ):
-    """Recompute risk scores (and optionally criticality + finding priorities) for all or one scan."""
+    """Dispatch risk recalculation as a background job. Returns job_id immediately."""
+    from services.job_manager import dispatch
+    from core.database import SessionLocal
+
     org_id = int(x_org_context) if x_org_context else user.org_id
+    scan_id = body.scan_id
+    apply_criticality = body.apply_criticality_rules
+    recalc_findings = body.recalculate_findings
+
+    def _run_risk_recalc():
+        db = SessionLocal()
+        try:
+            return _risk_recalc_sync(db, org_id, scan_id, apply_criticality, recalc_findings)
+        finally:
+            db.close()
+
+    job = dispatch("risk_recalculate", _run_risk_recalc)
+    return {"job_id": job.id, "status": job.status.value, "poll_url": f"/api/jobs/{job.id}/status"}
+
+
+def _risk_recalc_sync(db, org_id, scan_id, apply_criticality, recalc_findings):
+    """Synchronous risk recalculation logic (runs in background thread)."""
     cfg = risk_engine.load_config_for_org(db, org_id)
     intel = load_intel_json(str(INTEL_PATH)) if INTEL_PATH.exists() else {}
 
     asset_q = db.query(Asset)
-    if body.scan_id:
-        asset_q = asset_q.filter(Asset.scan_id == body.scan_id)
+    if scan_id:
+        asset_q = asset_q.filter(Asset.scan_id == scan_id)
     assets = asset_q.all()
 
     # Preload tags for all assets in this batch (avoids N+1 queries)
@@ -4608,7 +4694,7 @@ def recalculate_risk(
     updated_findings = 0
     for asset in assets:
         # Re-apply criticality rules if requested
-        if body.apply_criticality_rules:
+        if apply_criticality:
             asset_dict = {
                 "ip": asset.ip, "hostname": asset.hostname, "fqdn": asset.fqdn,
                 "os": asset.os, "netbios_name": asset.netbios_name,
@@ -4668,7 +4754,7 @@ def recalculate_risk(
         updated_assets += 1
 
         # Optionally recompute finding priority scores
-        if body.recalculate_findings:
+        if recalc_findings:
             for f in findings:
                 finding_dict = {
                     "plugin_id":        f.plugin_id,
@@ -4708,7 +4794,7 @@ def recalculate_risk(
                 updated_findings += 1
 
     db.commit()
-    return {"updated_assets": updated_assets, "updated_findings": updated_findings, "scan_id": body.scan_id}
+    return {"updated_assets": updated_assets, "updated_findings": updated_findings, "scan_id": scan_id}
 
 
 # ─────────────────────────────────────────────
@@ -5244,52 +5330,59 @@ def delete_campaign(campaign_id: int, db: Session = Depends(get_db), user: Optio
     return {"ok": True}
 
 
-@app.post("/api/campaigns/{campaign_id}/run")
+@app.post("/api/campaigns/{campaign_id}/run", status_code=202)
 def run_campaign(campaign_id: int, db: Session = Depends(get_db)):
-    """Execute the campaign query and populate its findings."""
+    """Dispatch campaign execution as a background job. Returns job_id immediately."""
+    from services.job_manager import dispatch
+    from core.database import SessionLocal
+
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(404, "Campaign not found")
 
-    # Clear previous results
-    db.query(CampaignFinding).filter(CampaignFinding.campaign_id == campaign_id).delete()
+    def _run_campaign():
+        db2 = SessionLocal()
+        try:
+            camp = db2.query(Campaign).filter(Campaign.id == campaign_id).first()
+            if not camp:
+                return {"error": "Campaign not found"}
 
-    # If the referenced scan was deleted, clear the stale scan_id so the query searches all scans
-    scan_id = campaign.scan_id
-    if scan_id and not db.query(Scan).filter(Scan.id == scan_id).first():
-        campaign.scan_id = None
-        scan_id = None
+            db2.query(CampaignFinding).filter(CampaignFinding.campaign_id == campaign_id).delete()
 
-    # Run query
-    results = cq.run_query(db, campaign.query or [], campaign.query_logic or "AND", scan_id)
+            scan_id = camp.scan_id
+            if scan_id and not db2.query(Scan).filter(Scan.id == scan_id).first():
+                camp.scan_id = None
+                scan_id = None
 
-    # Populate findings
-    added = 0
-    for r in results:
-        for finding in r["findings"]:
-            cf = CampaignFinding(
-                campaign_id=campaign_id,
-                finding_id=finding.id,
-            )
-            db.add(cf)
-            added += 1
+            results = cq.run_query(db2, camp.query or [], camp.query_logic or "AND", scan_id)
 
-    campaign.finding_count = added
-    campaign.last_run_at = datetime.utcnow()
-    if campaign.status == "draft":
-        campaign.status = "active"
+            added = 0
+            for r in results:
+                for finding in r["findings"]:
+                    cf = CampaignFinding(campaign_id=campaign_id, finding_id=finding.id)
+                    db2.add(cf)
+                    added += 1
 
-    if added > 0:
-        from services.notifications import create_notification
-        create_notification(db, campaign.org_id, "campaign_findings",
-            f"{added} findings matched in campaign '{campaign.name}'",
-            link=f"/campaigns/{campaign_id}",
-            entity_type="campaign", entity_id=campaign_id,
-            metadata={"count": added, "campaign_name": campaign.name})
+            camp.finding_count = added
+            camp.last_run_at = datetime.utcnow()
+            if camp.status == "draft":
+                camp.status = "active"
 
-    db.commit()
+            if added > 0:
+                from services.notifications import create_notification
+                create_notification(db2, camp.org_id, "campaign_findings",
+                    f"{added} findings matched in campaign '{camp.name}'",
+                    link=f"/campaigns/{campaign_id}",
+                    entity_type="campaign", entity_id=campaign_id,
+                    metadata={"count": added, "campaign_name": camp.name})
 
-    return {"ok": True, "finding_count": added, "asset_count": len(results)}
+            db2.commit()
+            return {"ok": True, "finding_count": added, "asset_count": len(results)}
+        finally:
+            db2.close()
+
+    job = dispatch(f"campaign_run_{campaign_id}", _run_campaign)
+    return {"job_id": job.id, "status": job.status.value, "poll_url": f"/api/jobs/{job.id}/status"}
 
 
 @app.patch("/api/campaigns/{campaign_id}/findings/{cf_id}")
@@ -5455,7 +5548,10 @@ def get_blast_radius_bulk(
     """Compute blast radius scores for ALL assets in a scan in one pass."""
     from sqlalchemy import or_
 
-    all_assets = db.query(Asset).filter(Asset.scan_id == scan_id).all()
+    set_statement_timeout(db)
+    asset_q = db.query(Asset).filter(Asset.scan_id == scan_id)
+    check_row_count(db, asset_q)
+    all_assets = asset_q.all()
     if not all_assets:
         return {}
 
@@ -7285,36 +7381,59 @@ def save_sla_config(body: SLAConfigUpdateBody, db: Session = Depends(get_db), us
                       changes=diff, actor=user)
     db.commit()
 
-    # Recalculate SLA for all scans
-    configs = db.query(SLAConfig).all()
-    scans = db.query(Scan).all()
-    total = 0
-    for scan in scans:
-        total += _recalculate_sla_for_scan(db, scan.id, configs)
-    return {"ok": True, "updated_findings": total}
+    # Dispatch SLA recalculation as a background job (covers all scans)
+    from services.job_manager import dispatch
+    from core.database import SessionLocal
+
+    def _run_sla_after_save():
+        bg_db = SessionLocal()
+        try:
+            _ensure_sla_defaults(bg_db)
+            cfgs = bg_db.query(SLAConfig).all()
+            all_scans = bg_db.query(Scan).all()
+            total = 0
+            for s in all_scans:
+                total += _recalculate_sla_for_scan(bg_db, s.id, cfgs)
+            return {"updated_findings": total}
+        finally:
+            bg_db.close()
+
+    job = dispatch("sla_recalculate_after_config_save", _run_sla_after_save)
+    return {"ok": True, "job_id": job.id, "poll_url": f"/api/jobs/{job.id}/status"}
 
 
 class SLARecalcBody(BaseModel):
     scan_id: Optional[int] = None
 
 
-@app.post("/api/sla/recalculate")
+@app.post("/api/sla/recalculate", status_code=202)
 def recalculate_sla(
     body: SLARecalcBody = SLARecalcBody(),
-    db: Session = Depends(get_db),
 ):
-    """Recompute sla_due_date and sla_status for findings (all scans or a specific one)."""
+    """Dispatch SLA recalculation as a background job. Returns job_id immediately."""
+    from services.job_manager import dispatch
+    from core.database import SessionLocal
+
     scan_id = body.scan_id
-    _ensure_sla_defaults(db)
-    configs = db.query(SLAConfig).all()
-    if scan_id:
-        scans = db.query(Scan).filter(Scan.id == scan_id).all()
-    else:
-        scans = db.query(Scan).all()
-    total = 0
-    for scan in scans:
-        total += _recalculate_sla_for_scan(db, scan.id, configs)
-    return {"ok": True, "updated_findings": total}
+
+    def _run_sla_recalc():
+        db = SessionLocal()
+        try:
+            _ensure_sla_defaults(db)
+            configs = db.query(SLAConfig).all()
+            if scan_id:
+                scans = db.query(Scan).filter(Scan.id == scan_id).all()
+            else:
+                scans = db.query(Scan).all()
+            total = 0
+            for scan in scans:
+                total += _recalculate_sla_for_scan(db, scan.id, configs)
+            return {"ok": True, "updated_findings": total}
+        finally:
+            db.close()
+
+    job = dispatch("sla_recalculate", _run_sla_recalc)
+    return {"job_id": job.id, "status": job.status.value, "poll_url": f"/api/jobs/{job.id}/status"}
 
 
 @app.get("/api/sla/summary")

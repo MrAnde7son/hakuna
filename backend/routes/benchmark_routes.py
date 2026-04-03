@@ -161,6 +161,9 @@ def _ensure_benchmark_seed(db: Session):
 
 def _compute_org_metrics(db: Session, org_ids: Optional[List[int]], scan_id: Optional[int] = None) -> dict:
     """Compute all benchmark-relevant metrics for the given org scope."""
+    from core.query_guards import set_statement_timeout, check_row_count
+    set_statement_timeout(db)
+
     asset_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
     finding_q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
     asset_q = apply_scan_org_filter(asset_q, org_ids)
