@@ -2607,6 +2607,271 @@ def get_workflow_execution_tool(db: Session, params: dict):
     }
 
 
+@agent_tool(
+    "create_campaign_workflow",
+    "Create a new automation workflow for a campaign with a full node graph (trigger, conditions, actions). "
+    "Write operation. "
+    "WHEN TO CALL: When the user asks to create or build a workflow for a campaign. "
+    "You must provide the nodes and edges that define the workflow DAG. "
+    "Common node types — trigger: campaign_run, schedule, webhook; "
+    "condition: severity_check, exploit_check, tag_check, owner_check, sla_check; "
+    "action: assign_owner, create_ticket, send_email, send_slack, update_status, add_tag, run_query, webhook.",
+    {
+        "campaign_id": {"type": "integer", "description": "Campaign ID to attach the workflow to"},
+        "name": {"type": "string", "description": "Workflow name"},
+        "description": {"type": "string", "description": "Workflow description/goal"},
+        "nodes": {
+            "type": "array",
+            "description": (
+                "List of workflow nodes. Each node: "
+                "{node_id: str, node_type: 'trigger'|'condition'|'action', "
+                "node_subtype: str, label: str, config: dict}. "
+                "Example subtypes — trigger: campaign_run, schedule; "
+                "condition: severity_check (config: {operator:'gte', value:4}), "
+                "exploit_check, tag_check; "
+                "action: assign_owner, create_ticket (config: {provider:'jira', project:'SEC'}), "
+                "send_slack (config: {channel:'#alerts', message:'...'}), "
+                "send_email (config: {to:'...', subject:'...'}), "
+                "update_status (config: {status:'in_progress'}), add_tag."
+            ),
+        },
+        "edges": {
+            "type": "array",
+            "description": (
+                "List of edges connecting nodes. Each edge: "
+                "{edge_id: str, source_node_id: str, target_node_id: str, "
+                "source_handle: 'output'|'true'|'false' (default 'output')}. "
+                "Use source_handle 'true'/'false' for condition node branches."
+            ),
+        },
+        "is_enabled": {"type": "boolean", "description": "Enable the workflow immediately (default false)"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved this action"},
+    },
+)
+def create_campaign_workflow(db: Session, params: dict):
+    campaign_id = params.get("campaign_id")
+    name = params.get("name")
+    nodes_data = params.get("nodes") or []
+    edges_data = params.get("edges") or []
+
+    if not name:
+        return {"error": "Workflow name is required"}
+    if not nodes_data:
+        return {"error": "At least one node is required"}
+
+    # Verify campaign exists and belongs to org
+    if campaign_id:
+        org_id = params.get("_org_id")
+        org_ids = params.get("_org_ids", [org_id] if org_id else [])
+        campaign = db.query(Campaign).filter(
+            Campaign.id == campaign_id,
+            Campaign.org_id.in_(org_ids),
+        ).first()
+        if not campaign:
+            return {"error": f"Campaign {campaign_id} not found"}
+
+    wf = Workflow(
+        org_id=params.get("_org_id"),
+        campaign_id=campaign_id,
+        name=name,
+        description=params.get("description", ""),
+        status="active" if params.get("is_enabled") else "draft",
+        is_enabled=bool(params.get("is_enabled")),
+    )
+    db.add(wf)
+    db.flush()
+
+    for nd in nodes_data:
+        db.add(WorkflowNode(
+            workflow_id=wf.id,
+            node_id=nd.get("node_id", f"node-{nodes_data.index(nd)+1}"),
+            node_type=nd.get("node_type", "action"),
+            node_subtype=nd.get("node_subtype", ""),
+            label=nd.get("label", ""),
+            config=nd.get("config", {}),
+            position_x=nd.get("position_x", 0),
+            position_y=nd.get("position_y", 0),
+        ))
+
+    for ed in edges_data:
+        db.add(WorkflowEdge(
+            workflow_id=wf.id,
+            edge_id=ed.get("edge_id", f"edge-{edges_data.index(ed)+1}"),
+            source_node_id=ed.get("source_node_id"),
+            target_node_id=ed.get("target_node_id"),
+            source_handle=ed.get("source_handle", "output"),
+            target_handle=ed.get("target_handle", "input"),
+            label=ed.get("label"),
+        ))
+
+    db.commit()
+    db.refresh(wf)
+    return {
+        "workflow_id": wf.id,
+        "name": wf.name,
+        "campaign_id": wf.campaign_id,
+        "status": wf.status,
+        "is_enabled": wf.is_enabled,
+        "node_count": len(nodes_data),
+        "edge_count": len(edges_data),
+    }
+
+
+@agent_tool(
+    "create_workflow_from_template",
+    "Create a workflow from a pre-built template. Much simpler than building nodes manually. "
+    "Write operation. "
+    "WHEN TO CALL: When the user wants a standard workflow (e.g. 'create a Jira ticketing workflow', "
+    "'set up a Slack alert workflow'). Use list_workflow_templates first to show available templates. "
+    "Available templates include: critical_triage, patch_tuesday, exploit_response, owner_routing, "
+    "sla_breach_email, email_notification, regression_response, quick_wins_sprint, "
+    "integration_complete_campaign, threat_intel_response, new_asset_onboard, critical_finding_alert, "
+    "multi_owner_ticketing, and more.",
+    {
+        "template_id": {"type": "string", "description": "Template ID (e.g. 'critical_triage', 'sla_breach_email', 'multi_owner_ticketing')"},
+        "name": {"type": "string", "description": "Custom name for the workflow (optional, defaults to template name)"},
+        "campaign_id": {"type": "integer", "description": "Campaign ID to attach the workflow to (optional)"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved this action"},
+    },
+)
+def create_workflow_from_template(db: Session, params: dict):
+    from services.workflow_engine import create_workflow_from_template as _create_from_template
+
+    template_id = params.get("template_id")
+    if not template_id:
+        return {"error": "template_id is required"}
+
+    try:
+        wf = _create_from_template(
+            db,
+            template_id,
+            name=params.get("name"),
+            campaign_id=params.get("campaign_id"),
+        )
+        # Set org_id
+        if params.get("_org_id"):
+            wf.org_id = params["_org_id"]
+            db.commit()
+            db.refresh(wf)
+
+        nodes = db.query(WorkflowNode).filter(WorkflowNode.workflow_id == wf.id).all()
+        return {
+            "workflow_id": wf.id,
+            "name": wf.name,
+            "campaign_id": wf.campaign_id,
+            "status": wf.status,
+            "node_count": len(nodes),
+            "nodes": [
+                {"node_id": n.node_id, "type": n.node_type, "subtype": n.node_subtype, "label": n.label}
+                for n in nodes
+            ],
+        }
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@agent_tool(
+    "list_workflow_templates",
+    "List available pre-built workflow templates with their descriptions and categories. "
+    "WHEN TO CALL: When the user asks what workflow templates are available, or before creating "
+    "a workflow from a template to help them pick one.",
+    {
+        "category": {"type": "string", "description": "Filter by category: triage, patching, incident, integration, sla (optional)"},
+    },
+)
+def list_workflow_templates_tool(db: Session, params: dict):
+    from services.workflow_catalog import WORKFLOW_TEMPLATES, TEMPLATE_CATEGORIES
+
+    category = params.get("category")
+    templates = WORKFLOW_TEMPLATES
+    if category:
+        templates = [t for t in templates if t.get("category") == category]
+
+    return {
+        "categories": TEMPLATE_CATEGORIES,
+        "templates": [
+            {
+                "id": t["id"],
+                "name": t["name"],
+                "description": t["description"],
+                "category": t.get("category"),
+                "node_count": len(t.get("nodes", [])),
+            }
+            for t in templates
+        ],
+    }
+
+
+@agent_tool(
+    "run_workflow",
+    "Execute/run a workflow manually. Write operation. "
+    "WHEN TO CALL: When the user asks to run, trigger, or execute a workflow.",
+    {
+        "workflow_id": {"type": "integer", "description": "Workflow ID to execute"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved this action"},
+    },
+)
+def run_workflow_tool(db: Session, params: dict):
+    from services.workflow_engine import execute_workflow
+
+    workflow_id = params.get("workflow_id")
+    if not workflow_id:
+        return {"error": "workflow_id is required"}
+
+    # Verify workflow exists and belongs to org
+    org_id = params.get("_org_id")
+    org_ids = params.get("_org_ids", [org_id] if org_id else [])
+    wf = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+    if not wf:
+        return {"error": f"Workflow {workflow_id} not found"}
+    if wf.org_id and org_ids and wf.org_id not in org_ids:
+        return {"error": f"Workflow {workflow_id} not found"}
+
+    try:
+        result = execute_workflow(db, workflow_id)
+        return result
+    except Exception as e:
+        return {"error": f"Workflow execution failed: {str(e)}"}
+
+
+@agent_tool(
+    "toggle_workflow",
+    "Enable or disable a workflow, or change its status (draft/active/paused). Write operation. "
+    "WHEN TO CALL: When the user asks to enable, disable, activate, pause, or change the status of a workflow.",
+    {
+        "workflow_id": {"type": "integer", "description": "Workflow ID to update"},
+        "is_enabled": {"type": "boolean", "description": "Enable (true) or disable (false) the workflow"},
+        "status": {"type": "string", "description": "Set status: draft, active, or paused (optional)"},
+        "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user has approved this action"},
+    },
+)
+def toggle_workflow_tool(db: Session, params: dict):
+    workflow_id = params.get("workflow_id")
+    if not workflow_id:
+        return {"error": "workflow_id is required"}
+
+    org_id = params.get("_org_id")
+    org_ids = params.get("_org_ids", [org_id] if org_id else [])
+    wf = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+    if not wf:
+        return {"error": f"Workflow {workflow_id} not found"}
+    if wf.org_id and org_ids and wf.org_id not in org_ids:
+        return {"error": f"Workflow {workflow_id} not found"}
+
+    if params.get("is_enabled") is not None:
+        wf.is_enabled = params["is_enabled"]
+    if params.get("status"):
+        wf.status = params["status"]
+
+    db.commit()
+    return {
+        "workflow_id": wf.id,
+        "name": wf.name,
+        "is_enabled": wf.is_enabled,
+        "status": wf.status,
+    }
+
+
 # ── Agent Management Tools ─────────────────────────────────────────────
 
 @agent_tool(
