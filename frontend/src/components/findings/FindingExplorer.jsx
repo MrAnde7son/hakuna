@@ -386,6 +386,7 @@ export default function FindingExplorer() {
   const [advancedLogic, setAdvancedLogic] = useState(() => searchParams.get('q_logic') || 'AND')
   const [advancedLoading, setAdvancedLoading] = useState(false)
   const [fetchError, setFetchError] = useState(null)
+  const [createdAfter, setCreatedAfter] = useState(null)
 
   // Column visibility (persisted in localStorage)
   const [colVis, setColVis] = useState(() => {
@@ -498,6 +499,7 @@ export default function FindingExplorer() {
       source: sourceFilter || null,
       product: productFilter || null,
       cpe: cpeFilter2 || null,
+      created_after: createdAfter || undefined,
       sort_by: sortBy,
       order: sortOrder,
       page,
@@ -515,7 +517,7 @@ export default function FindingExplorer() {
       })
       .catch(() => setFetchError('Failed to load findings.'))
       .finally(() => setLoading(false))
-  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, productFilter, cpeFilter2, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException, hasTicket, ticketStatus, urlFilters.control_status])
+  }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, productFilter, cpeFilter2, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException, hasTicket, ticketStatus, urlFilters.control_status, createdAfter])
 
   useEffect(() => { if (!advancedMode) load() }, [load, advancedMode])
 
@@ -904,7 +906,7 @@ export default function FindingExplorer() {
 
   return (
     <div>
-      <NewSinceBanner pageKey="findings" labelKey="notifications.newFindings" />
+      <NewSinceBanner pageKey="findings" labelKey="notifications.newFindings" filtering={!!createdAfter} onFilter={(since) => { setCreatedAfter(since) }} />
       <PageHeader
         title={t('findings.title')}
         subtitle={advancedMode ? t('findings.matchedFindings', { count: total.toLocaleString() }) : t('findings.totalFindings', { count: total.toLocaleString() })}

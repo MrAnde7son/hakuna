@@ -1635,6 +1635,7 @@ def list_assets(
     asset_status: Optional[str] = None,
     source: Optional[str] = None,
     min_sources: Optional[int] = None,
+    first_seen_after: Optional[str] = None,
     tags: Optional[str] = None,
     tag_logic: str = "AND",
     expand_children: bool = False,
@@ -1647,6 +1648,11 @@ def list_assets(
 ):
     q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
     q = apply_scan_org_filter(q, org_ids)
+    if first_seen_after:
+        try:
+            q = q.filter(Asset.first_seen > datetime.fromisoformat(first_seen_after))
+        except ValueError:
+            pass
     if scan_id:
         # VM scans may attach findings to existing assets (different scan_id) via dedup.
         # Use the same union approach as the scan list endpoint so all relevant assets appear.
@@ -1914,6 +1920,7 @@ def list_findings(
     tactic: Optional[str] = None,
     technique_id: Optional[str] = None,
     threat_group_id: Optional[int] = None,
+    created_after: Optional[str] = None,
     sort_by: str = "priority_score",
     order: str = "desc",
     page: int = 1,
@@ -1923,6 +1930,11 @@ def list_findings(
 ):
     q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
     q = apply_scan_org_filter(q, org_ids)
+    if created_after:
+        try:
+            q = q.filter(Scan.created_at > datetime.fromisoformat(created_after))
+        except ValueError:
+            pass
     if scan_id:
         q = q.filter(Finding.scan_id == scan_id)
     if asset_id:

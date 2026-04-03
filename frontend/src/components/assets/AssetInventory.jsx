@@ -361,6 +361,7 @@ export default function AssetInventory() {
   const [searchParams, setSearchParams] = useSearchParams()
   const isMobile = useIsMobile()
   const [showMobileFilters, setShowMobileFilters] = useState(false)
+  const [firstSeenAfter, setFirstSeenAfter] = useState(null)
 
   // Sync tagFilter from URL ?tags= param on mount
   const tagsSynced = useRef(false)
@@ -422,6 +423,7 @@ export default function AssetInventory() {
       server_role: filters.serverRole || undefined,
       source: filters.source || undefined,
       min_sources: filters.minSources || undefined,
+      first_seen_after: firstSeenAfter || undefined,
       sort_by: sortBy,
       order: sortOrder,
       page,
@@ -473,7 +475,7 @@ export default function AssetInventory() {
     clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(load, filters.search ? 300 : 0)
     return () => clearTimeout(debounceRef.current)
-  }, [activeScanId, sortBy, sortOrder, tagFilter, tagLogic, filters, advancedMode, page])
+  }, [activeScanId, sortBy, sortOrder, tagFilter, tagLogic, filters, advancedMode, page, firstSeenAfter])
 
   // Auto-run advanced search if restored from URL params
   const advancedRestoredRef = useRef(false)
@@ -856,7 +858,7 @@ export default function AssetInventory() {
 
   return (
     <div>
-      <NewSinceBanner pageKey="assets" labelKey="notifications.newAssets" />
+      <NewSinceBanner pageKey="assets" labelKey="notifications.newAssets" filtering={!!firstSeenAfter} onFilter={(since) => { setFirstSeenAfter(since) }} />
       <PageHeader
         title={t('assets.title')}
         subtitle={advancedMode ? t('assets.assetsMatched', { count: assets.length }) : t('assets.assetsDiscovered', { count: totalAssets })}

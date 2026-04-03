@@ -308,4 +308,7 @@ async def new_since_counts(
             logger.warning(f"new-since count failed for {key}: {e}")
             result[key] = 0
 
-    return result
+    return {
+        "counts": result,
+        "timestamps": {k: v.isoformat() for k, v in visit_map.items()},
+    }
