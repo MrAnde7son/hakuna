@@ -26,3 +26,4 @@ stripe>=7.0.0
 slowapi>=0.1.9
 ddgs>=6.0.0
 sqlglot>=26.0.0
+python3-saml>=1.16.0

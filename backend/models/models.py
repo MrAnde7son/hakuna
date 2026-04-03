@@ -63,6 +63,7 @@ class User(Base):
     email_verified = Column(Boolean, default=False)
     email_verify_token = Column(String, nullable=True, index=True)
     email_verify_expires = Column(DateTime, nullable=True)
+    saml_subject_id = Column(String, nullable=True, index=True)  # SAML NameID from IdP
 
     organization = relationship("Organization", back_populates="users")
 
@@ -173,6 +174,40 @@ class UserCustomRole(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "role_id", name="uq_user_custom_role"),
         Index("ix_ucr_user", "user_id"),
+    )
+
+
+# ─────────────────────────────────────────────────────────
+# SAML SSO Configuration
+# ─────────────────────────────────────────────────────────
+
+class SAMLConfig(Base):
+    """Per-organization SAML 2.0 SSO configuration for enterprise identity providers."""
+    __tablename__ = "saml_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, unique=True)
+    is_enabled = Column(Boolean, default=False)
+    # IdP metadata
+    idp_entity_id = Column(String, nullable=False)          # IdP Entity ID / Issuer
+    idp_sso_url = Column(String, nullable=False)             # IdP Single Sign-On URL
+    idp_slo_url = Column(String, nullable=True)              # IdP Single Logout URL (optional)
+    idp_x509_cert = Column(Text, nullable=False)             # IdP X.509 signing certificate (PEM)
+    # SP settings
+    sp_entity_id = Column(String, nullable=True)             # Override SP entity ID (auto-generated if null)
+    # Behavior
+    default_role = Column(String, default="analyst")         # Role for JIT-provisioned users
+    auto_provision = Column(Boolean, default=True)           # Create users on first SAML login
+    force_sso = Column(Boolean, default=False)               # Require SSO (disable password login for org)
+    # Attribute mapping (JSON: {"email": "...", "display_name": "...", "role": "..."})
+    attribute_mapping = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    org = relationship("Organization")
+
+    __table_args__ = (
+        Index("ix_saml_config_org", "org_id"),
     )
 
 

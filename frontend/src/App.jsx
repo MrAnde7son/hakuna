@@ -54,6 +54,7 @@ import ForgotPassword from './components/auth/ForgotPassword.jsx'
 import ResetPassword from './components/auth/ResetPassword.jsx'
 import AcceptInvite from './components/auth/AcceptInvite.jsx'
 import VerifyEmail from './components/auth/VerifyEmail.jsx'
+import SSOCallback from './components/auth/SSOCallback.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
 import SubscriptionBanner from './components/billing/SubscriptionBanner.jsx'
 import GettingStartedPanel from './components/onboarding/GettingStartedPanel.jsx'
@@ -1148,6 +1149,7 @@ export default function App() {
                   <Route path="/reset-password" element={<ResetPassword />} />
                   <Route path="/accept-invite" element={<AcceptInvite />} />
                   <Route path="/verify-email" element={<VerifyEmail />} />
+                  <Route path="/sso/callback" element={<SSOCallback />} />
                   <Route path="/onboarding" element={
                     <ProtectedRoute>
                       <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: 'var(--muted)' }}>Loading...</div>}>

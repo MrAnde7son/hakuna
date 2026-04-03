@@ -273,6 +273,21 @@ export const authAssignCustomRole = (userId, roleId) =>
 export const authUnassignCustomRole = (userId, roleId) =>
   request(`/auth/users/${userId}/custom-roles/${roleId}`, { method: 'DELETE' })
 
+// SAML SSO
+export const samlDiscover = (email) => request(`/saml/discover?email=${encodeURIComponent(email)}`)
+export const getSamlConfig = () => request('/saml/config')
+export const createSamlConfig = (data) => request('/saml/config', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const updateSamlConfig = (data) => request('/saml/config', {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const deleteSamlConfig = () => request('/saml/config', { method: 'DELETE' })
+
 // Onboarding
 export const getOnboardingOptions = () => request('/onboarding/options')
 export const getOnboardingStatus = () => request('/onboarding/status')
