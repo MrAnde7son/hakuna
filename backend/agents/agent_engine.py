@@ -257,42 +257,49 @@ def _get_ollama_models(cfg) -> list:
 _PROVIDER_DEFAULTS = [
     ("anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-4-6"),
     ("openai", "OPENAI_API_KEY", "gpt-4o"),
-    ("google_gemini", "GOOGLE_API_KEY", "gemini-2.5-flash"),
     ("vertex_ai", "GOOGLE_CLOUD_PROJECT", "vertex/gemini-2.5-flash"),
+    ("google_gemini", "GOOGLE_API_KEY", "gemini-2.5-flash"),
     ("groq", "GROQ_API_KEY", "llama-3.3-70b-versatile"),
     ("ollama", None, "ollama/llama3"),
 ]
 
 
 def get_default_model(db: Session) -> str:
-    """Get the default model from settings, picking from whichever provider has a key configured."""
-    # First check if any provider has an explicit default_model set
-    for provider, env_var, fallback_model in _PROVIDER_DEFAULTS:
-        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
-        if cfg and cfg.config:
-            explicit = cfg.config.get("default_model")
-            if explicit:
-                return explicit
+    """Get the default model from settings, picking from whichever provider has a key configured.
 
-    # Otherwise, pick the first provider that has an API key
+    Priority order follows _PROVIDER_DEFAULTS.  For each provider we check:
+    1. Is it configured (has credentials / project)?
+    2. If yes, does it have an explicit ``default_model`` override?
+       → return that override; otherwise return the provider's fallback model.
+    This ensures the *highest-priority configured provider* always wins,
+    and its ``default_model`` (if set) is respected.
+    """
     for provider, env_var, fallback_model in _PROVIDER_DEFAULTS:
         cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
+
+        # Determine whether this provider is configured
         if provider == "ollama":
-            if cfg and cfg.is_enabled:
-                return fallback_model
-            continue
-        if provider == "vertex_ai":
+            if not (cfg and cfg.is_enabled):
+                continue
+        elif provider == "vertex_ai":
             has_project = (
                 (cfg and cfg.config and cfg.config.get("project_id"))
                 or os.environ.get("GOOGLE_CLOUD_PROJECT")
                 or os.environ.get("GCLOUD_PROJECT")
             )
-            if has_project:
-                return fallback_model
-            continue
-        has_key = (cfg and cfg.config and cfg.config.get("api_key")) or os.environ.get(env_var)
-        if has_key:
-            return fallback_model
+            if not has_project:
+                continue
+        else:
+            has_key = (cfg and cfg.config and cfg.config.get("api_key")) or (env_var and os.environ.get(env_var))
+            if not has_key:
+                continue
+
+        # Provider is configured — use its explicit default_model or the fallback
+        if cfg and cfg.config:
+            explicit = cfg.config.get("default_model")
+            if explicit:
+                return explicit
+        return fallback_model
 
     from hakuna.routing.model_router import SONNET
     return SONNET  # ultimate fallback

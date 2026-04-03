@@ -1048,8 +1048,13 @@ export const deleteCredential = (id) => request(`${IB}/credentials/${id}`, { met
 
 export const integrationConnect = (data) => request(`${IB}/connect`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  timeout: data.transport_type === 'file' ? 180_000 : undefined, // PDF/DOCX LLM extraction can take minutes
 })
 export const integrationPreview = (data) => request(`${IB}/preview`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  timeout: data.transport_type === 'file' ? 180_000 : undefined,
+})
+export const integrationAutoSuggest = (data) => request(`${IB}/auto-suggest`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
 })
 
@@ -1064,7 +1069,7 @@ export const ibUpdateIntegration = (id, data) => request(`${IB}/integrations/${i
 export const ibDeleteIntegration = (id) => request(`${IB}/integrations/${id}`, { method: 'DELETE' })
 export const ibEnableIntegration = (id) => request(`${IB}/integrations/${id}/enable`, { method: 'POST' })
 export const ibDisableIntegration = (id) => request(`${IB}/integrations/${id}/disable`, { method: 'POST' })
-export const ibRunIntegration = (id) => request(`${IB}/integrations/${id}/run`, { method: 'POST' })
+export const ibRunIntegration = (id) => request(`${IB}/integrations/${id}/run`, { method: 'POST', timeout: 300_000 })
 export const ibGetIntegrationRuns = (id) => request(`${IB}/integrations/${id}/runs`)
 export const ibGetIntegrationRun = (integrationId, runId) => request(`${IB}/integrations/${integrationId}/runs/${runId}`)
 export const ibUpdateLogo = (id, data) => request(`${IB}/integrations/${id}/logo`, {

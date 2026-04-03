@@ -1,4 +1,4 @@
-"""File Transport — parse any structured file: CSV, JSON, XML, YAML, .nessus."""
+"""File Transport — parse any structured file: CSV, JSON, XML, YAML, .nessus, PDF, DOCX."""
 
 import csv
 import json
@@ -7,12 +7,32 @@ import logging
 from typing import AsyncIterator
 from xml.etree import ElementTree
 
+from sqlalchemy.orm import Session
 from .base import BaseTransport, ConnectResult
 
 logger = logging.getLogger(__name__)
 
+# LLM extraction prompt for unstructured pentest reports (PDF/DOCX)
+_PENTEST_EXTRACT_PROMPT = """Extract ALL vulnerability findings from this penetration test report.
+
+Return ONLY a JSON array — no markdown fences, no preamble. Use compact single-line JSON (no pretty-printing) to minimize output size.
+
+Each finding object fields (omit if not mentioned):
+finding_id, title, severity (critical/high/medium/low/info), cvss_score (number), cvss_vector, cve_id, affected_host, hostname, port, protocol, description (max 300 chars), evidence (max 200 chars), recommendation (max 200 chars), references, exploit_available (bool)
+
+Rules:
+- Extract EVERY finding, not just a summary
+- Map severity consistently
+- Keep description/evidence/recommendation concise — capture the key point, not verbatim paragraphs
+
+Report text:
+"""
+
 
 class FileTransport(BaseTransport):
+
+    def __init__(self, db: Session = None):
+        self.db = db
 
     async def connect(self, config: dict, credentials: dict) -> ConnectResult:
         """Read a file and return sample records."""
@@ -54,6 +74,12 @@ class FileTransport(BaseTransport):
         if fmt == "auto":
             fmt = self._detect_format(file_path)
 
+        # PDF and DOCX need special handling (binary + LLM extraction)
+        if fmt == "pdf":
+            return self._parse_pentest_document(file_path, "pdf")
+        elif fmt == "docx":
+            return self._parse_pentest_document(file_path, "docx")
+
         with open(file_path, "rb") as f:
             content = f.read()
 
@@ -89,6 +115,10 @@ class FileTransport(BaseTransport):
             return "xml"
         if path_lower.endswith((".yaml", ".yml")):
             return "yaml"
+        if path_lower.endswith(".pdf"):
+            return "pdf"
+        if path_lower.endswith(".docx"):
+            return "docx"
         return "auto"
 
     def _parse_nessus(self, content: bytes, filename: str) -> list:
@@ -203,3 +233,182 @@ class FileTransport(BaseTransport):
                 return records if isinstance(records, list) else [data]
             return [data]
         return [{"value": data}]
+
+    # ─────────────────────────────────────────────────────────
+    # PDF / DOCX — extract text, then use LLM to structure findings
+    # ─────────────────────────────────────────────────────────
+
+    def _extract_text_from_pdf(self, file_path: str) -> str:
+        """Extract text from a PDF file using pypdf."""
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            raise ValueError(
+                "pypdf is not installed. Install it with: pip install pypdf"
+            )
+
+        reader = PdfReader(file_path)
+        pages = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                pages.append(text)
+        if not pages:
+            raise ValueError("Could not extract any text from the PDF file")
+        return "\n\n".join(pages)
+
+    def _extract_text_from_docx(self, file_path: str) -> str:
+        """Extract text from a DOCX file using python-docx."""
+        try:
+            from docx import Document
+        except ImportError:
+            raise ValueError(
+                "python-docx is not installed. Install it with: pip install python-docx"
+            )
+
+        doc = Document(file_path)
+        paragraphs = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                paragraphs.append(para.text)
+
+        # Also extract text from tables (pentest reports often use tables)
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cells:
+                    paragraphs.append(" | ".join(cells))
+
+        if not paragraphs:
+            raise ValueError("Could not extract any text from the DOCX file")
+        return "\n".join(paragraphs)
+
+    def _parse_pentest_document(self, file_path: str, fmt: str) -> list:
+        """Extract text from PDF/DOCX, then use LLM to extract structured findings."""
+        # Step 1: Extract raw text
+        if fmt == "pdf":
+            text = self._extract_text_from_pdf(file_path)
+        else:
+            text = self._extract_text_from_docx(file_path)
+
+        logger.info("Extracted %d chars from %s file for LLM parsing", len(text), fmt)
+
+        # Step 2: Send to LLM for structured extraction
+        return self._extract_findings_with_llm(text)
+
+    def _extract_findings_with_llm(self, text: str) -> list:
+        """Use the configured LLM provider to extract structured findings."""
+        import re
+        from agents.agent_engine import (
+            get_default_model, detect_provider,
+            _get_anthropic_client, _get_openai_client, _get_gemini_client,
+            _get_vertex_client, _get_groq_client, _get_ollama_client,
+        )
+
+        if not self.db:
+            raise ValueError(
+                "No database session available — cannot resolve LLM provider. "
+                "Ensure the transport is created with a db session."
+            )
+
+        model = get_default_model(self.db)
+        provider = detect_provider(model)
+
+        # Truncate to fit context window — keep first 150k chars
+        truncated = text[:150_000]
+        prompt = _PENTEST_EXTRACT_PROMPT + truncated
+
+        logger.info("Pentest LLM extraction using provider=%s model=%s", provider, model)
+
+        if provider == "anthropic":
+            client = _get_anthropic_client(self.db)
+            message = client.messages.create(
+                model=model, max_tokens=8000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            response_text = message.content[0].text.strip()
+
+        elif provider in ("openai", "groq", "ollama"):
+            if provider == "openai":
+                client = _get_openai_client(self.db)
+            elif provider == "groq":
+                client = _get_groq_client(self.db)
+            else:
+                client = _get_ollama_client(self.db)
+            # Strip ollama/ prefix for the API call
+            api_model = model.replace("ollama/", "") if model.startswith("ollama/") else model
+            resp = client.chat.completions.create(
+                model=api_model, max_tokens=8000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            response_text = resp.choices[0].message.content.strip()
+
+        elif provider in ("google_gemini", "vertex_ai"):
+            if provider == "vertex_ai":
+                client = _get_vertex_client(self.db)
+                api_model = model.replace("vertex/", "")
+            else:
+                client = _get_gemini_client(self.db)
+                api_model = model
+            resp = client.models.generate_content(
+                model=api_model, contents=prompt,
+            )
+            response_text = resp.text.strip()
+
+        else:
+            raise ValueError(f"Unsupported LLM provider for pentest extraction: {provider}")
+
+        # Strip markdown fences if present
+        if response_text.startswith("```"):
+            response_text = re.sub(r'^```\w*\n?', '', response_text)
+            response_text = re.sub(r'\n?```$', '', response_text)
+
+        findings = self._parse_llm_json(response_text)
+
+        if not isinstance(findings, list):
+            raise ValueError("LLM returned non-array response")
+
+        if not findings:
+            raise ValueError("LLM could not extract any findings from the document")
+
+        logger.info("LLM extracted %d findings from pentest document", len(findings))
+        return findings
+
+    @staticmethod
+    def _parse_llm_json(text: str) -> list:
+        """Parse JSON from LLM output with repair for common issues."""
+        import re
+        # First try direct parse
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Try to extract the JSON array from surrounding text
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+
+        # Repair common LLM issues: control chars, trailing commas
+        repaired = text
+        repaired = re.sub(r'[\x00-\x1f](?<![\n\r\t])', ' ', repaired)  # strip control chars
+        repaired = re.sub(r',\s*([}\]])', r'\1', repaired)  # trailing commas
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
+
+        # Last resort: parse individual objects between { }
+        objects = []
+        for m in re.finditer(r'\{[^{}]*\}', text, re.DOTALL):
+            try:
+                objects.append(json.loads(m.group()))
+            except json.JSONDecodeError:
+                continue
+        if objects:
+            return objects
+
+        raise ValueError(f"Could not parse LLM response as JSON. First 200 chars: {text[:200]}")

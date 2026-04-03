@@ -695,6 +695,7 @@ const SOURCE_LABELS = {
   inferred_service: 'Auto',
   inferred_user: 'Auto',
   plugin_family: 'Default',
+  pentest_report: 'Pentest',
 }
 const SOURCE_COLORS = {
   manual_finding: '#22c55e',
@@ -702,6 +703,7 @@ const SOURCE_COLORS = {
   inferred_service: '#60a5fa',
   inferred_user: '#60a5fa',
   plugin_family: 'var(--text-muted)',
+  pentest_report: '#e879f9',
 }
 
 export function ResolvedOwnerBadge({ resolved }) {
