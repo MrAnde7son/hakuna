@@ -6,7 +6,7 @@ import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Dow
 import { useScan, useIsMobile } from '../../App.jsx'
 import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign } from '../../api.js'
 import {
-  Card, SeverityBadge, ScoreBar, Table, PageHeader, Select,
+  Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, MultiSelect,
   Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable, useToast
 } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
@@ -303,7 +303,7 @@ export default function FindingExplorer() {
   const navigate = useNavigate()
   const FILTER_SCHEMA = useMemo(() => ({
     search: { default: '' },
-    severity: { default: null, type: 'number' },
+    severity: { default: null },
     family: { default: null },
     exploit: { default: null, type: 'boolean' },
     group: { default: null },
@@ -997,9 +997,9 @@ export default function FindingExplorer() {
           )}
 
           {(!isMobile || showMobileFilters) && <>
-            <Select
-              value={severity !== null ? String(severity) : null}
-              onChange={v => setFilter('severity', v)}
+            <MultiSelect
+              values={severity ? severity.split(',') : []}
+              onChange={vals => setFilter('severity', vals.length ? vals.join(',') : null)}
               placeholder={t('findings.allSeverities')}
               options={getSevOptions(t)}
             />

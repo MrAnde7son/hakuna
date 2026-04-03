@@ -1957,7 +1957,7 @@ def list_findings(
     request: Request,
     scan_id: Optional[int] = None,
     asset_id: Optional[int] = None,
-    severity: Optional[int] = None,
+    severity: Optional[str] = None,
     plugin_family: Optional[str] = None,
     has_exploit: Optional[bool] = None,
     is_kev: Optional[bool] = None,
@@ -2001,7 +2001,11 @@ def list_findings(
     if asset_id:
         q = q.filter(Finding.asset_id == asset_id)
     if severity is not None:
-        q = q.filter(Finding.severity == severity)
+        sev_parts = [int(s) for s in severity.split(",") if s.strip().lstrip("-").isdigit()]
+        if len(sev_parts) == 1:
+            q = q.filter(Finding.severity == sev_parts[0])
+        elif sev_parts:
+            q = q.filter(Finding.severity.in_(sev_parts))
     if plugin_family:
         q = q.filter(Finding.plugin_family == plugin_family)
     if has_exploit is not None:

@@ -120,31 +120,52 @@ def _run_ticket_sync():
 
 
 def _run_integration_job(integration_id: str):
-    """Execute an integration run from a scheduled job."""
+    """Execute an integration run from a scheduled job.
+
+    Uses short-lived sessions: one to verify the integration exists,
+    and a separate one for the actual execution.  Reuses a single
+    module-level event loop instead of creating (and leaking) one per job.
+    """
     logger.info("Scheduled run triggered for integration %s", integration_id)
 
-    db = SessionLocal()
+    # 1. Quick check — verify integration exists and is enabled.
+    check_db = SessionLocal()
     try:
-        # Verify integration still exists and is enabled
-        integration = db.query(Integration).filter(
+        integration = check_db.query(Integration).filter(
             Integration.id == integration_id,
             Integration.enabled == True,
         ).first()
-
         if not integration:
             logger.warning("Scheduled integration %s not found or disabled, skipping", integration_id)
             return
+    finally:
+        check_db.close()
 
-        # Run in event loop
+    # 2. Execute with its own session.
+    run_db = SessionLocal()
+    try:
         from services.run_engine import execute
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            run_id = loop.run_until_complete(execute(db, integration_id, triggered_by="schedule"))
-            logger.info("Scheduled run completed: integration=%s run=%s", integration_id, run_id)
-        finally:
-            loop.close()
+        loop = _get_or_create_loop()
+        run_id = loop.run_until_complete(execute(run_db, integration_id, triggered_by="schedule"))
+        logger.info("Scheduled run completed: integration=%s run=%s", integration_id, run_id)
     except Exception as e:
         logger.exception("Scheduled run failed for integration %s: %s", integration_id, e)
     finally:
-        db.close()
+        run_db.close()
+
+
+def _get_or_create_loop() -> asyncio.AbstractEventLoop:
+    """Return a reusable event loop for scheduler threads.
+
+    APScheduler jobs run in background threads that have no event loop.
+    Rather than creating (and leaking) a new loop per job, we keep one
+    per thread via threading.local().
+    """
+    import threading
+    if not hasattr(_thread_local, "loop") or _thread_local.loop.is_closed():
+        _thread_local.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_thread_local.loop)
+    return _thread_local.loop
+
+
+_thread_local = __import__("threading").local()

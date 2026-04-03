@@ -598,6 +598,79 @@ export function Select({ value, onChange, options, placeholder }) {
   )
 }
 
+/**
+ * MultiSelect – dropdown with checkboxes for selecting multiple values.
+ * Props: values (array of selected strings), onChange(newValues[]), options [{value,label,color?}], placeholder
+ */
+export function MultiSelect({ values = [], onChange, options, placeholder }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const toggle = (val) => {
+    onChange(values.includes(val) ? values.filter(v => v !== val) : [...values, val])
+  }
+
+  const label = values.length === 0
+    ? placeholder
+    : values.length === options.length
+      ? placeholder  // all selected = same as no filter
+      : options.filter(o => values.includes(o.value)).map(o => o.label).join(', ')
+
+  return (
+    <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        style={{
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          color: values.length ? 'var(--text-primary)' : 'var(--text-muted)',
+          borderRadius: 6, padding: '7px 12px', fontSize: 13, cursor: 'pointer',
+          outline: 'none', display: 'flex', alignItems: 'center', gap: 6,
+          minWidth: 130, justifyContent: 'space-between', whiteSpace: 'nowrap',
+        }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>{label}</span>
+        <span style={{ fontSize: 10, opacity: 0.5 }}>▾</span>
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, zIndex: 200, minWidth: 180,
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 8, marginTop: 4, boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+          padding: '4px 0',
+        }}>
+          {options.map(o => (
+            <label
+              key={o.value}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '6px 12px', cursor: 'pointer', fontSize: 13,
+                color: 'var(--text-primary)',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+            >
+              <input
+                type="checkbox"
+                checked={values.includes(o.value)}
+                onChange={() => toggle(o.value)}
+                style={{ accentColor: o.color || 'var(--accent)' }}
+              />
+              {o.label}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function Input({ value, onChange, placeholder, style = {} }) {
   return (
     <input
