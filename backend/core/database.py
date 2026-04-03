@@ -1,14 +1,20 @@
+import logging
 import os
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
+logger = logging.getLogger(__name__)
+
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./nessus_remediation.db")
 
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 _pool_kwargs = {} if DATABASE_URL.startswith("sqlite") else {
+    "pool_size": 10,         # persistent connections in the pool
+    "max_overflow": 20,      # extra connections allowed above pool_size under load
+    "pool_timeout": 30,      # seconds to wait for a connection before raising
+    "pool_recycle": 1800,    # recycle connections every 30 min to avoid idle timeouts
     "pool_pre_ping": True,   # detect stale connections (important for Cloud Run cold starts)
-    "pool_recycle": 300,     # recycle connections every 5 min to avoid Cloud SQL idle timeouts
 }
 engine = create_engine(DATABASE_URL, connect_args=_connect_args, **_pool_kwargs)
 
@@ -237,3 +243,30 @@ def _migrate_add_columns():
                     conn.commit()
             except Exception as exc:
                 logger.warning("_migrate_add_columns: skipping %s.%s — %s", table, col_name, exc)
+
+
+def get_pool_status() -> dict:
+    """Return connection pool metrics. Works for QueuePool (Postgres); SQLite uses StaticPool."""
+    pool = engine.pool
+    pool_class = type(pool).__name__
+    status = {"pool_class": pool_class}
+    if hasattr(pool, "size"):
+        status["pool_size"] = pool.size()
+    if hasattr(pool, "checkedin"):
+        status["checkedin"] = pool.checkedin()
+    if hasattr(pool, "checkedout"):
+        status["checkedout"] = pool.checkedout()
+    if hasattr(pool, "overflow"):
+        status["overflow"] = pool.overflow()
+    return status
+
+
+def check_db_health() -> dict:
+    """Quick DB connectivity check + pool status."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ok", "pool": get_pool_status()}
+    except Exception as e:
+        logger.error("DB health check failed: %s", e)
+        return {"status": "error", "error": str(e), "pool": get_pool_status()}

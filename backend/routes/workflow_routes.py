@@ -332,17 +332,25 @@ def restore_workflow_version(wf_id: int, version: int, db: Session = Depends(get
     return d
 
 
-@router.post("/api/workflows/{wf_id}/execute")
+@router.post("/api/workflows/{wf_id}/execute", status_code=202)
 def execute_workflow_endpoint(wf_id: int, db: Session = Depends(get_db)):
-    """Execute a workflow manually."""
+    """Dispatch workflow execution as a background job. Returns job_id immediately."""
+    from services.job_manager import dispatch
+    from core.database import SessionLocal
+
     wf = db.query(Workflow).filter(Workflow.id == wf_id).first()
     if not wf:
         raise HTTPException(404, "Workflow not found")
-    try:
-        result = workflow_engine.execute_workflow(db, wf_id)
-        return result
-    except Exception as e:
-        raise HTTPException(400, str(e))
+
+    def _run_workflow():
+        db2 = SessionLocal()
+        try:
+            return workflow_engine.execute_workflow(db2, wf_id)
+        finally:
+            db2.close()
+
+    job = dispatch(f"workflow_execute_{wf_id}", _run_workflow)
+    return {"job_id": job.id, "status": job.status.value, "poll_url": f"/api/jobs/{job.id}/status"}
 
 
 @router.get("/api/workflows/{wf_id}/executions")

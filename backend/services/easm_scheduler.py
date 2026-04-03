@@ -95,13 +95,29 @@ def _deregister_job(scheduler: BackgroundScheduler, scan_id: int):
         pass
 
 
+_thread_local = __import__("threading").local()
+
+
+def _get_or_create_loop() -> asyncio.AbstractEventLoop:
+    """Return a reusable event loop for this scheduler thread."""
+    if not hasattr(_thread_local, "loop") or _thread_local.loop.is_closed():
+        _thread_local.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_thread_local.loop)
+    return _thread_local.loop
+
+
 def _run_easm_scan_job(scan_id: int):
-    """Execute an EASM scan from a scheduled job."""
+    """Execute an EASM scan from a scheduled job.
+
+    Uses short-lived sessions: one to load scan metadata (and release
+    the connection), a second for the actual scan execution.
+    """
     logger.info("Scheduled EASM scan triggered for scan %s", scan_id)
 
-    db = SessionLocal()
+    # 1. Load metadata with a short-lived session.
+    check_db = SessionLocal()
     try:
-        scan = db.query(Scan).filter(
+        scan = check_db.query(Scan).filter(
             Scan.id == scan_id,
             Scan.source_type == "easm",
         ).first()
@@ -110,7 +126,7 @@ def _run_easm_scan_job(scan_id: int):
             logger.warning("Scheduled EASM scan %s not found or unscheduled, skipping", scan_id)
             return
 
-        org = db.query(Organization).filter(Organization.id == scan.org_id).first()
+        org = check_db.query(Organization).filter(Organization.id == scan.org_id).first()
         if not org or not org.easm_org_id:
             logger.warning("Org not found or EASM not configured for scan %s", scan_id)
             return
@@ -121,17 +137,25 @@ def _run_easm_scan_job(scan_id: int):
             return
 
         scan_type = (scan.raw_metadata or {}).get("scan_type", "full")
+        # Snapshot org fields needed by scan_domain before closing session
+        org_id = org.id
+        easm_org_id = org.easm_org_id
+    except Exception as e:
+        logger.exception("Scheduled EASM scan failed loading metadata for scan %s: %s", scan_id, e)
+        return
+    finally:
+        check_db.close()
 
-        # Run the scan
+    # 2. Execute the scan with its own session.
+    run_db = SessionLocal()
+    try:
         from services.easm import scan_domain
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(scan_domain(db, org, domain, scan_type))
-            logger.info("Scheduled EASM scan completed: scan=%s result=%s", scan_id, result)
-        finally:
-            loop.close()
+        # Re-load org inside the new session to avoid detached instance
+        org = run_db.query(Organization).filter(Organization.id == org_id).first()
+        loop = _get_or_create_loop()
+        result = loop.run_until_complete(scan_domain(run_db, org, domain, scan_type))
+        logger.info("Scheduled EASM scan completed: scan=%s result=%s", scan_id, result)
     except Exception as e:
         logger.exception("Scheduled EASM scan failed for scan %s: %s", scan_id, e)
     finally:
-        db.close()
+        run_db.close()
