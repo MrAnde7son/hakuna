@@ -1,8 +1,9 @@
-import React, { useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import React, { useState, useEffect } from 'react'
+import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import GoogleSignInButton from './GoogleSignInButton.jsx'
+import { samlDiscover } from '../../api.js'
 
 function HakunaLogo({ size = 40 }) {
   const scale = size / 65
@@ -18,9 +19,48 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [ssoInfo, setSsoInfo] = useState(null)
+  const [ssoChecking, setSsoChecking] = useState(false)
   const { login } = useAuth()
   const navigate = useNavigate()
   const { t } = useTranslation()
+  const [searchParams] = useSearchParams()
+
+  // Show SSO error from redirect
+  useEffect(() => {
+    const ssoError = searchParams.get('sso_error')
+    if (ssoError) {
+      const messages = {
+        saml_validation_failed: 'SSO authentication failed. Please contact your administrator.',
+        not_authenticated: 'SSO authentication was not completed.',
+        no_email_in_assertion: 'No email found in SSO response. Check IdP attribute mapping.',
+        user_not_found: 'No account found for your SSO identity. Contact your administrator.',
+        account_deactivated: 'Your account has been deactivated.',
+        org_not_found: 'Organization not found.',
+      }
+      setError(messages[ssoError] || `SSO error: ${ssoError}`)
+    }
+  }, [searchParams])
+
+  // Check for SSO when email changes (debounced)
+  useEffect(() => {
+    if (!email || !email.includes('@') || email.split('@')[1].length < 3) {
+      setSsoInfo(null)
+      return
+    }
+    const timer = setTimeout(async () => {
+      setSsoChecking(true)
+      try {
+        const data = await samlDiscover(email)
+        setSsoInfo(data.sso_enabled ? data : null)
+      } catch {
+        setSsoInfo(null)
+      } finally {
+        setSsoChecking(false)
+      }
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [email])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -70,6 +110,34 @@ export default function Login() {
           or
           <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
         </div>
+
+        {/* SSO discovery banner */}
+        {ssoInfo && (
+          <div style={{
+            background: 'var(--accent-subtle, #eef2ff)', borderRadius: 8,
+            padding: '12px 16px', marginBottom: 16,
+            border: '1px solid var(--accent, #6366f1)',
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>
+              SSO is available for {ssoInfo.org_name}
+            </div>
+            <a
+              href={ssoInfo.login_url}
+              style={{
+                display: 'inline-block', padding: '8px 20px', borderRadius: 8,
+                background: 'var(--accent)', color: '#fff', fontSize: 13,
+                fontWeight: 600, textDecoration: 'none', textAlign: 'center',
+              }}
+            >
+              Sign in with SSO
+            </a>
+            {ssoInfo.force_sso && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+                Your organization requires SSO. Password login is disabled.
+              </div>
+            )}
+          </div>
+        )}
 
         <form onSubmit={handleSubmit}>
           {error && (
@@ -146,6 +214,14 @@ export default function Login() {
           >
             {loading ? t('auth.signingIn') : t('auth.signIn')}
           </button>
+
+          {ssoInfo && !ssoInfo.force_sso && (
+            <div style={{ textAlign: 'center', marginTop: 12 }}>
+              <a href={ssoInfo.login_url} style={{ fontSize: 13, color: 'var(--accent)', textDecoration: 'none', fontWeight: 500 }}>
+                Or sign in with SSO
+              </a>
+            </div>
+          )}
         </form>
 
         <div style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: 'var(--muted, #71717a)' }}>

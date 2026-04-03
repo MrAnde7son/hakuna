@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2 } from 'lucide-react'
+import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2, KeyRound } from 'lucide-react'
 import { getDedupConfig, saveDedupConfig, runDedup, exportConfig } from '../../api.js'
 import { Card, ExportImportButtons } from '../shared/ui.jsx'
 import { useAuth } from '../../contexts/AuthContext.jsx'
@@ -16,6 +16,7 @@ import RoleManager from './RoleManager.jsx'
 import UsersPanel from './UsersPanel.jsx'
 import OrgsPanel from './OrgsPanel.jsx'
 import IntegrationBuilderTab from './IntegrationBuilderTab.jsx'
+import SSOSettings from './SSOSettings.jsx'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -264,7 +265,7 @@ function EntityCard({ entityKey, cfg, onChange }) {
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { isAdmin, isSuperadmin, isMSSP } = useAuth()
-  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla', 'exceptions', 'integrations', 'integration-builder', 'audit-log', 'ownership', 'users', 'roles', 'orgs']
+  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla', 'exceptions', 'integrations', 'integration-builder', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'sso']
   const tabParam = searchParams.get('tab')
   const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'upload'
   const setActiveTab = (id) => setSearchParams(prev => { prev.set('tab', id); return prev })
@@ -314,6 +315,7 @@ export default function Settings() {
   if (isAdmin) accessControlItems.push({ id: 'users', label: 'Users', icon: <Users size={14} /> })
   if (isAdmin) accessControlItems.push({ id: 'roles', label: 'Roles', icon: <ShieldCheck size={14} /> })
   if (isSuperadmin || isMSSP) accessControlItems.push({ id: 'orgs', label: 'Organizations', icon: <Building2 size={14} /> })
+  if (isAdmin) accessControlItems.push({ id: 'sso', label: 'SAML SSO', icon: <KeyRound size={14} /> })
 
   const NAV_GROUPS = [
     {
@@ -430,6 +432,9 @@ export default function Settings() {
 
       {/* Organizations tab */}
       {activeTab === 'orgs' && (isSuperadmin || isMSSP) && <OrgsPanel />}
+
+      {/* SSO tab */}
+      {activeTab === 'sso' && isAdmin && <SSOSettings />}
 
       {/* Dedup tab */}
       {activeTab === 'dedup' && <>
