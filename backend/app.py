@@ -386,6 +386,13 @@ def _deferred_startup():
     _intel_scheduler.add_job(update_intel, _IntervalTrigger(hours=24), id="intel_update", replace_existing=True)
     _intel_scheduler.start()
     logger.info("Intel auto-update scheduled (every 24h)")
+    # Schedule audit log retention purge (90-day TTL, runs daily)
+    from core.audit import purge_expired_audit_logs
+    _audit_scheduler = _BGScheduler()
+    _audit_scheduler.add_job(purge_expired_audit_logs, _IntervalTrigger(hours=24), id="audit_log_purge", replace_existing=True)
+    _audit_scheduler.start()
+    purge_expired_audit_logs()  # run once at startup
+    logger.info("Audit log retention purge scheduled (every 24h, 90-day TTL)")
     # Seed SLA defaults and backfill any scans that have no SLA due dates yet
     try:
         from core.database import SessionLocal as _SL
@@ -9225,6 +9232,7 @@ def get_audit_log(
         ],
         "entity_types": [r[0] for r in db.query(AuditLog.entity_type).distinct().all()],
         "actions": [r[0] for r in db.query(AuditLog.action).distinct().all()],
+        "retention_days": 90,
     }
 
 
