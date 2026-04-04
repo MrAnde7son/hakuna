@@ -109,6 +109,22 @@
     {
       "source": "_zone",
       "target": "easm_data.gcp_clouddns.zone_name"
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'hostname': record.get('name', ''), 'fqdn': record.get('name', ''), 'ip': (record.get('rrdatas', [''])[0] if record.get('rrdatas') else ''), 'display_name': record.get('name', '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'dns_record_type': record.get('type', ''), 'ttl': record.get('ttl'), 'rrdatas': record.get('rrdatas', []), 'cloud_provider': 'gcp', 'gcp_project': record.get('_project_id', ''), 'gcp_zone': record.get('_zone', '')}"
+      }
     }
   ],
   "dedup_key": [

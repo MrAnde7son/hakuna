@@ -102,6 +102,22 @@
     {
       "source": "_zone_name",
       "target": "easm_data.azure_dns.zone_name"
+    },
+    {
+      "source": "properties.fqdn",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'hostname': record.get('properties', {}).get('fqdn', ''), 'fqdn': record.get('properties', {}).get('fqdn', ''), 'ip': ((record.get('properties', {}).get('ARecords') or [{}])[0].get('ipv4Address', '')), 'display_name': record.get('properties', {}).get('fqdn', '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'dns_record_type': (record.get('type', '').split('/')[-1] if record.get('type') else ''), 'ttl': record.get('properties', {}).get('TTL'), 'cname_target': (record.get('properties', {}).get('CNAMERecord', {}) or {}).get('cname', ''), 'target_resource_id': (record.get('properties', {}).get('targetResource', {}) or {}).get('id', ''), 'cloud_provider': 'azure', 'subscription_id': record.get('_subscription_id', ''), 'resource_group': record.get('_resource_group', '')}"
+      }
     }
   ],
   "dedup_key": [

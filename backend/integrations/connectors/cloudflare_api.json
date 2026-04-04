@@ -121,6 +121,22 @@
       "transform": {
         "type": "datetime"
       }
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'hostname': record.get('name', ''), 'fqdn': record.get('name', ''), 'ip': record.get('content', ''), 'display_name': record.get('name', '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'dns_record_type': record.get('type', ''), 'proxied': record.get('proxied', False), 'ttl': record.get('ttl'), 'zone_id': record.get('zone_id', ''), 'zone_name': record.get('zone_name', ''), 'origin_ip': record.get('content', '') if record.get('proxied') else '', 'cdn_provider': 'cloudflare'}"
+      }
     }
   ],
   "dedup_key": [

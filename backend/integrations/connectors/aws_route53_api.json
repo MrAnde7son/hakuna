@@ -113,6 +113,22 @@
     {
       "source": "AliasTarget.HostedZoneId",
       "target": "easm_data.aws_route53.alias_hosted_zone_id"
+    },
+    {
+      "source": "Name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'hostname': record.get('Name', ''), 'fqdn': record.get('Name', ''), 'ip': (record.get('ResourceRecords', [{}])[0].get('Value', '') if record.get('ResourceRecords') else ''), 'display_name': record.get('Name', '')}"
+      }
+    },
+    {
+      "source": "Name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'dns_record_type': record.get('Type', ''), 'ttl': record.get('TTL'), 'alias_target': (record.get('AliasTarget', {}) or {}).get('DNSName', ''), 'health_check_id': record.get('HealthCheckId', ''), 'cloud_provider': 'aws', 'aws_service': 'route53'}"
+      }
     }
   ],
   "dedup_key": [
