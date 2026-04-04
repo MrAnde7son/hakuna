@@ -492,6 +492,9 @@ def parse_nessus_xml(xml_content: str, filename: str) -> dict:
                     asset["last_auth_run"] = v
                 elif n == "system-type":
                     asset["system_type"] = v
+                    # WAS scans produce web_application system-type — promote to asset_type
+                    if v == "web_application":
+                        asset["asset_type"] = "web_app"
 
         # Extract IP: bare IP, or IP embedded in a URL-style hostname (WAS scans)
         if not asset["ip"]:
@@ -501,6 +504,28 @@ def parse_nessus_xml(xml_content: str, filename: str) -> dict:
                 ip_match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", host_name)
                 if ip_match:
                     asset["ip"] = ip_match.group(1)
+
+        # For WAS web_app assets, preserve the full URL as identity
+        if asset.get("asset_type") == "web_app":
+            from urllib.parse import urlparse
+            parsed_url = urlparse(host_name)
+            domain = parsed_url.hostname or host_name
+            asset["asset_identity"] = {
+                "url": host_name,
+                "domain": domain,
+                "display_name": host_name,
+            }
+        else:
+            # Host assets: build identity from IP/hostname/fqdn
+            identity = {}
+            if asset.get("ip"):
+                identity["ip"] = asset["ip"]
+            if asset.get("hostname"):
+                identity["hostname"] = asset["hostname"]
+            if asset.get("fqdn"):
+                identity["fqdn"] = asset["fqdn"]
+            if identity:
+                asset["asset_identity"] = identity
 
         asset_map[host_name] = asset
         assets.append(asset)

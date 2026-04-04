@@ -13,6 +13,7 @@ import {
   Code, Crosshair, Wrench,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
+import { getAssetDisplayName } from '../../utils/assetDisplay.js'
 import { Card, Button, Spinner, EmptyState, StatCard, SeverityBadge, ScoreBar, SkeletonCard } from '../shared/ui.jsx'
 import NewSinceBanner from '../notifications/NewSinceBanner.jsx'
 import {
@@ -1508,11 +1509,8 @@ function GroupCard({ group, exposure }) {
                             padding: '4px 8px', background: 'var(--bg-muted)', borderRadius: 6,
                           }}>
                             <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-primary)', fontWeight: 600 }}>
-                              {a.ip}
+                              {getAssetDisplayName(a)}
                             </span>
-                            {a.hostname && (
-                              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{a.hostname}</span>
-                            )}
                             <span style={{ marginLeft: 'auto', fontSize: 10, color: '#dc2626', fontWeight: 700 }}>
                               {a.finding_count} finding{a.finding_count !== 1 ? 's' : ''}
                             </span>

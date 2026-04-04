@@ -13,6 +13,7 @@ import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
 import NLPSearchBar from '../shared/NLPSearchBar.jsx'
 import NewSinceBanner from '../notifications/NewSinceBanner.jsx'
+import { getFindingAssetDisplay, getAssetDisplayName } from '../../utils/assetDisplay.js'
 
 const TACTIC_COLORS = {
   'credential-access':    '#dc2626',
@@ -76,7 +77,7 @@ const SEV_COLORS = { 4: 'var(--critical)', 3: 'var(--high)', 2: 'var(--medium)',
 
 function getGroupKey(finding, groupBy) {
   if (groupBy === 'severity') return String(finding.severity)
-  if (groupBy === 'asset') return finding.asset_hostname || finding.asset_ip || 'Unknown'
+  if (groupBy === 'asset') return getFindingAssetDisplay(finding)
   if (groupBy === 'root_cause') return finding.aggregated_solution_id ? String(finding.aggregated_solution_id) : 'ungrouped'
   return finding[groupBy] || 'Other'
 }
@@ -1022,7 +1023,7 @@ export default function FindingExplorer() {
               value={assetId}
               onChange={v => setFilter('asset_id', v)}
               placeholder={t('findings.allAssets')}
-              options={assets.map(a => ({ value: String(a.id), label: a.hostname || a.ip }))}
+              options={assets.map(a => ({ value: String(a.id), label: getAssetDisplayName(a) }))}
             />
 
             <SourceFilter

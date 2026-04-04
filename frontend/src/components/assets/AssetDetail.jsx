@@ -8,7 +8,7 @@ import {
   Cloud, HardDrive, Router, Container
 } from 'lucide-react'
 import {
-  getAsset, getAssetRiskBreakdown, getFindings, getBlastRadius,
+  getAsset, getAssetRiskBreakdown, getAssetSources, getFindings, getBlastRadius,
   getInventoryUsers, getInventoryServices,
   getInventorySoftware, getInventoryNetconns, getInventoryPatches,
   getInventorySecurityControls, getInventoryCertificates,
@@ -20,6 +20,7 @@ import {
   buildAssetBreakdown, useAssetRiskWeights
 } from '../shared/ui.jsx'
 import { useScan } from '../../App.jsx'
+import { getAssetDisplayName, getAssetSecondaryInfo, getAssetTypeLabel } from '../../utils/assetDisplay.js'
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -175,6 +176,7 @@ const TABS = [
   { key: 'findings', icon: Bug, labelKey: 'assetDetail.findings' },
   { key: 'inventory', icon: Database, labelKey: 'assetDetail.inventory' },
   { key: 'policies', icon: Shield, label: 'Policies' },
+  { key: 'sources', icon: Layers, label: 'Sources' },
 ]
 
 
@@ -221,6 +223,7 @@ function OverviewTab({ asset, blastRadius, onReload, riskComponents, assetRiskWe
         <KeyVal label="MAC"><CopyableValue value={asset.mac_address} /></KeyVal>
         <KeyVal label={t('assets.os')}>{asset.os}</KeyVal>
         <KeyVal label={t('assetDetail.deviceType')}>{asset.device_type}</KeyVal>
+        <KeyVal label={t('assets.type', 'Type')}>{getAssetTypeLabel(asset.asset_type)}</KeyVal>
         {asset.is_internet_facing && (
           <KeyVal label={t('assets.internetFacing')}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -431,7 +434,7 @@ function InventoryTab({ asset }) {
   }, [asset.id])
 
   const inventoryUrl = (tab) =>
-    `/inventory?asset_id=${asset.id}&asset_name=${encodeURIComponent(asset.hostname || asset.ip)}${tab ? '&tab=' + tab : ''}`
+    `/inventory?asset_id=${asset.id}&asset_name=${encodeURIComponent(getAssetDisplayName(asset))}${tab ? '&tab=' + tab : ''}`
 
   if (loading) return <div style={{ padding: 32, textAlign: 'center' }}><Spinner /></div>
 
@@ -560,6 +563,127 @@ function PoliciesTab({ asset }) {
 }
 
 
+// ─── Sources Tab ─────────────────────────────────────────
+const SOURCE_LABELS = {
+  nessus: 'Nessus', tenable_sc: 'Tenable.sc', qualys: 'Qualys', rapid7: 'Rapid7',
+  openvas: 'OpenVAS', crowdstrike: 'CrowdStrike', wiz: 'Wiz', easm: 'EASM',
+  vm_scanner: 'VM Scanner',
+}
+
+const FIELD_LABELS = {
+  ip: 'IP Address', hostname: 'Hostname', fqdn: 'FQDN', os: 'Operating System',
+  mac_address: 'MAC Address', netbios_name: 'NetBIOS Name', device_type: 'Device Type',
+  criticality: 'Criticality', environment: 'Environment', asset_type: 'Asset Type',
+  is_credentialed: 'Credentialed Scan', is_internet_facing: 'Internet Facing',
+  scan_start: 'Scan Start', scan_end: 'Scan End', system_type: 'System Type',
+}
+
+function SourcesTab({ asset }) {
+  const [sources, setSources] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [expanded, setExpanded] = useState(null)
+
+  useEffect(() => {
+    setLoading(true)
+    getAssetSources(asset.id)
+      .then(data => {
+        setSources(data || [])
+        if (data?.length) setExpanded(data[0].source_system)
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [asset.id])
+
+  if (loading) return <div style={{ padding: 32, textAlign: 'center' }}><Spinner /></div>
+
+  if (!sources.length) {
+    return <EmptyState icon={Layers} title="No Source Data" sub="Source observations are recorded when assets are imported from scanners or integrations." />
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+        Raw data from each source that contributed to this asset ({sources.length} source{sources.length !== 1 ? 's' : ''})
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {sources.map(src => {
+          const isOpen = expanded === src.source_system
+          const fields = src.raw_fields || {}
+          const displayName = SOURCE_LABELS[src.source_system] || src.source_system
+          return (
+            <Card key={src.source_system} style={{ padding: 0, overflow: 'hidden' }}>
+              <button
+                onClick={() => setExpanded(isOpen ? null : src.source_system)}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  width: '100%', padding: '14px 16px', background: 'none', border: 'none',
+                  cursor: 'pointer', textAlign: 'left',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    width: 28, height: 28, borderRadius: 6,
+                    background: 'var(--accent-muted)', color: 'var(--accent)',
+                    fontSize: 12, fontWeight: 700,
+                  }}>
+                    {displayName.charAt(0)}
+                  </span>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{displayName}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                      {src.times_seen} scan{src.times_seen !== 1 ? 's' : ''}
+                      {src.first_seen && ` · First seen ${new Date(src.first_seen).toLocaleDateString()}`}
+                      {src.last_seen && ` · Last seen ${new Date(src.last_seen).toLocaleDateString()}`}
+                    </div>
+                  </div>
+                </div>
+                {isOpen ? <ChevronDown size={16} color="var(--text-muted)" /> : <ChevronRight size={16} color="var(--text-muted)" />}
+              </button>
+              {isOpen && (
+                <div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border)' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
+                    {Object.entries(fields)
+                      .filter(([, v]) => v != null && v !== '' && typeof v !== 'object')
+                      .map(([key, value]) => (
+                        <div key={key} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>
+                            {FIELD_LABELS[key] || key.replace(/_/g, ' ')}
+                          </div>
+                          <div style={{ fontSize: 13, color: 'var(--text-primary)', wordBreak: 'break-all' }}>
+                            {typeof value === 'boolean' ? (value ? 'Yes' : 'No') : String(value)}
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                  {/* Nested objects displayed as JSON */}
+                  {Object.entries(fields)
+                    .filter(([, v]) => v != null && typeof v === 'object')
+                    .map(([key, value]) => (
+                      <div key={key} style={{ marginTop: 12 }}>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+                          {FIELD_LABELS[key] || key.replace(/_/g, ' ')}
+                        </div>
+                        <pre style={{
+                          fontSize: 11, background: 'var(--bg-secondary)', padding: 12,
+                          borderRadius: 6, overflow: 'auto', maxHeight: 200,
+                          color: 'var(--text-secondary)', margin: 0,
+                        }}>
+                          {JSON.stringify(value, null, 2)}
+                        </pre>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </Card>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+
 export default function AssetDetail() {
   const { t } = useTranslation()
   const { id } = useParams()
@@ -606,7 +730,7 @@ export default function AssetDetail() {
   if (fetchError) return <ErrorBanner error={fetchError} onRetry={load} />
   if (!asset) return <div style={{ color: 'var(--text-muted)', padding: 32 }}>{t('assetDetail.notFound')}</div>
 
-  const displayName = asset.hostname || asset.ip || `Asset #${asset.id}`
+  const displayName = getAssetDisplayName(asset)
   const findingTotal = (asset.critical_count || 0) + (asset.high_count || 0) + (asset.medium_count || 0) + (asset.low_count || 0) + (asset.info_count || 0)
 
   return (
@@ -638,8 +762,7 @@ export default function AssetDetail() {
 
             {/* Subtitle */}
             <div style={{ fontSize: 13, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              {asset.ip && asset.ip !== asset.hostname && <span>{asset.ip}</span>}
-              {asset.fqdn && asset.fqdn !== asset.hostname && <span>· {asset.fqdn}</span>}
+              {getAssetSecondaryInfo(asset).map((info, i) => <span key={i}>{i > 0 ? '· ' : ''}{info}</span>)}
               {asset.os && <span>· {asset.os}</span>}
             </div>
 
@@ -716,6 +839,7 @@ export default function AssetDetail() {
       {activeTab === 'findings' && <FindingsTab asset={asset} />}
       {activeTab === 'inventory' && <InventoryTab asset={asset} />}
       {activeTab === 'policies' && <PoliciesTab asset={asset} />}
+      {activeTab === 'sources' && <SourcesTab asset={asset} />}
     </div>
   )
 }

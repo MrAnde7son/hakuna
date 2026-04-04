@@ -7,6 +7,7 @@ import { Search, Sparkles, X, AlertTriangle, ChevronRight, Shield, Server, Zap, 
 import { nlpReportQuery, createReportTemplate } from '../../api.js'
 import { useScan } from '../../App.jsx'
 import { SeverityBadge, Card, ScoreBar } from '../shared/ui.jsx'
+import { getAssetDisplayName, getAssetSecondaryInfo } from '../../utils/assetDisplay.js'
 
 const EXAMPLE_QUERIES = [
   'show me all critical findings on Windows assets',
@@ -205,8 +206,8 @@ function AssetsTable({ assets }) {
             {assets.map((a, i) => (
               <tr key={a.id} style={{ borderBottom: '1px solid var(--border)', background: i % 2 === 0 ? 'transparent' : 'var(--bg-subtle)' }}>
                 <td style={{ padding: '8px 12px' }}>
-                  <div style={{ fontWeight: 600, color: 'var(--text)' }}>{a.hostname || a.fqdn || a.ip}</div>
-                  {(a.hostname || a.fqdn) && <div style={{ fontSize: 11, color: 'var(--muted)' }}>{a.ip}</div>}
+                  <div style={{ fontWeight: 600, color: 'var(--text)' }}>{getAssetDisplayName(a)}</div>
+                  {getAssetSecondaryInfo(a).length > 0 && <div style={{ fontSize: 11, color: 'var(--muted)' }}>{getAssetSecondaryInfo(a).join(' · ')}</div>}
                 </td>
                 <td style={{ padding: '8px 12px', color: 'var(--muted)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   <span title={a.os}>{a.os || '—'}</span>
@@ -585,7 +586,7 @@ export default function NLPReportBuilder() {
                       <div key={a.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {a.hostname || a.fqdn || a.ip}
+                            {getAssetDisplayName(a)}
                           </div>
                           <div style={{ fontSize: 11, color: 'var(--muted)' }}>{a.ip}{a.os ? ` · ${a.os.split(' ')[0]}` : ''}</div>
                         </div>

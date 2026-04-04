@@ -33,8 +33,9 @@ All authenticated endpoints require a `Authorization: Bearer <token>` header.
 | GET | `/api/assets` | List assets with filtering, sorting, pagination |
 | GET | `/api/assets/{id}` | Get asset details |
 | GET | `/api/assets/{id}/findings` | Get findings for an asset |
+| GET | `/api/assets/{id}/sources` | Per-source observation snapshots for an asset |
 
-**Query parameters:** `scan_id`, `search`, `tag`, `environment`, `sort_by`, `order`, `page`, `page_size`
+**Query parameters:** `scan_id`, `search`, `tag`, `environment`, `asset_type`, `sort_by`, `order`, `page`, `page_size`
 
 ## Findings
 
@@ -43,6 +44,7 @@ All authenticated endpoints require a `Authorization: Bearer <token>` header.
 | GET | `/api/findings` | List findings with filtering, sorting, pagination |
 | GET | `/api/findings/{id}` | Get finding details |
 | PATCH | `/api/findings/{id}/status` | Update finding workflow status |
+| GET | `/api/findings/{id}/sources` | Per-source observation snapshots for a finding |
 
 **Query parameters:** `scan_id`, `severity`, `search`, `tag`, `status`, `effort`, `sla_status`, `sort_by`, `order`, `page`, `page_size`
 
@@ -81,6 +83,20 @@ All authenticated endpoints require a `Authorization: Bearer <token>` header.
 | GET | `/api/inventory/processes` | Running processes |
 | GET | `/api/inventory/databases` | Database instances |
 | GET | `/api/inventory/credentials` | Discovered credentials |
+
+## Asset Type Rules
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/asset-type-rules` | List asset type classification rules |
+| POST | `/api/asset-type-rules` | Create a classification rule |
+| GET | `/api/asset-type-rules/{id}` | Get rule details |
+| PATCH | `/api/asset-type-rules/{id}` | Update a rule |
+| DELETE | `/api/asset-type-rules/{id}` | Delete a rule |
+| POST | `/api/asset-type-rules/test` | Test a rule against sample asset data |
+| GET | `/api/asset-type-rules/condition-catalog` | List available condition fields and operators |
+
+**Rule body fields:** `name`, `conditions`, `condition_logic` (AND/OR), `target_asset_type`, `identity_mapping`, `default_attributes`, `priority`, `source_filter`, `is_enabled`
 
 ## SBOM
 

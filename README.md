@@ -13,7 +13,7 @@ An open-source vulnerability management platform that imports scan results from 
 - **Multi-format import** — Upload `.nessus` (XML), `.html`, or `.csv` exports from Tenable Nessus, plus Qualys, Rapid7, and OpenVAS formats. Auto-detected on upload.
 - **Cross-source normalization** — Canonical vulnerability identity across scanners via CVE references for consistent deduplication.
 - **Scan comparison** — Side-by-side delta timelines, regression reports, temporal summaries, and remediation velocity metrics.
-- **Deduplication** — Configurable dedup settings to merge duplicate findings across scans.
+- **Deduplication** — Per-type dedup configuration with type-specific key fields, match modes (AND/OR), and merge strategies. Supports cross-scan and within-scan scopes for all asset types and entity types.
 
 ### Prioritization & Risk
 - **Smart prioritization** — Findings scored 0–10 using a weighted formula combining CVSS, VPR, exploit availability, asset criticality, and plugin family.
@@ -21,6 +21,9 @@ An open-source vulnerability management platform that imports scan results from 
 - **Effort estimation** — Each finding is assigned an effort level (quick win / medium / complex) and a suggested owner team (IT / DevOps / SecOps / AppSec).
 
 ### Asset Intelligence
+- **Multi-type asset model** — Assets aren't just hosts. The platform natively supports 8 built-in types (host, web app, cloud instance, API endpoint, identity, container image, code repo, K8s workload) plus user-defined custom types. Each type has structured identity keys and type-specific deduplication.
+- **Asset type rules** — Low-code classification rules that automatically assign asset types during ingestion based on configurable conditions (e.g., web service detected → web_app). Rules support identity mapping with field copy, domain extraction, static values, and coalesce functions.
+- **Asset & finding observations** — Per-source snapshots showing what each scanner or integration contributed to a merged asset or finding. See exactly which fields came from Nessus vs. CrowdStrike vs. EASM.
 - **Asset & finding explorer** — Browse all assets and findings with filtering, sorting, NLP search, and drill-down detail views.
 - **Attack surface inventory** — Auto-extracts 18+ entity types from informational plugins: users, groups, services, network connections, scheduled tasks, patches, logged-on users, shares, software, certificates, security controls, computers, password policies, environment variables, AI tools, processes, database instances, and credentials.
 - **Asset classification** — Automatically infers environment (production/staging/dev/DMZ/external) from hostname patterns and IP ranges, and detects asset roles (domain controller, database, web server, etc.).
@@ -132,6 +135,7 @@ npm run dev
 │   │   └── risk_config.py           # Risk scoring configuration
 │   ├── models/
 │   │   ├── models.py                # SQLAlchemy models (40+ tables)
+│   │   ├── entity_registry.py       # Importable entity metadata registry
 │   │   └── threat_intel_models.py   # MITRE ATT&CK models
 │   ├── parsers/
 │   │   ├── parser.py                # Multi-format scan parser
@@ -160,6 +164,8 @@ npm run dev
 │   │   ├── solution_aggregator.py   # Group findings by root cause
 │   │   ├── downstream_impact.py     # Upgrade safety assessment
 │   │   ├── asset_classifier.py      # Environment & role inference
+│   │   ├── asset_type_rules.py      # Multi-type asset classification engine
+│   │   ├── asset_observations.py    # Per-source observation tracking
 │   │   ├── normalizer.py            # Cross-scanner normalization
 │   │   ├── easm.py                  # EASM domain discovery
 │   │   └── sbom_pipeline.py         # SBOM extraction & EOL tracking
@@ -223,10 +229,19 @@ Key endpoints:
 | `GET /api/scans` | List all imported scans |
 | `GET /api/scans/compare` | Compare two scans (delta) |
 | **Assets & Findings** | |
-| `GET /api/assets` | List assets (supports tag, NLP, and environment filtering) |
+| `GET /api/assets` | List assets (supports tag, NLP, type, and environment filtering) |
+| `GET /api/assets/:id/sources` | Per-source observation snapshots for an asset |
 | `GET /api/findings` | List findings (supports tag, NLP, and severity filtering) |
+| `GET /api/findings/:id/sources` | Per-source observation snapshots for a finding |
 | `PATCH /api/findings/:id/status` | Update finding status |
 | `GET /api/nlp-search` | Natural language search |
+| **Asset Type Rules** | |
+| `GET /api/asset-type-rules` | List asset type classification rules |
+| `POST /api/asset-type-rules` | Create a classification rule |
+| `PATCH /api/asset-type-rules/:id` | Update a rule |
+| `DELETE /api/asset-type-rules/:id` | Delete a rule |
+| `POST /api/asset-type-rules/test` | Test a rule against sample data |
+| `GET /api/asset-type-rules/condition-catalog` | Available conditions for rules |
 | **Inventory** | |
 | `GET /api/inventory/*` | Attack surface inventory (users, groups, services, certs, software, etc.) |
 | `GET /api/sbom/components` | SBOM components with CVE/EOL data |
