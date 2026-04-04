@@ -11,6 +11,7 @@ import {
   getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, useConfirm, useToast } from '../shared/ui.jsx'
+import { getAssetDisplayName, getAssetTarget } from '../../utils/assetDisplay.js'
 
 
 // ── Source type metadata ─────────────────────────────────────────────
@@ -432,7 +433,7 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
         // Send asset_ids + targets so backend can link findings to existing assets
         const assetEntries = [...selectedAssets.values()].map(a => ({
           asset_id: a.id,
-          target: a.ip || a.hostname || a.fqdn,
+          target: getAssetTarget(a),
         })).filter(e => e.target)
         if (assetEntries.length === 0) { setError('Selected assets have no IP or hostname'); return }
         payload = {
@@ -579,7 +580,7 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
                       style={{ accentColor: '#ec4899' }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {asset.hostname || asset.ip || asset.fqdn || `Asset #${asset.id}`}
+                        {getAssetDisplayName(asset)}
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 8 }}>
                         {asset.ip && <span>{asset.ip}</span>}

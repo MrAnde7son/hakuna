@@ -67,7 +67,8 @@ After your first login, consider completing these steps:
 4. **Set up auto-tag rules** — Automatically tag new findings on upload
 5. **Configure integrations** — Connect Jira, ServiceNow, Slack, Teams, or Email
 6. **Invite team members** — Add analysts and viewers in Settings > Users
-7. **Create your first campaign** — Group related findings into a remediation campaign
+7. **Review asset type rules** — Check Settings > Asset Type Rules to customize how assets are classified (host, web app, cloud instance, etc.)
+8. **Create your first campaign** — Group related findings into a remediation campaign
 
 ## Navigation
 

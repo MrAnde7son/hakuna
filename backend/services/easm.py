@@ -21,6 +21,7 @@ from models.models import (
 )
 
 from apscheduler.triggers.cron import CronTrigger
+from services.asset_observations import record_observation
 
 logger = logging.getLogger(__name__)
 
@@ -684,6 +685,20 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
     for f in findings_to_add:
         f.source_systems = ["easm"]
     db.add_all(findings_to_add)
+    db.flush()
+
+    # Record per-source finding observations
+    from services.asset_observations import record_finding_observation
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    _org_id = scan.org_id if scan else None
+    for f in findings_to_add:
+        record_finding_observation(
+            db, finding_id=f.id, source_system="easm",
+            raw_fields={"plugin_id": f.plugin_id, "plugin_name": f.plugin_name,
+                         "severity": f.severity, "plugin_output": f.plugin_output},
+            scan_id=scan_id, org_id=_org_id,
+        )
+
     return len(findings_to_add)
 
 
@@ -804,6 +819,44 @@ def _import_assets_for_domain(
             asset.easm_data = easm_data
             asset.last_seen = now
         else:
+            # Evaluate asset-type rules for EASM assets
+            # Pass all EASM enrichment data — normalize_asset_data() will
+            # flatten easm_data and compute derived fingerprint fields.
+            type_kwargs = {}
+            try:
+                import services.asset_type_rules as asset_type_rule_engine
+                rule_data = {
+                    "hostname": hostname,
+                    "ip": ip,
+                    "fqdn": fqdn,
+                    "os": os_hint or "",
+                    "source_type": "easm",
+                    "easm_data": easm_data,
+                    # Also pass top-level EASM fields for direct access
+                    "open_ports": ea.get("open_ports") or [],
+                    "services": ea.get("services") or {},
+                    "tech_stack": ea.get("tech_stack") or [],
+                    "cpe": ea.get("cpe") or [],
+                    "http_url": ea.get("http_url") or "",
+                    "http_status": ea.get("http_status"),
+                    "http_title": ea.get("http_title") or "",
+                    "cdn_provider": ea.get("cdn_provider") or "",
+                    "waf": ea.get("waf") or "",
+                }
+                type_result = asset_type_rule_engine.evaluate_asset_type_rules(
+                    rule_data, db,
+                    org_id=scan.org_id if hasattr(scan, "org_id") else None,
+                    source_type="easm",
+                )
+                if type_result:
+                    type_kwargs = {
+                        "asset_type": type_result["asset_type"],
+                        "asset_identity": type_result["asset_identity"],
+                        "asset_attributes": type_result["asset_attributes"],
+                    }
+            except Exception:
+                pass  # graceful fallback
+
             asset = Asset(
                 scan_id=scan.id,
                 ip=ip or None,
@@ -817,10 +870,19 @@ def _import_assets_for_domain(
                 last_seen=now,
                 easm_data=easm_data,
                 source_systems=["easm"],
+                **type_kwargs,
             )
             db.add(asset)
             db.flush()
         created += 1
+
+        # Record per-source observation for EASM
+        record_observation(
+            db, asset_id=asset.id, source_system="easm",
+            raw_fields={"ip": ip, "hostname": hostname, "fqdn": fqdn,
+                         "os": os_hint, "easm_data": easm_data},
+            scan_id=scan.id, org_id=scan.org_id,
+        )
 
         findings_created += _generate_easm_findings(db, scan.id, asset, ea)
 

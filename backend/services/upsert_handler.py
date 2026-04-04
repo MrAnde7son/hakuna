@@ -14,6 +14,7 @@ from sqlalchemy import and_
 
 from models.models import Asset, Finding
 from integrations.model_registry import get_model_meta
+from services.asset_observations import record_observation, record_finding_observation
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,9 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
             "hostname": "hostname", "ip_address": "ip", "fqdn": "fqdn",
             "os": "os", "environment": "environment_tag",
             "last_seen": "last_seen", "criticality": "criticality",
+            "asset_type": "asset_type",
+            "asset_identity": "asset_identity",
+            "asset_attributes": "asset_attributes",
         }
         for src_field, db_field in field_mapping.items():
             value = record.get(src_field)
@@ -81,8 +85,39 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
         # Side effect: create policy assignment if present
         _handle_policy_assignment(db, record, existing.id, scan_id)
 
+        # Record per-source observation
+        record_observation(
+            db, asset_id=existing.id, source_system=source_system,
+            raw_fields=record, scan_id=scan_id,
+        )
+
         return UpsertResult(action="updated" if updated else "skipped", id=existing.id)
     else:
+        # Evaluate asset-type rules before insert (if no type already set by mapping)
+        if not record.get("asset_type") or record.get("asset_type") == "host":
+            try:
+                import services.asset_type_rules as asset_type_rule_engine
+                # Pass all available fields — normalize_asset_data() handles
+                # flattening easm_data and computing derived fingerprint signals.
+                rule_data = dict(record)
+                rule_data.setdefault("hostname", record.get("hostname", ""))
+                rule_data.setdefault("ip", record.get("ip_address", ""))
+                rule_data.setdefault("fqdn", record.get("fqdn", ""))
+                rule_data.setdefault("os", record.get("os", ""))
+                rule_data.setdefault("source_type", "integration")
+                type_result = asset_type_rule_engine.evaluate_asset_type_rules(
+                    rule_data, db, source_type="integration",
+                )
+                if type_result:
+                    record["asset_type"] = type_result["asset_type"]
+                    record["asset_identity"] = type_result["asset_identity"]
+                    record["asset_attributes"] = {
+                        **record.get("asset_attributes", {}),
+                        **type_result["asset_attributes"],
+                    }
+            except Exception:
+                pass  # graceful fallback — don't block upsert
+
         # Insert new asset
         asset = Asset(
             scan_id=scan_id or 0,
@@ -97,12 +132,21 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
             source_systems=[source_system] if source_system else [],
             first_seen=datetime.utcnow(),
             last_seen=datetime.utcnow(),
+            asset_type=record.get("asset_type", "host"),
+            asset_identity=record.get("asset_identity", {}),
+            asset_attributes=record.get("asset_attributes", {}),
         )
         db.add(asset)
         db.flush()
 
         # Side effect: create policy assignment if present
         _handle_policy_assignment(db, record, asset.id, scan_id)
+
+        # Record per-source observation
+        record_observation(
+            db, asset_id=asset.id, source_system=source_system,
+            raw_fields=record, scan_id=scan_id,
+        )
 
         return UpsertResult(action="inserted", id=asset.id)
 
@@ -206,6 +250,12 @@ def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: 
         _accumulate_source(existing, source_system)
         # Do NOT change workflow_status if user has set it
 
+        # Record per-source finding observation
+        record_finding_observation(
+            db, finding_id=existing.id, source_system=source_system,
+            raw_fields=record, scan_id=scan_id,
+        )
+
         return UpsertResult(action="updated" if updated else "skipped", id=existing.id)
     else:
         # Insert new finding
@@ -233,6 +283,13 @@ def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: 
         )
         db.add(finding)
         db.flush()
+
+        # Record per-source finding observation
+        record_finding_observation(
+            db, finding_id=finding.id, source_system=source_system,
+            raw_fields=record, scan_id=scan_id,
+        )
+
         return UpsertResult(action="inserted", id=finding.id)
 
 

@@ -176,6 +176,26 @@ def infer_business_context(asset_data: dict) -> Optional[str]:
 # Combined entry point
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Non-host asset type defaults (config-driven, editable via Settings)
+# ---------------------------------------------------------------------------
+
+# Curated defaults for well-known asset types.
+# Unknown/custom types get safe defaults. Users can add/override via config.
+ASSET_TYPE_DEFAULTS: dict[str, dict] = {
+    "web_app":          {"environment_tag": "external", "business_context": "Web Application", "context_criticality": 7},
+    "cloud_instance":   {"environment_tag": "cloud",    "business_context": "Cloud Instance",  "context_criticality": 5},
+    "api_endpoint":     {"environment_tag": "external", "business_context": "API Endpoint",    "context_criticality": 6},
+    "identity":         {"environment_tag": "internal", "business_context": "Identity",        "context_criticality": 6},
+    "container_image":  {"environment_tag": "cloud",    "business_context": "Container",       "context_criticality": 5},
+    "code_repo":        {"environment_tag": "development", "business_context": "Code Repository", "context_criticality": 4},
+    "k8s_workload":     {"environment_tag": "cloud",    "business_context": "K8s Workload",    "context_criticality": 5},
+}
+
+# Safe fallback for unknown custom asset types
+_DEFAULT_NON_HOST = {"environment_tag": "internal", "business_context": None, "context_criticality": 5}
+
+
 def classify_asset(asset_data: dict) -> dict:
     """
     Returns {"environment_tag": str, "business_context": str|None,
@@ -186,6 +206,11 @@ def classify_asset(asset_data: dict) -> dict:
     the inferred business context.  Callers should treat it as a default
     that auto-rules and manual overrides can supersede.
     """
+    asset_type = asset_data.get("asset_type", "host")
+    if asset_type != "host":
+        defaults = ASSET_TYPE_DEFAULTS.get(asset_type, _DEFAULT_NON_HOST)
+        return dict(defaults)
+
     biz_ctx = infer_business_context(asset_data)
     return {
         "environment_tag": infer_environment(asset_data),

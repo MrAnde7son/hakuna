@@ -67,6 +67,8 @@ def engine():
             ("source_system", "VARCHAR"), ("user_edited_fields", "JSON"),
             ("device_type", "VARCHAR"), ("cpe", "JSON"),
             ("os_confidence", "INTEGER"), ("source_systems", "JSON"),
+            ("asset_type", "VARCHAR DEFAULT 'host'"),
+            ("asset_identity", "JSON"), ("asset_attributes", "JSON"),
         ],
         "findings": [
             ("org_id", "INTEGER"),

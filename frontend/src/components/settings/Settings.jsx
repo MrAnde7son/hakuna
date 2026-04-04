@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2, KeyRound } from 'lucide-react'
-import { getDedupConfig, saveDedupConfig, runDedup, exportConfig } from '../../api.js'
+import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2, KeyRound, Plus, X, GripVertical, Layers } from 'lucide-react'
+import { getDedupConfig, saveDedupConfig, runDedup, exportConfig, getAvailableSources, runRollup } from '../../api.js'
 import { Card, ExportImportButtons } from '../shared/ui.jsx'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import RiskSettings from './RiskSettings.jsx'
@@ -21,7 +21,14 @@ import SSOSettings from './SSOSettings.jsx'
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const KEY_FIELD_OPTIONS = {
-  assets: ['ip', 'hostname', 'fqdn', 'netbios_name'],
+  'assets.host': ['ip', 'hostname', 'fqdn', 'netbios_name'],
+  'assets.web_app': ['url', 'domain'],
+  'assets.cloud_instance': ['cloud_provider', 'instance_id', 'account_id', 'region'],
+  'assets.api_endpoint': ['method', 'url'],
+  'assets.identity': ['provider', 'principal_id', 'tenant_id'],
+  'assets.container_image': ['registry', 'repository', 'tag', 'digest'],
+  'assets.code_repo': ['provider', 'org', 'repo'],
+  'assets.k8s_workload': ['cluster', 'namespace', 'kind', 'name'],
   findings: ['plugin_id', 'asset_id', 'port', 'protocol', 'cve'],
   users: ['username', 'domain', 'sid'],
   groups: ['group_name', 'domain', 'sid'],
@@ -41,7 +48,14 @@ const KEY_FIELD_OPTIONS = {
 }
 
 const ENTITY_LABELS = {
-  assets: 'Assets',
+  'assets.host': 'Host',
+  'assets.web_app': 'Web App',
+  'assets.cloud_instance': 'Cloud Instance',
+  'assets.api_endpoint': 'API Endpoint',
+  'assets.identity': 'Identity',
+  'assets.container_image': 'Container Image',
+  'assets.code_repo': 'Code Repo',
+  'assets.k8s_workload': 'K8s Workload',
   findings: 'Findings',
   users: 'Users',
   groups: 'Groups',
@@ -84,7 +98,168 @@ function Toggle({ checked, onChange, label }) {
   )
 }
 
-function EntityCard({ entityKey, cfg, onChange }) {
+// ─── Source Priority Editor ──────────────────────────────────────────────────
+
+const PRIORITY_FIELD_OPTIONS = [
+  'hostname', 'fqdn', 'ip', 'os', 'netbios_name', 'mac_address',
+  'device_type', 'system_type', 'is_internet_facing', 'criticality',
+  'environment_tag', 'asset_type',
+]
+
+function SourcePriorityEditor({ sourcePriority, availableSources, onChange }) {
+  const sp = sourcePriority || { '*': [] }
+  const defaultList = sp['*'] || []
+  const overrides = Object.entries(sp).filter(([k]) => k !== '*')
+
+  const moveSource = (field, fromIdx, toIdx) => {
+    const list = [...(sp[field] || [])]
+    const [item] = list.splice(fromIdx, 1)
+    list.splice(toIdx, 0, item)
+    onChange({ ...sp, [field]: list })
+  }
+
+  const addSource = (field, source) => {
+    const list = [...(sp[field] || [])]
+    if (!list.includes(source)) {
+      onChange({ ...sp, [field]: [...list, source] })
+    }
+  }
+
+  const removeSource = (field, source) => {
+    onChange({ ...sp, [field]: (sp[field] || []).filter(s => s !== source) })
+  }
+
+  const addOverride = (field) => {
+    if (!sp[field]) {
+      onChange({ ...sp, [field]: [...defaultList] })
+    }
+  }
+
+  const removeOverride = (field) => {
+    const next = { ...sp }
+    delete next[field]
+    onChange(next)
+  }
+
+  const unusedSources = (field) => availableSources.filter(s => !(sp[field] || []).includes(s))
+
+  const renderSortableList = (field) => {
+    const list = sp[field] || []
+    return (
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', minHeight: 28 }}>
+        {list.map((source, idx) => (
+          <span
+            key={source}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 3,
+              fontSize: 12, padding: '3px 8px', borderRadius: 6,
+              background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.25)',
+              color: 'var(--accent)', fontWeight: 500, cursor: 'grab',
+            }}
+          >
+            <span style={{ fontSize: 10, color: 'var(--text-muted)', marginRight: 2, fontWeight: 700 }}>{idx + 1}</span>
+            {idx > 0 && (
+              <button
+                onClick={() => moveSource(field, idx, idx - 1)}
+                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-muted)', fontSize: 10, lineHeight: 1 }}
+                title="Move up"
+              >{'<'}</button>
+            )}
+            {source}
+            {idx < list.length - 1 && (
+              <button
+                onClick={() => moveSource(field, idx, idx + 1)}
+                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-muted)', fontSize: 10, lineHeight: 1 }}
+                title="Move down"
+              >{'>'}</button>
+            )}
+            <button
+              onClick={() => removeSource(field, source)}
+              style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--text-muted)', lineHeight: 1 }}
+            >
+              <X size={10} />
+            </button>
+          </span>
+        ))}
+        {unusedSources(field).length > 0 && (
+          <select
+            value=""
+            onChange={e => { if (e.target.value) addSource(field, e.target.value) }}
+            style={{
+              fontSize: 11, padding: '2px 6px', borderRadius: 4,
+              border: '1px solid var(--border)', background: 'var(--bg)',
+              color: 'var(--text-muted)', cursor: 'pointer',
+            }}
+          >
+            <option value="">+ Add</option>
+            {unusedSources(field).map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        )}
+      </div>
+    )
+  }
+
+  const unusedFields = PRIORITY_FIELD_OPTIONS.filter(f => !sp[f])
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <Layers size={12} color="var(--text-muted)" />
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Source Priority</span>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+        When multiple sources report the same field, higher-ranked sources win. Drag to reorder.
+      </div>
+
+      {/* Default priority */}
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, fontWeight: 600 }}>Default (all fields)</div>
+        {renderSortableList('*')}
+      </div>
+
+      {/* Per-field overrides */}
+      {overrides.length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6, fontWeight: 600 }}>Per-field overrides</div>
+          {overrides.map(([field]) => (
+            <div key={field} style={{ marginBottom: 8, padding: '6px 10px', background: 'var(--bg)', borderRadius: 6, border: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text)' }}>{field}</span>
+                <button
+                  onClick={() => removeOverride(field)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 2 }}
+                  title="Remove override"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+              {renderSortableList(field)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Add override */}
+      {unusedFields.length > 0 && (
+        <select
+          value=""
+          onChange={e => { if (e.target.value) addOverride(e.target.value) }}
+          style={{
+            fontSize: 11, padding: '3px 8px', borderRadius: 4,
+            border: '1px solid var(--border)', background: 'var(--bg)',
+            color: 'var(--text-muted)', cursor: 'pointer',
+          }}
+        >
+          <option value="">+ Add field override</option>
+          {unusedFields.map(f => <option key={f} value={f}>{f}</option>)}
+        </select>
+      )}
+    </div>
+  )
+}
+
+
+function EntityCard({ entityKey, label, cfg, onChange, runEntityKey, availableSources }) {
   const [runResult, setRunResult] = useState(null)
   const [running, setRunning] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -102,7 +277,7 @@ function EntityCard({ entityKey, cfg, onChange }) {
     setRunning(true)
     setRunResult(null)
     try {
-      const result = await runDedup(entityKey)
+      const result = await runDedup(runEntityKey || entityKey)
       setRunResult(result)
     } catch (e) {
       setRunResult({ error: e.message })
@@ -127,7 +302,7 @@ function EntityCard({ entityKey, cfg, onChange }) {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ color: 'var(--text)', fontWeight: 500, fontSize: 14 }}>
-            {ENTITY_LABELS[entityKey] || entityKey}
+            {label || ENTITY_LABELS[entityKey] || entityKey}
           </span>
           <span style={{
             fontSize: 11, padding: '1px 7px', borderRadius: 10,
@@ -227,6 +402,15 @@ function EntityCard({ entityKey, cfg, onChange }) {
             </div>
           </div>
 
+          {/* Source Priority (only for merge strategy + asset types) */}
+          {cfg.strategy === 'merge' && availableSources?.length > 0 && entityKey.startsWith('assets.') && (
+            <SourcePriorityEditor
+              sourcePriority={cfg.source_priority || { '*': [] }}
+              availableSources={availableSources}
+              onChange={(sp) => onChange({ ...cfg, source_priority: sp })}
+            />
+          )}
+
           {/* Run Now */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <button
@@ -273,9 +457,11 @@ export default function Settings() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState(null)
+  const [availableSources, setAvailableSources] = useState([])
 
   useEffect(() => {
     getDedupConfig().then(setCfg).catch(e => setError(e.message))
+    getAvailableSources().then(setAvailableSources).catch(() => {})
   }, [])
 
   const updateInventoryEntity = useCallback((key, entityCfg) => {
@@ -290,6 +476,13 @@ export default function Settings() {
     setSaved(false)
     try {
       await saveDedupConfig(cfg)
+      // If any asset type has source_priority configured, trigger rollup
+      const hasSourcePriority = Object.values(cfg.assets || {}).some(
+        tc => tc?.source_priority && Object.values(tc.source_priority).some(v => v?.length > 0)
+      )
+      if (hasSourcePriority) {
+        runRollup().catch(() => {})  // fire-and-forget background job
+      }
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     } catch (e) {
@@ -502,26 +695,48 @@ export default function Settings() {
         </div>
       </Card>
 
-      {/* Assets & Findings */}
+      {/* Asset Types */}
       <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 10 }}>
-        Assets &amp; Findings
+        Asset Types
       </div>
       <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-        Cross-scan dedup can merge the same host seen in multiple uploads into a single asset record.
-        Findings dedup is disabled by default (same vulnerability can legitimately recur across scans).
+        Configure deduplication per asset type. Cross-scan dedup can merge the same record seen in multiple uploads into a single asset.
       </div>
-      {['assets', 'findings'].map(key => {
-        const entityCfg = cfg[key]
-        if (!entityCfg) return null
+      {Object.keys(cfg.assets || {}).map(assetType => {
+        const typeCfg = cfg.assets[assetType]
+        if (!typeCfg || typeof typeCfg !== 'object') return null
+        const entityKey = `assets.${assetType}`
         return (
           <EntityCard
-            key={key}
-            entityKey={key}
-            cfg={entityCfg}
-            onChange={(next) => setCfg(p => ({ ...p, [key]: next }))}
+            key={entityKey}
+            entityKey={entityKey}
+            label={ENTITY_LABELS[entityKey] || assetType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+            cfg={typeCfg}
+            runEntityKey="assets"
+            availableSources={availableSources}
+            onChange={(next) => setCfg(p => ({
+              ...p,
+              assets: { ...p.assets, [assetType]: next },
+            }))}
           />
         )
       })}
+
+      {/* Findings */}
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 10, marginTop: 20 }}>
+        Findings
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+        Findings dedup is disabled by default (same vulnerability can legitimately recur across scans).
+      </div>
+      {cfg.findings && (
+        <EntityCard
+          key="findings"
+          entityKey="findings"
+          cfg={cfg.findings}
+          onChange={(next) => setCfg(p => ({ ...p, findings: next }))}
+        />
+      )}
 
       {/* Inventory Entities */}
       <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', marginBottom: 10, marginTop: 20 }}>

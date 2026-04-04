@@ -3,6 +3,7 @@ import { ShieldOff, ShieldCheck, ShieldAlert, Plus, Trash2, Edit3, RefreshCw, Cl
 import { getExceptions, createException, updateException, deleteException, applyAllExceptions, getExceptionConditionCatalog, getAssets, getTags } from '../../api.js'
 import { Card, StatCard, PageHeader, Button, Select, Input, Spinner, Table, FilterBar, EmptyState, Pill } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
+import { getAssetTarget } from '../../utils/assetDisplay.js'
 
 // ─── Toast ───────────────────────────────────────────────────────────────────
 
@@ -138,7 +139,7 @@ function ExceptionModal({ initial, onSave, onClose, saving }) {
     getExceptionConditionCatalog().then(setCatalog).catch(console.error)
     getAssets({ limit: 500 }).then(data => {
       const list = (Array.isArray(data) ? data : data.assets || [])
-      setAssetIps([...new Set(list.map(a => a.ip).filter(Boolean))])
+      setAssetIps([...new Set(list.map(a => getAssetTarget(a)).filter(Boolean))])
     }).catch(() => {})
     getTags().then(data => {
       const list = Array.isArray(data) ? data : data.tags || []

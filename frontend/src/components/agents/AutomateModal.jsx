@@ -2,6 +2,7 @@ import React from 'react'
 import { X, Zap, Lock } from 'lucide-react'
 import { logAutomateClick } from '../../api.js'
 import { Button, useToast } from '../shared/ui.jsx'
+import { getFindingAssetDisplay } from '../../utils/assetDisplay.js'
 
 export default function AutomateModal({ finding, onClose }) {
   const toast = useToast()
@@ -60,7 +61,7 @@ export default function AutomateModal({ finding, onClose }) {
             <div style={{ color: 'var(--text-muted)', fontSize: 11, marginBottom: 4 }}>Finding to automate</div>
             <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{finding.plugin_name}</div>
             <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 2 }}>
-              {finding.asset_hostname || finding.asset_ip} · Plugin {finding.plugin_id}
+              {getFindingAssetDisplay(finding)} · Plugin {finding.plugin_id}
             </div>
           </div>
         )}

@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft, ExternalLink, Zap, Shield, ShieldCheck, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight, Layers, RefreshCw, Ticket } from 'lucide-react'
-import { getFinding, getFindingAssessments, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign, syncFindingTickets } from '../../api.js'
+import { getFinding, getFindingSources, getFindingAssessments, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign, syncFindingTickets } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail, useToast, buildFindingBreakdown, useRiskWeights } from '../shared/ui.jsx'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import BlastRadiusPanel from '../campaigns/BlastRadiusPanel.jsx'
+import { getFindingAssetDisplay } from '../../utils/assetDisplay.js'
 
 function Section({ title, icon: Icon, children, defaultOpen = true }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -337,6 +338,7 @@ export default function FindingDetail() {
           { key: 'context', icon: Eye, label: 'Context' },
           { key: 'remediation', icon: Shield, label: 'Remediation' },
           { key: 'technical', icon: Terminal, label: 'Technical' },
+          { key: 'sources', icon: Layers, label: 'Sources' },
         ].map(({ key, icon: Icon, label }) => {
           const active = activeTab === key
           return (
@@ -750,7 +752,7 @@ export default function FindingDetail() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                   <Briefcase size={14} color="var(--text-muted)" />
                   <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Business Context</span>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— {finding.asset_hostname || finding.asset_ip}</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— {getFindingAssetDisplay(finding)}</span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
                   <div>
@@ -1051,6 +1053,137 @@ export default function FindingDetail() {
       </Section>
       </>)}
 
+      {activeTab === 'sources' && <FindingSourcesTab finding={finding} />}
+
+    </div>
+  )
+}
+
+
+const FINDING_SOURCE_LABELS = {
+  nessus: 'Nessus', tenable_sc: 'Tenable.sc', qualys: 'Qualys', rapid7: 'Rapid7',
+  openvas: 'OpenVAS', crowdstrike: 'CrowdStrike', wiz: 'Wiz', easm: 'EASM',
+  vm_scanner: 'VM Scanner',
+}
+
+const FINDING_FIELD_LABELS = {
+  plugin_id: 'Plugin ID', plugin_name: 'Name', plugin_family: 'Family',
+  severity: 'Severity', severity_label: 'Severity Label', cvss3_score: 'CVSS3 Score',
+  cvss3_vector: 'CVSS3 Vector', cvss2_score: 'CVSS2 Score', vpr_score: 'VPR Score',
+  description: 'Description', solution: 'Solution', synopsis: 'Synopsis',
+  port: 'Port', protocol: 'Protocol', plugin_output: 'Plugin Output',
+  exploit_available: 'Exploit Available', exploit_maturity: 'Exploit Maturity',
+  title: 'Title', cve_id: 'CVE', template_id: 'Template ID', matched_at: 'Matched At',
+}
+
+function FindingSourcesTab({ finding }) {
+  const [sources, setSources] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [expanded, setExpanded] = useState(null)
+
+  useEffect(() => {
+    setLoading(true)
+    getFindingSources(finding.id)
+      .then(data => {
+        setSources(data || [])
+        if (data?.length) setExpanded(data[0].source_system)
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [finding.id])
+
+  if (loading) return <div style={{ padding: 32, textAlign: 'center' }}><Spinner /></div>
+
+  if (!sources.length) {
+    return (
+      <Card style={{ padding: 32, textAlign: 'center' }}>
+        <Layers size={28} style={{ color: 'var(--text-muted)', marginBottom: 8 }} />
+        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>No Source Data</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+          Source observations are recorded when findings are imported from scanners or integrations.
+        </div>
+      </Card>
+    )
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+        Raw data from each source that reported this finding ({sources.length} source{sources.length !== 1 ? 's' : ''})
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {sources.map(src => {
+          const isOpen = expanded === src.source_system
+          const fields = src.raw_fields || {}
+          const displayName = FINDING_SOURCE_LABELS[src.source_system] || src.source_system
+          return (
+            <Card key={src.source_system} style={{ padding: 0, overflow: 'hidden' }}>
+              <button
+                onClick={() => setExpanded(isOpen ? null : src.source_system)}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  width: '100%', padding: '14px 16px', background: 'none', border: 'none',
+                  cursor: 'pointer', textAlign: 'left',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    width: 28, height: 28, borderRadius: 6,
+                    background: 'var(--accent-muted)', color: 'var(--accent)',
+                    fontSize: 12, fontWeight: 700,
+                  }}>
+                    {displayName.charAt(0)}
+                  </span>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{displayName}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                      {src.times_seen} scan{src.times_seen !== 1 ? 's' : ''}
+                      {src.first_seen && ` · First seen ${new Date(src.first_seen).toLocaleDateString()}`}
+                      {src.last_seen && ` · Last seen ${new Date(src.last_seen).toLocaleDateString()}`}
+                    </div>
+                  </div>
+                </div>
+                {isOpen ? <ChevronDown size={16} color="var(--text-muted)" /> : <ChevronRight size={16} color="var(--text-muted)" />}
+              </button>
+              {isOpen && (
+                <div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border)' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
+                    {Object.entries(fields)
+                      .filter(([, v]) => v != null && v !== '' && typeof v !== 'object')
+                      .map(([key, value]) => (
+                        <div key={key} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 3 }}>
+                            {FINDING_FIELD_LABELS[key] || key.replace(/_/g, ' ')}
+                          </div>
+                          <div style={{ fontSize: 13, color: 'var(--text-primary)', wordBreak: 'break-all' }}>
+                            {typeof value === 'boolean' ? (value ? 'Yes' : 'No') : String(value)}
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                  {Object.entries(fields)
+                    .filter(([, v]) => v != null && typeof v === 'object')
+                    .map(([key, value]) => (
+                      <div key={key} style={{ marginTop: 12 }}>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+                          {FINDING_FIELD_LABELS[key] || key.replace(/_/g, ' ')}
+                        </div>
+                        <pre style={{
+                          fontSize: 11, background: 'var(--bg-secondary)', padding: 12,
+                          borderRadius: 6, overflow: 'auto', maxHeight: 200,
+                          color: 'var(--text-secondary)', margin: 0,
+                        }}>
+                          {JSON.stringify(value, null, 2)}
+                        </pre>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </Card>
+          )
+        })}
+      </div>
     </div>
   )
 }
