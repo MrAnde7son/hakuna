@@ -67,6 +67,15 @@ def normalize_asset_data(raw: dict) -> dict:
     """
     d = dict(raw)  # shallow copy — don't mutate caller's dict
 
+    # ── Flatten asset_attributes blob if present ─────────────────
+    # This makes connector-specific fields (dns_record_type, proxied, etc.)
+    # available to asset type rules without hardcoding field names.
+    attrs = raw.get("asset_attributes") or {}
+    if isinstance(attrs, dict):
+        for key, val in attrs.items():
+            if key not in d or not d[key]:
+                d[key] = val
+
     # ── Flatten easm_data blob if present ────────────────────────
     easm = raw.get("easm_data") or {}
     if isinstance(easm, dict):
@@ -216,6 +225,26 @@ ASSET_TYPE_CONDITION_CATALOG = [
                     {"label": "Integration", "value": "integration"},
                 ],
             },
+        ],
+    },
+    {
+        "group": "Connector Attributes",
+        "conditions": [
+            {"field": "dns_record_type", "label": "DNS Record Type", "ops": ["eq", "neq", "contains"], "value_type": "enum",
+             "options": [
+                 {"label": "A", "value": "A"}, {"label": "AAAA", "value": "AAAA"},
+                 {"label": "CNAME", "value": "CNAME"}, {"label": "MX", "value": "MX"},
+                 {"label": "TXT", "value": "TXT"}, {"label": "NS", "value": "NS"},
+                 {"label": "SRV", "value": "SRV"}, {"label": "SOA", "value": "SOA"},
+             ]},
+            {"field": "proxied", "label": "Proxied (CDN/WAF)", "ops": ["is_true", "is_false"], "value_type": "none"},
+            {"field": "cloud_provider", "label": "Cloud Provider", "ops": ["eq", "neq", "contains"], "value_type": "string", "placeholder": "aws, azure, gcp"},
+            {"field": "cloud_region", "label": "Cloud Region", "ops": ["eq", "neq", "contains", "startswith"], "value_type": "string"},
+            {"field": "cloud_account_id", "label": "Cloud Account ID", "ops": ["eq", "neq", "contains"], "value_type": "string"},
+            {"field": "origin_ip", "label": "Origin IP", "ops": ["eq", "neq", "contains", "startswith", "cidr"], "value_type": "string"},
+            {"field": "service_name", "label": "Service Name", "ops": ["eq", "neq", "contains", "regex"], "value_type": "string"},
+            {"field": "cname_target", "label": "CNAME Target", "ops": ["eq", "neq", "contains", "endswith", "regex"], "value_type": "string", "placeholder": "*.amazonaws.com"},
+            {"field": "ttl", "label": "DNS TTL", "ops": ["eq", "neq", "gt", "lt", "gte", "lte"], "value_type": "integer"},
         ],
     },
     {

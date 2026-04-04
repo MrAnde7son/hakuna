@@ -4,6 +4,8 @@ Decorate any model with @importable(...) to register it as a valid destination
 for the integration builder's field mapping and upsert engine.
 """
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
@@ -19,6 +21,38 @@ _AUTO_COLUMNS = frozenset([
     "id", "created_at", "updated_at",
     "org_id", "scan_id",  # Set by the upsert engine, not user-mapped
 ])
+
+# JSON columns that support dot-notation sub-key mapping (e.g. "asset_attributes.dns_record_type")
+# Each entry lists suggested sub-keys shown in the UI, but users can add custom ones.
+_EXPANDABLE_JSON_HINTS: dict[str, list[dict]] = {
+    "asset_attributes": [
+        {"name": "dns_record_type", "type": "string", "description": "DNS record type (A, AAAA, CNAME, MX, TXT)"},
+        {"name": "cloud_provider", "type": "string", "description": "Cloud provider (aws, azure, gcp)"},
+        {"name": "cloud_region", "type": "string", "description": "Cloud region or location"},
+        {"name": "cloud_account_id", "type": "string", "description": "Cloud account or subscription ID"},
+        {"name": "cdn_provider", "type": "string", "description": "CDN provider name"},
+        {"name": "origin_ip", "type": "string", "description": "Origin IP behind CDN/proxy"},
+        {"name": "proxied", "type": "boolean", "description": "Whether traffic is proxied (e.g. Cloudflare)"},
+        {"name": "ttl", "type": "integer", "description": "DNS TTL value"},
+        {"name": "cname_target", "type": "string", "description": "CNAME target hostname"},
+        {"name": "service_name", "type": "string", "description": "Service or application name"},
+    ],
+    "easm_data": [
+        {"name": "http_url", "type": "string", "description": "HTTP URL observed"},
+        {"name": "http_status", "type": "integer", "description": "HTTP response status code"},
+        {"name": "http_title", "type": "string", "description": "HTML page title"},
+        {"name": "cdn_provider", "type": "string", "description": "CDN provider detected"},
+        {"name": "waf", "type": "string", "description": "WAF detected"},
+    ],
+    "asset_identity": [
+        {"name": "hostname", "type": "string", "description": "Primary hostname"},
+        {"name": "fqdn", "type": "string", "description": "Fully qualified domain name"},
+        {"name": "ip", "type": "string", "description": "IP address"},
+        {"name": "url", "type": "string", "description": "URL for web apps"},
+        {"name": "display_name", "type": "string", "description": "Display name"},
+        {"name": "instance_id", "type": "string", "description": "Cloud instance ID"},
+    ],
+}
 
 
 @dataclass
@@ -125,6 +159,11 @@ def _introspect_columns(model_cls, parent_fk: str | None = None) -> list[dict]:
         if col.foreign_keys:
             fk = next(iter(col.foreign_keys))
             entry["foreign_key"] = str(fk.target_fullname)
+
+        # Mark JSON columns that support dot-notation sub-key mapping
+        if col_type == "json" and col.name in _EXPANDABLE_JSON_HINTS:
+            entry["expandable"] = True
+            entry["sub_fields"] = _EXPANDABLE_JSON_HINTS[col.name]
 
         columns.append(entry)
 

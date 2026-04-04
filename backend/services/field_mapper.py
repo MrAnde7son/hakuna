@@ -6,6 +6,7 @@ Four public functions:
 - auto_suggest(source_paths, target_schema) → list of MappingRule dicts
 - render_template(template, finding, asset) → rendered object
 """
+from __future__ import annotations
 
 import re
 import copy
@@ -440,6 +441,17 @@ ALIAS_TABLE = {
     "component_type": ["component_type", "componentType", "type", "kind"],
     "eol_date": ["eol_date", "eolDate", "end_of_life", "endOfLife"],
     "eol_status": ["eol_status", "eolStatus", "lifecycle_status", "supportStatus"],
+    # ── Expandable JSON sub-keys (asset_attributes.*, easm_data.*) ──
+    "asset_attributes.dns_record_type": ["type", "record_type", "recordType", "dns_type", "rrtype", "rr_type"],
+    "asset_attributes.proxied": ["proxied", "is_proxied", "proxy", "cdn_proxied"],
+    "asset_attributes.ttl": ["ttl", "TTL", "time_to_live", "timeToLive"],
+    "asset_attributes.cloud_provider": ["cloud_provider", "cloudProvider", "provider", "cloud"],
+    "asset_attributes.cloud_region": ["cloud_region", "region", "location", "zone", "availability_zone"],
+    "asset_attributes.cloud_account_id": ["cloud_account_id", "account_id", "accountId", "subscription_id", "subscriptionId"],
+    "asset_attributes.origin_ip": ["origin_ip", "origin", "origin_address", "backend_ip"],
+    "asset_attributes.cdn_provider": ["cdn_provider", "cdn", "cdnProvider"],
+    "asset_attributes.cname_target": ["cname_target", "cname", "canonical_name", "alias_target"],
+    "asset_attributes.service_name": ["service_name", "serviceName", "service", "app_name"],
 }
 
 
