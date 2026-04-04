@@ -1,5 +1,6 @@
 {
   "id": "jira_create_ticket",
+  "relay_capable": true,
   "name": "Jira — Create Ticket",
   "description": "Push findings to Jira as new issues",
   "logo": "/logos/vendors/jira.svg",

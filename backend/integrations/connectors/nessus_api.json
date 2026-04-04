@@ -1,5 +1,6 @@
 {
   "id": "nessus_api",
+  "relay_capable": true,
   "name": "Nessus Scanner \u2014 API",
   "description": "Pull vulnerability findings from a Nessus scanner via its REST API",
   "logo": "/logos/vendors/nessus.svg",

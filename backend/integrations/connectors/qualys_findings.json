@@ -1,5 +1,6 @@
 {
   "id": "qualys_findings",
+  "relay_capable": true,
   "name": "Qualys \u2014 Findings",
   "description": "Pull vulnerability detections from Qualys VM",
   "logo": "/logos/vendors/qualys.svg",

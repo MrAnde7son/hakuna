@@ -1,5 +1,6 @@
 {
   "id": "crowdstrike_findings",
+  "relay_capable": true,
   "name": "CrowdStrike Spotlight \u2014 Findings",
   "description": "Pull vulnerability findings from CrowdStrike Spotlight",
   "logo": "/logos/vendors/crowdstrike.svg",
