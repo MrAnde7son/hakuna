@@ -188,6 +188,30 @@ def get_target_schema(slug: str) -> list[dict] | None:
     return meta.writable_columns
 
 
+def get_target_schema_expanded(slug: str) -> list[dict] | None:
+    """Return schema with expandable JSON sub-fields inlined as dot-notation targets.
+
+    Used by auto-suggest so it can match source fields against sub-keys
+    like ``asset_attributes.dns_record_type``.
+    """
+    base = get_target_schema(slug)
+    if base is None:
+        return None
+    expanded = []
+    for col in base:
+        expanded.append(col)
+        if col.get("expandable") and col.get("sub_fields"):
+            for sf in col["sub_fields"]:
+                expanded.append({
+                    "name": f"{col['name']}.{sf['name']}",
+                    "type": sf.get("type", "string"),
+                    "required": False,
+                    "group": col.get("group", ""),
+                    "description": sf.get("description", ""),
+                })
+    return expanded
+
+
 def list_targets() -> list[dict]:
     """Return a summary list of all importable targets for the frontend."""
     targets = []
