@@ -41,7 +41,7 @@ from models.models import (
     SBOMComponent, SBOMVulnerability,
     Campaign, CampaignFinding, FindingOwnership, AssetOwnership,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
-    Tag, TagAssignment, AutoTagRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
+    Tag, TagAssignment, AutoTagRule, AssetTypeRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
     SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog, AggregatedSolution,
     BenchmarkReference,
 )
@@ -56,6 +56,7 @@ import core.risk_config as risk_engine
 import services.campaign_query as cq
 import services.tags as tag_engine
 import services.rule_engine as rule_engine
+import services.asset_type_rules as asset_type_rule_engine
 import services.workflow_engine as workflow_engine
 from services.nlp_search import parse_nlp_query
 from services.nlp_filters import apply_asset_nlp_filters, apply_finding_nlp_filters, severity_breakdown_grouped
@@ -875,6 +876,22 @@ def _run_scan_ingest(
 
             # Enrich asset_data with scan-level context for classification
             asset_data["scanner_type"] = scan_data.get("scanner_type")
+            asset_data["source_type"] = source_parser.source_type
+
+            # Low-code asset-type rules: evaluate first, override parser defaults
+            type_rule_result = asset_type_rule_engine.evaluate_asset_type_rules(
+                asset_data, db,
+                org_id=scan.org_id,
+                source_type=source_parser.source_type,
+            )
+            if type_rule_result:
+                asset_data["asset_type"] = type_rule_result["asset_type"]
+                asset_data["asset_identity"] = type_rule_result["asset_identity"]
+                asset_data["asset_attributes"] = {
+                    **asset_data.get("asset_attributes", {}),
+                    **type_rule_result["asset_attributes"],
+                }
+
             ctx = classify_asset(asset_data)
             # Internet-facing = public IP scanned by an external/cloud scanner
             is_ext_scanner = scan_data.get("scanner_type") in ("cloud", "external")
@@ -6977,6 +6994,180 @@ def _rule_to_dict(rule: AutoTagRule) -> dict:
         "created_at": rule.created_at.isoformat() if rule.created_at else None,
         "last_run_at": rule.last_run_at.isoformat() if rule.last_run_at else None,
         "last_run_count": rule.last_run_count,
+    }
+
+
+# ─────────────────────────────────────────────
+# Asset Type Rules (low-code classification)
+# ─────────────────────────────────────────────
+
+class AssetTypeRuleCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    conditions: list = []
+    condition_logic: str = "AND"
+    target_asset_type: str
+    identity_mapping: dict = {}
+    default_attributes: dict = {}
+    priority: int = 100
+    source_filter: Optional[str] = None
+    is_enabled: bool = True
+
+
+class AssetTypeRuleUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    conditions: Optional[list] = None
+    condition_logic: Optional[str] = None
+    target_asset_type: Optional[str] = None
+    identity_mapping: Optional[dict] = None
+    default_attributes: Optional[dict] = None
+    priority: Optional[int] = None
+    source_filter: Optional[str] = None
+    is_enabled: Optional[bool] = None
+
+
+def _asset_type_rule_to_dict(rule: AssetTypeRule) -> dict:
+    return {
+        "id": rule.id,
+        "org_id": rule.org_id,
+        "name": rule.name,
+        "description": rule.description,
+        "conditions": rule.conditions,
+        "condition_logic": rule.condition_logic,
+        "target_asset_type": rule.target_asset_type,
+        "identity_mapping": rule.identity_mapping,
+        "default_attributes": rule.default_attributes,
+        "priority": rule.priority,
+        "source_filter": rule.source_filter,
+        "is_enabled": rule.is_enabled,
+        "created_at": rule.created_at.isoformat() if rule.created_at else None,
+        "updated_at": rule.updated_at.isoformat() if rule.updated_at else None,
+    }
+
+
+@app.get("/api/asset-type-rules/condition-catalog")
+def asset_type_rules_condition_catalog():
+    """Return available conditions for asset-type classification rules."""
+    return asset_type_rule_engine.get_condition_catalog()
+
+
+@app.get("/api/asset-type-rules")
+def list_asset_type_rules(
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    rules = (
+        db.query(AssetTypeRule)
+        .order_by(AssetTypeRule.priority, AssetTypeRule.id)
+        .all()
+    )
+    return [_asset_type_rule_to_dict(r) for r in rules]
+
+
+@app.post("/api/asset-type-rules")
+def create_asset_type_rule(
+    body: AssetTypeRuleCreate,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
+    rule = AssetTypeRule(
+        org_id=user.org_id if user else None,
+        name=body.name,
+        description=body.description,
+        conditions=body.conditions,
+        condition_logic=body.condition_logic,
+        target_asset_type=body.target_asset_type,
+        identity_mapping=body.identity_mapping,
+        default_attributes=body.default_attributes,
+        priority=body.priority,
+        source_filter=body.source_filter,
+        is_enabled=body.is_enabled,
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    log_audit(db, "create", "asset_type_rule", rule.id,
+              entity_name=rule.name,
+              changes={"target_asset_type": rule.target_asset_type, "conditions": rule.conditions},
+              actor=user)
+    db.commit()
+    return _asset_type_rule_to_dict(rule)
+
+
+@app.get("/api/asset-type-rules/{rule_id}")
+def get_asset_type_rule(rule_id: int, db: Session = Depends(get_db)):
+    rule = db.query(AssetTypeRule).filter(AssetTypeRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, "Asset type rule not found")
+    return _asset_type_rule_to_dict(rule)
+
+
+@app.patch("/api/asset-type-rules/{rule_id}")
+def update_asset_type_rule(
+    rule_id: int,
+    body: AssetTypeRuleUpdate,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
+    rule = db.query(AssetTypeRule).filter(AssetTypeRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, "Asset type rule not found")
+    changes = {}
+    for field in body.model_fields_set:
+        val = getattr(body, field)
+        changes[field] = val
+        setattr(rule, field, val)
+    log_audit(db, "update", "asset_type_rule", rule.id,
+              entity_name=rule.name, changes=changes, actor=user)
+    db.commit()
+    db.refresh(rule)
+    return _asset_type_rule_to_dict(rule)
+
+
+@app.delete("/api/asset-type-rules/{rule_id}")
+def delete_asset_type_rule(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
+    rule = db.query(AssetTypeRule).filter(AssetTypeRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, "Asset type rule not found")
+    log_audit(db, "delete", "asset_type_rule", rule.id,
+              entity_name=rule.name, actor=user)
+    db.delete(rule)
+    db.commit()
+    return {"message": "Asset type rule deleted"}
+
+
+@app.post("/api/asset-type-rules/test")
+def test_asset_type_rule(
+    body: dict,
+    db: Session = Depends(get_db),
+):
+    """Dry-run: test a rule's conditions against sample asset data.
+
+    Body: {"conditions": [...], "condition_logic": "AND",
+           "identity_mapping": {...}, "target_asset_type": "web_app",
+           "sample_asset": {"hostname": "http://...", "ip": "10.0.0.1", ...}}
+    """
+    sample = body.get("sample_asset", {})
+    conditions = body.get("conditions", [])
+    logic = body.get("condition_logic", "AND")
+    mapping = body.get("identity_mapping", {})
+    target = body.get("target_asset_type", "host")
+
+    matched = rule_engine.evaluate_conditions(
+        conditions=conditions,
+        logic=logic,
+        asset_dict=sample,
+    )
+    identity = asset_type_rule_engine.resolve_identity(mapping, sample) if matched else {}
+    return {
+        "matched": matched,
+        "result_asset_type": target if matched else None,
+        "result_identity": identity if matched else None,
     }
 
 

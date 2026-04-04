@@ -1114,6 +1114,36 @@ class OwnershipRule(Base):
     last_run_count = Column(Integer, nullable=True)
 
 
+class AssetTypeRule(Base):
+    """Low-code rule that classifies assets into a target asset_type based on conditions.
+
+    Evaluated during ingestion (scan upload, integration sync) before asset creation.
+    First matching rule (by priority) wins.  Uses the unified rule-engine condition format.
+    """
+    __tablename__ = "asset_type_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    # Conditions: same format as AutoTagRule / Campaign
+    # [{"field": "system_type", "op": "eq", "value": "web_application"}, ...]
+    conditions = Column(JSON, nullable=False, default=list)
+    condition_logic = Column(String, default="AND")  # "AND" | "OR"
+    # What to set when conditions match
+    target_asset_type = Column(String, nullable=False)  # e.g. "web_app", "cloud_instance", "host"
+    # JSON mapping: which raw fields populate asset_identity keys
+    # e.g. {"url": "hostname", "domain": "@extract_domain(hostname)"}
+    identity_mapping = Column(JSON, nullable=False, default=dict)
+    # Static attributes to merge into asset_attributes
+    default_attributes = Column(JSON, nullable=False, default=dict)
+    priority = Column(Integer, default=100)  # lower = evaluated first
+    source_filter = Column(String, nullable=True)  # optional: only apply for this source (nessus, qualys, easm, integration, etc.)
+    is_enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Campaign(Base):
     """Remediation campaign grouping findings with a shared query and goal."""
     __tablename__ = "campaigns"

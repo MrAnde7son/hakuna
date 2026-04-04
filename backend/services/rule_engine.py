@@ -546,6 +546,20 @@ _NUMERIC_ASSET_FIELDS = {
 # Per-namespace evaluators
 # ─────────────────────────────────────────────────────────
 
+def _list_has(items: list, value) -> bool:
+    """Check if value is in a list, with type coercion (str↔int for ports)."""
+    for it in items:
+        if str(it).lower() == str(value).lower():
+            return True
+        # Numeric coercion: "443" matches 443
+        try:
+            if float(it) == float(value):
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
 def _eval_asset(cond: dict, asset: dict) -> bool:
     """Evaluate an asset-namespace condition against an asset dict."""
     field = cond["field"]
@@ -558,6 +572,30 @@ def _eval_asset(cond: dict, asset: dict) -> bool:
         val = str(value or "").lower()
         has = any(val == s.lower() for s in sources)
         return has if op == "contains" else not has
+
+    if op in ("is_true", "is_false"):
+        result = bool(asset.get(field))
+        return result if op == "is_true" else not result
+
+    # List-aware operators: work on list/JSON-array fields (open_ports, tech_stack, cpe, etc.)
+    if op in ("has_any", "has_all", "has_item", "not_has_item", "list_contains"):
+        raw = asset.get(field)
+        items = raw if isinstance(raw, list) else []
+        if op == "has_item":
+            # Single value membership: value in list (coerce types for port ints)
+            return _list_has(items, value)
+        if op == "not_has_item":
+            return not _list_has(items, value)
+        if op == "list_contains":
+            # Substring match: any item in list contains the value string
+            val = str(value or "").lower()
+            return any(val in str(it).lower() for it in items)
+        # has_any / has_all: value is comma-separated list of values
+        targets = [v.strip() for v in str(value or "").split(",") if v.strip()]
+        if op == "has_any":
+            return any(_list_has(items, t) for t in targets)
+        if op == "has_all":
+            return all(_list_has(items, t) for t in targets)
 
     if field in _NUMERIC_ASSET_FIELDS:
         return _num_op(float(asset.get(field) or 0), op, value)

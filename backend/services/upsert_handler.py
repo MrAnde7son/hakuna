@@ -86,6 +86,31 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
 
         return UpsertResult(action="updated" if updated else "skipped", id=existing.id)
     else:
+        # Evaluate asset-type rules before insert (if no type already set by mapping)
+        if not record.get("asset_type") or record.get("asset_type") == "host":
+            try:
+                import services.asset_type_rules as asset_type_rule_engine
+                # Pass all available fields — normalize_asset_data() handles
+                # flattening easm_data and computing derived fingerprint signals.
+                rule_data = dict(record)
+                rule_data.setdefault("hostname", record.get("hostname", ""))
+                rule_data.setdefault("ip", record.get("ip_address", ""))
+                rule_data.setdefault("fqdn", record.get("fqdn", ""))
+                rule_data.setdefault("os", record.get("os", ""))
+                rule_data.setdefault("source_type", "integration")
+                type_result = asset_type_rule_engine.evaluate_asset_type_rules(
+                    rule_data, db, source_type="integration",
+                )
+                if type_result:
+                    record["asset_type"] = type_result["asset_type"]
+                    record["asset_identity"] = type_result["asset_identity"]
+                    record["asset_attributes"] = {
+                        **record.get("asset_attributes", {}),
+                        **type_result["asset_attributes"],
+                    }
+            except Exception:
+                pass  # graceful fallback — don't block upsert
+
         # Insert new asset
         asset = Asset(
             scan_id=scan_id or 0,
