@@ -11,7 +11,8 @@
     "method": "GET",
     "path": "/zones/{{params.zone_id}}/dns_records",
     "headers": {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      "Authorization": "Bearer {{credentials.api_token}}"
     },
     "query_params": {
       "type": "{{params.record_type}}"

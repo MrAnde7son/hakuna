@@ -7,7 +7,7 @@ the application entrypoint (proper dependency direction).
 """
 
 from models.models import (
-    Asset, Finding,
+    Asset, Finding, AssetRelationship,
     InventoryUser, InventoryGroup, InventoryComputer, InventoryService,
     InventorySoftware, InventoryShare, InventoryNetConn, InventoryPatch,
     InventorySecurityControl, InventoryPasswordPolicy, InventoryLoggedOn,
@@ -115,5 +115,11 @@ ENTITY_MODEL_MAP: dict = {
         InventoryCredential,
         [],
         [],
+    ),
+    "asset_relationships": (
+        AssetRelationship,
+        [],
+        [],
+        ["source_detail"],
     ),
 }

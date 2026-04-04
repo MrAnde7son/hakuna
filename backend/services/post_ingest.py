@@ -85,6 +85,13 @@ def finalize_scan(
             db, "Cross-scan dedup", lambda: _cross_scan_dedup(db, org_id)
         )
 
+    # 9.5. Asset relationship inference (DNS → cloud workload)
+    if org_id and scan_id:
+        results["asset_relationships"] = _step(
+            db, "Asset relationship inference",
+            lambda: _infer_asset_relationships(db, org_id, scan_id),
+        )
+
     # 10. EASM enrichment
     if org_id:
         results["easm"] = _step(
@@ -246,6 +253,11 @@ def _cross_scan_dedup(db, org_id):
     if result.get("removed"):
         logger.info("Cross-scan dedup: merged %d duplicate asset(s)", result["removed"])
     return result
+
+
+def _infer_asset_relationships(db, org_id, scan_id):
+    from services.asset_relationship_engine import infer_dns_to_cloud_relationships
+    return infer_dns_to_cloud_relationships(db, org_id, scan_id)
 
 
 def _easm_enrich(db, org_id, scan_id):

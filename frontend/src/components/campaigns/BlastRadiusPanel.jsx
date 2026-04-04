@@ -31,6 +31,9 @@ import { getBlastRadius } from '../../api.js'
 
 // ── Colours ─────────────────────────────────────────────────────────────
 const EDGE_CFG = {
+  // Infrastructure
+  resolves_to:         { color: '#6366f1', label: 'Resolves To', dash: '6 2' },
+  internet_vulnerability: { color: '#dc2626', label: 'Internet Vuln', dash: '4 2' },
   // Identity & access
   local_admin:         { color: '#f59e0b', label: 'Local Admin' },
   domain_admin:        { color: '#ef4444', label: 'Domain Admin' },
@@ -115,11 +118,13 @@ const handleStyle = { background: 'transparent', border: 'none', width: 1, heigh
 
 function AssetNode({ data }) {
   const isStart = data._start
+  const isCollapsed = data._collapsed
+  const isCloud = data.asset_type === 'cloud_instance'
   const riskPct = Math.min((data.risk_score || 0) * 10, 100)
   const riskColor = riskPct > 70 ? '#ef4444' : riskPct > 50 ? '#f59e0b' : '#22c55e'
 
-  const color = isStart ? '#22c55e' : data.is_dc ? '#ea580c' : '#64748b'
-  const AssetIcon = data.is_dc ? Database : Server
+  const color = isStart ? '#22c55e' : data.is_dc ? '#ea580c' : isCloud ? '#6366f1' : '#64748b'
+  const AssetIcon = data.is_dc ? Database : isCloud ? Monitor : Server
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 80 }}>
@@ -132,8 +137,18 @@ function AssetNode({ data }) {
         boxShadow: isStart
           ? `0 0 0 4px ${color}30, 0 2px 8px rgba(0,0,0,0.15)`
           : '0 2px 8px rgba(0,0,0,0.12)',
+        border: isCollapsed ? '2px dashed #94a3b8' : 'none',
+        position: 'relative',
       }}>
         <AssetIcon size={20} color="#fff" strokeWidth={2} />
+        {isCollapsed && (
+          <div style={{
+            position: 'absolute', top: -6, right: -6,
+            width: 16, height: 16, borderRadius: '50%',
+            background: '#475569', color: '#fff', fontSize: 9, fontWeight: 700,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>+</div>
+        )}
       </div>
       {/* Risk ring */}
       <div style={{ width: CIRCLE_SIZE - 4, height: 3, background: '#e2e8f0', borderRadius: 99, marginTop: -2 }}>
@@ -154,6 +169,7 @@ function AssetNode({ data }) {
       <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'center' }}>
         {isStart && <NBadge bg="#22c55e18" fg="#22c55e" border="#22c55e">START</NBadge>}
         {data.is_dc && <NBadge bg="#ea580c18" fg="#ea580c" border="#ea580c">DC</NBadge>}
+        {isCloud && <NBadge bg="#6366f118" fg="#6366f1" border="#6366f1">CLOUD</NBadge>}
         {data.is_internet_facing && <NBadge bg="#7c3aed18" fg="#7c3aed" border="#7c3aed">EXT</NBadge>}
         {data.critical_count > 0 && <NBadge bg="var(--danger-subtle)" fg="var(--danger)" border="var(--danger)">{data.critical_count}C</NBadge>}
         {data.high_count > 0 && <NBadge bg="var(--warning-subtle)" fg="var(--warning)" border="var(--warning)">{data.high_count}H</NBadge>}
@@ -305,6 +321,9 @@ const EDGE_LEGEND = [
   { key: 'scheduled_task',      color: '#e11d48', label: 'Sched Task' },
   // Vulnerabilities
   { key: 'vulnerability',       color: '#ef4444', label: 'Vulnerability' },
+  { key: 'internet_vulnerability', color: '#dc2626', label: 'Internet Vuln' },
+  // Infrastructure
+  { key: 'resolves_to',         color: '#6366f1', label: 'Resolves To' },
 ]
 
 // ── Mini ReactFlow graph ──────────────────────────────────────────────────
@@ -314,9 +333,40 @@ function BlastRadiusFlow({ data }) {
   // blastNode: node-click mode; legendFilter: { kind: 'edge'|'node', value }
   const [blastNode, setBlastNode] = useState(null)
   const [legendFilter, setLegendFilter] = useState(null)
+  // collapsedNodes: set of node IDs whose children are hidden
+  const [collapsedNodes, setCollapsedNodes] = useState(new Set())
 
   // Filter out self-loop edges (they can't be rendered well in ReactFlow)
-  const displayEdges = useMemo(() => data.edges.filter(e => e.source !== e.target), [data.edges])
+  const allEdges = useMemo(() => data.edges.filter(e => e.source !== e.target), [data.edges])
+
+  // Compute visible nodes/edges based on collapsed state
+  const { visibleNodes, displayEdges } = useMemo(() => {
+    if (collapsedNodes.size === 0) {
+      return { visibleNodes: data.nodes, displayEdges: allEdges }
+    }
+    // Find all nodes reachable from the start node, skipping outbound edges from collapsed nodes
+    const startId = `asset-${data.asset_id}`
+    const visible = new Set([startId])
+    // Always include collapsed nodes themselves
+    collapsedNodes.forEach(id => visible.add(id))
+    const q = [startId]
+    while (q.length) {
+      const cur = q.shift()
+      if (collapsedNodes.has(cur) && cur !== startId) continue // don't expand children of collapsed
+      allEdges.forEach(e => {
+        if (e.source === cur && !visible.has(e.target)) {
+          visible.add(e.target); q.push(e.target)
+        }
+        if (e.target === cur && !visible.has(e.source)) {
+          visible.add(e.source); q.push(e.source)
+        }
+      })
+    }
+    return {
+      visibleNodes: data.nodes.filter(n => visible.has(n.id)),
+      displayEdges: allEdges.filter(e => visible.has(e.source) && visible.has(e.target)),
+    }
+  }, [data.nodes, data.asset_id, allEdges, collapsedNodes])
 
   const styledEdges = useMemo(() => {
     // Count edges between each pair — if multiple, show detail; if unique, short type is enough
@@ -353,10 +403,17 @@ function BlastRadiusFlow({ data }) {
     })
   }, [displayEdges])
 
-  const positioned = useMemo(() => layoutNodes(data.nodes, displayEdges), [data.nodes, displayEdges])
+  const positioned = useMemo(() => {
+    const laid = layoutNodes(visibleNodes, displayEdges)
+    // Inject collapse state into node data so AssetNode can render the indicator
+    return laid.map(n => collapsedNodes.has(n.id)
+      ? { ...n, data: { ...n.data, _collapsed: true } }
+      : n
+    )
+  }, [visibleNodes, displayEdges, collapsedNodes])
 
   useEffect(() => {
-    if (!data.nodes.length) return
+    if (!visibleNodes.length) return
 
     // ── legend filter mode ───────────────────────────────────────────────
     if (legendFilter) {
@@ -364,7 +421,7 @@ function BlastRadiusFlow({ data }) {
 
       if (legendFilter.kind === 'edge') {
         // Highlight edges of this type + their connected nodes
-        data.edges.forEach(e => {
+        displayEdges.forEach(e => {
           if (e.type === legendFilter.value) {
             litNodeIds.add(e.source)
             litNodeIds.add(e.target)
@@ -386,13 +443,13 @@ function BlastRadiusFlow({ data }) {
         // node-type filter: find matching nodes via predicate
         const entry = NODE_LEGEND.find(l => l.label === legendFilter.value)
         if (entry) {
-          data.nodes.forEach(n => { if (entry.match(n)) litNodeIds.add(n.id) })
+          visibleNodes.forEach(n => { if (entry.match(n)) litNodeIds.add(n.id) })
           // Also include edges that touch at least one lit node
           const litEdgeIds = new Set(
-            data.edges.filter(e => litNodeIds.has(e.source) || litNodeIds.has(e.target)).map(e => e.id)
+            displayEdges.filter(e => litNodeIds.has(e.source) || litNodeIds.has(e.target)).map(e => e.id)
           )
           // Expand lit nodes to include the other end of those edges
-          data.edges.forEach(e => {
+          displayEdges.forEach(e => {
             if (litNodeIds.has(e.source)) litNodeIds.add(e.target)
             if (litNodeIds.has(e.target)) litNodeIds.add(e.source)
           })
@@ -437,11 +494,22 @@ function BlastRadiusFlow({ data }) {
         opacity: hasBlast && !(reachable.has(e.source) && reachable.has(e.target)) ? 0.06 : 1,
       },
     })))
-  }, [data, blastNode, legendFilter, styledEdges, positioned, displayEdges])
+  }, [data, visibleNodes, blastNode, legendFilter, styledEdges, positioned, displayEdges, collapsedNodes])
 
   const onNodeClick = useCallback((_, node) => {
     setLegendFilter(null)
     setBlastNode(prev => prev === node.id ? null : node.id)
+  }, [])
+
+  const onNodeDoubleClick = useCallback((_, node) => {
+    // Don't collapse the start node
+    if (node.data?._start) return
+    setCollapsedNodes(prev => {
+      const next = new Set(prev)
+      if (next.has(node.id)) next.delete(node.id)
+      else next.add(node.id)
+      return next
+    })
   }, [])
 
   const onLegendEdgeClick = useCallback((key) => {
@@ -457,8 +525,10 @@ function BlastRadiusFlow({ data }) {
   const hint = legendFilter
     ? `Filtering: ${legendFilter.value.replace(/_/g, ' ')} — click again to clear`
     : blastNode
-      ? 'Click same node to clear'
-      : 'Click node or legend to highlight'
+      ? 'Click same node to clear · Double-click to collapse'
+      : collapsedNodes.size > 0
+        ? `${collapsedNodes.size} node(s) collapsed · Double-click to expand`
+        : 'Click to highlight · Double-click to collapse'
 
   const hintColor = legendFilter ? '#0ea5e9' : blastNode ? '#f59e0b' : undefined
 
@@ -469,6 +539,7 @@ function BlastRadiusFlow({ data }) {
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
       onNodeClick={onNodeClick}
+      onNodeDoubleClick={onNodeDoubleClick}
       nodeTypes={nodeTypes}
       fitView
       fitViewOptions={{ padding: 0.15 }}

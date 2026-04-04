@@ -185,6 +185,25 @@ def _extract_cloud_workload(value) -> dict | None:
     return None
 
 
+def workload_to_canonical_id(workload: dict) -> str:
+    """Convert a workload dict to a stable canonical ID for dedup as instance_id.
+
+    Examples:
+      {"provider": "aws", "service": "alb", "name": "my-alb"} -> "aws:alb:my-alb"
+      {"provider": "aws", "service": "s3", "bucket": "my-bucket"} -> "aws:s3:my-bucket"
+      {"provider": "gcp", "service": "cloud_run", "name": "my-svc"} -> "gcp:cloud_run:my-svc"
+    """
+    provider = workload.get("provider", "unknown")
+    service = workload.get("service", "unknown")
+    # Pick the name field — try generic "name" first, then service-specific keys
+    name = (workload.get("name") or workload.get("bucket") or workload.get("app")
+            or workload.get("dist_id") or workload.get("site") or workload.get("profile")
+            or workload.get("account") or workload.get("endpoint") or workload.get("server")
+            or workload.get("api_id") or workload.get("function_url") or workload.get("project")
+            or "unknown")
+    return f"{provider}:{service}:{name}"
+
+
 def _apply_transform(value, transform, record):
     """Apply a transform to a value. Returns (transformed_value, error_or_None)."""
     if transform is None:

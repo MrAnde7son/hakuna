@@ -50,7 +50,14 @@ def _resolve_dot_path(obj, path):
 
 
 def _inject_auth(headers: dict, credentials: dict):
-    """Inject authentication into request headers based on credential type."""
+    """Inject authentication into request headers based on credential type.
+
+    Skips injection if an Authorization header was already set via template
+    substitution (e.g. ``Authorization: Bearer {{credentials.api_token}}``).
+    """
+    if headers.get("Authorization"):
+        return
+
     auth_type = credentials.get("_auth_type", "")
 
     if auth_type == "api_key":

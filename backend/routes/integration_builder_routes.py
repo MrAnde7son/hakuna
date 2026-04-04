@@ -201,15 +201,21 @@ async def validate_credentials(connector_id: str, body: ValidateCredentialReques
     instance_url = (body.instance_url or "").rstrip("/")
     method = val_req.get("method", "GET").upper()
 
-    # Build URL
+    # Build URL — fall back to connector's base_url when no instance_url
+    base = instance_url or (c.get("transport_config", {}).get("base_url", "")).rstrip("/")
     path = val_req.get("path", "")
     # Substitute credential values in path
     for k, v in body.values.items():
         path = path.replace("{{" + k + "}}", str(v))
-    url = f"{instance_url}{path}" if instance_url else path
+    url = f"{base}{path}" if base else path
 
-    # Build headers
+    # Build headers from validation_request.headers dict
     headers = {}
+    if val_req.get("headers"):
+        for h_name, h_val in val_req["headers"].items():
+            for k, v in body.values.items():
+                h_val = h_val.replace("{{" + k + "}}", str(v))
+            headers[h_name] = h_val
     if val_req.get("auth_header"):
         header_str = val_req["auth_header"]
         for k, v in body.values.items():
