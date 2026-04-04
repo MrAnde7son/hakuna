@@ -4698,6 +4698,70 @@ def run_dedup(body: RunDedupBody):
     return {"job_id": job.id, "status": job.status.value, "poll_url": f"/api/jobs/{job.id}/status"}
 
 
+@app.get("/api/dedup/available-sources")
+def get_available_sources(
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return distinct source_system values across assets and findings for this org."""
+    from sqlalchemy import func as sa_func
+    q = (
+        db.query(AssetObservation.source_system)
+        .distinct()
+    )
+    if org_ids:
+        q = q.filter(AssetObservation.org_id.in_(org_ids))
+    asset_sources = {row[0] for row in q.all() if row[0]}
+
+    q2 = (
+        db.query(FindingObservation.source_system)
+        .distinct()
+    )
+    if org_ids:
+        q2 = q2.filter(FindingObservation.org_id.in_(org_ids))
+    finding_sources = {row[0] for row in q2.all() if row[0]}
+
+    # Also include source_systems from Asset/Finding for orgs that predate observations
+    q3 = db.query(Asset.source_systems).join(Scan, Asset.scan_id == Scan.id)
+    q3 = apply_scan_org_filter(q3, org_ids)
+    for row in q3.all():
+        if row[0] and isinstance(row[0], list):
+            asset_sources.update(row[0])
+
+    return sorted(asset_sources | finding_sources)
+
+
+@app.post("/api/dedup/rollup", status_code=202)
+def run_rollup(db: Session = Depends(get_db)):
+    """Re-rollup all assets from their observations using current source_priority config.
+
+    Called after the user saves source_priority changes in Settings.
+    """
+    from services.job_manager import dispatch
+    from core.database import SessionLocal
+
+    def _run_rollup():
+        _db = SessionLocal()
+        try:
+            cfg = dedup_engine.load_config()
+            from services.asset_observations import rollup_all_assets
+            # Collect all source_priority configs across asset types
+            assets_cfg = cfg.get("assets", {})
+            total = 0
+            for atype, tcfg in assets_cfg.items():
+                if not isinstance(tcfg, dict):
+                    continue
+                sp = tcfg.get("source_priority")
+                if sp and any(sp.values()):
+                    total += rollup_all_assets(_db, sp)
+            return {"rolled_up": total}
+        finally:
+            _db.close()
+
+    job = dispatch("rollup_assets", _run_rollup)
+    return {"job_id": job.id, "status": job.status.value, "poll_url": f"/api/jobs/{job.id}/status"}
+
+
 # ─────────────────────────────────────────────
 # Risk Config & Recalculate
 # ─────────────────────────────────────────────

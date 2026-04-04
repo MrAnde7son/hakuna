@@ -852,10 +852,31 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
         # After reassigning children, dedup inventory on survivor assets
         # to eliminate duplicates created by merging records from multiple scans
         inv_removed = _dedup_inventory_on_assets(db, survivor_ids, cfg, ENTITY_MODEL_MAP)
+
+        # Re-rollup survivor assets using source priority (if configured)
+        _rollup_survivors(db, survivor_ids, cfg)
+
         db.commit()
         logger.info(f"Cross-scan asset dedup: removed {removed} duplicate assets, {inv_removed} duplicate inventory records (org_id={org_id!r})")
 
     return {"removed": removed, "entity_type": "assets", "scope": "cross_scan"}
+
+
+def _rollup_survivors(db, survivor_ids: set, cfg: dict) -> None:
+    """Apply source_priority rollup to survivor assets after dedup merge."""
+    # Collect source_priority from all asset type configs
+    from services.asset_observations import rollup_asset
+    assets_cfg = cfg.get("assets", {})
+    for aid in survivor_ids:
+        from models.models import Asset
+        asset = db.query(Asset).filter(Asset.id == aid).first()
+        if not asset:
+            continue
+        atype = asset.asset_type or "host"
+        type_cfg = get_asset_type_config(cfg, atype)
+        sp = type_cfg.get("source_priority")
+        if sp and any(sp.values()):
+            rollup_asset(db, aid, sp)
 
 
 def run_db_dedup(db, entity_type: str, scan_id: int | None, cfg: dict, ENTITY_MODEL_MAP: dict) -> dict:

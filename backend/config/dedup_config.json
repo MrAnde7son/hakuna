@@ -10,7 +10,13 @@
       ],
       "key_mode": "or",
       "strategy": "merge",
-      "scope": "cross_scan"
+      "scope": "cross_scan",
+      "source_priority": {
+        "*": [],
+        "hostname": [
+          "nessus"
+        ]
+      }
     },
     "web_app": {
       "enabled": true,

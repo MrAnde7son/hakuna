@@ -907,6 +907,8 @@ export const runDedup = (entity_type, scan_id = null) => request('/dedup/run', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ entity_type, scan_id }),
 })
+export const getAvailableSources = () => request('/dedup/available-sources')
+export const runRollup = () => request('/dedup/rollup', { method: 'POST' })
 
 // Mini Agents
 export const getAgentToolCatalog = () => request('/agents/tool-catalog')
