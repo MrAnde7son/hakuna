@@ -141,6 +141,50 @@ def _set_nested(obj, path, value):
 # transforms
 # ─────────────────────────────────────────────────────────
 
+_CLOUD_WORKLOAD_PATTERNS = [
+    # AWS
+    (r'^(.+?)\.elb\.amazonaws\.com\.?$', lambda m: {"provider": "aws", "service": "alb", "name": m.group(1), "region": _extract_region(m.group(1))}),
+    (r'^(.+?)\.elb\.([a-z]{2}-[a-z]+-\d+)\.amazonaws\.com\.?$', lambda m: {"provider": "aws", "service": "alb", "name": m.group(1), "region": m.group(2)}),
+    (r'^s3-website-(.+?)\.amazonaws\.com\.?$', lambda m: {"provider": "aws", "service": "s3", "bucket": None, "region": m.group(1)}),
+    (r'^(.+?)\.s3\.amazonaws\.com\.?$', lambda m: {"provider": "aws", "service": "s3", "bucket": m.group(1)}),
+    (r'^(.+?)\.s3-([a-z]{2}-[a-z]+-\d+)\.amazonaws\.com\.?$', lambda m: {"provider": "aws", "service": "s3", "bucket": m.group(1), "region": m.group(2)}),
+    (r'^(.+?)\.cloudfront\.net\.?$', lambda m: {"provider": "aws", "service": "cloudfront", "dist_id": m.group(1)}),
+    (r'^(.+?)\.execute-api\.([a-z]{2}-[a-z]+-\d+)\.amazonaws\.com\.?$', lambda m: {"provider": "aws", "service": "api_gateway", "api_id": m.group(1), "region": m.group(2)}),
+    (r'^(.+?)\.lambda-url\.([a-z]{2}-[a-z]+-\d+)\.on\.aws\.?$', lambda m: {"provider": "aws", "service": "lambda", "function_url": m.group(1), "region": m.group(2)}),
+    # GCP
+    (r'^(.+?)\.run\.app\.?$', lambda m: {"provider": "gcp", "service": "cloud_run", "name": m.group(1)}),
+    (r'^(.+?)\.appspot\.com\.?$', lambda m: {"provider": "gcp", "service": "app_engine", "app": m.group(1)}),
+    (r'^(.+?)\.cloudfunctions\.net\.?$', lambda m: {"provider": "gcp", "service": "cloud_functions", "project": m.group(1)}),
+    (r'^(.+?)\.web\.app\.?$', lambda m: {"provider": "gcp", "service": "firebase_hosting", "site": m.group(1)}),
+    # Azure
+    (r'^(.+?)\.azurewebsites\.net\.?$', lambda m: {"provider": "azure", "service": "app_service", "app": m.group(1)}),
+    (r'^(.+?)\.trafficmanager\.net\.?$', lambda m: {"provider": "azure", "service": "traffic_manager", "profile": m.group(1)}),
+    (r'^(.+?)\.azurefd\.net\.?$', lambda m: {"provider": "azure", "service": "front_door", "name": m.group(1)}),
+    (r'^(.+?)\.azure-api\.net\.?$', lambda m: {"provider": "azure", "service": "api_management", "name": m.group(1)}),
+    (r'^(.+?)\.blob\.core\.windows\.net\.?$', lambda m: {"provider": "azure", "service": "blob_storage", "account": m.group(1)}),
+    (r'^(.+?)\.azureedge\.net\.?$', lambda m: {"provider": "azure", "service": "cdn", "endpoint": m.group(1)}),
+    (r'^(.+?)\.database\.windows\.net\.?$', lambda m: {"provider": "azure", "service": "sql_database", "server": m.group(1)}),
+]
+
+
+def _extract_region(name: str) -> str | None:
+    """Try to extract an AWS region from an ALB name like 'dualstack.my-alb-123456.us-east-1'."""
+    m = re.search(r'([a-z]{2}-[a-z]+-\d+)', name)
+    return m.group(1) if m else None
+
+
+def _extract_cloud_workload(value) -> dict | None:
+    """Parse a CNAME/alias target and extract structured cloud workload info."""
+    if not value or not isinstance(value, str):
+        return None
+    target = value.strip().lower()
+    for pattern, extractor in _CLOUD_WORKLOAD_PATTERNS:
+        m = re.match(pattern, target, re.IGNORECASE)
+        if m:
+            return extractor(m)
+    return None
+
+
 def _apply_transform(value, transform, record):
     """Apply a transform to a value. Returns (transformed_value, error_or_None)."""
     if transform is None:
@@ -203,6 +247,20 @@ def _apply_transform(value, transform, record):
             return result, None
         except Exception as e:
             return None, f"Expression error: {e}"
+
+    if t == "construct_fqdn":
+        zone_field = transform.get("zone_field", "zone_name")
+        zone = record.get(zone_field, "") if isinstance(record, dict) else ""
+        name = str(value) if value is not None else ""
+        if not name or not zone:
+            return value, None
+        # "@" means apex / root
+        if name == "@" or name == zone or name.endswith("." + zone):
+            return zone if name == "@" else name, None
+        return f"{name}.{zone}", None
+
+    if t == "extract_cloud_workload":
+        return _extract_cloud_workload(value), None
 
     return value, f"Unknown transform type: {t}"
 

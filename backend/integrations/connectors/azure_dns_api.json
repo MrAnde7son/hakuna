@@ -1,0 +1,133 @@
+{
+  "id": "azure_dns_api",
+  "name": "Azure DNS — Zones & Records",
+  "description": "Pull DNS zones and record sets from Azure DNS to trace workloads behind App Service, Front Door, Traffic Manager, and API Management",
+  "logo": "/logos/vendors/azure.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://management.azure.com",
+    "method": "GET",
+    "path": "/subscriptions/{{params.subscription_id}}/resourceGroups/{{params.resource_group}}/providers/Microsoft.Network/dnsZones/{{params.zone_name}}/recordsets",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "query_params": {
+      "api-version": "2018-05-01"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextLink",
+      "cursor_param": "_next_link_url",
+      "page_size": 100,
+      "page_size_param": "$top"
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "client_credentials",
+    "token_url": "https://login.microsoftonline.com/{{params.tenant_id}}/oauth2/v2.0/token",
+    "scopes": ["https://management.azure.com/.default"],
+    "fields": [
+      {
+        "field": "client_id",
+        "label": "Application (Client) ID",
+        "type": "text",
+        "help": "From Azure AD → App registrations → your app → Overview"
+      },
+      {
+        "field": "client_secret",
+        "label": "Client Secret",
+        "type": "password",
+        "help": "From Azure AD → App registrations → your app → Certificates & secrets"
+      }
+    ]
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id",
+      "transform": {
+        "type": "expression",
+        "expr": "str(record.get('_subscription_id', '')) + ':' + str(record.get('_zone_name', '')) + ':' + str(record.get('properties', {}).get('fqdn', '')) + ':' + str(record.get('type', '').split('/')[-1] if record.get('type') else '')"
+      }
+    },
+    {
+      "source": "properties.fqdn",
+      "target": "hostname"
+    },
+    {
+      "source": "properties.fqdn",
+      "target": "fqdn"
+    },
+    {
+      "source": "properties.ARecords[0].ipv4Address",
+      "target": "ip_address"
+    },
+    {
+      "source": "properties.CNAMERecord.cname",
+      "target": "easm_data.azure_dns.cname_target"
+    },
+    {
+      "source": "properties.CNAMERecord.cname",
+      "target": "easm_data.azure_dns.workload",
+      "transform": {
+        "type": "extract_cloud_workload"
+      }
+    },
+    {
+      "source": "properties.targetResource.id",
+      "target": "easm_data.azure_dns.target_resource_id"
+    },
+    {
+      "source": "name",
+      "target": "easm_data.azure_dns.record_name"
+    },
+    {
+      "source": "type",
+      "target": "easm_data.azure_dns.record_type",
+      "transform": {
+        "type": "expression",
+        "expr": "value.split('/')[-1] if isinstance(value, str) else value"
+      }
+    },
+    {
+      "source": "properties.TTL",
+      "target": "easm_data.azure_dns.ttl",
+      "transform": {
+        "type": "integer"
+      }
+    },
+    {
+      "source": "_zone_name",
+      "target": "easm_data.azure_dns.zone_name"
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "tenant_id": {
+      "type": "string",
+      "required": true,
+      "description": "Azure AD Tenant ID (from Azure Portal → Azure Active Directory → Overview)"
+    },
+    "subscription_id": {
+      "type": "string",
+      "required": true,
+      "description": "Azure Subscription ID containing the DNS zones"
+    },
+    "resource_group": {
+      "type": "string",
+      "required": true,
+      "description": "Resource group containing the DNS zone"
+    },
+    "zone_name": {
+      "type": "string",
+      "required": true,
+      "description": "Azure DNS zone name (e.g., 'example.com')"
+    }
+  }
+}
