@@ -30,7 +30,15 @@ Compare any two scans side-by-side to see:
 
 ### Deduplication
 
-Configure deduplication settings in Settings to control how duplicate findings are merged across scans. Settings include match criteria and merge behavior.
+Deduplication is configured per asset type and entity type in Settings:
+
+- **Per-type configuration** — Each asset type (host, web_app, cloud_instance, etc.) has independent dedup settings with type-specific key fields
+- **Key fields** — Define which fields constitute a unique record (e.g., `ip` + `fqdn` for hosts, `url` for web apps, `instance_id` for cloud instances)
+- **Key mode** — `AND` (all fields must match) or `OR` (any field match triggers dedup)
+- **Merge strategy** — `merge` (combine fields from both records) or `keep_last` (newer record wins)
+- **Scope** — `cross_scan` (deduplicate across all scans) or `within_scan` (only within a single scan)
+
+Entity-level dedup (findings, users, groups, services, etc.) is also configurable with the same options.
 
 ---
 
@@ -67,12 +75,55 @@ Go to **Settings > Risk Configuration** to:
 
 ## Asset Intelligence
 
+### Multi-Type Asset Model
+
+Assets support multiple types beyond traditional hosts:
+
+| Type | Identity Keys | Description |
+|------|--------------|-------------|
+| `host` | ip, hostname, fqdn, netbios_name | Traditional network hosts, servers, endpoints |
+| `web_app` | url, domain | Web applications and sites |
+| `cloud_instance` | cloud_provider, instance_id, account_id, region | AWS EC2, Azure VM, GCP Compute |
+| `api_endpoint` | method, url | REST/GraphQL API endpoints |
+| `identity` | provider, principal_id, tenant_id | IAM users, service accounts, principals |
+| `container_image` | registry, repository, tag, digest | Docker/OCI container images |
+| `code_repo` | provider, org, repo | GitHub, GitLab, Bitbucket repositories |
+| `k8s_workload` | cluster, namespace, kind, name | Kubernetes deployments, pods, services |
+| *custom* | user-defined | Any custom type via asset type rules |
+
+Each type has its own structured identity (`asset_identity` JSON field) and type-specific metadata (`asset_attributes` JSON field).
+
+### Asset Type Rules
+
+Low-code classification rules that automatically assign asset types during ingestion:
+
+- **Condition-based matching** — Uses the unified rule engine (same format as auto-tag rules and campaigns)
+- **Priority ordering** — First matching rule (lowest priority number) wins
+- **Identity mapping** — Flexible field mapping with functions:
+  - Direct copy: `{"url": "hostname"}`
+  - Domain extraction: `{"domain": "@extract_domain(hostname)"}`
+  - Static values: `{"provider": "@static(nessus)"}`
+  - Coalesce (first non-empty): `{"url": "@coalesce(http_url,hostname)"}`
+- **Source filtering** — Rules can target specific sources (nessus, qualys, easm, integration)
+- **Built-in heuristics** — Auto-detects web apps from HTTP ports, web CPEs, and service names even without explicit rules
+
+Manage rules from **Settings > Asset Type Rules** or via the `/api/asset-type-rules` API.
+
+### Asset & Finding Observations
+
+Every asset and finding tracks per-source observations — one snapshot per source system (Nessus, CrowdStrike, EASM, integrations, etc.):
+
+- View which fields each source contributed to the merged record
+- Track first seen, last seen, and times seen per source
+- Access via the **Sources** tab on asset and finding detail pages
+- API: `GET /api/assets/{id}/sources` and `GET /api/findings/{id}/sources`
+
 ### Asset Explorer
 
 Browse all discovered assets with:
-- Filtering by hostname, IP, OS, environment, tags
+- Filtering by hostname, IP, OS, environment, asset type, tags
 - NLP search (e.g., "production Windows servers")
-- Drill-down to findings, inventory, and ownership
+- Drill-down to findings, inventory, observations, and ownership
 
 ### Asset Classification
 
