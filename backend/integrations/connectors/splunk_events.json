@@ -1,5 +1,6 @@
 {
   "id": "splunk_events",
+  "relay_capable": true,
   "name": "Splunk \u2014 Search Results",
   "description": "Pull security events and findings from Splunk search results",
   "logo": "/logos/vendors/splunk.svg",

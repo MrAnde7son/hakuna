@@ -6,7 +6,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from models.models import Integration, IntegrationRun, Scan
+from models.models import Integration, IntegrationRun, Scan, RelayAgent
 from services.field_mapper import map_record, render_template
 from services.upsert_handler import upsert, upsert_batch
 from services import credential_vault
@@ -63,10 +63,26 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
             credentials = await load_credentials(db, integration.credentials_id, integration.org_id)
 
         # Get transport
-        transport_cls = TRANSPORTS.get(integration.transport_type)
-        if not transport_cls:
-            raise ValueError(f"Unknown transport type: {integration.transport_type}")
-        transport = transport_cls(db=db) if integration.transport_type == "file" else transport_cls()
+        if integration.transport_type == "relay":
+            from services.transports.relay_transport import RelayTransport
+            from services.relay_broker import get_relay_broker
+            if not integration.relay_agent_id:
+                raise ValueError("Integration uses relay transport but no relay agent is assigned")
+            agent = db.query(RelayAgent).filter(RelayAgent.id == integration.relay_agent_id).first()
+            if not agent:
+                raise ValueError(f"Relay agent {integration.relay_agent_id} not found")
+            broker = get_relay_broker()
+            if not broker.is_connected(agent.id):
+                raise ConnectionError(f"Relay agent '{agent.name}' is offline")
+            transport = RelayTransport(
+                agent_id=agent.id,
+                credentials_mode=agent.credentials_mode or "agent_local",
+            )
+        else:
+            transport_cls = TRANSPORTS.get(integration.transport_type)
+            if not transport_cls:
+                raise ValueError(f"Unknown transport type: {integration.transport_type}")
+            transport = transport_cls(db=db) if integration.transport_type == "file" else transport_cls()
 
         config = integration.transport_config or {}
         config["records_path"] = integration.records_path

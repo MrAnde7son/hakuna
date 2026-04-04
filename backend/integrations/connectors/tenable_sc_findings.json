@@ -1,5 +1,6 @@
 {
   "id": "tenable_sc_findings",
+  "relay_capable": true,
   "name": "Tenable Security Center \u2014 Findings",
   "description": "Pull vulnerability findings from Tenable Security Center",
   "logo": "/logos/vendors/tenable.svg",
