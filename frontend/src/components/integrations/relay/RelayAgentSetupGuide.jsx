@@ -170,7 +170,7 @@ export default function RelayAgentSetupGuide({ agent, onBack }) {
             width: 24, height: 24, borderRadius: '50%', background: 'var(--accent)',
             color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: 12, fontWeight: 700, flexShrink: 0,
-          }}>{setup.credentials_mode === 'agent_local' ? '4' : '3'}</div>
+          }}>{setup.credentials_mode === 'agent_local' ? 4 : 3}</div>
           <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0, color: 'var(--text)' }}>Verify Connection</h3>
         </div>
         <div style={{ marginLeft: 32, fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.8 }}>

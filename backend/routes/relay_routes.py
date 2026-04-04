@@ -279,10 +279,6 @@ async def get_setup_instructions(
         "    environment:\n"
         "      HAKUNA_AGENT_TOKEN: <your-agent-token>\n"
         "      HAKUNA_CLOUD_URL: wss://<your-hakuna-host>/ws/relay\n"
-        "      # Add on-prem service credentials below:\n"
-        "      # JIRA_BASE_URL: http://jira.internal:8080\n"
-        "      # JIRA_USERNAME: svc-hakuna\n"
-        "      # JIRA_PASSWORD: secret\n"
     )
 
     # Agent env vars reference
@@ -293,25 +289,6 @@ async def get_setup_instructions(
         {"name": "HAKUNA_RECONNECT_MAX", "required": False, "description": "Max reconnect delay in seconds. Default: 60"},
     ]
 
-    # Per-product credential env vars
-    product_env_examples = [
-        {"product": "Jira Server/DC", "vars": [
-            {"name": "JIRA_BASE_URL", "example": "http://jira.internal:8080"},
-            {"name": "JIRA_USERNAME", "example": "svc-hakuna"},
-            {"name": "JIRA_PASSWORD", "example": "<password>"},
-        ]},
-        {"product": "ServiceNow", "vars": [
-            {"name": "SERVICENOW_BASE_URL", "example": "https://yourcompany.service-now.com"},
-            {"name": "SERVICENOW_USERNAME", "example": "svc-hakuna"},
-            {"name": "SERVICENOW_PASSWORD", "example": "<password>"},
-        ]},
-        {"product": "CrowdStrike (GovCloud)", "vars": [
-            {"name": "CROWDSTRIKE_BASE_URL", "example": "https://api.laggar.gcw.crowdstrike.com"},
-            {"name": "CROWDSTRIKE_CLIENT_ID", "example": "<client-id>"},
-            {"name": "CROWDSTRIKE_CLIENT_SECRET", "example": "<client-secret>"},
-        ]},
-    ]
-
     return {
         "agent_id": agent.id,
         "agent_name": agent.name,
@@ -319,7 +296,6 @@ async def get_setup_instructions(
         "docker_run": docker_cmd,
         "docker_compose": compose_yaml,
         "env_vars": env_vars,
-        "product_examples": product_env_examples,
         "steps": [
             "1. Copy the agent token from above (shown only once at creation).",
             "2. Deploy the relay agent container in your network using Docker or Docker Compose.",
