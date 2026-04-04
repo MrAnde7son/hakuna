@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <rect width="40" height="40" rx="8" fill="#1BDBDB"/>
+  <!-- GoDaddy heart shape -->
+  <path d="M20 28 C14 24 9 19 9 15 C9 12 11 10 14 10 C16 10 18 11 20 14 C22 11 24 10 26 10 C29 10 31 12 31 15 C31 19 26 24 20 28Z" fill="#fff"/>
+  <!-- Eye dot -->
+  <circle cx="22" cy="16" r="1.5" fill="#1BDBDB"/>
+</svg>
