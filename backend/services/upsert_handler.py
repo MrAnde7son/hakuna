@@ -14,6 +14,7 @@ from sqlalchemy import and_
 
 from models.models import Asset, Finding
 from integrations.model_registry import get_model_meta
+from services.asset_observations import record_observation, record_finding_observation
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,12 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
         # Side effect: create policy assignment if present
         _handle_policy_assignment(db, record, existing.id, scan_id)
 
+        # Record per-source observation
+        record_observation(
+            db, asset_id=existing.id, source_system=source_system,
+            raw_fields=record, scan_id=scan_id,
+        )
+
         return UpsertResult(action="updated" if updated else "skipped", id=existing.id)
     else:
         # Evaluate asset-type rules before insert (if no type already set by mapping)
@@ -134,6 +141,12 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
 
         # Side effect: create policy assignment if present
         _handle_policy_assignment(db, record, asset.id, scan_id)
+
+        # Record per-source observation
+        record_observation(
+            db, asset_id=asset.id, source_system=source_system,
+            raw_fields=record, scan_id=scan_id,
+        )
 
         return UpsertResult(action="inserted", id=asset.id)
 
@@ -237,6 +250,12 @@ def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: 
         _accumulate_source(existing, source_system)
         # Do NOT change workflow_status if user has set it
 
+        # Record per-source finding observation
+        record_finding_observation(
+            db, finding_id=existing.id, source_system=source_system,
+            raw_fields=record, scan_id=scan_id,
+        )
+
         return UpsertResult(action="updated" if updated else "skipped", id=existing.id)
     else:
         # Insert new finding
@@ -264,6 +283,13 @@ def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: 
         )
         db.add(finding)
         db.flush()
+
+        # Record per-source finding observation
+        record_finding_observation(
+            db, finding_id=finding.id, source_system=source_system,
+            raw_fields=record, scan_id=scan_id,
+        )
+
         return UpsertResult(action="inserted", id=finding.id)
 
 

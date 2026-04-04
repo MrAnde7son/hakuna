@@ -15,6 +15,7 @@ from sqlalchemy import cast, or_, String
 from sqlalchemy.orm import Session
 
 from models.models import Asset, Finding, Scan, Organization
+from services.asset_observations import record_observation, record_finding_observation
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +333,13 @@ def _import_adhoc_findings(db: Session, scan: Scan, job_result: dict) -> int:
         if "vm_scanner" not in existing_sources:
             asset.source_systems = existing_sources + ["vm_scanner"]
 
+    # Record per-source observation
+    record_observation(
+        db, asset_id=asset.id, source_system="vm_scanner",
+        raw_fields={"ip": target if _is_ip(target) else "", "hostname": target if not _is_ip(target) else ""},
+        scan_id=scan.id, org_id=scan.org_id,
+    )
+
     if not findings_data:
         return 0
 
@@ -371,9 +379,14 @@ def _import_adhoc_findings(db: Session, scan: Scan, job_result: dict) -> int:
             last_seen=now,
         )
         db.add(finding)
+        db.flush()
+
+        record_finding_observation(
+            db, finding_id=finding.id, source_system="vm_scanner",
+            raw_fields=f, scan_id=scan.id, org_id=scan.org_id,
+        )
         created += 1
 
-    db.flush()
     return created
 
 

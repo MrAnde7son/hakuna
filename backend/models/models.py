@@ -326,6 +326,35 @@ class Asset(Base):
 
     scan = relationship("Scan", back_populates="assets")
     findings = relationship("Finding", back_populates="asset", cascade="all, delete-orphan")
+    observations = relationship("AssetObservation", back_populates="asset", cascade="all, delete-orphan")
+
+
+class AssetObservation(Base):
+    """Per-source snapshot of an asset — one row per (asset, source_system).
+
+    Stores the raw fields each source reported so the UI can show
+    what each scanner/integration contributed to the merged asset.
+    """
+    __tablename__ = "asset_observations"
+    __table_args__ = (
+        UniqueConstraint("asset_id", "source_system", name="uq_asset_obs_source"),
+        Index("ix_asset_observations_asset_id", "asset_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
+    source_system = Column(String, nullable=False)       # "nessus" | "crowdstrike" | "wiz" | "easm" | …
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+
+    # Raw fields as reported by this source
+    raw_fields = Column(JSON, default=dict)              # Full snapshot: {ip, hostname, fqdn, os, ...}
+
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
+    times_seen = Column(Integer, default=1)
+
+    asset = relationship("Asset", back_populates="observations")
 
 
 @importable(
@@ -461,6 +490,34 @@ class Finding(Base):
     asset = relationship("Asset", back_populates="findings")
     automate_clicks = relationship("AutomateClick", back_populates="finding", cascade="all, delete-orphan")
     tickets = relationship("FindingTicket", back_populates="finding", cascade="all, delete-orphan")
+    observations = relationship("FindingObservation", back_populates="finding", cascade="all, delete-orphan")
+
+
+class FindingObservation(Base):
+    """Per-source snapshot of a finding — one row per (finding, source_system).
+
+    Stores the raw fields each source reported so the UI can show
+    what each scanner/integration contributed to the merged finding.
+    """
+    __tablename__ = "finding_observations"
+    __table_args__ = (
+        UniqueConstraint("finding_id", "source_system", name="uq_finding_obs_source"),
+        Index("ix_finding_observations_finding_id", "finding_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False)
+    source_system = Column(String, nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+
+    raw_fields = Column(JSON, default=dict)
+
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
+    times_seen = Column(Integer, default=1)
+
+    finding = relationship("Finding", back_populates="observations")
 
 
 class FindingTicket(Base):

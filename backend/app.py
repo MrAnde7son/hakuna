@@ -21,7 +21,7 @@ from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Query, Re
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, desc, distinct, or_, cast, Text
 
 from core.database import get_db, init_db
@@ -43,7 +43,7 @@ from models.models import (
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
     Tag, TagAssignment, AutoTagRule, AssetTypeRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
     SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog, AggregatedSolution,
-    BenchmarkReference,
+    BenchmarkReference, AssetObservation, FindingObservation,
 )
 from parsers.parser import detect_and_parse, load_intel_json
 from parsers.registry import detect_parser, list_parsers, init_parsers
@@ -63,6 +63,7 @@ from services.nlp_filters import apply_asset_nlp_filters, apply_finding_nlp_filt
 import services.integrations as integ_module
 import services.ownership_inference as ownership_inference
 from services.easm import enrich_assets_from_easm
+from services.asset_observations import record_observation as record_asset_observation
 import services.solution_aggregator as solution_aggregator
 from core.audit import log_audit, diff as _diff
 from core.auth import (
@@ -936,6 +937,12 @@ def _run_scan_ingest(
             )
             db.add(asset)
             db.flush()
+            # Record per-source observation
+            record_asset_observation(
+                db, asset_id=asset.id,
+                source_system=source_parser.source_type,
+                raw_fields=asset_data, scan_id=scan.id, org_id=scan.org_id,
+            )
             # Register both hostname and IP so finding lookup works after dedup merges
             if asset_data.get("hostname"):
                 asset_map[asset_data["hostname"]] = asset
@@ -948,6 +955,7 @@ def _run_scan_ingest(
                     asset_map[key] = asset
 
         # Create Finding records
+        _pending_finding_obs = []
         for finding_data in parsed["findings"]:
             host_key = finding_data.get("host_name")
             asset = asset_map.get(host_key)
@@ -1015,8 +1023,19 @@ def _run_scan_ingest(
                 source_systems=[source_parser.source_type],
             )
             db.add(finding)
+            _pending_finding_obs.append((finding, finding_data))
 
         db.flush()
+
+        # Record per-source observations for all findings (IDs now assigned after flush)
+        from services.asset_observations import record_finding_observation
+        for finding, finding_data in _pending_finding_obs:
+            record_finding_observation(
+                db, finding_id=finding.id,
+                source_system=source_parser.source_type,
+                raw_fields=finding_data,
+                scan_id=scan.id, org_id=scan.org_id,
+            )
 
         # ── Recount severity per asset (covers placeholder assets created mid-loop) ──
         from sqlalchemy import func as sa_func
@@ -1826,6 +1845,58 @@ def get_asset(asset_id: int, db: Session = Depends(get_db), org_ids: Optional[Li
     if not asset:
         raise HTTPException(404, "Asset not found")
     return _asset_to_dict(asset)
+
+
+@app.get("/api/assets/{asset_id}/sources")
+def get_asset_sources(asset_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    """Return per-source observation snapshots for a deduplicated asset."""
+    query = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id == asset_id)
+    query = apply_scan_org_filter(query, org_ids)
+    if not query.first():
+        raise HTTPException(404, "Asset not found")
+    observations = (
+        db.query(AssetObservation)
+        .filter(AssetObservation.asset_id == asset_id)
+        .order_by(AssetObservation.last_seen.desc())
+        .all()
+    )
+    return [
+        {
+            "id": obs.id,
+            "source_system": obs.source_system,
+            "raw_fields": obs.raw_fields or {},
+            "first_seen": obs.first_seen.isoformat() if obs.first_seen else None,
+            "last_seen": obs.last_seen.isoformat() if obs.last_seen else None,
+            "times_seen": obs.times_seen,
+        }
+        for obs in observations
+    ]
+
+
+@app.get("/api/findings/{finding_id}/sources")
+def get_finding_sources(finding_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    """Return per-source observation snapshots for a deduplicated finding."""
+    query = db.query(Finding).join(Scan, Finding.scan_id == Scan.id).filter(Finding.id == finding_id)
+    query = apply_scan_org_filter(query, org_ids)
+    if not query.first():
+        raise HTTPException(404, "Finding not found")
+    observations = (
+        db.query(FindingObservation)
+        .filter(FindingObservation.finding_id == finding_id)
+        .order_by(FindingObservation.last_seen.desc())
+        .all()
+    )
+    return [
+        {
+            "id": obs.id,
+            "source_system": obs.source_system,
+            "raw_fields": obs.raw_fields or {},
+            "first_seen": obs.first_seen.isoformat() if obs.first_seen else None,
+            "last_seen": obs.last_seen.isoformat() if obs.last_seen else None,
+            "times_seen": obs.times_seen,
+        }
+        for obs in observations
+    ]
 
 
 @app.get("/api/assets/{asset_id}/risk-breakdown")
@@ -5016,7 +5087,6 @@ class CampaignFindingUpdateBody(BaseModel):
 
 def _serialize_finding(f: Finding, asset: Asset = None) -> dict:
     """Minimal finding dict for campaign results."""
-    own = f.ownership[0] if f.ownership else None
     return {
         "id": f.id,
         "plugin_id": f.plugin_id,
@@ -5026,35 +5096,22 @@ def _serialize_finding(f: Finding, asset: Asset = None) -> dict:
         "severity_label": f.severity_label,
         "cvss2_score": f.cvss2_score,
         "cvss3_score": f.cvss3_score,
-        "cvss4_score": f.cvss4_score,
         "vpr_score": f.vpr_score,
         "priority_score": f.priority_score,
-        "effort_level": f.effort_level,
         "owner_suggestion": f.owner_suggestion,
         "synopsis": f.synopsis,
-        "solution": f.solution,
         "remediation_steps": f.remediation_steps,
         "cves": f.cves or [],
         "exploit_available": f.exploit_available,
+        "exploit_maturity": f.exploit_maturity,
         "zero_day": f.zero_day,
         "is_kev": f.is_kev or False,
         "epss_score": f.epss_score,
-        "epss_percentile": f.epss_percentile,
         "ransomware_linked": f.ransomware_linked or False,
         "trending_in_news": f.trending_in_news or False,
-        "matched_ttps": f.matched_ttps or [],
         "port": f.port,
-        "protocol": f.protocol,
-        "asset_id": f.asset_id,
         "asset_ip": asset.ip if asset else None,
         "asset_hostname": (asset.hostname or asset.fqdn or asset.ip) if asset else None,
-        "ownership": {
-            "owner_name": own.owner_name,
-            "owner_email": own.owner_email,
-            "owner_role": own.owner_role,
-            "team": own.team,
-            "notes": own.notes,
-        } if own else None,
     }
 
 
@@ -5288,7 +5345,14 @@ def list_campaigns(scan_id: Optional[int] = None, db: Session = Depends(get_db),
 @app.get("/api/campaigns/{campaign_id}")
 def get_campaign(campaign_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Get a campaign with its findings grouped by owner."""
-    query = db.query(Campaign).filter(Campaign.id == campaign_id)
+    query = db.query(Campaign).options(
+        selectinload(Campaign.findings)
+        .joinedload(CampaignFinding.finding)
+        .options(
+            joinedload(Finding.asset).selectinload(Asset.ownership),
+            selectinload(Finding.ownership),
+        )
+    ).filter(Campaign.id == campaign_id)
     query = apply_org_filter(query, Campaign, org_ids)
     campaign = query.first()
     if not campaign:

@@ -11,7 +11,7 @@ import { filtersToConditions } from '../../utils/filtersToConditions.js'
 import BlastRadiusPanel, { BlastRadiusScore } from '../campaigns/BlastRadiusPanel.jsx'
 import NLPSearchBar from '../shared/NLPSearchBar.jsx'
 import NewSinceBanner from '../notifications/NewSinceBanner.jsx'
-import { getAssetDisplayName, getAssetSecondaryInfo, getAssetTarget } from '../../utils/assetDisplay.js'
+import { getAssetDisplayName, getAssetSecondaryInfo, getAssetTarget, getAssetTypeLabel } from '../../utils/assetDisplay.js'
 
 function RiskScore({ score }) {
   const color = score >= 8 ? 'var(--critical)' : score >= 6 ? 'var(--high)' : score >= 4 ? 'var(--medium)' : 'var(--low)'
@@ -630,6 +630,10 @@ export default function AssetInventory() {
           )}
         </div>
       )
+    },
+    {
+      key: 'asset_type', label: t('assets.type', 'Type'), width: '100px', sortable: true,
+      render: (_, row) => <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{getAssetTypeLabel(row.asset_type)}</span>
     },
     {
       key: 'os', label: t('assets.os'), width: '15%', sortable: true,

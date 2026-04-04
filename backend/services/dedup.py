@@ -644,6 +644,10 @@ def _reassign_asset_children(db, old_asset_id: int, new_asset_id: int, ENTITY_MO
             db.delete(ta)
         else:
             ta.asset_id = new_asset_id
+    # Reassign per-source observations (merge if same source exists on both sides)
+    from services.asset_observations import reassign_observations
+    reassign_observations(db, old_asset_id, new_asset_id)
+
     for entity_type, entry in ENTITY_MODEL_MAP.items():
         if entity_type in ("assets", "findings"):
             continue
@@ -951,6 +955,9 @@ def run_db_dedup(db, entity_type: str, scan_id: int | None, cfg: dict, ENTITY_MO
             # and leaves no orphaned inventory rows.
             _reassign_asset_children(db, row.id, survivor.id, ENTITY_MODEL_MAP)
             db.expire(row)  # force SQLAlchemy to reload relationship collections
+        elif entity_type == "findings":
+            from services.asset_observations import reassign_finding_observations
+            reassign_finding_observations(db, row.id, survivor.id)
         db.delete(row)
 
     if removed:

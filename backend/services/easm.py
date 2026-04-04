@@ -21,6 +21,7 @@ from models.models import (
 )
 
 from apscheduler.triggers.cron import CronTrigger
+from services.asset_observations import record_observation
 
 logger = logging.getLogger(__name__)
 
@@ -684,6 +685,20 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
     for f in findings_to_add:
         f.source_systems = ["easm"]
     db.add_all(findings_to_add)
+    db.flush()
+
+    # Record per-source finding observations
+    from services.asset_observations import record_finding_observation
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    _org_id = scan.org_id if scan else None
+    for f in findings_to_add:
+        record_finding_observation(
+            db, finding_id=f.id, source_system="easm",
+            raw_fields={"plugin_id": f.plugin_id, "plugin_name": f.plugin_name,
+                         "severity": f.severity, "plugin_output": f.plugin_output},
+            scan_id=scan_id, org_id=_org_id,
+        )
+
     return len(findings_to_add)
 
 
@@ -860,6 +875,14 @@ def _import_assets_for_domain(
             db.add(asset)
             db.flush()
         created += 1
+
+        # Record per-source observation for EASM
+        record_observation(
+            db, asset_id=asset.id, source_system="easm",
+            raw_fields={"ip": ip, "hostname": hostname, "fqdn": fqdn,
+                         "os": os_hint, "easm_data": easm_data},
+            scan_id=scan.id, org_id=scan.org_id,
+        )
 
         findings_created += _generate_easm_findings(db, scan.id, asset, ea)
 
