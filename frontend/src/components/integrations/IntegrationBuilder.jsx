@@ -87,6 +87,34 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [oauthDiscovering, setOauthDiscovering] = useState(false)
   const [oauthDiscovered, setOauthDiscovered] = useState(null) // null | false | { token_endpoint, scopes_supported }
 
+  // Connector params (e.g. zone_id for Cloudflare)
+  const [connectorParams, setConnectorParams] = useState({})
+
+  // Resolve {{params.*}} placeholders in transport config
+  const resolveTransportConfig = () => {
+    const cfg = { ...transportConfig }
+    if (cfg.path && Object.keys(connectorParams).length > 0) {
+      for (const [k, v] of Object.entries(connectorParams)) {
+        cfg.path = cfg.path.replaceAll(`{{params.${k}}}`, v)
+      }
+      if (cfg.query_params) {
+        const qp = { ...cfg.query_params }
+        for (const [qk, qv] of Object.entries(qp)) {
+          if (typeof qv === 'string') {
+            let resolved = qv
+            for (const [k, v] of Object.entries(connectorParams)) {
+              resolved = resolved.replaceAll(`{{params.${k}}}`, v)
+            }
+            if (resolved.includes('{{params.')) delete qp[qk]
+            else qp[qk] = resolved
+          }
+        }
+        cfg.query_params = qp
+      }
+    }
+    return cfg
+  }
+
   // Custom request headers (key-value pairs)
   const [customHeaders, setCustomHeaders] = useState([]) // [{key, value}]
   // Custom request body params (key-value pairs, for POST/PUT/PATCH)
@@ -208,6 +236,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       setFieldMap(detail.default_field_map || [])
       setDedupKey(detail.dedup_key || [])
       setRecordsPath(detail.records_path || '')
+      setConnectorParams({})
       setIntegrationName(detail.name)
 
       // Load schema for the connector's target entity
@@ -283,7 +312,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
 
       const result = await integrationConnect({
         transport_type: transportType,
-        transport_config: transportConfig,
+        transport_config: resolveTransportConfig(),
         credentials_id: cId,
         records_path: undefined, // don't send — we'll pick from response
       })
@@ -315,7 +344,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     try {
       const result = await integrationConnect({
         transport_type: transportType,
-        transport_config: transportConfig,
+        transport_config: resolveTransportConfig(),
         credentials_id: credentialsId,
         records_path: path,
       })
@@ -335,7 +364,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     try {
       const result = await integrationPreview({
         transport_type: transportType,
-        transport_config: transportConfig,
+        transport_config: resolveTransportConfig(),
         credentials_id: credentialsId,
         records_path: recordsPath || undefined,
         field_map: fieldMap,
@@ -378,7 +407,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         name: integrationName,
         direction, entity,
         transport_type: useRelay ? 'relay' : transportType,
-        transport_config: transportConfig,
+        transport_config: resolveTransportConfig(),
         credentials_id: useRelay ? null : credentialsId,
         records_path: recordsPath || null,
         field_map: fieldMap,
@@ -698,6 +727,28 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
             onChange={e => setTransportConfig({ ...transportConfig, path: e.target.value })}
             style={inputStyle}
           />
+
+          {/* Connector params (e.g. zone_id for Cloudflare) */}
+          {connectorDetail?.params_schema && Object.keys(connectorDetail.params_schema).length > 0 && (
+            <div style={{ padding: 16, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Parameters
+              </div>
+              {Object.entries(connectorDetail.params_schema).map(([key, schema]) => (
+                <div key={key} style={{ marginBottom: 8 }}>
+                  <input
+                    placeholder={schema.description || key}
+                    value={connectorParams[key] || ''}
+                    onChange={e => setConnectorParams(p => ({ ...p, [key]: e.target.value }))}
+                    style={inputStyle}
+                  />
+                  {schema.required && !connectorParams[key] && (
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>Required</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Inline auth — shown when no credentials yet, or when editing (to allow updating) */}
           {(!credentialsId || editId) && (

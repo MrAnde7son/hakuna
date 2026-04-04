@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowRight, Wand2, X, ChevronDown, ChevronRight } from 'lucide-react'
+import { ArrowRight, Wand2, X, ChevronDown, ChevronRight, Plus } from 'lucide-react'
 import { Button, Spinner, InlineSpinner } from '../../shared/ui.jsx'
 
 const TRANSFORM_TYPES = [
@@ -75,12 +75,64 @@ export default function StepFieldMapper({
     !sourceFilter || p.path.toLowerCase().includes(sourceFilter.toLowerCase())
   )
 
-  // Group schema by group
+  // Track custom sub-keys added by the user for expandable JSON fields
+  const [customSubKeys, setCustomSubKeys] = useState({}) // { "asset_attributes": ["zone_name", ...] }
+  const [addingSubKey, setAddingSubKey] = useState(null)  // field name currently adding to
+  const [newSubKeyName, setNewSubKeyName] = useState('')
+
+  const handleAddCustomSubKey = (parentName) => {
+    const key = newSubKeyName.trim().replace(/\s+/g, '_').toLowerCase()
+    if (!key) return
+    const existing = customSubKeys[parentName] || []
+    if (!existing.includes(key)) {
+      setCustomSubKeys({ ...customSubKeys, [parentName]: [...existing, key] })
+    }
+    setNewSubKeyName('')
+    setAddingSubKey(null)
+  }
+
+  // Group schema by group, expanding JSON fields with sub-keys
   const schemaGroups = {}
   schema.forEach(f => {
     const g = f.group || 'Other'
     if (!schemaGroups[g]) schemaGroups[g] = []
-    schemaGroups[g].push(f)
+
+    if (f.expandable && f.sub_fields) {
+      // Add the sub-fields as individual targets with dot-notation names
+      const hintNames = new Set(f.sub_fields.map(sf => sf.name))
+      const customKeys = (customSubKeys[f.name] || []).filter(k => !hintNames.has(k))
+
+      // Also detect sub-keys already mapped in fieldMap (e.g. from default_field_map)
+      const mappedSubKeys = fieldMap
+        .filter(m => m.target.startsWith(f.name + '.'))
+        .map(m => m.target.slice(f.name.length + 1).split('.')[0])
+        .filter(k => !hintNames.has(k) && !customKeys.includes(k))
+
+      const allSubFields = [
+        ...f.sub_fields.map(sf => ({
+          name: `${f.name}.${sf.name}`,
+          type: sf.type || 'string',
+          required: false,
+          group: g,
+          description: sf.description || '',
+          parentJson: f.name,
+        })),
+        ...[...customKeys, ...mappedSubKeys].map(k => ({
+          name: `${f.name}.${k}`,
+          type: 'string',
+          required: false,
+          group: g,
+          description: '',
+          parentJson: f.name,
+        })),
+      ]
+
+      // Add a marker entry for the expandable group header + add button
+      schemaGroups[g].push({ ...f, _expandableHeader: true })
+      allSubFields.forEach(sf => schemaGroups[g].push(sf))
+    } else {
+      schemaGroups[g].push(f)
+    }
   })
 
   return (
@@ -183,15 +235,67 @@ export default function StepFieldMapper({
             {Object.entries(schemaGroups).map(([group, fields]) => (
               <GroupSection key={group} title={group.toUpperCase()}>
                 {fields.map(f => {
+                  // Expandable JSON group header (e.g. "asset_attributes")
+                  if (f._expandableHeader) {
+                    return (
+                      <div key={f.name + '__header'} style={{
+                        padding: '5px 10px', display: 'flex', alignItems: 'center', gap: 6,
+                        borderBottom: '1px solid var(--border)',
+                        background: 'var(--bg)',
+                      }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', flex: 1 }}>
+                          {f.name}
+                        </span>
+                        <span style={{ fontSize: 9, color: 'var(--text-muted)', background: 'var(--border)', padding: '1px 5px', borderRadius: 3 }}>
+                          json
+                        </span>
+                        {addingSubKey === f.name ? (
+                          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                            <input
+                              autoFocus
+                              placeholder="key_name"
+                              value={newSubKeyName}
+                              onChange={e => setNewSubKeyName(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') handleAddCustomSubKey(f.name); if (e.key === 'Escape') setAddingSubKey(null) }}
+                              style={{ width: 100, fontSize: 10, padding: '2px 6px', background: 'var(--bg)', border: '1px solid var(--accent)', borderRadius: 4, color: 'var(--text)' }}
+                            />
+                            <button onClick={() => handleAddCustomSubKey(f.name)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--accent)', fontSize: 10, fontWeight: 600 }}>
+                              Add
+                            </button>
+                            <button onClick={() => { setAddingSubKey(null); setNewSubKeyName('') }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                              <X size={12} />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={e => { e.stopPropagation(); setAddingSubKey(f.name) }}
+                            title="Add custom key"
+                            style={{
+                              background: 'none', border: '1px dashed var(--border)', borderRadius: 3,
+                              cursor: 'pointer', color: 'var(--text-muted)', padding: '1px 6px',
+                              fontSize: 10, display: 'flex', alignItems: 'center', gap: 2,
+                            }}
+                          >
+                            <Plus size={10} /> key
+                          </button>
+                        )}
+                      </div>
+                    )
+                  }
+
                   const mappingIdx = fieldMap.findIndex(m => m.target === f.name)
                   const mapping = mappingIdx >= 0 ? fieldMap[mappingIdx] : null
                   const isRequired = f.required
+                  const isSubField = !!f.parentJson
+                  const displayName = isSubField ? f.name.split('.').slice(1).join('.') : f.name
+
                   return (
                     <div
                       key={f.name}
                       onClick={() => handleClickTarget(f.name)}
                       style={{
                         padding: '6px 10px', display: 'flex', alignItems: 'center', gap: 6,
+                        paddingLeft: isSubField ? 24 : 10,
                         borderBottom: '1px solid var(--border)',
                         cursor: selectedSource ? 'crosshair' : 'default',
                         background: selectedSource ? 'var(--bg-card)' : 'transparent',
@@ -199,8 +303,8 @@ export default function StepFieldMapper({
                     >
                       {mapping && <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }} />}
                       {!mapping && isRequired && <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#ef4444', flexShrink: 0 }} />}
-                      <span style={{ fontSize: 12, flex: 1 }}>
-                        {f.name}
+                      <span style={{ fontSize: 12, flex: 1, fontFamily: isSubField ? 'var(--mono)' : 'inherit', color: isSubField ? 'var(--text)' : 'inherit' }}>
+                        {displayName}
                         {isRequired && <span style={{ color: '#ef4444', marginLeft: 2 }}>*</span>}
                       </span>
                       <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{f.type}</span>

@@ -648,6 +648,9 @@ def _reassign_asset_children(db, old_asset_id: int, new_asset_id: int, ENTITY_MO
     from services.asset_observations import reassign_observations
     reassign_observations(db, old_asset_id, new_asset_id)
 
+    from services.asset_relationship_engine import reassign_relationships
+    reassign_relationships(db, old_asset_id, new_asset_id)
+
     for entity_type, entry in ENTITY_MODEL_MAP.items():
         if entity_type in ("assets", "findings"):
             continue

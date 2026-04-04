@@ -1,0 +1,162 @@
+{
+  "id": "godaddy_api",
+  "name": "GoDaddy — Domains & DNS",
+  "description": "Pull domain registrations and DNS records from GoDaddy to discover all authoritative DNS records and domain expiry dates for takeover risk assessment",
+  "logo": "/logos/vendors/godaddy.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.godaddy.com",
+    "method": "GET",
+    "path": "/v1/domains/{{params.domain}}/records",
+    "headers": {
+      "Authorization": "sso-key {{credentials.api_key}}:{{credentials.api_secret}}",
+      "Content-Type": "application/json"
+    },
+    "query_params": {
+      "type": "{{params.record_type}}"
+    },
+    "pagination": {
+      "strategy": "none"
+    }
+  },
+  "records_path": "",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Go to developer.godaddy.com and sign in with your GoDaddy account"
+      },
+      {
+        "instruction": "Navigate to API Keys and click 'Create New API Key'. Select 'Production' environment."
+      },
+      {
+        "instruction": "Copy the API Key",
+        "capture": {
+          "field": "api_key",
+          "label": "Paste API Key here",
+          "type": "text",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the API Secret (shown only once after creation)",
+        "capture": {
+          "field": "api_secret",
+          "label": "Paste API Secret here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/v1/domains",
+      "headers": {
+        "Authorization": "sso-key {{api_key}}:{{api_secret}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to GoDaddy API. Verify your API key and secret are for the Production environment."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "name",
+      "target": "source_id",
+      "transform": {
+        "type": "expression",
+        "expr": "str(record.get('_domain', '')) + ':' + str(record.get('type', '')) + ':' + str(value)"
+      }
+    },
+    {
+      "source": "name",
+      "target": "hostname",
+      "transform": {
+        "type": "construct_fqdn",
+        "zone_field": "_domain"
+      }
+    },
+    {
+      "source": "name",
+      "target": "fqdn",
+      "transform": {
+        "type": "construct_fqdn",
+        "zone_field": "_domain"
+      }
+    },
+    {
+      "source": "data",
+      "target": "ip_address"
+    },
+    {
+      "source": "data",
+      "target": "easm_data.godaddy_dns.workload",
+      "transform": {
+        "type": "extract_cloud_workload"
+      }
+    },
+    {
+      "source": "type",
+      "target": "easm_data.godaddy_dns.record_type"
+    },
+    {
+      "source": "ttl",
+      "target": "easm_data.godaddy_dns.ttl",
+      "transform": {
+        "type": "integer"
+      }
+    },
+    {
+      "source": "_domain",
+      "target": "easm_data.godaddy_dns.domain"
+    },
+    {
+      "source": "_domain_expiry",
+      "target": "easm_data.godaddy_dns.domain_expiry",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "_nameservers",
+      "target": "easm_data.godaddy_dns.nameservers"
+    },
+    {
+      "source": "_registrar_status",
+      "target": "easm_data.godaddy_dns.registrar_status"
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'hostname': (record.get('name', '') + '.' + record.get('_domain', '') if record.get('name', '') != '@' else record.get('_domain', '')), 'fqdn': (record.get('name', '') + '.' + record.get('_domain', '') if record.get('name', '') != '@' else record.get('_domain', '')), 'ip': record.get('data', ''), 'display_name': (record.get('name', '') + '.' + record.get('_domain', '') if record.get('name', '') != '@' else record.get('_domain', ''))}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'dns_record_type': record.get('type', ''), 'ttl': record.get('ttl'), 'domain': record.get('_domain', ''), 'domain_expiry': record.get('_domain_expiry', ''), 'nameservers': record.get('_nameservers', []), 'registrar_status': record.get('_registrar_status', ''), 'registrar': 'godaddy'}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "domain": {
+      "type": "string",
+      "required": true,
+      "description": "Domain name to pull DNS records for (e.g., 'example.com')"
+    },
+    "record_type": {
+      "type": "string",
+      "required": false,
+      "description": "Filter by record type (A, AAAA, CNAME, MX, NS, TXT). Leave blank for all."
+    }
+  }
+}

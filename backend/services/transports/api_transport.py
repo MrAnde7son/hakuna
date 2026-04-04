@@ -50,7 +50,14 @@ def _resolve_dot_path(obj, path):
 
 
 def _inject_auth(headers: dict, credentials: dict):
-    """Inject authentication into request headers based on credential type."""
+    """Inject authentication into request headers based on credential type.
+
+    Skips injection if an Authorization header was already set via template
+    substitution (e.g. ``Authorization: Bearer {{credentials.api_token}}``).
+    """
+    if headers.get("Authorization"):
+        return
+
     auth_type = credentials.get("_auth_type", "")
 
     if auth_type == "api_key":
@@ -79,6 +86,67 @@ def _inject_auth(headers: dict, credentials: dict):
     # by _substitute already — this covers the standard patterns.
 
 
+def _inject_aws_sigv4(headers: dict, credentials: dict, config: dict, method: str, url: str, body=None):
+    """Sign a request with AWS SigV4 using requests-aws4auth."""
+    try:
+        from requests_aws4auth import AWS4Auth
+    except ImportError:
+        raise RuntimeError("requests-aws4auth is required for AWS SigV4 auth. Install it: pip install requests-aws4auth")
+
+    region = credentials.get("region") or config.get("params", {}).get("region", "us-east-1")
+    service = config.get("aws_service", "execute-api")
+    access_key = credentials.get("access_key_id", "")
+    secret_key = credentials.get("secret_access_key", "")
+
+    auth = AWS4Auth(access_key, secret_key, region, service)
+
+    # AWS4Auth works with requests library; we extract headers manually
+    from urllib.parse import urlparse
+    import datetime
+
+    parsed = urlparse(url)
+    host = parsed.hostname
+
+    # Build a minimal requests-compatible object for signing
+    from requests import Request
+    req = Request(method=method, url=url, headers={**headers, "Host": host})
+    if body:
+        import json as _json
+        req.data = _json.dumps(body) if isinstance(body, dict) else body
+    prepared = req.prepare()
+    auth(prepared)
+
+    # Copy signed headers back
+    for key, value in prepared.headers.items():
+        if key.lower() in ("authorization", "x-amz-date", "x-amz-content-sha256", "x-amz-security-token"):
+            headers[key] = value
+
+
+def _inject_gcp_service_account(headers: dict, credentials: dict, config: dict):
+    """Generate an OAuth2 access token from GCP service account credentials."""
+    try:
+        from google.oauth2 import service_account as sa
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+    except ImportError:
+        raise RuntimeError("google-auth is required for GCP service account auth. Install it: pip install google-auth")
+
+    email = credentials.get("service_account_email", "")
+    private_key = credentials.get("private_key", "")
+    scopes = config.get("gcp_scopes", ["https://www.googleapis.com/auth/cloud-platform"])
+
+    # Build credentials from the provided email + key
+    info = {
+        "type": "service_account",
+        "client_email": email,
+        "private_key": private_key,
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    creds = sa.Credentials.from_service_account_info(info, scopes=scopes)
+    creds.refresh(GoogleAuthRequest())
+
+    headers["Authorization"] = f"Bearer {creds.token}"
+
+
 def _build_context(config: dict, credentials: dict, params: dict = None):
     """Build substitution context from config, credentials, and params."""
     return {
@@ -104,6 +172,13 @@ class ApiTransport(BaseTransport):
             _inject_auth(headers, credentials)
 
             url = f"{base_url.rstrip('/')}/{path.lstrip('/')}" if path else base_url
+
+            # Cloud provider auth strategies
+            auth_strategy = config.get("auth_strategy")
+            if auth_strategy == "aws_sigv4":
+                _inject_aws_sigv4(headers, credentials, config, method, url, body)
+            elif auth_strategy == "gcp_service_account":
+                _inject_gcp_service_account(headers, credentials, config)
 
             async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
                 resp = await client.request(
@@ -222,6 +297,13 @@ class ApiTransport(BaseTransport):
         _inject_auth(headers, credentials)
 
         url = f"{base_url.rstrip('/')}/{path.lstrip('/')}" if path else base_url
+
+        # Cloud provider auth strategies
+        auth_strategy = config.get("auth_strategy")
+        if auth_strategy == "aws_sigv4":
+            _inject_aws_sigv4(headers, credentials, config, method, url, body)
+        elif auth_strategy == "gcp_service_account":
+            _inject_gcp_service_account(headers, credentials, config)
 
         async with httpx.AsyncClient(timeout=60.0, verify=False) as client:
             resp = await client.request(

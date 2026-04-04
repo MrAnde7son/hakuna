@@ -1,0 +1,159 @@
+{
+  "id": "cloudflare_api",
+  "name": "Cloudflare — DNS & Zones",
+  "description": "Pull DNS zones and records from Cloudflare to discover origin servers behind proxied domains and correlate with EASM-discovered assets",
+  "logo": "/logos/vendors/cloudflare.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.cloudflare.com/client/v4",
+    "method": "GET",
+    "path": "/zones/{{params.zone_id}}/dns_records",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer {{credentials.api_token}}"
+    },
+    "query_params": {
+      "type": "{{params.record_type}}"
+    },
+    "pagination": {
+      "strategy": "page",
+      "page_size": 100,
+      "page_param": "page",
+      "page_size_param": "per_page",
+      "total_field": "result_info.total_pages"
+    }
+  },
+  "records_path": "result",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into your Cloudflare dashboard at dash.cloudflare.com"
+      },
+      {
+        "instruction": "Go to My Profile → API Tokens → Create Token"
+      },
+      {
+        "instruction": "Create a Custom Token with permissions: Zone — Zone — Read, and Zone — DNS — Read. Set Zone Resources to 'Include — All zones' (or specific zones)."
+      },
+      {
+        "instruction": "Copy the generated API Token",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/user/tokens/verify",
+      "headers": {
+        "Authorization": "Bearer {{api_token}}"
+      },
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "connected_status": "response.result.status"
+      },
+      "error_message": "Could not verify Cloudflare API token. Check that the token has Zone:Read and DNS:Read permissions."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id",
+      "transform": {
+        "type": "expression",
+        "expr": "str(record.get('zone_id', '')) + ':' + str(value)"
+      }
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "content",
+      "target": "ip_address"
+    },
+    {
+      "source": "name",
+      "target": "fqdn"
+    },
+    {
+      "source": "content",
+      "target": "easm_data.cloudflare_dns.target",
+      "transform": {
+        "type": "extract_cloud_workload"
+      }
+    },
+    {
+      "source": "zone_name",
+      "target": "easm_data.cloudflare_dns.zone_name"
+    },
+    {
+      "source": "type",
+      "target": "easm_data.cloudflare_dns.record_type"
+    },
+    {
+      "source": "proxied",
+      "target": "easm_data.cloudflare_dns.proxied",
+      "transform": {
+        "type": "boolean",
+        "truthy": ["true", "True", "1", true]
+      }
+    },
+    {
+      "source": "ttl",
+      "target": "easm_data.cloudflare_dns.ttl",
+      "transform": {
+        "type": "integer"
+      }
+    },
+    {
+      "source": "zone_id",
+      "target": "easm_data.cloudflare_dns.zone_id"
+    },
+    {
+      "source": "modified_on",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'hostname': record.get('name', ''), 'fqdn': record.get('name', ''), 'ip': record.get('content', ''), 'display_name': record.get('name', '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'dns_record_type': record.get('type', ''), 'proxied': record.get('proxied', False), 'ttl': record.get('ttl'), 'zone_id': record.get('zone_id', ''), 'zone_name': record.get('zone_name', ''), 'origin_ip': record.get('content', '') if record.get('proxied') else '', 'cdn_provider': 'cloudflare'}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "zone_id": {
+      "type": "string",
+      "required": true,
+      "description": "Cloudflare Zone ID (found in the Overview tab of your domain in the dashboard)"
+    },
+    "record_type": {
+      "type": "string",
+      "required": false,
+      "description": "Filter by DNS record type (A, AAAA, CNAME, MX, TXT). Leave blank for all types."
+    }
+  }
+}

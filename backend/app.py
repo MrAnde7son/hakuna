@@ -38,7 +38,7 @@ from models.models import (
     InventoryShare, InventorySoftware, InventorySecurityControl,
     InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
     InventoryAITool, InventoryProcess, InventoryDatabaseInstance, InventoryCredential,
-    SBOMComponent, SBOMVulnerability, RelayAgent,
+    SBOMComponent, SBOMVulnerability, RelayAgent, AssetRelationship,
     Campaign, CampaignFinding, FindingOwnership, AssetOwnership,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
     Tag, TagAssignment, AutoTagRule, AssetTypeRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
@@ -1874,6 +1874,207 @@ def get_asset_sources(asset_id: int, db: Session = Depends(get_db), org_ids: Opt
         }
         for obs in observations
     ]
+
+
+@app.get("/api/assets/{asset_id}/relationships")
+def get_asset_relationships(asset_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    """Return all relationship edges for an asset (both outbound and inbound)."""
+    query = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id == asset_id)
+    query = apply_scan_org_filter(query, org_ids)
+    if not query.first():
+        raise HTTPException(404, "Asset not found")
+
+    def _rel_asset_summary(a: Asset) -> dict:
+        return {
+            "id": a.id, "hostname": a.hostname, "fqdn": a.fqdn, "ip": a.ip,
+            "asset_type": a.asset_type, "asset_identity": a.asset_identity or {},
+        }
+
+    outbound = db.query(AssetRelationship).filter(AssetRelationship.source_asset_id == asset_id).all()
+    inbound = db.query(AssetRelationship).filter(AssetRelationship.target_asset_id == asset_id).all()
+    results = []
+    for rel in outbound:
+        target = db.query(Asset).filter(Asset.id == rel.target_asset_id).first()
+        results.append({
+            "id": rel.id, "direction": "outbound", "relationship_type": rel.relationship_type,
+            "confidence": rel.confidence, "source_detail": rel.source_detail or {},
+            "related_asset": _rel_asset_summary(target) if target else None,
+            "created_at": rel.created_at.isoformat() if rel.created_at else None,
+        })
+    for rel in inbound:
+        source = db.query(Asset).filter(Asset.id == rel.source_asset_id).first()
+        results.append({
+            "id": rel.id, "direction": "inbound", "relationship_type": rel.relationship_type,
+            "confidence": rel.confidence, "source_detail": rel.source_detail or {},
+            "related_asset": _rel_asset_summary(source) if source else None,
+            "created_at": rel.created_at.isoformat() if rel.created_at else None,
+        })
+    return results
+
+
+@app.get("/api/asset-graph")
+def get_asset_graph(
+    asset_ids: str, depth: int = 1,
+    collapsed: str = None,
+    db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """BFS traversal from seed assets returning nodes + edges for graph visualization.
+
+    Supports expand/collapse: pass `collapsed=1,5,12` to hide the subtrees rooted
+    at those asset IDs. Collapsed nodes are included but marked with `_collapsed: true`
+    and their children are excluded. The frontend can re-request with updated collapsed
+    list to expand/collapse interactively.
+    """
+    depth = min(depth, 3)
+    try:
+        seed_ids = {int(x.strip()) for x in asset_ids.split(",") if x.strip()}
+    except ValueError:
+        raise HTTPException(400, "asset_ids must be comma-separated integers")
+
+    collapsed_ids: set[int] = set()
+    if collapsed:
+        try:
+            collapsed_ids = {int(x.strip()) for x in collapsed.split(",") if x.strip()}
+        except ValueError:
+            pass
+
+    # Collect nodes and edges via BFS
+    visited_ids: set[int] = set()
+    edge_ids: set[int] = set()
+    frontier = seed_ids.copy()
+
+    for _ in range(depth + 1):
+        if not frontier:
+            break
+        new_frontier: set[int] = set()
+        for aid in frontier:
+            if aid in visited_ids:
+                continue
+            visited_ids.add(aid)
+            # If this node is collapsed, include it but don't expand its children
+            if aid in collapsed_ids and aid not in seed_ids:
+                continue
+            rels = db.query(AssetRelationship).filter(
+                (AssetRelationship.source_asset_id == aid) | (AssetRelationship.target_asset_id == aid)
+            ).all()
+            for rel in rels:
+                edge_ids.add(rel.id)
+                if rel.source_asset_id not in visited_ids:
+                    new_frontier.add(rel.source_asset_id)
+                if rel.target_asset_id not in visited_ids:
+                    new_frontier.add(rel.target_asset_id)
+        frontier = new_frontier
+
+    # Fetch nodes with org filtering — use blast radius node format for compatibility
+    nodes = {}
+    if visited_ids:
+        asset_query = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id.in_(visited_ids))
+        asset_query = apply_scan_org_filter(asset_query, org_ids)
+        for a in asset_query.all():
+            nid = f"asset-{a.id}"
+            # Count hidden children for collapsed nodes
+            child_count = 0
+            if a.id in collapsed_ids:
+                child_count = db.query(AssetRelationship).filter(
+                    (AssetRelationship.source_asset_id == a.id) | (AssetRelationship.target_asset_id == a.id)
+                ).count()
+            nodes[nid] = {
+                "id": nid, "type": "asset",
+                "data": {
+                    "label": a.hostname or a.fqdn or a.ip or f"Asset {a.id}",
+                    "ip": a.ip, "hostname": a.hostname, "fqdn": a.fqdn,
+                    "os": a.os, "asset_type": a.asset_type,
+                    "asset_identity": a.asset_identity or {},
+                    "is_internet_facing": a.is_internet_facing or False,
+                    "environment_tag": a.environment_tag,
+                    "risk_score": a.risk_score, "criticality": a.criticality,
+                    "_collapsed": a.id in collapsed_ids,
+                    "_hidden_children": child_count if a.id in collapsed_ids else 0,
+                },
+            }
+
+    # Filter edges to only include edges between org-visible nodes
+    visible_ids = {int(nid.split("-", 1)[1]) for nid in nodes}
+    edges = []
+    if edge_ids:
+        for rel in db.query(AssetRelationship).filter(AssetRelationship.id.in_(edge_ids)).all():
+            if rel.source_asset_id in visible_ids and rel.target_asset_id in visible_ids:
+                edges.append({
+                    "id": f"e-rel-{rel.id}",
+                    "source": f"asset-{rel.source_asset_id}",
+                    "target": f"asset-{rel.target_asset_id}",
+                    "type": rel.relationship_type,
+                    "data": {
+                        "label": rel.relationship_type.replace("_", " ").title(),
+                        "confidence": rel.confidence,
+                        "source_detail": rel.source_detail or {},
+                    },
+                })
+
+    return {"nodes": list(nodes.values()), "edges": edges}
+
+
+@app.post("/api/asset-relationships")
+def create_asset_relationship(
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Manually create a relationship edge between two assets."""
+    src_id = body.get("source_asset_id")
+    tgt_id = body.get("target_asset_id")
+    rel_type = body.get("relationship_type", "resolves_to")
+
+    if not src_id or not tgt_id:
+        raise HTTPException(400, "source_asset_id and target_asset_id are required")
+    if src_id == tgt_id:
+        raise HTTPException(400, "Cannot create self-referencing relationship")
+
+    # Verify both assets exist and are org-accessible
+    for aid in (src_id, tgt_id):
+        q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id == aid)
+        q = apply_scan_org_filter(q, org_ids)
+        if not q.first():
+            raise HTTPException(404, f"Asset {aid} not found")
+
+    src_asset = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id == src_id).first()
+    org_id = db.query(Scan.org_id).filter(Scan.id == src_asset.scan_id).scalar()
+
+    rel = AssetRelationship(
+        org_id=org_id, source_asset_id=src_id, target_asset_id=tgt_id,
+        relationship_type=rel_type, confidence=body.get("confidence", "high"),
+        source_detail=body.get("source_detail", {"manual": True}),
+    )
+    db.add(rel)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(409, "Relationship already exists")
+    db.refresh(rel)
+    return {"id": rel.id, "source_asset_id": src_id, "target_asset_id": tgt_id, "relationship_type": rel_type}
+
+
+@app.delete("/api/asset-relationships/{rel_id}")
+def delete_asset_relationship(
+    rel_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Delete a relationship edge."""
+    rel = db.query(AssetRelationship).filter(AssetRelationship.id == rel_id).first()
+    if not rel:
+        raise HTTPException(404, "Relationship not found")
+    # Verify org access via source asset
+    q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id == rel.source_asset_id)
+    q = apply_scan_org_filter(q, org_ids)
+    if not q.first():
+        raise HTTPException(404, "Relationship not found")
+    db.delete(rel)
+    db.commit()
+    return {"deleted": True}
 
 
 @app.get("/api/findings/{finding_id}/sources")
@@ -6226,6 +6427,37 @@ def get_blast_radius(
 
         queue = next_queue
 
+    # ── 5b. Follow infrastructure relationships (DNS → cloud workload) ──
+    infra_visited = set()
+    try:
+        for aid in list(visited_assets):
+            for rel in db.query(AssetRelationship).filter(
+                AssetRelationship.source_asset_id == aid,
+            ).all():
+                tgt_id = rel.target_asset_id
+                if tgt_id in visited_assets or tgt_id in infra_visited:
+                    continue
+                tgt = asset_map.get(tgt_id) or db.query(Asset).filter(Asset.id == tgt_id).first()
+                if not tgt:
+                    continue
+                asset_map[tgt_id] = tgt
+                if tgt.ip:
+                    ip_to_asset_id.setdefault(tgt.ip, tgt_id)
+                add_node(f"asset-{tgt_id}", "asset", _asset_node_data(tgt))
+                label = rel.relationship_type.replace("_", " ").title()
+                detail = rel.source_detail or {}
+                if detail.get("connector"):
+                    label += f" ({detail['connector']})"
+                add_edge(
+                    f"e-infra-{rel.id}",
+                    f"asset-{aid}", f"asset-{tgt_id}",
+                    rel.relationship_type, label,
+                )
+                infra_visited.add(tgt_id)
+                visited_assets.add(tgt_id)
+    except Exception:
+        pass  # table may not exist yet before restart
+
     # ── 6. Scheduled tasks running as privileged users (persistence paths) ──
     for nid, n in list(nodes.items()):
         if n["type"] != "asset":
@@ -6303,12 +6535,44 @@ def get_blast_radius(
         Finding.severity >= 3,  # High + Critical
         Finding.exploit_available == True,
     ).limit(20).all()
+    exploit_ids = {f.id for f in exploit_findings}
+
+    # Also include internet-reachable findings (AV:N in CVSS vector) on internet-facing assets
+    internet_facing_ids = [
+        aid for aid in visited_asset_ids
+        if asset_map.get(aid) and asset_map[aid].is_internet_facing
+    ]
+    if internet_facing_ids and exploit_ids:
+        inet_findings = db.query(Finding).filter(
+            Finding.asset_id.in_(internet_facing_ids),
+            Finding.scan_id == scan_id,
+            Finding.severity >= 3,
+            Finding.id.notin_(exploit_ids),
+            or_(
+                Finding.cvss3_vector.like("%AV:N%"),
+                Finding.cvss2_vector.like("%AV:N%"),
+            ),
+        ).limit(10).all()
+        exploit_findings.extend(inet_findings)
+    elif internet_facing_ids:
+        inet_findings = db.query(Finding).filter(
+            Finding.asset_id.in_(internet_facing_ids),
+            Finding.scan_id == scan_id,
+            Finding.severity >= 3,
+            or_(
+                Finding.cvss3_vector.like("%AV:N%"),
+                Finding.cvss2_vector.like("%AV:N%"),
+            ),
+        ).limit(10).all()
+        exploit_findings.extend(inet_findings)
 
     # Add exploitable findings as vuln nodes connected to their assets
     for f in exploit_findings:
         cve_list = (f.cves or [])[:3]
         cve_str = ", ".join(cve_list) if cve_list else f.plugin_name or f"Plugin {f.plugin_id}"
         sev_label = "Critical" if f.severity >= 4 else "High"
+        f_asset = asset_map.get(f.asset_id)
+        is_inet = f_asset.is_internet_facing if f_asset else False
         vnid = f"vuln-{f.id}"
         add_node(vnid, "vuln", {
             "label": cve_str,
@@ -6319,13 +6583,15 @@ def get_blast_radius(
             "cves": f.cves or [],
             "is_kev": bool(f.is_kev),
             "cvss": f.cvss3_score or f.cvss2_score,
-            "exploit_available": True,
+            "exploit_available": bool(f.exploit_available),
+            "internet_reachable": is_inet,
             "finding_id": f.id,
         })
+        edge_type = "internet_vulnerability" if is_inet and not f.exploit_available else "vulnerability"
         add_edge(
             f"e-vuln-{f.id}-{f.asset_id}",
             vnid, f"asset-{f.asset_id}",
-            "vulnerability", cve_str,
+            edge_type, cve_str,
         )
 
     # ── 10. Listening risky services on visited assets ──
@@ -6426,6 +6692,8 @@ def get_blast_radius(
     has_exposed_dbs = sum(len(v) for v in db_instances.values()) > 0
     has_expired_certs = len(expired_certs) > 0
     is_internet_facing = asset.is_internet_facing or False
+    has_cloud_workload = len(infra_visited) > 0
+    inet_vuln_count = sum(1 for e in edges if e["type"] == "internet_vulnerability")
 
     score = min(len(reachable_asset_ids) * 1.5, 5.0)
     if dc_reachable:              score += 3.0
@@ -6441,6 +6709,9 @@ def get_blast_radius(
     if has_exposed_dbs:           score += 0.5
     if has_expired_certs:         score += 0.3
     if is_internet_facing:        score += 1.5  # externally reachable = major risk multiplier
+    if is_internet_facing and inet_vuln_count:
+        score += min(inet_vuln_count * 0.5, 2.0)  # internet-exploitable vulns compound risk
+    if has_cloud_workload:        score += 0.5  # compromising this asset reaches cloud infra
     score = min(round(score, 1), 10.0)
 
     _GROUP_ACCESS_LABELS = {
@@ -6570,6 +6841,42 @@ def get_blast_radius(
             "severity": "critical",
         })
 
+    # ── Internet-exploitable attack vectors ──
+    for f in exploit_findings:
+        f_asset = asset_map.get(f.asset_id)
+        if not f_asset or not f_asset.is_internet_facing:
+            continue
+        cve_list = (f.cves or [])[:2]
+        cve_str = ", ".join(cve_list) if cve_list else f.plugin_name or f"Plugin {f.plugin_id}"
+        kev_tag = " [KEV]" if f.is_kev else ""
+        vectors.append({
+            "type": "internet_exploitable",
+            "label": f"Internet-reachable: {cve_str}{kev_tag} on {f_asset.hostname or f_asset.ip}",
+            "severity": "critical" if f.severity >= 4 or f.is_kev else "high",
+        })
+
+    # ── Cloud workload exposure vectors ──
+    for cloud_id in infra_visited:
+        cloud = asset_map.get(cloud_id)
+        if not cloud:
+            continue
+        identity = cloud.asset_identity or {}
+        canonical = identity.get("instance_id", cloud.hostname or "")
+        # Check if any exploitable finding targets the cloud workload
+        cloud_vulns = [f for f in exploit_findings if f.asset_id == cloud_id]
+        if cloud_vulns:
+            vectors.append({
+                "type": "cloud_workload_compromise",
+                "label": f"Cloud workload compromised: {canonical} — {len(cloud_vulns)} exploitable finding(s)",
+                "severity": "critical",
+            })
+        else:
+            vectors.append({
+                "type": "cloud_workload_exposure",
+                "label": f"Resolves to cloud workload: {canonical}",
+                "severity": "medium",
+            })
+
     return {
         "asset_id": asset_id,
         "score": score,
@@ -6582,7 +6889,9 @@ def get_blast_radius(
         "has_weak_creds": has_weak_creds,
         "has_exploitable": has_exploitable,
         "has_exposed_dbs": has_exposed_dbs,
-        "vectors": vectors[:25],
+        "has_cloud_workload": has_cloud_workload,
+        "internet_vuln_count": inet_vuln_count,
+        "vectors": vectors[:30],
         "nodes": list(nodes.values()),
         "edges": edges,
     }

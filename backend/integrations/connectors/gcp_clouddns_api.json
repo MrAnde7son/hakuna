@@ -1,0 +1,146 @@
+{
+  "id": "gcp_clouddns_api",
+  "name": "Google Cloud DNS — Zones & Records",
+  "description": "Pull managed zones and DNS record sets from Google Cloud DNS to trace workloads behind Cloud Run, App Engine, Cloud Functions, and load balancers",
+  "logo": "/logos/vendors/gcp.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://dns.googleapis.com",
+    "method": "GET",
+    "path": "/dns/v1/projects/{{params.project_id}}/managedZones/{{params.zone}}/rrsets",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "auth_strategy": "gcp_service_account",
+    "gcp_scopes": ["https://www.googleapis.com/auth/ndev.clouddns.readonly"],
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextPageToken",
+      "cursor_param": "pageToken",
+      "page_size": 500,
+      "page_size_param": "maxResults"
+    }
+  },
+  "records_path": "rrsets",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Go to Google Cloud Console → IAM & Admin → Service Accounts"
+      },
+      {
+        "instruction": "Create a new service account (or select an existing one) and grant it the 'DNS Reader' role (roles/dns.reader)"
+      },
+      {
+        "instruction": "Go to the service account → Keys → Add Key → Create new key → JSON"
+      },
+      {
+        "instruction": "Open the downloaded JSON key file and copy the service account email",
+        "capture": {
+          "field": "service_account_email",
+          "label": "Service Account Email",
+          "type": "text",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the full private_key field from the JSON key file (including BEGIN/END markers)",
+        "capture": {
+          "field": "private_key",
+          "label": "Private Key (PEM)",
+          "type": "password",
+          "auto_validate": false
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/dns/v1/projects/{{params.project_id}}/managedZones",
+      "headers": {},
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to Google Cloud DNS. Verify the service account has the DNS Reader role and the project ID is correct."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "name",
+      "target": "source_id",
+      "transform": {
+        "type": "expression",
+        "expr": "str(record.get('_project_id', '')) + ':' + str(record.get('_zone', '')) + ':' + str(value) + ':' + str(record.get('type', ''))"
+      }
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "name",
+      "target": "fqdn"
+    },
+    {
+      "source": "rrdatas[0]",
+      "target": "ip_address"
+    },
+    {
+      "source": "rrdatas[0]",
+      "target": "easm_data.gcp_clouddns.workload",
+      "transform": {
+        "type": "extract_cloud_workload"
+      }
+    },
+    {
+      "source": "type",
+      "target": "easm_data.gcp_clouddns.record_type"
+    },
+    {
+      "source": "ttl",
+      "target": "easm_data.gcp_clouddns.ttl",
+      "transform": {
+        "type": "integer"
+      }
+    },
+    {
+      "source": "rrdatas",
+      "target": "easm_data.gcp_clouddns.rrdatas"
+    },
+    {
+      "source": "_zone",
+      "target": "easm_data.gcp_clouddns.zone_name"
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'hostname': record.get('name', ''), 'fqdn': record.get('name', ''), 'ip': (record.get('rrdatas', [''])[0] if record.get('rrdatas') else ''), 'display_name': record.get('name', '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'dns_record_type': record.get('type', ''), 'ttl': record.get('ttl'), 'rrdatas': record.get('rrdatas', []), 'cloud_provider': 'gcp', 'gcp_project': record.get('_project_id', ''), 'gcp_zone': record.get('_zone', '')}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "project_id": {
+      "type": "string",
+      "required": true,
+      "description": "GCP project ID that owns the Cloud DNS zones"
+    },
+    "zone": {
+      "type": "string",
+      "required": true,
+      "description": "Cloud DNS managed zone name (e.g., 'my-zone'). Find it in Cloud Console → Network services → Cloud DNS."
+    }
+  }
+}

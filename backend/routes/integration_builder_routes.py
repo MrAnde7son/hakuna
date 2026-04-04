@@ -17,7 +17,8 @@ from models.models import (
 from integrations.schema import get_schema
 from integrations.connector_loader import get_all_connectors, get_connector
 from integrations.model_registry import (
-    get_registry, get_model_meta, get_target_schema, list_targets as list_registry_targets,
+    get_registry, get_model_meta, get_target_schema, get_target_schema_expanded,
+    list_targets as list_registry_targets,
 )
 from services import credential_vault
 from services.field_mapper import detect_paths, map_record, auto_suggest
@@ -77,7 +78,7 @@ class AutoSuggestRequest(BaseModel):
 @router.post("/auto-suggest")
 def auto_suggest_fields(body: AutoSuggestRequest, user: User = Depends(require_auth)):
     """Lightweight auto-suggest — no transport re-run, just string matching."""
-    schema = get_target_schema(body.entity) or get_schema(body.entity)
+    schema = get_target_schema_expanded(body.entity) or get_schema(body.entity)
     if not schema:
         raise HTTPException(404, f"Unknown target entity '{body.entity}'")
     return auto_suggest(body.source_paths, schema)
@@ -201,15 +202,21 @@ async def validate_credentials(connector_id: str, body: ValidateCredentialReques
     instance_url = (body.instance_url or "").rstrip("/")
     method = val_req.get("method", "GET").upper()
 
-    # Build URL
+    # Build URL — fall back to connector's base_url when no instance_url
+    base = instance_url or (c.get("transport_config", {}).get("base_url", "")).rstrip("/")
     path = val_req.get("path", "")
     # Substitute credential values in path
     for k, v in body.values.items():
         path = path.replace("{{" + k + "}}", str(v))
-    url = f"{instance_url}{path}" if instance_url else path
+    url = f"{base}{path}" if base else path
 
-    # Build headers
+    # Build headers from validation_request.headers dict
     headers = {}
+    if val_req.get("headers"):
+        for h_name, h_val in val_req["headers"].items():
+            for k, v in body.values.items():
+                h_val = h_val.replace("{{" + k + "}}", str(v))
+            headers[h_name] = h_val
     if val_req.get("auth_header"):
         header_str = val_req["auth_header"]
         for k, v in body.values.items():
@@ -380,7 +387,7 @@ async def preview_mapping(body: PreviewRequest, db: Session = Depends(get_db),
         if body.auto_suggest_flag and samples:
             paths = detect_paths(samples[0])
             target_slug = body.entity or "finding"
-            schema = get_target_schema(target_slug) or get_schema("finding")
+            schema = get_target_schema_expanded(target_slug) or get_schema("finding")
             suggestions = auto_suggest(paths, schema)
 
         field_map = body.field_map or (suggestions if suggestions else [])
