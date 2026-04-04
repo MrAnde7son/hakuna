@@ -9,7 +9,7 @@ Works with both SQLite and PostgreSQL.
 
 Usage:
     cd backend
-    python migrations/018_add_relay_agents.py
+    python migrations/021_add_relay_agents.py
 """
 
 import os
@@ -88,6 +88,6 @@ def downgrade():
 
 
 if __name__ == "__main__":
-    print("Running migration: 018_add_relay_agents")
+    print("Running migration: 021_add_relay_agents")
     upgrade()
     print("Done.")

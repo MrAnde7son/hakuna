@@ -1852,7 +1852,7 @@ class Integration(Base):
     name = Column(String, nullable=False)
     direction = Column(String, nullable=False)  # pull | push
     entity = Column(String, nullable=False)  # asset | finding | action
-    transport_type = Column(String, nullable=False)  # api | sql | file | mcp
+    transport_type = Column(String, nullable=False)  # api | sql | file | mcp | relay
     transport_config = Column(JSON, nullable=False, default=dict)
     credentials_id = Column(String, ForeignKey("integration_credentials.id"), nullable=True)
     records_path = Column(String, nullable=True)  # dot-path to records array in response
