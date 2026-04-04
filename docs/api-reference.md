@@ -174,6 +174,35 @@ All authenticated endpoints require a `Authorization: Bearer <token>` header.
 
 **Types:** `jira`, `servicenow`, `slack`, `teams`, `email`
 
+## Relay Agents
+
+Manage on-prem relay agents for connecting to products behind firewalls.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/relay-agents` | List all relay agents for the current org |
+| POST | `/api/relay-agents` | Create a new agent (returns one-time token) |
+| GET | `/api/relay-agents/{id}` | Get agent details and live status |
+| PUT | `/api/relay-agents/{id}` | Update agent name, allowed hosts, labels, or credentials mode |
+| DELETE | `/api/relay-agents/{id}` | Delete an agent (fails if linked to integrations) |
+| POST | `/api/relay-agents/{id}/rotate-token` | Generate a new token (invalidates old, disconnects agent) |
+| GET | `/api/relay-agents/{id}/setup` | Get deployment instructions (Docker commands, env var reference) |
+
+**WebSocket:** `wss://<host>/ws/relay` — relay agents connect here with `?token=<agent-token>` or `Authorization: Bearer <agent-token>`
+
+**Create request body:**
+
+```json
+{
+  "name": "DC-East Relay",
+  "allowed_hosts": ["jira.internal:8080", "snow.internal"],
+  "credentials_mode": "agent_local",
+  "labels": { "site": "dc-east", "env": "production" }
+}
+```
+
+**Credentials modes:** `agent_local` (default — agent loads creds from env vars), `cloud_managed` (Hakuna sends creds per-request)
+
 ## Threat Intelligence
 
 | Method | Endpoint | Description |

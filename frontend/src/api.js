@@ -1124,6 +1124,19 @@ export const oauthClientCredentials = (data) => request(`${IB}/oauth/client-cred
 })
 export const refreshCredential = (id) => request(`${IB}/credentials/${id}/refresh`, { method: 'POST' })
 
+// ── Relay Agents ─────────────────────────────────────────
+export const getRelayAgents = () => request('/relay-agents')
+export const createRelayAgent = (data) => request('/relay-agents', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+export const getRelayAgent = (id) => request(`/relay-agents/${id}`)
+export const updateRelayAgent = (id, data) => request(`/relay-agents/${id}`, {
+  method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+export const deleteRelayAgent = (id) => request(`/relay-agents/${id}`, { method: 'DELETE' })
+export const rotateAgentToken = (id) => request(`/relay-agents/${id}/rotate-token`, { method: 'POST' })
+export const getAgentSetup = (id) => request(`/relay-agents/${id}/setup`)
+
 // Auto-provision
 export const provisionConnector = (connectorId, data) => request(`${IB}/connectors/${connectorId}/provision`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),

@@ -38,7 +38,7 @@ from models.models import (
     InventoryShare, InventorySoftware, InventorySecurityControl,
     InventoryComputer, InventoryPasswordPolicy, InventoryEnvVar, InventoryCertificate,
     InventoryAITool, InventoryProcess, InventoryDatabaseInstance, InventoryCredential,
-    SBOMComponent, SBOMVulnerability,
+    SBOMComponent, SBOMVulnerability, RelayAgent,
     Campaign, CampaignFinding, FindingOwnership, AssetOwnership,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
     Tag, TagAssignment, AutoTagRule, AssetTypeRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
@@ -89,6 +89,7 @@ from routes.notification_routes import router as notification_router
 from routes.control_assessment_routes import router as control_assessment_router
 from routes.onboarding_routes import router as onboarding_router
 from routes.saml_routes import router as saml_router
+from routes.relay_routes import router as relay_router, ws_router as relay_ws_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -368,6 +369,8 @@ app.include_router(notification_router)
 app.include_router(control_assessment_router)
 app.include_router(onboarding_router)
 app.include_router(saml_router)
+app.include_router(relay_router)
+app.include_router(relay_ws_router)
 
 
 INTEL_PATH = Path(__file__).parent.parent / "intel.json"

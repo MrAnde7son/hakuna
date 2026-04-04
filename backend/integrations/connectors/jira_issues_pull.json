@@ -1,5 +1,6 @@
 {
   "id": "jira_issues_pull",
+  "relay_capable": true,
   "name": "Jira — Pull Issues",
   "description": "Pull issues from Jira using JQL queries",
   "logo": "/logos/vendors/jira.svg",

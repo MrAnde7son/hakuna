@@ -426,6 +426,7 @@ class IntegrationCreate(BaseModel):
     enabled: bool = False
     template_id: Optional[str] = None
     logo_url: Optional[str] = None
+    relay_agent_id: Optional[str] = None
 
 
 class IntegrationUpdate(BaseModel):
@@ -439,6 +440,7 @@ class IntegrationUpdate(BaseModel):
     schedule: Optional[str] = None
     enabled: Optional[bool] = None
     logo_url: Optional[str] = None
+    relay_agent_id: Optional[str] = None
 
 
 @router.get("/integrations")
@@ -457,8 +459,8 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
     valid_entities = set(get_registry().keys()) | {"action"}
     if body.entity not in valid_entities:
         raise HTTPException(400, f"entity must be one of: {sorted(valid_entities)}")
-    if body.transport_type not in ("api", "sql", "file", "mcp"):
-        raise HTTPException(400, "transport_type must be 'api', 'sql', 'file', or 'mcp'")
+    if body.transport_type not in ("api", "sql", "file", "mcp", "relay"):
+        raise HTTPException(400, "transport_type must be 'api', 'sql', 'file', 'mcp', or 'relay'")
 
     # Auto-resolve logo from connector template if not provided
     logo_url = body.logo_url
@@ -496,6 +498,7 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
         enabled=body.enabled,
         template_id=body.template_id,
         logo_url=logo_url,
+        relay_agent_id=body.relay_agent_id,
     )
     db.add(integration)
     db.commit()
@@ -519,7 +522,8 @@ def update_integration(integration_id: str, body: IntegrationUpdate,
                         db: Session = Depends(get_db), user: User = Depends(require_auth)):
     i = _get_integration_or_404(db, integration_id, user.org_id)
     for field in ["name", "transport_config", "credentials_id", "records_path",
-                   "field_map", "dedup_key", "params", "schedule", "enabled", "logo_url"]:
+                   "field_map", "dedup_key", "params", "schedule", "enabled", "logo_url",
+                   "relay_agent_id"]:
         val = getattr(body, field)
         if val is not None:
             setattr(i, field, val)
@@ -673,6 +677,7 @@ def _integration_summary(i):
         "transport_type": i.transport_type, "enabled": i.enabled,
         "template_id": i.template_id, "schedule": i.schedule,
         "logo_url": logo,
+        "relay_agent_id": getattr(i, "relay_agent_id", None),
         "last_run_at": i.last_run_at, "last_run_status": i.last_run_status,
         "last_run_records": i.last_run_records, "created_at": i.created_at,
     }

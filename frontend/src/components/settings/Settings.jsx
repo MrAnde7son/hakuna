@@ -449,7 +449,7 @@ function EntityCard({ entityKey, label, cfg, onChange, runEntityKey, availableSo
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { isAdmin, isSuperadmin, isMSSP } = useAuth()
-  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla', 'exceptions', 'integrations', 'integration-builder', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'sso']
+  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla', 'exceptions', 'integrations', 'integration-builder', 'relay-agents', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'sso']
   const tabParam = searchParams.get('tab')
   const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'upload'
   const setActiveTab = (id) => setSearchParams(prev => { prev.set('tab', id); return prev })
@@ -611,7 +611,7 @@ export default function Settings() {
       {/* Integration Builder tab */}
       {activeTab === 'integration-builder' && <IntegrationBuilderTab />}
 
-      {/* Audit Log tab */}
+{/* Audit Log tab */}
       {activeTab === 'audit-log' && <AuditLog />}
 
       {/* Ownership tab */}

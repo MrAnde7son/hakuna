@@ -1,0 +1,19 @@
+version: '3.8'
+services:
+  hakuna-relay:
+    build: .
+    restart: unless-stopped
+    environment:
+      HAKUNA_AGENT_TOKEN: ${HAKUNA_AGENT_TOKEN}
+      HAKUNA_CLOUD_URL: ${HAKUNA_CLOUD_URL:-wss://app.hakuna.io/ws/relay}
+      HAKUNA_LOG_LEVEL: ${HAKUNA_LOG_LEVEL:-INFO}
+      # On-prem product credentials (add as needed)
+      # JIRA_BASE_URL: http://jira.internal:8080
+      # JIRA_USERNAME: svc-hakuna
+      # JIRA_PASSWORD: changeme
+      # SERVICENOW_BASE_URL: https://yourcompany.service-now.com
+      # SERVICENOW_USERNAME: svc-hakuna
+      # SERVICENOW_PASSWORD: changeme
+      # CROWDSTRIKE_BASE_URL: https://api.laggar.gcw.crowdstrike.com
+      # CROWDSTRIKE_CLIENT_ID: changeme
+      # CROWDSTRIKE_CLIENT_SECRET: changeme

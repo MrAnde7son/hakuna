@@ -1,5 +1,6 @@
 {
   "id": "servicenow_incident",
+  "relay_capable": true,
   "name": "ServiceNow \u2014 Create Incident",
   "description": "Push findings to ServiceNow as new incidents",
   "logo": "/logos/vendors/servicenow.svg",
