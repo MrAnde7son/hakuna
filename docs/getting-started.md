@@ -65,7 +65,7 @@ After your first login, consider completing these steps:
 2. **Set up SLAs** — Define remediation deadlines per severity in Settings > SLA
 3. **Create tags** — Organize assets and findings with hierarchical tags
 4. **Set up auto-tag rules** — Automatically tag new findings on upload
-5. **Configure integrations** — Connect Jira, ServiceNow, Slack, Teams, or Email
+5. **Configure integrations** — Connect Jira, ServiceNow, Slack, Teams, or Email. For on-prem products, deploy a relay agent (Settings > Integrations > Relay Agents)
 6. **Invite team members** — Add analysts and viewers in Settings > Users
 7. **Review asset type rules** — Check Settings > Asset Type Rules to customize how assets are classified (host, web app, cloud instance, etc.)
 8. **Create your first campaign** — Group related findings into a remediation campaign

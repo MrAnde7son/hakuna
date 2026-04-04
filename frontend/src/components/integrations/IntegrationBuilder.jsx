@@ -503,7 +503,6 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
                 <Badge bg={DIRECTION_BADGE[c.direction]?.bg} text={DIRECTION_BADGE[c.direction]?.text} label={c.direction.toUpperCase()} />
                 <Badge bg={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).bg} text={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).text} label={c.entity.toUpperCase()} />
                 <Badge bg="var(--border)" text="var(--text-muted)" label={c.transport_type.toUpperCase()} />
-                {c.relay_capable && <Badge bg="#7c3aed20" text="#7c3aed" label="ON-PREM" />}
               </div>
             </Card>
           ))}

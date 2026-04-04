@@ -4,7 +4,7 @@
  * env var references, and per-product credential examples.
  */
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Copy, Check, Terminal, Server, Shield, ChevronDown, ChevronRight } from 'lucide-react'
+import { ArrowLeft, Copy, Check, Terminal, Server, Shield } from 'lucide-react'
 import { Card, Button, useToast } from '../../shared/ui.jsx'
 import { getAgentSetup } from '../../../api.js'
 
@@ -45,7 +45,6 @@ export default function RelayAgentSetupGuide({ agent, onBack }) {
   const toast = useToast()
   const [setup, setSetup] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [expandedProduct, setExpandedProduct] = useState(null)
   const [activeTab, setActiveTab] = useState('docker-run') // docker-run | docker-compose
 
   useEffect(() => {
@@ -145,7 +144,7 @@ export default function RelayAgentSetupGuide({ agent, onBack }) {
         </div>
       </Card>
 
-      {/* Step 3: Configure Credentials */}
+      {/* Step 3: Credentials info */}
       {setup.credentials_mode === 'agent_local' && (
         <Card style={{ padding: 20, marginBottom: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
@@ -154,37 +153,13 @@ export default function RelayAgentSetupGuide({ agent, onBack }) {
               color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 12, fontWeight: 700, flexShrink: 0,
             }}>3</div>
-            <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0, color: 'var(--text)' }}>Configure On-Prem Credentials</h3>
+            <h3 style={{ fontSize: 14, fontWeight: 600, margin: 0, color: 'var(--text)' }}>Credentials</h3>
           </div>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '0 0 12px 32px' }}>
-            Add environment variables for each on-prem product. Credentials stay on the agent and are never sent to Hakuna cloud.
+          <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '0 0 0 32px', lineHeight: 1.7 }}>
+            This agent uses <strong>agent-local</strong> credential mode. When you create an integration that uses this relay agent,
+            the agent will load credentials from its own environment — they are never sent to Hakuna cloud.
+            Set the required credentials as environment variables on the container for each on-prem service you connect.
           </p>
-
-          <div style={{ marginLeft: 32, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {(setup.product_examples || []).map(product => {
-              const isOpen = expandedProduct === product.product
-              return (
-                <div key={product.product} style={{ border: '1px solid var(--border)', borderRadius: 8 }}>
-                  <button
-                    onClick={() => setExpandedProduct(isOpen ? null : product.product)}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-                      padding: '10px 12px', border: 'none', background: 'transparent',
-                      cursor: 'pointer', textAlign: 'left',
-                    }}
-                  >
-                    {isOpen ? <ChevronDown size={14} color="var(--text-muted)" /> : <ChevronRight size={14} color="var(--text-muted)" />}
-                    <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text)' }}>{product.product}</span>
-                  </button>
-                  {isOpen && (
-                    <div style={{ padding: '0 12px 12px 34px' }}>
-                      <CodeBlock code={product.vars.map(v => `${v.name}=${v.example}`).join('\n')} />
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
         </Card>
       )}
 

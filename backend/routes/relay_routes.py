@@ -81,10 +81,10 @@ def _agent_to_dict(agent: RelayAgent, integration_count: int = 0) -> dict:
 @router.get("")
 async def list_agents(
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """List all relay agents for the current org."""
-    org_id = current_user.get("org_id")
+    org_id = current_user.org_id
     agents = db.query(RelayAgent).filter(RelayAgent.org_id == org_id).order_by(RelayAgent.created_at.desc()).all()
 
     broker = get_relay_broker()
@@ -107,10 +107,10 @@ async def list_agents(
 async def create_agent(
     body: CreateAgentRequest,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Create a new relay agent and return the one-time token."""
-    org_id = current_user.get("org_id")
+    org_id = current_user.org_id
 
     # Generate a secure token
     raw_token = TOKEN_PREFIX + secrets.token_urlsafe(48)
@@ -125,7 +125,7 @@ async def create_agent(
         allowed_hosts=body.allowed_hosts,
         credentials_mode=body.credentials_mode,
         labels=body.labels,
-        created_by=str(current_user.get("user_id", "")),
+        created_by=str(current_user.id),
     )
     db.add(agent)
     db.commit()
@@ -141,9 +141,9 @@ async def create_agent(
 async def get_agent(
     agent_id: str,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
-    org_id = current_user.get("org_id")
+    org_id = current_user.org_id
     agent = db.query(RelayAgent).filter(
         RelayAgent.id == agent_id, RelayAgent.org_id == org_id
     ).first()
@@ -163,9 +163,9 @@ async def update_agent(
     agent_id: str,
     body: UpdateAgentRequest,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
-    org_id = current_user.get("org_id")
+    org_id = current_user.org_id
     agent = db.query(RelayAgent).filter(
         RelayAgent.id == agent_id, RelayAgent.org_id == org_id
     ).first()
@@ -191,9 +191,9 @@ async def update_agent(
 async def delete_agent(
     agent_id: str,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
-    org_id = current_user.get("org_id")
+    org_id = current_user.org_id
     agent = db.query(RelayAgent).filter(
         RelayAgent.id == agent_id, RelayAgent.org_id == org_id
     ).first()
@@ -219,10 +219,10 @@ async def delete_agent(
 async def rotate_token(
     agent_id: str,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Generate a new token for an agent (invalidates the old one)."""
-    org_id = current_user.get("org_id")
+    org_id = current_user.org_id
     agent = db.query(RelayAgent).filter(
         RelayAgent.id == agent_id, RelayAgent.org_id == org_id
     ).first()
@@ -250,10 +250,10 @@ async def rotate_token(
 async def get_setup_instructions(
     agent_id: str,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
 ):
     """Return setup instructions for deploying the relay agent."""
-    org_id = current_user.get("org_id")
+    org_id = current_user.org_id
     agent = db.query(RelayAgent).filter(
         RelayAgent.id == agent_id, RelayAgent.org_id == org_id
     ).first()

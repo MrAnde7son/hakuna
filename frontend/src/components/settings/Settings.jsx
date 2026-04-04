@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2, KeyRound, Server, Plus, X, GripVertical, Layers } from 'lucide-react'
+import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2, KeyRound, Plus, X, GripVertical, Layers } from 'lucide-react'
 import { getDedupConfig, saveDedupConfig, runDedup, exportConfig, getAvailableSources, runRollup } from '../../api.js'
 import { Card, ExportImportButtons } from '../shared/ui.jsx'
 import { useAuth } from '../../contexts/AuthContext.jsx'
@@ -17,7 +17,6 @@ import UsersPanel from './UsersPanel.jsx'
 import OrgsPanel from './OrgsPanel.jsx'
 import IntegrationBuilderTab from './IntegrationBuilderTab.jsx'
 import SSOSettings from './SSOSettings.jsx'
-import RelayAgentManager from '../integrations/relay/RelayAgentManager.jsx'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -543,7 +542,6 @@ export default function Settings() {
       items: [
         { id: 'integrations', label: 'Integrations', icon: <Plug size={14} /> },
         { id: 'integration-builder', label: 'Integration Builder', icon: <Blocks size={14} /> },
-        { id: 'relay-agents', label: 'Relay Agents', icon: <Server size={14} /> },
         { id: 'audit-log',    label: 'Audit Log',    icon: <ClipboardList size={14} /> },
       ],
     },
@@ -590,7 +588,7 @@ export default function Settings() {
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, padding: 24, maxWidth: ['integration-builder', 'users', 'relay-agents'].includes(activeTab) ? 1200 : 760 }}>
+      <div style={{ flex: 1, padding: 24, maxWidth: ['integration-builder', 'users'].includes(activeTab) ? 1200 : 760 }}>
 
       {/* Scans tab */}
       {activeTab === 'upload' && <ScanManagement />}
@@ -613,10 +611,7 @@ export default function Settings() {
       {/* Integration Builder tab */}
       {activeTab === 'integration-builder' && <IntegrationBuilderTab />}
 
-      {/* Relay Agents tab */}
-      {activeTab === 'relay-agents' && <RelayAgentManager />}
-
-      {/* Audit Log tab */}
+{/* Audit Log tab */}
       {activeTab === 'audit-log' && <AuditLog />}
 
       {/* Ownership tab */}
