@@ -30,7 +30,7 @@
     "fields": [
       { "field": "client_id", "label": "Client ID", "type": "text", "help": "From CrowdStrike API clients page" },
       { "field": "client_secret", "label": "Client Secret", "type": "password", "help": "Generated when you created the API client" }
-    ],
+    ]
   },
   "default_field_map": [
     {
@@ -54,10 +54,30 @@
       "target": "os_version"
     },
     {
+      "source": "mac_address",
+      "target": "mac_address"
+    },
+    {
       "source": "last_seen",
       "target": "last_seen",
       "transform": {
         "type": "datetime"
+      }
+    },
+    {
+      "source": "hostname",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': record.get('local_ip', ''), 'hostname': record.get('hostname', ''), 'fqdn': record.get('hostname', ''), 'device_id': record.get('device_id', ''), 'display_name': record.get('hostname') or record.get('local_ip', '')}"
+      }
+    },
+    {
+      "source": "hostname",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'external_ip': record.get('external_ip', ''), 'agent_version': record.get('agent_version', ''), 'agent_status': record.get('status', ''), 'platform_name': record.get('platform_name', ''), 'product_type_desc': record.get('product_type_desc', ''), 'system_manufacturer': record.get('system_manufacturer', ''), 'system_product_name': record.get('system_product_name', ''), 'serial_number': record.get('serial_number', ''), 'bios_version': record.get('bios_version', ''), 'kernel_version': record.get('kernel_version', ''), 'os_build': record.get('os_build', ''), 'site_name': record.get('site_name', ''), 'tags': record.get('tags', [])}"
       }
     },
     {

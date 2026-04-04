@@ -11,6 +11,7 @@ import { filtersToConditions } from '../../utils/filtersToConditions.js'
 import BlastRadiusPanel, { BlastRadiusScore } from '../campaigns/BlastRadiusPanel.jsx'
 import NLPSearchBar from '../shared/NLPSearchBar.jsx'
 import NewSinceBanner from '../notifications/NewSinceBanner.jsx'
+import { getAssetDisplayName, getAssetSecondaryInfo, getAssetTarget, getAssetTypeLabel } from '../../utils/assetDisplay.js'
 
 function RiskScore({ score }) {
   const color = score >= 8 ? 'var(--critical)' : score >= 6 ? 'var(--high)' : score >= 4 ? 'var(--medium)' : 'var(--low)'
@@ -255,10 +256,11 @@ function BulkCampaignModal({ selectedAssets, scanId, onClose, onCreated }) {
     try {
       // Build valid rule-engine conditions using ip (preferred) or hostname
       const conditions = selectedAssets.map(a => {
-        if (a.ip) return { field: 'ip', op: 'eq', value: a.ip }
-        if (a.hostname) return { field: 'hostname', op: 'eq', value: a.hostname }
-        return { field: 'fqdn', op: 'eq', value: a.fqdn }
-      }).filter(c => c.value)
+        const target = getAssetTarget(a)
+        if (!target) return null
+        const field = a.ip ? 'ip' : a.hostname ? 'hostname' : 'fqdn'
+        return { field, op: 'eq', value: target }
+      }).filter(c => c)
       if (conditions.length === 0) { setError('Selected assets have no IP, hostname, or FQDN'); setSaving(false); return }
       const result = await createCampaign({
         name: name.trim(),
@@ -550,7 +552,7 @@ export default function AssetInventory() {
     const selectedAssets = assets.filter(a => selectedIds.has(a.id))
     const assetEntries = selectedAssets.map(a => ({
       asset_id: a.id,
-      target: a.ip || a.hostname || a.fqdn,
+      target: getAssetTarget(a),
     })).filter(e => e.target)
     if (assetEntries.length === 0) {
       setBulkScanError('Selected assets have no IP or hostname')
@@ -586,7 +588,7 @@ export default function AssetInventory() {
       render: (_, row) => (
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 13 }}>{row.hostname || row.ip}</span>
+            <span style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 13 }}>{getAssetDisplayName(row)}</span>
             {row.is_domain_controller && (
               <span style={{
                 display: 'inline-block', padding: '1px 5px', borderRadius: 4,
@@ -616,8 +618,9 @@ export default function AssetInventory() {
               )
             })}
           </div>
-          {row.fqdn && row.fqdn !== row.hostname && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.fqdn}</div>}
-          {row.ip && row.ip !== row.hostname && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{row.ip}</div>}
+          {getAssetSecondaryInfo(row).map((info, i) => (
+            <div key={i} style={{ fontSize: 11, color: 'var(--text-muted)' }}>{info}</div>
+          ))}
           {row.tags?.length > 0 && (
             <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginTop: 4 }}>
               {row.tags.map(t => (
@@ -627,6 +630,10 @@ export default function AssetInventory() {
           )}
         </div>
       )
+    },
+    {
+      key: 'asset_type', label: t('assets.type', 'Type'), width: '100px', sortable: true,
+      render: (_, row) => <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{getAssetTypeLabel(row.asset_type)}</span>
     },
     {
       key: 'os', label: t('assets.os'), width: '15%', sortable: true,
@@ -1149,8 +1156,7 @@ export default function AssetInventory() {
             }}>
               <Crosshair size={15} color="var(--accent)" />
               <span style={{ flex: 1, fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
-                {t('assets.blastRadius')} — {assets.find(a => a.id === expandedAsset)?.hostname ||
-                                assets.find(a => a.id === expandedAsset)?.ip}
+                {t('assets.blastRadius')} — {getAssetDisplayName(assets.find(a => a.id === expandedAsset))}
               </span>
               <button
                 onClick={() => setExpandedAsset(null)}

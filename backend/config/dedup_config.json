@@ -2,14 +2,95 @@
   "enabled": true,
   "apply_on_upload": true,
   "assets": {
-    "enabled": true,
-    "key_fields": [
-      "ip",
-      "fqdn"
-    ],
-    "key_mode": "or",
-    "strategy": "merge",
-    "scope": "cross_scan"
+    "host": {
+      "enabled": true,
+      "key_fields": [
+        "ip",
+        "fqdn"
+      ],
+      "key_mode": "or",
+      "strategy": "merge",
+      "scope": "cross_scan",
+      "source_priority": {
+        "*": [],
+        "hostname": [
+          "nessus"
+        ]
+      }
+    },
+    "web_app": {
+      "enabled": true,
+      "key_fields": [
+        "url"
+      ],
+      "key_mode": "and",
+      "strategy": "keep_last",
+      "scope": "cross_scan"
+    },
+    "cloud_instance": {
+      "enabled": true,
+      "key_fields": [
+        "cloud_provider",
+        "instance_id"
+      ],
+      "key_mode": "and",
+      "strategy": "merge",
+      "scope": "cross_scan"
+    },
+    "api_endpoint": {
+      "enabled": true,
+      "key_fields": [
+        "method",
+        "url"
+      ],
+      "key_mode": "and",
+      "strategy": "keep_last",
+      "scope": "cross_scan"
+    },
+    "identity": {
+      "enabled": true,
+      "key_fields": [
+        "provider",
+        "principal_id"
+      ],
+      "key_mode": "and",
+      "strategy": "merge",
+      "scope": "cross_scan"
+    },
+    "container_image": {
+      "enabled": true,
+      "key_fields": [
+        "registry",
+        "repository",
+        "digest"
+      ],
+      "key_mode": "and",
+      "strategy": "keep_last",
+      "scope": "cross_scan"
+    },
+    "code_repo": {
+      "enabled": true,
+      "key_fields": [
+        "provider",
+        "org",
+        "repo"
+      ],
+      "key_mode": "and",
+      "strategy": "merge",
+      "scope": "cross_scan"
+    },
+    "k8s_workload": {
+      "enabled": true,
+      "key_fields": [
+        "cluster",
+        "namespace",
+        "kind",
+        "name"
+      ],
+      "key_mode": "and",
+      "strategy": "merge",
+      "scope": "cross_scan"
+    }
   },
   "findings": {
     "enabled": true,
@@ -72,7 +153,7 @@
       "strategy": "merge"
     },
     "netconns": {
-      "enabled": false,
+      "enabled": true,
       "key_fields": [
         "local_addr",
         "local_port",
@@ -121,6 +202,42 @@
         "asset_id"
       ],
       "strategy": "merge"
+    },
+    "env_vars": {
+      "enabled": true,
+      "key_fields": [
+        "name",
+        "asset_id"
+      ],
+      "strategy": "keep_last"
+    },
+    "processes": {
+      "enabled": true,
+      "key_fields": [
+        "process_name",
+        "pid",
+        "asset_id"
+      ],
+      "strategy": "keep_last"
+    },
+    "certificates": {
+      "enabled": true,
+      "key_fields": [
+        "subject_cn",
+        "serial_number",
+        "asset_id"
+      ],
+      "strategy": "keep_last"
+    },
+    "database_instances": {
+      "enabled": true,
+      "key_fields": [
+        "db_type",
+        "instance_name",
+        "port",
+        "asset_id"
+      ],
+      "strategy": "keep_last"
     }
   }
 }

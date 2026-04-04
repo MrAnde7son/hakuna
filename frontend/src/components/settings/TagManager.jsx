@@ -9,6 +9,7 @@ import { Card, PageHeader, Button, Input, Select, Spinner, EmptyState, ExportImp
 import { useNavigate } from 'react-router-dom'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import TagMappings from './TagMappings.jsx'
+import { getAssetDisplayName, getFindingAssetDisplay } from '../../utils/assetDisplay.js'
 
 const PALETTE = [
   '#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f97316',
@@ -405,10 +406,7 @@ function TagAssetsPanel({ tag, onClose }) {
     return () => { cancelled = true }
   }, [activeTab, tag.id, tagQuery, findingsLoaded])
 
-  const assetLabel = (a) => {
-    if (a.ip && a.hostname) return a.ip
-    return a.ip || a.hostname || `Asset #${a.id}`
-  }
+  const assetLabel = (a) => getAssetDisplayName(a)
   const assetSub = (a) => {
     if (a.ip && a.hostname) return a.hostname
     return null
@@ -555,7 +553,7 @@ function TagAssetsPanel({ tag, onClose }) {
                     {f.plugin_name || `Finding #${f.id}`}
                   </span>
                   <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0, marginLeft: 'auto' }}>
-                    {f.asset_ip || f.asset_hostname || ''}
+                    {getFindingAssetDisplay(f)}
                   </span>
                   <ExternalLink size={10} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
                 </div>

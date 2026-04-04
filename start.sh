@@ -5,7 +5,6 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 echo "═══════════════════════════════════════════════"
 echo "  Exposure Command Center"
-echo "  Supports: HTML · .nessus XML · CSV"
 echo "═══════════════════════════════════════════════"
 
 # ── Backend setup ────────────────────────────────

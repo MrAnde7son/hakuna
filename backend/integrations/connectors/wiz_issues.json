@@ -14,7 +14,7 @@
       "Content-Type": "application/json"
     },
     "body": {
-      "query": "query IssuesTable($first: Int, $after: String, $filterBy: IssueFilters) { issues(first: $first, after: $after, filterBy: $filterBy) { nodes { id sourceRule { name } severity status entity { name type ... on CloudResource { nativeType region cloudPlatform } } note createdAt updatedAt } pageInfo { hasNextPage endCursor } totalCount } }",
+      "query": "query IssuesTable($first: Int, $after: String, $filterBy: IssueFilters) { issues(first: $first, after: $after, filterBy: $filterBy) { nodes { id sourceRule { name } severity status entity { name type ... on CloudResource { nativeType region cloudPlatform cloudAccount { id name } subscription { id name } } } note createdAt updatedAt } pageInfo { hasNextPage endCursor } totalCount } }",
       "variables": {
         "first": 100,
         "after": "{{pagination.cursor}}",
@@ -100,15 +100,27 @@
     },
     {
       "source": "entity.type",
-      "target": "asset.type"
+      "target": "asset.asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "{'VIRTUAL_MACHINE': 'cloud_instance', 'CONTAINER': 'container_image', 'SERVERLESS': 'cloud_instance', 'HOSTED_TECHNOLOGY': 'cloud_instance', 'CLOUD_RESOURCE': 'cloud_instance', 'KUBERNETES_CLUSTER': 'k8s_workload', 'KUBERNETES_NODE': 'k8s_workload', 'KUBERNETES_POD': 'k8s_workload', 'CODE_REPOSITORY': 'code_repo', 'IDENTITY': 'identity'}.get(value, 'cloud_instance')"
+      }
     },
     {
-      "source": "entity.cloudPlatform",
-      "target": "asset.cloud_provider"
+      "source": "entity.name",
+      "target": "asset.asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'display_name': value, 'cloud_provider': (record.get('entity') or {}).get('cloudPlatform', ''), 'region': (record.get('entity') or {}).get('region', ''), 'native_type': (record.get('entity') or {}).get('nativeType', ''), 'instance_id': value}"
+      }
     },
     {
-      "source": "entity.region",
-      "target": "asset.region"
+      "source": "entity.name",
+      "target": "asset.asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'native_type': (record.get('entity') or {}).get('nativeType', ''), 'cloud_account_id': ((record.get('entity') or {}).get('cloudAccount') or {}).get('id', ''), 'cloud_account_name': ((record.get('entity') or {}).get('cloudAccount') or {}).get('name', ''), 'subscription_id': ((record.get('entity') or {}).get('subscription') or {}).get('id', ''), 'subscription_name': ((record.get('entity') or {}).get('subscription') or {}).get('name', ''), 'entity_type': (record.get('entity') or {}).get('type', '')}"
+      }
     },
     {
       "source": "note",

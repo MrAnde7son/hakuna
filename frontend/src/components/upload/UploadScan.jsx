@@ -168,7 +168,7 @@ export default function UploadScan() {
       />
 
       <Card style={{ marginBottom: 20 }}>
-        <DropZone onFile={handleFile} disabled={uploads.some(u => u.status === 'uploading' || u.status === 'processing')} />
+        <DropZone onFile={handleFile} disabled={false} />
       </Card>
 
       {/* Upload status */}

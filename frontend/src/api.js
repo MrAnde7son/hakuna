@@ -369,6 +369,7 @@ export const getAssets = (params = {}) => {
 }
 export const getAsset = (id) => request(`/assets/${id}`)
 export const getAssetRiskBreakdown = (id) => request(`/assets/${id}/risk-breakdown`)
+export const getAssetSources = (id) => request(`/assets/${id}/sources`)
 export const updateAsset = (id, data) => {
   const q = new URLSearchParams(Object.entries(data).filter(([, v]) => v != null && v !== ''))
   return request(`/assets/${id}?${q}`, { method: 'PATCH' })
@@ -380,6 +381,7 @@ export const getFindings = (params = {}) => {
   return request(`/findings?${q}`)
 }
 export const getFinding = (id) => request(`/findings/${id}`)
+export const getFindingSources = (id) => request(`/findings/${id}/sources`)
 export const getFindingProducts = () => request('/findings/products')
 export const getFindingCpes = () => request('/findings/cpes')
 
@@ -905,6 +907,8 @@ export const runDedup = (entity_type, scan_id = null) => request('/dedup/run', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ entity_type, scan_id }),
 })
+export const getAvailableSources = () => request('/dedup/available-sources')
+export const runRollup = () => request('/dedup/rollup', { method: 'POST' })
 
 // Mini Agents
 export const getAgentToolCatalog = () => request('/agents/tool-catalog')

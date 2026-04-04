@@ -21,7 +21,7 @@ from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Query, Re
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, desc, distinct, or_, cast, Text
 
 from core.database import get_db, init_db
@@ -41,9 +41,9 @@ from models.models import (
     SBOMComponent, SBOMVulnerability, RelayAgent,
     Campaign, CampaignFinding, FindingOwnership, AssetOwnership,
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
-    Tag, TagAssignment, AutoTagRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
+    Tag, TagAssignment, AutoTagRule, AssetTypeRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
     SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog, AggregatedSolution,
-    BenchmarkReference,
+    BenchmarkReference, AssetObservation, FindingObservation,
 )
 from parsers.parser import detect_and_parse, load_intel_json
 from parsers.registry import detect_parser, list_parsers, init_parsers
@@ -56,12 +56,14 @@ import core.risk_config as risk_engine
 import services.campaign_query as cq
 import services.tags as tag_engine
 import services.rule_engine as rule_engine
+import services.asset_type_rules as asset_type_rule_engine
 import services.workflow_engine as workflow_engine
 from services.nlp_search import parse_nlp_query
 from services.nlp_filters import apply_asset_nlp_filters, apply_finding_nlp_filters, severity_breakdown_grouped
 import services.integrations as integ_module
 import services.ownership_inference as ownership_inference
 from services.easm import enrich_assets_from_easm
+from services.asset_observations import record_observation as record_asset_observation
 import services.solution_aggregator as solution_aggregator
 from core.audit import log_audit, diff as _diff
 from core.auth import (
@@ -863,17 +865,10 @@ def _run_scan_ingest(
         # Within-scan asset dedup: collapse duplicate hosts before creating DB records
         parsed_assets = parsed["assets"]
         if dedup_cfg.get("enabled") and dedup_cfg.get("apply_on_upload"):
-            asset_dcfg = dedup_cfg.get("assets", {})
-            if asset_dcfg.get("enabled"):
-                before = len(parsed_assets)
-                parsed_assets = dedup_engine.dedup_records(
-                    parsed_assets,
-                    asset_dcfg.get("key_fields", ["ip"]),
-                    asset_dcfg.get("strategy", "merge"),
-                    key_mode=asset_dcfg.get("key_mode", "and"),
-                )
-                if len(parsed_assets) < before:
-                    logger.info(f"Within-scan asset dedup: {before} → {len(parsed_assets)} assets")
+            before = len(parsed_assets)
+            parsed_assets = dedup_engine.dedup_asset_records(parsed_assets, dedup_cfg)
+            if len(parsed_assets) < before:
+                logger.info(f"Within-scan asset dedup: {before} → {len(parsed_assets)} assets")
 
         # Create Asset records
         asset_map = {}  # hostname/ip → Asset (populated with both keys for reliable lookup)
@@ -885,6 +880,22 @@ def _run_scan_ingest(
 
             # Enrich asset_data with scan-level context for classification
             asset_data["scanner_type"] = scan_data.get("scanner_type")
+            asset_data["source_type"] = source_parser.source_type
+
+            # Low-code asset-type rules: evaluate first, override parser defaults
+            type_rule_result = asset_type_rule_engine.evaluate_asset_type_rules(
+                asset_data, db,
+                org_id=scan.org_id,
+                source_type=source_parser.source_type,
+            )
+            if type_rule_result:
+                asset_data["asset_type"] = type_rule_result["asset_type"]
+                asset_data["asset_identity"] = type_rule_result["asset_identity"]
+                asset_data["asset_attributes"] = {
+                    **asset_data.get("asset_attributes", {}),
+                    **type_rule_result["asset_attributes"],
+                }
+
             ctx = classify_asset(asset_data)
             # Internet-facing = public IP scanned by an external/cloud scanner
             is_ext_scanner = scan_data.get("scanner_type") in ("cloud", "external")
@@ -917,9 +928,24 @@ def _run_scan_ingest(
                 environment_tag=ctx["environment_tag"],
                 business_context=ctx["business_context"],
                 source_systems=[source_parser.source_type],
+                asset_type=asset_data.get("asset_type", "host"),
+                asset_identity=asset_data.get("asset_identity") or {
+                    k: v for k, v in {
+                        "ip": asset_data.get("ip"),
+                        "hostname": asset_data.get("hostname"),
+                        "fqdn": asset_data.get("fqdn"),
+                    }.items() if v
+                },
+                asset_attributes=asset_data.get("asset_attributes", {}),
             )
             db.add(asset)
             db.flush()
+            # Record per-source observation
+            record_asset_observation(
+                db, asset_id=asset.id,
+                source_system=source_parser.source_type,
+                raw_fields=asset_data, scan_id=scan.id, org_id=scan.org_id,
+            )
             # Register both hostname and IP so finding lookup works after dedup merges
             if asset_data.get("hostname"):
                 asset_map[asset_data["hostname"]] = asset
@@ -932,6 +958,7 @@ def _run_scan_ingest(
                     asset_map[key] = asset
 
         # Create Finding records
+        _pending_finding_obs = []
         for finding_data in parsed["findings"]:
             host_key = finding_data.get("host_name")
             asset = asset_map.get(host_key)
@@ -999,8 +1026,19 @@ def _run_scan_ingest(
                 source_systems=[source_parser.source_type],
             )
             db.add(finding)
+            _pending_finding_obs.append((finding, finding_data))
 
         db.flush()
+
+        # Record per-source observations for all findings (IDs now assigned after flush)
+        from services.asset_observations import record_finding_observation
+        for finding, finding_data in _pending_finding_obs:
+            record_finding_observation(
+                db, finding_id=finding.id,
+                source_system=source_parser.source_type,
+                raw_fields=finding_data,
+                scan_id=scan.id, org_id=scan.org_id,
+            )
 
         # ── Recount severity per asset (covers placeholder assets created mid-loop) ──
         from sqlalchemy import func as sa_func
@@ -1703,6 +1741,7 @@ def list_assets(
     tags: Optional[str] = None,
     tag_logic: str = "AND",
     expand_children: bool = False,
+    asset_type: Optional[str] = None,
     sort_by: str = "risk_score",
     order: str = "desc",
     page: int = 1,
@@ -1740,6 +1779,8 @@ def list_assets(
         q = q.filter(Asset.environment_tag == environment)
     if criticality is not None:
         q = q.filter(Asset.criticality == criticality)
+    if asset_type:
+        q = q.filter(Asset.asset_type == asset_type)
     if search:
         pattern = f"%{search}%"
         from sqlalchemy import or_
@@ -1748,6 +1789,7 @@ def list_assets(
             Asset.ip.ilike(pattern),
             Asset.fqdn.ilike(pattern),
             Asset.os.ilike(pattern),
+            cast(Asset.asset_identity, Text).ilike(pattern),
         ))
     if min_critical is not None:
         q = q.filter(Asset.critical_count >= min_critical)
@@ -1806,6 +1848,58 @@ def get_asset(asset_id: int, db: Session = Depends(get_db), org_ids: Optional[Li
     if not asset:
         raise HTTPException(404, "Asset not found")
     return _asset_to_dict(asset)
+
+
+@app.get("/api/assets/{asset_id}/sources")
+def get_asset_sources(asset_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    """Return per-source observation snapshots for a deduplicated asset."""
+    query = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id == asset_id)
+    query = apply_scan_org_filter(query, org_ids)
+    if not query.first():
+        raise HTTPException(404, "Asset not found")
+    observations = (
+        db.query(AssetObservation)
+        .filter(AssetObservation.asset_id == asset_id)
+        .order_by(AssetObservation.last_seen.desc())
+        .all()
+    )
+    return [
+        {
+            "id": obs.id,
+            "source_system": obs.source_system,
+            "raw_fields": obs.raw_fields or {},
+            "first_seen": obs.first_seen.isoformat() if obs.first_seen else None,
+            "last_seen": obs.last_seen.isoformat() if obs.last_seen else None,
+            "times_seen": obs.times_seen,
+        }
+        for obs in observations
+    ]
+
+
+@app.get("/api/findings/{finding_id}/sources")
+def get_finding_sources(finding_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
+    """Return per-source observation snapshots for a deduplicated finding."""
+    query = db.query(Finding).join(Scan, Finding.scan_id == Scan.id).filter(Finding.id == finding_id)
+    query = apply_scan_org_filter(query, org_ids)
+    if not query.first():
+        raise HTTPException(404, "Finding not found")
+    observations = (
+        db.query(FindingObservation)
+        .filter(FindingObservation.finding_id == finding_id)
+        .order_by(FindingObservation.last_seen.desc())
+        .all()
+    )
+    return [
+        {
+            "id": obs.id,
+            "source_system": obs.source_system,
+            "raw_fields": obs.raw_fields or {},
+            "first_seen": obs.first_seen.isoformat() if obs.first_seen else None,
+            "last_seen": obs.last_seen.isoformat() if obs.last_seen else None,
+            "times_seen": obs.times_seen,
+        }
+        for obs in observations
+    ]
 
 
 @app.get("/api/assets/{asset_id}/risk-breakdown")
@@ -1948,6 +2042,10 @@ def _asset_to_dict(a: Asset) -> dict:
         "easm_data": a.easm_data,
         # Multi-source provenance
         "source_systems": a.source_systems or [],
+        # Multi-type asset identity
+        "asset_type": a.asset_type or "host",
+        "asset_identity": a.asset_identity or {},
+        "asset_attributes": a.asset_attributes or {},
     }
 
 
@@ -4603,6 +4701,70 @@ def run_dedup(body: RunDedupBody):
     return {"job_id": job.id, "status": job.status.value, "poll_url": f"/api/jobs/{job.id}/status"}
 
 
+@app.get("/api/dedup/available-sources")
+def get_available_sources(
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return distinct source_system values across assets and findings for this org."""
+    from sqlalchemy import func as sa_func
+    q = (
+        db.query(AssetObservation.source_system)
+        .distinct()
+    )
+    if org_ids:
+        q = q.filter(AssetObservation.org_id.in_(org_ids))
+    asset_sources = {row[0] for row in q.all() if row[0]}
+
+    q2 = (
+        db.query(FindingObservation.source_system)
+        .distinct()
+    )
+    if org_ids:
+        q2 = q2.filter(FindingObservation.org_id.in_(org_ids))
+    finding_sources = {row[0] for row in q2.all() if row[0]}
+
+    # Also include source_systems from Asset/Finding for orgs that predate observations
+    q3 = db.query(Asset.source_systems).join(Scan, Asset.scan_id == Scan.id)
+    q3 = apply_scan_org_filter(q3, org_ids)
+    for row in q3.all():
+        if row[0] and isinstance(row[0], list):
+            asset_sources.update(row[0])
+
+    return sorted(asset_sources | finding_sources)
+
+
+@app.post("/api/dedup/rollup", status_code=202)
+def run_rollup(db: Session = Depends(get_db)):
+    """Re-rollup all assets from their observations using current source_priority config.
+
+    Called after the user saves source_priority changes in Settings.
+    """
+    from services.job_manager import dispatch
+    from core.database import SessionLocal
+
+    def _run_rollup():
+        _db = SessionLocal()
+        try:
+            cfg = dedup_engine.load_config()
+            from services.asset_observations import rollup_all_assets
+            # Collect all source_priority configs across asset types
+            assets_cfg = cfg.get("assets", {})
+            total = 0
+            for atype, tcfg in assets_cfg.items():
+                if not isinstance(tcfg, dict):
+                    continue
+                sp = tcfg.get("source_priority")
+                if sp and any(sp.values()):
+                    total += rollup_all_assets(_db, sp)
+            return {"rolled_up": total}
+        finally:
+            _db.close()
+
+    job = dispatch("rollup_assets", _run_rollup)
+    return {"job_id": job.id, "status": job.status.value, "poll_url": f"/api/jobs/{job.id}/status"}
+
+
 # ─────────────────────────────────────────────
 # Risk Config & Recalculate
 # ─────────────────────────────────────────────
@@ -4992,7 +5154,6 @@ class CampaignFindingUpdateBody(BaseModel):
 
 def _serialize_finding(f: Finding, asset: Asset = None) -> dict:
     """Minimal finding dict for campaign results."""
-    own = f.ownership[0] if f.ownership else None
     return {
         "id": f.id,
         "plugin_id": f.plugin_id,
@@ -5002,35 +5163,22 @@ def _serialize_finding(f: Finding, asset: Asset = None) -> dict:
         "severity_label": f.severity_label,
         "cvss2_score": f.cvss2_score,
         "cvss3_score": f.cvss3_score,
-        "cvss4_score": f.cvss4_score,
         "vpr_score": f.vpr_score,
         "priority_score": f.priority_score,
-        "effort_level": f.effort_level,
         "owner_suggestion": f.owner_suggestion,
         "synopsis": f.synopsis,
-        "solution": f.solution,
         "remediation_steps": f.remediation_steps,
         "cves": f.cves or [],
         "exploit_available": f.exploit_available,
+        "exploit_maturity": f.exploit_maturity,
         "zero_day": f.zero_day,
         "is_kev": f.is_kev or False,
         "epss_score": f.epss_score,
-        "epss_percentile": f.epss_percentile,
         "ransomware_linked": f.ransomware_linked or False,
         "trending_in_news": f.trending_in_news or False,
-        "matched_ttps": f.matched_ttps or [],
         "port": f.port,
-        "protocol": f.protocol,
-        "asset_id": f.asset_id,
         "asset_ip": asset.ip if asset else None,
         "asset_hostname": (asset.hostname or asset.fqdn or asset.ip) if asset else None,
-        "ownership": {
-            "owner_name": own.owner_name,
-            "owner_email": own.owner_email,
-            "owner_role": own.owner_role,
-            "team": own.team,
-            "notes": own.notes,
-        } if own else None,
     }
 
 
@@ -5264,7 +5412,14 @@ def list_campaigns(scan_id: Optional[int] = None, db: Session = Depends(get_db),
 @app.get("/api/campaigns/{campaign_id}")
 def get_campaign(campaign_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     """Get a campaign with its findings grouped by owner."""
-    query = db.query(Campaign).filter(Campaign.id == campaign_id)
+    query = db.query(Campaign).options(
+        selectinload(Campaign.findings)
+        .joinedload(CampaignFinding.finding)
+        .options(
+            joinedload(Finding.asset).selectinload(Asset.ownership),
+            selectinload(Finding.ownership),
+        )
+    ).filter(Campaign.id == campaign_id)
     query = apply_org_filter(query, Campaign, org_ids)
     campaign = query.first()
     if not campaign:
@@ -6606,6 +6761,16 @@ def get_os_software_summary(
     dt_q = dt_q.filter(Asset.device_type.isnot(None)).group_by(Asset.device_type).order_by(sqla_func.count(Asset.id).desc())
     device_types = [{"name": r.device_type, "count": r.count} for r in dt_q.all()]
 
+    # Asset type distribution
+    at_q = db.query(Asset.asset_type, sqla_func.count(Asset.id).label("count")).join(
+        Scan, Asset.scan_id == Scan.id
+    )
+    at_q = apply_scan_org_filter(at_q, org_ids)
+    if scan_id:
+        at_q = at_q.filter(Asset.scan_id == scan_id)
+    at_q = at_q.group_by(Asset.asset_type).order_by(sqla_func.count(Asset.id).desc())
+    asset_types = [{"name": r.asset_type or "host", "count": r.count} for r in at_q.all()]
+
     # ── Riskiest OS families (OS → assets → findings severity rollup) ──
     from sqlalchemy import case as sa_case2
     os_risk_q = (
@@ -6693,6 +6858,7 @@ def get_os_software_summary(
         "software": software,
         "software_categories": software_categories,
         "device_types": device_types,
+        "asset_types": asset_types,
         "os_risk": os_risk,
         "software_risk": sw_risk,
         "family_risk": family_risk,
@@ -6959,6 +7125,180 @@ def _rule_to_dict(rule: AutoTagRule) -> dict:
         "created_at": rule.created_at.isoformat() if rule.created_at else None,
         "last_run_at": rule.last_run_at.isoformat() if rule.last_run_at else None,
         "last_run_count": rule.last_run_count,
+    }
+
+
+# ─────────────────────────────────────────────
+# Asset Type Rules (low-code classification)
+# ─────────────────────────────────────────────
+
+class AssetTypeRuleCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    conditions: list = []
+    condition_logic: str = "AND"
+    target_asset_type: str
+    identity_mapping: dict = {}
+    default_attributes: dict = {}
+    priority: int = 100
+    source_filter: Optional[str] = None
+    is_enabled: bool = True
+
+
+class AssetTypeRuleUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    conditions: Optional[list] = None
+    condition_logic: Optional[str] = None
+    target_asset_type: Optional[str] = None
+    identity_mapping: Optional[dict] = None
+    default_attributes: Optional[dict] = None
+    priority: Optional[int] = None
+    source_filter: Optional[str] = None
+    is_enabled: Optional[bool] = None
+
+
+def _asset_type_rule_to_dict(rule: AssetTypeRule) -> dict:
+    return {
+        "id": rule.id,
+        "org_id": rule.org_id,
+        "name": rule.name,
+        "description": rule.description,
+        "conditions": rule.conditions,
+        "condition_logic": rule.condition_logic,
+        "target_asset_type": rule.target_asset_type,
+        "identity_mapping": rule.identity_mapping,
+        "default_attributes": rule.default_attributes,
+        "priority": rule.priority,
+        "source_filter": rule.source_filter,
+        "is_enabled": rule.is_enabled,
+        "created_at": rule.created_at.isoformat() if rule.created_at else None,
+        "updated_at": rule.updated_at.isoformat() if rule.updated_at else None,
+    }
+
+
+@app.get("/api/asset-type-rules/condition-catalog")
+def asset_type_rules_condition_catalog():
+    """Return available conditions for asset-type classification rules."""
+    return asset_type_rule_engine.get_condition_catalog()
+
+
+@app.get("/api/asset-type-rules")
+def list_asset_type_rules(
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    rules = (
+        db.query(AssetTypeRule)
+        .order_by(AssetTypeRule.priority, AssetTypeRule.id)
+        .all()
+    )
+    return [_asset_type_rule_to_dict(r) for r in rules]
+
+
+@app.post("/api/asset-type-rules")
+def create_asset_type_rule(
+    body: AssetTypeRuleCreate,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
+    rule = AssetTypeRule(
+        org_id=user.org_id if user else None,
+        name=body.name,
+        description=body.description,
+        conditions=body.conditions,
+        condition_logic=body.condition_logic,
+        target_asset_type=body.target_asset_type,
+        identity_mapping=body.identity_mapping,
+        default_attributes=body.default_attributes,
+        priority=body.priority,
+        source_filter=body.source_filter,
+        is_enabled=body.is_enabled,
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    log_audit(db, "create", "asset_type_rule", rule.id,
+              entity_name=rule.name,
+              changes={"target_asset_type": rule.target_asset_type, "conditions": rule.conditions},
+              actor=user)
+    db.commit()
+    return _asset_type_rule_to_dict(rule)
+
+
+@app.get("/api/asset-type-rules/{rule_id}")
+def get_asset_type_rule(rule_id: int, db: Session = Depends(get_db)):
+    rule = db.query(AssetTypeRule).filter(AssetTypeRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, "Asset type rule not found")
+    return _asset_type_rule_to_dict(rule)
+
+
+@app.patch("/api/asset-type-rules/{rule_id}")
+def update_asset_type_rule(
+    rule_id: int,
+    body: AssetTypeRuleUpdate,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
+    rule = db.query(AssetTypeRule).filter(AssetTypeRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, "Asset type rule not found")
+    changes = {}
+    for field in body.model_fields_set:
+        val = getattr(body, field)
+        changes[field] = val
+        setattr(rule, field, val)
+    log_audit(db, "update", "asset_type_rule", rule.id,
+              entity_name=rule.name, changes=changes, actor=user)
+    db.commit()
+    db.refresh(rule)
+    return _asset_type_rule_to_dict(rule)
+
+
+@app.delete("/api/asset-type-rules/{rule_id}")
+def delete_asset_type_rule(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+):
+    rule = db.query(AssetTypeRule).filter(AssetTypeRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(404, "Asset type rule not found")
+    log_audit(db, "delete", "asset_type_rule", rule.id,
+              entity_name=rule.name, actor=user)
+    db.delete(rule)
+    db.commit()
+    return {"message": "Asset type rule deleted"}
+
+
+@app.post("/api/asset-type-rules/test")
+def test_asset_type_rule(
+    body: dict,
+    db: Session = Depends(get_db),
+):
+    """Dry-run: test a rule's conditions against sample asset data.
+
+    Body: {"conditions": [...], "condition_logic": "AND",
+           "identity_mapping": {...}, "target_asset_type": "web_app",
+           "sample_asset": {"hostname": "http://...", "ip": "10.0.0.1", ...}}
+    """
+    sample = body.get("sample_asset", {})
+    conditions = body.get("conditions", [])
+    logic = body.get("condition_logic", "AND")
+    mapping = body.get("identity_mapping", {})
+    target = body.get("target_asset_type", "host")
+
+    matched = rule_engine.evaluate_conditions(
+        conditions=conditions,
+        logic=logic,
+        asset_dict=sample,
+    )
+    identity = asset_type_rule_engine.resolve_identity(mapping, sample) if matched else {}
+    return {
+        "matched": matched,
+        "result_asset_type": target if matched else None,
+        "result_identity": identity if matched else None,
     }
 
 

@@ -250,9 +250,9 @@ class Scan(Base):
     slug="asset",
     display_name="Asset",
     category="core",
-    dedup_keys=["source_system", "source_id"],
-    required_fields=["ip", "hostname"],
-    description="Network assets — hosts, servers, endpoints, cloud instances",
+    dedup_keys=["source_system", "source_id", "asset_type"],
+    required_fields=[],
+    description="Assets — hosts, web apps, cloud instances, APIs, identities, containers, and custom types",
 )
 class Asset(Base):
     __tablename__ = "assets"
@@ -290,6 +290,11 @@ class Asset(Base):
     last_auth_run = Column(String)                     # LastAuthenticatedResults timestamp
     system_type = Column(String)                        # e.g. "web_application" for WAS scans
 
+    # Multi-type asset identity
+    asset_type = Column(String, default="host", index=True)   # host, web_app, cloud_instance, api_endpoint, identity, container_image, code_repo, k8s_workload, or any custom type
+    asset_identity = Column(JSON, default=dict)                # structured identity keys per type (e.g. {"url": "..."} for web_app, {"instance_id": "..."} for cloud)
+    asset_attributes = Column(JSON, default=dict)              # type-specific metadata overflow
+
     # OS / device enrichment (from plugins 11936, 45590)
     device_type = Column(String)                        # server, workstation, router, switch, firewall, printer, hypervisor, wap, voip, storage, unknown
     cpe = Column(JSON, default=list)                    # CPE URIs from plugin 45590, e.g. ["cpe:/o:cisco:ios:15.1"]
@@ -321,6 +326,35 @@ class Asset(Base):
 
     scan = relationship("Scan", back_populates="assets")
     findings = relationship("Finding", back_populates="asset", cascade="all, delete-orphan")
+    observations = relationship("AssetObservation", back_populates="asset", cascade="all, delete-orphan")
+
+
+class AssetObservation(Base):
+    """Per-source snapshot of an asset — one row per (asset, source_system).
+
+    Stores the raw fields each source reported so the UI can show
+    what each scanner/integration contributed to the merged asset.
+    """
+    __tablename__ = "asset_observations"
+    __table_args__ = (
+        UniqueConstraint("asset_id", "source_system", name="uq_asset_obs_source"),
+        Index("ix_asset_observations_asset_id", "asset_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
+    source_system = Column(String, nullable=False)       # "nessus" | "crowdstrike" | "wiz" | "easm" | …
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+
+    # Raw fields as reported by this source
+    raw_fields = Column(JSON, default=dict)              # Full snapshot: {ip, hostname, fqdn, os, ...}
+
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
+    times_seen = Column(Integer, default=1)
+
+    asset = relationship("Asset", back_populates="observations")
 
 
 @importable(
@@ -456,6 +490,34 @@ class Finding(Base):
     asset = relationship("Asset", back_populates="findings")
     automate_clicks = relationship("AutomateClick", back_populates="finding", cascade="all, delete-orphan")
     tickets = relationship("FindingTicket", back_populates="finding", cascade="all, delete-orphan")
+    observations = relationship("FindingObservation", back_populates="finding", cascade="all, delete-orphan")
+
+
+class FindingObservation(Base):
+    """Per-source snapshot of a finding — one row per (finding, source_system).
+
+    Stores the raw fields each source reported so the UI can show
+    what each scanner/integration contributed to the merged finding.
+    """
+    __tablename__ = "finding_observations"
+    __table_args__ = (
+        UniqueConstraint("finding_id", "source_system", name="uq_finding_obs_source"),
+        Index("ix_finding_observations_finding_id", "finding_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=False)
+    source_system = Column(String, nullable=False)
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+
+    raw_fields = Column(JSON, default=dict)
+
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
+    times_seen = Column(Integer, default=1)
+
+    finding = relationship("Finding", back_populates="observations")
 
 
 class FindingTicket(Base):
@@ -1107,6 +1169,36 @@ class OwnershipRule(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     last_run_at = Column(DateTime, nullable=True)
     last_run_count = Column(Integer, nullable=True)
+
+
+class AssetTypeRule(Base):
+    """Low-code rule that classifies assets into a target asset_type based on conditions.
+
+    Evaluated during ingestion (scan upload, integration sync) before asset creation.
+    First matching rule (by priority) wins.  Uses the unified rule-engine condition format.
+    """
+    __tablename__ = "asset_type_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    # Conditions: same format as AutoTagRule / Campaign
+    # [{"field": "system_type", "op": "eq", "value": "web_application"}, ...]
+    conditions = Column(JSON, nullable=False, default=list)
+    condition_logic = Column(String, default="AND")  # "AND" | "OR"
+    # What to set when conditions match
+    target_asset_type = Column(String, nullable=False)  # e.g. "web_app", "cloud_instance", "host"
+    # JSON mapping: which raw fields populate asset_identity keys
+    # e.g. {"url": "hostname", "domain": "@extract_domain(hostname)"}
+    identity_mapping = Column(JSON, nullable=False, default=dict)
+    # Static attributes to merge into asset_attributes
+    default_attributes = Column(JSON, nullable=False, default=dict)
+    priority = Column(Integer, default=100)  # lower = evaluated first
+    source_filter = Column(String, nullable=True)  # optional: only apply for this source (nessus, qualys, easm, integration, etc.)
+    is_enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class Campaign(Base):

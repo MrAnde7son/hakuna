@@ -236,8 +236,11 @@ def _cross_scan_dedup(db, org_id):
     if not cfg.get("enabled") or not cfg.get("apply_on_upload"):
         return None
     asset_cfg = cfg.get("assets", {})
-    if not asset_cfg.get("enabled") or asset_cfg.get("scope", "cross_scan") != "cross_scan":
-        return None
+    # Per-type config: assets is a dict of {type: {enabled, ...}} — no top-level "enabled".
+    # Only skip if it's a legacy flat config with enabled=False.
+    if dedup_engine._is_legacy_asset_config(asset_cfg):
+        if not asset_cfg.get("enabled") or asset_cfg.get("scope", "cross_scan") != "cross_scan":
+            return None
 
     result = dedup_engine.run_cross_scan_asset_dedup(db, org_id, cfg, ENTITY_MODEL_MAP)
     if result.get("removed"):

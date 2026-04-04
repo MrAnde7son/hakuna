@@ -9,6 +9,7 @@ import {
   Card, SeverityBadge, ScoreBar, buildFindingBreakdown, useRiskWeights, PageHeader, Select, Spinner,
   EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, ErrorBanner, SkeletonCard
 } from '../shared/ui.jsx'
+import { getFindingAssetDisplay } from '../../utils/assetDisplay.js'
 
 const SEV_COLORS = ['var(--info)', 'var(--low)', 'var(--medium)', 'var(--high)', 'var(--critical)']
 
@@ -70,7 +71,7 @@ function FindingCard({ finding, rank, scanId, riskWeights }) {
             {finding.plugin_name}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-            {finding.asset_hostname || finding.asset_ip}
+            {getFindingAssetDisplay(finding)}
             {finding.plugin_family && ` · ${finding.plugin_family}`}
             {finding.port && ` · ${t('findings.port')} ${finding.port}/${finding.protocol}`}
           </div>

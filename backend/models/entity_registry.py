@@ -17,10 +17,13 @@ from models.models import (
 
 
 ENTITY_MODEL_MAP: dict = {
+    # Tuple format: (Model, list_fields, bool_fields, dict_fields)
+    # dict_fields are deep-merged during dedup (new keys win on conflict)
     "assets": (
         Asset,
         ["inferred_admin_contacts", "source_systems"],
         ["is_internet_facing", "is_credentialed"],
+        ["asset_identity", "asset_attributes"],
     ),
     "findings": (
         Finding,
