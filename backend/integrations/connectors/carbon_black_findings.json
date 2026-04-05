@@ -127,6 +127,14 @@
       "target": "asset.os"
     },
     {
+      "source": "device_external_ip",
+      "target": "asset.fqdn",
+      "transform": {
+        "type": "expression",
+        "expr": "record.get('device_name', '') + '.' + record.get('device_location', '') if record.get('device_location') else ''"
+      }
+    },
+    {
       "source": "threat_id",
       "target": "plugin_id"
     },

@@ -96,6 +96,22 @@
       "target": "asset.hostname"
     },
     {
+      "source": "Url",
+      "target": "asset.asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'web_app'"
+      }
+    },
+    {
+      "source": "Url",
+      "target": "asset.asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'url': str(value) if value else ''}"
+      }
+    },
+    {
       "source": "CvssScore",
       "target": "cvss_score",
       "transform": {

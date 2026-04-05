@@ -2,14 +2,19 @@
 
 import pytest
 
+_aws4auth_available = True
+try:
+    import requests_aws4auth  # noqa: F401
+except ImportError:
+    _aws4auth_available = False
+
+pytestmark = pytest.mark.skipif(not _aws4auth_available, reason="requests-aws4auth not installed")
+
 
 class TestAwsSigv4Injection:
     def test_sigv4_produces_authorization_header(self):
         """Verify _inject_aws_sigv4 adds Authorization and X-Amz-Date headers."""
-        try:
-            from services.transports.api_transport import _inject_aws_sigv4
-        except ImportError:
-            pytest.skip("requests-aws4auth not installed")
+        from services.transports.api_transport import _inject_aws_sigv4
 
         headers = {"Content-Type": "application/json"}
         credentials = {
@@ -34,10 +39,7 @@ class TestAwsSigv4Injection:
 
     def test_sigv4_uses_region_from_params(self):
         """Region should come from credentials first, then params."""
-        try:
-            from services.transports.api_transport import _inject_aws_sigv4
-        except ImportError:
-            pytest.skip("requests-aws4auth not installed")
+        from services.transports.api_transport import _inject_aws_sigv4
 
         headers = {}
         credentials = {
@@ -57,10 +59,7 @@ class TestAwsSigv4Injection:
 
     def test_sigv4_with_body(self):
         """SigV4 should handle POST requests with body."""
-        try:
-            from services.transports.api_transport import _inject_aws_sigv4
-        except ImportError:
-            pytest.skip("requests-aws4auth not installed")
+        from services.transports.api_transport import _inject_aws_sigv4
 
         headers = {"Content-Type": "application/json"}
         credentials = {

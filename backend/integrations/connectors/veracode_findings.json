@@ -84,6 +84,22 @@
       "target": "asset.hostname"
     },
     {
+      "source": "context",
+      "target": "asset.asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'code_repo'"
+      }
+    },
+    {
+      "source": "context",
+      "target": "asset.asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'provider': 'veracode', 'org': '', 'repo': str(value) if value else ''}"
+      }
+    },
+    {
       "source": "finding_details.cwe.id",
       "target": "plugin_id"
     },

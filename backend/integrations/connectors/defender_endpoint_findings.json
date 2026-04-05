@@ -92,6 +92,10 @@
       "target": "asset.hostname"
     },
     {
+      "source": "computerDnsName",
+      "target": "asset.fqdn"
+    },
+    {
       "source": "category",
       "target": "plugin_id"
     },

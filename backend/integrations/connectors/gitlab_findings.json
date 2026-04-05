@@ -84,6 +84,22 @@
       "target": "asset.hostname"
     },
     {
+      "source": "project.path_with_namespace",
+      "target": "asset.asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'code_repo'"
+      }
+    },
+    {
+      "source": "project.path_with_namespace",
+      "target": "asset.asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'provider': 'gitlab', 'org': '/'.join(str(value).split('/')[:-1]) if '/' in str(value) else '', 'repo': str(value).split('/')[-1] if value else ''}"
+      }
+    },
+    {
       "source": "scanner.name",
       "target": "plugin_id"
     },

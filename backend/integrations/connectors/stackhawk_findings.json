@@ -79,6 +79,22 @@
       "target": "asset.hostname"
     },
     {
+      "source": "host",
+      "target": "asset.asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'web_app'"
+      }
+    },
+    {
+      "source": "host",
+      "target": "asset.asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'url': str(value) if value else ''}"
+      }
+    },
+    {
       "source": "path",
       "target": "description",
       "transform": {

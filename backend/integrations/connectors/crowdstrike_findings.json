@@ -78,6 +78,14 @@
       "target": "asset.os"
     },
     {
+      "source": "host_info.machine_domain",
+      "target": "asset.fqdn",
+      "transform": {
+        "type": "expression",
+        "expr": "(record.get('host_info', {}).get('hostname', '') + '.' + str(value)) if value else ''"
+      }
+    },
+    {
       "source": "status",
       "target": "severity",
       "transform": {

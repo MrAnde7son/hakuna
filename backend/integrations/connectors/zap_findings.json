@@ -86,6 +86,22 @@
       "target": "asset.hostname"
     },
     {
+      "source": "url",
+      "target": "asset.asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'web_app'"
+      }
+    },
+    {
+      "source": "url",
+      "target": "asset.asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'url': str(value) if value else ''}"
+      }
+    },
+    {
       "source": "cweid",
       "target": "plugin_id"
     },

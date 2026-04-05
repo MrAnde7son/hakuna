@@ -83,6 +83,22 @@
       "target": "asset.hostname"
     },
     {
+      "source": "repository.full_name",
+      "target": "asset.asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'code_repo'"
+      }
+    },
+    {
+      "source": "repository.full_name",
+      "target": "asset.asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'provider': 'github', 'org': value.split('/')[0] if '/' in str(value) else '', 'repo': value.split('/')[-1] if value else ''}"
+      }
+    },
+    {
       "source": "rule.id",
       "target": "plugin_id"
     },

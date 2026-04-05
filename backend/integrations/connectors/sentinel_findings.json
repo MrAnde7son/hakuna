@@ -109,6 +109,14 @@
       "target": "plugin_id"
     },
     {
+      "source": "properties.additionalData.techniques",
+      "target": "asset.hostname",
+      "transform": {
+        "type": "expression",
+        "expr": "record.get('properties', {}).get('relatedAnalyticRuleIds', [''])[0] if record.get('properties', {}).get('relatedAnalyticRuleIds') else (record.get('properties', {}).get('additionalData', {}).get('alertProductNames', ['sentinel'])[0])"
+      }
+    },
+    {
       "source": "properties.createdTimeUtc",
       "target": "first_seen",
       "transform": {

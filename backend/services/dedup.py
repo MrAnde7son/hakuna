@@ -305,6 +305,89 @@ def _get_asset_field(asset_or_dict, field: str):
         return val
 
 
+_HOST_COLUMN_FIELDS = {"ip", "hostname", "fqdn", "netbios_name", "mac_address", "os"}
+
+
+def resolve_asset_by_dedup_keys(db, asset_data: dict, org_id: int | None,
+                                 asset_type: str = "host"):
+    """Find an existing asset using the same dedup config as the cross-scan engine.
+
+    Translates the in-memory key_fields + key_mode logic into a SQLAlchemy query
+    so that finding→asset resolution uses the same rules as asset dedup.
+
+    Returns the matching Asset or None.
+    """
+    from models.models import Asset, Scan
+    from sqlalchemy import and_, func
+
+    cfg = load_config()
+    type_cfg = get_asset_type_config(cfg, asset_type)
+    if not type_cfg.get("enabled", True):
+        return None
+
+    key_fields = type_cfg.get("key_fields", ["ip"] if asset_type == "host" else [])
+    key_mode = type_cfg.get("key_mode", "or" if asset_type == "host" else "and")
+
+    if not key_fields:
+        return None
+
+    # Resolve values for each key_field from the asset_data dict
+    field_values = {}
+    for field in key_fields:
+        val = _get_asset_field(asset_data, field)
+        if val is not None and val != "":
+            field_values[field] = str(val)
+
+    if not field_values:
+        # No key fields have values — fall back to hostname for host type
+        if asset_type == "host":
+            hostname = asset_data.get("hostname", "")
+            if hostname:
+                field_values["hostname"] = str(hostname)
+            else:
+                return None
+        else:
+            return None
+
+    # Build the query with org scoping
+    base_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
+    if org_id is not None:
+        base_q = base_q.filter(or_(Scan.org_id == org_id, Scan.org_id.is_(None)))
+
+    # Filter by asset_type for non-host types
+    if asset_type != "host":
+        base_q = base_q.filter(Asset.asset_type == asset_type)
+
+    # Build field match clauses
+    def _field_clause(field: str, value: str):
+        """Build a SQLAlchemy filter for a single key field."""
+        if field in _HOST_COLUMN_FIELDS and hasattr(Asset, field):
+            return getattr(Asset, field) == value
+        # Non-host key field — lives in asset_identity JSON
+        # Use func.json_extract for SQLite, ->> for PostgreSQL (both work via SA)
+        return Asset.asset_identity[field].as_string() == value
+
+    if key_mode == "or":
+        # OR-style: match on ANY key field
+        clauses = [_field_clause(f, v) for f, v in field_values.items()]
+        result = base_q.filter(or_(*clauses)).first()
+    else:
+        # AND-style: ALL key fields must match
+        clauses = [_field_clause(f, v) for f, v in field_values.items()]
+        result = base_q.filter(and_(*clauses)).first()
+
+    if result:
+        return result
+
+    # Fallback for host type: try hostname even if not in key_fields
+    if asset_type == "host" and "hostname" not in field_values:
+        hostname = asset_data.get("hostname", "")
+        if hostname:
+            return base_q.filter(Asset.hostname == str(hostname)).first()
+
+    return None
+
+
 def dedup_asset_records(records: list[dict], cfg: dict) -> list[dict]:
     """Deduplicate asset records using per-type config.
     Groups records by asset_type, applies type-specific dedup settings, returns merged list.

@@ -82,6 +82,22 @@
       "target": "asset.hostname"
     },
     {
+      "source": "relationships.scan_item.data.id",
+      "target": "asset.asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'code_repo'"
+      }
+    },
+    {
+      "source": "relationships.scan_item.data.id",
+      "target": "asset.asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'provider': 'snyk', 'org': '', 'repo': str(value) if value else ''}"
+      }
+    },
+    {
       "source": "attributes.problems[0].id",
       "target": "cve_id"
     },

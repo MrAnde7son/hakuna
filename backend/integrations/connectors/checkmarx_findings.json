@@ -97,6 +97,22 @@
       "target": "asset.hostname"
     },
     {
+      "source": "data.fileName",
+      "target": "asset.asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'code_repo'"
+      }
+    },
+    {
+      "source": "data.projectName",
+      "target": "asset.asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'provider': 'checkmarx', 'org': '', 'repo': str(value) if value else ''}"
+      }
+    },
+    {
       "source": "data.languageName",
       "target": "plugin_id"
     },

@@ -92,6 +92,22 @@
       "target": "asset.hostname"
     },
     {
+      "source": "finding.resourceName",
+      "target": "asset.asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_instance'"
+      }
+    },
+    {
+      "source": "finding.resourceName",
+      "target": "asset.asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'gcp', 'instance_id': str(value) if value else ''}"
+      }
+    },
+    {
       "source": "finding.vulnerability.cve.id",
       "target": "cve_id"
     },

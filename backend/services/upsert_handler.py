@@ -54,7 +54,8 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
     source_id = record.get("source_id", "")
 
     # Build dedup filters
-    existing = _find_existing(db, Asset, record, dedup_key, source_system, source_id)
+    existing = _find_existing(db, Asset, record, dedup_key, source_system, source_id,
+                               scan_id=scan_id)
 
     if existing:
         # Update only non-null fields, respecting user_edited_fields
@@ -290,14 +291,14 @@ def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: 
     source_system = record.get("source_system", "")
     source_id = record.get("source_id", "")
 
-    # Resolve asset FK
+    # Resolve asset FK using the dedup-aware pipeline
     asset_data = record.get("asset", {})
-    ip = asset_data.get("ip_address", "") if isinstance(asset_data, dict) else ""
-    hostname = asset_data.get("hostname", "") if isinstance(asset_data, dict) else ""
-
-    asset = _resolve_asset(db, ip, hostname, source_system, scan_id)
+    if not isinstance(asset_data, dict):
+        asset_data = {}
+    asset = _resolve_asset(db, asset_data, source_system, scan_id)
 
     # Build dedup filters
+    ip = asset_data.get("ip_address", "") or ""
     existing = _find_existing_finding(db, record, dedup_key, source_system, source_id, ip)
 
     severity_label = record.get("severity", "info")
@@ -491,7 +492,8 @@ def upsert_batch(db: Session, entity_type: str, mapped_records: list, dedup_key:
 
 # ── Helpers ──
 
-def _find_existing(db, model, record, dedup_key, source_system, source_id):
+def _find_existing(db, model, record, dedup_key, source_system, source_id,
+                    scan_id: int = None):
     """Find existing record by dedup key."""
     if not dedup_key:
         dedup_key = ["source_system", "source_id"]
@@ -509,6 +511,18 @@ def _find_existing(db, model, record, dedup_key, source_system, source_id):
 
     if not filters:
         return None
+
+    # Scope to the same org via scan when dedup_key doesn't include source_system
+    if "source_system" not in dedup_key and scan_id and model == Asset:
+        from models.models import Scan
+        scan = db.query(Scan).filter(Scan.id == scan_id).first()
+        if scan and scan.org_id:
+            filters.append(model.scan_id == Scan.id)
+            filters.append(Scan.org_id == scan.org_id)
+            return db.query(model).join(Scan, model.scan_id == Scan.id).filter(
+                and_(*filters)
+            ).first()
+
     return db.query(model).filter(and_(*filters)).first()
 
 
@@ -538,26 +552,67 @@ def _find_existing_finding(db, record, dedup_key, source_system, source_id, ip):
     return query.filter(and_(*filters)).first()
 
 
-def _resolve_asset(db: Session, ip: str, hostname: str, source_system: str, scan_id: int) -> Asset:
-    """Find or create an asset for a finding."""
-    asset = None
-    if ip:
-        asset = db.query(Asset).filter(Asset.ip == ip).first()
-    if not asset and hostname:
-        asset = db.query(Asset).filter(Asset.hostname == hostname).first()
-    if not asset:
-        asset = Asset(
-            scan_id=scan_id or 0,
-            ip=ip,
-            hostname=hostname,
-            source_system=source_system,
-            source_systems=[source_system] if source_system else [],
-            source_id=f"auto:{ip or hostname}",
-            first_seen=datetime.utcnow(),
-            last_seen=datetime.utcnow(),
-        )
-        db.add(asset)
-        db.flush()
+def _resolve_asset(db: Session, asset_data: dict, source_system: str, scan_id: int) -> Asset:
+    """Find or create an asset for a finding, using the dedup config pipeline.
+
+    Uses the same key_fields and key_mode logic as the cross-scan dedup engine
+    so that findings land on the correct asset regardless of asset type.
+    """
+    from services.dedup import resolve_asset_by_dedup_keys
+
+    asset_type = asset_data.get("asset_type", "host")
+
+    # Resolve org_id from scan for tenant-scoped lookup
+    org_id = None
+    if scan_id:
+        from models.models import Scan
+        scan = db.query(Scan).filter(Scan.id == scan_id).first()
+        if scan:
+            org_id = scan.org_id
+
+    # Normalize field names: templates use ip_address but Asset model uses ip
+    normalized = dict(asset_data)
+    if "ip_address" in normalized and "ip" not in normalized:
+        normalized["ip"] = normalized["ip_address"]
+
+    asset = resolve_asset_by_dedup_keys(db, normalized, org_id, asset_type)
+
+    if asset:
+        asset.last_seen = datetime.utcnow()
+        _accumulate_source(asset, source_system)
+        return asset
+
+    # No match — create a new asset with all available fields
+    ip = asset_data.get("ip_address", "") or ""
+    hostname = asset_data.get("hostname", "") or ""
+    fqdn = asset_data.get("fqdn", "") or ""
+
+    # Build a descriptive source_id label based on asset type
+    if asset_type == "host":
+        auto_label = ip or fqdn or hostname or "unknown"
+    else:
+        identity = asset_data.get("asset_identity") or {}
+        identity_vals = [str(v) for v in identity.values() if v]
+        auto_label = "/".join(identity_vals) if identity_vals else hostname or "unknown"
+
+    asset = Asset(
+        scan_id=scan_id or 0,
+        ip=ip,
+        hostname=hostname,
+        fqdn=fqdn,
+        os=asset_data.get("os", "") or "",
+        mac_address=asset_data.get("mac_address", "") or "",
+        asset_type=asset_type,
+        asset_identity=asset_data.get("asset_identity") or {},
+        asset_attributes=asset_data.get("asset_attributes") or {},
+        source_system=source_system,
+        source_systems=[source_system] if source_system else [],
+        source_id=f"auto:{auto_label}",
+        first_seen=datetime.utcnow(),
+        last_seen=datetime.utcnow(),
+    )
+    db.add(asset)
+    db.flush()
     return asset
 
 

@@ -96,6 +96,14 @@
       "target": "asset.os"
     },
     {
+      "source": "agentRealtimeInfo.agentDomain",
+      "target": "asset.fqdn",
+      "transform": {
+        "type": "expression",
+        "expr": "(record.get('agentRealtimeInfo', {}).get('agentComputerName', '') + '.' + str(value)) if value else ''"
+      }
+    },
+    {
       "source": "threatInfo.mitigationStatus",
       "target": "solution"
     },

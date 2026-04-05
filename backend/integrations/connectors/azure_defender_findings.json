@@ -97,6 +97,22 @@
       "target": "asset.hostname"
     },
     {
+      "source": "id",
+      "target": "asset.asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_instance'"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset.asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'azure', 'instance_id': str(value) if value else ''}"
+      }
+    },
+    {
       "source": "properties.remediationSteps[0]",
       "target": "solution"
     },
