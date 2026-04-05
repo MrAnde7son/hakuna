@@ -767,6 +767,9 @@ def _delete_scan_cascade(db: Session, scan: Scan):
     db.query(CampaignFinding).filter(CampaignFinding.finding_id.in_(finding_subq)).delete(synchronize_session=False)
     db.query(TagAssignment).filter(TagAssignment.asset_id.in_(asset_subq)).delete(synchronize_session=False)
     db.query(TagAssignment).filter(TagAssignment.finding_id.in_(finding_subq)).delete(synchronize_session=False)
+    # Observation tables with direct scan_id FK
+    db.query(AssetObservation).filter(AssetObservation.scan_id == scan_id).delete(synchronize_session=False)
+    db.query(FindingObservation).filter(FindingObservation.scan_id == scan_id).delete(synchronize_session=False)
     # Clear auto_resolved_by_scan_id references from findings in OTHER scans
     db.query(Finding).filter(Finding.auto_resolved_by_scan_id == scan_id).update(
         {"auto_resolved_by_scan_id": None}, synchronize_session=False
