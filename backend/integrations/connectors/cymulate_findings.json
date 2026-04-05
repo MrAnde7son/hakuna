@@ -1,0 +1,135 @@
+{
+  "id": "cymulate_findings",
+  "name": "Cymulate — Findings",
+  "description": "Pull attack simulation and exposure validation findings from Cymulate",
+  "category": "BAS",
+  "logo": "/logos/vendors/cymulate.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.app.cymulate.com",
+    "method": "GET",
+    "path": "/v2/assessments/results",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "limit": "100"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "help": "API key from Cymulate Settings → Integrations → API Keys"
+      }
+    ],
+    "auth_type": "header",
+    "auth_header": "x-token",
+    "auth_value": "{{credentials.api_key}}",
+    "validation_request": {
+      "method": "GET",
+      "path": "/v2/user/info",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Cymulate. Verify your API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "attack_name",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "risk_level",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Critical": "critical",
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "Info": "info"
+        }
+      }
+    },
+    {
+      "source": "target_ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "target_hostname",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "cve",
+      "target": "cve_id"
+    },
+    {
+      "source": "mitre_technique",
+      "target": "mitre_technique_id"
+    },
+    {
+      "source": "mitigation",
+      "target": "solution"
+    },
+    {
+      "source": "timestamp",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "last_tested",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "cvss_score",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "module": {
+      "type": "string",
+      "default": "",
+      "description": "Filter by module (e.g., email-gateway, web-gateway, endpoint-security, lateral-movement, data-exfiltration)"
+    },
+    "status": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Filter by status (Penetrated, Detected, Blocked)"
+    }
+  }
+}

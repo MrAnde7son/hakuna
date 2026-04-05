@@ -1,0 +1,139 @@
+{
+  "id": "safebreach_findings",
+  "name": "SafeBreach — Findings",
+  "description": "Pull breach simulation results and security gap findings from SafeBreach",
+  "category": "BAS",
+  "logo": "/logos/vendors/safebreach.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/api/v1/simulations/results",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "limit": "100"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": true,
+    "fields": [
+      {
+        "field": "instance_url",
+        "label": "SafeBreach Management URL",
+        "type": "text",
+        "help": "Your SafeBreach management console URL (e.g., https://management.safebreach.com)"
+      },
+      {
+        "field": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "help": "API key from SafeBreach Settings → API Keys"
+      }
+    ],
+    "auth_type": "header",
+    "auth_header": "Authorization",
+    "auth_value": "ApiKey {{credentials.api_key}}",
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v1/simulations/results?limit=1",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with SafeBreach. Verify your management URL and API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "simulation_name",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "result_status",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Penetrated": "critical",
+          "Not Blocked": "high",
+          "Partially Blocked": "medium",
+          "Logged": "low",
+          "Blocked": "info",
+          "Not Relevant": "info"
+        }
+      }
+    },
+    {
+      "source": "target.ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "target.name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "cve_list",
+      "target": "cve_id",
+      "transform": {
+        "type": "first"
+      }
+    },
+    {
+      "source": "attack_id",
+      "target": "mitre_technique_id"
+    },
+    {
+      "source": "remediation_guidance",
+      "target": "solution"
+    },
+    {
+      "source": "run_time",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "last_run_time",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "plan_id": {
+      "type": "string",
+      "default": "",
+      "description": "Filter results to a specific simulation plan ID"
+    },
+    "result_status": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": ["Penetrated", "Not Blocked"],
+      "description": "Filter by result status (Penetrated, Not Blocked, Partially Blocked, Logged, Blocked)"
+    }
+  }
+}

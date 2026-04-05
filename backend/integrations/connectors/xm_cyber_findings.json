@@ -1,0 +1,147 @@
+{
+  "id": "xm_cyber_findings",
+  "name": "XM Cyber — Findings",
+  "description": "Pull attack path analysis and exposure findings from XM Cyber",
+  "category": "BAS",
+  "logo": "/logos/vendors/xm_cyber.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{credentials.tenant}}.xmcyber.com",
+    "method": "GET",
+    "path": "/api/v1/exposures",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "pageSize": "100"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "page"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "tenant",
+        "label": "Tenant ID",
+        "type": "text",
+        "help": "Your XM Cyber tenant identifier (the subdomain in your XM Cyber URL)"
+      },
+      {
+        "field": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "help": "API key from XM Cyber Settings → API Keys"
+      }
+    ],
+    "auth_type": "header",
+    "auth_header": "X-Api-Key",
+    "auth_value": "{{credentials.api_key}}",
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v1/exposures?pageSize=1",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with XM Cyber. Verify your tenant ID and API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "risk_score",
+      "target": "severity",
+      "transform": {
+        "type": "range_map",
+        "ranges": [
+          { "min": 9.0, "max": 10.0, "value": "critical" },
+          { "min": 7.0, "max": 8.99, "value": "high" },
+          { "min": 4.0, "max": 6.99, "value": "medium" },
+          { "min": 0.1, "max": 3.99, "value": "low" },
+          { "min": 0, "max": 0.09, "value": "info" }
+        ]
+      }
+    },
+    {
+      "source": "entity.ip_address",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "entity.hostname",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "cve_id",
+      "target": "cve_id"
+    },
+    {
+      "source": "technique_id",
+      "target": "mitre_technique_id"
+    },
+    {
+      "source": "cvss_score",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "remediation",
+      "target": "solution"
+    },
+    {
+      "source": "first_detected",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "last_detected",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "attack_complexity",
+      "target": "cvss_vector"
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "scenario_id": {
+      "type": "string",
+      "default": "",
+      "description": "Filter exposures to a specific attack scenario"
+    },
+    "entity_type": {
+      "type": "string",
+      "default": "",
+      "description": "Filter by entity type (e.g., device, user, cloud_resource)"
+    },
+    "min_risk_score": {
+      "type": "number",
+      "default": 0,
+      "description": "Minimum risk score (0-10) to include"
+    }
+  }
+}
