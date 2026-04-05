@@ -17,7 +17,8 @@ from models.models import (
 from integrations.schema import get_schema
 from integrations.connector_loader import get_all_connectors, get_connector
 from integrations.model_registry import (
-    get_registry, get_model_meta, get_target_schema, list_targets as list_registry_targets,
+    get_registry, get_model_meta, get_target_schema, get_target_schema_expanded,
+    list_targets as list_registry_targets,
 )
 from services import credential_vault
 from services.field_mapper import detect_paths, map_record, auto_suggest
@@ -77,7 +78,7 @@ class AutoSuggestRequest(BaseModel):
 @router.post("/auto-suggest")
 def auto_suggest_fields(body: AutoSuggestRequest, user: User = Depends(require_auth)):
     """Lightweight auto-suggest — no transport re-run, just string matching."""
-    schema = get_target_schema(body.entity) or get_schema(body.entity)
+    schema = get_target_schema_expanded(body.entity) or get_schema(body.entity)
     if not schema:
         raise HTTPException(404, f"Unknown target entity '{body.entity}'")
     return auto_suggest(body.source_paths, schema)
@@ -201,15 +202,21 @@ async def validate_credentials(connector_id: str, body: ValidateCredentialReques
     instance_url = (body.instance_url or "").rstrip("/")
     method = val_req.get("method", "GET").upper()
 
-    # Build URL
+    # Build URL — fall back to connector's base_url when no instance_url
+    base = instance_url or (c.get("transport_config", {}).get("base_url", "")).rstrip("/")
     path = val_req.get("path", "")
     # Substitute credential values in path
     for k, v in body.values.items():
         path = path.replace("{{" + k + "}}", str(v))
-    url = f"{instance_url}{path}" if instance_url else path
+    url = f"{base}{path}" if base else path
 
-    # Build headers
+    # Build headers from validation_request.headers dict
     headers = {}
+    if val_req.get("headers"):
+        for h_name, h_val in val_req["headers"].items():
+            for k, v in body.values.items():
+                h_val = h_val.replace("{{" + k + "}}", str(v))
+            headers[h_name] = h_val
     if val_req.get("auth_header"):
         header_str = val_req["auth_header"]
         for k, v in body.values.items():
@@ -380,7 +387,7 @@ async def preview_mapping(body: PreviewRequest, db: Session = Depends(get_db),
         if body.auto_suggest_flag and samples:
             paths = detect_paths(samples[0])
             target_slug = body.entity or "finding"
-            schema = get_target_schema(target_slug) or get_schema("finding")
+            schema = get_target_schema_expanded(target_slug) or get_schema("finding")
             suggestions = auto_suggest(paths, schema)
 
         field_map = body.field_map or (suggestions if suggestions else [])
@@ -426,6 +433,7 @@ class IntegrationCreate(BaseModel):
     enabled: bool = False
     template_id: Optional[str] = None
     logo_url: Optional[str] = None
+    relay_agent_id: Optional[str] = None
 
 
 class IntegrationUpdate(BaseModel):
@@ -439,6 +447,7 @@ class IntegrationUpdate(BaseModel):
     schedule: Optional[str] = None
     enabled: Optional[bool] = None
     logo_url: Optional[str] = None
+    relay_agent_id: Optional[str] = None
 
 
 @router.get("/integrations")
@@ -457,8 +466,8 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
     valid_entities = set(get_registry().keys()) | {"action"}
     if body.entity not in valid_entities:
         raise HTTPException(400, f"entity must be one of: {sorted(valid_entities)}")
-    if body.transport_type not in ("api", "sql", "file", "mcp"):
-        raise HTTPException(400, "transport_type must be 'api', 'sql', 'file', or 'mcp'")
+    if body.transport_type not in ("api", "sql", "file", "mcp", "relay"):
+        raise HTTPException(400, "transport_type must be 'api', 'sql', 'file', 'mcp', or 'relay'")
 
     # Auto-resolve logo from connector template if not provided
     logo_url = body.logo_url
@@ -496,6 +505,7 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
         enabled=body.enabled,
         template_id=body.template_id,
         logo_url=logo_url,
+        relay_agent_id=body.relay_agent_id,
     )
     db.add(integration)
     db.commit()
@@ -519,7 +529,8 @@ def update_integration(integration_id: str, body: IntegrationUpdate,
                         db: Session = Depends(get_db), user: User = Depends(require_auth)):
     i = _get_integration_or_404(db, integration_id, user.org_id)
     for field in ["name", "transport_config", "credentials_id", "records_path",
-                   "field_map", "dedup_key", "params", "schedule", "enabled", "logo_url"]:
+                   "field_map", "dedup_key", "params", "schedule", "enabled", "logo_url",
+                   "relay_agent_id"]:
         val = getattr(body, field)
         if val is not None:
             setattr(i, field, val)
@@ -673,6 +684,7 @@ def _integration_summary(i):
         "transport_type": i.transport_type, "enabled": i.enabled,
         "template_id": i.template_id, "schedule": i.schedule,
         "logo_url": logo,
+        "relay_agent_id": getattr(i, "relay_agent_id", None),
         "last_run_at": i.last_run_at, "last_run_status": i.last_run_status,
         "last_run_records": i.last_run_records, "created_at": i.created_at,
     }

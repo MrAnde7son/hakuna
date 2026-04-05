@@ -438,6 +438,44 @@ Configure and test integrations from **Settings > Integrations**:
 | Microsoft Teams | Notifications, alerts, campaign updates |
 | Email (SMTP) | Reports, alerts, campaign notifications |
 
+### On-Prem Relay Agents
+
+Connect to on-premises products (Jira Server/DC, ServiceNow, CrowdStrike GovCloud, etc.) that are not reachable from the cloud via lightweight relay agents.
+
+**How it works:**
+
+1. **Register an agent** in **Settings > Integrations > Relay Agents** — a one-time authentication token is generated
+2. **Deploy the agent** as a Docker container inside your network
+3. The agent opens an outbound WebSocket connection to Hakuna (`wss://<host>/ws/relay`) — no inbound firewall rules required
+4. Integration traffic is routed through the agent transparently — field mapping, scheduling, and upsert logic remain in the cloud
+
+**Credential modes:**
+
+| Mode | Description |
+|------|-------------|
+| `agent_local` (default) | Credentials are stored as environment variables on the agent container — secrets never leave your network |
+| `cloud_managed` | Credentials are stored in Hakuna's credential vault and sent to the agent per-request over the encrypted WebSocket |
+
+**Agent management features:**
+
+- **Allowed hosts** — Restrict which on-prem hosts the agent can reach
+- **Labels** — Organize agents by site, environment, or team
+- **Token rotation** — Generate a new token without redeploying (old token is invalidated, agent disconnects)
+- **Live status** — Real-time connected/disconnected status via the WebSocket broker
+- **Setup instructions** — Docker run and Docker Compose examples with env var reference, available per-agent
+
+**Deployment:**
+
+```bash
+docker run -d --restart=unless-stopped \
+  --name hakuna-relay-agent \
+  -e HAKUNA_AGENT_TOKEN=<your-agent-token> \
+  -e HAKUNA_CLOUD_URL=wss://<your-hakuna-host>/ws/relay \
+  hakuna/relay-agent:latest
+```
+
+For agent-local credentials, add product-specific env vars (e.g., `JIRA_BASE_URL`, `JIRA_USERNAME`, `JIRA_PASSWORD`).
+
 ---
 
 ## Internationalization

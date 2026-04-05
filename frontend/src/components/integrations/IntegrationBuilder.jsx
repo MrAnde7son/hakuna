@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, Check, ChevronRight, ChevronDown, Zap, Database as DbIcon, FileText, Globe, Wand2, Eye, EyeOff, List } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, ChevronRight, ChevronDown, Zap, Database as DbIcon, FileText, Globe, Wand2, Eye, EyeOff, List, Server } from 'lucide-react'
 import { Card, Button, useToast } from '../shared/ui.jsx'
 import {
   getConnectors, getConnector, getIntegrationSchema, getAcquisitionFlow,
@@ -9,6 +9,7 @@ import {
   ibCreateIntegration, ibUpdateIntegration, ibGetIntegration,
   discoverApi, parseDocs, uploadIntegrationFile, discoverMcpTools, mcpOAuthStart,
   getTargetModels, getTargetSchema, oauthClientCredentials, discoverOAuth,
+  getRelayAgents,
 } from '../../api.js'
 import StepAuthenticate from './steps/StepAuthenticate.jsx'
 import StepFieldMapper from './steps/StepFieldMapper.jsx'
@@ -86,6 +87,34 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [oauthDiscovering, setOauthDiscovering] = useState(false)
   const [oauthDiscovered, setOauthDiscovered] = useState(null) // null | false | { token_endpoint, scopes_supported }
 
+  // Connector params (e.g. zone_id for Cloudflare)
+  const [connectorParams, setConnectorParams] = useState({})
+
+  // Resolve {{params.*}} placeholders in transport config
+  const resolveTransportConfig = () => {
+    const cfg = { ...transportConfig }
+    if (cfg.path && Object.keys(connectorParams).length > 0) {
+      for (const [k, v] of Object.entries(connectorParams)) {
+        cfg.path = cfg.path.replaceAll(`{{params.${k}}}`, v)
+      }
+      if (cfg.query_params) {
+        const qp = { ...cfg.query_params }
+        for (const [qk, qv] of Object.entries(qp)) {
+          if (typeof qv === 'string') {
+            let resolved = qv
+            for (const [k, v] of Object.entries(connectorParams)) {
+              resolved = resolved.replaceAll(`{{params.${k}}}`, v)
+            }
+            if (resolved.includes('{{params.')) delete qp[qk]
+            else qp[qk] = resolved
+          }
+        }
+        cfg.query_params = qp
+      }
+    }
+    return cfg
+  }
+
   // Custom request headers (key-value pairs)
   const [customHeaders, setCustomHeaders] = useState([]) // [{key, value}]
   // Custom request body params (key-value pairs, for POST/PUT/PATCH)
@@ -98,6 +127,11 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
 
   // Target models (from model registry)
   const [targetModels, setTargetModels] = useState([])
+
+  // Relay agent support (on-prem)
+  const [useRelay, setUseRelay] = useState(false)
+  const [relayAgents, setRelayAgents] = useState([])
+  const [relayAgentId, setRelayAgentId] = useState(null)
 
   // Discovery
   const [discoverUrl, setDiscoverUrl] = useState('')
@@ -115,6 +149,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     getConnectors().then(setConnectors).catch(console.error)
     getIntegrationSchema().then(s => setSchema(s)).catch(console.error)
     getTargetModels().then(setTargetModels).catch(console.error)
+    getRelayAgents().then(setRelayAgents).catch(() => {})
   }, [])
 
   // If editing, load existing integration
@@ -134,6 +169,8 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       setSchedule(i.schedule || '')
       setEnabled(i.enabled)
       setCredentialsId(i.credentials_id)
+      if (i.relay_agent_id) { setRelayAgentId(i.relay_agent_id); setUseRelay(true) }
+      if (i.transport_type === 'relay') setUseRelay(true)
       if (i.template_id) setSelectedConnector(i.template_id)
       // Load target schema for the entity
       try {
@@ -199,6 +236,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       setFieldMap(detail.default_field_map || [])
       setDedupKey(detail.dedup_key || [])
       setRecordsPath(detail.records_path || '')
+      setConnectorParams({})
       setIntegrationName(detail.name)
 
       // Load schema for the connector's target entity
@@ -274,7 +312,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
 
       const result = await integrationConnect({
         transport_type: transportType,
-        transport_config: transportConfig,
+        transport_config: resolveTransportConfig(),
         credentials_id: cId,
         records_path: undefined, // don't send — we'll pick from response
       })
@@ -306,7 +344,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     try {
       const result = await integrationConnect({
         transport_type: transportType,
-        transport_config: transportConfig,
+        transport_config: resolveTransportConfig(),
         credentials_id: credentialsId,
         records_path: path,
       })
@@ -326,7 +364,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     try {
       const result = await integrationPreview({
         transport_type: transportType,
-        transport_config: transportConfig,
+        transport_config: resolveTransportConfig(),
         credentials_id: credentialsId,
         records_path: recordsPath || undefined,
         field_map: fieldMap,
@@ -368,15 +406,16 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       const payload = {
         name: integrationName,
         direction, entity,
-        transport_type: transportType,
-        transport_config: transportConfig,
-        credentials_id: credentialsId,
+        transport_type: useRelay ? 'relay' : transportType,
+        transport_config: resolveTransportConfig(),
+        credentials_id: useRelay ? null : credentialsId,
         records_path: recordsPath || null,
         field_map: fieldMap,
         dedup_key: dedupKey,
         schedule: schedule || null,
         enabled,
         template_id: selectedConnector || null,
+        relay_agent_id: useRelay ? relayAgentId : null,
       }
 
       let result
@@ -489,7 +528,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
                   <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.description}</div>
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 4 }}>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                 <Badge bg={DIRECTION_BADGE[c.direction]?.bg} text={DIRECTION_BADGE[c.direction]?.text} label={c.direction.toUpperCase()} />
                 <Badge bg={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).bg} text={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).text} label={c.entity.toUpperCase()} />
                 <Badge bg="var(--border)" text="var(--text-muted)" label={c.transport_type.toUpperCase()} />
@@ -498,6 +537,50 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
           ))}
         </div>
       </div>
+
+      {/* Section: On-Prem / Relay Agent */}
+      {relayAgents.length > 0 && (
+        <div style={{
+          padding: 16, borderRadius: 10,
+          background: 'linear-gradient(135deg, rgba(124,58,237,0.04), rgba(99,102,241,0.04))',
+          border: '1px solid rgba(124,58,237,0.15)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <Server size={16} color="#7c3aed" />
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>On-Prem Connection</h3>
+          </div>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 12px' }}>
+            Connect to services behind your firewall using a relay agent. Select an agent to route traffic through your network.
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={useRelay}
+                onChange={e => { setUseRelay(e.target.checked); if (!e.target.checked) setRelayAgentId(null) }}
+              />
+              <span style={{ fontSize: 13, color: 'var(--text)' }}>Use relay agent</span>
+            </label>
+            {useRelay && (
+              <select
+                value={relayAgentId || ''}
+                onChange={e => setRelayAgentId(e.target.value || null)}
+                style={{
+                  flex: 1, maxWidth: 300, padding: '6px 10px', borderRadius: 8, fontSize: 13,
+                  border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)',
+                }}
+              >
+                <option value="">Select an agent...</option>
+                {relayAgents.map(a => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} ({a.status === 'connected' ? 'Online' : 'Offline'})
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Section B: Connect any tool (discovery) */}
       <div>
@@ -644,6 +727,28 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
             onChange={e => setTransportConfig({ ...transportConfig, path: e.target.value })}
             style={inputStyle}
           />
+
+          {/* Connector params (e.g. zone_id for Cloudflare) */}
+          {connectorDetail?.params_schema && Object.keys(connectorDetail.params_schema).length > 0 && (
+            <div style={{ padding: 16, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Parameters
+              </div>
+              {Object.entries(connectorDetail.params_schema).map(([key, schema]) => (
+                <div key={key} style={{ marginBottom: 8 }}>
+                  <input
+                    placeholder={schema.description || key}
+                    value={connectorParams[key] || ''}
+                    onChange={e => setConnectorParams(p => ({ ...p, [key]: e.target.value }))}
+                    style={inputStyle}
+                  />
+                  {schema.required && !connectorParams[key] && (
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>Required</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Inline auth — shown when no credentials yet, or when editing (to allow updating) */}
           {(!credentialsId || editId) && (

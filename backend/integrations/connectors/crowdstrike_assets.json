@@ -1,5 +1,6 @@
 {
   "id": "crowdstrike_assets",
+  "relay_capable": true,
   "name": "CrowdStrike Falcon \u2014 Assets",
   "description": "Pull device/asset inventory from CrowdStrike Falcon",
   "logo": "/logos/vendors/crowdstrike.svg",

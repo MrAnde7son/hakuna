@@ -14,6 +14,7 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
   const [validatedUser, setValidatedUser] = useState(null)
   const [error, setError] = useState(null)
   const [showPasswords, setShowPasswords] = useState({})
+  const [savedCredId, setSavedCredId] = useState(null)
   const [oauthPending, setOauthPending] = useState(false)
   const [discovered, setDiscovered] = useState(null)   // result from /discovery/oauth
   const [discovering, setDiscovering] = useState(false)
@@ -52,6 +53,7 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
           instance_url: instanceUrl || null,
           connected_user: result.connected_user || null,
         })
+        setSavedCredId(cred.id)
         onComplete(cred.id, result.connected_user)
       } else {
         setError(result.error || 'Validation failed')
@@ -214,7 +216,27 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
             </Button>
           )}
           {validated && (
-            <Button onClick={() => onComplete(null, validatedUser)}>
+            <Button onClick={async () => {
+              if (savedCredId) {
+                onComplete(savedCredId, validatedUser)
+              } else {
+                // Auto-validate path — credentials weren't saved yet
+                try {
+                  const authType = flow.validation_request?.auth === 'basic' ? 'basic' : 'api_key'
+                  const cred = await createCredential({
+                    name: `${connectorDetail?.name || connectorId} credentials`,
+                    connector_id: connectorId,
+                    auth_type: authType,
+                    values: values,
+                    instance_url: instanceUrl || null,
+                    connected_user: validatedUser || null,
+                  })
+                  onComplete(cred.id, validatedUser)
+                } catch {
+                  onComplete(null, validatedUser)
+                }
+              }
+            }}>
               Continue →
             </Button>
           )}

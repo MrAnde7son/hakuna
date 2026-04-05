@@ -67,6 +67,7 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
             "asset_type": "asset_type",
             "asset_identity": "asset_identity",
             "asset_attributes": "asset_attributes",
+            "is_internet_facing": "is_internet_facing",
         }
         for src_field, db_field in field_mapping.items():
             value = record.get(src_field)
@@ -79,11 +80,26 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
         if source_id:
             existing.source_id = source_id
 
+        # Deep-merge easm_data (connector-specific blobs accumulate, not overwrite)
+        new_easm = record.get("easm_data")
+        if new_easm and isinstance(new_easm, dict) and "easm_data" not in user_edited:
+            merged = dict(existing.easm_data or {})
+            for k, v in new_easm.items():
+                if isinstance(v, dict) and isinstance(merged.get(k), dict):
+                    merged[k] = {**merged[k], **v}
+                else:
+                    merged[k] = v
+            existing.easm_data = merged
+            updated = True
+
         # Accumulate source provenance
         _accumulate_source(existing, source_system)
 
         # Side effect: create policy assignment if present
         _handle_policy_assignment(db, record, existing.id, scan_id)
+
+        # Side effect: create asset relationships if mapped
+        _handle_relationship_map(db, record, existing.id, scan_id)
 
         # Record per-source observation
         record_observation(
@@ -135,12 +151,17 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
             asset_type=record.get("asset_type", "host"),
             asset_identity=record.get("asset_identity", {}),
             asset_attributes=record.get("asset_attributes", {}),
+            easm_data=record.get("easm_data"),
+            is_internet_facing=record.get("is_internet_facing", False),
         )
         db.add(asset)
         db.flush()
 
         # Side effect: create policy assignment if present
         _handle_policy_assignment(db, record, asset.id, scan_id)
+
+        # Side effect: create asset relationships if mapped
+        _handle_relationship_map(db, record, asset.id, scan_id)
 
         # Record per-source observation
         record_observation(
@@ -187,6 +208,80 @@ def _handle_policy_assignment(db, record, asset_id, scan_id):
             source_group_id=groups[0] if groups else None,
             synced_at=datetime.utcnow(),
         ))
+
+
+def _handle_relationship_map(db, record, asset_id, scan_id):
+    """Create AssetRelationship edges if the record has _relationship_map entries.
+
+    Connector JSON can define:
+      {"source": "cname_target", "target": "_relationship_map",
+       "transform": {"type": "expression",
+                     "expr": "[{'target_hostname': value, 'relationship_type': 'resolves_to'}]"}}
+
+    Or directly in the mapped record via field_map:
+      _relationship_map: [
+        {"target_hostname": "my-alb.elb.amazonaws.com", "relationship_type": "resolves_to"},
+        {"target_ip": "10.0.0.5", "relationship_type": "depends_on"},
+        {"target_asset_id": 42, "relationship_type": "hosts"},
+      ]
+    """
+    rel_maps = record.get("_relationship_map")
+    if not rel_maps or not isinstance(rel_maps, list):
+        return
+
+    from models.models import Asset, AssetRelationship, Scan
+
+    scan = db.query(Scan).filter(Scan.id == scan_id).first() if scan_id else None
+    org_id = scan.org_id if scan else None
+    if not org_id:
+        return
+
+    for rel_spec in rel_maps:
+        if not isinstance(rel_spec, dict):
+            continue
+        rel_type = rel_spec.get("relationship_type", "resolves_to")
+        confidence = rel_spec.get("confidence", "high")
+
+        # Resolve target asset by ID, hostname, FQDN, or IP
+        target_asset = None
+        if rel_spec.get("target_asset_id"):
+            target_asset = db.query(Asset).filter(Asset.id == rel_spec["target_asset_id"]).first()
+        else:
+            # Search by hostname/fqdn/ip within this org's scans
+            org_scan_ids = db.query(Scan.id).filter(Scan.org_id == org_id).scalar_subquery()
+            for field in ("target_hostname", "target_fqdn", "target_ip"):
+                val = rel_spec.get(field)
+                if not val:
+                    continue
+                col_name = field.replace("target_", "")  # hostname, fqdn, ip
+                col = getattr(Asset, col_name, None)
+                if col is None:
+                    continue
+                target_asset = db.query(Asset).filter(
+                    col == val, Asset.scan_id.in_(org_scan_ids),
+                ).first()
+                if target_asset:
+                    break
+
+        if not target_asset or target_asset.id == asset_id:
+            continue
+
+        # Idempotent edge creation
+        existing = db.query(AssetRelationship).filter(
+            AssetRelationship.org_id == org_id,
+            AssetRelationship.source_asset_id == asset_id,
+            AssetRelationship.target_asset_id == target_asset.id,
+            AssetRelationship.relationship_type == rel_type,
+        ).first()
+        if not existing:
+            db.add(AssetRelationship(
+                org_id=org_id,
+                source_asset_id=asset_id,
+                target_asset_id=target_asset.id,
+                relationship_type=rel_type,
+                confidence=confidence,
+                source_detail={"connector": record.get("source_system", ""), "manual": False},
+            ))
 
 
 def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: str,

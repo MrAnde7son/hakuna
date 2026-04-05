@@ -6,6 +6,7 @@ Four public functions:
 - auto_suggest(source_paths, target_schema) → list of MappingRule dicts
 - render_template(template, finding, asset) → rendered object
 """
+from __future__ import annotations
 
 import re
 import copy
@@ -141,6 +142,69 @@ def _set_nested(obj, path, value):
 # transforms
 # ─────────────────────────────────────────────────────────
 
+_CLOUD_WORKLOAD_PATTERNS = [
+    # AWS
+    (r'^(.+?)\.elb\.amazonaws\.com\.?$', lambda m: {"provider": "aws", "service": "alb", "name": m.group(1), "region": _extract_region(m.group(1))}),
+    (r'^(.+?)\.elb\.([a-z]{2}-[a-z]+-\d+)\.amazonaws\.com\.?$', lambda m: {"provider": "aws", "service": "alb", "name": m.group(1), "region": m.group(2)}),
+    (r'^s3-website-(.+?)\.amazonaws\.com\.?$', lambda m: {"provider": "aws", "service": "s3", "bucket": None, "region": m.group(1)}),
+    (r'^(.+?)\.s3\.amazonaws\.com\.?$', lambda m: {"provider": "aws", "service": "s3", "bucket": m.group(1)}),
+    (r'^(.+?)\.s3-([a-z]{2}-[a-z]+-\d+)\.amazonaws\.com\.?$', lambda m: {"provider": "aws", "service": "s3", "bucket": m.group(1), "region": m.group(2)}),
+    (r'^(.+?)\.cloudfront\.net\.?$', lambda m: {"provider": "aws", "service": "cloudfront", "dist_id": m.group(1)}),
+    (r'^(.+?)\.execute-api\.([a-z]{2}-[a-z]+-\d+)\.amazonaws\.com\.?$', lambda m: {"provider": "aws", "service": "api_gateway", "api_id": m.group(1), "region": m.group(2)}),
+    (r'^(.+?)\.lambda-url\.([a-z]{2}-[a-z]+-\d+)\.on\.aws\.?$', lambda m: {"provider": "aws", "service": "lambda", "function_url": m.group(1), "region": m.group(2)}),
+    # GCP
+    (r'^(.+?)\.run\.app\.?$', lambda m: {"provider": "gcp", "service": "cloud_run", "name": m.group(1)}),
+    (r'^(.+?)\.appspot\.com\.?$', lambda m: {"provider": "gcp", "service": "app_engine", "app": m.group(1)}),
+    (r'^(.+?)\.cloudfunctions\.net\.?$', lambda m: {"provider": "gcp", "service": "cloud_functions", "project": m.group(1)}),
+    (r'^(.+?)\.web\.app\.?$', lambda m: {"provider": "gcp", "service": "firebase_hosting", "site": m.group(1)}),
+    # Azure
+    (r'^(.+?)\.azurewebsites\.net\.?$', lambda m: {"provider": "azure", "service": "app_service", "app": m.group(1)}),
+    (r'^(.+?)\.trafficmanager\.net\.?$', lambda m: {"provider": "azure", "service": "traffic_manager", "profile": m.group(1)}),
+    (r'^(.+?)\.azurefd\.net\.?$', lambda m: {"provider": "azure", "service": "front_door", "name": m.group(1)}),
+    (r'^(.+?)\.azure-api\.net\.?$', lambda m: {"provider": "azure", "service": "api_management", "name": m.group(1)}),
+    (r'^(.+?)\.blob\.core\.windows\.net\.?$', lambda m: {"provider": "azure", "service": "blob_storage", "account": m.group(1)}),
+    (r'^(.+?)\.azureedge\.net\.?$', lambda m: {"provider": "azure", "service": "cdn", "endpoint": m.group(1)}),
+    (r'^(.+?)\.database\.windows\.net\.?$', lambda m: {"provider": "azure", "service": "sql_database", "server": m.group(1)}),
+]
+
+
+def _extract_region(name: str) -> str | None:
+    """Try to extract an AWS region from an ALB name like 'dualstack.my-alb-123456.us-east-1'."""
+    m = re.search(r'([a-z]{2}-[a-z]+-\d+)', name)
+    return m.group(1) if m else None
+
+
+def _extract_cloud_workload(value) -> dict | None:
+    """Parse a CNAME/alias target and extract structured cloud workload info."""
+    if not value or not isinstance(value, str):
+        return None
+    target = value.strip().lower()
+    for pattern, extractor in _CLOUD_WORKLOAD_PATTERNS:
+        m = re.match(pattern, target, re.IGNORECASE)
+        if m:
+            return extractor(m)
+    return None
+
+
+def workload_to_canonical_id(workload: dict) -> str:
+    """Convert a workload dict to a stable canonical ID for dedup as instance_id.
+
+    Examples:
+      {"provider": "aws", "service": "alb", "name": "my-alb"} -> "aws:alb:my-alb"
+      {"provider": "aws", "service": "s3", "bucket": "my-bucket"} -> "aws:s3:my-bucket"
+      {"provider": "gcp", "service": "cloud_run", "name": "my-svc"} -> "gcp:cloud_run:my-svc"
+    """
+    provider = workload.get("provider", "unknown")
+    service = workload.get("service", "unknown")
+    # Pick the name field — try generic "name" first, then service-specific keys
+    name = (workload.get("name") or workload.get("bucket") or workload.get("app")
+            or workload.get("dist_id") or workload.get("site") or workload.get("profile")
+            or workload.get("account") or workload.get("endpoint") or workload.get("server")
+            or workload.get("api_id") or workload.get("function_url") or workload.get("project")
+            or "unknown")
+    return f"{provider}:{service}:{name}"
+
+
 def _apply_transform(value, transform, record):
     """Apply a transform to a value. Returns (transformed_value, error_or_None)."""
     if transform is None:
@@ -203,6 +267,20 @@ def _apply_transform(value, transform, record):
             return result, None
         except Exception as e:
             return None, f"Expression error: {e}"
+
+    if t == "construct_fqdn":
+        zone_field = transform.get("zone_field", "zone_name")
+        zone = record.get(zone_field, "") if isinstance(record, dict) else ""
+        name = str(value) if value is not None else ""
+        if not name or not zone:
+            return value, None
+        # "@" means apex / root
+        if name == "@" or name == zone or name.endswith("." + zone):
+            return zone if name == "@" else name, None
+        return f"{name}.{zone}", None
+
+    if t == "extract_cloud_workload":
+        return _extract_cloud_workload(value), None
 
     return value, f"Unknown transform type: {t}"
 
@@ -363,6 +441,17 @@ ALIAS_TABLE = {
     "component_type": ["component_type", "componentType", "type", "kind"],
     "eol_date": ["eol_date", "eolDate", "end_of_life", "endOfLife"],
     "eol_status": ["eol_status", "eolStatus", "lifecycle_status", "supportStatus"],
+    # ── Expandable JSON sub-keys (asset_attributes.*, easm_data.*) ──
+    "asset_attributes.dns_record_type": ["type", "record_type", "recordType", "dns_type", "rrtype", "rr_type"],
+    "asset_attributes.proxied": ["proxied", "is_proxied", "proxy", "cdn_proxied"],
+    "asset_attributes.ttl": ["ttl", "TTL", "time_to_live", "timeToLive"],
+    "asset_attributes.cloud_provider": ["cloud_provider", "cloudProvider", "provider", "cloud"],
+    "asset_attributes.cloud_region": ["cloud_region", "region", "location", "zone", "availability_zone"],
+    "asset_attributes.cloud_account_id": ["cloud_account_id", "account_id", "accountId", "subscription_id", "subscriptionId"],
+    "asset_attributes.origin_ip": ["origin_ip", "origin", "origin_address", "backend_ip"],
+    "asset_attributes.cdn_provider": ["cdn_provider", "cdn", "cdnProvider"],
+    "asset_attributes.cname_target": ["cname_target", "cname", "canonical_name", "alias_target"],
+    "asset_attributes.service_name": ["service_name", "serviceName", "service", "app_name"],
 }
 
 

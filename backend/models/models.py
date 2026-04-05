@@ -327,6 +327,10 @@ class Asset(Base):
     scan = relationship("Scan", back_populates="assets")
     findings = relationship("Finding", back_populates="asset", cascade="all, delete-orphan")
     observations = relationship("AssetObservation", back_populates="asset", cascade="all, delete-orphan")
+    outbound_relationships = relationship("AssetRelationship", foreign_keys="[AssetRelationship.source_asset_id]",
+                                          back_populates="source_asset", cascade="all, delete-orphan")
+    inbound_relationships = relationship("AssetRelationship", foreign_keys="[AssetRelationship.target_asset_id]",
+                                         back_populates="target_asset", cascade="all, delete-orphan")
 
 
 class AssetObservation(Base):
@@ -355,6 +359,30 @@ class AssetObservation(Base):
     times_seen = Column(Integer, default=1)
 
     asset = relationship("Asset", back_populates="observations")
+
+
+class AssetRelationship(Base):
+    """Directional edge between two assets (e.g. DNS record → cloud workload)."""
+    __tablename__ = "asset_relationships"
+    __table_args__ = (
+        UniqueConstraint("org_id", "source_asset_id", "target_asset_id", "relationship_type",
+                         name="uq_asset_relationship"),
+        Index("ix_asset_rel_source", "source_asset_id"),
+        Index("ix_asset_rel_target", "target_asset_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    source_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
+    target_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
+    relationship_type = Column(String, nullable=False)   # resolves_to, alias_of
+    confidence = Column(String, default="high")           # high / medium / low
+    source_detail = Column(JSON, default=dict)            # provenance: {connector, dns_record_type}
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    source_asset = relationship("Asset", foreign_keys=[source_asset_id], back_populates="outbound_relationships")
+    target_asset = relationship("Asset", foreign_keys=[target_asset_id], back_populates="inbound_relationships")
 
 
 @importable(
@@ -1852,7 +1880,7 @@ class Integration(Base):
     name = Column(String, nullable=False)
     direction = Column(String, nullable=False)  # pull | push
     entity = Column(String, nullable=False)  # asset | finding | action
-    transport_type = Column(String, nullable=False)  # api | sql | file | mcp
+    transport_type = Column(String, nullable=False)  # api | sql | file | mcp | relay
     transport_config = Column(JSON, nullable=False, default=dict)
     credentials_id = Column(String, ForeignKey("integration_credentials.id"), nullable=True)
     records_path = Column(String, nullable=True)  # dot-path to records array in response
@@ -1863,6 +1891,7 @@ class Integration(Base):
     enabled = Column(Boolean, nullable=False, default=False)
     template_id = Column(String, nullable=True)  # OOTB template used
     logo_url = Column(String, nullable=True)  # custom logo URL or auto-fetched favicon
+    relay_agent_id = Column(String, ForeignKey("relay_agents.id"), nullable=True)
     spec_cache_id = Column(String, ForeignKey("discovered_specs.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1895,6 +1924,30 @@ class IntegrationRun(Base):
     step_log = Column(JSON, nullable=False, default=list)
 
     integration = relationship("Integration", back_populates="runs")
+
+
+# ─────────────────────────────────────────────────────────
+# Relay Agents (on-prem connectivity)
+# ─────────────────────────────────────────────────────────
+
+class RelayAgent(Base):
+    """A relay agent deployed in a customer's network for on-prem integrations."""
+    __tablename__ = "relay_agents"
+
+    id = Column(String, primary_key=True, default=_gen_uuid)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)             # "NYC Office Agent"
+    token_hash = Column(String, nullable=False)        # bcrypt hash of agent token
+    token_prefix = Column(String, nullable=True)       # "hka_abc1…" for display
+    status = Column(String, default="disconnected")    # connected | disconnected
+    last_seen_at = Column(DateTime, nullable=True)
+    agent_version = Column(String, nullable=True)
+    ip_address = Column(String, nullable=True)         # source IP for audit
+    allowed_hosts = Column(JSON, default=list)         # optional URL allowlist
+    credentials_mode = Column(String, default="agent_local")  # agent_local | cloud_managed
+    labels = Column(JSON, default=dict)                # freeform metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(String, nullable=True)
 
 
 # ─────────────────────────────────────────────────────────

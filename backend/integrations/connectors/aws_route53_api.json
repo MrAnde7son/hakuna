@@ -1,0 +1,151 @@
+{
+  "id": "aws_route53_api",
+  "name": "AWS Route 53 — DNS Zones",
+  "description": "Pull hosted zones and DNS record sets from AWS Route 53 to trace workloads behind ALBs, CloudFront distributions, S3 buckets, and other AWS services",
+  "logo": "/logos/vendors/aws.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://route53.amazonaws.com",
+    "method": "GET",
+    "path": "/2013-04-01/hostedzone/{{params.hosted_zone_id}}/rrset",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "auth_strategy": "aws_sigv4",
+    "aws_service": "route53",
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "NextRecordName",
+      "cursor_param": "name",
+      "page_size": 300,
+      "page_size_param": "maxitems"
+    }
+  },
+  "records_path": "ResourceRecordSets",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the AWS Management Console and go to IAM → Users"
+      },
+      {
+        "instruction": "Create a new user (or select an existing one) and attach the AmazonRoute53ReadOnlyAccess managed policy"
+      },
+      {
+        "instruction": "Go to Security credentials → Create access key → Choose 'Third-party service'"
+      },
+      {
+        "instruction": "Copy the Access Key ID",
+        "capture": {
+          "field": "access_key_id",
+          "label": "Paste Access Key ID here",
+          "type": "text",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the Secret Access Key",
+        "capture": {
+          "field": "secret_access_key",
+          "label": "Paste Secret Access Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/2013-04-01/hostedzone",
+      "headers": {},
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to AWS Route 53. Verify your access key has AmazonRoute53ReadOnlyAccess permission."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "Name",
+      "target": "source_id",
+      "transform": {
+        "type": "expression",
+        "expr": "str(record.get('_hosted_zone_id', '')) + ':' + str(value) + ':' + str(record.get('Type', ''))"
+      }
+    },
+    {
+      "source": "Name",
+      "target": "hostname"
+    },
+    {
+      "source": "Name",
+      "target": "fqdn"
+    },
+    {
+      "source": "ResourceRecords[0].Value",
+      "target": "ip_address"
+    },
+    {
+      "source": "AliasTarget.DNSName",
+      "target": "easm_data.aws_route53.alias_target"
+    },
+    {
+      "source": "AliasTarget.DNSName",
+      "target": "easm_data.aws_route53.workload",
+      "transform": {
+        "type": "extract_cloud_workload"
+      }
+    },
+    {
+      "source": "Type",
+      "target": "easm_data.aws_route53.record_type"
+    },
+    {
+      "source": "TTL",
+      "target": "easm_data.aws_route53.ttl",
+      "transform": {
+        "type": "integer"
+      }
+    },
+    {
+      "source": "HealthCheckId",
+      "target": "easm_data.aws_route53.health_check_id"
+    },
+    {
+      "source": "AliasTarget.HostedZoneId",
+      "target": "easm_data.aws_route53.alias_hosted_zone_id"
+    },
+    {
+      "source": "Name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'hostname': record.get('Name', ''), 'fqdn': record.get('Name', ''), 'ip': (record.get('ResourceRecords', [{}])[0].get('Value', '') if record.get('ResourceRecords') else ''), 'display_name': record.get('Name', '')}"
+      }
+    },
+    {
+      "source": "Name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'dns_record_type': record.get('Type', ''), 'ttl': record.get('TTL'), 'alias_target': (record.get('AliasTarget', {}) or {}).get('DNSName', ''), 'health_check_id': record.get('HealthCheckId', ''), 'cloud_provider': 'aws', 'aws_service': 'route53'}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "region": {
+      "type": "string",
+      "required": true,
+      "description": "AWS region (e.g., us-east-1). Route 53 is global but SigV4 requires a region.",
+      "default": "us-east-1"
+    },
+    "hosted_zone_id": {
+      "type": "string",
+      "required": true,
+      "description": "Route 53 Hosted Zone ID (e.g., Z1D633PJN98FT9)"
+    }
+  }
+}
