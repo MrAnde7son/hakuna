@@ -476,8 +476,43 @@ def _edit_distance(a, b):
     return prev[len(b)]
 
 
+def _infer_semantic_type(value):
+    """Infer the semantic type of a sample value (ip, fqdn, datetime, etc.)."""
+    if not isinstance(value, str) or not value:
+        return None
+    v = value.strip()
+    # IPv4
+    if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', v):
+        return "ip"
+    # IPv6 (simplified)
+    if ':' in v and re.match(r'^[0-9a-fA-F:]+$', v):
+        return "ip"
+    # FQDN (2+ labels, no spaces, valid TLD)
+    if re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$', v) and len(v) > 4:
+        parts = v.split('.')
+        tld = parts[-1].lower()
+        if len(tld) >= 2 and tld.isalpha():
+            return "fqdn"
+    # MAC address
+    if re.match(r'^([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$', v):
+        return "mac_address"
+    # CVE ID
+    if re.match(r'^CVE-\d{4}-\d{4,}$', v, re.IGNORECASE):
+        return "cve_id"
+    return None
+
+
+# Map from semantic type → target field names (ordered by priority)
+_SEMANTIC_TYPE_TARGETS = {
+    "ip": ["ip", "ip_address"],
+    "fqdn": ["fqdn", "hostname"],
+    "mac_address": ["mac_address"],
+    "cve_id": ["cve_id"],
+}
+
+
 def auto_suggest(source_paths, target_schema):
-    """Suggest field mappings based on name similarity and alias table.
+    """Suggest field mappings based on name similarity, alias table, and sample values.
 
     source_paths: list of PathInfo dicts (from detect_paths)
     target_schema: list of {name, type, group, ...} dicts
@@ -486,6 +521,7 @@ def auto_suggest(source_paths, target_schema):
     suggestions = []
     # Build lookup: last segment of source path → full path
     source_by_leaf = {}
+    source_by_path = {}  # path → PathInfo (includes sample_value)
     for p in source_paths:
         path = p["path"]
         leaf = path.rsplit(".", 1)[-1] if "." in path else path
@@ -493,6 +529,20 @@ def auto_suggest(source_paths, target_schema):
         leaf_clean = re.sub(r'\[\d+\]$', '', leaf)
         source_by_leaf[leaf_clean] = path
         source_by_leaf[path] = path
+        source_by_path[path] = p
+
+    # Pre-compute semantic types from sample values
+    # path → semantic type (e.g. "ip", "fqdn")
+    source_semantic = {}
+    for p in source_paths:
+        sem = _infer_semantic_type(p.get("sample_value"))
+        if sem:
+            source_semantic[p["path"]] = sem
+
+    # Build reverse index: semantic_type → [paths]
+    semantic_sources = {}
+    for path, sem in source_semantic.items():
+        semantic_sources.setdefault(sem, []).append(path)
 
     for target_field in target_schema:
         target_name = target_field["name"]
@@ -516,7 +566,16 @@ def auto_suggest(source_paths, target_schema):
             if best_source:
                 break
 
-        # Fallback: edit distance on normalized names
+        # Fallback 1: value-based inference — look at sample values to detect
+        # semantic types (e.g. "34.54.87.52" → ip, "app.example.com" → fqdn)
+        if not best_source:
+            for sem_type, sem_targets in _SEMANTIC_TYPE_TARGETS.items():
+                if target_name in sem_targets and sem_type in semantic_sources:
+                    best_source = semantic_sources[sem_type][0]
+                    best_confidence = 0.85
+                    break
+
+        # Fallback 2: edit distance on normalized names
         if not best_source:
             norm_target = _normalize(target_name)
             for leaf, path in source_by_leaf.items():

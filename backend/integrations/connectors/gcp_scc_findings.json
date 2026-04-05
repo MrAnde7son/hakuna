@@ -14,6 +14,8 @@
     "headers": {
       "Accept": "application/json"
     },
+    "auth_strategy": "gcp_service_account",
+    "gcp_scopes": ["https://www.googleapis.com/auth/cloud-platform"],
     "query_params": {
       "filter": "{{params.filter}}",
       "pageSize": "1000"
@@ -27,33 +29,48 @@
   },
   "records_path": "listFindingsResults",
   "credential_acquisition": {
-    "pattern": "oauth2",
-    "token_url": "https://oauth2.googleapis.com/token",
-    "grant_type": "client_credentials",
-    "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
-    "fields": [
+    "pattern": "guided_generation",
+    "steps": [
       {
-        "field": "organization_id",
-        "label": "GCP Organization ID",
-        "type": "text",
-        "help": "Numeric organization ID from GCP Resource Manager"
+        "instruction": "Go to the GCP Console → IAM & Admin → Service Accounts"
       },
       {
-        "field": "client_email",
-        "label": "Service Account Email",
-        "type": "text",
-        "help": "The client_email field from your service account JSON key file"
+        "instruction": "Create a service account (or use an existing one) with the Security Center Findings Viewer role (roles/securitycenter.findingsViewer)"
       },
       {
-        "field": "private_key",
-        "label": "Service Account Private Key",
-        "type": "password",
-        "help": "The private_key field from your service account JSON key file"
+        "instruction": "Create a JSON key for the service account and open the downloaded file"
+      },
+      {
+        "instruction": "Enter your GCP Organization ID (found in Resource Manager)",
+        "capture": {
+          "field": "organization_id",
+          "label": "GCP Organization ID",
+          "type": "text"
+        }
+      },
+      {
+        "instruction": "Copy the client_email from the JSON key file",
+        "capture": {
+          "field": "service_account_email",
+          "label": "Service Account Email",
+          "type": "text"
+        }
+      },
+      {
+        "instruction": "Copy the private_key from the JSON key file (the entire string including -----BEGIN/END-----)",
+        "capture": {
+          "field": "private_key",
+          "label": "Service Account Private Key",
+          "type": "password",
+          "auto_validate": true
+        }
       }
     ],
+    "auth_type": "gcp_service_account",
+    "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
     "validation_request": {
       "method": "GET",
-      "path": "/v1/organizations/{{credentials.organization_id}}/sources/-/findings",
+      "path": "/v1/organizations/{{organization_id}}/sources/-/findings",
       "query_params": {
         "pageSize": "1"
       },
