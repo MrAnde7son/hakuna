@@ -844,7 +844,7 @@ function ScanProgressBar({ metadata }) {
 
 // ── Scan run history (EASM) ──────────────────────────────────────────
 
-function ScanRunHistory({ expanded }) {
+function ScanRunHistory({ expanded, domain }) {
   const [runs, setRuns] = useState(null)
   const [loading, setLoading] = useState(false)
 
@@ -852,7 +852,7 @@ function ScanRunHistory({ expanded }) {
     if (!expanded) return
     const load = () => {
       if (!runs) setLoading(true)
-      getEasmScanRuns(20)
+      getEasmScanRuns(20, domain)
         .then(setRuns)
         .catch(() => setRuns([]))
         .finally(() => setLoading(false))
@@ -1507,7 +1507,7 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
       </div>
       {isEasm && isRunning && <ScanProgressBar metadata={scan.raw_metadata} />}
       {isVm && isRunning && <VmScanProgress metadata={scan.raw_metadata} />}
-      {isEasm && <ScanRunHistory expanded={showHistory} />}
+      {isEasm && <ScanRunHistory expanded={showHistory} domain={domain} />}
       {isVm && <VmScanHistory expanded={showHistory} metadata={scan.raw_metadata} />}
     </div>
   )

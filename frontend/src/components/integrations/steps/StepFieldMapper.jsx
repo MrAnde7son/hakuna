@@ -118,10 +118,11 @@ export default function StepFieldMapper({
       const customKeys = (customSubKeys[f.name] || []).filter(k => !hintNames.has(k))
 
       // Also detect sub-keys already mapped in fieldMap (e.g. from default_field_map)
-      const mappedSubKeys = fieldMap
+      const mappedSubKeys = [...new Set(fieldMap
         .filter(m => m.target.startsWith(f.name + '.'))
         .map(m => m.target.slice(f.name.length + 1).split('.')[0])
         .filter(k => !hintNames.has(k) && !customKeys.includes(k))
+      )]
 
       const allSubFields = [
         ...f.sub_fields.map(sf => ({

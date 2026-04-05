@@ -112,6 +112,7 @@ class ScanRun(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("orgs.id"), nullable=False)
     scan_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_domain: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued")
     assets_found: Mapped[int] = mapped_column(Integer, default=0)
     assets_changed: Mapped[int] = mapped_column(Integer, default=0)

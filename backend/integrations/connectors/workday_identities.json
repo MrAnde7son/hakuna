@@ -27,7 +27,7 @@
   },
   "records_path": "data",
   "credential_acquisition": {
-    "pattern": "oauth2",
+    "pattern": "client_credentials",
     "token_url": "https://{{credentials.host}}/ccx/oauth2/{{credentials.tenant}}/token",
     "grant_type": "client_credentials",
     "client_id_field": {

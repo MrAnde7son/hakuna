@@ -400,22 +400,32 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
 
   // ── Client Credentials (machine-to-machine OAuth2) ──
   if (flow.pattern === 'client_credentials') {
+    // Build fields from either explicit `fields` array or legacy `client_id_field`/`client_secret_field`/`extra_fields`
     const fields = flow.fields || [
-      { field: 'client_id', label: 'Client ID', type: 'text' },
-      { field: 'client_secret', label: 'Client Secret', type: 'password' },
+      ...(flow.extra_fields || []).filter(f => f.field !== 'client_id' && f.field !== 'client_secret'),
+      { field: 'client_id', label: flow.client_id_field?.label || 'Client ID', type: flow.client_id_field?.type || 'text', help: flow.client_id_field?.help },
+      { field: 'client_secret', label: flow.client_secret_field?.label || 'Client Secret', type: flow.client_secret_field?.type || 'password', help: flow.client_secret_field?.help },
     ]
 
     const handleConnect = async () => {
       setValidating(true)
       setError(null)
       try {
+        // Resolve {{credentials.X}} templates in token_url using current field values
+        const resolvedTokenUrl = (flow.token_url || '').replace(
+          /\{\{credentials\.(\w+)\}\}/g,
+          (_, key) => values[key] || ''
+        )
         const result = await oauthClientCredentials({
           instance_url: instanceUrl || '',
-          token_url: flow.token_url,
+          token_url: resolvedTokenUrl,
           client_id: values.client_id || '',
           client_secret: values.client_secret || '',
           scopes: flow.scopes || [],
           connector_id: connectorId || 'custom',
+          extra_values: Object.fromEntries(
+            Object.entries(values).filter(([k]) => k !== 'client_id' && k !== 'client_secret')
+          ),
         })
         setValidated(true)
         setValidatedUser(result.connected_user || null)

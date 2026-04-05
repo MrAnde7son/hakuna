@@ -10,12 +10,10 @@
   "transport_config": {
     "base_url": "https://securitycenter.googleapis.com",
     "method": "GET",
-    "path": "/v1/organizations/{{credentials.organization_id}}/sources/-/findings",
+    "path": "/v1/organizations/{{params.organization_id}}/sources/-/findings",
     "headers": {
       "Accept": "application/json"
     },
-    "auth_strategy": "gcp_service_account",
-    "gcp_scopes": ["https://www.googleapis.com/auth/cloud-platform"],
     "query_params": {
       "filter": "{{params.filter}}",
       "pageSize": "1000"
@@ -29,53 +27,29 @@
   },
   "records_path": "listFindingsResults",
   "credential_acquisition": {
-    "pattern": "guided_generation",
-    "steps": [
-      {
-        "instruction": "Go to the GCP Console → IAM & Admin → Service Accounts"
-      },
-      {
-        "instruction": "Create a service account (or use an existing one) with the Security Center Findings Viewer role (roles/securitycenter.findingsViewer)"
-      },
-      {
-        "instruction": "Create a JSON key for the service account and open the downloaded file"
-      },
-      {
-        "instruction": "Enter your GCP Organization ID (found in Resource Manager)",
-        "capture": {
-          "field": "organization_id",
-          "label": "GCP Organization ID",
-          "type": "text"
-        }
-      },
-      {
-        "instruction": "Copy the client_email from the JSON key file",
-        "capture": {
-          "field": "service_account_email",
-          "label": "Service Account Email",
-          "type": "text"
-        }
-      },
-      {
-        "instruction": "Copy the private_key from the JSON key file (the entire string including -----BEGIN/END-----)",
-        "capture": {
-          "field": "private_key",
-          "label": "Service Account Private Key",
-          "type": "password",
-          "auto_validate": true
-        }
-      }
-    ],
-    "auth_type": "gcp_service_account",
-    "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
+    "pattern": "oauth2",
+    "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token_url": "https://oauth2.googleapis.com/token",
+    "token_request_format": "form",
+    "client_id": "{{env.GOOGLE_CLIENT_ID}}",
+    "scopes": ["https://www.googleapis.com/auth/cloud-platform.read-only"],
+    "extra_params": {
+      "access_type": "offline",
+      "prompt": "consent"
+    },
+    "pkce": false,
+    "popup": { "width": 500, "height": 600 },
     "validation_request": {
       "method": "GET",
-      "path": "/v1/organizations/{{organization_id}}/sources/-/findings",
+      "path": "/v1/organizations/{{params.organization_id}}/sources/-/findings",
       "query_params": {
         "pageSize": "1"
       },
       "success_condition": "status == 200",
-      "error_message": "Could not authenticate with GCP Security Command Center. Verify your organization ID and service account credentials."
+      "success_extracts": {
+        "connected_user": "response.email"
+      },
+      "error_message": "Could not access Security Command Center. Make sure the authenticated account has the Security Center Findings Viewer role."
     }
   },
   "default_field_map": [

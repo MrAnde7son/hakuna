@@ -14,8 +14,6 @@
     "headers": {
       "Content-Type": "application/json"
     },
-    "auth_strategy": "gcp_service_account",
-    "gcp_scopes": ["https://www.googleapis.com/auth/ndev.clouddns.readonly"],
     "pagination": {
       "strategy": "cursor",
       "cursor_field": "nextPageToken",
@@ -26,42 +24,26 @@
   },
   "records_path": "rrsets",
   "credential_acquisition": {
-    "pattern": "guided_generation",
-    "steps": [
-      {
-        "instruction": "Go to Google Cloud Console → IAM & Admin → Service Accounts"
-      },
-      {
-        "instruction": "Create a new service account (or select an existing one) and grant it the 'DNS Reader' role (roles/dns.reader)"
-      },
-      {
-        "instruction": "Go to the service account → Keys → Add Key → Create new key → JSON"
-      },
-      {
-        "instruction": "Open the downloaded JSON key file and copy the service account email",
-        "capture": {
-          "field": "service_account_email",
-          "label": "Service Account Email",
-          "type": "text",
-          "auto_validate": true
-        }
-      },
-      {
-        "instruction": "Copy the full private_key field from the JSON key file (including BEGIN/END markers)",
-        "capture": {
-          "field": "private_key",
-          "label": "Private Key (PEM)",
-          "type": "password",
-          "auto_validate": false
-        }
-      }
-    ],
+    "pattern": "oauth2",
+    "authorization_url": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token_url": "https://oauth2.googleapis.com/token",
+    "token_request_format": "form",
+    "client_id": "{{env.GOOGLE_CLIENT_ID}}",
+    "scopes": ["https://www.googleapis.com/auth/ndev.clouddns.readonly"],
+    "extra_params": {
+      "access_type": "offline",
+      "prompt": "consent"
+    },
+    "pkce": false,
+    "popup": { "width": 500, "height": 600 },
     "validation_request": {
       "method": "GET",
       "path": "/dns/v1/projects/{{params.project_id}}/managedZones",
-      "headers": {},
       "success_condition": "status == 200",
-      "error_message": "Could not connect to Google Cloud DNS. Verify the service account has the DNS Reader role and the project ID is correct."
+      "success_extracts": {
+        "connected_user": "response.email"
+      },
+      "error_message": "Could not access Cloud DNS. Make sure the authenticated account has the DNS Reader role on the project."
     }
   },
   "default_field_map": [

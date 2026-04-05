@@ -361,17 +361,18 @@ async def list_domains(
 @router.get("/scan-runs")
 async def list_scan_runs(
     limit: int = Query(10, le=50),
+    domain: str = Query(None),
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
 ):
-    """List recent EASM scan runs with status."""
+    """List recent EASM scan runs with status, optionally filtered by domain."""
     org = _get_org(db, user)
     try:
         easm_org_id = _require_easm_org_id(db, org)
     except HTTPException:
         return []
 
-    runs = await get_easm_scan_runs(easm_org_id, limit=limit)
+    runs = await get_easm_scan_runs(easm_org_id, limit=limit, domain=domain)
     if runs is None:
         raise HTTPException(502, "Failed to fetch scan runs")
     return runs

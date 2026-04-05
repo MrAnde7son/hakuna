@@ -28,7 +28,7 @@
   },
   "records_path": "results",
   "credential_acquisition": {
-    "pattern": "oauth2",
+    "pattern": "client_credentials",
     "token_url": "https://iam.checkmarx.net/auth/realms/{{credentials.tenant}}/protocol/openid-connect/token",
     "grant_type": "client_credentials",
     "fields": [

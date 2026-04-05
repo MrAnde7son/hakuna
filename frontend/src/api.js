@@ -990,7 +990,7 @@ export const getEasmEvents = (since, limit = 100) => request(`/easm/events?limit
 export const setupEasm = (domain) => request(`/easm/setup?domain=${encodeURIComponent(domain)}`, { method: 'POST' })
 export const addEasmDomain = (domain) => request(`/easm/domain?domain=${encodeURIComponent(domain)}`, { method: 'POST' })
 export const getEasmDomains = () => request('/easm/domains')
-export const getEasmScanRuns = (limit = 10) => request(`/easm/scan-runs?limit=${limit}`)
+export const getEasmScanRuns = (limit = 10, domain = null) => request(`/easm/scan-runs?limit=${limit}${domain ? `&domain=${encodeURIComponent(domain)}` : ''}`)
 export const syncEasmAssets = () => request('/easm/sync', { method: 'POST' })
 
 // Agent Pipelines

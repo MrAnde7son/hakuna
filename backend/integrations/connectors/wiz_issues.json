@@ -36,7 +36,7 @@
   },
   "records_path": "data.issues.nodes",
   "credential_acquisition": {
-    "pattern": "oauth2",
+    "pattern": "client_credentials",
     "instance_url_field": {
       "label": "Wiz API Endpoint URL",
       "placeholder": "https://api.us1.app.wiz.io"

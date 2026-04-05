@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,12 +19,14 @@ router = APIRouter(prefix="/api/v1/orgs/{org_id}/scans", tags=["scans"])
 
 class ScanRequest(BaseModel):
     scan_type: str = "full"  # discovery | enrichment | full
+    target_domain: str | None = None
 
 
 class ScanRunResponse(BaseModel):
     id: uuid.UUID
     org_id: uuid.UUID
     scan_type: str
+    target_domain: str | None = None
     status: str
     assets_found: int
     assets_changed: int
@@ -53,7 +55,7 @@ async def trigger_scan(
     if body.scan_type not in ("discovery", "enrichment", "full"):
         raise HTTPException(400, "scan_type must be one of: discovery, enrichment, full")
 
-    scan_run = ScanRun(org_id=org_id, scan_type=body.scan_type, status="queued")
+    scan_run = ScanRun(org_id=org_id, scan_type=body.scan_type, target_domain=body.target_domain, status="queued")
     db.add(scan_run)
     await db.commit()
     await db.refresh(scan_run)
@@ -78,14 +80,13 @@ async def trigger_scan(
 async def list_scans(
     org_id: uuid.UUID,
     limit: int = 20,
+    domain: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(ScanRun)
-        .where(ScanRun.org_id == org_id)
-        .order_by(ScanRun.id.desc())
-        .limit(limit)
-    )
+    stmt = select(ScanRun).where(ScanRun.org_id == org_id)
+    if domain:
+        stmt = stmt.where(ScanRun.target_domain == domain)
+    result = await db.execute(stmt.order_by(ScanRun.id.desc()).limit(limit))
     return result.scalars().all()
 
 

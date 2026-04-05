@@ -470,6 +470,7 @@ class ClientCredentialsRequest(BaseModel):
     client_secret: str
     scopes: list = []
     connector_id: str = "custom"
+    extra_values: dict = {}  # Additional fields (tenant_id, subscription_id, etc.)
 
 
 @router.post("/oauth/client-credentials")
@@ -528,6 +529,7 @@ async def oauth_client_credentials(body: ClientCredentialsRequest, db: Session =
         "_client_secret": body.client_secret,
         "_token_url": body.token_url,
         "_scopes": body.scopes,
+        **body.extra_values,
     })
     db.add(cred)
     db.commit()

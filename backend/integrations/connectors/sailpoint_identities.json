@@ -34,7 +34,7 @@
   },
   "records_path": "",
   "credential_acquisition": {
-    "pattern": "oauth2",
+    "pattern": "client_credentials",
     "token_url": "https://{{credentials.tenant}}.api.identitynow.com/oauth/token",
     "grant_type": "client_credentials",
     "client_id_field": {

@@ -303,9 +303,12 @@ async def add_easm_domain(hakuna_org_id: str, domain: str) -> bool:
     return data is not None
 
 
-async def trigger_easm_scan(hakuna_org_id: str, scan_type: str = "full") -> Optional[str]:
+async def trigger_easm_scan(hakuna_org_id: str, scan_type: str = "full", target_domain: str = None) -> Optional[str]:
     """Trigger a scan in hakuna-scanner. Returns scan run ID or None."""
-    data = await _hakuna_request("POST", f"/orgs/{hakuna_org_id}/scans", json={"scan_type": scan_type})
+    payload = {"scan_type": scan_type}
+    if target_domain:
+        payload["target_domain"] = target_domain
+    data = await _hakuna_request("POST", f"/orgs/{hakuna_org_id}/scans", json=payload)
     if data:
         return data.get("id")
     return None
@@ -342,9 +345,12 @@ async def get_easm_domains(hakuna_org_id: str) -> Optional[list]:
     return data if isinstance(data, list) else None
 
 
-async def get_easm_scan_runs(hakuna_org_id: str, limit: int = 20) -> Optional[list]:
-    """List recent scan runs for a hakuna org."""
-    data = await _hakuna_request("GET", f"/orgs/{hakuna_org_id}/scans", params={"limit": limit})
+async def get_easm_scan_runs(hakuna_org_id: str, limit: int = 20, domain: str = None) -> Optional[list]:
+    """List recent scan runs for a hakuna org, optionally filtered by domain."""
+    params = {"limit": limit}
+    if domain:
+        params["domain"] = domain
+    data = await _hakuna_request("GET", f"/orgs/{hakuna_org_id}/scans", params=params)
     return data if isinstance(data, list) else None
 
 
@@ -960,7 +966,7 @@ async def scan_domain(
     await add_easm_domain(org.easm_org_id, domain)
 
     # Trigger scan in hakuna
-    run_id = await trigger_easm_scan(org.easm_org_id, scan_type)
+    run_id = await trigger_easm_scan(org.easm_org_id, scan_type, target_domain=domain)
 
     # Reuse existing EASM scan for this domain, or create a new one
     scan = _find_existing_easm_scan(db, org, domain)

@@ -106,13 +106,13 @@ class TestCloudConnectorsAuth:
         assert "access_key_id" in fields
         assert "secret_access_key" in fields
 
-    def test_gcp_service_account_auth(self):
+    def test_gcp_oauth2_auth(self):
         data = _load_connector("gcp_clouddns_api")
-        assert data["transport_config"]["auth_strategy"] == "gcp_service_account"
+        assert "auth_strategy" not in data["transport_config"]
         acq = data["credential_acquisition"]
-        fields = [s.get("capture", {}).get("field") for s in acq["steps"] if "capture" in s]
-        assert "service_account_email" in fields
-        assert "private_key" in fields
+        assert acq["pattern"] == "oauth2"
+        assert "authorization_url" in acq
+        assert acq["client_id"] == "{{env.GOOGLE_CLIENT_ID}}"
 
     def test_azure_client_credentials(self):
         data = _load_connector("azure_dns_api")

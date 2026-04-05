@@ -25,7 +25,7 @@
   },
   "records_path": "value",
   "credential_acquisition": {
-    "pattern": "oauth2",
+    "pattern": "client_credentials",
     "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
     "grant_type": "client_credentials",
     "scopes": ["https://management.azure.com/.default"],
