@@ -1,0 +1,107 @@
+{
+  "id": "automox_assets",
+  "name": "Automox \u2014 Managed Devices",
+  "description": "Pull managed device inventory and patch status from Automox",
+  "category": "Patch Management",
+  "logo": "/logos/vendors/automox.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://console.automox.com/api",
+    "method": "GET",
+    "path": "/servers",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_key}}"
+    },
+    "query_params": {
+      "limit": "500"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 500,
+      "offset_param": "page",
+      "total_field": "total_count"
+    }
+  },
+  "records_path": "",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the Automox console at console.automox.com",
+        "deeplink_path": null
+      },
+      {
+        "instruction": "Navigate to Settings \u2192 API Keys",
+        "deeplink_path": "/settings/api-keys"
+      },
+      {
+        "instruction": "Generate a new API key. Copy the key value.",
+        "capture": {
+          "field": "api_key",
+          "label": "Paste API Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/servers?limit=1",
+      "auth_header": "Authorization: Bearer {{api_key}}",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Automox. Check your API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "ip_addrs[0]",
+      "target": "ip_address"
+    },
+    {
+      "source": "os_family",
+      "target": "os"
+    },
+    {
+      "source": "os_version",
+      "target": "os_version"
+    },
+    {
+      "source": "last_disconnect_time",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': record.get('ip_addrs', [''])[0] if record.get('ip_addrs') else '', 'hostname': record.get('name', ''), 'fqdn': record.get('name', ''), 'device_id': str(record.get('id', '')), 'display_name': record.get('name') or (record.get('ip_addrs', [''])[0] if record.get('ip_addrs') else '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'agent_version': record.get('agent_version', ''), 'needs_reboot': record.get('needs_reboot', False), 'patch_count': record.get('patches_pending', 0), 'is_compatible': record.get('is_compatible', ''), 'serial_number': record.get('serial_number', ''), 'group_name': record.get('server_group_id', ''), 'tags': record.get('tags', [])}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

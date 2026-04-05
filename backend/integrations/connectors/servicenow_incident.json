@@ -3,7 +3,7 @@
   "relay_capable": true,
   "name": "ServiceNow \u2014 Create Incident",
   "description": "Push findings to ServiceNow as new incidents",
-  "category": "ITSM / Ticketing",
+  "category": "ITSM",
   "logo": "/logos/vendors/servicenow.svg",
   "direction": "push",
   "entity": "action",

@@ -3,7 +3,7 @@
   "relay_capable": true,
   "name": "Jira — Pull Issues",
   "description": "Pull issues from Jira using JQL queries",
-  "category": "ITSM / Ticketing",
+  "category": "ITSM",
   "logo": "/logos/vendors/jira.svg",
   "direction": "pull",
   "entity": "finding",

@@ -3,7 +3,7 @@
   "relay_capable": false,
   "name": "Linear \u2014 Issues",
   "description": "Pull issues from Linear via GraphQL and map them to findings",
-  "category": "ITSM / Ticketing",
+  "category": "ITSM",
   "logo": "/logos/vendors/linear.svg",
   "direction": "pull",
   "entity": "finding",

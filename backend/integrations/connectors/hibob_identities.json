@@ -2,7 +2,7 @@
   "id": "hibob_identities",
   "name": "HiBob \u2014 People",
   "description": "Pull people records from HiBob for identity-aware exposure management",
-  "category": "HR / People",
+  "category": "HR",
   "logo": "/logos/vendors/hibob.svg",
   "direction": "pull",
   "entity": "asset",

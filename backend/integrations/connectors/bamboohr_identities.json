@@ -2,7 +2,7 @@
   "id": "bamboohr_identities",
   "name": "BambooHR \u2014 Employees",
   "description": "Pull employee directory from BambooHR for identity-aware exposure management",
-  "category": "HR / People",
+  "category": "HR",
   "logo": "/logos/vendors/bamboohr.svg",
   "direction": "pull",
   "entity": "asset",

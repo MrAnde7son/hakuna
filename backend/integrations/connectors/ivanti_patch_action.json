@@ -1,0 +1,77 @@
+{
+  "id": "ivanti_patch_action",
+  "name": "Ivanti Neurons \u2014 Deploy Patch",
+  "description": "Deploy patches to managed devices via Ivanti Neurons",
+  "category": "Patch Management",
+  "logo": "/logos/vendors/ivanti.svg",
+  "direction": "push",
+  "entity": "action",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "POST",
+    "path": "/api/v1/patch/deployments",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_key}}",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "targets": [
+        {
+          "deviceId": "{{asset.source_id}}"
+        }
+      ],
+      "patches": [
+        {
+          "cveId": "{{finding.cve_id}}"
+        }
+      ],
+      "deploymentOptions": {
+        "rebootOption": "{{params.reboot_option}}"
+      }
+    }
+  },
+  "records_path": null,
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Ivanti Neurons Tenant URL",
+      "placeholder": "https://yourcompany.ivanticloud.com"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the Ivanti Neurons portal as an administrator",
+        "deeplink_path": null
+      },
+      {
+        "instruction": "Navigate to Administration \u2192 API Keys",
+        "deeplink_path": "/administration/api-keys"
+      },
+      {
+        "instruction": "Create a new API key with patch deployment permissions. Copy the key value.",
+        "capture": {
+          "field": "api_key",
+          "label": "Paste API Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v1/devices?$top=1",
+      "auth_header": "Authorization: Bearer {{api_key}}",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Ivanti Neurons. Check your API key and tenant URL."
+    }
+  },
+  "default_field_map": [],
+  "dedup_key": [],
+  "params_schema": {
+    "reboot_option": {
+      "type": "string",
+      "default": "if_required",
+      "description": "Reboot option: never, if_required, force"
+    }
+  }
+}

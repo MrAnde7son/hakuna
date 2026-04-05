@@ -2,7 +2,7 @@
   "id": "adaptive_shield_findings",
   "name": "Adaptive Shield \u2014 Security Checks",
   "description": "Pull SaaS security posture findings from Adaptive Shield",
-  "category": "SaaS Security / SSPM",
+  "category": "SSPM",
   "logo": "/logos/vendors/adaptive_shield.svg",
   "direction": "pull",
   "entity": "finding",

@@ -2,7 +2,7 @@
   "id": "sumo_logic_findings",
   "name": "Sumo Logic \u2014 Cloud SIEM Signals",
   "description": "Pull security signals from Sumo Logic Cloud SIEM",
-  "category": "SIEM / Analytics",
+  "category": "SIEM",
   "logo": "/logos/vendors/sumologic.svg",
   "direction": "pull",
   "entity": "finding",

@@ -2036,3 +2036,44 @@ class ControlAssessment(Base):
     )
 
     policy = relationship("SecurityControlPolicy", back_populates="assessments")
+
+
+# ── Firewall Policy (network access rules from NGFW / UTM appliances) ────
+@importable(
+    slug="firewall_policy",
+    display_name="Firewall Policy Rule",
+    category="network",
+    dedup_keys=["org_id", "vendor", "rule_id"],
+    required_fields=["vendor", "rule_id", "action"],
+    description="Network firewall rules from Palo Alto, Fortinet, Check Point for lateral movement & blast radius analysis",
+)
+class FirewallPolicy(Base):
+    """Normalized firewall rule pulled from a network appliance API."""
+    __tablename__ = "firewall_policies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    vendor = Column(String, nullable=False, index=True)           # palo_alto, fortinet, checkpoint
+    source_integration_id = Column(String, ForeignKey("integrations.id"), nullable=True)
+    rule_id = Column(String, nullable=False, index=True)          # rule name or policy ID from appliance
+    rule_name = Column(String)                                    # human-readable rule name
+    from_zone = Column(String)                                    # source zone / interface
+    to_zone = Column(String)                                      # destination zone / interface
+    src_cidrs = Column(JSON, default=list)                        # ["10.0.1.0/24"]
+    dst_cidrs = Column(JSON, default=list)                        # ["10.0.2.0/24"]
+    applications = Column(JSON, default=list)                     # ["ssh", "rdp"] (PAN-style)
+    services = Column(JSON, default=list)                         # [{"port": 22, "protocol": "tcp"}]
+    action = Column(String, nullable=False, index=True)           # allow / deny / accept / drop / reject
+    enabled = Column(Boolean, default=True)
+    logged = Column(Boolean, default=False)
+    nat = Column(Boolean, default=False)
+    raw_response = Column(JSON)                                   # full vendor payload for audit
+    synced_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "vendor", "rule_id", name="uq_fwp_org_vendor_rule"),
+        Index("ix_fwp_org_vendor", "org_id", "vendor"),
+        Index("ix_fwp_action", "org_id", "action"),
+    )

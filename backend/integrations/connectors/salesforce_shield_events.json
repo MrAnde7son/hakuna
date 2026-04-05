@@ -2,7 +2,7 @@
   "id": "salesforce_shield_events",
   "name": "Salesforce Shield \u2014 Event Monitoring",
   "description": "Pull security event logs from Salesforce Shield Event Monitoring",
-  "category": "SaaS Security / SSPM",
+  "category": "SSPM",
   "logo": "/logos/vendors/salesforce.svg",
   "direction": "pull",
   "entity": "finding",

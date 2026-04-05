@@ -2,7 +2,7 @@
   "id": "claroty_findings",
   "name": "Claroty \u2014 OT Vulnerabilities",
   "description": "Pull OT/ICS vulnerability findings from Claroty xDome or CTD",
-  "category": "OT / IoT Security",
+  "category": "OT",
   "logo": "/logos/vendors/claroty.svg",
   "direction": "pull",
   "entity": "finding",

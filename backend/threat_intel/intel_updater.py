@@ -18,7 +18,7 @@ import urllib.error
 
 logger = logging.getLogger(__name__)
 
-INTEL_PATH = Path(__file__).parent.parent.parent / "intel.json"
+INTEL_PATH = Path(__file__).parent.parent / "data" / "intel.json"
 
 NVD_API    = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 CISA_KEV   = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"

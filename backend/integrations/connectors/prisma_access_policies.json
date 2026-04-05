@@ -1,0 +1,188 @@
+{
+  "id": "prisma_access_policies",
+  "name": "Palo Alto Prisma Access — Security Policies",
+  "description": "Pull security policies from Prisma Access (SASE) for zero-trust coverage and compensating control analysis",
+  "category": "SSE",
+  "logo": "/logos/vendors/palo_alto.svg",
+  "direction": "pull",
+  "entity": "security_control_policy",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.sase.paloaltonetworks.com",
+    "method": "GET",
+    "path": "/sse/config/v1/security-rules",
+    "headers": {
+      "Authorization": "Bearer {{credentials.access_token}}",
+      "Content-Type": "application/json"
+    },
+    "query_params": {
+      "folder": "{{params.folder}}"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 200,
+      "offset_param": "offset",
+      "total_field": "total"
+    },
+    "auth": {
+      "type": "client_credentials",
+      "token_url": "https://auth.apps.paloaltonetworks.com/oauth2/access_token",
+      "client_id": "{{credentials.client_id}}",
+      "client_secret": "{{credentials.client_secret}}",
+      "scopes": ["tsg_id:{{credentials.tsg_id}}"]
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the Prisma SASE portal at https://apps.paloaltonetworks.com"
+      },
+      {
+        "instruction": "Navigate to Settings → Identity & Access → Service Accounts and create a new service account with Security Policy read access"
+      },
+      {
+        "instruction": "Copy the Client ID and Client Secret from the service account details"
+      },
+      {
+        "instruction": "Find your Tenant Service Group (TSG) ID under Settings → Tenant Service Groups"
+      },
+      {
+        "instruction": "Enter the Client ID",
+        "capture": {
+          "field": "client_id",
+          "label": "Client ID",
+          "type": "text",
+          "placeholder": "sa-example@1234567890.iam.panserviceaccount.com"
+        }
+      },
+      {
+        "instruction": "Enter the Client Secret",
+        "capture": {
+          "field": "client_secret",
+          "label": "Client Secret",
+          "type": "password"
+        }
+      },
+      {
+        "instruction": "Enter the Tenant Service Group ID",
+        "capture": {
+          "field": "tsg_id",
+          "label": "TSG ID",
+          "type": "text",
+          "placeholder": "1234567890",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "base_url": "https://api.sase.paloaltonetworks.com",
+      "path": "/sse/config/v1/security-rules",
+      "headers": {
+        "Authorization": "Bearer {{access_token}}",
+        "Content-Type": "application/json"
+      },
+      "query_params": {
+        "folder": "Shared",
+        "limit": "1"
+      },
+      "auth": {
+        "type": "client_credentials",
+        "token_url": "https://auth.apps.paloaltonetworks.com/oauth2/access_token",
+        "client_id": "{{client_id}}",
+        "client_secret": "{{client_secret}}",
+        "scopes": ["tsg_id:{{tsg_id}}"]
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to Prisma Access. Verify the Client ID, Client Secret, and TSG ID are correct and that the service account has Security Policy read access."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "rule_id"
+    },
+    {
+      "source": "name",
+      "target": "rule_name"
+    },
+    {
+      "source": "from.member",
+      "target": "from_zone",
+      "transform": {
+        "type": "expression",
+        "expr": "value[0] if isinstance(value, list) and len(value) == 1 else ','.join(value) if isinstance(value, list) else value"
+      }
+    },
+    {
+      "source": "to.member",
+      "target": "to_zone",
+      "transform": {
+        "type": "expression",
+        "expr": "value[0] if isinstance(value, list) and len(value) == 1 else ','.join(value) if isinstance(value, list) else value"
+      }
+    },
+    {
+      "source": "source.member",
+      "target": "src_cidrs",
+      "transform": {
+        "type": "expression",
+        "expr": "value if isinstance(value, list) else [value]"
+      }
+    },
+    {
+      "source": "destination.member",
+      "target": "dst_cidrs",
+      "transform": {
+        "type": "expression",
+        "expr": "value if isinstance(value, list) else [value]"
+      }
+    },
+    {
+      "source": "application.member",
+      "target": "applications",
+      "transform": {
+        "type": "expression",
+        "expr": "value if isinstance(value, list) else [value]"
+      }
+    },
+    {
+      "source": "action",
+      "target": "action",
+      "transform": {
+        "type": "expression",
+        "expr": "'allow' if value == 'allow' else 'deny'"
+      }
+    },
+    {
+      "source": "disabled",
+      "target": "enabled",
+      "transform": {
+        "type": "expression",
+        "expr": "value != 'yes' if isinstance(value, str) else not value"
+      }
+    },
+    {
+      "source": "log-end",
+      "target": "logged",
+      "transform": {
+        "type": "boolean",
+        "truthy": ["yes", "true", "True", true]
+      }
+    }
+  ],
+  "static_fields": {
+    "vendor": "palo_alto_prisma"
+  },
+  "dedup_key": ["vendor", "rule_id"],
+  "params_schema": {
+    "folder": {
+      "type": "string",
+      "required": false,
+      "default": "Shared",
+      "description": "Prisma Access folder: Shared, Mobile Users, Remote Networks, Service Connections"
+    }
+  }
+}

@@ -2,7 +2,7 @@
   "id": "checkmarx_findings",
   "name": "Checkmarx One \u2014 Findings",
   "description": "Pull SAST, SCA, and DAST findings from Checkmarx One via REST API",
-  "category": "SAST / Code Security",
+  "category": "SAST",
   "logo": "/logos/vendors/checkmarx.svg",
   "direction": "pull",
   "entity": "finding",

@@ -2,7 +2,7 @@
   "id": "cobalt_findings",
   "name": "Cobalt \u2014 Findings",
   "description": "Pull pentest findings from Cobalt via the REST API v2",
-  "category": "SAST / Code Security",
+  "category": "SAST",
   "logo": "/logos/vendors/cobalt.svg",
   "direction": "pull",
   "entity": "finding",

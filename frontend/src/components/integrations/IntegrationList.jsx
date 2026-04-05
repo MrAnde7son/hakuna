@@ -28,6 +28,7 @@ const ENTITY_BADGE = {
   asset: { bg: '#1a2e05', text: '#86efac', label: 'ASSET' },
   finding: { bg: '#451a03', text: '#fcd34d', label: 'FINDING' },
   action: { bg: '#1e3a5f', text: '#7dd3fc', label: 'ACTION' },
+  threat_intel: { bg: '#451a03', text: '#fcd34d', label: 'THREAT INTEL' },
 }
 
 const TRANSPORT_BADGE = {

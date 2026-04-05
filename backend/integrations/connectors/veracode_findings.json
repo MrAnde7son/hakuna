@@ -2,7 +2,7 @@
   "id": "veracode_findings",
   "name": "Veracode \u2014 Findings",
   "description": "Pull application security findings from Veracode. Note: Veracode uses HMAC-SHA-256 request signing; the connector handles signature generation from the API ID and API key.",
-  "category": "SAST / Code Security",
+  "category": "SAST",
   "logo": "/logos/vendors/veracode.svg",
   "direction": "pull",
   "entity": "finding",

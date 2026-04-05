@@ -113,10 +113,11 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
 
   // Ordered category list — derived from data but displayed in a fixed logical order
   const CATEGORY_ORDER = [
-    'Vulnerability Management', 'Cloud Security', 'Endpoint Security', 'DAST', 'SAST / Code Security',
-    'EASM', 'SaaS Security / SSPM', 'Identity Security', 'OT / IoT Security',
-    'SIEM / Analytics', 'Threat Intelligence', 'Bug Bounty',
-    'ITSM / Ticketing', 'DNS / Infrastructure', 'HR / People', 'Collaboration / Docs',
+    'Vulnerability Management', 'Cloud Security', 'Endpoint Security', 'DAST', 'SAST',
+    'EASM', 'BAS', 'SSPM', 'Identity Security', 'OT',
+    'SIEM', 'Threat Intelligence', 'Bug Bounty',
+    'Network Security', 'SSE', 'Patch Management', 'Data Security',
+    'ITSM', 'DNS', 'HR', 'Collaboration',
   ]
 
   const categoryCounts = useMemo(() => {
@@ -631,7 +632,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
                 </div>
                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                   <Badge bg={DIRECTION_BADGE[c.direction]?.bg} text={DIRECTION_BADGE[c.direction]?.text} label={c.direction.toUpperCase()} />
-                  <Badge bg={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).bg} text={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).text} label={c.entity.toUpperCase()} />
+                  <Badge bg={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).bg} text={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).text} label={c.entity.replace(/_/g, ' ').toUpperCase()} />
                   <Badge bg="var(--border)" text="var(--text-muted)" label={c.transport_type.toUpperCase()} />
                 </div>
               </Card>
@@ -2134,6 +2135,7 @@ const ENTITY_BADGE = {
   asset: { bg: '#1a2e05', text: '#86efac' },
   finding: { bg: '#451a03', text: '#fcd34d' },
   action: { bg: '#1e3a5f', text: '#7dd3fc' },
+  threat_intel: { bg: '#451a03', text: '#fcd34d' },
   threat_cve: { bg: '#451a03', text: '#fcd34d' },
   threat_group: { bg: '#451a03', text: '#fcd34d' },
   threat_campaign: { bg: '#451a03', text: '#fcd34d' },

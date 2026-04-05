@@ -2,7 +2,7 @@
   "id": "sentinel_findings",
   "name": "Microsoft Sentinel \u2014 Incidents",
   "description": "Pull security incidents from Microsoft Sentinel",
-  "category": "SIEM / Analytics",
+  "category": "SIEM",
   "logo": "/logos/vendors/azure.svg",
   "direction": "pull",
   "entity": "finding",

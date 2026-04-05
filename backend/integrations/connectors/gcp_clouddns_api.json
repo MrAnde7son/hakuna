@@ -2,7 +2,7 @@
   "id": "gcp_clouddns_api",
   "name": "Google Cloud DNS — Zones & Records",
   "description": "Pull managed zones and DNS record sets from Google Cloud DNS to trace workloads behind Cloud Run, App Engine, Cloud Functions, and load balancers",
-  "category": "DNS / Infrastructure",
+  "category": "DNS",
   "logo": "/logos/vendors/gcp.svg",
   "direction": "pull",
   "entity": "asset",

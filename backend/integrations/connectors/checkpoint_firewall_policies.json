@@ -1,0 +1,231 @@
+{
+  "id": "checkpoint_firewall_policies",
+  "name": "Check Point Firewall — Access Policies",
+  "description": "Pull access policy rulebase from Check Point management server to enrich lateral movement analysis and blast radius calculation",
+  "category": "Network Security",
+  "logo": "/logos/vendors/checkpoint.svg",
+  "direction": "pull",
+  "entity": "firewall_policy",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{credentials.hostname}}/web_api",
+    "method": "POST",
+    "path": "/show-access-rulebase",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-chkp-sid": "{{credentials.session_token}}"
+    },
+    "body": {
+      "name": "{{params.policy_package}}",
+      "details-level": "full",
+      "use-object-dictionary": true
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "page_size_param": "limit",
+      "total_field": "total"
+    },
+    "tls_verify": false,
+    "auth_flow": {
+      "type": "session",
+      "login": {
+        "method": "POST",
+        "path": "/login",
+        "body": {
+          "user": "{{credentials.username}}",
+          "password": "{{credentials.password}}"
+        },
+        "token_path": "sid",
+        "token_header": "X-chkp-sid"
+      },
+      "logout": {
+        "method": "POST",
+        "path": "/logout",
+        "headers": {
+          "X-chkp-sid": "{{session_token}}"
+        },
+        "body": {}
+      }
+    },
+    "additional_requests": [
+      {
+        "key": "network_objects",
+        "method": "POST",
+        "path": "/show-objects",
+        "headers": {
+          "Content-Type": "application/json",
+          "X-chkp-sid": "{{credentials.session_token}}"
+        },
+        "body": {
+          "type": "network",
+          "details-level": "full",
+          "limit": 500
+        },
+        "records_path": "objects"
+      },
+      {
+        "key": "host_objects",
+        "method": "POST",
+        "path": "/show-objects",
+        "headers": {
+          "Content-Type": "application/json",
+          "X-chkp-sid": "{{credentials.session_token}}"
+        },
+        "body": {
+          "type": "host",
+          "details-level": "full",
+          "limit": 500
+        },
+        "records_path": "objects"
+      },
+      {
+        "key": "group_objects",
+        "method": "POST",
+        "path": "/show-objects",
+        "headers": {
+          "Content-Type": "application/json",
+          "X-chkp-sid": "{{credentials.session_token}}"
+        },
+        "body": {
+          "type": "group",
+          "details-level": "full",
+          "limit": 500
+        },
+        "records_path": "objects"
+      }
+    ]
+  },
+  "records_path": "rulebase",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Identify your Check Point Management Server IP or hostname (SmartConsole connects to this)"
+      },
+      {
+        "instruction": "Ensure the Management API is enabled: in SmartConsole go to Manage & Settings → Blades → Management API → Advanced Settings → enable 'All IP addresses' or whitelist your Hakuna server IP"
+      },
+      {
+        "instruction": "Create a dedicated API user in SmartConsole: Manage & Settings → Permissions & Administrators → New Administrator with read-only permission profile",
+        "help": "Use a dedicated read-only admin to follow least-privilege"
+      },
+      {
+        "instruction": "Enter the Management Server hostname or IP",
+        "capture": {
+          "field": "hostname",
+          "label": "Management Server Hostname / IP",
+          "type": "text",
+          "placeholder": "mgmt01.example.com"
+        }
+      },
+      {
+        "instruction": "Enter the API administrator username",
+        "capture": {
+          "field": "username",
+          "label": "API Username",
+          "type": "text"
+        }
+      },
+      {
+        "instruction": "Enter the API administrator password",
+        "capture": {
+          "field": "password",
+          "label": "API Password",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "POST",
+      "base_url": "https://{{hostname}}/web_api",
+      "path": "/login",
+      "body": {
+        "user": "{{username}}",
+        "password": "{{password}}"
+      },
+      "tls_verify": false,
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "session_token": "response.sid"
+      },
+      "error_message": "Could not authenticate to Check Point Management API. Verify hostname, credentials, and that the Management API is enabled for your source IP."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "rule-number",
+      "target": "rule_id",
+      "transform": {
+        "type": "expression",
+        "expr": "str(value)"
+      }
+    },
+    {
+      "source": "name",
+      "target": "rule_name"
+    },
+    {
+      "source": "source",
+      "target": "src_cidrs",
+      "transform": {
+        "type": "expression",
+        "expr": "[obj.get('name', str(obj)) for obj in value] if isinstance(value, list) else [value]"
+      }
+    },
+    {
+      "source": "destination",
+      "target": "dst_cidrs",
+      "transform": {
+        "type": "expression",
+        "expr": "[obj.get('name', str(obj)) for obj in value] if isinstance(value, list) else [value]"
+      }
+    },
+    {
+      "source": "service",
+      "target": "services",
+      "transform": {
+        "type": "expression",
+        "expr": "[{'name': s.get('name', str(s)), 'port': s.get('port', ''), 'protocol': s.get('protocol', '')} for s in value] if isinstance(value, list) else [{'name': str(value)}]"
+      }
+    },
+    {
+      "source": "action",
+      "target": "action",
+      "transform": {
+        "type": "expression",
+        "expr": "value.get('name', str(value)).lower() if isinstance(value, dict) else str(value).lower()"
+      }
+    },
+    {
+      "source": "enabled",
+      "target": "enabled",
+      "transform": {
+        "type": "boolean",
+        "truthy": [true, "true", "True"]
+      }
+    },
+    {
+      "source": "track",
+      "target": "logged",
+      "transform": {
+        "type": "expression",
+        "expr": "(value.get('type', {}).get('name', '') != 'None') if isinstance(value, dict) else bool(value)"
+      }
+    }
+  ],
+  "static_fields": {
+    "vendor": "checkpoint"
+  },
+  "dedup_key": ["vendor", "rule_id"],
+  "params_schema": {
+    "policy_package": {
+      "type": "string",
+      "required": true,
+      "default": "Standard",
+      "description": "Name of the Check Point policy package to pull rules from (e.g., 'Standard', 'Network')"
+    }
+  }
+}

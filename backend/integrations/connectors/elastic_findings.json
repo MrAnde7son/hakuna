@@ -2,7 +2,7 @@
   "id": "elastic_findings",
   "name": "Elastic Security \u2014 Alerts",
   "description": "Pull security alerts from Elastic Security",
-  "category": "SIEM / Analytics",
+  "category": "SIEM",
   "logo": "/logos/vendors/elastic.svg",
   "direction": "pull",
   "entity": "finding",

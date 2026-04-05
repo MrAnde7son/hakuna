@@ -1,0 +1,136 @@
+{
+  "id": "cyera_findings",
+  "name": "Cyera \u2014 Data Security Findings",
+  "description": "Pull data security posture findings and sensitive data exposure risks from Cyera",
+  "category": "Data Security",
+  "logo": "/logos/vendors/cyera.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://app.cyera.io/api/v1",
+    "method": "GET",
+    "path": "/risks",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_token}}",
+      "Content-Type": "application/json"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 100,
+      "cursor_field": "pagination.nextCursor",
+      "cursor_param": "cursor",
+      "cursor_param_in": "query",
+      "has_next_field": "pagination.hasMore"
+    }
+  },
+  "records_path": "risks",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the Cyera platform as an administrator"
+      },
+      {
+        "instruction": "Navigate to Settings > Integrations > API"
+      },
+      {
+        "instruction": "Generate an API token with read access to risks. Copy the token.",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/risks?limit=1",
+      "headers": {
+        "Authorization": "Bearer {{api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to Cyera. Check your API token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "CRITICAL": "Critical",
+          "HIGH": "High",
+          "MEDIUM": "Medium",
+          "LOW": "Low",
+          "INFO": "Informational"
+        }
+      }
+    },
+    {
+      "source": null,
+      "target": "cve_id"
+    },
+    {
+      "source": "remediation",
+      "target": "solution"
+    },
+    {
+      "source": "dataStore.name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "firstDetected",
+      "target": "found_date",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "status",
+      "target": "state",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "OPEN": "active",
+          "RESOLVED": "fixed",
+          "MUTED": "accepted"
+        }
+      }
+    }
+  ],
+  "static_fields": {
+    "source_system": "cyera",
+    "scanner_name": "Cyera"
+  },
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "environment": {
+      "type": "string",
+      "default": "",
+      "description": "Filter by environment (production, staging, development)"
+    },
+    "data_class": {
+      "type": "string",
+      "default": "",
+      "description": "Filter by data classification (e.g. 'PII', 'PHI', 'PCI')"
+    }
+  }
+}

@@ -2,7 +2,7 @@
   "id": "github_advanced_security_findings",
   "name": "GitHub Advanced Security \u2014 Findings",
   "description": "Pull code scanning alerts from GitHub Advanced Security across an organization",
-  "category": "SAST / Code Security",
+  "category": "SAST",
   "logo": "/logos/vendors/github.svg",
   "direction": "pull",
   "entity": "finding",

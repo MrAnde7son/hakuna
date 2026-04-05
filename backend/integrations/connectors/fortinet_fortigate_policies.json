@@ -1,0 +1,206 @@
+{
+  "id": "fortinet_fortigate_policies",
+  "name": "Fortinet FortiGate — Firewall Policies",
+  "description": "Pull IPv4 firewall policies from FortiGate to enrich lateral movement analysis and blast radius calculation",
+  "category": "Network Security",
+  "logo": "/logos/vendors/fortinet.svg",
+  "direction": "pull",
+  "entity": "firewall_policy",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{credentials.hostname}}/api/v2",
+    "method": "GET",
+    "path": "/cmdb/firewall/policy",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_token}}",
+      "Content-Type": "application/json"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 200,
+      "offset_param": "start",
+      "page_size_param": "count",
+      "total_field": "total"
+    },
+    "tls_verify": false,
+    "additional_requests": [
+      {
+        "key": "addresses",
+        "method": "GET",
+        "path": "/cmdb/firewall/address",
+        "headers": {
+          "Authorization": "Bearer {{credentials.api_token}}"
+        },
+        "records_path": "results"
+      },
+      {
+        "key": "address_groups",
+        "method": "GET",
+        "path": "/cmdb/firewall/addrgrp",
+        "headers": {
+          "Authorization": "Bearer {{credentials.api_token}}"
+        },
+        "records_path": "results"
+      },
+      {
+        "key": "services",
+        "method": "GET",
+        "path": "/cmdb/firewall/service/custom",
+        "headers": {
+          "Authorization": "Bearer {{credentials.api_token}}"
+        },
+        "records_path": "results"
+      }
+    ]
+  },
+  "records_path": "results",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into your FortiGate admin UI (https://<fortigate-ip>)"
+      },
+      {
+        "instruction": "Navigate to System → Administrators → Create New → REST API Admin"
+      },
+      {
+        "instruction": "Set an admin profile with read-only access to firewall policies. Optionally restrict trusted hosts to your Hakuna server IP."
+      },
+      {
+        "instruction": "Enter the FortiGate hostname or IP address",
+        "capture": {
+          "field": "hostname",
+          "label": "FortiGate Hostname / IP",
+          "type": "text",
+          "placeholder": "fg01.example.com"
+        }
+      },
+      {
+        "instruction": "Copy and paste the API token generated for the REST API admin",
+        "capture": {
+          "field": "api_token",
+          "label": "API Token",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "base_url": "https://{{hostname}}/api/v2",
+      "path": "/cmdb/firewall/policy",
+      "headers": {
+        "Authorization": "Bearer {{api_token}}"
+      },
+      "query_params": {
+        "count": "1"
+      },
+      "tls_verify": false,
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to FortiGate. Verify the hostname is reachable, the API token is valid, and the admin profile has firewall policy read access."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "policyid",
+      "target": "rule_id",
+      "transform": {
+        "type": "expression",
+        "expr": "str(value)"
+      }
+    },
+    {
+      "source": "name",
+      "target": "rule_name"
+    },
+    {
+      "source": "srcintf",
+      "target": "from_zone",
+      "transform": {
+        "type": "expression",
+        "expr": "','.join(i['name'] for i in value) if isinstance(value, list) else value"
+      }
+    },
+    {
+      "source": "dstintf",
+      "target": "to_zone",
+      "transform": {
+        "type": "expression",
+        "expr": "','.join(i['name'] for i in value) if isinstance(value, list) else value"
+      }
+    },
+    {
+      "source": "srcaddr",
+      "target": "src_cidrs",
+      "transform": {
+        "type": "expression",
+        "expr": "[a['name'] for a in value] if isinstance(value, list) else [value]"
+      }
+    },
+    {
+      "source": "dstaddr",
+      "target": "dst_cidrs",
+      "transform": {
+        "type": "expression",
+        "expr": "[a['name'] for a in value] if isinstance(value, list) else [value]"
+      }
+    },
+    {
+      "source": "service",
+      "target": "services",
+      "transform": {
+        "type": "expression",
+        "expr": "[{'name': s['name']} for s in value] if isinstance(value, list) else [{'name': value}]"
+      }
+    },
+    {
+      "source": "action",
+      "target": "action",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "accept": "allow",
+          "deny": "deny",
+          "ipsec": "allow"
+        }
+      }
+    },
+    {
+      "source": "status",
+      "target": "enabled",
+      "transform": {
+        "type": "expression",
+        "expr": "value == 'enable' if isinstance(value, str) else bool(value)"
+      }
+    },
+    {
+      "source": "logtraffic",
+      "target": "logged",
+      "transform": {
+        "type": "expression",
+        "expr": "value in ('all', 'utm') if isinstance(value, str) else bool(value)"
+      }
+    },
+    {
+      "source": "nat",
+      "target": "nat",
+      "transform": {
+        "type": "expression",
+        "expr": "value == 'enable' if isinstance(value, str) else bool(value)"
+      }
+    }
+  ],
+  "static_fields": {
+    "vendor": "fortinet"
+  },
+  "dedup_key": ["vendor", "rule_id"],
+  "params_schema": {
+    "vdom": {
+      "type": "string",
+      "required": false,
+      "default": "root",
+      "description": "Virtual domain (VDOM) to query. Leave blank or 'root' for single-VDOM deployments."
+    }
+  }
+}

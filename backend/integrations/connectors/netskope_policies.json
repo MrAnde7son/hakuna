@@ -1,0 +1,154 @@
+{
+  "id": "netskope_policies",
+  "name": "Netskope — Security Policies",
+  "description": "Pull real-time and API protection policies from Netskope for coverage gap and compensating control analysis",
+  "category": "SSE",
+  "logo": "/logos/vendors/netskope.svg",
+  "direction": "pull",
+  "entity": "security_control_policy",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{credentials.tenant_hostname}}.goskope.com/api/v2",
+    "method": "GET",
+    "path": "/policy/rules",
+    "headers": {
+      "Netskope-Api-Token": "{{credentials.api_token}}"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "total_field": "total"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into your Netskope tenant admin console"
+      },
+      {
+        "instruction": "Navigate to Settings → Tools → REST API v2"
+      },
+      {
+        "instruction": "Create a New Token with read privileges for /api/v2/policy"
+      },
+      {
+        "instruction": "Enter your Netskope tenant name (the subdomain before .goskope.com)",
+        "capture": {
+          "field": "tenant_hostname",
+          "label": "Tenant Hostname",
+          "type": "text",
+          "placeholder": "mycompany"
+        }
+      },
+      {
+        "instruction": "Paste the REST API v2 token",
+        "capture": {
+          "field": "api_token",
+          "label": "API Token",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "base_url": "https://{{tenant_hostname}}.goskope.com/api/v2",
+      "path": "/policy/rules",
+      "headers": {
+        "Netskope-Api-Token": "{{api_token}}"
+      },
+      "query_params": {
+        "limit": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to Netskope. Verify the tenant hostname and API token are correct and that the token has read access to /api/v2/policy."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "policy_id",
+      "target": "rule_id"
+    },
+    {
+      "source": "policy_name",
+      "target": "rule_name"
+    },
+    {
+      "source": "cloud",
+      "target": "from_zone",
+      "transform": {
+        "type": "expression",
+        "expr": "'any'"
+      }
+    },
+    {
+      "source": "cloud",
+      "target": "to_zone",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_app'"
+      }
+    },
+    {
+      "source": "src_location",
+      "target": "src_cidrs",
+      "transform": {
+        "type": "expression",
+        "expr": "value if isinstance(value, list) else [value] if value else []"
+      }
+    },
+    {
+      "source": "dst_app",
+      "target": "applications",
+      "transform": {
+        "type": "expression",
+        "expr": "value if isinstance(value, list) else [value] if value else []"
+      }
+    },
+    {
+      "source": "action",
+      "target": "action",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "allow": "allow",
+          "block": "deny",
+          "alert": "allow",
+          "bypass": "allow",
+          "quarantine": "deny"
+        }
+      }
+    },
+    {
+      "source": "enabled",
+      "target": "enabled",
+      "transform": {
+        "type": "boolean",
+        "truthy": [true, "true", 1]
+      }
+    },
+    {
+      "source": "log_enabled",
+      "target": "logged",
+      "transform": {
+        "type": "boolean",
+        "truthy": [true, "true", 1]
+      }
+    }
+  ],
+  "static_fields": {
+    "vendor": "netskope"
+  },
+  "dedup_key": ["vendor", "rule_id"],
+  "params_schema": {
+    "policy_type": {
+      "type": "string",
+      "required": false,
+      "default": "realtime",
+      "description": "Policy type: realtime, api_protection, threat_protection"
+    }
+  }
+}

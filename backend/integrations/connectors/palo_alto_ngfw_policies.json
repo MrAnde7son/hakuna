@@ -1,0 +1,186 @@
+{
+  "id": "palo_alto_ngfw_policies",
+  "name": "Palo Alto Networks NGFW — Security Policies",
+  "description": "Pull security policy rules from Palo Alto Networks Next-Generation Firewall to enrich lateral movement analysis and blast radius calculation",
+  "category": "Network Security",
+  "logo": "/logos/vendors/palo_alto.svg",
+  "direction": "pull",
+  "entity": "firewall_policy",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{credentials.hostname}}/restapi/v10.2",
+    "method": "GET",
+    "path": "/Objects/SecurityRules",
+    "headers": {
+      "X-PAN-KEY": "{{credentials.api_key}}",
+      "Content-Type": "application/json"
+    },
+    "query_params": {
+      "location": "{{params.location}}"
+    },
+    "pagination": {
+      "strategy": "none"
+    },
+    "tls_verify": false,
+    "additional_requests": [
+      {
+        "key": "address_groups",
+        "method": "GET",
+        "path": "/Objects/AddressGroups",
+        "headers": {
+          "X-PAN-KEY": "{{credentials.api_key}}"
+        },
+        "query_params": {
+          "location": "{{params.location}}"
+        },
+        "records_path": "result.entry"
+      },
+      {
+        "key": "addresses",
+        "method": "GET",
+        "path": "/Objects/Addresses",
+        "headers": {
+          "X-PAN-KEY": "{{credentials.api_key}}"
+        },
+        "query_params": {
+          "location": "{{params.location}}"
+        },
+        "records_path": "result.entry"
+      }
+    ]
+  },
+  "records_path": "result.entry",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Open your Palo Alto firewall management UI (https://<firewall-ip>)"
+      },
+      {
+        "instruction": "Navigate to Device → Administrators and ensure your admin account has API access, or create a dedicated API admin"
+      },
+      {
+        "instruction": "Generate an API key by calling: https://<firewall-ip>/api/?type=keygen&user=<username>&password=<password> — copy the key from the response"
+      },
+      {
+        "instruction": "Enter the firewall hostname or IP address",
+        "capture": {
+          "field": "hostname",
+          "label": "Firewall Hostname / IP",
+          "type": "text",
+          "placeholder": "fw01.example.com"
+        }
+      },
+      {
+        "instruction": "Paste the API key",
+        "capture": {
+          "field": "api_key",
+          "label": "API Key",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "base_url": "https://{{hostname}}/restapi/v10.2",
+      "path": "/Objects/SecurityRules",
+      "headers": {
+        "X-PAN-KEY": "{{api_key}}"
+      },
+      "query_params": {
+        "location": "vsys",
+        "vsys": "vsys1"
+      },
+      "tls_verify": false,
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to Palo Alto NGFW. Verify the hostname is reachable and the API key is valid."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "@name",
+      "target": "rule_id"
+    },
+    {
+      "source": "@name",
+      "target": "rule_name"
+    },
+    {
+      "source": "from.member",
+      "target": "from_zone",
+      "transform": {
+        "type": "expression",
+        "expr": "value[0] if isinstance(value, list) and len(value) == 1 else ','.join(value) if isinstance(value, list) else value"
+      }
+    },
+    {
+      "source": "to.member",
+      "target": "to_zone",
+      "transform": {
+        "type": "expression",
+        "expr": "value[0] if isinstance(value, list) and len(value) == 1 else ','.join(value) if isinstance(value, list) else value"
+      }
+    },
+    {
+      "source": "source.member",
+      "target": "src_cidrs",
+      "transform": {
+        "type": "expression",
+        "expr": "value if isinstance(value, list) else [value]"
+      }
+    },
+    {
+      "source": "destination.member",
+      "target": "dst_cidrs",
+      "transform": {
+        "type": "expression",
+        "expr": "value if isinstance(value, list) else [value]"
+      }
+    },
+    {
+      "source": "application.member",
+      "target": "applications",
+      "transform": {
+        "type": "expression",
+        "expr": "value if isinstance(value, list) else [value]"
+      }
+    },
+    {
+      "source": "action",
+      "target": "action",
+      "transform": {
+        "type": "expression",
+        "expr": "'allow' if value == 'allow' else 'deny'"
+      }
+    },
+    {
+      "source": "disabled",
+      "target": "enabled",
+      "transform": {
+        "type": "expression",
+        "expr": "value != 'yes' if isinstance(value, str) else not value"
+      }
+    },
+    {
+      "source": "log-end",
+      "target": "logged",
+      "transform": {
+        "type": "boolean",
+        "truthy": ["yes", "true", "True", true]
+      }
+    }
+  ],
+  "static_fields": {
+    "vendor": "palo_alto"
+  },
+  "dedup_key": ["vendor", "rule_id"],
+  "params_schema": {
+    "location": {
+      "type": "string",
+      "required": true,
+      "default": "vsys",
+      "description": "Policy location: 'vsys' for local policies, 'panorama' for Panorama-managed, or a specific device-group name"
+    }
+  }
+}

@@ -2,7 +2,7 @@
   "id": "armis_findings",
   "name": "Armis \u2014 Vulnerabilities",
   "description": "Pull device vulnerability findings from Armis",
-  "category": "OT / IoT Security",
+  "category": "OT",
   "logo": "/logos/vendors/armis.svg",
   "direction": "pull",
   "entity": "finding",

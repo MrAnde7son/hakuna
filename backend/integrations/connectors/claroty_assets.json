@@ -2,7 +2,7 @@
   "id": "claroty_assets",
   "name": "Claroty \u2014 OT Assets",
   "description": "Pull OT/ICS asset inventory from Claroty xDome or CTD",
-  "category": "OT / IoT Security",
+  "category": "OT",
   "logo": "/logos/vendors/claroty.svg",
   "direction": "pull",
   "entity": "asset",

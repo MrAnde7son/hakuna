@@ -1,0 +1,136 @@
+{
+  "id": "securiti_findings",
+  "name": "Securiti \u2014 Data Risk Findings",
+  "description": "Pull sensitive data discovery and data risk findings from Securiti Data Command Center",
+  "category": "Data Security",
+  "logo": "/logos/vendors/securiti.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://app.securiti.ai/core/v1",
+    "method": "GET",
+    "path": "/data-risks",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_token}}",
+      "Content-Type": "application/json"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "total_field": "total"
+    }
+  },
+  "records_path": "results",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the Securiti portal as an administrator"
+      },
+      {
+        "instruction": "Navigate to Settings > API Configuration"
+      },
+      {
+        "instruction": "Generate an API Token with Data Risk read access. Copy the token.",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/data-risks?limit=1",
+      "headers": {
+        "Authorization": "Bearer {{api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to Securiti. Check your API token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "riskId",
+      "target": "source_id"
+    },
+    {
+      "source": "riskName",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "riskLevel",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "CRITICAL": "Critical",
+          "HIGH": "High",
+          "MEDIUM": "Medium",
+          "LOW": "Low"
+        }
+      }
+    },
+    {
+      "source": null,
+      "target": "cve_id"
+    },
+    {
+      "source": "recommendation",
+      "target": "solution"
+    },
+    {
+      "source": "dataStore.name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "detectedAt",
+      "target": "found_date",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "status",
+      "target": "state",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "OPEN": "active",
+          "REMEDIATED": "fixed",
+          "ACCEPTED": "accepted"
+        }
+      }
+    }
+  ],
+  "static_fields": {
+    "source_system": "securiti",
+    "scanner_name": "Securiti Data Command Center"
+  },
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "data_store_type": {
+      "type": "string",
+      "default": "",
+      "description": "Filter by data store type (e.g. 's3', 'rds', 'snowflake')"
+    },
+    "risk_level": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": ["CRITICAL", "HIGH", "MEDIUM"],
+      "description": "Risk levels to pull"
+    }
+  }
+}

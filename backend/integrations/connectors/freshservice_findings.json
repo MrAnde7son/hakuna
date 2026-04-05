@@ -3,7 +3,7 @@
   "relay_capable": true,
   "name": "Freshservice \u2014 Tickets as Findings",
   "description": "Pull incident tickets from Freshservice and map them to findings for tracking",
-  "category": "ITSM / Ticketing",
+  "category": "ITSM",
   "logo": "/logos/vendors/freshservice.svg",
   "direction": "pull",
   "entity": "finding",

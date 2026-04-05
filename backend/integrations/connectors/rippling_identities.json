@@ -2,7 +2,7 @@
   "id": "rippling_identities",
   "name": "Rippling \u2014 Employees",
   "description": "Pull employee records from Rippling for identity-aware exposure management",
-  "category": "HR / People",
+  "category": "HR",
   "logo": "/logos/vendors/rippling.svg",
   "direction": "pull",
   "entity": "asset",

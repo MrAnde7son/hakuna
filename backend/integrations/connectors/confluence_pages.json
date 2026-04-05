@@ -2,7 +2,7 @@
   "id": "confluence_pages",
   "name": "Confluence — Security Pages",
   "description": "Pull security-related pages from Confluence Cloud and extract findings using AI. Ingests wiki pages, runbooks, audit notes, and incident reports as structured vulnerability findings.",
-  "category": "Collaboration / Docs",
+  "category": "Collaboration",
   "logo": "/logos/vendors/confluence.svg",
   "direction": "pull",
   "entity": "finding",

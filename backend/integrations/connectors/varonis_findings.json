@@ -1,0 +1,142 @@
+{
+  "id": "varonis_findings",
+  "name": "Varonis \u2014 Data Security Alerts",
+  "description": "Pull data security alerts and sensitive data exposure findings from Varonis DatAdvantage",
+  "category": "Data Security",
+  "logo": "/logos/vendors/varonis.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}/api",
+    "method": "GET",
+    "path": "/alerts",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_token}}",
+      "Content-Type": "application/json"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "total_field": "pagination.totalItems"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Varonis Web Interface URL",
+      "placeholder": "https://varonis.yourcompany.com"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the Varonis Web Interface as an administrator"
+      },
+      {
+        "instruction": "Navigate to Configuration > API Keys"
+      },
+      {
+        "instruction": "Click Generate API Key with Alert read permissions. Copy the generated key.",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/alerts?limit=1",
+      "headers": {
+        "Authorization": "Bearer {{api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to Varonis. Check your API token and instance URL."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "alertId",
+      "target": "source_id"
+    },
+    {
+      "source": "alertName",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Critical": "Critical",
+          "High": "High",
+          "Medium": "Medium",
+          "Low": "Low",
+          "Info": "Informational"
+        }
+      }
+    },
+    {
+      "source": null,
+      "target": "cve_id"
+    },
+    {
+      "source": "remediation",
+      "target": "solution"
+    },
+    {
+      "source": "affectedObject.path",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "alertTime",
+      "target": "found_date",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "status",
+      "target": "state",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Open": "active",
+          "InProgress": "active",
+          "Closed": "fixed",
+          "Dismissed": "accepted"
+        }
+      }
+    }
+  ],
+  "static_fields": {
+    "source_system": "varonis",
+    "scanner_name": "Varonis DatAdvantage"
+  },
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "severity_filter": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": ["Critical", "High", "Medium"],
+      "description": "Alert severity levels to pull"
+    },
+    "alert_type": {
+      "type": "string",
+      "default": "",
+      "description": "Filter by alert type (e.g. 'Sensitive data exposure', 'Abnormal access')"
+    }
+  }
+}

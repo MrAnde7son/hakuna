@@ -2,7 +2,7 @@
   "id": "cloudflare_api",
   "name": "Cloudflare — DNS & Zones",
   "description": "Pull DNS zones and records from Cloudflare to discover origin servers behind proxied domains and correlate with EASM-discovered assets",
-  "category": "DNS / Infrastructure",
+  "category": "DNS",
   "logo": "/logos/vendors/cloudflare.svg",
   "direction": "pull",
   "entity": "asset",

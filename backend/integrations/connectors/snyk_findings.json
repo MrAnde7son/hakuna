@@ -2,7 +2,7 @@
   "id": "snyk_findings",
   "name": "Snyk \u2014 Issues",
   "description": "Pull security issues from Snyk via the REST API (v1/2024-01-23)",
-  "category": "SAST / Code Security",
+  "category": "SAST",
   "logo": "/logos/vendors/snyk.svg",
   "direction": "pull",
   "entity": "finding",

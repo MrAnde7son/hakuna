@@ -2,7 +2,7 @@
   "id": "google_docs",
   "name": "Google Drive — Security Documents",
   "description": "Pull documents from Google Drive and extract security findings using AI. Supports Google Docs, Sheets, and uploaded PDFs in a specified folder.",
-  "category": "Collaboration / Docs",
+  "category": "Collaboration",
   "logo": "/logos/vendors/google-drive.svg",
   "direction": "pull",
   "entity": "finding",

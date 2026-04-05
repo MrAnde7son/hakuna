@@ -6,7 +6,7 @@
   "category": "Threat Intelligence",
   "logo": "/logos/vendors/virustotal.svg",
   "direction": "pull",
-  "entity": "finding",
+  "entity": "threat_intel",
   "transport_type": "api",
   "transport_config": {
     "base_url": "https://www.virustotal.com",

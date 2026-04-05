@@ -2,7 +2,7 @@
   "id": "dragos_findings",
   "name": "Dragos \u2014 OT Detections",
   "description": "Pull OT/ICS threat detections from Dragos Platform",
-  "category": "OT / IoT Security",
+  "category": "OT",
   "logo": "/logos/vendors/dragos.svg",
   "direction": "pull",
   "entity": "finding",

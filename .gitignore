@@ -8,6 +8,7 @@ __pycache__/
 .env
 .claude/settings.local.json
 backend/uploads/
+reports/
 
 # Nessus scan files (may contain secrets)
 *.nessus

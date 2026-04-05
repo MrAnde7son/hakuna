@@ -2,7 +2,7 @@
   "id": "pentera_findings",
   "name": "Pentera \u2014 Findings",
   "description": "Pull automated penetration testing findings from Pentera",
-  "category": "EASM",
+  "category": "BAS",
   "logo": "/logos/vendors/pentera.svg",
   "direction": "pull",
   "entity": "finding",

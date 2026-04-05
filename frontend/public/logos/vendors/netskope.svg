@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <rect width="40" height="40" rx="8" fill="#1A1A2E"/>
+  <!-- Netskope cloud/shield -->
+  <path d="M10 24 C10 20 12 16 16 16 C17 12 21 10 25 12 C29 10 33 14 32 18 C34 20 34 24 30 26 L10 26 C8 26 10 24 10 24 Z" fill="none" stroke="#24BAAE" stroke-width="2"/>
+  <path d="M18 22 L20 24 L24 19" fill="none" stroke="#24BAAE" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -2,7 +2,7 @@
   "id": "workday_identities",
   "name": "Workday \u2014 Workers",
   "description": "Pull worker records from Workday HCM for identity-aware exposure management",
-  "category": "HR / People",
+  "category": "HR",
   "logo": "/logos/vendors/workday.svg",
   "direction": "pull",
   "entity": "asset",

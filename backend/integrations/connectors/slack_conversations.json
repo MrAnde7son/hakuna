@@ -2,7 +2,7 @@
   "id": "slack_conversations",
   "name": "Slack — Security Conversations",
   "description": "Pull messages from Slack channels and extract security findings using AI. Monitors security-related channels for vulnerability discussions, incident reports, and remediation updates.",
-  "category": "Collaboration / Docs",
+  "category": "Collaboration",
   "logo": "/logos/vendors/slack.svg",
   "direction": "pull",
   "entity": "finding",

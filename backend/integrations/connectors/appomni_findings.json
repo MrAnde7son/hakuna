@@ -2,7 +2,7 @@
   "id": "appomni_findings",
   "name": "AppOmni \u2014 SaaS Alerts",
   "description": "Pull SaaS security alerts from AppOmni",
-  "category": "SaaS Security / SSPM",
+  "category": "SSPM",
   "logo": "/logos/vendors/appomni.svg",
   "direction": "pull",
   "entity": "finding",

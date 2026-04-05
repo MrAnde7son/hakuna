@@ -1,0 +1,177 @@
+{
+  "id": "zscaler_zia_policies",
+  "name": "Zscaler ZIA — Security Policies",
+  "description": "Pull web security and access policies from Zscaler Internet Access for coverage gap analysis",
+  "category": "SSE",
+  "logo": "/logos/vendors/zscaler.svg",
+  "direction": "pull",
+  "entity": "security_control_policy",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://zsapi.{{credentials.zscaler_cloud}}/api/v1",
+    "method": "GET",
+    "path": "/webApplicationRules",
+    "headers": {
+      "Content-Type": "application/json",
+      "Cookie": "JSESSIONID={{credentials.session_id}}"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "page",
+      "total_field": "totalCount"
+    }
+  },
+  "records_path": "list",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the ZIA admin portal at https://admin.<your-cloud>.net"
+      },
+      {
+        "instruction": "Navigate to Administration → API Key Management"
+      },
+      {
+        "instruction": "Note your API key and admin credentials"
+      },
+      {
+        "instruction": "Enter your Zscaler cloud domain (e.g. zscaler.net, zscalerone.net, zscloud.net)",
+        "capture": {
+          "field": "zscaler_cloud",
+          "label": "Zscaler Cloud",
+          "type": "text",
+          "placeholder": "zscaler.net"
+        }
+      },
+      {
+        "instruction": "Enter your API key",
+        "capture": {
+          "field": "api_key",
+          "label": "API Key",
+          "type": "password"
+        }
+      },
+      {
+        "instruction": "Enter the admin username used for API authentication",
+        "capture": {
+          "field": "username",
+          "label": "Admin Username",
+          "type": "text",
+          "placeholder": "admin@example.com"
+        }
+      },
+      {
+        "instruction": "Enter the admin password",
+        "capture": {
+          "field": "password",
+          "label": "Admin Password",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "base_url": "https://zsapi.{{zscaler_cloud}}/api/v1",
+      "path": "/urlFilteringRules",
+      "headers": {
+        "Content-Type": "application/json",
+        "Cookie": "JSESSIONID={{session_id}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to Zscaler ZIA. Verify your cloud domain, credentials, and that the session is active."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "rule_id"
+    },
+    {
+      "source": "name",
+      "target": "rule_name"
+    },
+    {
+      "source": "any",
+      "target": "from_zone",
+      "transform": {
+        "type": "expression",
+        "expr": "'internet'"
+      }
+    },
+    {
+      "source": "any",
+      "target": "to_zone",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_proxy'"
+      }
+    },
+    {
+      "source": "srcIps",
+      "target": "src_cidrs",
+      "transform": {
+        "type": "expression",
+        "expr": "value if isinstance(value, list) else [value] if value else []"
+      }
+    },
+    {
+      "source": "destAddresses",
+      "target": "dst_cidrs",
+      "transform": {
+        "type": "expression",
+        "expr": "value if isinstance(value, list) else [value] if value else []"
+      }
+    },
+    {
+      "source": "protocols",
+      "target": "applications",
+      "transform": {
+        "type": "expression",
+        "expr": "value if isinstance(value, list) else [value] if value else []"
+      }
+    },
+    {
+      "source": "action",
+      "target": "action",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "ALLOW": "allow",
+          "BLOCK": "deny",
+          "CAUTION": "deny",
+          "ISOLATE": "deny"
+        }
+      }
+    },
+    {
+      "source": "state",
+      "target": "enabled",
+      "transform": {
+        "type": "expression",
+        "expr": "value == 'ENABLED'"
+      }
+    },
+    {
+      "source": "enableFullLogging",
+      "target": "logged",
+      "transform": {
+        "type": "boolean",
+        "truthy": [true, "true"]
+      }
+    }
+  ],
+  "static_fields": {
+    "vendor": "zscaler"
+  },
+  "dedup_key": ["vendor", "rule_id"],
+  "params_schema": {
+    "policy_type": {
+      "type": "string",
+      "required": false,
+      "default": "web",
+      "description": "Policy type to pull: web, url_filtering, firewall, dlp"
+    }
+  }
+}

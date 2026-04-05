@@ -1,0 +1,113 @@
+{
+  "id": "tanium_assets",
+  "name": "Tanium \u2014 Managed Assets",
+  "description": "Pull managed endpoint inventory from Tanium including patch compliance status",
+  "category": "Patch Management",
+  "logo": "/logos/vendors/tanium.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/api/v2/endpoints",
+    "headers": {
+      "session": "{{credentials.api_token}}"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 500,
+      "offset_param": "offset",
+      "total_field": "data.total_count"
+    }
+  },
+  "records_path": "data.endpoints",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Tanium Server URL",
+      "placeholder": "https://tanium.yourcompany.com"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the Tanium console as an administrator",
+        "deeplink_path": null
+      },
+      {
+        "instruction": "Navigate to Administration \u2192 Permissions \u2192 API Tokens",
+        "deeplink_path": "/administration/permissions/api-tokens"
+      },
+      {
+        "instruction": "Generate a new read-only API token. Copy the token value.",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v2/session/current",
+      "auth_header": "session: {{api_token}}",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Tanium. Check your API token and instance URL."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "computer_name",
+      "target": "hostname"
+    },
+    {
+      "source": "ip_address",
+      "target": "ip_address"
+    },
+    {
+      "source": "os_name",
+      "target": "os"
+    },
+    {
+      "source": "os_version",
+      "target": "os_version"
+    },
+    {
+      "source": "mac_address",
+      "target": "mac_address"
+    },
+    {
+      "source": "last_registration",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "computer_name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': record.get('ip_address', ''), 'hostname': record.get('computer_name', ''), 'fqdn': record.get('computer_name', ''), 'device_id': record.get('id', ''), 'display_name': record.get('computer_name') or record.get('ip_address', '')}"
+      }
+    },
+    {
+      "source": "computer_name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'domain': record.get('domain', ''), 'chassis_type': record.get('chassis_type', ''), 'is_virtual': record.get('is_virtual', ''), 'cpu_count': record.get('cpu_count', ''), 'total_physical_memory': record.get('total_physical_memory', ''), 'last_reboot_time': record.get('last_reboot_time', ''), 'agent_version': record.get('tanium_client_version', ''), 'compliance_status': record.get('patch_compliance_percentage', ''), 'managed_patch_count': record.get('managed_patch_count', ''), 'installed_patch_count': record.get('installed_patch_count', '')}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

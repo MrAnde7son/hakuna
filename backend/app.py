@@ -43,7 +43,7 @@ from models.models import (
     Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowExecutionLog,
     Tag, TagAssignment, AutoTagRule, AssetTypeRule, OwnershipRule, ExternalTagSource, ExternalTagMap,
     SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog, AggregatedSolution,
-    BenchmarkReference, AssetObservation, FindingObservation,
+    BenchmarkReference, AssetObservation, FindingObservation, FirewallPolicy,
 )
 from parsers.parser import detect_and_parse, load_intel_json
 from parsers.registry import detect_parser, list_parsers, init_parsers
@@ -373,7 +373,7 @@ app.include_router(relay_router)
 app.include_router(relay_ws_router)
 
 
-INTEL_PATH = Path(__file__).parent.parent / "intel.json"
+INTEL_PATH = Path(__file__).parent / "data" / "intel.json"
 
 
 # ─────────────────────────────────────────────────────────
@@ -6458,6 +6458,64 @@ def get_blast_radius(
     except Exception:
         pass  # table may not exist yet before restart
 
+    # ── 5c. Firewall policy reachability (lateral movement via NGFW rules) ──
+    _FW_RISKY_PORTS = {22, 23, 445, 3389, 5985, 5986}
+    firewall_lateral_paths = []
+    try:
+        import ipaddress as _ipamod
+        fw_policies = (
+            db.query(FirewallPolicy)
+            .filter(
+                FirewallPolicy.org_id.in_(org_ids),
+                FirewallPolicy.enabled.is_(True),
+                FirewallPolicy.action.in_(["allow", "accept", "permit"]),
+            )
+            .all()
+        )
+        def _fw_ip_in_cidr(ip, cidr):
+            if cidr.strip().lower() == "any":
+                return True
+            try:
+                return _ipamod.ip_address(ip) in _ipamod.ip_network(cidr, strict=False)
+            except (ValueError, TypeError):
+                return False
+
+        if fw_policies and asset.ip:
+            for policy in fw_policies:
+                in_src = any(_fw_ip_in_cidr(asset.ip, c) for c in (policy.src_cidrs or []))
+                if not in_src:
+                    continue
+                ports = set()
+                for svc in (policy.services or []):
+                    if isinstance(svc, dict) and isinstance(svc.get("port"), int):
+                        ports.add(svc["port"])
+                risky = ports & _FW_RISKY_PORTS
+                for dst_cidr in (policy.dst_cidrs or []):
+                    for other_a in all_assets:
+                        if not other_a.ip or other_a.id == asset_id:
+                            continue
+                        if not _fw_ip_in_cidr(other_a.ip, dst_cidr):
+                            continue
+                        other_nid = f"asset-{other_a.id}"
+                        add_node(other_nid, "asset", _asset_node_data(other_a))
+                        port_label = ",".join(str(p) for p in sorted(risky)[:3]) if risky else "any"
+                        add_edge(
+                            f"e-fw-{policy.id}-{other_a.id}",
+                            start_nid, other_nid,
+                            "firewall_allow", f"FW {policy.vendor}: :{port_label}",
+                        )
+                        if other_a.id not in visited_assets:
+                            visited_assets.add(other_a.id)
+                        if risky:
+                            firewall_lateral_paths.append({
+                                "rule_id": policy.rule_id,
+                                "vendor": policy.vendor,
+                                "dst_ip": other_a.ip,
+                                "ports": sorted(risky),
+                            })
+    except Exception:
+        pass  # firewall_policies table may not exist yet
+
     # ── 6. Scheduled tasks running as privileged users (persistence paths) ──
     for nid, n in list(nodes.items()):
         if n["type"] != "asset":
@@ -6712,6 +6770,8 @@ def get_blast_radius(
     if is_internet_facing and inet_vuln_count:
         score += min(inet_vuln_count * 0.5, 2.0)  # internet-exploitable vulns compound risk
     if has_cloud_workload:        score += 0.5  # compromising this asset reaches cloud infra
+    has_fw_lateral = len(firewall_lateral_paths) > 0
+    if has_fw_lateral:            score += min(len(firewall_lateral_paths) * 0.5, 2.0)
     score = min(round(score, 1), 10.0)
 
     _GROUP_ACCESS_LABELS = {
@@ -6877,6 +6937,15 @@ def get_blast_radius(
                 "severity": "medium",
             })
 
+    # ── Firewall lateral movement vectors ──
+    for fwp in firewall_lateral_paths[:10]:
+        port_str = ", ".join(str(p) for p in fwp["ports"][:3])
+        vectors.append({
+            "type": "firewall_lateral_movement",
+            "label": f"FW allow ({fwp['vendor']}): rule {fwp['rule_id']} → {fwp['dst_ip']} on port {port_str}",
+            "severity": "high",
+        })
+
     return {
         "asset_id": asset_id,
         "score": score,
@@ -6890,7 +6959,9 @@ def get_blast_radius(
         "has_exploitable": has_exploitable,
         "has_exposed_dbs": has_exposed_dbs,
         "has_cloud_workload": has_cloud_workload,
+        "has_fw_lateral": has_fw_lateral,
         "internet_vuln_count": inet_vuln_count,
+        "firewall_lateral_paths": firewall_lateral_paths[:10],
         "vectors": vectors[:30],
         "nodes": list(nodes.values()),
         "edges": edges,

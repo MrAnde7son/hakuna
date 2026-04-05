@@ -1,0 +1,157 @@
+{
+  "id": "cycognito_assets",
+  "relay_capable": false,
+  "name": "CyCognito — Assets",
+  "description": "Pull discovered external assets from CyCognito EASM platform",
+  "category": "EASM",
+  "logo": "/logos/vendors/cycognito.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{credentials.instance_url}}",
+    "method": "POST",
+    "path": "/v1/assets/{{params.asset_type}}",
+    "headers": {
+      "Authorization": "{{credentials.api_key}}",
+      "Content-Type": "application/json"
+    },
+    "query_params": {
+      "count": "100",
+      "offset": "{{pagination.offset}}",
+      "sort-by": "last-seen",
+      "sort-order": "desc"
+    },
+    "body": "{{params.filters}}",
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "total_field": "total"
+    }
+  },
+  "records_path": "assets",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "API Base URL",
+      "placeholder": "https://api.platform.cycognito.com",
+      "help": "Use https://api.us-platform.cycognito.com for US region, or your region-specific URL"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the CyCognito platform at https://platform.cycognito.com"
+      },
+      {
+        "instruction": "Navigate to Settings > Integrations > API Keys"
+      },
+      {
+        "instruction": "Click 'Create API Key' and copy the generated key",
+        "capture": {
+          "field": "api_key",
+          "label": "API Key",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "POST",
+      "path": "/v1/assets/ip",
+      "headers": {
+        "Authorization": "{{api_key}}",
+        "Content-Type": "application/json"
+      },
+      "query_params": {
+        "count": "1",
+        "offset": "0"
+      },
+      "body": "[]",
+      "success_condition": "status == 200",
+      "error_message": "Authentication failed. Verify your API key and base URL."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "domain",
+      "target": "hostname"
+    },
+    {
+      "source": "ip",
+      "target": "ip_address"
+    },
+    {
+      "source": "domain",
+      "target": "fqdn"
+    },
+    {
+      "source": "last_seen",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "first_seen",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "security_grade",
+      "target": "criticality",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "A": 1,
+          "B": 2,
+          "C": 3,
+          "D": 4,
+          "F": 5
+        }
+      }
+    },
+    {
+      "source": "tags",
+      "target": "tags"
+    },
+    {
+      "source": "id",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': record.get('ip', ''), 'hostname': record.get('domain', ''), 'fqdn': record.get('domain', ''), 'display_name': record.get('domain') or record.get('ip', '')}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'asset_type': record.get('type', ''), 'hosting_type': record.get('hosting_type', ''), 'security_grade': record.get('security_grade', ''), 'issues_count': record.get('issues_count', 0), 'severe_issues': record.get('severe_issues', 0), 'alive': record.get('alive', False), 'discoverability': record.get('discoverability', ''), 'investigation_status': record.get('investigation_status', ''), 'organizations': record.get('organizations', []), 'locations': record.get('locations', []), 'open_ports': record.get('open_ports', []), 'sub_domains': record.get('sub_domains', [])}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "asset_type": {
+      "type": "string",
+      "default": "ip",
+      "description": "Asset type to pull: ip, domain, cert, webapp, or iprange",
+      "enum": ["ip", "domain", "cert", "webapp", "iprange"]
+    },
+    "filters": {
+      "type": "string",
+      "default": "[]",
+      "description": "JSON array of filters, e.g. [{\"field\": \"alive\", \"op\": \"in\", \"values\": [\"true\"]}]"
+    }
+  }
+}

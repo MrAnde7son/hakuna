@@ -2,7 +2,7 @@
   "id": "obsidian_findings",
   "name": "Obsidian Security \u2014 Threats",
   "description": "Pull SaaS threat detections from Obsidian Security",
-  "category": "SaaS Security / SSPM",
+  "category": "SSPM",
   "logo": "/logos/vendors/obsidian.svg",
   "direction": "pull",
   "entity": "finding",

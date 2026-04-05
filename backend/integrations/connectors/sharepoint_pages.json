@@ -2,7 +2,7 @@
   "id": "sharepoint_pages",
   "name": "SharePoint — Security Pages",
   "description": "Pull pages and documents from SharePoint Online and extract security findings using AI. Ingests site pages, document library files, and wiki content.",
-  "category": "Collaboration / Docs",
+  "category": "Collaboration",
   "logo": "/logos/vendors/sharepoint.svg",
   "direction": "pull",
   "entity": "finding",

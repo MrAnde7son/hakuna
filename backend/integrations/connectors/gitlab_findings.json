@@ -2,7 +2,7 @@
   "id": "gitlab_findings",
   "name": "GitLab Ultimate \u2014 Security Findings",
   "description": "Pull security vulnerability findings from a GitLab Ultimate group via the Vulnerability Findings API",
-  "category": "SAST / Code Security",
+  "category": "SAST",
   "logo": "/logos/vendors/gitlab.svg",
   "direction": "pull",
   "entity": "finding",

@@ -1,0 +1,150 @@
+{
+  "id": "bigid_findings",
+  "name": "BigID \u2014 Data Risk Findings",
+  "description": "Pull data risk and privacy violation findings from BigID",
+  "category": "Data Security",
+  "logo": "/logos/vendors/bigid.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}/api/v1",
+    "method": "GET",
+    "path": "/data-risks",
+    "headers": {
+      "Authorization": "Bearer {{credentials.session_token}}",
+      "Content-Type": "application/json"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "skip",
+      "total_field": "totalCount"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "BigID Instance URL",
+      "placeholder": "https://bigid.yourcompany.com"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the BigID console as an administrator"
+      },
+      {
+        "instruction": "Navigate to Administration > API Credentials"
+      },
+      {
+        "instruction": "Create a session token or note your username and password for API access"
+      }
+    ],
+    "fields": [
+      {
+        "field": "username",
+        "label": "Username",
+        "type": "text",
+        "help": "Your BigID admin username"
+      },
+      {
+        "field": "password",
+        "label": "Password",
+        "type": "password",
+        "help": "Your BigID admin password"
+      }
+    ],
+    "validation_request": {
+      "method": "POST",
+      "path": "/api/v1/sessions",
+      "body": {
+        "username": "{{username}}",
+        "password": "{{password}}"
+      },
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "session_token": "auth_token"
+      },
+      "error_message": "Could not authenticate with BigID. Check credentials."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "riskId",
+      "target": "source_id"
+    },
+    {
+      "source": "riskTitle",
+      "target": "title"
+    },
+    {
+      "source": "riskDescription",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "Critical",
+          "high": "High",
+          "medium": "Medium",
+          "low": "Low"
+        }
+      }
+    },
+    {
+      "source": null,
+      "target": "cve_id"
+    },
+    {
+      "source": "recommendation",
+      "target": "solution"
+    },
+    {
+      "source": "dataSource.name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "discoveredAt",
+      "target": "found_date",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "status",
+      "target": "state",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "open": "active",
+          "resolved": "fixed",
+          "accepted": "accepted",
+          "in_progress": "active"
+        }
+      }
+    }
+  ],
+  "static_fields": {
+    "source_system": "bigid",
+    "scanner_name": "BigID"
+  },
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "data_source_filter": {
+      "type": "string",
+      "default": "",
+      "description": "Filter by data source name pattern"
+    },
+    "category": {
+      "type": "string",
+      "default": "",
+      "description": "Filter by risk category (e.g. 'PII Exposure', 'Over-Privileged Access')"
+    }
+  }
+}

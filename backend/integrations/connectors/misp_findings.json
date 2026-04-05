@@ -6,7 +6,7 @@
   "category": "Threat Intelligence",
   "logo": "/logos/vendors/misp.svg",
   "direction": "pull",
-  "entity": "finding",
+  "entity": "threat_intel",
   "transport_type": "api",
   "transport_config": {
     "base_url": "{{instance_url}}",

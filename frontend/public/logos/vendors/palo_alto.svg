@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <rect width="40" height="40" rx="8" fill="#1A1A2E"/>
+  <!-- Palo Alto Networks stylized flame/shield -->
+  <path d="M20 8 L28 16 L28 28 L20 32 L12 28 L12 16 Z" fill="none" stroke="#FA582D" stroke-width="2"/>
+  <path d="M20 14 L24 18 L24 26 L20 28 L16 26 L16 18 Z" fill="#FA582D"/>
+</svg>

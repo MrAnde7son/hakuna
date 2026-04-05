@@ -2,7 +2,7 @@
   "id": "nozomi_findings",
   "name": "Nozomi Networks \u2014 Alerts",
   "description": "Pull OT/IoT security alerts from Nozomi Networks Guardian or Vantage",
-  "category": "OT / IoT Security",
+  "category": "OT",
   "logo": "/logos/vendors/nozomi.svg",
   "direction": "pull",
   "entity": "finding",

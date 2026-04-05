@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <rect width="40" height="40" rx="8" fill="#1A1A2E"/>
+  <!-- Automox shield/patch icon -->
+  <path d="M20 8 L30 14 L30 24 C30 30 20 34 20 34 C20 34 10 30 10 24 L10 14 Z" fill="none" stroke="#00B4D8" stroke-width="2"/>
+  <path d="M16 21 L19 24 L25 17" fill="none" stroke="#00B4D8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
