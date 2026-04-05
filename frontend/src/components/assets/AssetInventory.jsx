@@ -1137,7 +1137,7 @@ export default function AssetInventory() {
       )}
 
       {/* Blast Radius sidebar */}
-      {expandedAsset && (activeScanId || assets.find(a => a.id === expandedAsset)?.scan_id) && (
+      {expandedAsset && (
         <>
           {/* Backdrop */}
           <div

@@ -302,7 +302,7 @@ async def _do_liveness_gate(sf, org_id: str) -> dict:
         result = await runner.run(org_id=org_id)
         for entry in result.results:
             host = (entry.get("input") or entry.get("host") or "").strip().lower()
-            if host and entry.get("status_code") or entry.get("status-code"):
+            if host and (entry.get("status_code") or entry.get("status-code")):
                 http_check_results[host] = True
 
     # Run validation and update states

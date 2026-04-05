@@ -84,7 +84,7 @@ async def validate_and_update_assets(
         row = await db.execute(
             text("""
                 SELECT id, hostname, host(ip) as ip, open_ports, consecutive_failures,
-                       liveness_state, tags
+                       liveness_state, tags, cdn_provider
                 FROM assets WHERE id = :id AND org_id = :org_id
             """),
             {"id": asset_id, "org_id": org_id},
@@ -116,7 +116,12 @@ async def validate_and_update_assets(
         old_failures = asset.consecutive_failures or 0
         tags = list(asset.tags or [])
 
-        if checks_passed >= 2:
+        # CDN-fronted assets often block raw SYN probes (naabu), so
+        # DNS + HTTP is sufficient to confirm liveness.
+        is_cdn = bool(asset.cdn_provider) or "cdn" in tags
+        threshold = 1 if (is_cdn and dns_ok and http_ok) else 2
+
+        if checks_passed >= threshold:
             new_state = "confirmed_alive"
             new_failures = 0
             summary["confirmed_alive"] += 1

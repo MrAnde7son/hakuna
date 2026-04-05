@@ -23,7 +23,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import dagre from '@dagrejs/dagre'
 import {
-  Server, User, Users, Monitor, Database, ShieldAlert,
+  Server, User, Users, Monitor, Database, ShieldAlert, Globe,
   UserCheck, UserCog,
   ChevronDown, ChevronRight, Crosshair, Maximize2, Minimize2,
 } from 'lucide-react'
@@ -33,6 +33,7 @@ import { getBlastRadius } from '../../api.js'
 const EDGE_CFG = {
   // Infrastructure
   resolves_to:         { color: '#6366f1', label: 'Resolves To', dash: '6 2' },
+  internet_access:     { color: '#7c3aed', label: 'Internet Access', dash: '6 2' },
   internet_vulnerability: { color: '#dc2626', label: 'Internet Vuln', dash: '4 2' },
   // Identity & access
   local_admin:         { color: '#f59e0b', label: 'Local Admin' },
@@ -93,8 +94,8 @@ function layoutNodes(rawNodes, rawEdges) {
   g.setGraph({ rankdir, ranksep, nodesep, marginx: 24, marginy: 24, ranker: 'network-simplex' })
 
   rawNodes.forEach(n => {
-    const w = n.type === 'asset' ? 140 : n.type === 'vuln' ? 130 : 110
-    const h = n.type === 'asset' ? 110 : n.type === 'vuln' ? 100 : 90
+    const w = n.type === 'asset' ? 140 : n.type === 'internet' ? 120 : n.type === 'vuln' ? 130 : 110
+    const h = n.type === 'asset' ? 110 : n.type === 'internet' ? 90 : n.type === 'vuln' ? 100 : 90
     g.setNode(n.id, { width: w, height: h })
   })
 
@@ -275,6 +276,26 @@ function VulnNode({ data }) {
   )
 }
 
+function InternetNode({ data }) {
+  const color = '#7c3aed'
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 80 }}>
+      <Handle type="target" position={Position.Left} style={{ ...handleStyle, top: CIRCLE_SIZE / 2 }} />
+      <Handle type="source" position={Position.Right} style={{ ...handleStyle, top: CIRCLE_SIZE / 2 }} />
+      <div style={{
+        width: CIRCLE_SIZE, height: CIRCLE_SIZE, borderRadius: '50%',
+        background: color, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: `0 0 0 4px ${color}30, 0 2px 8px rgba(0,0,0,0.15)`,
+      }}>
+        <Globe size={20} color="#fff" strokeWidth={2} />
+      </div>
+      <div style={{ textAlign: 'center', lineHeight: 1.2 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)' }}>Internet</div>
+      </div>
+    </div>
+  )
+}
+
 function NBadge({ bg, fg, border, children }) {
   return (
     <span style={{ fontSize: 9, background: bg, color: fg,
@@ -285,7 +306,7 @@ function NBadge({ bg, fg, border, children }) {
   )
 }
 
-const nodeTypes = { asset: AssetNode, user: UserNode, vuln: VulnNode }
+const nodeTypes = { asset: AssetNode, user: UserNode, vuln: VulnNode, internet: InternetNode }
 
 // Maps legend node entries to a predicate over node data
 const NODE_LEGEND = [
@@ -296,6 +317,7 @@ const NODE_LEGEND = [
   { Icon: UserCog,   color: '#8b5cf6', bg: '#f5f3ff', label: 'Service Account',   match: n => n.type === 'user' && n.data.user_type === 'service_account' },
   { Icon: Monitor,   color: '#0ea5e9', bg: '#f0f9ff', label: 'Computer Account',  match: n => n.type === 'user' && n.data.user_type === 'computer_account' },
   { Icon: ShieldAlert, color: '#ef4444', bg: '#fef2f2', label: 'Vulnerability',     match: n => n.type === 'vuln' },
+  { Icon: Globe,       color: '#7c3aed', bg: '#f5f3ff', label: 'Internet',          match: n => n.type === 'internet' },
 ]
 
 const EDGE_LEGEND = [
@@ -706,9 +728,9 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
   const [fullscreen, setFullscreen] = useState(false)
 
   useEffect(() => {
-    if (!scanId || !assetId) return
+    if (!assetId) return
     setLoading(true)
-    getBlastRadius(scanId, assetId)
+    getBlastRadius(scanId || null, assetId)
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false))

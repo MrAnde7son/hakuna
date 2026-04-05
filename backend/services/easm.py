@@ -156,7 +156,7 @@ def _clear_scan_data(db: Session, scan_id: int):
 
     Deletes dependent rows first to avoid FK constraint violations.
     """
-    is_sqlite = str(db.bind.url).startswith("sqlite")
+    is_sqlite = db.bind.dialect.name == "sqlite"
     if is_sqlite:
         db.execute(sa_text("PRAGMA foreign_keys=OFF"))
     try:
@@ -1101,8 +1101,8 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             db.commit()
             return {"scan_id": scan.id, "status": "failed", "domain": domain}
 
-    elif hakuna_status in ("failed", "error"):
-        scan.raw_metadata = {**meta, "status": "failed"}
+    elif hakuna_status in ("failed", "error", "unknown"):
+        scan.raw_metadata = {**meta, "status": "failed", "error": f"Scanner returned status: {hakuna_status}"}
         scan.status = "failed"
         db.commit()
         return {"scan_id": scan.id, "status": "failed", "domain": domain}

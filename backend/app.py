@@ -6230,7 +6230,10 @@ def get_blast_radius_bulk(
         has_schtask_priv = asset_id in schtask_priv_assets
         has_missing_patches = len(patches_by_asset.get(asset_id, [])) > 0
 
-        score = min(len(reachable) * 1.5, 5.0)
+        is_inet = asset.is_internet_facing or False
+        reachable_count = len(reachable) + (1 if is_inet else 0)
+
+        score = min(reachable_count * 1.5, 5.0)
         if dc_reachable:              score += 3.0
         if da_exposed:                score += 2.0
         elif la_exposed:              score += 1.0
@@ -6241,12 +6244,13 @@ def get_blast_radius_bulk(
         if has_schtask_priv:          score += 0.5
         if has_missing_patches:       score += 0.5
         if has_exposed_dbs:           score += 0.5
+        if is_inet:                   score += 1.5
         score = min(round(score, 1), 10.0)
 
         results[str(asset_id)] = {
             "asset_id": asset_id,
             "score": score,
-            "reachable_assets": len(reachable),
+            "reachable_assets": reachable_count,
             "da_exposed": da_exposed,
             "dc_reachable": dc_reachable,
             "group_access_exposed": group_access_exposed,
@@ -6260,18 +6264,26 @@ def get_blast_radius_bulk(
 
 @app.get("/api/blast-radius")
 def get_blast_radius(
-    scan_id: int = Query(...),
+    scan_id: int = Query(None),
     asset_id: int = Query(...),
     db: Session = Depends(get_db),
 ):
     """Compute blast radius for a specific asset using inventory data."""
     from sqlalchemy import or_
 
-    asset = db.query(Asset).filter(Asset.id == asset_id, Asset.scan_id == scan_id).first()
+    if scan_id:
+        asset = db.query(Asset).filter(Asset.id == asset_id, Asset.scan_id == scan_id).first()
+    else:
+        asset = db.query(Asset).filter(Asset.id == asset_id).first()
+        scan_id = asset.scan_id if asset else None
     if not asset:
         raise HTTPException(404, "Asset not found")
 
-    all_assets = db.query(Asset).filter(Asset.scan_id == scan_id).all()
+    if scan_id:
+        all_assets = db.query(Asset).filter(Asset.scan_id == scan_id).all()
+    else:
+        # EASM-only asset with no scan — scope to org
+        all_assets = db.query(Asset).filter(Asset.org_id == asset.org_id).all()
     asset_map = {a.id: a for a in all_assets}
     ip_to_asset_id = {a.ip: a.id for a in all_assets if a.ip}
 
@@ -6372,6 +6384,26 @@ def get_blast_radius(
 
     start_nid = f"asset-{asset_id}"
     add_node(start_nid, "asset", {**_asset_node_data(asset), "_start": True})
+
+    # Virtual "Internet" node for internet-facing assets
+    if asset.is_internet_facing:
+        ports = asset.open_ports or []
+        services = asset.services or {}
+        if ports:
+            port_labels = []
+            for p in sorted(ports):
+                svc_name = (services.get(str(p)) or {}).get("name", "")
+                port_labels.append(f"{p}/{svc_name}" if svc_name else str(p))
+            port_str = ", ".join(port_labels)
+        else:
+            port_str = None
+        inet_label = f"Exposed ports: {port_str}" if port_str else "Externally reachable"
+        add_node("internet", "internet", {
+            "label": "Internet",
+            "ip": None, "hostname": None, "os": None,
+        })
+        add_edge("e-inet-access", "internet", start_nid, "internet_access",
+                 inet_label)
 
     visited_assets = {asset_id}
     queue = [asset_id]
@@ -6824,6 +6856,8 @@ def get_blast_radius(
         for n in nodes.values()
         if n["type"] == "asset" and n["id"] != start_nid
     }
+    internet_reachable = "internet" in nodes
+    reachable_count = len(reachable_asset_ids) + (1 if internet_reachable else 0)
     user_nodes = [n for n in nodes.values() if n["type"] == "user"]
     da_exposed = any(u["data"].get("is_domain_admin") for u in user_nodes)
     la_exposed = any(u["data"].get("is_local_admin") for u in user_nodes)
@@ -6852,7 +6886,7 @@ def get_blast_radius(
     has_cloud_workload = len(infra_visited) > 0
     inet_vuln_count = sum(1 for e in edges if e["type"] == "internet_vulnerability")
 
-    score = min(len(reachable_asset_ids) * 1.5, 5.0)
+    score = min(reachable_count * 1.5, 5.0)
     if dc_reachable:              score += 3.0
     if da_exposed:                score += 2.0
     elif la_exposed:              score += 1.0
@@ -6996,7 +7030,7 @@ def get_blast_radius(
     if is_internet_facing:
         vectors.insert(0, {
             "type": "internet_facing",
-            "label": "Internet-facing asset — externally reachable",
+            "label": f"Internet-facing — {inet_label.lower()}" if port_str else "Internet-facing asset — externally reachable",
             "severity": "critical",
         })
 
@@ -7048,7 +7082,7 @@ def get_blast_radius(
     return {
         "asset_id": asset_id,
         "score": score,
-        "reachable_assets": len(reachable_asset_ids),
+        "reachable_assets": reachable_count,
         "privileged_users": len(user_nodes),
         "da_exposed": da_exposed,
         "dc_reachable": dc_reachable,

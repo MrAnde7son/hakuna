@@ -40,12 +40,14 @@ def _run_async(coro):
 
 
 async def _get_confirmed_alive_hostnames(sf, org_id: str) -> list[str]:
-    """Get hostnames of confirmed_alive assets only."""
+    """Get hostnames of confirmed_alive or HTTP-responsive unconfirmed assets."""
     async with sf() as db:
         result = await db.execute(
             text("""
                 SELECT hostname FROM assets
-                WHERE org_id = :org_id AND liveness_state = 'confirmed_alive'
+                WHERE org_id = :org_id
+                  AND (liveness_state = 'confirmed_alive'
+                       OR (liveness_state = 'unconfirmed' AND http_status IS NOT NULL))
             """),
             {"org_id": org_id},
         )
@@ -53,13 +55,15 @@ async def _get_confirmed_alive_hostnames(sf, org_id: str) -> list[str]:
 
 
 async def _get_confirmed_alive_assets(sf, org_id: str) -> list[dict]:
-    """Get confirmed_alive assets with ports for enrichment routing."""
+    """Get confirmed_alive (or HTTP-responsive unconfirmed) assets with ports for enrichment routing."""
     async with sf() as db:
         result = await db.execute(
             text("""
                 SELECT id, hostname, host(ip) as ip, open_ports, cdn_provider, tags
                 FROM assets
-                WHERE org_id = :org_id AND liveness_state = 'confirmed_alive'
+                WHERE org_id = :org_id
+                  AND (liveness_state = 'confirmed_alive'
+                       OR (liveness_state = 'unconfirmed' AND http_status IS NOT NULL))
             """),
             {"org_id": org_id},
         )

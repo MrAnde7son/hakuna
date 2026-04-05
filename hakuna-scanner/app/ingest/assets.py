@@ -191,6 +191,22 @@ async def update_enrichment(
         cdn_name = entry.get("cdn_name") or entry.get("cdn")
         waf = entry.get("waf_name") or entry.get("waf")
 
+        # Build services dict from httpx probe results
+        url = entry.get("url") or ""
+        webserver = entry.get("webserver") or entry.get("web_server") or ""
+        port = entry.get("port")
+        scheme = url.split("://")[0].lower() if "://" in url else ""
+        if not port:
+            port = 443 if scheme == "https" else 80 if scheme == "http" else None
+        services_dict = {}
+        if port and scheme:
+            services_dict[str(port)] = {
+                "name": scheme,
+                "product": webserver,
+                "version": "",
+            }
+        services_json = json.dumps(services_dict) if services_dict else None
+
         await db.execute(
             text("""
                 UPDATE assets SET
@@ -200,6 +216,7 @@ async def update_enrichment(
                     tech_stack = cast(:tech as jsonb),
                     cdn_provider = :cdn,
                     waf = :waf,
+                    services = COALESCE(services, '{}'::jsonb) || COALESCE(cast(:services as jsonb), '{}'::jsonb),
                     last_enriched = :now,
                     last_seen = :now
                 WHERE org_id = :org_id AND hostname = :host
@@ -207,10 +224,11 @@ async def update_enrichment(
             {
                 "status": entry.get("status_code") or entry.get("status-code"),
                 "title": entry.get("title"),
-                "url": entry.get("url"),
+                "url": url,
                 "tech": json.dumps(tech) if tech else None,
                 "cdn": cdn_name if isinstance(cdn_name, str) else (cdn_name[0] if cdn_name else None),
                 "waf": waf if isinstance(waf, str) else (waf[0] if waf else None),
+                "services": services_json,
                 "org_id": org_id,
                 "host": host,
                 "now": now,
