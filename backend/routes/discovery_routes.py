@@ -6,7 +6,6 @@ import os
 import json
 import logging
 import secrets
-import tempfile
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
@@ -677,8 +676,8 @@ async def provision_service_account(connector_id: str, body: ProvisionRequest,
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...), user: User = Depends(require_auth)):
-    """Upload a file for FileTransport. Returns temp path."""
-    upload_dir = os.path.join(tempfile.gettempdir(), "hakuna_uploads")
+    """Upload a file for FileTransport. Returns persistent path."""
+    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads")
     os.makedirs(upload_dir, exist_ok=True)
 
     # Sanitize filename
