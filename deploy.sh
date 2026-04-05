@@ -24,7 +24,7 @@ set -euo pipefail
 # ── Config ────────────────────────────────────────────────────────────────────
 PROJECT_ID="hakuna-prod-2026"
 REGION="me-west1"
-ZONE="me-west1-b"
+ZONE="me-west1-a"
 REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/hakuna"
 
 API_IMAGE="${REGISTRY}/api:latest"
