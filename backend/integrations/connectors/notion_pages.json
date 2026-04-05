@@ -2,6 +2,7 @@
   "id": "notion_pages",
   "name": "Notion — Security Pages",
   "description": "Pull pages from a Notion database or workspace and extract security findings using AI. Ingests security runbooks, incident notes, vulnerability tracking pages, and audit documentation.",
+  "category": "Collaboration / Docs",
   "logo": "/logos/vendors/notion.svg",
   "direction": "pull",
   "entity": "finding",

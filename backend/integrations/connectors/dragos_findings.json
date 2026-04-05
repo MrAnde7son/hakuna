@@ -1,0 +1,124 @@
+{
+  "id": "dragos_findings",
+  "name": "Dragos \u2014 OT Detections",
+  "description": "Pull OT/ICS threat detections from Dragos Platform",
+  "category": "OT / IoT Security",
+  "logo": "/logos/vendors/dragos.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://portal.dragos.com",
+    "method": "GET",
+    "path": "/api/v2/detections",
+    "headers": {
+      "Api-Key": "{{credentials.api_key}}",
+      "Api-Secret": "{{credentials.api_secret}}"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "total_field": "total"
+    }
+  },
+  "records_path": "detections",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the Dragos Platform portal as an administrator",
+        "deeplink_path": null
+      },
+      {
+        "instruction": "Navigate to Settings \u2192 API Keys",
+        "deeplink_path": "/settings/api-keys"
+      },
+      {
+        "instruction": "Create a new API key pair. Copy the API Key.",
+        "capture": {
+          "field": "api_key",
+          "label": "Paste API Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the API Secret.",
+        "capture": {
+          "field": "api_secret",
+          "label": "Paste API Secret here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v2/detections?limit=1",
+      "auth_header": "Api-Key: {{api_key}}",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Dragos. Check your API key and secret."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "summary",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "moderate": "medium",
+          "low": "low",
+          "informational": "info"
+        }
+      }
+    },
+    {
+      "source": "asset.ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "asset.hostname",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "recommendation",
+      "target": "solution"
+    },
+    {
+      "source": "first_detected",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "last_detected",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

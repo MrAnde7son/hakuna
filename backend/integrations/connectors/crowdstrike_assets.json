@@ -3,6 +3,7 @@
   "relay_capable": true,
   "name": "CrowdStrike Falcon \u2014 Assets",
   "description": "Pull device/asset inventory from CrowdStrike Falcon",
+  "category": "Endpoint Security",
   "logo": "/logos/vendors/crowdstrike.svg",
   "direction": "pull",
   "entity": "asset",

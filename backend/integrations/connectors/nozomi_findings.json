@@ -1,0 +1,120 @@
+{
+  "id": "nozomi_findings",
+  "name": "Nozomi Networks \u2014 Alerts",
+  "description": "Pull OT/IoT security alerts from Nozomi Networks Guardian or Vantage",
+  "category": "OT / IoT Security",
+  "logo": "/logos/vendors/nozomi.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/api/open/query/do",
+    "headers": {
+      "Authorization": "{{credentials.api_key}}"
+    },
+    "query_params": {
+      "query": "alerts"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "total_field": "total"
+    }
+  },
+  "records_path": "result",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Nozomi Networks Instance URL",
+      "placeholder": "https://nozomi.yourcompany.com"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the Nozomi Networks Guardian or Vantage console as an administrator",
+        "deeplink_path": null
+      },
+      {
+        "instruction": "Navigate to Administration \u2192 API Keys",
+        "deeplink_path": "/administration/api-keys"
+      },
+      {
+        "instruction": "Generate a new API key with read permissions. Copy the key.",
+        "capture": {
+          "field": "api_key",
+          "label": "Paste API Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/open/query/do?query=alerts&count=1",
+      "auth_header": "Authorization: {{api_key}}",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Nozomi Networks. Check your API key and instance URL."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "risk",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low",
+          "info": "info"
+        }
+      }
+    },
+    {
+      "source": "src_ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "src_host",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "protocol",
+      "target": "plugin_id"
+    },
+    {
+      "source": "created_time",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "last_time",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

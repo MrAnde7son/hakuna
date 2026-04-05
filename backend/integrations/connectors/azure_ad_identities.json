@@ -1,0 +1,115 @@
+{
+  "id": "azure_ad_identities",
+  "name": "Azure AD / Entra ID \u2014 Identities",
+  "description": "Pull user identities from Microsoft Entra ID (Azure AD) via Microsoft Graph API",
+  "category": "Identity Security",
+  "logo": "/logos/vendors/azure.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://graph.microsoft.com",
+    "method": "GET",
+    "path": "/v1.0/users",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "$select": "id,displayName,userPrincipalName,mail,department,jobTitle,accountEnabled,createdDateTime,signInActivity"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "@odata.nextLink",
+      "page_size": 100
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
+    "grant_type": "client_credentials",
+    "client_id_field": {
+      "label": "Application (Client) ID",
+      "type": "text"
+    },
+    "client_secret_field": {
+      "label": "Client Secret Value",
+      "type": "password"
+    },
+    "extra_fields": [
+      {
+        "field": "tenant_id",
+        "label": "Directory (Tenant) ID",
+        "type": "text",
+        "help": "Found in Azure Portal \u2192 App Registration \u2192 Overview"
+      }
+    ],
+    "scopes": [
+      "https://graph.microsoft.com/.default"
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/v1.0/users?$top=1",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Microsoft Graph. Verify the tenant ID, client ID, and client secret."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "userPrincipalName",
+      "target": "hostname"
+    },
+    {
+      "source": "mail",
+      "target": "fqdn"
+    },
+    {
+      "source": "signInActivity.lastSignInDateTime",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "accountEnabled",
+      "target": "tags",
+      "transform": {
+        "type": "expression",
+        "expr": "['active'] if value is True else ['disabled']"
+      }
+    },
+    {
+      "source": "displayName",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'display_name': record.get('displayName', ''), 'email': record.get('mail', ''), 'upn': record.get('userPrincipalName', ''), 'user_id': record.get('id', '')}"
+      }
+    },
+    {
+      "source": "displayName",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'department': record.get('department', ''), 'job_title': record.get('jobTitle', ''), 'account_enabled': record.get('accountEnabled', ''), 'created_date': record.get('createdDateTime', ''), 'user_type': record.get('userType', ''), 'company_name': record.get('companyName', ''), 'office_location': record.get('officeLocation', '')}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'identity'"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

@@ -1,0 +1,124 @@
+{
+  "id": "misp_findings",
+  "relay_capable": true,
+  "name": "MISP \u2014 Events",
+  "description": "Pull threat intelligence events from a MISP instance",
+  "category": "Threat Intelligence",
+  "logo": "/logos/vendors/misp.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "POST",
+    "path": "/events/restSearch",
+    "headers": {
+      "Authorization": "{{credentials.api_key}}",
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "limit": 100,
+      "page": "{{pagination.page}}",
+      "published": true
+    },
+    "pagination": {
+      "strategy": "page",
+      "page_size": 100,
+      "page_param": "page"
+    }
+  },
+  "records_path": "response",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Your MISP Instance URL",
+      "placeholder": "https://misp.yourcompany.com"
+    },
+    "steps": [
+      {
+        "instruction": "Log into your MISP instance as an administrator"
+      },
+      {
+        "instruction": "Go to Administration \u2192 List Auth Keys, or click on your profile to view your Auth Key.",
+        "deeplink_path": "/auth_keys/index"
+      },
+      {
+        "instruction": "Copy your API key (or create a new one with appropriate permissions).",
+        "capture": {
+          "field": "api_key",
+          "label": "MISP Auth Key",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/servers/getVersion.json",
+      "headers": {
+        "Authorization": "{{api_key}}",
+        "Accept": "application/json"
+      },
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "misp_version": "version"
+      },
+      "error_message": "Could not authenticate with MISP. Verify the instance URL and API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "Event.id",
+      "target": "source_id"
+    },
+    {
+      "source": "Event.info",
+      "target": "title"
+    },
+    {
+      "source": "Event.Attribute[0].value",
+      "target": "description"
+    },
+    {
+      "source": "Event.threat_level_id",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "1": "high",
+          "2": "medium",
+          "3": "low",
+          "4": "info"
+        }
+      }
+    },
+    {
+      "source": "Event.Attribute[0].value",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "Event.Tag[0].name",
+      "target": "plugin_id"
+    },
+    {
+      "source": "Event.date",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "Event.timestamp",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

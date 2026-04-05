@@ -1,0 +1,142 @@
+{
+  "id": "azure_defender_findings",
+  "name": "Azure Defender for Cloud \u2014 Findings",
+  "description": "Pull security alerts from Microsoft Defender for Cloud",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/azure.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://management.azure.com",
+    "method": "GET",
+    "path": "/subscriptions/{{credentials.subscription_id}}/providers/Microsoft.Security/alerts",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "api-version": "2022-01-01"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextLink",
+      "cursor_is_full_url": true
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
+    "grant_type": "client_credentials",
+    "scopes": ["https://management.azure.com/.default"],
+    "fields": [
+      {
+        "field": "tenant_id",
+        "label": "Azure Tenant ID",
+        "type": "text",
+        "help": "From Azure Active Directory > Properties > Tenant ID"
+      },
+      {
+        "field": "client_id",
+        "label": "Application (Client) ID",
+        "type": "text",
+        "help": "From App registrations > Your app > Application (client) ID"
+      },
+      {
+        "field": "client_secret",
+        "label": "Client Secret",
+        "type": "password",
+        "help": "From App registrations > Your app > Certificates & secrets"
+      },
+      {
+        "field": "subscription_id",
+        "label": "Azure Subscription ID",
+        "type": "text",
+        "help": "The subscription to pull Defender alerts from"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/subscriptions/{{credentials.subscription_id}}/providers/Microsoft.Security/alerts",
+      "query_params": {
+        "api-version": "2022-01-01",
+        "$top": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Azure. Verify your tenant ID, client credentials, and subscription ID."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "name",
+      "target": "source_id"
+    },
+    {
+      "source": "properties.alertDisplayName",
+      "target": "title"
+    },
+    {
+      "source": "properties.description",
+      "target": "description"
+    },
+    {
+      "source": "properties.severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "Informational": "info"
+        }
+      }
+    },
+    {
+      "source": "properties.compromisedEntity",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "properties.remediationSteps[0]",
+      "target": "solution"
+    },
+    {
+      "source": "properties.timeGeneratedUtc",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "properties.processingEndTimeUtc",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "properties.status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Active": "open",
+          "InProgress": "in_progress",
+          "Resolved": "resolved",
+          "Dismissed": "accepted"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "subscription_id": {
+      "type": "string",
+      "required": true,
+      "description": "Azure Subscription ID to pull alerts from"
+    }
+  }
+}

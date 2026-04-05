@@ -1,0 +1,134 @@
+{
+  "id": "orca_findings",
+  "name": "Orca Security \u2014 Alerts",
+  "description": "Pull security alerts from Orca Security via the REST API",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/orca.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.orcasecurity.io",
+    "method": "GET",
+    "path": "/api/alerts",
+    "headers": {
+      "Accept": "application/json",
+      "Authorization": "Bearer {{credentials.api_token}}"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "next_page_token",
+      "cursor_param": "page_token"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_token",
+        "label": "API Token",
+        "type": "password",
+        "help": "Generate an API token from Orca Security under Settings > API Configuration"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/user/action/status",
+      "headers": {
+        "Authorization": "Bearer {{credentials.api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Orca Security. Check your API token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "alert_id",
+      "target": "source_id"
+    },
+    {
+      "source": "type_string",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low",
+          "informational": "info"
+        }
+      }
+    },
+    {
+      "source": "asset.name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "asset.private_ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "cve_list[0]",
+      "target": "cve_id"
+    },
+    {
+      "source": "score",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "recommendation",
+      "target": "solution"
+    },
+    {
+      "source": "created_at",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "updated_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "state",
+      "target": "status"
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "alert_type": {
+      "type": "string",
+      "default": "",
+      "description": "Filter by alert type"
+    },
+    "severity_filter": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Filter by severity (critical, high, medium, low, informational)"
+    }
+  }
+}

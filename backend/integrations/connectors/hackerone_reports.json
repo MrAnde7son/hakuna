@@ -1,0 +1,143 @@
+{
+  "id": "hackerone_reports",
+  "name": "HackerOne \u2014 Reports",
+  "description": "Pull bug bounty reports from HackerOne via the GraphQL API",
+  "category": "Bug Bounty",
+  "logo": "/logos/vendors/hackerone.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.hackerone.com",
+    "method": "POST",
+    "path": "/graphql",
+    "headers": {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    "body": {
+      "query": "query($cursor: String) { reports(first: 100, after: $cursor) { nodes { id title severity_rating weakness { name } structured_scope { asset_identifier asset_type } vulnerability_information created_at disclosed_at triaged_at state } pageInfo { hasNextPage endCursor } } }",
+      "variables": {
+        "cursor": "{{pagination.cursor}}"
+      }
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 100,
+      "cursor_field": "data.reports.pageInfo.endCursor",
+      "has_next_field": "data.reports.pageInfo.hasNextPage"
+    }
+  },
+  "records_path": "data.reports.nodes",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_identifier",
+        "label": "API Identifier",
+        "type": "text",
+        "help": "Your HackerOne API identifier from Settings > API Token"
+      },
+      {
+        "field": "api_token",
+        "label": "API Token",
+        "type": "password",
+        "help": "Your HackerOne API token"
+      }
+    ],
+    "auth_type": "basic",
+    "auth_header": "Authorization",
+    "auth_value": "Basic {{base64(credentials.api_identifier + ':' + credentials.api_token)}}",
+    "validation_request": {
+      "method": "GET",
+      "path": "/v1/me",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with HackerOne. Verify your API identifier and token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "title",
+      "target": "title"
+    },
+    {
+      "source": "vulnerability_information",
+      "target": "description"
+    },
+    {
+      "source": "severity_rating",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low",
+          "none": "info"
+        }
+      }
+    },
+    {
+      "source": "structured_scope.asset_identifier",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "weakness.name",
+      "target": "plugin_id"
+    },
+    {
+      "source": "created_at",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "disclosed_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "state",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "new": "open",
+          "triaged": "open",
+          "resolved": "resolved",
+          "informative": "accepted",
+          "duplicate": "accepted",
+          "not-applicable": "accepted"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "program_handle": {
+      "type": "string",
+      "default": "",
+      "description": "HackerOne program handle to filter reports"
+    },
+    "state": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": ["new", "triaged"],
+      "description": "Filter by report state (new, triaged, resolved, informative, duplicate, not-applicable)"
+    }
+  }
+}

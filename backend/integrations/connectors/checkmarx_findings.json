@@ -1,0 +1,158 @@
+{
+  "id": "checkmarx_findings",
+  "name": "Checkmarx One \u2014 Findings",
+  "description": "Pull SAST, SCA, and DAST findings from Checkmarx One via REST API",
+  "category": "SAST / Code Security",
+  "logo": "/logos/vendors/checkmarx.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{credentials.region}}.ast.checkmarx.net",
+    "method": "GET",
+    "path": "/api/results",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "limit": "100",
+      "offset": "{{pagination.offset}}",
+      "scan-id": "{{params.scan_id}}"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "limit_param": "limit"
+    }
+  },
+  "records_path": "results",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "token_url": "https://iam.checkmarx.net/auth/realms/{{credentials.tenant}}/protocol/openid-connect/token",
+    "grant_type": "client_credentials",
+    "fields": [
+      {
+        "field": "tenant",
+        "label": "Tenant Name",
+        "type": "text",
+        "help": "Your Checkmarx One tenant name (visible in the Checkmarx One URL)."
+      },
+      {
+        "field": "region",
+        "label": "Region",
+        "type": "text",
+        "help": "Checkmarx One region code, e.g. 'us', 'eu', 'ast-east1'. Used to construct the API base URL."
+      },
+      {
+        "field": "client_id",
+        "label": "OAuth Client ID",
+        "type": "text",
+        "help": "OAuth2 client ID from Checkmarx One Identity & Access Management."
+      },
+      {
+        "field": "client_secret",
+        "label": "OAuth Client Secret",
+        "type": "password",
+        "help": "OAuth2 client secret paired with the client ID."
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/projects",
+      "headers": {},
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Checkmarx One. Verify your tenant, region, client ID, and client secret."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "data.queryName",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "CRITICAL": "critical",
+          "HIGH": "high",
+          "MEDIUM": "medium",
+          "LOW": "low",
+          "INFO": "info"
+        }
+      }
+    },
+    {
+      "source": "data.fileName",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "data.languageName",
+      "target": "plugin_id"
+    },
+    {
+      "source": "vulnerabilityDetails.cveId",
+      "target": "cve_id"
+    },
+    {
+      "source": "vulnerabilityDetails.cvss",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "data.recommendedFix",
+      "target": "solution"
+    },
+    {
+      "source": "created",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "updated",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "state",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "TO_VERIFY": "open",
+          "CONFIRMED": "open",
+          "NOT_EXPLOITABLE": "accepted",
+          "PROPOSED_NOT_EXPLOITABLE": "accepted",
+          "URGENT": "open"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "scan_id": {
+      "type": "string",
+      "required": false,
+      "description": "Filter by specific scan ID"
+    }
+  }
+}

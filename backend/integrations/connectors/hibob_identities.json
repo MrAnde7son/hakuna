@@ -1,0 +1,116 @@
+{
+  "id": "hibob_identities",
+  "name": "HiBob \u2014 People",
+  "description": "Pull people records from HiBob for identity-aware exposure management",
+  "category": "HR / People",
+  "logo": "/logos/vendors/hibob.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.hibob.com",
+    "method": "GET",
+    "path": "/v1/people",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "auth": {
+      "type": "basic",
+      "username": "{{credentials.service_user_id}}",
+      "password": "{{credentials.api_token}}"
+    },
+    "query_params": {
+      "limit": "100",
+      "offset": "{{pagination.offset}}"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset"
+    }
+  },
+  "records_path": "employees",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into HiBob as an admin user"
+      },
+      {
+        "instruction": "Navigate to Settings \u2192 Integrations \u2192 Service Users and create a new service user if one does not exist"
+      },
+      {
+        "instruction": "Copy the Service User ID",
+        "capture": {
+          "field": "service_user_id",
+          "label": "Service User ID",
+          "type": "text",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Copy the API Token for the service user",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/v1/people?limit=1",
+      "auth": {
+        "type": "basic",
+        "username": "{{service_user_id}}",
+        "password": "{{api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with HiBob. Check the service user ID and API token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "displayName",
+      "target": "hostname"
+    },
+    {
+      "source": "email",
+      "target": "fqdn"
+    },
+    {
+      "source": "displayName",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'display_name': record.get('displayName', ''), 'first_name': record.get('firstName', ''), 'last_name': record.get('surname', ''), 'email': record.get('email', ''), 'employee_id': str(record.get('id', ''))}"
+      }
+    },
+    {
+      "source": "displayName",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'department': (record.get('work') or {}).get('department', ''), 'title': (record.get('work') or {}).get('title', ''), 'site': (record.get('work') or {}).get('site', ''), 'status': record.get('internal', {}).get('status', ''), 'start_date': record.get('startDate', ''), 'reports_to': (record.get('work') or {}).get('reportsTo', {}).get('displayName', ''), 'lifecycle_status': (record.get('internal') or {}).get('lifecycleStatus', '')}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'identity'"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

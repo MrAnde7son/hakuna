@@ -1,0 +1,133 @@
+{
+  "id": "burp_enterprise_findings",
+  "name": "Burp Suite Enterprise \u2014 Findings",
+  "description": "Pull web application security findings from Burp Suite Enterprise via REST API",
+  "category": "DAST",
+  "logo": "/logos/vendors/burp.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/api/v1/issues",
+    "headers": {
+      "Authorization": "{{credentials.api_key}}",
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "start": "{{pagination.offset}}",
+      "page_size": "100"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "start",
+      "limit_param": "page_size"
+    }
+  },
+  "records_path": "issues",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Burp Suite Enterprise URL",
+      "placeholder": "https://burp-enterprise.yourcompany.com"
+    },
+    "fields": [
+      {
+        "field": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "help": "Generate an API key from Burp Suite Enterprise Settings > API Keys"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v1/scans",
+      "headers": {
+        "Authorization": "{{credentials.api_key}}"
+      },
+      "query_params": {
+        "limit": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Burp Suite Enterprise. Verify the instance URL and API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "serial_number",
+      "target": "source_id"
+    },
+    {
+      "source": "issue_type.name",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low",
+          "info": "info"
+        }
+      }
+    },
+    {
+      "source": "origin",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "path",
+      "target": "description",
+      "transform": {
+        "type": "expression",
+        "expr": "(record.get('description') or '') + '\\n\\nAffected path: ' + (value or '')"
+      }
+    },
+    {
+      "source": "cvss_score",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "remediation",
+      "target": "solution"
+    },
+    {
+      "source": "first_seen",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "last_seen",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "scan_id": {
+      "type": "string",
+      "default": "",
+      "description": "Optional scan ID to filter issues from a specific scan"
+    }
+  }
+}

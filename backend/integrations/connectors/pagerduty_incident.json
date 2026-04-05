@@ -2,6 +2,7 @@
   "id": "pagerduty_incident",
   "name": "PagerDuty \u2014 Create Incident",
   "description": "Push findings to PagerDuty as triggered incidents",
+  "category": "ITSM / Ticketing",
   "logo": "/logos/vendors/pagerduty.svg",
   "direction": "push",
   "entity": "action",

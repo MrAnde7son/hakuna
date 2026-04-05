@@ -3,6 +3,7 @@
   "relay_capable": true,
   "name": "CrowdStrike Falcon — Prevention Policies",
   "description": "Pull prevention policy configurations from CrowdStrike Falcon to assess control effectiveness",
+  "category": "Endpoint Security",
   "logo": "/logos/vendors/crowdstrike.svg",
   "direction": "pull",
   "entity": "security_control_policy",

@@ -1,0 +1,150 @@
+{
+  "id": "microsoft_defender_vm_findings",
+  "name": "Microsoft Defender \u2014 Vulnerability Management Findings",
+  "description": "Pull vulnerability findings from Microsoft Defender Vulnerability Management via the Security Center API",
+  "category": "Vulnerability Management",
+  "logo": "/logos/vendors/microsoft.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.securitycenter.microsoft.com",
+    "method": "GET",
+    "path": "/api/vulnerabilities/machinesVulnerabilities",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "@odata.nextLink",
+      "cursor_is_full_url": true
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
+    "grant_type": "client_credentials",
+    "fields": [
+      {
+        "field": "tenant_id",
+        "label": "Azure AD Tenant ID",
+        "type": "text",
+        "help": "Directory (tenant) ID from your Azure AD app registration"
+      },
+      {
+        "field": "client_id",
+        "label": "Application (Client) ID",
+        "type": "text",
+        "help": "Application ID from your Azure AD app registration"
+      },
+      {
+        "field": "client_secret",
+        "label": "Client Secret",
+        "type": "password",
+        "help": "Client secret value generated in Certificates & secrets"
+      }
+    ],
+    "scopes": [
+      "https://api.securitycenter.microsoft.com/.default"
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/machines",
+      "query_params": {
+        "$top": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Microsoft Defender. Check your tenant ID, client ID, and client secret."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "cveId",
+      "target": "cve_id"
+    },
+    {
+      "source": "cveId",
+      "target": "title"
+    },
+    {
+      "source": "machineId",
+      "target": "asset.source_id"
+    },
+    {
+      "source": "machineName",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Critical": "critical",
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "Informational": "info"
+        }
+      }
+    },
+    {
+      "source": "cvssV3",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "fixedBuild",
+      "target": "solution"
+    },
+    {
+      "source": "detectedAt",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "lastUpdated",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "exploitVerified",
+      "target": "exploit_available",
+      "transform": {
+        "type": "boolean",
+        "truthy": [
+          "true",
+          "True",
+          true
+        ]
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "severity_filter": {
+      "type": "string",
+      "default": "",
+      "description": "OData filter for severity (e.g., severity eq 'Critical')"
+    }
+  }
+}

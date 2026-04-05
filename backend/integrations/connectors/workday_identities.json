@@ -1,0 +1,106 @@
+{
+  "id": "workday_identities",
+  "name": "Workday \u2014 Workers",
+  "description": "Pull worker records from Workday HCM for identity-aware exposure management",
+  "category": "HR / People",
+  "logo": "/logos/vendors/workday.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{credentials.host}}/ccx/api/v1/{{credentials.tenant}}",
+    "method": "GET",
+    "path": "/workers",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "limit": "100",
+      "offset": "{{pagination.offset}}"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "total_field": "total"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "token_url": "https://{{credentials.host}}/ccx/oauth2/{{credentials.tenant}}/token",
+    "grant_type": "client_credentials",
+    "client_id_field": {
+      "label": "Workday API Client ID",
+      "type": "text"
+    },
+    "client_secret_field": {
+      "label": "Workday API Client Secret",
+      "type": "password"
+    },
+    "extra_fields": [
+      {
+        "field": "host",
+        "label": "Workday Host",
+        "type": "text",
+        "help": "Your Workday hostname (e.g. wd2-impl-services1.workday.com)"
+      },
+      {
+        "field": "tenant",
+        "label": "Workday Tenant Name",
+        "type": "text",
+        "help": "Your Workday tenant identifier"
+      }
+    ],
+    "scopes": [],
+    "validation_request": {
+      "method": "GET",
+      "path": "/workers?limit=1",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Workday. Verify the host, tenant, client ID, and client secret."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "descriptor",
+      "target": "hostname"
+    },
+    {
+      "source": "primaryWorkEmail",
+      "target": "fqdn"
+    },
+    {
+      "source": "descriptor",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'display_name': record.get('descriptor', ''), 'email': record.get('primaryWorkEmail', ''), 'employee_id': record.get('employeeID', record.get('id', '')), 'worker_type': record.get('workerType', '')}"
+      }
+    },
+    {
+      "source": "descriptor",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'supervisory_organization': (record.get('supervisoryOrganization') or {}).get('descriptor', ''), 'location': (record.get('location') or {}).get('descriptor', ''), 'job_title': record.get('jobTitle', ''), 'employee_type': record.get('employeeType', ''), 'worker_type': record.get('workerType', ''), 'hire_date': record.get('hireDate', ''), 'termination_date': record.get('terminationDate', ''), 'business_title': record.get('businessTitle', ''), 'manager': (record.get('manager') or {}).get('descriptor', ''), 'cost_center': (record.get('costCenter') or {}).get('descriptor', '')}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'identity'"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

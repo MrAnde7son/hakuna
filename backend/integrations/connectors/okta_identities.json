@@ -1,0 +1,128 @@
+{
+  "id": "okta_identities",
+  "name": "Okta \u2014 Identities",
+  "description": "Pull user identities from Okta for identity-aware exposure management",
+  "category": "Identity Security",
+  "logo": "/logos/vendors/okta.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{credentials.domain}}.okta.com",
+    "method": "GET",
+    "path": "/api/v1/users",
+    "headers": {
+      "Authorization": "SSWS {{credentials.api_token}}",
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "limit": "200",
+      "after": "{{pagination.cursor}}"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 200,
+      "cursor_param": "after",
+      "cursor_field": "id"
+    }
+  },
+  "records_path": "",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into your Okta Admin Console"
+      },
+      {
+        "instruction": "Navigate to Security \u2192 API \u2192 Tokens",
+        "deeplink_path": "/admin/access/api/tokens"
+      },
+      {
+        "instruction": "Enter your Okta domain (e.g. 'yourcompany' from yourcompany.okta.com)",
+        "capture": {
+          "field": "domain",
+          "label": "Okta Domain",
+          "type": "text",
+          "placeholder": "yourcompany",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Click Create Token, give it a name, and copy the token value",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v1/users?limit=1",
+      "headers": {
+        "Authorization": "SSWS {{api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Okta. Check your domain and API token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "profile.login",
+      "target": "hostname"
+    },
+    {
+      "source": "profile.email",
+      "target": "fqdn"
+    },
+    {
+      "source": "lastLogin",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "status",
+      "target": "tags",
+      "transform": {
+        "type": "expression",
+        "expr": "[value.lower() if value else 'unknown']"
+      }
+    },
+    {
+      "source": "profile.login",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'display_name': ((record.get('profile') or {}).get('firstName', '') + ' ' + (record.get('profile') or {}).get('lastName', '')).strip(), 'email': (record.get('profile') or {}).get('email', ''), 'login': (record.get('profile') or {}).get('login', ''), 'employee_number': (record.get('profile') or {}).get('employeeNumber', ''), 'user_id': record.get('id', '')}"
+      }
+    },
+    {
+      "source": "profile.login",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'department': (record.get('profile') or {}).get('department', ''), 'title': (record.get('profile') or {}).get('title', ''), 'manager': (record.get('profile') or {}).get('manager', ''), 'mobile_phone': (record.get('profile') or {}).get('mobilePhone', ''), 'user_type': (record.get('profile') or {}).get('userType', ''), 'organization': (record.get('profile') or {}).get('organization', ''), 'division': (record.get('profile') or {}).get('division', ''), 'status': record.get('status', ''), 'created': record.get('created', ''), 'last_updated': record.get('lastUpdated', ''), 'password_changed': record.get('passwordChanged', '')}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'identity'"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

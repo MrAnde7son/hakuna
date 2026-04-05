@@ -1,0 +1,159 @@
+{
+  "id": "gcp_scc_findings",
+  "name": "GCP Security Command Center \u2014 Findings",
+  "description": "Pull security findings from Google Cloud Security Command Center",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/gcp.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://securitycenter.googleapis.com",
+    "method": "GET",
+    "path": "/v1/organizations/{{credentials.organization_id}}/sources/-/findings",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "filter": "{{params.filter}}",
+      "pageSize": "1000"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 1000,
+      "cursor_field": "nextPageToken",
+      "cursor_param": "pageToken"
+    }
+  },
+  "records_path": "listFindingsResults",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "token_url": "https://oauth2.googleapis.com/token",
+    "grant_type": "client_credentials",
+    "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
+    "fields": [
+      {
+        "field": "organization_id",
+        "label": "GCP Organization ID",
+        "type": "text",
+        "help": "Numeric organization ID from GCP Resource Manager"
+      },
+      {
+        "field": "client_email",
+        "label": "Service Account Email",
+        "type": "text",
+        "help": "The client_email field from your service account JSON key file"
+      },
+      {
+        "field": "private_key",
+        "label": "Service Account Private Key",
+        "type": "password",
+        "help": "The private_key field from your service account JSON key file"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/v1/organizations/{{credentials.organization_id}}/sources/-/findings",
+      "query_params": {
+        "pageSize": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with GCP Security Command Center. Verify your organization ID and service account credentials."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "finding.name",
+      "target": "source_id"
+    },
+    {
+      "source": "finding.category",
+      "target": "title"
+    },
+    {
+      "source": "finding.description",
+      "target": "description"
+    },
+    {
+      "source": "finding.severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "CRITICAL": "critical",
+          "HIGH": "high",
+          "MEDIUM": "medium",
+          "LOW": "low"
+        }
+      }
+    },
+    {
+      "source": "finding.resourceName",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "finding.vulnerability.cve.id",
+      "target": "cve_id"
+    },
+    {
+      "source": "finding.sourceProperties.ReactiveCvss.baseScore",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "finding.vulnerability.cve.exploitationActivity",
+      "target": "exploit_available",
+      "transform": {
+        "type": "boolean",
+        "truthy": ["WIDE", "CONFIRMED"]
+      }
+    },
+    {
+      "source": "finding.sourceProperties.Recommendation",
+      "target": "solution"
+    },
+    {
+      "source": "finding.createTime",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "finding.eventTime",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "finding.state",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "ACTIVE": "open",
+          "INACTIVE": "resolved"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "organization_id": {
+      "type": "string",
+      "required": true,
+      "description": "GCP Organization ID (numeric)"
+    },
+    "filter": {
+      "type": "string",
+      "default": "state=\"ACTIVE\"",
+      "description": "SCC finding filter expression"
+    }
+  }
+}

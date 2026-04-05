@@ -2,6 +2,7 @@
   "id": "tenable_io_findings",
   "name": "Tenable.io \u2014 Findings",
   "description": "Pull vulnerability findings from Tenable.io via the vulnerability export API",
+  "category": "Vulnerability Management",
   "logo": "/logos/vendors/tenable.svg",
   "direction": "pull",
   "entity": "finding",

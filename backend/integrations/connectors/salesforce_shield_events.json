@@ -1,0 +1,115 @@
+{
+  "id": "salesforce_shield_events",
+  "name": "Salesforce Shield \u2014 Event Monitoring",
+  "description": "Pull security event logs from Salesforce Shield Event Monitoring",
+  "category": "SaaS Security / SSPM",
+  "logo": "/logos/vendors/salesforce.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/services/data/v59.0/query",
+    "headers": {
+      "Authorization": "Bearer {{credentials.access_token}}"
+    },
+    "query_params": {
+      "q": "SELECT Id,EventType,CreatedDate,EventDate,SourceIp,Username,Display FROM EventLogFile WHERE EventType = 'Login' ORDER BY CreatedDate DESC"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 200,
+      "cursor_field": "nextRecordsUrl",
+      "cursor_param": "_next_url"
+    }
+  },
+  "records_path": "records",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "instance_url_field": {
+      "label": "Salesforce Instance URL",
+      "placeholder": "https://yourorg.my.salesforce.com"
+    },
+    "token_url": "{{instance_url}}/services/oauth2/token",
+    "grant_type": "client_credentials",
+    "client_id_field": {
+      "label": "Connected App Consumer Key",
+      "type": "text"
+    },
+    "client_secret_field": {
+      "label": "Connected App Consumer Secret",
+      "type": "password"
+    },
+    "scopes": [
+      "api"
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/services/data/v59.0/limits",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Salesforce. Check your Connected App credentials and ensure the user has API access."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "Id",
+      "target": "source_id"
+    },
+    {
+      "source": "EventType",
+      "target": "title"
+    },
+    {
+      "source": "Display",
+      "target": "description"
+    },
+    {
+      "source": "EventType",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Login": "info",
+          "LoginAs": "medium",
+          "ApiAnomalyEvent": "high",
+          "ReportAnomalyEvent": "medium"
+        },
+        "default": "info"
+      }
+    },
+    {
+      "source": "SourceIp",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "Username",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "CreatedDate",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "EventDate",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "event_type_filter": {
+      "type": "string",
+      "default": "Login",
+      "description": "Salesforce event type to query (Login, LoginAs, ApiAnomalyEvent, ReportAnomalyEvent, etc.)"
+    }
+  }
+}

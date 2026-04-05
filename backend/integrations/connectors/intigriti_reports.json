@@ -1,0 +1,141 @@
+{
+  "id": "intigriti_reports",
+  "name": "Intigriti \u2014 Reports",
+  "description": "Pull bug bounty submissions from Intigriti via the REST API",
+  "category": "Bug Bounty",
+  "logo": "/logos/vendors/intigriti.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.intigriti.com",
+    "method": "GET",
+    "path": "/core/company/submissions",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_token}}",
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "limit": "100"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset"
+    }
+  },
+  "records_path": "records",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_token",
+        "label": "API Token",
+        "type": "password",
+        "help": "Your Intigriti Bearer token from the API settings page"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/core/company/submissions?limit=1",
+      "headers": {
+        "Authorization": "Bearer {{credentials.api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Intigriti. Verify your API token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "submissionId",
+      "target": "source_id"
+    },
+    {
+      "source": "title",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity.value",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "CRITICAL": "critical",
+          "HIGH": "high",
+          "MEDIUM": "medium",
+          "LOW": "low",
+          "NONE": "info",
+          "4": "critical",
+          "3": "high",
+          "2": "medium",
+          "1": "low",
+          "0": "info"
+        }
+      }
+    },
+    {
+      "source": "endpointVulnerableComponent",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "cvssVector",
+      "target": "cvss_vector"
+    },
+    {
+      "source": "cvssScore",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "createdAt",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "lastUpdatedAt",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "state.value",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Triage": "open",
+          "Accepted": "open",
+          "Closed": "resolved"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "program_id": {
+      "type": "string",
+      "default": "",
+      "description": "Intigriti program ID to filter submissions"
+    },
+    "state": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": ["Triage", "Accepted"],
+      "description": "Filter by submission state (Triage, Accepted, Closed)"
+    }
+  }
+}

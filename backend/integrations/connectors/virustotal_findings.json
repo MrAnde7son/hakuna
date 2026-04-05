@@ -1,0 +1,117 @@
+{
+  "id": "virustotal_findings",
+  "relay_capable": false,
+  "name": "VirusTotal Enterprise \u2014 Intelligence Search",
+  "description": "Pull file and URL analysis results from VirusTotal Enterprise Intelligence",
+  "category": "Threat Intelligence",
+  "logo": "/logos/vendors/virustotal.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://www.virustotal.com",
+    "method": "GET",
+    "path": "/api/v3/intelligence/search",
+    "headers": {
+      "x-apikey": "{{credentials.api_key}}",
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "query": "{{params.query}}",
+      "limit": "100",
+      "cursor": "{{pagination.cursor}}"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 100,
+      "cursor_field": "meta.cursor",
+      "cursor_param": "cursor"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into VirusTotal with your Enterprise account"
+      },
+      {
+        "instruction": "Go to your profile \u2192 API Key section and copy your API key.",
+        "deeplink_path": "https://www.virustotal.com/gui/user/apikey",
+        "capture": {
+          "field": "api_key",
+          "label": "API Key",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v3/users/current",
+      "headers": {
+        "x-apikey": "{{api_key}}"
+      },
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "connected_user": "data.id"
+      },
+      "error_message": "Could not authenticate with VirusTotal. Verify your API key has Enterprise access."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "attributes.meaningful_name",
+      "target": "title"
+    },
+    {
+      "source": "attributes.magic",
+      "target": "description"
+    },
+    {
+      "source": "attributes.last_analysis_stats.malicious",
+      "target": "severity",
+      "transform": {
+        "type": "expression",
+        "expression": "value > 10 ? 'critical' : value > 5 ? 'high' : value > 0 ? 'medium' : 'info'"
+      }
+    },
+    {
+      "source": "attributes.sha256",
+      "target": "plugin_id"
+    },
+    {
+      "source": "attributes.tags",
+      "target": "tags"
+    },
+    {
+      "source": "attributes.first_submission_date",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "attributes.last_analysis_date",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "query": {
+      "type": "string",
+      "required": true,
+      "description": "VT Intelligence search query"
+    }
+  }
+}

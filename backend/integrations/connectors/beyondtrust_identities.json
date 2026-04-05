@@ -1,0 +1,120 @@
+{
+  "id": "beyondtrust_identities",
+  "name": "BeyondTrust \u2014 Managed Accounts",
+  "description": "Pull managed account inventory from BeyondTrust Password Safe for identity-aware exposure management",
+  "category": "Identity Security",
+  "logo": "/logos/vendors/beyondtrust.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/BeyondTrust/api/public/v3/ManagedAccounts",
+    "headers": {
+      "Authorization": "PS-Auth key={{credentials.api_key}}; runas=api-user;",
+      "Content-Type": "application/json"
+    },
+    "query_params": {
+      "limit": "100",
+      "offset": "{{pagination.offset}}"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset"
+    }
+  },
+  "records_path": "",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "BeyondTrust Password Safe URL",
+      "placeholder": "https://passwordsafe.yourcompany.com"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the BeyondTrust Password Safe administration console"
+      },
+      {
+        "instruction": "Navigate to Configuration \u2192 API Registration and create a new API registration if one does not exist"
+      },
+      {
+        "instruction": "Copy the API Key from the registration",
+        "capture": {
+          "field": "api_key",
+          "label": "Paste API Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/BeyondTrust/api/public/v3/ManagedAccounts?limit=1",
+      "headers": {
+        "Authorization": "PS-Auth key={{api_key}}; runas=api-user;"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with BeyondTrust. Check the URL and API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "ManagedAccountID",
+      "target": "source_id"
+    },
+    {
+      "source": "AccountName",
+      "target": "hostname"
+    },
+    {
+      "source": "DomainName",
+      "target": "fqdn"
+    },
+    {
+      "source": "ManagedSystemName",
+      "target": "ip_address"
+    },
+    {
+      "source": "PlatformID",
+      "target": "os"
+    },
+    {
+      "source": "LastChangeDate",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "AccountName",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'display_name': record.get('AccountName', ''), 'account_name': record.get('AccountName', ''), 'domain_name': record.get('DomainName', ''), 'managed_system': record.get('ManagedSystemName', ''), 'account_id': str(record.get('ManagedAccountID', ''))}"
+      }
+    },
+    {
+      "source": "AccountName",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'system_name': record.get('ManagedSystemName', ''), 'domain_name': record.get('DomainName', ''), 'account_type': record.get('AccountType', ''), 'platform_id': record.get('PlatformID', ''), 'password_rule_id': record.get('PasswordRuleID', ''), 'is_subscribed_account': record.get('IsSubscribedAccount', False), 'last_change_date': record.get('LastChangeDate', ''), 'next_change_date': record.get('NextChangeDate', '')}"
+      }
+    },
+    {
+      "source": "ManagedAccountID",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'identity'"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

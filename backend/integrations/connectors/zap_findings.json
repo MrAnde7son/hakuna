@@ -1,0 +1,133 @@
+{
+  "id": "zap_findings",
+  "name": "OWASP ZAP \u2014 Findings",
+  "description": "Pull web application security alerts from OWASP ZAP via its REST API",
+  "category": "DAST",
+  "logo": "/logos/vendors/zap.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/JSON/core/view/alerts/",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "apikey": "{{credentials.api_key}}",
+      "start": "{{pagination.offset}}",
+      "count": "100"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "start",
+      "limit_param": "count"
+    }
+  },
+  "records_path": "alerts",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "ZAP API URL",
+      "placeholder": "http://localhost:8080"
+    },
+    "fields": [
+      {
+        "field": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "help": "ZAP API key from Tools > Options > API"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/JSON/core/view/version/",
+      "query_params": {
+        "apikey": "{{credentials.api_key}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to OWASP ZAP. Verify the instance URL and API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "alert",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "risk",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "3": "high",
+          "2": "medium",
+          "1": "low",
+          "0": "info",
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "Informational": "info"
+        }
+      }
+    },
+    {
+      "source": "url",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "cweid",
+      "target": "plugin_id"
+    },
+    {
+      "source": "solution",
+      "target": "solution"
+    },
+    {
+      "source": "evidence",
+      "target": "description",
+      "transform": {
+        "type": "expression",
+        "expr": "(record.get('description') or '') + '\\n\\nEvidence: ' + (value or '')"
+      }
+    },
+    {
+      "source": "confidence",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "3": "confirmed",
+          "2": "open",
+          "1": "open",
+          "0": "open",
+          "High": "confirmed",
+          "Medium": "open",
+          "Low": "open",
+          "False Positive": "false_positive"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "baseurl": {
+      "type": "string",
+      "default": "",
+      "description": "Optional base URL filter to restrict alerts to a specific target site"
+    }
+  }
+}

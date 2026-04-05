@@ -2,6 +2,7 @@
   "id": "azure_dns_api",
   "name": "Azure DNS — Zones & Records",
   "description": "Pull DNS zones and record sets from Azure DNS to trace workloads behind App Service, Front Door, Traffic Manager, and API Management",
+  "category": "DNS / Infrastructure",
   "logo": "/logos/vendors/azure.svg",
   "direction": "pull",
   "entity": "asset",

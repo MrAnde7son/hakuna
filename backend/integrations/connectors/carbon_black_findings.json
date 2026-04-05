@@ -1,0 +1,171 @@
+{
+  "id": "carbon_black_findings",
+  "name": "VMware Carbon Black \u2014 Alerts",
+  "description": "Pull security alerts from VMware Carbon Black Cloud",
+  "category": "Endpoint Security",
+  "logo": "/logos/vendors/carbonblack.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "POST",
+    "path": "/api/alerts/v7/orgs/{{credentials.org_key}}/alerts/_search",
+    "headers": {
+      "X-Auth-Token": "{{credentials.api_secret_key}}/{{credentials.api_id}}",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "rows": 100,
+      "start": "{{pagination.offset}}",
+      "sort": [{"field": "create_time", "order": "DESC"}]
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "start",
+      "offset_in_body": true
+    }
+  },
+  "records_path": "results",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Carbon Black Cloud Console URL",
+      "placeholder": "https://defense.conferdeploy.net"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the Carbon Black Cloud console as an administrator"
+      },
+      {
+        "instruction": "Navigate to Settings > API Access",
+        "deeplink_path": "/#/provider/apiKeys"
+      },
+      {
+        "instruction": "Note your Organization Key displayed on the API Access page.",
+        "capture": {
+          "field": "org_key",
+          "label": "Organization Key",
+          "type": "text",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Click Add API Key. Select Access Level type 'Custom' and grant 'Alerts > General information > Read' permission. Copy the API ID.",
+        "capture": {
+          "field": "api_id",
+          "label": "API ID",
+          "type": "text",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Copy the API Secret Key shown after creating the key.",
+        "capture": {
+          "field": "api_secret_key",
+          "label": "API Secret Key",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "POST",
+      "path": "/api/alerts/v7/orgs/{{org_key}}/alerts/_search",
+      "headers": {
+        "X-Auth-Token": "{{api_secret_key}}/{{api_id}}",
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "rows": 1
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Carbon Black Cloud. Check the Org Key, API ID, and API Secret Key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "reason",
+      "target": "title"
+    },
+    {
+      "source": "reason_code",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "CRITICAL": "critical",
+          "SEVERE": "high",
+          "MODERATE": "medium",
+          "LOW": "low",
+          "10": "critical",
+          "7": "high",
+          "4": "medium",
+          "1": "low"
+        }
+      }
+    },
+    {
+      "source": "device_name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "device_internal_ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "device_os",
+      "target": "asset.os"
+    },
+    {
+      "source": "threat_id",
+      "target": "plugin_id"
+    },
+    {
+      "source": "create_time",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "last_update_time",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "workflow.status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "OPEN": "open",
+          "IN_PROGRESS": "in_progress",
+          "CLOSED": "resolved"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "org_key": {
+      "type": "string",
+      "required": true,
+      "description": "Carbon Black Cloud Organization Key"
+    }
+  }
+}

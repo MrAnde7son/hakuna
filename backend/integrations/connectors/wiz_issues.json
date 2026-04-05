@@ -2,6 +2,7 @@
   "id": "wiz_issues",
   "name": "Wiz \u2014 Security Issues",
   "description": "Pull security issues from Wiz via GraphQL API",
+  "category": "Cloud Security",
   "logo": "/logos/vendors/wiz.svg",
   "direction": "pull",
   "entity": "finding",

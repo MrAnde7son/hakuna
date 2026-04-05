@@ -1,0 +1,106 @@
+{
+  "id": "bamboohr_identities",
+  "name": "BambooHR \u2014 Employees",
+  "description": "Pull employee directory from BambooHR for identity-aware exposure management",
+  "category": "HR / People",
+  "logo": "/logos/vendors/bamboohr.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.bamboohr.com/api/gateway.php/{{credentials.company_domain}}/v1",
+    "method": "GET",
+    "path": "/employees/directory",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "auth": {
+      "type": "basic",
+      "username": "{{credentials.api_key}}",
+      "password": "x"
+    }
+  },
+  "records_path": "employees",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into BambooHR as an admin user"
+      },
+      {
+        "instruction": "Enter your BambooHR company domain (the subdomain from your BambooHR URL, e.g. 'acme' from acme.bamboohr.com)",
+        "capture": {
+          "field": "company_domain",
+          "label": "Company Domain",
+          "type": "text",
+          "placeholder": "yourcompany",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Click your profile icon \u2192 API Keys \u2192 Add New Key. Copy the generated API key.",
+        "deeplink_path": "/settings/permissions/api_keys",
+        "capture": {
+          "field": "api_key",
+          "label": "Paste API Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/employees/directory",
+      "auth": {
+        "type": "basic",
+        "username": "{{api_key}}",
+        "password": "x"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with BambooHR. Check the company domain and API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "displayName",
+      "target": "hostname"
+    },
+    {
+      "source": "workEmail",
+      "target": "fqdn"
+    },
+    {
+      "source": "displayName",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'display_name': record.get('displayName', ''), 'first_name': record.get('firstName', ''), 'last_name': record.get('lastName', ''), 'email': record.get('workEmail', ''), 'employee_id': str(record.get('id', ''))}"
+      }
+    },
+    {
+      "source": "displayName",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'department': record.get('department', ''), 'job_title': record.get('jobTitle', ''), 'location': record.get('location', ''), 'division': record.get('division', ''), 'status': record.get('status', ''), 'hire_date': record.get('hireDate', ''), 'work_phone': record.get('workPhone', ''), 'mobile_phone': record.get('mobilePhone', ''), 'supervisor': record.get('supervisor', ''), 'photo_url': record.get('photoUrl', '')}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'identity'"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

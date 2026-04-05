@@ -1,0 +1,124 @@
+{
+  "id": "shodan_findings",
+  "relay_capable": false,
+  "name": "Shodan \u2014 Host Search",
+  "description": "Pull exposed services and vulnerabilities from Shodan host search results",
+  "category": "EASM",
+  "logo": "/logos/vendors/shodan.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.shodan.io",
+    "method": "GET",
+    "path": "/shodan/host/search",
+    "headers": {},
+    "query_params": {
+      "key": "{{credentials.api_key}}",
+      "query": "{{params.query}}",
+      "page": "{{pagination.page}}"
+    },
+    "pagination": {
+      "strategy": "page",
+      "page_size": 100,
+      "page_param": "page"
+    }
+  },
+  "records_path": "matches",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into your Shodan account"
+      },
+      {
+        "instruction": "Go to Account \u2192 API Key and copy your API key.",
+        "deeplink_path": "https://account.shodan.io",
+        "capture": {
+          "field": "api_key",
+          "label": "Shodan API Key",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api-info",
+      "query_params": {
+        "key": "{{api_key}}"
+      },
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "plan": "plan",
+        "query_credits": "query_credits"
+      },
+      "error_message": "Could not authenticate with Shodan. Verify your API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "_shodan.id",
+      "target": "source_id"
+    },
+    {
+      "source": "product",
+      "target": "title"
+    },
+    {
+      "source": "data",
+      "target": "description"
+    },
+    {
+      "source": "ip_str",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "hostnames[0]",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "vulns[0]",
+      "target": "cve_id"
+    },
+    {
+      "source": "port",
+      "target": "plugin_id"
+    },
+    {
+      "source": "vulns",
+      "target": "severity",
+      "transform": {
+        "type": "expression",
+        "expression": "value && Object.keys(value).length > 5 ? 'critical' : value && Object.keys(value).length > 2 ? 'high' : value && Object.keys(value).length > 0 ? 'medium' : 'low'"
+      }
+    },
+    {
+      "source": "os",
+      "target": "asset.os"
+    },
+    {
+      "source": "org",
+      "target": "asset.owner"
+    },
+    {
+      "source": "timestamp",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id",
+    "asset.ip_address"
+  ],
+  "params_schema": {
+    "query": {
+      "type": "string",
+      "required": true,
+      "description": "Shodan search query"
+    }
+  }
+}

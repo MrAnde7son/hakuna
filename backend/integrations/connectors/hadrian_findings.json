@@ -1,0 +1,121 @@
+{
+  "id": "hadrian_findings",
+  "name": "Hadrian \u2014 Findings",
+  "description": "Pull security findings from the Hadrian attack surface management platform",
+  "category": "DAST",
+  "logo": "/logos/vendors/hadrian.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.hadrian.io",
+    "method": "GET",
+    "path": "/v1/findings",
+    "headers": {
+      "Accept": "application/json",
+      "x-api-key": "{{credentials.api_key}}"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "meta.next_cursor",
+      "cursor_param": "cursor"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "help": "API key from Hadrian platform settings"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/v1/findings",
+      "headers": {
+        "x-api-key": "{{credentials.api_key}}"
+      },
+      "query_params": {
+        "limit": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Hadrian. Check your API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "title",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low",
+          "info": "info"
+        }
+      }
+    },
+    {
+      "source": "asset.hostname",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "asset.ip_address",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "cve",
+      "target": "cve_id"
+    },
+    {
+      "source": "recommendation",
+      "target": "solution"
+    },
+    {
+      "source": "created_at",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "updated_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "severity_filter": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Filter by severity (critical, high, medium, low, info)"
+    }
+  }
+}

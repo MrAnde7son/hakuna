@@ -1,0 +1,128 @@
+{
+  "id": "claroty_findings",
+  "name": "Claroty \u2014 OT Vulnerabilities",
+  "description": "Pull OT/ICS vulnerability findings from Claroty xDome or CTD",
+  "category": "OT / IoT Security",
+  "logo": "/logos/vendors/claroty.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/api/v1/vulnerabilities",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_token}}"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "total_field": "total_count"
+    }
+  },
+  "records_path": "objects",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Claroty Instance URL",
+      "placeholder": "https://yourcompany.claroty.cloud"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the Claroty management console as an administrator",
+        "deeplink_path": null
+      },
+      {
+        "instruction": "Navigate to Administration \u2192 Integrations \u2192 API Tokens",
+        "deeplink_path": "/administration/integrations"
+      },
+      {
+        "instruction": "Generate a new API token with read permissions for vulnerabilities. Copy the token.",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v1/vulnerabilities?limit=1",
+      "auth_header": "Authorization: Bearer {{api_token}}",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Claroty. Check your API token and instance URL."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Critical": "critical",
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low"
+        }
+      }
+    },
+    {
+      "source": "asset_name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "asset_ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "cve",
+      "target": "cve_id"
+    },
+    {
+      "source": "cvss_score",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "remediation",
+      "target": "solution"
+    },
+    {
+      "source": "first_seen",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "last_seen",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

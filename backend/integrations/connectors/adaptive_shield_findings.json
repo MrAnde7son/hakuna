@@ -1,0 +1,122 @@
+{
+  "id": "adaptive_shield_findings",
+  "name": "Adaptive Shield \u2014 Security Checks",
+  "description": "Pull SaaS security posture findings from Adaptive Shield",
+  "category": "SaaS Security / SSPM",
+  "logo": "/logos/vendors/adaptive_shield.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.adaptive-shield.com",
+    "method": "GET",
+    "path": "/api/v1/security-checks",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_token}}"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "total_field": "total"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the Adaptive Shield management console as an administrator",
+        "deeplink_path": null
+      },
+      {
+        "instruction": "Navigate to Settings \u2192 API Tokens",
+        "deeplink_path": "/settings/api-tokens"
+      },
+      {
+        "instruction": "Click Generate Token. Copy the API token.",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v1/security-checks?limit=1",
+      "auth_header": "Authorization: Bearer {{api_token}}",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Adaptive Shield. Check your API token and try again."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "check_name",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "CRITICAL": "critical",
+          "HIGH": "high",
+          "MEDIUM": "medium",
+          "LOW": "low",
+          "INFORMATIONAL": "info"
+        }
+      }
+    },
+    {
+      "source": "app_name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "recommendation",
+      "target": "solution"
+    },
+    {
+      "source": "created_at",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "last_checked_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "FAILED": "open",
+          "PASSED": "resolved",
+          "DISMISSED": "accepted"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

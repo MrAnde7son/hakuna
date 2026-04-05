@@ -1,0 +1,161 @@
+{
+  "id": "prisma_cloud_findings",
+  "name": "Prisma Cloud \u2014 Alerts",
+  "description": "Pull security alerts from Palo Alto Prisma Cloud",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/prisma_cloud.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{credentials.api_url}}",
+    "method": "GET",
+    "path": "/v2/alert",
+    "headers": {
+      "x-redlock-auth": "{{credentials.jwt_token}}",
+      "Accept": "application/json"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextPageToken",
+      "cursor_param": "nextPageToken"
+    }
+  },
+  "records_path": "items",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_url",
+        "label": "Prisma Cloud API URL",
+        "type": "text",
+        "placeholder": "api.prismacloud.io",
+        "help": "Your Prisma Cloud API base URL (e.g. api.prismacloud.io, api2.prismacloud.io, api.eu.prismacloud.io)"
+      },
+      {
+        "field": "access_key",
+        "label": "Access Key",
+        "type": "text",
+        "help": "From Prisma Cloud > Settings > Access Keys"
+      },
+      {
+        "field": "secret_key",
+        "label": "Secret Key",
+        "type": "password",
+        "help": "The secret key generated alongside the access key"
+      }
+    ],
+    "token_exchange": {
+      "method": "POST",
+      "url": "https://{{credentials.api_url}}/login",
+      "body": {
+        "username": "{{credentials.access_key}}",
+        "password": "{{credentials.secret_key}}"
+      },
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "token_path": "token",
+      "store_as": "jwt_token"
+    },
+    "validation_request": {
+      "method": "GET",
+      "path": "/v2/alert",
+      "query_params": {
+        "limit": "1"
+      },
+      "headers": {
+        "x-redlock-auth": "{{credentials.jwt_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Prisma Cloud. Verify your API URL, access key, and secret key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "policy.name",
+      "target": "title"
+    },
+    {
+      "source": "policy.description",
+      "target": "description"
+    },
+    {
+      "source": "policy.severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low",
+          "informational": "info"
+        }
+      }
+    },
+    {
+      "source": "resource.name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "resource.resourceApiName",
+      "target": "plugin_id"
+    },
+    {
+      "source": "policy.recommendation",
+      "target": "solution"
+    },
+    {
+      "source": "alertTime",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "lastUpdated",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "open": "open",
+          "snoozed": "accepted",
+          "dismissed": "accepted",
+          "resolved": "resolved"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "alert_status": {
+      "type": "string",
+      "default": "open",
+      "description": "Filter by alert status (open, snoozed, dismissed, resolved)"
+    },
+    "policy_severity": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": ["critical", "high", "medium", "low"],
+      "description": "Filter by policy severity levels"
+    }
+  }
+}

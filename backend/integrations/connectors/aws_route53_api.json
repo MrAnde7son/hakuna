@@ -2,6 +2,7 @@
   "id": "aws_route53_api",
   "name": "AWS Route 53 — DNS Zones",
   "description": "Pull hosted zones and DNS record sets from AWS Route 53 to trace workloads behind ALBs, CloudFront distributions, S3 buckets, and other AWS services",
+  "category": "DNS / Infrastructure",
   "logo": "/logos/vendors/aws.svg",
   "direction": "pull",
   "entity": "asset",

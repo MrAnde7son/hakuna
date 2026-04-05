@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, Check, ChevronRight, ChevronDown, Zap, Database as DbIcon, FileText, Globe, Wand2, Eye, EyeOff, List, Server } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, ChevronRight, ChevronDown, Zap, Database as DbIcon, FileText, Globe, Wand2, Eye, EyeOff, List, Server, Search, X } from 'lucide-react'
 import { Card, Button, useToast } from '../shared/ui.jsx'
 import {
   getConnectors, getConnector, getIntegrationSchema, getAcquisitionFlow,
-  validateCredentials, createCredential, integrationConnect, integrationPreview,
-  integrationAutoSuggest,
+  validateCredentials, createCredential, integrationConnect, pollExtraction,
+  integrationPreview, integrationAutoSuggest,
   ibCreateIntegration, ibUpdateIntegration, ibGetIntegration,
   discoverApi, parseDocs, uploadIntegrationFile, discoverMcpTools, mcpOAuthStart,
   getTargetModels, getTargetSchema, oauthClientCredentials, discoverOAuth,
@@ -54,6 +54,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const goDone = onDone || (() => navigate('/integrations'))
   const [step, setStep] = useState(0)
   const [loading, setLoading] = useState(false)
+  const [extracting, setExtracting] = useState(false)
   const [connectError, setConnectError] = useState(null)
 
   // State accumulated across steps
@@ -79,6 +80,56 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [dedupKey, setDedupKey] = useState([])
   const [schedule, setSchedule] = useState('')
   const [enabled, setEnabled] = useState(false)
+
+  // Template search & filter
+  const [templateSearch, setTemplateSearch] = useState('')
+  const [templateCategoryFilter, setTemplateCategoryFilter] = useState('all')
+  const TEMPLATES_PER_PAGE = 12
+  const [templatePage, setTemplatePage] = useState(1)
+
+  const filteredConnectors = useMemo(() => {
+    let list = connectors
+    if (templateCategoryFilter !== 'all') {
+      list = list.filter(c => c.category === templateCategoryFilter)
+    }
+    if (templateSearch.trim()) {
+      const q = templateSearch.toLowerCase()
+      list = list.filter(c =>
+        c.name.toLowerCase().includes(q) ||
+        (c.description || '').toLowerCase().includes(q)
+      )
+    }
+    return list
+  }, [connectors, templateSearch, templateCategoryFilter])
+
+  const templatePageCount = Math.max(1, Math.ceil(filteredConnectors.length / TEMPLATES_PER_PAGE))
+  const pagedConnectors = filteredConnectors.slice(
+    (templatePage - 1) * TEMPLATES_PER_PAGE,
+    templatePage * TEMPLATES_PER_PAGE,
+  )
+
+  // Reset page when filters change
+  useEffect(() => { setTemplatePage(1) }, [templateSearch, templateCategoryFilter])
+
+  // Ordered category list — derived from data but displayed in a fixed logical order
+  const CATEGORY_ORDER = [
+    'Vulnerability Management', 'Cloud Security', 'Endpoint Security', 'DAST', 'SAST / Code Security',
+    'EASM', 'SaaS Security / SSPM', 'Identity Security', 'OT / IoT Security',
+    'SIEM / Analytics', 'Threat Intelligence', 'Bug Bounty',
+    'ITSM / Ticketing', 'DNS / Infrastructure', 'HR / People', 'Collaboration / Docs',
+  ]
+
+  const categoryCounts = useMemo(() => {
+    const counts = {}
+    for (const c of connectors) {
+      if (c.category) counts[c.category] = (counts[c.category] || 0) + 1
+    }
+    return counts
+  }, [connectors])
+
+  const orderedCategories = useMemo(() =>
+    CATEGORY_ORDER.filter(cat => categoryCounts[cat]),
+  [categoryCounts])
 
   // Inline auth for custom builds
   const [inlineAuthType, setInlineAuthType] = useState('none')
@@ -310,12 +361,23 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         }
       }
 
-      const result = await integrationConnect({
+      let result = await integrationConnect({
         transport_type: transportType,
         transport_config: resolveTransportConfig(),
         credentials_id: cId,
         records_path: undefined, // don't send — we'll pick from response
       })
+
+      // PDF/DOCX: backend returns a task_id — poll until extraction is done
+      if (result.async_task_id) {
+        setExtracting(true)
+        try {
+          result = await pollExtraction(result.async_task_id)
+        } finally {
+          setExtracting(false)
+        }
+      }
+
       setRawResponse(result.raw_response)
       setSampleRecords(result.sample_records || [])
       setDetectedPaths(result.detected_paths || [])
@@ -517,25 +579,82 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       {/* Section A: Templates */}
       <div>
-        <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 600 }}>Start from a template</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
-          {connectors.map(c => (
-            <Card key={c.id} onClick={() => handleSelectConnector(c.id)} style={{ cursor: 'pointer', padding: 16 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                <VendorLogo src={c.logo} size={32} />
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.description}</div>
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                <Badge bg={DIRECTION_BADGE[c.direction]?.bg} text={DIRECTION_BADGE[c.direction]?.text} label={c.direction.toUpperCase()} />
-                <Badge bg={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).bg} text={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).text} label={c.entity.toUpperCase()} />
-                <Badge bg="var(--border)" text="var(--text-muted)" label={c.transport_type.toUpperCase()} />
-              </div>
-            </Card>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Start from a template</h3>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{filteredConnectors.length} connector{filteredConnectors.length !== 1 ? 's' : ''}</span>
         </div>
+
+        {/* Search + entity filter pills */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ position: 'relative', flex: '1 1 220px', maxWidth: 320 }}>
+            <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <input
+              placeholder="Search connectors..."
+              value={templateSearch}
+              onChange={e => setTemplateSearch(e.target.value)}
+              style={{ ...inputStyle, paddingLeft: 30, width: '100%', boxSizing: 'border-box' }}
+            />
+            {templateSearch && (
+              <X size={14} onClick={() => setTemplateSearch('')}
+                style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', cursor: 'pointer' }} />
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {[{ key: 'all', label: 'All' }, ...orderedCategories.map(k => ({ key: k, label: k }))].map(f => (
+              <button key={f.key} onClick={() => setTemplateCategoryFilter(f.key)}
+                style={{
+                  padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 500, cursor: 'pointer',
+                  border: '1px solid var(--border)',
+                  background: templateCategoryFilter === f.key ? 'var(--accent)' : 'transparent',
+                  color: templateCategoryFilter === f.key ? '#fff' : 'var(--text-muted)',
+                }}>
+                {f.label}{f.key !== 'all' ? ` (${categoryCounts[f.key]})` : ''}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {pagedConnectors.length === 0 ? (
+          <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+            No connectors match your search.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
+            {pagedConnectors.map(c => (
+              <Card key={c.id} onClick={() => handleSelectConnector(c.id)} style={{ cursor: 'pointer', padding: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                  <VendorLogo src={c.logo} size={32} />
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.description}</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                  <Badge bg={DIRECTION_BADGE[c.direction]?.bg} text={DIRECTION_BADGE[c.direction]?.text} label={c.direction.toUpperCase()} />
+                  <Badge bg={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).bg} text={(ENTITY_BADGE[c.entity] || DEFAULT_ENTITY_BADGE).text} label={c.entity.toUpperCase()} />
+                  <Badge bg="var(--border)" text="var(--text-muted)" label={c.transport_type.toUpperCase()} />
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+
+        {/* Pagination */}
+        {templatePageCount > 1 && (
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8, marginTop: 12 }}>
+            <button onClick={() => setTemplatePage(p => Math.max(1, p - 1))} disabled={templatePage === 1}
+              style={{ ...pillButtonStyle, border: '1px solid var(--border)', background: 'transparent', color: templatePage === 1 ? 'var(--text-muted)' : 'var(--text)', opacity: templatePage === 1 ? 0.4 : 1 }}>
+              Previous
+            </button>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              {templatePage} / {templatePageCount}
+            </span>
+            <button onClick={() => setTemplatePage(p => Math.min(templatePageCount, p + 1))} disabled={templatePage === templatePageCount}
+              style={{ ...pillButtonStyle, border: '1px solid var(--border)', background: 'transparent', color: templatePage === templatePageCount ? 'var(--text-muted)' : 'var(--text)', opacity: templatePage === templatePageCount ? 0.4 : 1 }}>
+              Next
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Section: On-Prem / Relay Agent */}
@@ -1330,7 +1449,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         </div>
       )}
 
-      {transportType === 'file' && loading && ['pdf', 'docx'].includes(transportConfig.format) && (
+      {transportType === 'file' && extracting && ['pdf', 'docx'].includes(transportConfig.format) && (
         <div style={{
           padding: 16, borderRadius: 8, background: 'var(--accent-bg, #3b82f610)',
           border: '1px solid var(--accent-border, #3b82f630)',

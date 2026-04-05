@@ -3,6 +3,7 @@
   "relay_capable": true,
   "name": "Qualys \u2014 Findings",
   "description": "Pull vulnerability detections from Qualys VM",
+  "category": "Vulnerability Management",
   "logo": "/logos/vendors/qualys.svg",
   "direction": "pull",
   "entity": "finding",

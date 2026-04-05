@@ -1,0 +1,145 @@
+{
+  "id": "cobalt_findings",
+  "name": "Cobalt \u2014 Findings",
+  "description": "Pull pentest findings from Cobalt via the REST API v2",
+  "category": "SAST / Code Security",
+  "logo": "/logos/vendors/cobalt.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.cobalt.io",
+    "method": "GET",
+    "path": "/v2/findings",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_token}}",
+      "X-Org-Token": "{{credentials.org_token}}",
+      "Accept": "application/vnd.cobalt.v2+json"
+    },
+    "query_params": {
+      "limit": "100"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_token",
+        "label": "API Token",
+        "type": "password",
+        "help": "Your Cobalt API token from Profile > API Token"
+      },
+      {
+        "field": "org_token",
+        "label": "Organization Token",
+        "type": "text",
+        "help": "Your Cobalt organization token from Settings > General"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/v2/findings?limit=1",
+      "headers": {
+        "Authorization": "Bearer {{credentials.api_token}}",
+        "X-Org-Token": "{{credentials.org_token}}",
+        "Accept": "application/vnd.cobalt.v2+json"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Cobalt. Verify your API token and organization token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "resource.title",
+      "target": "title"
+    },
+    {
+      "source": "resource.description",
+      "target": "description"
+    },
+    {
+      "source": "resource.severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low",
+          "informational": "info"
+        }
+      }
+    },
+    {
+      "source": "resource.affected_targets[0]",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "resource.suggested_fix",
+      "target": "solution"
+    },
+    {
+      "source": "resource.created_at",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "resource.updated_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "resource.state",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "new": "open",
+          "triaging": "open",
+          "need_fix": "open",
+          "check_fix": "open",
+          "carried_over": "open",
+          "fixed": "resolved",
+          "wont_fix": "accepted",
+          "not_applicable": "accepted",
+          "duplicate": "accepted",
+          "invalid": "accepted"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "pentest_id": {
+      "type": "string",
+      "default": "",
+      "description": "Filter findings by a specific Cobalt pentest ID"
+    },
+    "state": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": ["new", "triaging", "need_fix", "check_fix", "carried_over"],
+      "description": "Filter by finding state (new, triaging, need_fix, check_fix, carried_over, fixed, wont_fix, not_applicable, duplicate, invalid)"
+    }
+  }
+}

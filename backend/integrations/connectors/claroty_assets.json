@@ -1,0 +1,109 @@
+{
+  "id": "claroty_assets",
+  "name": "Claroty \u2014 OT Assets",
+  "description": "Pull OT/ICS asset inventory from Claroty xDome or CTD",
+  "category": "OT / IoT Security",
+  "logo": "/logos/vendors/claroty.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/api/v1/assets",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_token}}"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "total_field": "total_count"
+    }
+  },
+  "records_path": "objects",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Claroty Instance URL",
+      "placeholder": "https://yourcompany.claroty.cloud"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the Claroty management console as an administrator",
+        "deeplink_path": null
+      },
+      {
+        "instruction": "Navigate to Administration \u2192 Integrations \u2192 API Tokens",
+        "deeplink_path": "/administration/integrations"
+      },
+      {
+        "instruction": "Generate a new API token with read permissions for assets. Copy the token.",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v1/assets?limit=1",
+      "auth_header": "Authorization: Bearer {{api_token}}",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Claroty. Check your API token and instance URL."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "resource_id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "ip",
+      "target": "ip_address"
+    },
+    {
+      "source": "firmware_version",
+      "target": "os_version"
+    },
+    {
+      "source": "type",
+      "target": "tags"
+    },
+    {
+      "source": "last_seen",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': record.get('ip', ''), 'hostname': record.get('name', ''), 'display_name': record.get('name') or record.get('ip', ''), 'device_id': record.get('resource_id', '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'vendor': record.get('vendor', ''), 'model': record.get('model', ''), 'firmware_version': record.get('firmware_version', ''), 'zone': record.get('zone', ''), 'protocol': record.get('protocol', ''), 'device_type': record.get('type', ''), 'network_segment': record.get('network_segment', ''), 'site_name': record.get('site_name', '')}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

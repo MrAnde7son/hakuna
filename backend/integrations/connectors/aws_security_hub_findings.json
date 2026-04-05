@@ -1,0 +1,177 @@
+{
+  "id": "aws_security_hub_findings",
+  "name": "AWS Security Hub \u2014 Findings",
+  "description": "Pull security findings from AWS Security Hub",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/aws.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://securityhub.{{credentials.region}}.amazonaws.com",
+    "method": "POST",
+    "path": "/findings/get",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "Filters": {
+        "SeverityLabel": [
+          { "Value": "CRITICAL", "Comparison": "EQUALS" },
+          { "Value": "HIGH", "Comparison": "EQUALS" },
+          { "Value": "MEDIUM", "Comparison": "EQUALS" },
+          { "Value": "LOW", "Comparison": "EQUALS" },
+          { "Value": "INFORMATIONAL", "Comparison": "EQUALS" }
+        ]
+      },
+      "MaxResults": 100
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 100,
+      "cursor_field": "NextToken",
+      "cursor_param_in": "body",
+      "cursor_param": "NextToken"
+    }
+  },
+  "records_path": "Findings",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "access_key_id",
+        "label": "AWS Access Key ID",
+        "type": "text",
+        "help": "From IAM > Users > Security credentials > Access keys"
+      },
+      {
+        "field": "secret_access_key",
+        "label": "AWS Secret Access Key",
+        "type": "password",
+        "help": "The secret key generated alongside the access key ID"
+      },
+      {
+        "field": "region",
+        "label": "AWS Region",
+        "type": "text",
+        "default": "us-east-1",
+        "help": "The AWS region where Security Hub is enabled (e.g. us-east-1, eu-west-1)"
+      }
+    ],
+    "validation_request": {
+      "method": "POST",
+      "path": "/findings/get",
+      "body": {
+        "Filters": {},
+        "MaxResults": 1
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with AWS Security Hub. Verify your access key, secret key, and region."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "Id",
+      "target": "source_id"
+    },
+    {
+      "source": "Title",
+      "target": "title"
+    },
+    {
+      "source": "Description",
+      "target": "description"
+    },
+    {
+      "source": "Severity.Label",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "CRITICAL": "critical",
+          "HIGH": "high",
+          "MEDIUM": "medium",
+          "LOW": "low",
+          "INFORMATIONAL": "info"
+        }
+      }
+    },
+    {
+      "source": "Resources[0].Id",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "Resources[0].Details.AwsEc2Instance.IpV4Addresses[0]",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "Vulnerabilities[0].Id",
+      "target": "cve_id"
+    },
+    {
+      "source": "Vulnerabilities[0].Cvss[0].BaseScore",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "Vulnerabilities[0].ExploitAvailable",
+      "target": "exploit_available",
+      "transform": {
+        "type": "boolean",
+        "truthy": ["YES"]
+      }
+    },
+    {
+      "source": "Remediation.Recommendation.Text",
+      "target": "solution"
+    },
+    {
+      "source": "FirstObservedAt",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "LastObservedAt",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "Compliance.Status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "PASSED": "resolved",
+          "FAILED": "open",
+          "WARNING": "open",
+          "NOT_AVAILABLE": "open"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "region": {
+      "type": "string",
+      "default": "us-east-1",
+      "description": "AWS region where Security Hub is enabled"
+    },
+    "severity_filter": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"],
+      "description": "Severity labels to include (CRITICAL, HIGH, MEDIUM, LOW, INFORMATIONAL)"
+    }
+  }
+}

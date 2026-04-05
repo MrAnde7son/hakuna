@@ -2,6 +2,7 @@
   "id": "godaddy_api",
   "name": "GoDaddy — Domains & DNS",
   "description": "Pull domain registrations and DNS records from GoDaddy to discover all authoritative DNS records and domain expiry dates for takeover risk assessment",
+  "category": "DNS / Infrastructure",
   "logo": "/logos/vendors/godaddy.svg",
   "direction": "pull",
   "entity": "asset",

@@ -1,0 +1,139 @@
+{
+  "id": "bugcrowd_submissions",
+  "name": "Bugcrowd \u2014 Submissions",
+  "description": "Pull bug bounty submissions from Bugcrowd via the REST API",
+  "category": "Bug Bounty",
+  "logo": "/logos/vendors/bugcrowd.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.bugcrowd.com",
+    "method": "GET",
+    "path": "/submissions",
+    "headers": {
+      "Authorization": "Token {{credentials.api_token}}",
+      "Accept": "application/vnd.bugcrowd.v4+json"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 100,
+      "cursor_field": "meta.next_page",
+      "cursor_param": "page[cursor]"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_token",
+        "label": "API Token",
+        "type": "password",
+        "help": "Your Bugcrowd API token from Settings > API Credentials"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/submissions?page[limit]=1",
+      "headers": {
+        "Authorization": "Token {{credentials.api_token}}",
+        "Accept": "application/vnd.bugcrowd.v4+json"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Bugcrowd. Verify your API token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "attributes.title",
+      "target": "title"
+    },
+    {
+      "source": "attributes.description",
+      "target": "description"
+    },
+    {
+      "source": "attributes.priority",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "P1": "critical",
+          "P2": "high",
+          "P3": "medium",
+          "P4": "low",
+          "P5": "info"
+        }
+      }
+    },
+    {
+      "source": "attributes.target.name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "attributes.vulnerability_references[0].value",
+      "target": "cve_id"
+    },
+    {
+      "source": "attributes.remediation_advice",
+      "target": "solution"
+    },
+    {
+      "source": "attributes.submitted_at",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "attributes.updated_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "attributes.state",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "new": "open",
+          "triaged": "open",
+          "unresolved": "open",
+          "resolved": "resolved",
+          "informational": "accepted",
+          "duplicate": "accepted",
+          "out_of_scope": "accepted",
+          "not_applicable": "accepted",
+          "wont_fix": "accepted"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "program": {
+      "type": "string",
+      "default": "",
+      "description": "Bugcrowd program code to filter submissions"
+    },
+    "state": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": ["new", "triaged", "unresolved"],
+      "description": "Filter by submission state (new, triaged, unresolved, resolved, informational, duplicate, out_of_scope, not_applicable, wont_fix)"
+    }
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "id": "recorded_future_findings",
+  "relay_capable": false,
+  "name": "Recorded Future \u2014 Alerts",
+  "description": "Pull threat intelligence alerts from Recorded Future",
+  "category": "Threat Intelligence",
+  "logo": "/logos/vendors/recorded_future.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.recordedfuture.com",
+    "method": "GET",
+    "path": "/v2/alert/search",
+    "headers": {
+      "X-RFToken": "{{credentials.api_token}}"
+    },
+    "query_params": {
+      "limit": "100",
+      "from": "{{pagination.offset}}"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "from",
+      "total_field": "counts.total"
+    }
+  },
+  "records_path": "data.results",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the Recorded Future portal"
+      },
+      {
+        "instruction": "Go to User Settings \u2192 API Access and generate or copy your API token.",
+        "capture": {
+          "field": "api_token",
+          "label": "API Token",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/v2/alert/search?limit=1",
+      "headers": {
+        "X-RFToken": "{{api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Recorded Future. Verify your API token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "title",
+      "target": "title"
+    },
+    {
+      "source": "hits[0].fragment",
+      "target": "description"
+    },
+    {
+      "source": "risk.criticality",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Critical": "critical",
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "Informational": "info"
+        }
+      }
+    },
+    {
+      "source": "entities[0].name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "entities[0].type",
+      "target": "plugin_id"
+    },
+    {
+      "source": "triggered",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "updated",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

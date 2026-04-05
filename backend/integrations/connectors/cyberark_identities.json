@@ -1,0 +1,133 @@
+{
+  "id": "cyberark_identities",
+  "name": "CyberArk \u2014 Privileged Accounts",
+  "description": "Pull privileged account inventory from CyberArk Vault for identity-aware exposure management",
+  "category": "Identity Security",
+  "logo": "/logos/vendors/cyberark.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/PasswordVault/API/Accounts",
+    "headers": {
+      "Authorization": "{{credentials.session_token}}",
+      "Content-Type": "application/json"
+    },
+    "query_params": {
+      "limit": "100",
+      "offset": "{{pagination.offset}}"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset",
+      "total_field": "count"
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "CyberArk PVWA URL",
+      "placeholder": "https://pvwa.yourcompany.com"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the CyberArk Privileged Vault Web Access (PVWA)"
+      },
+      {
+        "instruction": "Obtain a session token by authenticating via the CyberArk API. You can use /PasswordVault/API/auth/Cyberark/Logon with your username and password."
+      },
+      {
+        "instruction": "Enter your CyberArk username",
+        "capture": {
+          "field": "username",
+          "label": "CyberArk Username",
+          "type": "text",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Enter your CyberArk password",
+        "capture": {
+          "field": "password",
+          "label": "CyberArk Password",
+          "type": "password",
+          "auto_validate": false
+        }
+      }
+    ],
+    "auth_request": {
+      "method": "POST",
+      "path": "/PasswordVault/API/auth/Cyberark/Logon",
+      "body": {
+        "username": "{{username}}",
+        "password": "{{password}}"
+      },
+      "extract_token": "response_body",
+      "token_field": "session_token"
+    },
+    "validation_request": {
+      "method": "GET",
+      "path": "/PasswordVault/API/Accounts?limit=1",
+      "headers": {
+        "Authorization": "{{session_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with CyberArk. Check the PVWA URL and credentials."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "userName",
+      "target": "fqdn"
+    },
+    {
+      "source": "address",
+      "target": "ip_address"
+    },
+    {
+      "source": "platformId",
+      "target": "os"
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'display_name': record.get('name', ''), 'account_name': record.get('name', ''), 'username': record.get('userName', ''), 'address': record.get('address', ''), 'platform': record.get('platformId', ''), 'safe_name': record.get('safeName', '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'safe_name': record.get('safeName', ''), 'secret_type': record.get('secretType', ''), 'platform_id': record.get('platformId', ''), 'secret_management': record.get('secretManagement', {}), 'created_time': record.get('createdTime', ''), 'category_modification_time': record.get('categoryModificationTime', ''), 'platform_account_properties': record.get('platformAccountProperties', {})}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'identity'"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

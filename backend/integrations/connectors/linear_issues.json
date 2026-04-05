@@ -1,0 +1,142 @@
+{
+  "id": "linear_issues",
+  "relay_capable": false,
+  "name": "Linear \u2014 Issues",
+  "description": "Pull issues from Linear via GraphQL and map them to findings",
+  "category": "ITSM / Ticketing",
+  "logo": "/logos/vendors/linear.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.linear.app",
+    "method": "POST",
+    "path": "/graphql",
+    "headers": {
+      "Authorization": "{{credentials.api_key}}",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "query": "query($first: Int, $after: String) { issues(first: $first, after: $after, filter: { state: { type: { nin: [\"canceled\"] } } }) { nodes { id identifier title description priority priorityLabel state { name type } assignee { name email } team { name } labels { nodes { name } } createdAt updatedAt } pageInfo { hasNextPage endCursor } } }",
+      "variables": {
+        "first": 100,
+        "after": "{{pagination.cursor}}"
+      }
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 100,
+      "cursor_field": "data.issues.pageInfo.endCursor",
+      "has_next_field": "data.issues.pageInfo.hasNextPage"
+    }
+  },
+  "records_path": "data.issues.nodes",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into Linear and go to Settings \u2192 API",
+        "deeplink_path": "https://linear.app/settings/api"
+      },
+      {
+        "instruction": "Create a personal API key or an OAuth application. Copy the API key.",
+        "capture": {
+          "field": "api_key",
+          "label": "API Key",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "POST",
+      "path": "/graphql",
+      "headers": {
+        "Authorization": "{{api_key}}",
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "query": "{ viewer { id } }"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Linear. Verify your API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "title",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "priority",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "0": "info",
+          "1": "critical",
+          "2": "high",
+          "3": "medium",
+          "4": "low"
+        }
+      }
+    },
+    {
+      "source": "team.name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "identifier",
+      "target": "plugin_id"
+    },
+    {
+      "source": "assignee.name",
+      "target": "assignee"
+    },
+    {
+      "source": "labels.nodes[0].name",
+      "target": "tags"
+    },
+    {
+      "source": "createdAt",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "updatedAt",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "state.type",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "backlog": "open",
+          "unstarted": "open",
+          "started": "in_progress",
+          "completed": "resolved",
+          "canceled": "accepted"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

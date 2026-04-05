@@ -1,0 +1,126 @@
+{
+  "id": "obsidian_findings",
+  "name": "Obsidian Security \u2014 Threats",
+  "description": "Pull SaaS threat detections from Obsidian Security",
+  "category": "SaaS Security / SSPM",
+  "logo": "/logos/vendors/obsidian.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.obsidiansecurity.com",
+    "method": "GET",
+    "path": "/v1/threats",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_token}}"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 100,
+      "cursor_field": "pagination.next_cursor",
+      "cursor_param": "cursor"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the Obsidian Security console as an administrator",
+        "deeplink_path": null
+      },
+      {
+        "instruction": "Navigate to Settings \u2192 Integrations \u2192 API Access",
+        "deeplink_path": "/settings/integrations"
+      },
+      {
+        "instruction": "Generate a new API token. Copy the token value.",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/v1/threats?limit=1",
+      "auth_header": "Authorization: Bearer {{api_token}}",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Obsidian Security. Check your API token and try again."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "threat_type",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "CRITICAL": "critical",
+          "HIGH": "high",
+          "MEDIUM": "medium",
+          "LOW": "low",
+          "INFO": "info"
+        }
+      }
+    },
+    {
+      "source": "service",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "user_email",
+      "target": "description"
+    },
+    {
+      "source": "recommendation",
+      "target": "solution"
+    },
+    {
+      "source": "detected_at",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "updated_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "ACTIVE": "open",
+          "RESOLVED": "resolved",
+          "DISMISSED": "accepted"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

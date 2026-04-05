@@ -1,0 +1,159 @@
+{
+  "id": "sentinel_findings",
+  "name": "Microsoft Sentinel \u2014 Incidents",
+  "description": "Pull security incidents from Microsoft Sentinel",
+  "category": "SIEM / Analytics",
+  "logo": "/logos/vendors/azure.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://management.azure.com",
+    "method": "GET",
+    "path": "/subscriptions/{{credentials.subscription_id}}/resourceGroups/{{credentials.resource_group}}/providers/Microsoft.OperationalInsights/workspaces/{{credentials.workspace_name}}/providers/Microsoft.SecurityInsights/incidents",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "api-version": "2023-11-01"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextLink",
+      "cursor_is_full_url": true
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
+    "grant_type": "client_credentials",
+    "scopes": ["https://management.azure.com/.default"],
+    "fields": [
+      {
+        "field": "tenant_id",
+        "label": "Azure Tenant ID",
+        "type": "text",
+        "help": "From Azure Active Directory > Properties > Tenant ID"
+      },
+      {
+        "field": "client_id",
+        "label": "Application (Client) ID",
+        "type": "text",
+        "help": "From App registrations > Your app > Application (client) ID"
+      },
+      {
+        "field": "client_secret",
+        "label": "Client Secret",
+        "type": "password",
+        "help": "From App registrations > Your app > Certificates & secrets"
+      },
+      {
+        "field": "subscription_id",
+        "label": "Azure Subscription ID",
+        "type": "text",
+        "help": "The subscription containing the Sentinel workspace"
+      },
+      {
+        "field": "resource_group",
+        "label": "Resource Group",
+        "type": "text",
+        "help": "The resource group containing the Log Analytics workspace"
+      },
+      {
+        "field": "workspace_name",
+        "label": "Workspace Name",
+        "type": "text",
+        "help": "The Log Analytics workspace name where Sentinel is enabled"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/subscriptions/{{credentials.subscription_id}}/resourceGroups/{{credentials.resource_group}}/providers/Microsoft.OperationalInsights/workspaces/{{credentials.workspace_name}}/providers/Microsoft.SecurityInsights/incidents",
+      "query_params": {
+        "api-version": "2023-11-01",
+        "$top": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Microsoft Sentinel. Verify your tenant ID, client credentials, subscription, resource group, and workspace name."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "name",
+      "target": "source_id"
+    },
+    {
+      "source": "properties.title",
+      "target": "title"
+    },
+    {
+      "source": "properties.description",
+      "target": "description"
+    },
+    {
+      "source": "properties.severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "Informational": "info"
+        }
+      }
+    },
+    {
+      "source": "properties.additionalData.alertProductNames[0]",
+      "target": "plugin_id"
+    },
+    {
+      "source": "properties.createdTimeUtc",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "properties.lastModifiedTimeUtc",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "properties.status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "New": "open",
+          "Active": "in_progress",
+          "Closed": "resolved"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "subscription_id": {
+      "type": "string",
+      "required": true,
+      "description": "Azure Subscription ID containing the Sentinel workspace"
+    },
+    "resource_group": {
+      "type": "string",
+      "required": true,
+      "description": "Resource group containing the Log Analytics workspace"
+    },
+    "workspace_name": {
+      "type": "string",
+      "required": true,
+      "description": "Log Analytics workspace name where Sentinel is enabled"
+    }
+  }
+}

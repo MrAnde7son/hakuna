@@ -2,6 +2,7 @@
   "id": "slack_alert",
   "name": "Slack \u2014 Alert",
   "description": "Push finding alerts to a Slack channel",
+  "category": "Collaboration / Docs",
   "logo": "/logos/vendors/slack.svg",
   "direction": "push",
   "entity": "action",

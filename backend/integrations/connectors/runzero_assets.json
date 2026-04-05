@@ -1,0 +1,114 @@
+{
+  "id": "runzero_assets",
+  "name": "runZero \u2014 Assets",
+  "description": "Pull asset inventory from runZero for network discovery and asset management",
+  "category": "EASM",
+  "logo": "/logos/vendors/runzero.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://console.runzero.com",
+    "method": "GET",
+    "path": "/api/v1.0/org/assets",
+    "headers": {
+      "Accept": "application/json",
+      "Authorization": "Bearer {{credentials.api_token}}"
+    },
+    "query_params": {
+      "count": "1000"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 1000,
+      "offset_param": "offset",
+      "size_param": "count"
+    }
+  },
+  "records_path": "",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_token",
+        "label": "Organization API Key",
+        "type": "password",
+        "help": "Generate an Organization API key from runZero under Account > Organization API keys"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v1.0/org/key",
+      "headers": {
+        "Authorization": "Bearer {{credentials.api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with runZero. Check your API token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "names[0]",
+      "target": "hostname"
+    },
+    {
+      "source": "addresses[0]",
+      "target": "ip_address"
+    },
+    {
+      "source": "os",
+      "target": "os"
+    },
+    {
+      "source": "os_version",
+      "target": "os_version"
+    },
+    {
+      "source": "last_seen",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "type",
+      "target": "tags"
+    },
+    {
+      "source": "id",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': (record.get('addresses') or [''])[0], 'hostname': (record.get('names') or [''])[0], 'display_name': (record.get('names') or [''])[0] or (record.get('addresses') or [''])[0], 'device_id': value}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'hw': record.get('hw', ''), 'mac_vendors': record.get('mac_vendors', []), 'service_count': record.get('service_count', 0), 'alive': record.get('alive', False), 'first_seen': record.get('first_seen', ''), 'detected_by': record.get('detected_by', ''), 'site_id': record.get('site_id', ''), 'agent_name': record.get('agent_name', '')}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "search": {
+      "type": "string",
+      "default": "",
+      "description": "runZero search query to filter assets (e.g., 'os:Windows AND alive:true')"
+    },
+    "count": {
+      "type": "integer",
+      "default": 1000,
+      "description": "Number of assets per page (max 1000)"
+    }
+  }
+}

@@ -1,0 +1,129 @@
+{
+  "id": "armis_findings",
+  "name": "Armis \u2014 Vulnerabilities",
+  "description": "Pull device vulnerability findings from Armis",
+  "category": "OT / IoT Security",
+  "logo": "/logos/vendors/armis.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/api/v1/vulnerabilities/",
+    "headers": {
+      "Authorization": "{{credentials.api_secret}}"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 1000,
+      "offset_param": "from",
+      "total_field": "data.total"
+    }
+  },
+  "records_path": "data.results",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Armis Instance URL",
+      "placeholder": "https://yourcompany.armis.com"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the Armis management console as an administrator",
+        "deeplink_path": null
+      },
+      {
+        "instruction": "Navigate to Settings \u2192 API Management",
+        "deeplink_path": "/settings/api-management"
+      },
+      {
+        "instruction": "Generate a new API secret key. Copy the secret key.",
+        "capture": {
+          "field": "api_secret",
+          "label": "Paste API Secret Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v1/vulnerabilities/?from=0&length=1",
+      "auth_header": "Authorization: {{api_secret}}",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Armis. Check your API secret key and instance URL."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "title",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Critical": "critical",
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "Info": "info"
+        }
+      }
+    },
+    {
+      "source": "device_name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "device_ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "cve_id",
+      "target": "cve_id"
+    },
+    {
+      "source": "cvss_score",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "recommendation",
+      "target": "solution"
+    },
+    {
+      "source": "first_detected",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "last_detected",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

@@ -37,6 +37,7 @@ def get_all_connectors():
             "direction": c["direction"],
             "entity": c["entity"],
             "transport_type": c["transport_type"],
+            "category": c.get("category", ""),
             "relay_capable": c.get("relay_capable", False),
         }
         for c in _CONNECTORS.values()

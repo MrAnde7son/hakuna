@@ -1,0 +1,151 @@
+{
+  "id": "invicti_findings",
+  "name": "Invicti \u2014 Findings",
+  "description": "Pull web application vulnerability findings from Invicti (Netsparker) via REST API",
+  "category": "DAST",
+  "logo": "/logos/vendors/invicti.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/api/1.0/vulnerabilities/list",
+    "headers": {
+      "Authorization": "Basic {{credentials.credentials_token}}",
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "page": "{{pagination.page}}",
+      "pageSize": "200"
+    },
+    "pagination": {
+      "strategy": "page",
+      "page_size": 200,
+      "page_param": "page",
+      "total_field": "TotalPageCount"
+    }
+  },
+  "records_path": "List",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Invicti Instance URL",
+      "placeholder": "https://yourcompany.invicti.com"
+    },
+    "fields": [
+      {
+        "field": "user_id",
+        "label": "User ID",
+        "type": "text",
+        "help": "Your Invicti user ID, found under Settings > API"
+      },
+      {
+        "field": "api_token",
+        "label": "API Token",
+        "type": "password",
+        "help": "API token generated from Invicti Settings > API"
+      }
+    ],
+    "credential_transform": {
+      "credentials_token": {
+        "type": "base64",
+        "value": "{{user_id}}:{{api_token}}"
+      }
+    },
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/1.0/account/me",
+      "headers": {
+        "Authorization": "Basic {{credentials.credentials_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Invicti. Verify your User ID and API Token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "Id",
+      "target": "source_id"
+    },
+    {
+      "source": "Title",
+      "target": "title"
+    },
+    {
+      "source": "Description",
+      "target": "description"
+    },
+    {
+      "source": "Severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Critical": "critical",
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "Information": "info",
+          "BestPractice": "info"
+        }
+      }
+    },
+    {
+      "source": "Url",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "CvssScore",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "CvssVector",
+      "target": "cvss_vector"
+    },
+    {
+      "source": "RemedialProcedure",
+      "target": "solution"
+    },
+    {
+      "source": "FirstSeenDate",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "LastSeenDate",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "CertaintyDescription",
+      "target": "status"
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "website_id": {
+      "type": "string",
+      "default": "",
+      "description": "Optional website ID to filter vulnerabilities from a specific target"
+    },
+    "severity": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Filter by severity (Critical, High, Medium, Low, Information, BestPractice)"
+    }
+  }
+}

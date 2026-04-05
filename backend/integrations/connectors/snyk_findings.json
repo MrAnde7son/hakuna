@@ -1,0 +1,126 @@
+{
+  "id": "snyk_findings",
+  "name": "Snyk \u2014 Issues",
+  "description": "Pull security issues from Snyk via the REST API (v1/2024-01-23)",
+  "category": "SAST / Code Security",
+  "logo": "/logos/vendors/snyk.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.snyk.io",
+    "method": "GET",
+    "path": "/rest/orgs/{{params.org_id}}/issues",
+    "headers": {
+      "Authorization": "token {{credentials.api_token}}",
+      "Accept": "application/vnd.api+json"
+    },
+    "query_params": {
+      "version": "2024-01-23",
+      "limit": "100"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 100,
+      "cursor_field": "links.next",
+      "cursor_param": "starting_after"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_token",
+        "label": "API Token",
+        "type": "password",
+        "help": "A Snyk API token. Generate at Account Settings > General > Auth Token, or use a service account token."
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/rest/self",
+      "headers": {
+        "Authorization": "token {{credentials.api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Snyk. Verify your API token is valid."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "attributes.title",
+      "target": "title"
+    },
+    {
+      "source": "attributes.description",
+      "target": "description"
+    },
+    {
+      "source": "attributes.effective_severity_level",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low"
+        }
+      }
+    },
+    {
+      "source": "attributes.coordinates[0].remedies[0].description",
+      "target": "solution"
+    },
+    {
+      "source": "relationships.scan_item.data.id",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "attributes.problems[0].id",
+      "target": "cve_id"
+    },
+    {
+      "source": "attributes.created_at",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "attributes.updated_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "attributes.status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "open": "open",
+          "resolved": "resolved",
+          "ignored": "accepted"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "org_id": {
+      "type": "string",
+      "required": true,
+      "description": "Snyk organization ID"
+    }
+  }
+}

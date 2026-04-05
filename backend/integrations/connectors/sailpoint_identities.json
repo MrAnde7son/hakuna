@@ -1,0 +1,114 @@
+{
+  "id": "sailpoint_identities",
+  "name": "SailPoint IdentityNow \u2014 Identities",
+  "description": "Pull identity records from SailPoint IdentityNow for identity-aware exposure management",
+  "category": "Identity Security",
+  "logo": "/logos/vendors/sailpoint.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{credentials.tenant}}.api.identitynow.com",
+    "method": "POST",
+    "path": "/v3/search",
+    "headers": {
+      "Content-Type": "application/json",
+      "Accept": "application/json"
+    },
+    "body": {
+      "indices": ["identities"],
+      "query": {
+        "query": "*"
+      },
+      "sort": ["+id"]
+    },
+    "query_params": {
+      "limit": "250",
+      "offset": "{{pagination.offset}}"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 250,
+      "offset_param": "offset"
+    }
+  },
+  "records_path": "",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "token_url": "https://{{credentials.tenant}}.api.identitynow.com/oauth/token",
+    "grant_type": "client_credentials",
+    "client_id_field": {
+      "label": "SailPoint Client ID",
+      "type": "text"
+    },
+    "client_secret_field": {
+      "label": "SailPoint Client Secret",
+      "type": "password"
+    },
+    "extra_fields": [
+      {
+        "field": "tenant",
+        "label": "SailPoint Tenant Name",
+        "type": "text",
+        "help": "Your tenant name from the IdentityNow URL (e.g. 'acme' from acme.identitynow.com)"
+      }
+    ],
+    "scopes": [],
+    "validation_request": {
+      "method": "GET",
+      "path": "/v3/public-identities?limit=1",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with SailPoint. Verify the tenant name, client ID, and client secret."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "email",
+      "target": "fqdn"
+    },
+    {
+      "source": "lastLogin",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "displayName",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'display_name': record.get('displayName', ''), 'name': record.get('name', ''), 'email': record.get('email', ''), 'employee_number': (record.get('attributes') or {}).get('employeeNumber', ''), 'identity_id': record.get('id', '')}"
+      }
+    },
+    {
+      "source": "displayName",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'department': (record.get('attributes') or {}).get('department', ''), 'title': (record.get('attributes') or {}).get('title', ''), 'manager': (record.get('manager') or {}).get('name', ''), 'lifecycle_state': record.get('lifecycleState', ''), 'identity_profile': record.get('identityProfile', ''), 'source_count': len(record.get('accounts') or []), 'entitlement_count': len(record.get('entitlements') or []), 'is_manager': record.get('isManager', False), 'created': record.get('created', ''), 'modified': record.get('modified', '')}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'identity'"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

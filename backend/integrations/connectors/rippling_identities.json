@@ -1,0 +1,100 @@
+{
+  "id": "rippling_identities",
+  "name": "Rippling \u2014 Employees",
+  "description": "Pull employee records from Rippling for identity-aware exposure management",
+  "category": "HR / People",
+  "logo": "/logos/vendors/rippling.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.rippling.com",
+    "method": "GET",
+    "path": "/platform/api/employees",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_token}}",
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "cursor": "{{pagination.cursor}}"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "next_cursor",
+      "cursor_param": "cursor"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into Rippling as an admin user"
+      },
+      {
+        "instruction": "Navigate to Company Settings \u2192 API Access and generate a new API token with read access to employee data"
+      },
+      {
+        "instruction": "Copy the API Bearer Token",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/platform/api/employees?limit=1",
+      "headers": {
+        "Authorization": "Bearer {{api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Rippling. Check the API token."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "workEmail",
+      "target": "fqdn"
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'display_name': record.get('name', ''), 'first_name': record.get('firstName', ''), 'last_name': record.get('lastName', ''), 'email': record.get('workEmail', ''), 'employee_id': str(record.get('id', ''))}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'department': record.get('department', ''), 'title': record.get('title', ''), 'role_state': record.get('roleState', ''), 'start_date': record.get('startDate', ''), 'end_date': record.get('endDate', ''), 'employment_type': record.get('employmentType', ''), 'manager': record.get('manager', ''), 'location': record.get('workLocation', ''), 'team': record.get('team', '')}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'identity'"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

@@ -1,0 +1,137 @@
+{
+  "id": "gitlab_findings",
+  "name": "GitLab Ultimate \u2014 Security Findings",
+  "description": "Pull security vulnerability findings from a GitLab Ultimate group via the Vulnerability Findings API",
+  "category": "SAST / Code Security",
+  "logo": "/logos/vendors/gitlab.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/api/v4/groups/{{params.group_id}}/vulnerability_findings",
+    "headers": {
+      "PRIVATE-TOKEN": "{{credentials.private_token}}",
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "per_page": "100",
+      "page": "{{pagination.page}}"
+    },
+    "pagination": {
+      "strategy": "page",
+      "page_size": 100,
+      "page_param": "page"
+    }
+  },
+  "records_path": "",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "GitLab Instance URL",
+      "placeholder": "https://gitlab.com",
+      "default": "https://gitlab.com"
+    },
+    "fields": [
+      {
+        "field": "private_token",
+        "label": "Private Token",
+        "type": "password",
+        "help": "A GitLab personal access token with 'read_api' scope. Generate at User Settings > Access Tokens."
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v4/user",
+      "headers": {
+        "PRIVATE-TOKEN": "{{credentials.private_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with GitLab. Verify your private token has the 'read_api' scope."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low",
+          "info": "info",
+          "unknown": "info"
+        }
+      }
+    },
+    {
+      "source": "location.file",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "scanner.name",
+      "target": "plugin_id"
+    },
+    {
+      "source": "identifiers[0].value",
+      "target": "cve_id"
+    },
+    {
+      "source": "solution",
+      "target": "solution"
+    },
+    {
+      "source": "created_at",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "updated_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "state",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "detected": "open",
+          "confirmed": "open",
+          "resolved": "resolved",
+          "dismissed": "accepted"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "group_id": {
+      "type": "string",
+      "required": true,
+      "description": "GitLab group ID"
+    }
+  }
+}

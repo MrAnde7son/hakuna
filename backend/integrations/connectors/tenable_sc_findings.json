@@ -3,6 +3,7 @@
   "relay_capable": true,
   "name": "Tenable Security Center \u2014 Findings",
   "description": "Pull vulnerability findings from Tenable Security Center",
+  "category": "Vulnerability Management",
   "logo": "/logos/vendors/tenable.svg",
   "direction": "pull",
   "entity": "finding",

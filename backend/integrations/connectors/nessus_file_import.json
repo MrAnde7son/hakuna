@@ -2,6 +2,7 @@
   "id": "nessus_file_import",
   "name": "Nessus File Import",
   "description": "Import findings from a .nessus scan file",
+  "category": "Vulnerability Management",
   "logo": "/logos/vendors/nessus.svg",
   "direction": "pull",
   "entity": "finding",

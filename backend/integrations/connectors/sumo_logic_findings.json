@@ -1,0 +1,162 @@
+{
+  "id": "sumo_logic_findings",
+  "name": "Sumo Logic \u2014 Cloud SIEM Signals",
+  "description": "Pull security signals from Sumo Logic Cloud SIEM",
+  "category": "SIEM / Analytics",
+  "logo": "/logos/vendors/sumologic.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.{{credentials.region}}.sumologic.com",
+    "method": "GET",
+    "path": "/api/sec/v1/signals",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "auth": {
+      "type": "basic",
+      "username": "{{credentials.access_id}}",
+      "password": "{{credentials.access_key}}"
+    },
+    "query_params": {
+      "limit": "100"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset"
+    }
+  },
+  "records_path": "data.objects",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into Sumo Logic as an administrator"
+      },
+      {
+        "instruction": "Navigate to Administration > Security > Access Keys",
+        "deeplink_path": "/ui/#/security/access-keys"
+      },
+      {
+        "instruction": "Click + Add Access Key. Give it a name (e.g. 'Hakuna Integration'). Copy the Access ID and Access Key.",
+        "capture": {
+          "field": "access_id",
+          "label": "Access ID",
+          "type": "text",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Paste the Access Key below.",
+        "capture": {
+          "field": "access_key",
+          "label": "Access Key",
+          "type": "password",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Enter your Sumo Logic deployment region (e.g. us2, eu, au, jp, ca, de, in, fed).",
+        "capture": {
+          "field": "region",
+          "label": "Deployment Region",
+          "type": "text",
+          "placeholder": "us2",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/sec/v1/signals",
+      "query_params": {
+        "limit": "1"
+      },
+      "auth": {
+        "type": "basic",
+        "username": "{{access_id}}",
+        "password": "{{access_key}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Sumo Logic. Check your Access ID, Access Key, and region."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "CRITICAL": "critical",
+          "HIGH": "high",
+          "MEDIUM": "medium",
+          "LOW": "low",
+          "INFORMATIONAL": "info",
+          "10": "critical",
+          "8": "high",
+          "6": "medium",
+          "4": "low",
+          "2": "info"
+        }
+      }
+    },
+    {
+      "source": "entity.hostname",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "entity.ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "ruleId",
+      "target": "plugin_id"
+    },
+    {
+      "source": "timestamp",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "lastUpdated",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "stage",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "New": "open",
+          "InProgress": "in_progress",
+          "Closed": "resolved"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

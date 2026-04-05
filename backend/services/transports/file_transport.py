@@ -267,15 +267,19 @@ class FileTransport(BaseTransport):
             raise ValueError("Could not extract any text from the DOCX file")
         return "\n".join(paragraphs)
 
+    def extract_document_text(self, file_path: str, fmt: str) -> str:
+        """Extract raw text from a PDF or DOCX file (fast, no LLM)."""
+        if fmt == "pdf":
+            return self._extract_text_from_pdf(file_path)
+        elif fmt == "docx":
+            return self._extract_text_from_docx(file_path)
+        raise ValueError(f"Unsupported document format for text extraction: {fmt}")
+
     def _parse_pentest_document(self, file_path: str, fmt: str) -> list:
         """Extract text from PDF/DOCX, then use LLM to extract structured findings."""
         from services.llm_extractor import extract_findings_with_llm
 
-        # Step 1: Extract raw text
-        if fmt == "pdf":
-            text = self._extract_text_from_pdf(file_path)
-        else:
-            text = self._extract_text_from_docx(file_path)
+        text = self.extract_document_text(file_path, fmt)
 
         logger.info("Extracted %d chars from %s file for LLM parsing", len(text), fmt)
 

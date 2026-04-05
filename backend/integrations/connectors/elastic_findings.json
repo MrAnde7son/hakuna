@@ -1,0 +1,142 @@
+{
+  "id": "elastic_findings",
+  "name": "Elastic Security \u2014 Alerts",
+  "description": "Pull security alerts from Elastic Security",
+  "category": "SIEM / Analytics",
+  "logo": "/logos/vendors/elastic.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "POST",
+    "path": "/.alerts-security.alerts-*/_search",
+    "headers": {
+      "Authorization": "ApiKey {{credentials.api_key}}",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "size": 100,
+      "sort": [{"@timestamp": "desc"}],
+      "query": {
+        "bool": {
+          "must": [
+            {"match": {"signal.status": "open"}}
+          ]
+        }
+      }
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "from",
+      "offset_in_body": true
+    }
+  },
+  "records_path": "hits.hits",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Elasticsearch URL",
+      "placeholder": "https://your-cluster.es.cloud.elastic.co:9243"
+    },
+    "steps": [
+      {
+        "instruction": "Log into Kibana as an administrator"
+      },
+      {
+        "instruction": "Navigate to Stack Management > API Keys",
+        "deeplink_path": "/app/management/security/api_keys"
+      },
+      {
+        "instruction": "Click Create API key. Give it a name (e.g. 'Hakuna Integration') and assign the 'viewer' role at minimum. Copy the Base64-encoded API key.",
+        "capture": {
+          "field": "api_key",
+          "label": "Paste API Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/_security/_authenticate",
+      "headers": {
+        "Authorization": "ApiKey {{api_key}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Elasticsearch. Check the API key and cluster URL."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "_id",
+      "target": "source_id"
+    },
+    {
+      "source": "_source.signal.rule.name",
+      "target": "title"
+    },
+    {
+      "source": "_source.signal.rule.description",
+      "target": "description"
+    },
+    {
+      "source": "_source.signal.rule.severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low"
+        }
+      }
+    },
+    {
+      "source": "_source.host.name",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "_source.host.ip[0]",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "_source.signal.rule.id",
+      "target": "plugin_id"
+    },
+    {
+      "source": "_source.@timestamp",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "_source.signal.rule.updated_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "_source.signal.status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "open": "open",
+          "acknowledged": "in_progress",
+          "in-progress": "in_progress",
+          "closed": "resolved"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

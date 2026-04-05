@@ -1067,8 +1067,17 @@ export const deleteCredential = (id) => request(`${IB}/credentials/${id}`, { met
 
 export const integrationConnect = (data) => request(`${IB}/connect`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
-  timeout: data.transport_type === 'file' ? 180_000 : undefined, // PDF/DOCX LLM extraction can take minutes
 })
+export const getExtractStatus = (taskId) => request(`${IB}/extract-status/${taskId}`)
+export async function pollExtraction(taskId, { interval = 2000, maxAttempts = 90 } = {}) {
+  for (let i = 0; i < maxAttempts; i++) {
+    const result = await getExtractStatus(taskId)
+    if (result.status === 'completed') return result
+    if (result.status === 'error') throw new Error(result.error || 'Extraction failed')
+    await new Promise(r => setTimeout(r, interval))
+  }
+  throw new Error('Extraction timed out')
+}
 export const integrationPreview = (data) => request(`${IB}/preview`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
   timeout: data.transport_type === 'file' ? 180_000 : undefined,

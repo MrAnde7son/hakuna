@@ -288,10 +288,12 @@ def _trim_raw_response(raw, max_items=20):
 async def live_connect(body: ConnectRequest, db: Session = Depends(get_db),
                         user: User = Depends(require_auth)):
     """Make a live call and return raw response + detected paths. No DB write."""
+    import asyncio
     from services.transports.api_transport import ApiTransport
     from services.transports.file_transport import FileTransport
     from services.transports.sql_transport import SqlTransport
     from services.transports.mcp_transport import McpTransport
+    from services.extraction_tasks import create_task, update_task
 
     transport_map = {"api": ApiTransport, "file": FileTransport, "sql": SqlTransport, "mcp": McpTransport}
     transport_cls = transport_map.get(body.transport_type)
@@ -304,6 +306,43 @@ async def live_connect(body: ConnectRequest, db: Session = Depends(get_db),
         config = body.transport_config
         if body.records_path:
             config["records_path"] = body.records_path
+
+        # PDF/DOCX: dispatch LLM extraction as a background task and return immediately
+        fmt = config.get("format", "")
+        file_path = config.get("path", "")
+        if body.transport_type == "file" and fmt in ("pdf", "docx"):
+            transport = FileTransport(db=db)
+            text = transport.extract_document_text(file_path, fmt)
+            logger.info("Extracted %d chars from %s, dispatching async LLM extraction", len(text), fmt)
+
+            task_id = create_task()
+            update_task(task_id, "running")
+
+            async def _bg_extract(bg_task_id: str, bg_text: str):
+                from core.database import SessionLocal
+                from services.llm_extractor import extract_findings_with_llm
+                bg_db = SessionLocal()
+                try:
+                    findings = await asyncio.to_thread(
+                        extract_findings_with_llm, bg_db, bg_text, prompt_type="pentest"
+                    )
+                    if not findings:
+                        update_task(bg_task_id, "error", error="LLM could not extract any findings from the document")
+                        return
+                    update_task(bg_task_id, "completed", result={
+                        "raw_response": findings,
+                        "sample_records": findings[:20],
+                        "detected_paths": detect_paths(findings[0]) if findings else [],
+                        "detected_records_path": None,
+                    })
+                except Exception as e:
+                    logger.exception("Background LLM extraction failed: %s", e)
+                    update_task(bg_task_id, "error", error=str(e)[:2000])
+                finally:
+                    bg_db.close()
+
+            asyncio.get_running_loop().create_task(_bg_extract(task_id, text))
+            return {"async_task_id": task_id, "status": "running"}
 
         transport = transport_cls(db=db) if body.transport_type == "file" else transport_cls()
         result = await transport.connect(config, credentials)
@@ -337,6 +376,23 @@ async def live_connect(body: ConnectRequest, db: Session = Depends(get_db),
     except Exception as e:
         logger.exception("live_connect failed")
         raise HTTPException(500, f"Connect failed: {e}")
+
+
+@router.get("/extract-status/{task_id}")
+def get_extract_status(task_id: str, user: User = Depends(require_auth)):
+    """Poll the status of an async LLM extraction task."""
+    from services.extraction_tasks import get_task
+
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Extraction task not found or expired")
+
+    response = {"task_id": task_id, "status": task["status"]}
+    if task["status"] == "completed" and task["result"]:
+        response.update(task["result"])
+    elif task["status"] == "error":
+        response["error"] = task["error"]
+    return response
 
 
 class PreviewRequest(BaseModel):

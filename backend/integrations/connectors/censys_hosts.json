@@ -1,0 +1,125 @@
+{
+  "id": "censys_hosts",
+  "name": "Censys \u2014 Host Search (EASM)",
+  "description": "Pull internet-facing host assets from Censys Search via the v2 API for external attack surface discovery",
+  "category": "EASM",
+  "logo": "/logos/vendors/censys.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://search.censys.io",
+    "method": "GET",
+    "path": "/api/v2/hosts/search",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "q": "{{params.query}}",
+      "per_page": "100"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "result.links.next",
+      "cursor_param": "cursor"
+    }
+  },
+  "records_path": "result.hits",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "censys_api_id",
+        "label": "Censys API ID",
+        "type": "text",
+        "help": "API ID from your Censys account at https://search.censys.io/account/api"
+      },
+      {
+        "field": "censys_api_secret",
+        "label": "Censys API Secret",
+        "type": "password",
+        "help": "API secret from your Censys account"
+      }
+    ],
+    "auth_header": {
+      "type": "basic",
+      "username": "{{credentials.censys_api_id}}",
+      "password": "{{credentials.censys_api_secret}}"
+    },
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v2/account",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Censys. Check your API ID and secret."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "ip",
+      "target": "source_id"
+    },
+    {
+      "source": "ip",
+      "target": "ip_address"
+    },
+    {
+      "source": "dns.reverse_dns.names[0]",
+      "target": "hostname"
+    },
+    {
+      "source": "dns.reverse_dns.names[0]",
+      "target": "fqdn"
+    },
+    {
+      "source": "operating_system.product",
+      "target": "os"
+    },
+    {
+      "source": "operating_system.version",
+      "target": "os_version"
+    },
+    {
+      "source": "labels",
+      "target": "tags"
+    },
+    {
+      "source": "services[0].observed_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "ip",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': value, 'hostname': (record.get('dns') or {}).get('reverse_dns', {}).get('names', [''])[0] if (record.get('dns') or {}).get('reverse_dns') else '', 'display_name': value}"
+      }
+    },
+    {
+      "source": "ip",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'autonomous_system': (record.get('autonomous_system') or {}).get('description', ''), 'asn': (record.get('autonomous_system') or {}).get('asn', ''), 'services_count': len(record.get('services', [])), 'location_country': (record.get('location') or {}).get('country', ''), 'location_city': (record.get('location') or {}).get('city', '')}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "query": {
+      "type": "string",
+      "default": "*",
+      "description": "Censys search query (e.g., 'services.port: 443 and labels: remote-access')"
+    },
+    "per_page": {
+      "type": "integer",
+      "default": 100,
+      "description": "Number of results per page (max 100)"
+    }
+  }
+}

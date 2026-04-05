@@ -1,0 +1,131 @@
+{
+  "id": "stackhawk_findings",
+  "name": "StackHawk \u2014 Findings",
+  "description": "Pull DAST findings from StackHawk via REST API",
+  "category": "DAST",
+  "logo": "/logos/vendors/stackhawk.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.stackhawk.com",
+    "method": "GET",
+    "path": "/api/v1/app/{{params.app_id}}/findings",
+    "headers": {
+      "Authorization": "Bearer {{credentials.api_key}}",
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "start": "{{pagination.offset}}",
+      "limit": "100"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "start",
+      "limit_param": "limit"
+    }
+  },
+  "records_path": "findings",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "help": "Generate an API key from StackHawk Settings > API Keys"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v1/app",
+      "headers": {
+        "Authorization": "Bearer {{credentials.api_key}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with StackHawk. Verify your API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "pluginName",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "CRITICAL": "critical",
+          "HIGH": "high",
+          "MEDIUM": "medium",
+          "LOW": "low",
+          "INFO": "info"
+        }
+      }
+    },
+    {
+      "source": "host",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "path",
+      "target": "description",
+      "transform": {
+        "type": "expression",
+        "expr": "(record.get('description') or '') + '\\n\\nAffected path: ' + (value or '')"
+      }
+    },
+    {
+      "source": "cwe",
+      "target": "plugin_id"
+    },
+    {
+      "source": "firstFoundDate",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "lastFoundDate",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "OPEN": "open",
+          "RISK_ACCEPTED": "accepted",
+          "FIXED": "resolved"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "app_id": {
+      "type": "string",
+      "required": true,
+      "description": "StackHawk application ID to pull findings from"
+    }
+  }
+}

@@ -1,0 +1,162 @@
+{
+  "id": "lacework_findings",
+  "name": "Lacework \u2014 Alerts",
+  "description": "Pull security alerts from Lacework",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/lacework.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://{{credentials.account}}.lacework.net",
+    "method": "GET",
+    "path": "/api/v2/Alerts",
+    "headers": {
+      "Authorization": "Bearer {{credentials.access_token}}",
+      "Accept": "application/json"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "paging.urls.nextPage",
+      "cursor_is_full_url": true
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "account",
+        "label": "Lacework Account Name",
+        "type": "text",
+        "placeholder": "yourcompany",
+        "help": "Your Lacework account subdomain (e.g. 'yourcompany' from yourcompany.lacework.net)"
+      },
+      {
+        "field": "key_id",
+        "label": "API Key ID",
+        "type": "text",
+        "help": "From Lacework Console > Settings > API Keys"
+      },
+      {
+        "field": "secret",
+        "label": "API Secret",
+        "type": "password",
+        "help": "The secret generated when creating the API key"
+      }
+    ],
+    "token_exchange": {
+      "method": "POST",
+      "url": "https://{{credentials.account}}.lacework.net/api/v2/access/tokens",
+      "body": {
+        "keyId": "{{credentials.key_id}}",
+        "expiryTime": 3600
+      },
+      "headers": {
+        "X-LW-UAKS": "{{credentials.secret}}",
+        "Content-Type": "application/json"
+      },
+      "token_path": "data[0].token",
+      "store_as": "access_token"
+    },
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v2/Alerts",
+      "query_params": {
+        "limit": "1"
+      },
+      "headers": {
+        "Authorization": "Bearer {{credentials.access_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Lacework. Verify your account name, key ID, and secret."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "alertId",
+      "target": "source_id"
+    },
+    {
+      "source": "alertName",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Critical": "critical",
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "Info": "info",
+          "1": "critical",
+          "2": "high",
+          "3": "medium",
+          "4": "low",
+          "5": "info"
+        }
+      }
+    },
+    {
+      "source": "entityMap.Machine[0].hostname",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "entityMap.Machine[0].mid",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "derivedFields.sub_category",
+      "target": "plugin_id"
+    },
+    {
+      "source": "startTime",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "endTime",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Open": "open",
+          "Closed": "resolved"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "start_time": {
+      "type": "string",
+      "default": "",
+      "description": "Filter alerts starting from this time (ISO 8601 format)"
+    },
+    "end_time": {
+      "type": "string",
+      "default": "",
+      "description": "Filter alerts up to this time (ISO 8601 format)"
+    }
+  }
+}

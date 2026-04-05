@@ -1,0 +1,134 @@
+{
+  "id": "defender_endpoint_findings",
+  "name": "Microsoft Defender for Endpoint \u2014 Alerts",
+  "description": "Pull security alerts from Microsoft Defender for Endpoint",
+  "category": "Endpoint Security",
+  "logo": "/logos/vendors/microsoft.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.securitycenter.microsoft.com",
+    "method": "GET",
+    "path": "/api/alerts",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "@odata.nextLink",
+      "cursor_is_full_url": true
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
+    "grant_type": "client_credentials",
+    "scopes": ["https://api.securitycenter.microsoft.com/.default"],
+    "fields": [
+      {
+        "field": "tenant_id",
+        "label": "Azure Tenant ID",
+        "type": "text",
+        "help": "From Azure Active Directory > Properties > Tenant ID"
+      },
+      {
+        "field": "client_id",
+        "label": "Application (Client) ID",
+        "type": "text",
+        "help": "From App registrations > Your app > Application (client) ID"
+      },
+      {
+        "field": "client_secret",
+        "label": "Client Secret",
+        "type": "password",
+        "help": "From App registrations > Your app > Certificates & secrets"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/alerts",
+      "query_params": {
+        "$top": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Microsoft Defender for Endpoint. Verify your tenant ID and client credentials."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "title",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "Informational": "info"
+        }
+      }
+    },
+    {
+      "source": "machineId",
+      "target": "asset.source_id"
+    },
+    {
+      "source": "computerDnsName",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "category",
+      "target": "plugin_id"
+    },
+    {
+      "source": "recommendedAction",
+      "target": "solution"
+    },
+    {
+      "source": "alertCreationTime",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "lastUpdateTime",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "New": "open",
+          "InProgress": "in_progress",
+          "Resolved": "resolved"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

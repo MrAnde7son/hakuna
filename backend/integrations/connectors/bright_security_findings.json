@@ -1,0 +1,121 @@
+{
+  "id": "bright_security_findings",
+  "name": "Bright Security \u2014 Findings",
+  "description": "Pull DAST findings from Bright Security (formerly NeuraLegion) via REST API",
+  "category": "DAST",
+  "logo": "/logos/vendors/bright.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://app.brightsec.com",
+    "method": "GET",
+    "path": "/api/v2/scans/{{params.scan_id}}/issues",
+    "headers": {
+      "Authorization": "Api-Key {{credentials.api_key}}",
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "skip": "{{pagination.offset}}",
+      "limit": "100"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "skip",
+      "limit_param": "limit"
+    }
+  },
+  "records_path": "items",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "help": "Generate an API key from Bright Security Organization Settings > API Keys"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v2/scans",
+      "headers": {
+        "Authorization": "Api-Key {{credentials.api_key}}"
+      },
+      "query_params": {
+        "limit": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Bright Security. Verify your API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "title"
+    },
+    {
+      "source": "details",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Critical": "critical",
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "Info": "info"
+        }
+      }
+    },
+    {
+      "source": "url",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "cvss",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "remedy",
+      "target": "solution"
+    },
+    {
+      "source": "created_at",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "updated_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "scan_id": {
+      "type": "string",
+      "required": true,
+      "description": "Bright Security scan ID to pull issues from"
+    }
+  }
+}

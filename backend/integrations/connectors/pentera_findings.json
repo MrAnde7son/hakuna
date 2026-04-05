@@ -1,0 +1,155 @@
+{
+  "id": "pentera_findings",
+  "name": "Pentera \u2014 Findings",
+  "description": "Pull automated penetration testing findings from Pentera",
+  "category": "EASM",
+  "logo": "/logos/vendors/pentera.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/api/v1/findings",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "limit": "100"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 100,
+      "offset_param": "offset"
+    }
+  },
+  "records_path": "findings",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": true,
+    "fields": [
+      {
+        "field": "instance_url",
+        "label": "Pentera Instance URL",
+        "type": "text",
+        "help": "Your Pentera instance URL (e.g., https://pentera.yourcompany.com)"
+      },
+      {
+        "field": "client_id",
+        "label": "Client ID",
+        "type": "text",
+        "help": "OAuth2 client ID from Pentera administration"
+      },
+      {
+        "field": "client_secret",
+        "label": "Client Secret",
+        "type": "password",
+        "help": "OAuth2 client secret from Pentera administration"
+      }
+    ],
+    "token_url": "{{instance_url}}/auth/token",
+    "auth_type": "client_credentials",
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/v1/findings?limit=1",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Pentera. Verify your instance URL and client credentials."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "Critical": "critical",
+          "High": "high",
+          "Medium": "medium",
+          "Low": "low",
+          "Informational": "info"
+        }
+      }
+    },
+    {
+      "source": "target.ip",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "target.hostname",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "cve",
+      "target": "cve_id"
+    },
+    {
+      "source": "cvss_score",
+      "target": "cvss_score",
+      "transform": {
+        "type": "float"
+      }
+    },
+    {
+      "source": "recommendation",
+      "target": "solution"
+    },
+    {
+      "source": "attack_vector",
+      "target": "cvss_vector"
+    },
+    {
+      "source": "discovered_at",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "last_tested_at",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "exploit_available",
+      "target": "exploit_available",
+      "transform": {
+        "type": "boolean",
+        "truthy": ["true", "True", "1", "yes"]
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "severity": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Filter by severity (Critical, High, Medium, Low, Informational)"
+    },
+    "test_run_id": {
+      "type": "string",
+      "default": "",
+      "description": "Filter findings by a specific Pentera test run ID"
+    }
+  }
+}

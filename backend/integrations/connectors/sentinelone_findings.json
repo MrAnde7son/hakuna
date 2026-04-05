@@ -1,0 +1,134 @@
+{
+  "id": "sentinelone_findings",
+  "name": "SentinelOne \u2014 Threats",
+  "description": "Pull threat detections from SentinelOne",
+  "category": "Endpoint Security",
+  "logo": "/logos/vendors/sentinelone.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/web/api/v2.1/threats",
+    "headers": {
+      "Authorization": "ApiToken {{credentials.api_token}}"
+    },
+    "query_params": {
+      "limit": "100"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 100,
+      "cursor_field": "pagination.nextCursor",
+      "cursor_param": "cursor"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "SentinelOne Console URL",
+      "placeholder": "https://your-org.sentinelone.net"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the SentinelOne Management Console"
+      },
+      {
+        "instruction": "Navigate to Settings > Users > your user, or Settings > Service Users to create a dedicated API user"
+      },
+      {
+        "instruction": "Click Actions > Generate API Token. Copy the token value.",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/web/api/v2.1/system/info",
+      "headers": {
+        "Authorization": "ApiToken {{api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with SentinelOne. Check the API token and console URL."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "threatInfo.threatName",
+      "target": "title"
+    },
+    {
+      "source": "threatInfo.maliciousProcessArguments",
+      "target": "description"
+    },
+    {
+      "source": "threatInfo.confidenceLevel",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "malicious": "critical",
+          "suspicious": "high",
+          "n/a": "medium"
+        }
+      }
+    },
+    {
+      "source": "agentRealtimeInfo.agentComputerName",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "agentRealtimeInfo.agentNetworkInterfaces[0].inet[0]",
+      "target": "asset.ip_address"
+    },
+    {
+      "source": "agentRealtimeInfo.agentOsName",
+      "target": "asset.os"
+    },
+    {
+      "source": "threatInfo.mitigationStatus",
+      "target": "solution"
+    },
+    {
+      "source": "createdAt",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "updatedAt",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "threatInfo.incidentStatus",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "unresolved": "open",
+          "in_progress": "in_progress",
+          "resolved": "resolved"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {}
+}

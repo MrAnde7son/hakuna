@@ -1,0 +1,141 @@
+{
+  "id": "veracode_findings",
+  "name": "Veracode \u2014 Findings",
+  "description": "Pull application security findings from Veracode. Note: Veracode uses HMAC-SHA-256 request signing; the connector handles signature generation from the API ID and API key.",
+  "category": "SAST / Code Security",
+  "logo": "/logos/vendors/veracode.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.veracode.com",
+    "method": "GET",
+    "path": "/appsec/v2/applications/{{params.app_guid}}/findings",
+    "headers": {
+      "Authorization": "VERACODE-HMAC-SHA-256 id={{credentials.api_id}},ts={{timestamp}},nonce={{nonce}},sig={{signature}}"
+    },
+    "query_params": {
+      "size": "100",
+      "page": "{{pagination.page}}"
+    },
+    "auth_scheme": "veracode_hmac",
+    "pagination": {
+      "strategy": "page",
+      "page_size": 100,
+      "page_param": "page"
+    }
+  },
+  "records_path": "_embedded.findings",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "fields": [
+      {
+        "field": "api_id",
+        "label": "API ID",
+        "type": "text",
+        "help": "Veracode API ID from your API credentials page (Administration > API Accounts)."
+      },
+      {
+        "field": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "help": "Veracode API secret key paired with the API ID."
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/appsec/v1/applications",
+      "headers": {
+        "Authorization": "VERACODE-HMAC-SHA-256 id={{credentials.api_id}},ts={{timestamp}},nonce={{nonce}},sig={{signature}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Veracode. Verify your API ID and API key are correct and have not expired."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "issue_id",
+      "target": "source_id"
+    },
+    {
+      "source": "finding_details.finding_category.name",
+      "target": "title"
+    },
+    {
+      "source": "description",
+      "target": "description"
+    },
+    {
+      "source": "finding_details.severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "5": "critical",
+          "4": "high",
+          "3": "medium",
+          "2": "low",
+          "1": "info"
+        }
+      }
+    },
+    {
+      "source": "context",
+      "target": "asset.hostname"
+    },
+    {
+      "source": "finding_details.cwe.id",
+      "target": "plugin_id"
+    },
+    {
+      "source": "finding_details.cve",
+      "target": "cve_id"
+    },
+    {
+      "source": "finding_details.finding_status.resolution",
+      "target": "solution"
+    },
+    {
+      "source": "scan_type",
+      "target": "source_system"
+    },
+    {
+      "source": "finding_details.found_date",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "finding_details.modified_date",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "finding_details.finding_status.status",
+      "target": "status",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "OPEN": "open",
+          "CLOSED": "resolved",
+          "PROPOSED": "open",
+          "APPROVED": "accepted"
+        }
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "app_guid": {
+      "type": "string",
+      "required": true,
+      "description": "Veracode application GUID"
+    }
+  }
+}
