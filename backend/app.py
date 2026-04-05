@@ -736,8 +736,14 @@ def _find_duplicate_scan(db: Session, scan_name: str, scan_date, org_id) -> Opti
 
 
 def _delete_scan_cascade(db: Session, scan: Scan):
-    """Delete a scan and all its dependent records (inventory, aggregations, etc.)."""
+    """Delete a scan and all its dependent records (inventory, aggregations, etc.).
+
+    Assets and findings that were deduplicated with data from other scans are
+    preserved — only the observations originating from this scan are removed.
+    """
     scan_id = scan.id
+
+    # ── Scan-level child records ────────────────────────────────────────
     # SBOM records (vulns before components due to FK)
     sbom_comp_ids = [c[0] for c in db.query(SBOMComponent.id).filter(SBOMComponent.scan_id == scan_id).all()]
     if sbom_comp_ids:
@@ -759,26 +765,116 @@ def _delete_scan_cascade(db: Session, scan: Scan):
     db.query(ScanComparison).filter(
         (ScanComparison.base_scan_id == scan_id) | (ScanComparison.compare_scan_id == scan_id)
     ).delete(synchronize_session=False)
-    # Ownership, campaign, & tag assignment rows via assets/findings
-    asset_subq = db.query(Asset.id).filter(Asset.scan_id == scan_id).scalar_subquery()
-    finding_subq = db.query(Finding.id).filter(Finding.asset_id.in_(asset_subq)).scalar_subquery()
-    db.query(AssetOwnership).filter(AssetOwnership.asset_id.in_(asset_subq)).delete(synchronize_session=False)
-    db.query(FindingOwnership).filter(FindingOwnership.finding_id.in_(finding_subq)).delete(synchronize_session=False)
-    db.query(CampaignFinding).filter(CampaignFinding.finding_id.in_(finding_subq)).delete(synchronize_session=False)
-    db.query(TagAssignment).filter(TagAssignment.asset_id.in_(asset_subq)).delete(synchronize_session=False)
-    db.query(TagAssignment).filter(TagAssignment.finding_id.in_(finding_subq)).delete(synchronize_session=False)
-    # Observation tables with direct scan_id FK
+
+    # ── Remove observations that belong to this scan ────────────────────
     db.query(AssetObservation).filter(AssetObservation.scan_id == scan_id).delete(synchronize_session=False)
     db.query(FindingObservation).filter(FindingObservation.scan_id == scan_id).delete(synchronize_session=False)
-    # Clear auto_resolved_by_scan_id references from findings in OTHER scans
+    db.flush()  # ensure observation rows are gone before the survival check
+
+    # ── Identify assets/findings that survive (have observations from other scans) ──
+    all_asset_ids = {a[0] for a in db.query(Asset.id).filter(Asset.scan_id == scan_id).all()}
+    surviving_asset_ids: set[int] = set()
+    if all_asset_ids:
+        surviving_asset_ids = {
+            row[0] for row in
+            db.query(AssetObservation.asset_id)
+            .filter(AssetObservation.asset_id.in_(all_asset_ids))
+            .distinct()
+            .all()
+        }
+
+    all_finding_ids = {f[0] for f in db.query(Finding.id).filter(Finding.scan_id == scan_id).all()}
+    surviving_finding_ids: set[int] = set()
+    if all_finding_ids:
+        surviving_finding_ids = {
+            row[0] for row in
+            db.query(FindingObservation.finding_id)
+            .filter(FindingObservation.finding_id.in_(all_finding_ids))
+            .distinct()
+            .all()
+        }
+
+    # Also keep findings that belong to surviving assets even if the finding
+    # itself doesn't have observations from other scans — the finding may have
+    # been created by this scan but the parent asset is shared.  However, if the
+    # finding has no other observations it genuinely only came from this scan, so
+    # we still delete it.  (Findings on surviving assets that DO have other
+    # observations are already in surviving_finding_ids.)
+
+    # ── Reassign surviving assets to another scan ───────────────────────
+    for asset_id in surviving_asset_ids:
+        # Pick the most-recent observation's scan_id as the new owner
+        newest_obs = (
+            db.query(AssetObservation)
+            .filter(AssetObservation.asset_id == asset_id)
+            .order_by(AssetObservation.last_seen.desc())
+            .first()
+        )
+        new_scan_id = newest_obs.scan_id if newest_obs and newest_obs.scan_id else None
+        if new_scan_id:
+            db.query(Asset).filter(Asset.id == asset_id).update(
+                {"scan_id": new_scan_id}, synchronize_session=False
+            )
+        # Update source_systems to reflect remaining observations only
+        remaining_sources = [
+            row[0] for row in
+            db.query(AssetObservation.source_system)
+            .filter(AssetObservation.asset_id == asset_id)
+            .distinct()
+            .all()
+        ]
+        db.query(Asset).filter(Asset.id == asset_id).update(
+            {"source_systems": remaining_sources}, synchronize_session=False
+        )
+
+    # ── Reassign surviving findings to another scan ─────────────────────
+    for finding_id in surviving_finding_ids:
+        newest_obs = (
+            db.query(FindingObservation)
+            .filter(FindingObservation.finding_id == finding_id)
+            .order_by(FindingObservation.last_seen.desc())
+            .first()
+        )
+        new_scan_id = newest_obs.scan_id if newest_obs and newest_obs.scan_id else None
+        if new_scan_id:
+            db.query(Finding).filter(Finding.id == finding_id).update(
+                {"scan_id": new_scan_id}, synchronize_session=False
+            )
+        remaining_sources = [
+            row[0] for row in
+            db.query(FindingObservation.source_system)
+            .filter(FindingObservation.finding_id == finding_id)
+            .distinct()
+            .all()
+        ]
+        db.query(Finding).filter(Finding.id == finding_id).update(
+            {"source_systems": remaining_sources}, synchronize_session=False
+        )
+
+    db.flush()  # commit reassignments before cascade
+
+    # ── Clean up association rows for assets/findings that WILL be deleted ──
+    doomed_asset_ids = all_asset_ids - surviving_asset_ids
+    doomed_finding_ids = all_finding_ids - surviving_finding_ids
+    if doomed_asset_ids:
+        db.query(AssetOwnership).filter(AssetOwnership.asset_id.in_(doomed_asset_ids)).delete(synchronize_session=False)
+        db.query(TagAssignment).filter(TagAssignment.asset_id.in_(doomed_asset_ids)).delete(synchronize_session=False)
+    if doomed_finding_ids:
+        db.query(FindingOwnership).filter(FindingOwnership.finding_id.in_(doomed_finding_ids)).delete(synchronize_session=False)
+        db.query(CampaignFinding).filter(CampaignFinding.finding_id.in_(doomed_finding_ids)).delete(synchronize_session=False)
+        db.query(TagAssignment).filter(TagAssignment.finding_id.in_(doomed_finding_ids)).delete(synchronize_session=False)
+
+    # ── Clear references from other tables ──────────────────────────────
     db.query(Finding).filter(Finding.auto_resolved_by_scan_id == scan_id).update(
         {"auto_resolved_by_scan_id": None}, synchronize_session=False
     )
-    # Clear campaign.scan_id references
     db.query(Campaign).filter(Campaign.scan_id == scan_id).update(
         {"scan_id": None}, synchronize_session=False
     )
-    db.delete(scan)  # ORM cascade handles Asset → Finding → AutomateClick
+
+    # ORM cascade deletes only assets/findings still pointing at this scan
+    # (the surviving ones were already reassigned above).
+    db.delete(scan)
     db.flush()
 
 
