@@ -47,8 +47,10 @@ RUN go clean -modcache
 
 # Default subdomain wordlist for brute force
 RUN mkdir -p /app/wordlists \
-    && wget -q "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-5000.txt" \
-       -O /app/wordlists/subdomains.txt
+    && (wget -q "https://raw.githubusercontent.com/danielmiessler/SecLists/main/Discovery/DNS/subdomains-top1million-5000.txt" \
+       -O /app/wordlists/subdomains.txt \
+    || wget -q "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-5000.txt" \
+       -O /app/wordlists/subdomains.txt)
 
 # Python deps
 WORKDIR /app
