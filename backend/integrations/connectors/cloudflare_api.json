@@ -62,6 +62,9 @@
       "error_message": "Could not verify Cloudflare API token. Check that the token has Zone:Read and DNS:Read permissions."
     }
   },
+  "record_filter": [
+    {"field": "type", "op": "in", "values": ["A", "AAAA", "CNAME"]}
+  ],
   "default_field_map": [
     {
       "source": "id",
@@ -73,11 +76,19 @@
     },
     {
       "source": "name",
-      "target": "hostname"
+      "target": "hostname",
+      "transform": {
+        "type": "expression",
+        "expr": "value.split('.')[0] if '.' in value else value"
+      }
     },
     {
       "source": "content",
-      "target": "ip_address"
+      "target": "ip_address",
+      "transform": {
+        "type": "expression",
+        "expr": "value if record.get('type') in ('A', 'AAAA') else ''"
+      }
     },
     {
       "source": "name",
@@ -129,7 +140,7 @@
       "target": "asset_identity",
       "transform": {
         "type": "expression",
-        "expr": "{'hostname': record.get('name', ''), 'fqdn': record.get('name', ''), 'ip': record.get('content', ''), 'display_name': record.get('name', '')}"
+        "expr": "{'hostname': record.get('name', '').split('.')[0], 'fqdn': record.get('name', ''), 'ip': record.get('content', '') if record.get('type') in ('A', 'AAAA') else '', 'display_name': record.get('name', '').split('.')[0]}"
       }
     },
     {
@@ -142,8 +153,7 @@
     }
   ],
   "dedup_key": [
-    "source_system",
-    "source_id"
+    "fqdn"
   ],
   "params_schema": {
     "zone_id": {

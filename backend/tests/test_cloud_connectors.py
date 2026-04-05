@@ -83,10 +83,12 @@ class TestCloudConnectorsFieldMaps:
             assert "target" in rule, f"Rule {i} in {connector_id} missing 'target'"
 
     @pytest.mark.parametrize("connector_id", CLOUD_CONNECTORS)
-    def test_dedup_key_includes_source_system(self, connector_id):
+    def test_dedup_key_is_valid(self, connector_id):
         data = _load_connector(connector_id)
-        assert "source_system" in data["dedup_key"]
-        assert "source_id" in data["dedup_key"]
+        dedup_key = data["dedup_key"]
+        assert isinstance(dedup_key, list) and len(dedup_key) > 0, (
+            f"{connector_id}: dedup_key must be a non-empty list"
+        )
 
 
 class TestCloudConnectorsAuth:

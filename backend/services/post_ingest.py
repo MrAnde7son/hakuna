@@ -122,11 +122,28 @@ def finalize_scan(
 
 
 def _step(db: Session, name: str, fn):
-    """Execute a pipeline step, catching and logging failures."""
+    """Execute a pipeline step, catching and logging failures.
+
+    Uses a savepoint so that a failure in one step doesn't roll back
+    the entire transaction (and undo previous steps' work).
+    """
+    # Try savepoint-based isolation first
+    nested = None
     try:
-        return fn()
+        nested = db.begin_nested()  # SAVEPOINT
+        result = fn()
+        nested.commit()
+        return result
     except Exception as e:
-        db.rollback()
+        if nested is not None:
+            try:
+                nested.rollback()  # roll back only this step's changes
+            except Exception:
+                # Savepoint not usable (e.g. test fixtures) — full rollback
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
         logger.warning("%s failed (non-fatal): %s", name, e)
         return None
 

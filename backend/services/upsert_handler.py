@@ -4,6 +4,7 @@ Supports the original hardcoded asset/finding paths for backward compatibility,
 plus a generic model-driven upsert for any model registered in the model registry.
 """
 
+import ipaddress
 import logging
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -62,8 +63,10 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
         user_edited = existing.user_edited_fields or []
         updated = False
         field_mapping = {
-            "hostname": "hostname", "ip_address": "ip", "fqdn": "fqdn",
+            "hostname": "hostname", "ip_address": "ip", "ip": "ip",
+            "fqdn": "fqdn",
             "os": "os", "environment": "environment_tag",
+            "environment_tag": "environment_tag",
             "last_seen": "last_seen", "criticality": "criticality",
             "asset_type": "asset_type",
             "asset_identity": "asset_identity",
@@ -73,6 +76,12 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
         for src_field, db_field in field_mapping.items():
             value = record.get(src_field)
             if value is not None and db_field not in user_edited:
+                # Validate IP-like fields to prevent storing hostnames as IPs
+                if db_field == "ip" and not _is_valid_ip(value):
+                    continue
+                # Don't overwrite a non-empty value with an empty one
+                if value == "" and getattr(existing, db_field, None):
+                    continue
                 setattr(existing, db_field, value)
                 updated = True
 
@@ -136,9 +145,10 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
                 pass  # graceful fallback — don't block upsert
 
         # Insert new asset
+        raw_ip = record.get("ip_address") or record.get("ip") or ""
         asset = Asset(
             scan_id=scan_id or 0,
-            ip=record.get("ip_address", ""),
+            ip=raw_ip if _is_valid_ip(raw_ip) else "",
             hostname=record.get("hostname", ""),
             fqdn=record.get("fqdn", ""),
             os=record.get("os", ""),
@@ -614,6 +624,17 @@ def _resolve_asset(db: Session, asset_data: dict, source_system: str, scan_id: i
     db.add(asset)
     db.flush()
     return asset
+
+
+def _is_valid_ip(value: str) -> bool:
+    """Check if a string looks like a valid IPv4 or IPv6 address."""
+    if not value or not isinstance(value, str):
+        return False
+    try:
+        ipaddress.ip_address(value.strip())
+        return True
+    except ValueError:
+        return False
 
 
 def _accumulate_source(record, source_system: str):

@@ -267,7 +267,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
 
   // Auto-run auto-suggest when reaching Map Fields step with no existing mappings
   useEffect(() => {
-    if (step === 5 && fieldMap.length === 0 && detectedPaths.length > 0 && schema.length > 0) {
+    if (step === 5 && fieldMap.length === 0 && detectedPaths.length > 0 && schema.length > 0 && !connectorDetail?.default_field_map?.length) {
       handleAutoSuggest()
     }
   }, [step]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -453,7 +453,16 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       })
       if (suggestions && suggestions.length) {
         setSuggestions(suggestions)
-        setFieldMap(suggestions)
+        // When a connector template provides default_field_map, merge suggestions
+        // into it (template mappings take priority since they're hand-curated)
+        const templateMap = connectorDetail?.default_field_map
+        if (templateMap && templateMap.length) {
+          const templateTargets = new Set(templateMap.map(m => m.target))
+          const extras = suggestions.filter(s => !templateTargets.has(s.target))
+          setFieldMap([...templateMap, ...extras])
+        } else {
+          setFieldMap(suggestions)
+        }
       }
     } catch (e) {
       console.error('Auto-suggest failed:', e)
@@ -1546,12 +1555,18 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
 
   // ── Step 4: Pick Target ──
   const handleSelectTarget = async (slug) => {
+    const prevEntity = entity
     setEntity(slug)
     setLoading(true)
     try {
       const targetSchema = await getTargetSchema(slug)
       setSchema(targetSchema) // Now schema is a flat array for the selected target
-      setFieldMap([]) // Reset field map when target changes
+      // Only reset field map when the user switches to a different entity type
+      // (e.g. from "asset" to "finding"). Preserve existing mappings when
+      // re-selecting the same entity or when a connector template pre-populated them.
+      if (slug !== prevEntity) {
+        setFieldMap([])
+      }
       setSuggestions(null)
       setStep(5) // advance to field mapper
     } catch (e) {

@@ -335,7 +335,7 @@ class TestFieldMapTransformChains:
 
         ai = mapped.get("asset_identity")
         assert isinstance(ai, dict)
-        assert ai["hostname"] == "www.example.com"
+        assert ai["hostname"] == "www"
         assert ai["ip"] == "203.0.113.10"
 
     def test_cloudflare_expression_asset_attributes(self):

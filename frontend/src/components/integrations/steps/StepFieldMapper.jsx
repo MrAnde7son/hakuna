@@ -2,6 +2,17 @@ import { useState } from 'react'
 import { ArrowRight, Wand2, X, ChevronDown, ChevronRight, Plus } from 'lucide-react'
 import { Button, Spinner, InlineSpinner } from '../../shared/ui.jsx'
 
+// Aliases: connector field_map targets → actual model column names.
+// The upsert handler accepts these legacy names, so we map them back
+// to the schema column names for display in the UI.
+const TARGET_ALIASES = {
+  ip_address: 'ip',
+  environment: 'environment_tag',
+}
+const REVERSE_ALIASES = Object.fromEntries(
+  Object.entries(TARGET_ALIASES).map(([k, v]) => [v, k])
+)
+
 const TRANSFORM_TYPES = [
   { value: '', label: 'None' },
   { value: 'map', label: 'Value Map' },
@@ -23,7 +34,11 @@ export default function StepFieldMapper({
   const [selectedSource, setSelectedSource] = useState(null)
   const [editingTransform, setEditingTransform] = useState(null) // index of mapping being edited
 
-  const mappedTargets = new Set(fieldMap.map(m => m.target))
+  // Resolve aliases so that e.g. target "ip_address" matches schema field "ip"
+  const resolveTarget = (t) => TARGET_ALIASES[t] || t
+  const unresolveTarget = (schemaName) => REVERSE_ALIASES[schemaName] || schemaName
+
+  const mappedTargets = new Set(fieldMap.map(m => resolveTarget(m.target)))
   const mappedSources = new Set(fieldMap.map(m => m.source))
   const requiredUnmapped = schema.filter(f => f.required && !mappedTargets.has(f.name))
 
@@ -33,8 +48,8 @@ export default function StepFieldMapper({
 
   const handleClickTarget = (targetName) => {
     if (selectedSource) {
-      // Create mapping
-      const existing = fieldMap.findIndex(m => m.target === targetName)
+      // Create mapping — check for alias match too (e.g. "ip" → "ip_address")
+      const existing = fieldMap.findIndex(m => resolveTarget(m.target) === targetName)
       const newMap = [...fieldMap]
       if (existing >= 0) {
         newMap[existing] = { ...newMap[existing], source: selectedSource }
@@ -58,7 +73,7 @@ export default function StepFieldMapper({
   }
 
   const handleTargetSourceChange = (targetName, sourcePath) => {
-    const existing = fieldMap.findIndex(m => m.target === targetName)
+    const existing = fieldMap.findIndex(m => resolveTarget(m.target) === targetName)
     const newMap = [...fieldMap]
     if (!sourcePath) {
       // Remove mapping
@@ -283,7 +298,7 @@ export default function StepFieldMapper({
                     )
                   }
 
-                  const mappingIdx = fieldMap.findIndex(m => m.target === f.name)
+                  const mappingIdx = fieldMap.findIndex(m => resolveTarget(m.target) === f.name)
                   const mapping = mappingIdx >= 0 ? fieldMap[mappingIdx] : null
                   const isRequired = f.required
                   const isSubField = !!f.parentJson

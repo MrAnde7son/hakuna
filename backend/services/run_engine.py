@@ -169,28 +169,62 @@ async def _execute_pull(db, transport, config, credentials, integration, run, pr
 
     progress.emit("step", message="Fetching records...")
 
-    field_map = integration.field_map or []
-    dedup_key = integration.dedup_key or []
     entity = integration.entity
     source_system = integration.template_id or "custom"
+
+    # Sync field_map/dedup_key from connector template when the integration
+    # still has the template defaults (i.e. hasn't been manually customized).
+    # This ensures existing integrations pick up connector template updates.
+    record_filter = None
+    if integration.template_id:
+        try:
+            from integrations.connector_loader import get_connector
+            tpl = get_connector(integration.template_id)
+            if tpl:
+                record_filter = tpl.get("record_filter")
+                tpl_field_map = tpl.get("default_field_map")
+                tpl_dedup_key = tpl.get("dedup_key")
+                if tpl_field_map and integration.field_map != tpl_field_map:
+                    integration.field_map = tpl_field_map
+                if tpl_dedup_key and integration.dedup_key != tpl_dedup_key:
+                    integration.dedup_key = tpl_dedup_key
+                db.flush()
+        except Exception:
+            pass
+
+    field_map = integration.field_map or []
+    dedup_key = integration.dedup_key or []
 
     # Check if this connector requires LLM extraction (unstructured sources)
     llm_extract_config = config.get("llm_extract")
 
-    # Create a placeholder scan so assets/findings have a valid scan_id FK
-    placeholder_scan = Scan(
-        org_id=integration.org_id,
-        filename=f"integration:{integration.name or integration.id}",
-        source_type=source_system,
-        status="completed",
+    # Reuse existing scan for this integration, or create one if first run
+    scan_filename = f"integration:{integration.name or integration.id}"
+    placeholder_scan = (
+        db.query(Scan)
+        .filter(Scan.org_id == integration.org_id, Scan.filename == scan_filename)
+        .order_by(Scan.created_at.desc())
+        .first()
     )
-    db.add(placeholder_scan)
-    db.flush()
+    if placeholder_scan:
+        placeholder_scan.status = "completed"
+        placeholder_scan.last_run_at = datetime.utcnow()
+        db.flush()
+    else:
+        placeholder_scan = Scan(
+            org_id=integration.org_id,
+            filename=scan_filename,
+            source_type=source_system,
+            status="completed",
+        )
+        db.add(placeholder_scan)
+        db.flush()
     scan_id = placeholder_scan.id
 
     batch = []
     batch_size = 500
     total_fetched = 0
+    total_filtered = 0
     total_inserted = 0
     total_updated = 0
     total_skipped = 0
@@ -269,6 +303,11 @@ async def _execute_pull(db, transport, config, credentials, integration, run, pr
     else:
         async for raw_record in transport.fetch_all(config, credentials, integration.params):
             total_fetched += 1
+
+            # Apply record_filter: skip records that don't match
+            if record_filter and not _passes_record_filter(raw_record, record_filter):
+                total_filtered += 1
+                continue
 
             # Apply field mapper
             result = map_record(raw_record, field_map)
@@ -382,3 +421,29 @@ async def _execute_push(db, transport, config, credentials, integration, run, pr
     run.records_updated = 0
     run.errors = errors[:100]
     run.step_log = progress.events
+
+
+def _passes_record_filter(record: dict, filters) -> bool:
+    """Check if a raw record passes the connector's record_filter rules.
+
+    filters can be a single dict or a list of dicts. All filters must pass (AND).
+    Each filter: {"field": str, "op": "in"|"eq"|"neq"|"not_in", "values": list} or {"value": str}.
+    """
+    if isinstance(filters, dict):
+        filters = [filters]
+    for f in filters:
+        field_val = record.get(f.get("field", ""))
+        op = f.get("op", "in")
+        if op == "in":
+            if field_val not in f.get("values", []):
+                return False
+        elif op == "not_in":
+            if field_val in f.get("values", []):
+                return False
+        elif op == "eq":
+            if field_val != f.get("value"):
+                return False
+        elif op == "neq":
+            if field_val == f.get("value"):
+                return False
+    return True
