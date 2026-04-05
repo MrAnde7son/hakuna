@@ -154,10 +154,11 @@ def _associate_subsidiary_domains(db: Session, org_id: int):
 def _clear_scan_data(db: Session, scan_id: int):
     """Delete all findings, dependents, and non-shared assets for a scan.
 
-    Temporarily disables FK checks to avoid cascading delete issues with
-    SQLite's NO ACTION constraints on inventory/ownership tables.
+    Deletes dependent rows first to avoid FK constraint violations.
     """
-    db.execute(sa_text("PRAGMA foreign_keys=OFF"))
+    is_sqlite = str(db.bind.url).startswith("sqlite")
+    if is_sqlite:
+        db.execute(sa_text("PRAGMA foreign_keys=OFF"))
     try:
         # Delete finding dependents + findings
         finding_ids = [r[0] for r in db.query(Finding.id).filter(Finding.scan_id == scan_id).all()]
@@ -179,7 +180,8 @@ def _clear_scan_data(db: Session, scan_id: int):
         q_del.delete(synchronize_session=False)
         db.flush()
     finally:
-        db.execute(sa_text("PRAGMA foreign_keys=ON"))
+        if is_sqlite:
+            db.execute(sa_text("PRAGMA foreign_keys=ON"))
 
 
 _SEVERITY_KEY = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}

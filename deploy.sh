@@ -7,17 +7,17 @@
 # Options:
 #   --all           Run all steps (default if no flags given)
 #   --api           Build & push API image, update Cloud Run
-#   --scanners      Build & push scanner images (hakuna-scanner + vm-scanner)
+#   --scanners      Build & push scanner images, pull & restart on VM
 #   --frontend      Build React app and sync to GCS
 #   --infra         Run terraform apply (use for infra changes)
-#   --migrate       Run standalone Python migration scripts via IAP tunnel through scanner VM
+#   --migrate       Run all database migrations (backend via Cloud Run job + scanner via VM)
 #   --help          Show this help
 #
 # Examples:
-#   ./deploy.sh                     # Deploy everything
+#   ./deploy.sh                     # Deploy everything (API + scanners + frontend + migrate)
 #   ./deploy.sh --api --frontend    # Redeploy only API and frontend
 #   ./deploy.sh --infra             # Apply infra changes only
-#   ./deploy.sh --scanners          # Rebuild and push scanner images only
+#   ./deploy.sh --scanners          # Rebuild, push, and restart scanner images
 
 set -euo pipefail
 
@@ -51,11 +51,11 @@ DO_INFRA=false
 DO_MIGRATE=false
 
 if [[ $# -eq 0 ]]; then
-  DO_API=true; DO_SCANNERS=true; DO_FRONTEND=true
+  DO_API=true; DO_SCANNERS=true; DO_FRONTEND=true; DO_MIGRATE=true
 else
   for arg in "$@"; do
     case "$arg" in
-      --all)       DO_API=true; DO_SCANNERS=true; DO_FRONTEND=true ;;
+      --all)       DO_API=true; DO_SCANNERS=true; DO_FRONTEND=true; DO_MIGRATE=true ;;
       --api)       DO_API=true ;;
       --scanners)  DO_SCANNERS=true ;;
       --frontend)  DO_FRONTEND=true ;;
@@ -199,9 +199,11 @@ if $DO_SCANNERS; then
   docker push "${VM_SCANNER_IMAGE}"
   success "hakuna-vm-scanner image pushed"
 
-  warn "Scanner images pushed. To pull and restart on the VM, run:"
-  echo "  gcloud compute ssh hakuna-scanners --zone=${ZONE} --tunnel-through-iap \\"
-  echo "    --command='cd /opt/hakuna-scanners && sudo docker compose pull && sudo docker compose up -d'"
+  step "Pulling and restarting scanners on VM"
+  gcloud compute ssh hakuna-scanners --zone="${ZONE}" --tunnel-through-iap \
+    --command="cd /opt/hakuna-scanners && sudo docker compose pull && sudo docker compose up -d" \
+    --quiet
+  success "Scanner containers restarted on VM (alembic migrations run on startup)"
 fi
 
 # ── Step: Frontend build & deploy to GCS ──────────────────────────────────────
@@ -317,7 +319,16 @@ if $DO_MIGRATE; then
     --execute-now \
     --wait
 
-  success "Migrations applied via Cloud Run job"
+  success "Backend migrations applied via Cloud Run job"
+
+  # Scanner migrations (alembic) — run on the scanner VM
+  step "Running scanner database migrations"
+  info "Running alembic upgrade on scanner VM..."
+  gcloud compute ssh hakuna-scanners --zone="${ZONE}" --tunnel-through-iap \
+    --command="cd /opt/hakuna-scanners && sudo docker compose exec -T scanner alembic upgrade head" \
+    --quiet
+  success "Scanner migrations applied"
+
   cd "${SCRIPT_DIR}"
 fi
 
@@ -328,10 +339,10 @@ echo -e "${GREEN}  Deploy complete!${NC}"
 echo -e "${GREEN}════════════════════════════════════════${NC}"
 
 $DO_API       && echo "  API      → Cloud Run (${REGION})"
-$DO_SCANNERS  && echo "  Scanners → Artifact Registry (pull on VM to activate)"
+$DO_SCANNERS  && echo "  Scanners → Built, pushed, and restarted on VM"
 $DO_FRONTEND  && echo "  Frontend → GCS + CDN invalidated"
 $DO_INFRA     && echo "  Infra    → Terraform applied"
-$DO_MIGRATE   && echo "  Database → Migrations applied"
+$DO_MIGRATE   && echo "  Database → Backend + scanner migrations applied"
 
 echo ""
 echo "  Verify: curl https://app.hakunahq.com/api/health"

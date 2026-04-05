@@ -17,7 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import text, inspect
-from core.database import engine
+from core.database import engine, DATABASE_URL
 
 
 def _column_exists(conn, table: str, column: str) -> bool:
@@ -44,15 +44,26 @@ def upgrade():
         conn.execute(text("UPDATE assets SET asset_type = 'host' WHERE asset_type IS NULL"))
 
         # Backfill asset_identity from existing IP/hostname/fqdn for host assets
-        conn.execute(text("""
-            UPDATE assets
-            SET asset_identity = json_object(
-                'ip', COALESCE(ip, ''),
-                'hostname', COALESCE(hostname, ''),
-                'fqdn', COALESCE(fqdn, '')
-            )
-            WHERE asset_identity IS NULL
-        """))
+        if DATABASE_URL.startswith("postgresql"):
+            conn.execute(text("""
+                UPDATE assets
+                SET asset_identity = jsonb_build_object(
+                    'ip', COALESCE(ip, ''),
+                    'hostname', COALESCE(hostname, ''),
+                    'fqdn', COALESCE(fqdn, '')
+                )::text
+                WHERE asset_identity IS NULL
+            """))
+        else:
+            conn.execute(text("""
+                UPDATE assets
+                SET asset_identity = json_object(
+                    'ip', COALESCE(ip, ''),
+                    'hostname', COALESCE(hostname, ''),
+                    'fqdn', COALESCE(fqdn, '')
+                )
+                WHERE asset_identity IS NULL
+            """))
 
         conn.commit()
         print("Migration complete: asset_type, asset_identity, asset_attributes columns added to assets.")
