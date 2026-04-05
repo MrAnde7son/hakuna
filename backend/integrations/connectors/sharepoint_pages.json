@@ -1,0 +1,99 @@
+{
+  "id": "sharepoint_pages",
+  "name": "SharePoint — Security Pages",
+  "description": "Pull pages and documents from SharePoint Online and extract security findings using AI. Ingests site pages, document library files, and wiki content.",
+  "logo": "/logos/vendors/sharepoint.svg",
+  "direction": "pull",
+  "entity": "finding",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://graph.microsoft.com/v1.0",
+    "method": "GET",
+    "path": "/sites/{{params.site_id}}/pages",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "$select": "id,title,webUrl,lastModifiedDateTime,description",
+      "$expand": "canvasLayout",
+      "$top": "50",
+      "$skiptoken": "{{pagination.cursor}}"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "@odata.nextLink",
+      "page_size": 50
+    },
+    "llm_extract": {
+      "text_field": "canvasLayout.content",
+      "title_field": "title",
+      "url_field": "webUrl"
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "oauth2",
+    "authorization_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    "token_request_format": "form",
+    "client_id": "{{env.MICROSOFT_CLIENT_ID}}",
+    "scopes": ["Sites.Read.All", "offline_access"],
+    "extra_params": {
+      "prompt": "consent"
+    },
+    "pkce": true,
+    "popup": { "width": 500, "height": 600 },
+    "validation_request": {
+      "method": "GET",
+      "path": "/me",
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "connected_user": "displayName",
+        "connected_email": "mail"
+      }
+    }
+  },
+  "default_field_map": [
+    { "source": "finding_id", "target": "source_id" },
+    { "source": "title", "target": "title" },
+    {
+      "source": "severity",
+      "target": "severity",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low",
+          "info": "info",
+          "informational": "info"
+        }
+      }
+    },
+    { "source": "affected_host", "target": "asset.ip_address" },
+    { "source": "hostname", "target": "asset.hostname" },
+    { "source": "cvss_score", "target": "cvss_score", "transform": { "type": "float" } },
+    { "source": "cve_id", "target": "cve_id" },
+    { "source": "description", "target": "description" },
+    { "source": "recommendation", "target": "solution" },
+    { "source": "evidence", "target": "plugin_output" },
+    { "source": "references", "target": "references" },
+    {
+      "source": "exploit_available",
+      "target": "exploit_available",
+      "transform": {
+        "type": "boolean",
+        "truthy": ["true", "True", "1", "yes"]
+      }
+    }
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "params_schema": {
+    "site_id": {
+      "type": "string",
+      "required": true,
+      "description": "SharePoint site ID (e.g. 'contoso.sharepoint.com,GUID,GUID'). Find it via the Graph Explorer or site settings."
+    }
+  }
+}

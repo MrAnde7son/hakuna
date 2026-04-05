@@ -174,6 +174,9 @@ async def _execute_pull(db, transport, config, credentials, integration, run, pr
     entity = integration.entity
     source_system = integration.template_id or "custom"
 
+    # Check if this connector requires LLM extraction (unstructured sources)
+    llm_extract_config = config.get("llm_extract")
+
     # Create a placeholder scan so assets/findings have a valid scan_id FK
     placeholder_scan = Scan(
         org_id=integration.org_id,
@@ -193,49 +196,120 @@ async def _execute_pull(db, transport, config, credentials, integration, run, pr
     total_skipped = 0
     errors = []
 
-    async for raw_record in transport.fetch_all(config, credentials, integration.params):
-        total_fetched += 1
+    # ── Unstructured source path: collect → extract → map → upsert ──
+    if llm_extract_config:
+        raw_records = []
+        async for raw_record in transport.fetch_all(config, credentials, integration.params):
+            total_fetched += 1
+            raw_records.append(raw_record)
 
-        # Apply field mapper
-        result = map_record(raw_record, field_map)
-        mapped = result["mapped"]
+            if total_fetched % 50 == 0:
+                progress.emit("progress", records_fetched=total_fetched, records_processed=0)
 
-        # Inject source_system if not mapped
-        if "source_system" not in mapped or not mapped.get("source_system"):
-            mapped["source_system"] = source_system
-        if "source_id" not in mapped or not mapped.get("source_id"):
-            mapped["source_id"] = str(total_fetched)
+        progress.emit("step", message=f"Fetched {total_fetched} records. Running AI extraction...")
 
-        # Collect mapping errors
-        for err in result["errors"]:
-            if err["level"] == "error":
-                errors.append({"record_index": total_fetched, **err})
+        # Prepare text for LLM
+        from services.llm_extractor import extract_findings_with_llm, prepare_text_for_extraction
 
-        batch.append(mapped)
+        text_field = llm_extract_config.get("text_field", "body")
+        title_field = llm_extract_config.get("title_field")
+        url_field = llm_extract_config.get("url_field")
 
-        if len(batch) >= batch_size:
+        combined_text = prepare_text_for_extraction(
+            raw_records, text_field, title_field, url_field
+        )
+
+        if not combined_text.strip():
+            logger.warning("No text content extracted from %d records", total_fetched)
+            run.records_fetched = total_fetched
+            run.records_inserted = 0
+            run.records_updated = 0
+            run.records_skipped = total_fetched
+            run.step_log = progress.events
+            return scan_id
+
+        # Run LLM extraction
+        extracted_findings = extract_findings_with_llm(db, combined_text, prompt_type="unstructured")
+
+        progress.emit("step", message=f"AI extracted {len(extracted_findings)} findings. Processing...")
+
+        # Process extracted findings through normal field map → upsert pipeline
+        for i, finding_record in enumerate(extracted_findings):
+            result = map_record(finding_record, field_map)
+            mapped = result["mapped"]
+
+            if "source_system" not in mapped or not mapped.get("source_system"):
+                mapped["source_system"] = source_system
+            if "source_id" not in mapped or not mapped.get("source_id"):
+                mapped["source_id"] = finding_record.get("finding_id", str(i + 1))
+
+            for err in result["errors"]:
+                if err["level"] == "error":
+                    errors.append({"record_index": i + 1, **err})
+
+            batch.append(mapped)
+
+            if len(batch) >= batch_size:
+                counts = upsert_batch(db, entity, batch, dedup_key, integration.id, scan_id=scan_id)
+                total_inserted += counts["inserted"]
+                total_updated += counts["updated"]
+                total_skipped += counts["skipped"]
+                errors.extend(counts["errors"])
+                batch = []
+
+        # Final batch
+        if batch:
             counts = upsert_batch(db, entity, batch, dedup_key, integration.id, scan_id=scan_id)
             total_inserted += counts["inserted"]
             total_updated += counts["updated"]
             total_skipped += counts["skipped"]
             errors.extend(counts["errors"])
-            batch = []
 
-            progress.emit("progress", records_fetched=total_fetched,
-                          records_processed=total_inserted + total_updated + total_skipped)
+    # ── Structured source path: fetch → map → upsert ──
+    else:
+        async for raw_record in transport.fetch_all(config, credentials, integration.params):
+            total_fetched += 1
 
-        # Periodic progress
-        if total_fetched % 100 == 0:
-            progress.emit("progress", records_fetched=total_fetched,
-                          records_processed=total_inserted + total_updated + total_skipped)
+            # Apply field mapper
+            result = map_record(raw_record, field_map)
+            mapped = result["mapped"]
 
-    # Final batch
-    if batch:
-        counts = upsert_batch(db, entity, batch, dedup_key, integration.id, scan_id=scan_id)
-        total_inserted += counts["inserted"]
-        total_updated += counts["updated"]
-        total_skipped += counts["skipped"]
-        errors.extend(counts["errors"])
+            # Inject source_system if not mapped
+            if "source_system" not in mapped or not mapped.get("source_system"):
+                mapped["source_system"] = source_system
+            if "source_id" not in mapped or not mapped.get("source_id"):
+                mapped["source_id"] = str(total_fetched)
+
+            # Collect mapping errors
+            for err in result["errors"]:
+                if err["level"] == "error":
+                    errors.append({"record_index": total_fetched, **err})
+
+            batch.append(mapped)
+
+            if len(batch) >= batch_size:
+                counts = upsert_batch(db, entity, batch, dedup_key, integration.id, scan_id=scan_id)
+                total_inserted += counts["inserted"]
+                total_updated += counts["updated"]
+                total_skipped += counts["skipped"]
+                errors.extend(counts["errors"])
+                batch = []
+
+                progress.emit("progress", records_fetched=total_fetched,
+                              records_processed=total_inserted + total_updated + total_skipped)
+
+            # Periodic progress
+            if total_fetched % 100 == 0:
+                progress.emit("progress", records_fetched=total_fetched,
+                              records_processed=total_inserted + total_updated + total_skipped)
+
+        # Final batch
+        if batch:
+            counts = upsert_batch(db, entity, batch, dedup_key, integration.id, scan_id=scan_id)
+            total_inserted += counts["inserted"]
+            total_updated += counts["updated"]
+            total_skipped += counts["skipped"]
+            errors.extend(counts["errors"])
 
     # Update run record
     run.records_fetched = total_fetched

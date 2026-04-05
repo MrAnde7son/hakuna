@@ -12,22 +12,6 @@ from .base import BaseTransport, ConnectResult
 
 logger = logging.getLogger(__name__)
 
-# LLM extraction prompt for unstructured pentest reports (PDF/DOCX)
-_PENTEST_EXTRACT_PROMPT = """Extract ALL vulnerability findings from this penetration test report.
-
-Return ONLY a JSON array — no markdown fences, no preamble. Use compact single-line JSON (no pretty-printing) to minimize output size.
-
-Each finding object fields (omit if not mentioned):
-finding_id, title, severity (critical/high/medium/low/info), cvss_score (number), cvss_vector, cve_id, affected_host, hostname, port, protocol, description (max 300 chars), evidence (max 200 chars), recommendation (max 200 chars), references, exploit_available (bool)
-
-Rules:
-- Extract EVERY finding, not just a summary
-- Map severity consistently
-- Keep description/evidence/recommendation concise — capture the key point, not verbatim paragraphs
-
-Report text:
-"""
-
 
 class FileTransport(BaseTransport):
 
@@ -285,6 +269,8 @@ class FileTransport(BaseTransport):
 
     def _parse_pentest_document(self, file_path: str, fmt: str) -> list:
         """Extract text from PDF/DOCX, then use LLM to extract structured findings."""
+        from services.llm_extractor import extract_findings_with_llm
+
         # Step 1: Extract raw text
         if fmt == "pdf":
             text = self._extract_text_from_pdf(file_path)
@@ -293,122 +279,16 @@ class FileTransport(BaseTransport):
 
         logger.info("Extracted %d chars from %s file for LLM parsing", len(text), fmt)
 
-        # Step 2: Send to LLM for structured extraction
-        return self._extract_findings_with_llm(text)
-
-    def _extract_findings_with_llm(self, text: str) -> list:
-        """Use the configured LLM provider to extract structured findings."""
-        import re
-        from agents.agent_engine import (
-            get_default_model, detect_provider,
-            _get_anthropic_client, _get_openai_client, _get_gemini_client,
-            _get_vertex_client, _get_groq_client, _get_ollama_client,
-        )
-
         if not self.db:
             raise ValueError(
                 "No database session available — cannot resolve LLM provider. "
                 "Ensure the transport is created with a db session."
             )
 
-        model = get_default_model(self.db)
-        provider = detect_provider(model)
-
-        # Truncate to fit context window — keep first 150k chars
-        truncated = text[:150_000]
-        prompt = _PENTEST_EXTRACT_PROMPT + truncated
-
-        logger.info("Pentest LLM extraction using provider=%s model=%s", provider, model)
-
-        if provider == "anthropic":
-            client = _get_anthropic_client(self.db)
-            message = client.messages.create(
-                model=model, max_tokens=8000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            response_text = message.content[0].text.strip()
-
-        elif provider in ("openai", "groq", "ollama"):
-            if provider == "openai":
-                client = _get_openai_client(self.db)
-            elif provider == "groq":
-                client = _get_groq_client(self.db)
-            else:
-                client = _get_ollama_client(self.db)
-            # Strip ollama/ prefix for the API call
-            api_model = model.replace("ollama/", "") if model.startswith("ollama/") else model
-            resp = client.chat.completions.create(
-                model=api_model, max_tokens=8000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            response_text = resp.choices[0].message.content.strip()
-
-        elif provider in ("google_gemini", "vertex_ai"):
-            if provider == "vertex_ai":
-                client = _get_vertex_client(self.db)
-                api_model = model.replace("vertex/", "")
-            else:
-                client = _get_gemini_client(self.db)
-                api_model = model
-            resp = client.models.generate_content(
-                model=api_model, contents=prompt,
-            )
-            response_text = resp.text.strip()
-
-        else:
-            raise ValueError(f"Unsupported LLM provider for pentest extraction: {provider}")
-
-        # Strip markdown fences if present
-        if response_text.startswith("```"):
-            response_text = re.sub(r'^```\w*\n?', '', response_text)
-            response_text = re.sub(r'\n?```$', '', response_text)
-
-        findings = self._parse_llm_json(response_text)
-
-        if not isinstance(findings, list):
-            raise ValueError("LLM returned non-array response")
+        # Step 2: Send to shared LLM extractor
+        findings = extract_findings_with_llm(self.db, text, prompt_type="pentest")
 
         if not findings:
             raise ValueError("LLM could not extract any findings from the document")
 
-        logger.info("LLM extracted %d findings from pentest document", len(findings))
         return findings
-
-    @staticmethod
-    def _parse_llm_json(text: str) -> list:
-        """Parse JSON from LLM output with repair for common issues."""
-        import re
-        # First try direct parse
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-
-        # Try to extract the JSON array from surrounding text
-        match = re.search(r'\[.*\]', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-
-        # Repair common LLM issues: control chars, trailing commas
-        repaired = text
-        repaired = re.sub(r'[\x00-\x1f](?<![\n\r\t])', ' ', repaired)  # strip control chars
-        repaired = re.sub(r',\s*([}\]])', r'\1', repaired)  # trailing commas
-        try:
-            return json.loads(repaired)
-        except json.JSONDecodeError:
-            pass
-
-        # Last resort: parse individual objects between { }
-        objects = []
-        for m in re.finditer(r'\{[^{}]*\}', text, re.DOTALL):
-            try:
-                objects.append(json.loads(m.group()))
-            except json.JSONDecodeError:
-                continue
-        if objects:
-            return objects
-
-        raise ValueError(f"Could not parse LLM response as JSON. First 200 chars: {text[:200]}")
