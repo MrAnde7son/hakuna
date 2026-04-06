@@ -1882,7 +1882,6 @@ def list_assets(
         q = q.filter(Asset.asset_type == asset_type)
     if search:
         pattern = f"%{search}%"
-        from sqlalchemy import or_
         q = q.filter(or_(
             Asset.hostname.ilike(pattern),
             Asset.ip.ilike(pattern),
