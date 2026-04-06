@@ -440,13 +440,16 @@ export default function AssetInventory() {
         setAssets(data.assets)
         setTotalAssets(data.total)
         const assetList = data.assets
+        const assetIds = assetList.map(a => a.id)
+        if (assetIds.length) {
+          getBlastRadiusBulk(assetIds)
+            .then(results => setBlastMap(results))
+            .catch(err => console.error('Blast radius bulk fetch failed:', err))
+        }
         const scanIds = activeScanId
           ? [activeScanId]
           : [...new Set(assetList.map(a => a.scan_id).filter(Boolean))]
         if (scanIds.length) {
-          Promise.all(scanIds.map(sid => getBlastRadiusBulk(sid)))
-            .then(results => setBlastMap(Object.assign({}, ...results)))
-            .catch(err => console.error('Blast radius bulk fetch failed:', err))
           // Fetch SBOM risk per asset
           Promise.all(scanIds.map(sid => getSBOMComponents({ scan_id: sid, page_size: 5000 })))
             .then(results => {
@@ -1172,7 +1175,6 @@ export default function AssetInventory() {
             {/* Content */}
             <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
               <BlastRadiusPanel
-                scanId={activeScanId || assets.find(a => a.id === expandedAsset)?.scan_id}
                 assetId={expandedAsset}
                 defaultExpanded={true}
               />

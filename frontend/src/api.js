@@ -537,13 +537,10 @@ export const updateCampaignFinding = (campaignId, cfId, data) =>
   })
 
 // Blast Radius
-export const getBlastRadius = (scan_id, asset_id) => {
-  const params = new URLSearchParams({ asset_id })
-  if (scan_id) params.set('scan_id', scan_id)
-  return request(`/blast-radius?${params}`)
-}
-export const getBlastRadiusBulk = (scan_id) =>
-  request(`/blast-radius/bulk?scan_id=${scan_id}`)
+export const getBlastRadius = (asset_id) =>
+  request(`/blast-radius?asset_id=${asset_id}`)
+export const getBlastRadiusBulk = (assetIds) =>
+  request(`/blast-radius/bulk?asset_ids=${assetIds.join(',')}`)
 
 // Risk scoring
 export const getRiskConfig = () => request('/risk/config')

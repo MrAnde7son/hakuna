@@ -715,9 +715,7 @@ export default function AssetDetail() {
       .then(data => {
         setAsset(data)
         // Fetch blast radius and risk breakdown in background
-        if (data.scan_id) {
-          getBlastRadius(data.scan_id, data.id).then(setBlastRadius).catch(() => {})
-        }
+        getBlastRadius(data.id).then(setBlastRadius).catch(() => {})
         getAssetRiskBreakdown(data.id).then(setRiskComponents).catch(() => {})
       })
       .catch(() => setFetchError(t('assetDetail.loadError')))

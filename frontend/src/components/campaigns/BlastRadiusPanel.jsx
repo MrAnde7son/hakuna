@@ -730,11 +730,11 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
   useEffect(() => {
     if (!assetId) return
     setLoading(true)
-    getBlastRadius(scanId || null, assetId)
+    getBlastRadius(assetId)
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false))
-  }, [scanId, assetId])
+  }, [assetId])
 
   const hasData = data && (data.nodes?.length > 1 || data.vectors?.length > 0)
   const sc = scoreColor(data?.score ?? 0)

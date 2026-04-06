@@ -362,9 +362,9 @@ export default function FindingDetail() {
 
       {activeTab === 'overview' && (<>
       {/* Blast Radius */}
-      {finding.asset_id && finding.scan_id && (
+      {finding.asset_id && (
         <div style={{ marginBottom: 14 }}>
-          <BlastRadiusPanel scanId={finding.scan_id} assetId={finding.asset_id} />
+          <BlastRadiusPanel assetId={finding.asset_id} />
         </div>
       )}
 

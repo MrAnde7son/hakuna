@@ -167,31 +167,23 @@ def _resolve_dc_asset_ids(db, scan_id=None, restrict_to_asset_ids=None) -> set:
         match_pairs.append(("computer_name", ["hostname", "netbios_name"]))
 
     q = db.query(
-        InventoryComputer.scan_id,
+        InventoryComputer.asset_id,
         InventoryComputer.computer_name,
         InventoryComputer.dns_hostname,
     ).filter(InventoryComputer.is_domain_controller == True)
     if scan_id:
         q = q.filter(InventoryComputer.scan_id == scan_id)
     elif restrict_to_asset_ids:
-        scan_ids = [
-            r[0] for r in db.query(Asset.scan_id)
-            .filter(Asset.id.in_(restrict_to_asset_ids))
-            .distinct().all()
-        ]
-        if scan_ids:
-            q = q.filter(InventoryComputer.scan_id.in_(scan_ids))
+        q = q.filter(InventoryComputer.asset_id.in_(restrict_to_asset_ids))
     dc_computers = q.all()
     if not dc_computers:
         return set()
 
-    # Build one query per scan_id (grouping all DCs in the same scan together)
-    # to avoid N+1 (one query per DC computer).
+    # Collect name-based match conditions to resolve actual DC assets
     from collections import defaultdict
-    scan_conditions: dict = defaultdict(list)
     comp_field_map = {"dns_hostname": lambda row: row[2], "computer_name": lambda row: row[1]}
+    all_conditions = []
     for dc_row in dc_computers:
-        dc_scan_id = dc_row[0]
         for comp_field, asset_fields in match_pairs:
             val = comp_field_map.get(comp_field, lambda r: None)(dc_row)
             if not val:
@@ -200,17 +192,18 @@ def _resolve_dc_asset_ids(db, scan_id=None, restrict_to_asset_ids=None) -> set:
             for af in asset_fields:
                 col = getattr(Asset, af, None)
                 if col is not None:
-                    scan_conditions[dc_scan_id].append(func.lower(col) == vl)
+                    all_conditions.append(func.lower(col) == vl)
 
     result = set()
-    for dc_scan_id, conditions in scan_conditions.items():
-        if not conditions:
-            continue
-        aq = db.query(Asset.id).filter(Asset.scan_id == dc_scan_id, or_(*conditions))
-        if restrict_to_asset_ids:
-            aq = aq.filter(Asset.id.in_(restrict_to_asset_ids))
-        for row in aq.all():
-            result.add(row[0])
+    if not all_conditions:
+        return result
+    aq = db.query(Asset.id).filter(or_(*all_conditions))
+    if restrict_to_asset_ids:
+        aq = aq.filter(Asset.id.in_(restrict_to_asset_ids))
+    elif scan_id:
+        aq = aq.filter(Asset.scan_id == scan_id)
+    for row in aq.all():
+        result.add(row[0])
     return result
 
 
@@ -6012,25 +6005,42 @@ _LINUX_OS_HINTS = ("linux", "unix", "ubuntu", "debian", "centos", "rhel", "fedor
 
 @app.get("/api/blast-radius/bulk")
 def get_blast_radius_bulk(
-    scan_id: int = Query(...),
+    asset_ids: str = Query(None, description="Comma-separated asset IDs"),
+    scan_id: int = Query(None, description="Deprecated — kept for backward compat"),
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """Compute blast radius scores for ALL assets in a scan in one pass."""
+    """Compute blast radius scores for assets in one pass (org-scoped)."""
     from sqlalchemy import or_
 
     set_statement_timeout(db)
-    asset_q = db.query(Asset).filter(Asset.scan_id == scan_id)
+
+    # Load assets: prefer explicit asset_ids, fall back to scan_id for backward compat
+    if asset_ids:
+        id_list = [int(x) for x in asset_ids.split(",") if x.strip().isdigit()]
+        asset_q = db.query(Asset).filter(Asset.id.in_(id_list))
+        if org_ids is not None:
+            # Org filter: include assets whose scan belongs to the org, OR scan-less assets
+            asset_q = asset_q.outerjoin(Scan, Asset.scan_id == Scan.id).filter(
+                or_(Scan.org_id.in_(org_ids), Asset.scan_id.is_(None))
+            )
+    elif scan_id:
+        asset_q = db.query(Asset).filter(Asset.scan_id == scan_id)
+    else:
+        return {}
+
     check_row_count(db, asset_q)
     all_assets = asset_q.all()
     if not all_assets:
         return {}
 
     asset_map = {a.id: a for a in all_assets}
+    all_asset_ids = list(asset_map.keys())
     ip_to_asset_id = {a.ip: a.id for a in all_assets if a.ip}
 
-    # Pre-fetch all inventory data for this scan in bulk
+    # Pre-fetch all inventory data scoped by asset_id (not scan_id)
     all_conns = db.query(InventoryNetConn).filter(
-        InventoryNetConn.scan_id == scan_id,
+        InventoryNetConn.asset_id.in_(all_asset_ids),
         InventoryNetConn.state.in_(["ESTABLISHED", "established"]),
     ).all()
     conns_by_asset = {}
@@ -6038,14 +6048,14 @@ def get_blast_radius_bulk(
         conns_by_asset.setdefault(c.asset_id, []).append(c)
 
     all_logons = db.query(InventoryLoggedOn).filter(
-        InventoryLoggedOn.scan_id == scan_id,
+        InventoryLoggedOn.asset_id.in_(all_asset_ids),
     ).all()
     logons_by_asset = {}
     for lo in all_logons:
         logons_by_asset.setdefault(lo.asset_id, []).append(lo)
 
     all_priv_users = db.query(InventoryUser).filter(
-        InventoryUser.scan_id == scan_id,
+        InventoryUser.asset_id.in_(all_asset_ids),
         or_(
             InventoryUser.is_domain_admin == True,
             InventoryUser.is_local_admin == True,
@@ -6058,7 +6068,7 @@ def get_blast_radius_bulk(
             priv_users_by_name.setdefault(u.username, []).append(u)
 
     admin_users = db.query(InventoryUser).filter(
-        InventoryUser.scan_id == scan_id,
+        InventoryUser.asset_id.in_(all_asset_ids),
         or_(
             InventoryUser.is_domain_admin == True,
             InventoryUser.is_local_admin == True,
@@ -6068,16 +6078,16 @@ def get_blast_radius_bulk(
     for u in admin_users:
         admins_by_asset.setdefault(u.asset_id, []).append(u)
 
-    dc_asset_ids = _resolve_dc_asset_ids(db, scan_id=scan_id)
+    dc_asset_ids = _resolve_dc_asset_ids(db, restrict_to_asset_ids=all_asset_ids)
 
     # Pre-fetch group data for group-membership access paths
-    all_groups = db.query(InventoryGroup).filter(InventoryGroup.scan_id == scan_id).all()
+    all_groups = db.query(InventoryGroup).filter(InventoryGroup.asset_id.in_(all_asset_ids)).all()
     groups_by_asset: dict[int, list] = {}
     for g in all_groups:
         groups_by_asset.setdefault(g.asset_id, []).append(g)
 
     # Pre-fetch all users indexed by username (lowercase) for member resolution
-    all_users_scan = db.query(InventoryUser).filter(InventoryUser.scan_id == scan_id).all()
+    all_users_scan = db.query(InventoryUser).filter(InventoryUser.asset_id.in_(all_asset_ids)).all()
     users_by_name = {}
     for u in all_users_scan:
         if u.username:
@@ -6087,33 +6097,33 @@ def get_blast_radius_bulk(
         users_by_asset.setdefault(u.asset_id, []).append(u)
 
     # Pre-fetch new data sources for enhanced scoring
-    all_creds = db.query(InventoryCredential).filter(InventoryCredential.scan_id == scan_id).all()
+    all_creds = db.query(InventoryCredential).filter(InventoryCredential.asset_id.in_(all_asset_ids)).all()
     creds_by_asset: dict[int, list] = {}
     for c in all_creds:
         creds_by_asset.setdefault(c.asset_id, []).append(c)
 
     all_exploitable = db.query(Finding).filter(
-        Finding.scan_id == scan_id, Finding.severity >= 3, Finding.exploit_available == True,
+        Finding.asset_id.in_(all_asset_ids), Finding.severity >= 3, Finding.exploit_available == True,
     ).all()
     exploitable_by_asset: dict[int, list] = {}
     for f in all_exploitable:
         exploitable_by_asset.setdefault(f.asset_id, []).append(f)
 
     all_dbs = db.query(InventoryDatabaseInstance).filter(
-        InventoryDatabaseInstance.scan_id == scan_id, InventoryDatabaseInstance.is_running == True,
+        InventoryDatabaseInstance.asset_id.in_(all_asset_ids), InventoryDatabaseInstance.is_running == True,
     ).all()
     dbs_by_asset: dict[int, list] = {}
     for d in all_dbs:
         dbs_by_asset.setdefault(d.asset_id, []).append(d)
 
-    all_patches = db.query(InventoryPatch).filter(InventoryPatch.scan_id == scan_id).all()
+    all_patches = db.query(InventoryPatch).filter(InventoryPatch.asset_id.in_(all_asset_ids)).all()
     patches_by_asset: dict[int, list] = {}
     for p in all_patches:
         if (p.vuln_count or 0) >= 5:
             patches_by_asset.setdefault(p.asset_id, []).append(p)
 
     # Scheduled tasks running as privileged users
-    all_schtasks = db.query(InventoryScheduledTask).filter(InventoryScheduledTask.scan_id == scan_id).all()
+    all_schtasks = db.query(InventoryScheduledTask).filter(InventoryScheduledTask.asset_id.in_(all_asset_ids)).all()
     schtask_priv_assets: set = set()
     for t in all_schtasks:
         run_user = (t.run_as_user or "").strip().lower()
@@ -6122,6 +6132,14 @@ def get_blast_radius_bulk(
                 if mu.is_domain_admin or mu.is_local_admin or mu.is_privileged:
                     schtask_priv_assets.add(t.asset_id)
                     break
+
+    # Pre-fetch AssetRelationship edges for reachable asset calculation
+    all_rels = db.query(AssetRelationship).filter(
+        AssetRelationship.source_asset_id.in_(all_asset_ids),
+    ).all()
+    rels_by_asset: dict[int, list] = {}
+    for r in all_rels:
+        rels_by_asset.setdefault(r.source_asset_id, []).append(r)
 
     results = {}
 
@@ -6140,6 +6158,11 @@ def get_blast_radius_bulk(
                 dst_id = ip_to_asset_id[conn.remote_addr]
                 if dst_id != asset_id:
                     reachable.add(dst_id)
+
+        # 1b. AssetRelationship edges (DNS, alias, integration links)
+        for rel in rels_by_asset.get(asset_id, []):
+            if rel.target_asset_id != asset_id:
+                reachable.add(rel.target_asset_id)
 
         # 2. Privileged users logged on
         for logon in logons_by_asset.get(asset_id, []):
@@ -6263,26 +6286,40 @@ def get_blast_radius_bulk(
 
 @app.get("/api/blast-radius")
 def get_blast_radius(
-    scan_id: int = Query(None),
     asset_id: int = Query(...),
+    scan_id: int = Query(None, description="Deprecated — ignored"),
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """Compute blast radius for a specific asset using inventory data."""
+    """Compute blast radius for a specific asset using inventory + relationship data."""
     from sqlalchemy import or_
 
-    if scan_id:
-        asset = db.query(Asset).filter(Asset.id == asset_id, Asset.scan_id == scan_id).first()
-    else:
-        asset = db.query(Asset).filter(Asset.id == asset_id).first()
-        scan_id = asset.scan_id if asset else None
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
     if not asset:
         raise HTTPException(404, "Asset not found")
-
-    if scan_id:
-        all_assets = db.query(Asset).filter(Asset.scan_id == scan_id).all()
+    # Determine org scope: use scan's org_id, or fall back to org_ids from auth
+    asset_org_id = None
+    if asset.scan_id:
+        scan_row = db.query(Scan).filter(Scan.id == asset.scan_id).first()
+        if scan_row:
+            asset_org_id = scan_row.org_id
+    if asset_org_id:
+        all_assets = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Scan.org_id == asset_org_id).all()
+        # Also include scan-less assets linked via relationships
+        rel_asset_ids = {r[0] for r in db.query(AssetRelationship.target_asset_id).filter(
+            AssetRelationship.org_id == asset_org_id,
+        ).all()} | {r[0] for r in db.query(AssetRelationship.source_asset_id).filter(
+            AssetRelationship.org_id == asset_org_id,
+        ).all()}
+        if rel_asset_ids:
+            extra = db.query(Asset).filter(Asset.id.in_(rel_asset_ids), Asset.scan_id.is_(None)).all()
+            all_assets.extend(extra)
+    elif org_ids:
+        all_assets = db.query(Asset).outerjoin(Scan, Asset.scan_id == Scan.id).filter(
+            or_(Scan.org_id.in_(org_ids), Asset.scan_id.is_(None))
+        ).all()
     else:
-        # EASM-only asset with no scan — scope to org
-        all_assets = db.query(Asset).filter(Asset.org_id == asset.org_id).all()
+        all_assets = [asset]
     asset_map = {a.id: a for a in all_assets}
     ip_to_asset_id = {a.ip: a.id for a in all_assets if a.ip}
 
@@ -6293,14 +6330,12 @@ def get_blast_radius(
     def _asset_dc(aid):
         return db.query(InventoryComputer).filter(
             InventoryComputer.asset_id == aid,
-            InventoryComputer.scan_id == scan_id,
             InventoryComputer.is_domain_controller == True,
         ).first() is not None
 
     def _asset_av(aid):
         return db.query(InventorySecurityControl).filter(
             InventorySecurityControl.asset_id == aid,
-            InventorySecurityControl.scan_id == scan_id,
             InventorySecurityControl.control_type == "av",
             InventorySecurityControl.is_enabled == True,
         ).first() is not None
@@ -6308,7 +6343,6 @@ def get_blast_radius(
     def _asset_share(aid):
         return db.query(InventoryShare).filter(
             InventoryShare.asset_id == aid,
-            InventoryShare.scan_id == scan_id,
             InventoryShare.is_writeable == True,
         ).first() is not None
 
@@ -6374,8 +6408,9 @@ def get_blast_radius(
     # Pre-compute DC asset IDs for group membership paths
     dc_asset_ids = [a.id for a in all_assets if _asset_dc(a.id)]
 
-    # Pre-index all scan users by username (lowercase) for fast member resolution
-    all_scan_users = db.query(InventoryUser).filter(InventoryUser.scan_id == scan_id).all()
+    # Pre-index all org users by username (lowercase) for fast member resolution
+    all_org_asset_ids = [a.id for a in all_assets]
+    all_scan_users = db.query(InventoryUser).filter(InventoryUser.asset_id.in_(all_org_asset_ids)).all()
     users_by_name_idx = {}
     for u in all_scan_users:
         if u.username:
@@ -6444,7 +6479,6 @@ def get_blast_radius(
             # 1. Established network connections to other known assets
             for conn in db.query(InventoryNetConn).filter(
                 InventoryNetConn.asset_id == cur_id,
-                InventoryNetConn.scan_id == scan_id,
                 InventoryNetConn.state.in_(["ESTABLISHED", "established"]),
             ).all():
                 if not conn.remote_addr or conn.remote_addr not in ip_to_asset_id:
@@ -6468,12 +6502,11 @@ def get_blast_radius(
             # 2. Privileged users currently logged on (credential exposure)
             for logon in db.query(InventoryLoggedOn).filter(
                 InventoryLoggedOn.asset_id == cur_id,
-                InventoryLoggedOn.scan_id == scan_id,
             ).all():
                 if not logon.username:
                     continue
                 user = db.query(InventoryUser).filter(
-                    InventoryUser.scan_id == scan_id,
+                    InventoryUser.asset_id.in_(all_org_asset_ids),
                     InventoryUser.username == logon.username,
                     or_(
                         InventoryUser.is_domain_admin == True,
@@ -6490,7 +6523,6 @@ def get_blast_radius(
             # 3. Admin accounts declared on this asset
             for user in db.query(InventoryUser).filter(
                 InventoryUser.asset_id == cur_id,
-                InventoryUser.scan_id == scan_id,
                 or_(
                     InventoryUser.is_domain_admin == True,
                     InventoryUser.is_local_admin == True,
@@ -6505,7 +6537,7 @@ def get_blast_radius(
                 # Domain admins expose all other assets they control (1 hop)
                 if user.is_domain_admin and hop == 0:
                     for other in db.query(InventoryUser).filter(
-                        InventoryUser.scan_id == scan_id,
+                        InventoryUser.asset_id.in_(all_org_asset_ids),
                         InventoryUser.username == user.username,
                         InventoryUser.asset_id != cur_id,
                         InventoryUser.is_domain_admin == True,
@@ -6529,7 +6561,6 @@ def get_blast_radius(
             is_linux = any(h in cur_os_lower for h in _LINUX_OS_HINTS)
             for user in db.query(InventoryUser).filter(
                 InventoryUser.asset_id == cur_id,
-                InventoryUser.scan_id == scan_id,
             ).all():
                 for group_entry in (user.member_of or []):
                     cn = _cn_from_dn(group_entry) if "=" in group_entry else group_entry.strip()
@@ -6562,7 +6593,6 @@ def get_blast_radius(
             local_groups_map = _LINUX_ACCESS_GROUPS if is_linux else _LOCAL_ACCESS_GROUPS
             for group in db.query(InventoryGroup).filter(
                 InventoryGroup.asset_id == cur_id,
-                InventoryGroup.scan_id == scan_id,
             ).all():
                 group_lower = (group.group_name or "").lower().strip()
                 if group_lower not in local_groups_map:
@@ -6680,7 +6710,6 @@ def get_blast_radius(
         aid = int(nid.split("-")[1])
         for task in db.query(InventoryScheduledTask).filter(
             InventoryScheduledTask.asset_id == aid,
-            InventoryScheduledTask.scan_id == scan_id,
         ).all():
             run_user = (task.run_as_user or "").strip()
             if not run_user:
@@ -6703,7 +6732,6 @@ def get_blast_radius(
         aid = int(nid.split("-")[1])
         for trust in db.query(InventoryDomainTrust).filter(
             InventoryDomainTrust.asset_id == aid,
-            InventoryDomainTrust.scan_id == scan_id,
         ).all():
             # Try to find the trusted domain's DC asset by matching hostname/fqdn
             trusted_name = (trust.trusted_domain or "").lower()
@@ -6733,7 +6761,6 @@ def get_blast_radius(
         aid = int(nid.split("-")[1])
         for cred in db.query(InventoryCredential).filter(
             InventoryCredential.asset_id == aid,
-            InventoryCredential.scan_id == scan_id,
         ).limit(5).all():
             proto = (cred.protocol or "unknown").upper()
             add_edge(
@@ -6746,7 +6773,6 @@ def get_blast_radius(
     visited_asset_ids = [int(n["id"].split("-")[1]) for n in nodes.values() if n["type"] == "asset"]
     exploit_findings = db.query(Finding).filter(
         Finding.asset_id.in_(visited_asset_ids),
-        Finding.scan_id == scan_id,
         Finding.severity >= 3,  # High + Critical
         Finding.exploit_available == True,
     ).limit(20).all()
@@ -6760,7 +6786,6 @@ def get_blast_radius(
     if internet_facing_ids and exploit_ids:
         inet_findings = db.query(Finding).filter(
             Finding.asset_id.in_(internet_facing_ids),
-            Finding.scan_id == scan_id,
             Finding.severity >= 3,
             Finding.id.notin_(exploit_ids),
             or_(
@@ -6772,7 +6797,6 @@ def get_blast_radius(
     elif internet_facing_ids:
         inet_findings = db.query(Finding).filter(
             Finding.asset_id.in_(internet_facing_ids),
-            Finding.scan_id == scan_id,
             Finding.severity >= 3,
             or_(
                 Finding.cvss3_vector.like("%AV:N%"),
@@ -6824,7 +6848,6 @@ def get_blast_radius(
         aid = int(nid.split("-")[1])
         for conn in db.query(InventoryNetConn).filter(
             InventoryNetConn.asset_id == aid,
-            InventoryNetConn.scan_id == scan_id,
             InventoryNetConn.state.in_(["LISTEN", "LISTENING"]),
         ).all():
             port = conn.local_port
@@ -6836,7 +6859,6 @@ def get_blast_radius(
     # ── 11. Missing critical patches on focal asset ──
     missing_patches = db.query(InventoryPatch).filter(
         InventoryPatch.asset_id == asset_id,
-        InventoryPatch.scan_id == scan_id,
     ).all()
     critical_patches = [p for p in missing_patches if (p.vuln_count or 0) >= 5]
 
@@ -6848,7 +6870,6 @@ def get_blast_radius(
         aid = int(nid.split("-")[1])
         for dbi in db.query(InventoryDatabaseInstance).filter(
             InventoryDatabaseInstance.asset_id == aid,
-            InventoryDatabaseInstance.scan_id == scan_id,
             InventoryDatabaseInstance.is_running == True,
         ).all():
             db_instances.setdefault(aid, []).append(dbi)
@@ -6860,7 +6881,6 @@ def get_blast_radius(
         aid = int(nid.split("-")[1])
         for share in db.query(InventoryShare).filter(
             InventoryShare.asset_id == aid,
-            InventoryShare.scan_id == scan_id,
             InventoryShare.is_writeable == True,
         ).limit(3).all():
             add_edge(
@@ -6872,7 +6892,6 @@ def get_blast_radius(
     # ── 14. Expired / weak certificates on focal asset ──
     expired_certs = db.query(InventoryCertificate).filter(
         InventoryCertificate.asset_id == asset_id,
-        InventoryCertificate.scan_id == scan_id,
         InventoryCertificate.is_expired == True,
     ).all()
 
