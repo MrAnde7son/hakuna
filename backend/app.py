@@ -6387,12 +6387,39 @@ def get_blast_radius(
 
     # Virtual "Internet" node for internet-facing assets
     if asset.is_internet_facing:
-        ports = asset.open_ports or []
-        services = asset.services or {}
-        if ports:
+        # Gather open ports from all sources: EASM, findings, listening sockets, services
+        easm = asset.easm_data or {}
+        port_svc_map: dict[int, str] = {}  # port → service name
+
+        for p in (easm.get("open_ports") or []):
+            svc = (easm.get("services") or {}).get(str(p)) or {}
+            port_svc_map.setdefault(int(p), svc.get("name", ""))
+
+        # Ports from findings (e.g. Nessus)
+        finding_ports = db.query(Finding.port).filter(
+            Finding.asset_id == asset_id, Finding.port.isnot(None),
+        ).distinct().all()
+        for (fp,) in finding_ports:
+            try:
+                port_svc_map.setdefault(int(fp), "")
+            except (ValueError, TypeError):
+                pass
+
+        # Listening ports from inventory
+        listen_ports = db.query(
+            InventoryNetConn.local_port, InventoryNetConn.proto,
+        ).filter(
+            InventoryNetConn.asset_id == asset_id,
+            InventoryNetConn.state.in_(["LISTEN", "LISTENING"]),
+            InventoryNetConn.local_port.isnot(None),
+        ).distinct().all()
+        for lp, proto in listen_ports:
+            port_svc_map.setdefault(int(lp), "")
+
+        if port_svc_map:
             port_labels = []
-            for p in sorted(ports):
-                svc_name = (services.get(str(p)) or {}).get("name", "")
+            for p in sorted(port_svc_map):
+                svc_name = port_svc_map[p]
                 port_labels.append(f"{p}/{svc_name}" if svc_name else str(p))
             port_str = ", ".join(port_labels)
         else:
