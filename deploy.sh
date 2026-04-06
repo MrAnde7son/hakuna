@@ -158,7 +158,12 @@ if $DO_API; then
     VM_SCANNER_URL_VAL=""
   fi
 
+  # Integration builder OAuth client (separate from login OAuth)
+  GOOGLE_INTEGRATION_CLIENT_ID_VAL="${GOOGLE_INTEGRATION_CLIENT_ID:-$(gcloud secrets versions access latest --secret="google-integration-client-id" 2>/dev/null || true)}"
+  GOOGLE_INTEGRATION_CLIENT_SECRET_VAL="${GOOGLE_INTEGRATION_CLIENT_SECRET:-$(gcloud secrets versions access latest --secret="google-integration-client-secret" 2>/dev/null || true)}"
+
   ENV_VARS="GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID_VAL}"
+  [[ -n "$GOOGLE_INTEGRATION_CLIENT_ID_VAL" ]] && ENV_VARS="${ENV_VARS},GOOGLE_INTEGRATION_CLIENT_ID=${GOOGLE_INTEGRATION_CLIENT_ID_VAL},OAUTH_CLIENT_SECRET=${GOOGLE_INTEGRATION_CLIENT_SECRET_VAL}"
   [[ -n "$HAKUNA_SCANNER_URL_VAL" ]] && ENV_VARS="${ENV_VARS},HAKUNA_SCANNER_URL=${HAKUNA_SCANNER_URL_VAL},VM_SCANNER_URL=${VM_SCANNER_URL_VAL}"
 
   gcloud run services update "${CLOUD_RUN_SERVICE}" \

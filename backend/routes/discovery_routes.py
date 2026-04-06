@@ -348,7 +348,7 @@ async def oauth_start(connector_id: str, body: OAuthStartRequest = None,
     # Store state for callback verification
     _oauth_states[state] = {
         "connector_id": connector_id,
-        "code_verifier": code_verifier,
+        "code_verifier": code_verifier if acq.get("pkce") else None,
         "instance_url": instance_url,
         "user_id": user.id,
         "org_id": user.org_id,
@@ -406,18 +406,26 @@ async def oauth_callback(code: str = Query(...), state: str = Query(...),
         val_req = flow.get("validation_request")
         if val_req and access_token:
             instance_url = flow.get("instance_url", "").rstrip("/")
-            val_url = f"{instance_url}{val_req['path']}" if instance_url else val_req["path"]
-            async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
-                val_resp = await client.get(val_url, headers={"Authorization": f"Bearer {access_token}"})
-                if val_resp.status_code < 400:
-                    val_data = val_resp.json()
-                    for key, path in val_req.get("success_extracts", {}).items():
-                        parts = path.replace("response.", "").split(".")
-                        val = val_data
-                        for p in parts:
-                            val = val.get(p) if isinstance(val, dict) else None
-                        if key == "connected_user":
-                            connected_user = val
+            if not instance_url:
+                # Fall back to the connector's transport base_url
+                from integrations.connector_loader import get_connector
+                c = get_connector(flow["connector_id"])
+                instance_url = (c or {}).get("transport_config", {}).get("base_url", "").rstrip("/")
+            # Skip validation if path contains unresolved template params or no base URL
+            val_path = val_req["path"]
+            if "{{" not in val_path and instance_url:
+                val_url = f"{instance_url}{val_path}"
+                async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+                    val_resp = await client.get(val_url, headers={"Authorization": f"Bearer {access_token}"})
+                    if val_resp.status_code < 400:
+                        val_data = val_resp.json()
+                        for key, path in val_req.get("success_extracts", {}).items():
+                            parts = path.replace("response.", "").split(".")
+                            val = val_data
+                            for p in parts:
+                                val = val.get(p) if isinstance(val, dict) else None
+                            if key == "connected_user":
+                                connected_user = val
 
         # Store credentials
         from datetime import datetime, timedelta
