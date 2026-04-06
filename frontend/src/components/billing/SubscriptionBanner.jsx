@@ -60,7 +60,7 @@ export function ProFeatureGate({ feature }) {
     }}>
       <Lock size={32} />
       <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>
-        {feature || 'You've reached your plan limit'}. Upgrade for higher quotas.
+        {feature || "You've reached your plan limit"}. Upgrade for higher quotas.
       </span>
       <button
         onClick={() => navigate('/profile')}
