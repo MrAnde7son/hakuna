@@ -852,7 +852,7 @@ function ScanRunHistory({ expanded, domain }) {
     if (!expanded) return
     const load = () => {
       if (!runs) setLoading(true)
-      getEasmScanRuns(20, domain)
+      getEasmScanRuns(20)
         .then(setRuns)
         .catch(() => setRuns([]))
         .finally(() => setLoading(false))
