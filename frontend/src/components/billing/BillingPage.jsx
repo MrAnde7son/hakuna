@@ -169,7 +169,7 @@ export default function BillingPage() {
             $0<span style={{ fontSize: 14, fontWeight: 400, color: 'var(--muted)' }}>/mo</span>
           </div>
           <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {(freePlan?.features || ['Dashboard & reports', 'Findings & assets', '3 scans total', '3 users', '3 campaigns', 'Integrations', 'Workflows', 'SBOM & EASM', 'Threat intelligence', 'NLP search']).map(f => (
+            {(freePlan?.features || ['All features included', '3 scans total', '3 users', '3 campaigns', 'AI agents & copilot', '500K AI tokens/month']).map(f => (
               <li key={f} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text)' }}>
                 <Check size={14} color="var(--muted)" /> {f}
               </li>
@@ -234,7 +234,7 @@ export default function BillingPage() {
           <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 20px', display: 'flex', flexDirection: 'column', gap: 8 }}>
             {(proPlan?.features || [
               'Everything in Free', 'Unlimited scans', 'Unlimited users',
-              'Unlimited campaigns', 'AI agents',
+              'Unlimited campaigns', '5M AI tokens/month',
             ]).map(f => (
               <li key={f} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--text)' }}>
                 <Check size={14} color="#22c55e" /> {f}

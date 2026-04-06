@@ -123,7 +123,7 @@ const NAV_GROUPS = [
     items: [
       { path: '/campaigns', labelKey: 'nav.campaigns', icon: Target, permission: 'page_campaigns' },
       { path: '/aggregated-solutions', labelKey: 'nav.remediation', icon: Layers, permission: 'page_remediation' },
-      { path: '/agents', labelKey: 'nav.agents', icon: Bot, permission: 'page_agents', proOnly: true },
+      { path: '/agents', labelKey: 'nav.agents', icon: Bot, permission: 'page_agents' },
     ],
   },
 ]
@@ -1121,8 +1121,8 @@ function AppShell() {
         <NotificationBell />
         <HelpButton />
         <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} />
-        {isPro && <CopilotButton onClick={() => setCopilotOpen(true)} />}
-        {isPro && (
+        <CopilotButton onClick={() => setCopilotOpen(true)} />
+        {(
           <Suspense fallback={null}>
             <CopilotPanel open={copilotOpen} onClose={() => setCopilotOpen(false)} currentPath={location.pathname} currentSearch={location.search} />
           </Suspense>

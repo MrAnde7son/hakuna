@@ -1,5 +1,8 @@
 """
 Subscription-gating FastAPI dependencies.
+
+All features are available on every tier. Free tier has reduced quotas
+(scans, users, campaigns, AI tokens). Pro tier removes those limits.
 """
 import logging
 
