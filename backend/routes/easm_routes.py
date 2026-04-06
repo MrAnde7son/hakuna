@@ -199,7 +199,17 @@ async def refresh_scan(
     user: User = Depends(require_auth),
 ):
     """Check hakuna scan status and import assets if completed."""
-    org = _get_org(db, user)
+    # Resolve org from the scan record, not the user's current org,
+    # so we poll the correct easm_org_id (important for MSSP / superadmin).
+    scan = db.query(Scan).filter(Scan.id == scan_id, Scan.source_type == "easm").first()
+    if not scan:
+        raise HTTPException(404, "EASM scan not found")
+    if user.role != "superadmin" and scan.org_id != user.org_id:
+        raise HTTPException(403, "Access denied")
+
+    org = db.query(Organization).filter(Organization.id == scan.org_id).first()
+    if not org:
+        raise HTTPException(404, "Organization not found")
     _require_easm_org_id(db, org)
 
     result = await refresh_easm_scan(db, org, scan_id)
