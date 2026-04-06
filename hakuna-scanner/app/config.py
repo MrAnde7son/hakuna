@@ -11,14 +11,27 @@ class Settings(BaseSettings):
     naabu_ports: str = "21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1433,1521,2049,3306,3389,5432,5900,5985,6379,8080,8443,8888,9000,9443,3000,5000,27017"
     subfinder_sources: str = "all"
     uncover_sources: str = "shodan,censys,fofa"
-    org_scan_stagger_seconds: int = 30
+    org_scan_stagger_seconds: int = 120
     nmap_timeout_seconds: int = 300
     nmap_max_rate: int = 100
-    nmap_concurrency: int = 5
+    nmap_concurrency: int = 3
     puredns_wordlist: str = "/app/wordlists/subdomains.txt"
     katana_depth: int = 2
     katana_rate_limit: int = 50
     screenshot_dir: str = "/data/screenshots"
+
+    # Per-tool thread/concurrency caps
+    subfinder_threads: int = 5
+    dnsx_threads: int = 15
+    naabu_rate: int = 500
+    httpx_threads: int = 15
+    tlsx_threads: int = 10
+    cdncheck_threads: int = 10
+    puredns_threads: int = 10
+
+    # Celery task safety limits (seconds)
+    task_soft_time_limit: int = 1800   # 30 min soft limit
+    task_time_limit: int = 2100        # 35 min hard kill
 
     shodan_api_key: str = ""
     censys_api_id: str = ""

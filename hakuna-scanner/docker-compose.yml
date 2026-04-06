@@ -54,7 +54,7 @@ services:
     command: >
       celery -A app.celery_app:celery worker
       --loglevel=info
-      --concurrency=4
+      --concurrency=2
       -Q celery
     env_file: .env
     environment:
@@ -66,6 +66,11 @@ services:
       - .:/app
       - pd_tools:/root/go/bin
       - screenshots:/data/screenshots
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
     depends_on:
       postgres:
         condition: service_healthy
@@ -78,7 +83,7 @@ services:
     command: >
       celery -A app.celery_app:celery worker
       --loglevel=info
-      --concurrency=5
+      --concurrency=3
       -Q nmap_queue
     env_file: .env
     environment:
@@ -89,6 +94,11 @@ services:
     volumes:
       - .:/app
       - pd_tools:/root/go/bin
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
     depends_on:
       postgres:
         condition: service_healthy

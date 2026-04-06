@@ -18,6 +18,8 @@ celery.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
     worker_concurrency=settings.celery_concurrency,
+    task_soft_time_limit=settings.task_soft_time_limit,
+    task_time_limit=settings.task_time_limit,
     beat_schedule={},  # populated by scheduler module
 )
 

@@ -12,7 +12,8 @@ class SubfinderRunner(BaseRunner):
         self.target_domain = target_domain
 
     def build_command(self) -> list[str]:
-        cmd = ["subfinder", "-d", self.target_domain, "-json", "-silent"]
+        cmd = ["subfinder", "-d", self.target_domain, "-json", "-silent",
+               "-t", str(settings.subfinder_threads)]
         if settings.subfinder_sources and settings.subfinder_sources != "all":
             cmd.extend(["-sources", settings.subfinder_sources])
         return cmd
@@ -34,7 +35,8 @@ class DnsxRunner(BaseRunner):
 
     def build_command(self) -> list[str]:
         path = self._write_hosts()
-        return ["dnsx", "-l", path, "-json", "-silent", "-a", "-cname", "-mx", "-txt"]
+        return ["dnsx", "-l", path, "-json", "-silent", "-a", "-cname", "-mx", "-txt",
+                "-threads", str(settings.dnsx_threads)]
 
     async def run(self, org_id: str | None = None):
         try:
@@ -62,7 +64,8 @@ class NaabuRunner(BaseRunner):
 
     def build_command(self) -> list[str]:
         path = self._write_hosts()
-        cmd = ["naabu", "-l", path, "-json", "-silent"]
+        cmd = ["naabu", "-l", path, "-json", "-silent",
+               "-rate", str(settings.naabu_rate)]
         ports = self.ports or settings.naabu_ports
         cmd.extend(["-p", ports])
         if self.custom_timeout:
@@ -101,6 +104,7 @@ class HttpxRunner(BaseRunner):
             "-cdn", "-follow-redirects",
             "-content-length", "-web-server", "-method",
             "-location", "-ip",
+            "-threads", str(settings.httpx_threads),
         ]
         if self.screenshots:
             ss_dir = self.screenshot_dir or settings.screenshot_dir
@@ -137,6 +141,7 @@ class TlsxRunner(BaseRunner):
             "tlsx", "-l", path, "-json", "-silent",
             "-so", "-cipher", "-tls-version",
             "-expired",
+            "-c", str(settings.tlsx_threads),
         ]
 
     async def run(self, org_id: str | None = None):
@@ -164,7 +169,8 @@ class CdncheckRunner(BaseRunner):
 
     def build_command(self) -> list[str]:
         path = self._write_hosts()
-        return ["cdncheck", "-l", path, "-json", "-silent"]
+        return ["cdncheck", "-l", path, "-json", "-silent",
+                "-c", str(settings.cdncheck_threads)]
 
     async def run(self, org_id: str | None = None):
         try:
@@ -217,6 +223,7 @@ class PurednsRunner(BaseRunner):
         return [
             "puredns", "bruteforce", self.wordlist,
             "-d", self.domain, "--quiet",
+            "-n", str(settings.puredns_threads),
         ]
 
     async def run(self, org_id: str | None = None):
