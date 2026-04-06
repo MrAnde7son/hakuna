@@ -6288,6 +6288,7 @@ def get_blast_radius_bulk(
 def get_blast_radius(
     asset_id: int = Query(...),
     scan_id: int = Query(None, description="Deprecated — ignored"),
+    finding_id: int = Query(None, description="Scope blast radius to a specific finding"),
     db: Session = Depends(get_db),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
@@ -6771,39 +6772,44 @@ def get_blast_radius(
 
     # ── 9. Exploitable findings / CVEs on ALL visited assets ──
     visited_asset_ids = [int(n["id"].split("-")[1]) for n in nodes.values() if n["type"] == "asset"]
-    exploit_findings = db.query(Finding).filter(
-        Finding.asset_id.in_(visited_asset_ids),
-        Finding.severity >= 3,  # High + Critical
-        Finding.exploit_available == True,
-    ).limit(20).all()
-    exploit_ids = {f.id for f in exploit_findings}
+    if finding_id:
+        # Scoped mode: only include the specific finding
+        scoped_finding = db.query(Finding).filter(Finding.id == finding_id).first()
+        exploit_findings = [scoped_finding] if scoped_finding else []
+    else:
+        exploit_findings = db.query(Finding).filter(
+            Finding.asset_id.in_(visited_asset_ids),
+            Finding.severity >= 3,  # High + Critical
+            Finding.exploit_available == True,
+        ).limit(20).all()
+        exploit_ids = {f.id for f in exploit_findings}
 
-    # Also include internet-reachable findings (AV:N in CVSS vector) on internet-facing assets
-    internet_facing_ids = [
-        aid for aid in visited_asset_ids
-        if asset_map.get(aid) and asset_map[aid].is_internet_facing
-    ]
-    if internet_facing_ids and exploit_ids:
-        inet_findings = db.query(Finding).filter(
-            Finding.asset_id.in_(internet_facing_ids),
-            Finding.severity >= 3,
-            Finding.id.notin_(exploit_ids),
-            or_(
-                Finding.cvss3_vector.like("%AV:N%"),
-                Finding.cvss2_vector.like("%AV:N%"),
-            ),
-        ).limit(10).all()
-        exploit_findings.extend(inet_findings)
-    elif internet_facing_ids:
-        inet_findings = db.query(Finding).filter(
-            Finding.asset_id.in_(internet_facing_ids),
-            Finding.severity >= 3,
-            or_(
-                Finding.cvss3_vector.like("%AV:N%"),
-                Finding.cvss2_vector.like("%AV:N%"),
-            ),
-        ).limit(10).all()
-        exploit_findings.extend(inet_findings)
+        # Also include internet-reachable findings (AV:N in CVSS vector) on internet-facing assets
+        internet_facing_ids = [
+            aid for aid in visited_asset_ids
+            if asset_map.get(aid) and asset_map[aid].is_internet_facing
+        ]
+        if internet_facing_ids and exploit_ids:
+            inet_findings = db.query(Finding).filter(
+                Finding.asset_id.in_(internet_facing_ids),
+                Finding.severity >= 3,
+                Finding.id.notin_(exploit_ids),
+                or_(
+                    Finding.cvss3_vector.like("%AV:N%"),
+                    Finding.cvss2_vector.like("%AV:N%"),
+                ),
+            ).limit(10).all()
+            exploit_findings.extend(inet_findings)
+        elif internet_facing_ids:
+            inet_findings = db.query(Finding).filter(
+                Finding.asset_id.in_(internet_facing_ids),
+                Finding.severity >= 3,
+                or_(
+                    Finding.cvss3_vector.like("%AV:N%"),
+                    Finding.cvss2_vector.like("%AV:N%"),
+                ),
+            ).limit(10).all()
+            exploit_findings.extend(inet_findings)
 
     # Add exploitable findings as vuln nodes connected to their assets
     for f in exploit_findings:
@@ -7126,6 +7132,7 @@ def get_blast_radius(
 
     return {
         "asset_id": asset_id,
+        "finding_id": finding_id,
         "score": score,
         "reachable_assets": reachable_count,
         "privileged_users": len(user_nodes),

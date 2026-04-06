@@ -364,7 +364,7 @@ export default function FindingDetail() {
       {/* Blast Radius */}
       {finding.asset_id && (
         <div style={{ marginBottom: 14 }}>
-          <BlastRadiusPanel assetId={finding.asset_id} />
+          <BlastRadiusPanel assetId={finding.asset_id} findingId={finding.id} />
         </div>
       )}
 

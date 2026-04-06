@@ -721,7 +721,7 @@ function AttackVectorsSection({ vectors, hasData }) {
 }
 
 // ── Full panel ────────────────────────────────────────────────────────────
-export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = false }) {
+export default function BlastRadiusPanel({ scanId, assetId, findingId, defaultExpanded = false }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(defaultExpanded)
@@ -730,11 +730,11 @@ export default function BlastRadiusPanel({ scanId, assetId, defaultExpanded = fa
   useEffect(() => {
     if (!assetId) return
     setLoading(true)
-    getBlastRadius(assetId)
+    getBlastRadius(assetId, findingId)
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false))
-  }, [assetId])
+  }, [assetId, findingId])
 
   const hasData = data && (data.nodes?.length > 1 || data.vectors?.length > 0)
   const sc = scoreColor(data?.score ?? 0)

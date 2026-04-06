@@ -537,8 +537,8 @@ export const updateCampaignFinding = (campaignId, cfId, data) =>
   })
 
 // Blast Radius
-export const getBlastRadius = (asset_id) =>
-  request(`/blast-radius?asset_id=${asset_id}`)
+export const getBlastRadius = (asset_id, finding_id) =>
+  request(`/blast-radius?asset_id=${asset_id}${finding_id ? `&finding_id=${finding_id}` : ''}`)
 export const getBlastRadiusBulk = (assetIds) =>
   request(`/blast-radius/bulk?asset_ids=${assetIds.join(',')}`)
 
