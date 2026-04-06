@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db, SessionLocal
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
-from core.subscription import require_pro
 from models.models import Agent, CopilotConversation, User
 from agents.agent_tools import TOOL_REGISTRY
 from agents.agent_engine import (
@@ -30,7 +29,7 @@ from agents.agent_engine import (
 from agents.copilot_prompt import COPILOT_SYSTEM_PROMPT
 from models.models import Organization
 
-router = APIRouter(prefix="/api/copilot", tags=["copilot"], dependencies=[Depends(require_pro)])
+router = APIRouter(prefix="/api/copilot", tags=["copilot"])
 
 COPILOT_AGENT_NAME = "__copilot__"
 MAX_CONTEXT_TURNS = 10  # Last N exchanges to include as conversation context

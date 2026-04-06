@@ -47,11 +47,11 @@ def _get_org(db: Session, user: User) -> Organization:
 # ── Routes ───────────────────────────────────────────────
 
 FREE_FEATURES = [
-    "Dashboard & reports",
-    "Findings & assets",
+    "All features included",
     "3 scans total",
     "3 users",
     "3 campaigns",
+    "AI agents & copilot (500K tokens/month)",
     "Integrations",
     "Workflows",
     "SBOM & EASM",

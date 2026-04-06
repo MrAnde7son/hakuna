@@ -16,7 +16,6 @@ from core.database import get_db, SessionLocal
 from core.limiter import limiter
 from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, AgentApproval, User
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
-from core.subscription import require_pro
 from agents.agent_tools import get_tool_catalog
 from agents.agent_engine import run_agent, run_agent_streaming, update_agent_memory, resume_agent_run
 from agents.agent_pipeline import get_available_pipelines, PIPELINE_REGISTRY
@@ -25,7 +24,7 @@ from agents.agent_prompts import ENHANCED_PROMPTS
 from hakuna.routing.model_router import SONNET as _DEFAULT_MODEL
 from agents.agent_engine import get_default_model, get_available_providers
 
-router = APIRouter(prefix="/api/agents", tags=["agents"], dependencies=[Depends(require_pro)])
+router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 
 # ── Pydantic schemas ─────────────────────────────────────────────────

@@ -49,7 +49,7 @@ export default function SubscriptionBanner() {
 }
 
 /**
- * Inline upgrade prompt — use when a free user hits a pro-gated feature.
+ * Inline upgrade prompt — use when a free user hits a quota limit.
  */
 export function ProFeatureGate({ feature }) {
   const navigate = useNavigate()
@@ -60,7 +60,7 @@ export function ProFeatureGate({ feature }) {
     }}>
       <Lock size={32} />
       <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>
-        {feature || 'This feature'} requires a Pro subscription
+        {feature || 'You've reached your plan limit'}. Upgrade for higher quotas.
       </span>
       <button
         onClick={() => navigate('/profile')}
