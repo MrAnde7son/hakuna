@@ -41,7 +41,7 @@ def upgrade():
         # --- inventory_users: new columns ---
         if _table_exists(conn, "inventory_users"):
             new_cols = {
-                "is_locked": "BOOLEAN DEFAULT 0",
+                "is_locked": "BOOLEAN DEFAULT false" if _is_pg else "BOOLEAN DEFAULT 0",
                 "email": "VARCHAR",
                 "upn": "VARCHAR",
                 "source": "VARCHAR",

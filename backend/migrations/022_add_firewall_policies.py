@@ -33,30 +33,56 @@ def _table_exists(conn, table: str) -> bool:
 def upgrade():
     with engine.begin() as conn:
         if not _table_exists(conn, "firewall_policies"):
-            conn.execute(text("""
-                CREATE TABLE firewall_policies (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    org_id INTEGER NOT NULL REFERENCES organizations(id),
-                    vendor VARCHAR NOT NULL,
-                    source_integration_id VARCHAR REFERENCES integrations(id),
-                    rule_id VARCHAR NOT NULL,
-                    rule_name VARCHAR,
-                    from_zone VARCHAR,
-                    to_zone VARCHAR,
-                    src_cidrs JSON DEFAULT '[]',
-                    dst_cidrs JSON DEFAULT '[]',
-                    applications JSON DEFAULT '[]',
-                    services JSON DEFAULT '[]',
-                    action VARCHAR NOT NULL,
-                    enabled BOOLEAN DEFAULT 1,
-                    logged BOOLEAN DEFAULT 0,
-                    nat BOOLEAN DEFAULT 0,
-                    raw_response JSON,
-                    synced_at DATETIME NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """))
+            if _is_pg:
+                conn.execute(text("""
+                    CREATE TABLE firewall_policies (
+                        id SERIAL PRIMARY KEY,
+                        org_id INTEGER NOT NULL REFERENCES organizations(id),
+                        vendor VARCHAR NOT NULL,
+                        source_integration_id VARCHAR REFERENCES integrations(id),
+                        rule_id VARCHAR NOT NULL,
+                        rule_name VARCHAR,
+                        from_zone VARCHAR,
+                        to_zone VARCHAR,
+                        src_cidrs JSONB DEFAULT '[]',
+                        dst_cidrs JSONB DEFAULT '[]',
+                        applications JSONB DEFAULT '[]',
+                        services JSONB DEFAULT '[]',
+                        action VARCHAR NOT NULL,
+                        enabled BOOLEAN DEFAULT true,
+                        logged BOOLEAN DEFAULT false,
+                        nat BOOLEAN DEFAULT false,
+                        raw_response JSONB,
+                        synced_at TIMESTAMP NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+            else:
+                conn.execute(text("""
+                    CREATE TABLE firewall_policies (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        org_id INTEGER NOT NULL REFERENCES organizations(id),
+                        vendor VARCHAR NOT NULL,
+                        source_integration_id VARCHAR REFERENCES integrations(id),
+                        rule_id VARCHAR NOT NULL,
+                        rule_name VARCHAR,
+                        from_zone VARCHAR,
+                        to_zone VARCHAR,
+                        src_cidrs JSON DEFAULT '[]',
+                        dst_cidrs JSON DEFAULT '[]',
+                        applications JSON DEFAULT '[]',
+                        services JSON DEFAULT '[]',
+                        action VARCHAR NOT NULL,
+                        enabled BOOLEAN DEFAULT 1,
+                        logged BOOLEAN DEFAULT 0,
+                        nat BOOLEAN DEFAULT 0,
+                        raw_response JSON,
+                        synced_at DATETIME NOT NULL,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
             conn.execute(text(
                 "CREATE INDEX ix_fwp_org_vendor ON firewall_policies(org_id, vendor)"
             ))

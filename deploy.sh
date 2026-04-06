@@ -330,7 +330,7 @@ if $DO_MIGRATE; then
   step "Running scanner database migrations"
   info "Running alembic upgrade on scanner VM..."
   gcloud compute ssh hakuna-scanners --zone="${ZONE}" --tunnel-through-iap \
-    --command="cd /opt/hakuna-scanners && sudo docker compose exec -T scanner alembic upgrade head" \
+    --command="cd /opt/hakuna-scanners && sudo docker compose exec -T -e PYTHONPATH=/app easm-api alembic upgrade head" \
     --quiet
   success "Scanner migrations applied"
 
