@@ -606,7 +606,7 @@ REPORT_TEMPLATES = {
                 {"id": "ob-es5", "type": "card", "title": "With Exploit", "width": "quarter", "config": {"preset": "exploit_count"}},
                 {"id": "ob-es6", "type": "card", "title": "Mean Time to Remediate", "width": "quarter", "config": {"preset": "mttr_overall", "label": "days"}},
                 {"id": "ob-es7", "type": "pie_chart", "title": "SLA Status", "width": "half", "config": {"preset": "sla_status", "donut": True}},
-                {"id": "ob-es8", "type": "bar_chart", "title": "Top 10 by Severity", "width": "half", "config": {"preset": "top_findings_by_severity", "limit": 10}},
+                {"id": "ob-es8", "type": "bar_chart", "title": "Top 10 by Severity", "width": "half", "config": {"preset": "severity_breakdown", "limit": 10}},
                 {"id": "ob-es9", "type": "table", "title": "Top Critical Findings", "width": "full", "config": {"preset": "findings_list", "filters": {"severity": "4", "order": "desc", "sort_by": "priority_score"}, "limit": 10}},
             ]
         },
@@ -618,12 +618,12 @@ REPORT_TEMPLATES = {
             "widgets": [
                 {"id": "ob-td1", "type": "card", "title": "Total Findings", "width": "quarter", "config": {"preset": "total_findings"}},
                 {"id": "ob-td2", "type": "card", "title": "Critical", "width": "quarter", "config": {"preset": "critical_count"}},
-                {"id": "ob-td3", "type": "card", "title": "SLA Breached", "width": "quarter", "config": {"preset": "sla_breached_count"}},
+                {"id": "ob-td3", "type": "card", "title": "SLA Breached", "width": "quarter", "config": {"preset": "sla_breached"}},
                 {"id": "ob-td4", "type": "card", "title": "With Exploit", "width": "quarter", "config": {"preset": "exploit_count"}},
                 {"id": "ob-td5", "type": "pie_chart", "title": "Findings by Severity", "width": "half", "config": {"preset": "severity_breakdown", "donut": True}},
                 {"id": "ob-td6", "type": "pie_chart", "title": "SLA Status", "width": "half", "config": {"preset": "sla_status", "donut": True}},
-                {"id": "ob-td7", "type": "bar_chart", "title": "Findings by Owner", "width": "half", "config": {"preset": "findings_by_owner"}},
-                {"id": "ob-td8", "type": "bar_chart", "title": "Findings by Family", "width": "half", "config": {"preset": "findings_by_family", "limit": 10}},
+                {"id": "ob-td7", "type": "bar_chart", "title": "Findings by Owner", "width": "half", "config": {"preset": "owner_finding_count"}},
+                {"id": "ob-td8", "type": "bar_chart", "title": "Findings by Family", "width": "half", "config": {"preset": "family_breakdown", "limit": 10}},
                 {"id": "ob-td9", "type": "table", "title": "Top Findings to Fix", "width": "full", "config": {"preset": "findings_list", "filters": {"order": "desc", "sort_by": "priority_score"}, "limit": 15}},
             ]
         },
@@ -635,12 +635,12 @@ REPORT_TEMPLATES = {
             "widgets": [
                 {"id": "ob-cr1", "type": "risk_grade", "title": "Organization Risk Grade", "width": "half", "config": {"preset": "risk_grade"}},
                 {"id": "ob-cr2", "type": "pie_chart", "title": "SLA Compliance", "width": "half", "config": {"preset": "sla_status", "donut": True}},
-                {"id": "ob-cr3", "type": "card", "title": "SLA Breached", "width": "quarter", "config": {"preset": "sla_breached_count"}},
+                {"id": "ob-cr3", "type": "card", "title": "SLA Breached", "width": "quarter", "config": {"preset": "sla_breached"}},
                 {"id": "ob-cr4", "type": "card", "title": "Mean Time to Remediate", "width": "quarter", "config": {"preset": "mttr_overall", "label": "days"}},
-                {"id": "ob-cr5", "type": "card", "title": "Active Exceptions", "width": "quarter", "config": {"preset": "exception_count"}},
+                {"id": "ob-cr5", "type": "card", "title": "Active Exceptions", "width": "quarter", "config": {"preset": "excepted_findings"}},
                 {"id": "ob-cr6", "type": "card", "title": "Total Findings", "width": "quarter", "config": {"preset": "total_findings"}},
                 {"id": "ob-cr7", "type": "pie_chart", "title": "Severity Distribution", "width": "half", "config": {"preset": "severity_breakdown", "donut": True}},
-                {"id": "ob-cr8", "type": "bar_chart", "title": "Findings by Age", "width": "half", "config": {"preset": "findings_by_age"}},
+                {"id": "ob-cr8", "type": "bar_chart", "title": "Findings by Age", "width": "half", "config": {"preset": "age_distribution"}},
                 {"id": "ob-cr9", "type": "table", "title": "SLA Breaches", "width": "full", "config": {"preset": "findings_list", "filters": {"sla_status": "breached", "order": "desc", "sort_by": "priority_score"}, "limit": 20}},
             ]
         },
