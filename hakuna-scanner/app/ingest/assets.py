@@ -216,7 +216,7 @@ async def update_enrichment(
                     tech_stack = cast(:tech as jsonb),
                     cdn_provider = :cdn,
                     waf = :waf,
-                    services = COALESCE(services, '{}'::jsonb) || COALESCE(cast(:services as jsonb), '{}'::jsonb),
+                    services = COALESCE(services::jsonb, '{}'::jsonb) || COALESCE(cast(:services as jsonb), '{}'::jsonb),
                     last_enriched = :now,
                     last_seen = :now
                 WHERE org_id = :org_id AND hostname = :host

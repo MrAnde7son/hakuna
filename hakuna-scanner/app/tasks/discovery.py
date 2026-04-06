@@ -374,7 +374,8 @@ def run_liveness_gate(self, org_id: str) -> dict:
     return _run_async(_do_liveness_gate(get_task_session(), org_id))
 
 
-@celery.task(bind=True, name="discovery.run_discovery_chain")
+@celery.task(bind=True, name="discovery.run_discovery_chain",
+             soft_time_limit=5400, time_limit=5700)  # 90 min / 95 min
 def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> dict:
     """Full discovery chain:
     subfinder → wildcard_bruteforce → asnmap → uncover → dnsx → naabu → liveness_gate.

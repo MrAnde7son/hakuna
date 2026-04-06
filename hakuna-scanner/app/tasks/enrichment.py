@@ -316,7 +316,8 @@ def run_katana(self, org_id: str) -> dict:
     return _run_async(_do_katana(get_task_session(), org_id))
 
 
-@celery.task(bind=True, name="enrichment.run_enrichment_chain")
+@celery.task(bind=True, name="enrichment.run_enrichment_chain",
+             soft_time_limit=5400, time_limit=5700)  # 90 min / 95 min
 def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> dict:
     """Full enrichment chain (confirmed_alive assets only):
     tlsx → httpx → cdncheck → katana → nmap_dispatch → auto-tag → delta.
