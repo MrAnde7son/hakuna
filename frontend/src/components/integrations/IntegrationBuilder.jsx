@@ -13,6 +13,7 @@ import {
 } from '../../api.js'
 import StepAuthenticate from './steps/StepAuthenticate.jsx'
 import StepFieldMapper from './steps/StepFieldMapper.jsx'
+import ActiveDirectoryConfig from './ActiveDirectoryConfig.jsx'
 
 const STEPS_API = [
   { key: 'source', label: 'Choose Source' },
@@ -35,7 +36,7 @@ const STEPS_FILE = [
   { key: 'save', label: 'Save' },
 ]
 
-const TRANSPORT_ICONS = { api: Globe, sql: DbIcon, file: FileText, mcp: Zap }
+const TRANSPORT_ICONS = { api: Globe, sql: DbIcon, file: FileText, mcp: Zap, ldap: Server }
 
 const AUTH_TYPES = [
   { value: 'none', label: 'None' },
@@ -329,12 +330,15 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     try {
       // Save credentials if any auth values were provided
       let cId = credentialsId
-      const hasInlineAuth = (inlineAuthType !== 'none' && Object.keys(inlineAuthValues).length > 0)
+      // LDAP: credentials are embedded in the transport config form
+      const hasLdapAuth = transportType === 'ldap' && transportConfig.host && transportConfig.bind_dn
+      const hasInlineAuth = hasLdapAuth
+        || (inlineAuthType !== 'none' && Object.keys(inlineAuthValues).length > 0)
         || (transportType === 'sql' && inlineAuthValues.connection_string)
         || (transportType === 'mcp' && inlineAuthValues.mcp_api_key)
 
       if (hasInlineAuth && (!cId || editId)) {
-        const authType = transportType === 'sql' ? 'basic' : transportType === 'mcp' ? 'api_key' : inlineAuthType
+        const authType = transportType === 'ldap' ? 'basic' : transportType === 'sql' ? 'basic' : transportType === 'mcp' ? 'api_key' : inlineAuthType
 
         if (authType === 'oauth2_client') {
           // Exchange client credentials for a token — backend stores it with auto-refresh
@@ -349,6 +353,26 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
           cId = result.credentials_id
           setCredentialsId(cId)
           setConnectedUser(result.connected_user || null)
+        } else if (hasLdapAuth) {
+          const cred = await createCredential({
+            name: `Active Directory — ${transportConfig.host}`,
+            connector_id: selectedConnector || 'active_directory',
+            auth_type: 'basic',
+            values: {
+              host: transportConfig.host,
+              port: parseInt(transportConfig.port, 10) || 636,
+              bind_dn: transportConfig.bind_dn,
+              bind_password: transportConfig.bind_password,
+              base_dn: transportConfig.base_dn,
+              use_ssl: transportConfig.use_ssl !== false,
+              use_starttls: !!transportConfig.use_starttls,
+              verify_ssl: transportConfig.verify_ssl !== false,
+              auth_mode: transportConfig.auth_mode || 'simple_bind',
+              ntlm_domain: transportConfig.ntlm_domain || '',
+            },
+          })
+          cId = cred.id
+          setCredentialsId(cId)
         } else {
           const cred = await createCredential({
             name: `${transportConfig.base_url || transportConfig.server_url || 'Custom'} credentials`,
@@ -809,7 +833,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const renderConfigure = () => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
-        {transportType === 'file' ? 'Upload File' : transportType === 'sql' ? 'Connect to Database' : transportType === 'mcp' ? 'Connect to MCP Server' : 'Connect to API'}
+        {transportType === 'file' ? 'Upload File' : transportType === 'sql' ? 'Connect to Database' : transportType === 'mcp' ? 'Connect to MCP Server' : transportType === 'ldap' ? 'Connect to Active Directory' : 'Connect to API'}
       </h3>
 
       {/* Direction selector (only for custom builds, templates pre-set this) */}
@@ -1453,6 +1477,14 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         </div>
       )}
 
+      {/* ── LDAP / Active Directory transport ── */}
+      {transportType === 'ldap' && (
+        <ActiveDirectoryConfig
+          value={transportConfig}
+          onChange={setTransportConfig}
+        />
+      )}
+
       {connectError && (
         <div style={{ padding: '10px 14px', borderRadius: 8, background: '#ef444412', border: '1px solid #ef444430', color: '#ef4444', fontSize: 12 }}>
           {connectError}
@@ -1485,7 +1517,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         </div>
       )}
       <Button onClick={handleConnect}
-        disabled={loading || (transportType === 'api' && !transportConfig.base_url) || (transportType === 'file' && !transportConfig.path) || (transportType === 'sql' && !transportConfig.query) || (transportType === 'mcp' && !transportConfig.server_url)}
+        disabled={loading || (transportType === 'api' && !transportConfig.base_url) || (transportType === 'file' && !transportConfig.path) || (transportType === 'sql' && !transportConfig.query) || (transportType === 'mcp' && !transportConfig.server_url) || (transportType === 'ldap' && (!transportConfig.host || !transportConfig.bind_dn || !transportConfig.base_dn))}
         style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
         {loading ? <><InlineSpinner /> {transportType === 'file' ? 'Parsing...' : 'Connecting...'}</> : <>{transportType === 'file' ? 'Parse File' : 'Connect & Fetch Response'} <ArrowRight size={14} /></>}
       </Button>

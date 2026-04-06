@@ -597,9 +597,9 @@ class InventoryUser(Base):
     __tablename__ = "inventory_users"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True, index=True)
     # The asset where this user data was collected (the host scanned)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
 
     username = Column(String, index=True)
     domain = Column(String, index=True)      # DOMAIN or hostname for local users
@@ -617,6 +617,7 @@ class InventoryUser(Base):
 
     # Account state flags
     is_disabled = Column(Boolean, default=False)
+    is_locked = Column(Boolean, default=False)        # AD lockout flag
     password_never_expires = Column(Boolean, default=False)
     never_logged_in = Column(Boolean, default=False)
     never_changed_password = Column(Boolean, default=False)
@@ -639,8 +640,20 @@ class InventoryUser(Base):
     # Organizational attributes (from AD or enrichment)
     department = Column(String)
     job_title = Column(String)
+    email = Column(String)                   # From AD mail attribute
+    upn = Column(String)                     # userPrincipalName
     manager_dn = Column(String)              # DN of manager (from AD)
     manager_username = Column(String)         # Resolved manager username
+
+    # Direct-connect source tracking (for AD/LDAP connector, not scanner-based)
+    source = Column(String, nullable=True)           # 'active_directory' | 'okta' | etc.
+    source_id = Column(String, nullable=True)        # objectGUID or external unique ID
+    org_id = Column(Integer, nullable=True, index=True)  # For direct-connect (no scan context)
+    last_synced_at = Column(DateTime, nullable=True)
+
+    # Password / logon age tracking
+    password_age_days = Column(Integer, nullable=True)
+    last_logon_days_ago = Column(Integer, nullable=True)
 
     # Last seen logged on to which host
     last_logon_host = Column(String)
@@ -651,8 +664,8 @@ class InventoryGroup(Base):
     __tablename__ = "inventory_groups"
 
     id = Column(Integer, primary_key=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False, index=True)
-    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id"), nullable=True, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
 
     group_name = Column(String, index=True)
     domain = Column(String)
@@ -662,6 +675,29 @@ class InventoryGroup(Base):
     members = Column(JSON, default=list)     # List of member CN/DN strings
     is_privileged = Column(Boolean, default=False)  # DA, EA, Admins, etc.
     source_plugin = Column(String)
+
+    # Direct-connect fields (for AD/LDAP connector)
+    source = Column(String, nullable=True)           # 'active_directory'
+    source_id = Column(String, nullable=True)        # objectGUID or DN
+    org_id = Column(Integer, nullable=True, index=True)
+    group_scope = Column(String, nullable=True)      # domain_local | global | universal
+    group_type = Column(String, nullable=True)       # security | distribution
+    member_count = Column(Integer, nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
+
+
+class IdentityGroupMembership(Base):
+    """Join table linking identities to groups."""
+    __tablename__ = "identity_group_memberships"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, nullable=False, index=True)
+    identity_source = Column(String, nullable=False)    # 'active_directory'
+    identity_source_id = Column(String, nullable=False)  # User objectGUID
+    group_source = Column(String, nullable=False)        # 'active_directory'
+    group_source_id = Column(String, nullable=False)     # Group objectGUID or DN
+    group_name = Column(String, nullable=True)
+    synced_at = Column(DateTime, nullable=True)
 
 
 class InventoryDomainTrust(Base):

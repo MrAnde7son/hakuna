@@ -1,0 +1,215 @@
+{
+  "id": "active_directory",
+  "name": "Active Directory / LDAP",
+  "description": "Pull users, computers, and groups from Active Directory via LDAP for identity-aware exposure management",
+  "category": "Identity Security",
+  "logo": "/logos/vendors/microsoft.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "ldap",
+  "relay_capable": true,
+
+  "transport_config": {
+    "mode": "users",
+    "page_size": 500,
+    "custom_filter": "",
+    "custom_attributes": ""
+  },
+
+  "records_path": "normalized",
+
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Enter the hostname or IP address of your domain controller",
+        "capture": {
+          "field": "host",
+          "label": "Domain Controller Host/IP",
+          "type": "text",
+          "placeholder": "dc01.corp.example.com",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Enter the LDAP port (636 for LDAPS, 389 for LDAP with StartTLS)",
+        "capture": {
+          "field": "port",
+          "label": "Port",
+          "type": "text",
+          "placeholder": "636",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Enter the Bind DN — the distinguished name of the service account used to query AD",
+        "capture": {
+          "field": "bind_dn",
+          "label": "Bind DN",
+          "type": "text",
+          "placeholder": "CN=hakuna-svc,OU=ServiceAccounts,DC=corp,DC=example,DC=com",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Enter the password for the bind account",
+        "capture": {
+          "field": "bind_password",
+          "label": "Bind Password",
+          "type": "password",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Enter the Base DN — the root of the directory tree to search",
+        "capture": {
+          "field": "base_dn",
+          "label": "Base DN",
+          "type": "text",
+          "placeholder": "DC=corp,DC=example,DC=com",
+          "auto_validate": false
+        }
+      }
+    ],
+    "extra_fields": [
+      {
+        "field": "use_ssl",
+        "label": "Use LDAPS (port 636)",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "field": "use_starttls",
+        "label": "Use StartTLS (port 389)",
+        "type": "boolean",
+        "default": false
+      },
+      {
+        "field": "verify_ssl",
+        "label": "Verify TLS Certificate",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "field": "auth_mode",
+        "label": "Authentication Mode",
+        "type": "select",
+        "options": ["simple_bind", "ntlm"],
+        "default": "simple_bind"
+      },
+      {
+        "field": "ntlm_domain",
+        "label": "NTLM Domain (if NTLM auth)",
+        "type": "text",
+        "placeholder": "CORP",
+        "required": false
+      }
+    ]
+  },
+
+  "default_field_map": [
+    {
+      "source": "normalized.source_id",
+      "target": "source_id",
+      "transform": {
+        "type": "expression",
+        "expr": "record.get('source_id', record.get('normalized', {}).get('objectGUID', record.get('normalized', {}).get('distinguishedName', '')))"
+      }
+    },
+    {
+      "source": "record_type",
+      "target": "asset_type",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "user": "identity",
+          "computer": "host",
+          "group": "identity"
+        }
+      }
+    },
+    {
+      "source": "normalized.hostname",
+      "target": "hostname",
+      "transform": {
+        "type": "expression",
+        "expr": "record.get('normalized', {}).get('hostname') or record.get('normalized', {}).get('dNSHostName') or record.get('normalized', {}).get('sAMAccountName', '')"
+      }
+    },
+    {
+      "source": "normalized.dNSHostName",
+      "target": "fqdn",
+      "transform": {
+        "type": "expression",
+        "expr": "record.get('normalized', {}).get('dNSHostName', '')"
+      }
+    },
+    {
+      "source": "normalized.operatingSystem",
+      "target": "os",
+      "transform": {
+        "type": "expression",
+        "expr": "record.get('normalized', {}).get('operatingSystem', '')"
+      }
+    },
+    {
+      "source": "normalized.whenChanged",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "normalized.sAMAccountName",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'display_name': record.get('normalized', {}).get('displayName', ''), 'email': record.get('normalized', {}).get('mail', ''), 'login': record.get('normalized', {}).get('sAMAccountName', ''), 'upn': record.get('normalized', {}).get('userPrincipalName', ''), 'user_id': record.get('source_id', ''), 'identity_type': record.get('normalized', {}).get('identity_type', 'unknown'), 'is_admin': record.get('normalized', {}).get('is_admin', False), 'is_service_account': record.get('normalized', {}).get('is_service_account', False)}"
+      }
+    },
+    {
+      "source": "normalized.sAMAccountName",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'department': record.get('normalized', {}).get('department', ''), 'title': record.get('normalized', {}).get('title', ''), 'manager': record.get('normalized', {}).get('manager_sam', ''), 'member_of': record.get('normalized', {}).get('memberOf', []), 'is_enabled': record.get('normalized', {}).get('is_enabled', True), 'is_locked': record.get('normalized', {}).get('is_locked', False), 'password_age_days': record.get('normalized', {}).get('password_age_days'), 'last_logon_days_ago': record.get('normalized', {}).get('last_logon_days_ago'), 'password_never_expires': record.get('normalized', {}).get('password_never_expires', False), 'distinguished_name': record.get('normalized', {}).get('distinguishedName', ''), 'when_created': record.get('normalized', {}).get('whenCreated', ''), 'when_changed': record.get('normalized', {}).get('whenChanged', ''), 'sid': str(record.get('normalized', {}).get('objectSid', '')), 'os_family': record.get('normalized', {}).get('os_family', ''), 'group_scope': record.get('normalized', {}).get('group_scope', ''), 'group_type': record.get('normalized', {}).get('group_type', ''), 'member_count': record.get('normalized', {}).get('member_count', 0)}"
+      }
+    }
+  ],
+
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+
+  "params_schema": {
+    "mode": {
+      "label": "Sync Mode",
+      "type": "select",
+      "options": ["users", "computers", "groups"],
+      "default": "users",
+      "description": "What to sync from Active Directory"
+    },
+    "custom_filter": {
+      "label": "Custom LDAP Filter",
+      "type": "text",
+      "default": "",
+      "description": "Additional LDAP filter (ANDed with the base filter). Example: (department=Engineering)",
+      "advanced": true
+    },
+    "custom_attributes": {
+      "label": "Custom Attributes",
+      "type": "text",
+      "default": "",
+      "description": "Comma-separated list of additional LDAP attributes to fetch",
+      "advanced": true
+    },
+    "page_size": {
+      "label": "Page Size",
+      "type": "integer",
+      "default": 500,
+      "description": "Number of records per LDAP page (max usually 1000)",
+      "advanced": true
+    }
+  }
+}

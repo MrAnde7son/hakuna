@@ -14,6 +14,7 @@ from services.transports.api_transport import ApiTransport
 from services.transports.file_transport import FileTransport
 from services.transports.sql_transport import SqlTransport
 from services.transports.mcp_transport import McpTransport
+from services.transports.ldap_transport import LdapTransport
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ TRANSPORTS = {
     "file": FileTransport,
     "sql": SqlTransport,
     "mcp": McpTransport,
+    "ldap": LdapTransport,
 }
 
 

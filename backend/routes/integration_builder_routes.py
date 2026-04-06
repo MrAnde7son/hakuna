@@ -293,9 +293,10 @@ async def live_connect(body: ConnectRequest, db: Session = Depends(get_db),
     from services.transports.file_transport import FileTransport
     from services.transports.sql_transport import SqlTransport
     from services.transports.mcp_transport import McpTransport
+    from services.transports.ldap_transport import LdapTransport
     from services.extraction_tasks import create_task, update_task
 
-    transport_map = {"api": ApiTransport, "file": FileTransport, "sql": SqlTransport, "mcp": McpTransport}
+    transport_map = {"api": ApiTransport, "file": FileTransport, "sql": SqlTransport, "mcp": McpTransport, "ldap": LdapTransport}
     transport_cls = transport_map.get(body.transport_type)
     if not transport_cls:
         raise HTTPException(400, f"Unsupported transport: {body.transport_type}")
@@ -816,3 +817,45 @@ def update_integration_logo(integration_id: str, body: dict,
         i.logo_url = body.get("logo_url")
     db.commit()
     return {"logo_url": i.logo_url}
+
+
+# ─────────────────────────────────────────────────────────
+# Active Directory / LDAP Test Connection
+# ─────────────────────────────────────────────────────────
+
+class ADTestConnectionRequest(BaseModel):
+    host: str
+    port: int = 636
+    bind_dn: str
+    bind_password: str
+    base_dn: str
+    use_ssl: bool = True
+    use_starttls: bool = False
+    verify_ssl: bool = True
+    auth_mode: str = "simple_bind"
+    ntlm_domain: Optional[str] = None
+
+
+@router.post("/integrations/active-directory/test-connection")
+async def ad_test_connection(
+    body: ADTestConnectionRequest,
+    current_user: User = Depends(require_auth),
+):
+    """Test connectivity to an Active Directory / LDAP server."""
+    from services.transports.ldap_transport import test_ldap_connection
+
+    credentials = {
+        "host": body.host,
+        "port": body.port,
+        "bind_dn": body.bind_dn,
+        "bind_password": body.bind_password,
+        "base_dn": body.base_dn,
+        "use_ssl": body.use_ssl,
+        "use_starttls": body.use_starttls,
+        "verify_ssl": body.verify_ssl,
+        "auth_mode": body.auth_mode,
+        "ntlm_domain": body.ntlm_domain,
+    }
+
+    result = test_ldap_connection(credentials)
+    return result

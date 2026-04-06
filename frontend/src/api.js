@@ -1107,6 +1107,11 @@ export const ibUpdateLogo = (id, data) => request(`${IB}/integrations/${id}/logo
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
 })
 
+// Active Directory / LDAP
+export const adTestConnection = (data) => request(`${IB}/integrations/active-directory/test-connection`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data), timeout: 30_000,
+})
+
 // Discovery
 export const discoverOAuth = (url) => request(`${IB}/discovery/oauth`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
