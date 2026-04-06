@@ -1053,7 +1053,15 @@ const IB = '/integration-builder'
 export const getIntegrationSchema = (entity) => request(`${IB}/schema${entity ? '?entity=' + entity : ''}`)
 export const getTargetModels = () => request(`${IB}/targets`)
 export const getTargetSchema = (slug) => request(`${IB}/targets/${slug}/schema`)
-export const getConnectors = () => request(`${IB}/connectors`)
+export const getConnectors = ({ search, category, page = 1, page_size = 12 } = {}) => {
+  const params = new URLSearchParams()
+  if (search) params.set('search', search)
+  if (category && category !== 'all') params.set('category', category)
+  params.set('page', page)
+  params.set('page_size', page_size)
+  return request(`${IB}/connectors?${params}`)
+}
+export const getConnectorCategories = () => request(`${IB}/connectors-categories`)
 export const getConnector = (id) => request(`${IB}/connectors/${id}`)
 export const getAcquisitionFlow = (id) => request(`${IB}/connectors/${id}/acquisition-flow`)
 export const validateCredentials = (connectorId, data) => request(`${IB}/connectors/${connectorId}/validate-credentials`, {

@@ -1,9 +1,9 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, Check, ChevronRight, ChevronDown, Zap, Database as DbIcon, FileText, Globe, Wand2, Eye, EyeOff, List, Server, Search, X } from 'lucide-react'
 import { Card, Button, useToast } from '../shared/ui.jsx'
 import {
-  getConnectors, getConnector, getIntegrationSchema, getAcquisitionFlow,
+  getConnectors, getConnectorCategories, getConnector, getIntegrationSchema, getAcquisitionFlow,
   validateCredentials, createCredential, integrationConnect, pollExtraction,
   integrationPreview, integrationAutoSuggest,
   ibCreateIntegration, ibUpdateIntegration, ibGetIntegration,
@@ -82,35 +82,24 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [schedule, setSchedule] = useState('')
   const [enabled, setEnabled] = useState(false)
 
-  // Template search & filter
+  // Template search & filter (server-side pagination)
   const [templateSearch, setTemplateSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [templateCategoryFilter, setTemplateCategoryFilter] = useState('all')
-  const TEMPLATES_PER_PAGE = 12
   const [templatePage, setTemplatePage] = useState(1)
+  const [templatePageCount, setTemplatePageCount] = useState(1)
+  const [filteredTotal, setFilteredTotal] = useState(0)
+  const searchDebounceRef = useRef(null)
 
-  const filteredConnectors = useMemo(() => {
-    let list = connectors
-    if (templateCategoryFilter !== 'all') {
-      list = list.filter(c => c.category === templateCategoryFilter)
-    }
-    if (templateSearch.trim()) {
-      const q = templateSearch.toLowerCase()
-      list = list.filter(c =>
-        c.name.toLowerCase().includes(q) ||
-        (c.description || '').toLowerCase().includes(q)
-      )
-    }
-    return list
-  }, [connectors, templateSearch, templateCategoryFilter])
-
-  const templatePageCount = Math.max(1, Math.ceil(filteredConnectors.length / TEMPLATES_PER_PAGE))
-  const pagedConnectors = filteredConnectors.slice(
-    (templatePage - 1) * TEMPLATES_PER_PAGE,
-    templatePage * TEMPLATES_PER_PAGE,
-  )
+  // Debounce search input
+  useEffect(() => {
+    clearTimeout(searchDebounceRef.current)
+    searchDebounceRef.current = setTimeout(() => setDebouncedSearch(templateSearch), 300)
+    return () => clearTimeout(searchDebounceRef.current)
+  }, [templateSearch])
 
   // Reset page when filters change
-  useEffect(() => { setTemplatePage(1) }, [templateSearch, templateCategoryFilter])
+  useEffect(() => { setTemplatePage(1) }, [debouncedSearch, templateCategoryFilter])
 
   // Ordered category list — derived from data but displayed in a fixed logical order
   const CATEGORY_ORDER = [
@@ -121,13 +110,8 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     'ITSM', 'DNS', 'HR', 'Collaboration',
   ]
 
-  const categoryCounts = useMemo(() => {
-    const counts = {}
-    for (const c of connectors) {
-      if (c.category) counts[c.category] = (counts[c.category] || 0) + 1
-    }
-    return counts
-  }, [connectors])
+  const [categoryCounts, setCategoryCounts] = useState({})
+  const [totalConnectors, setTotalConnectors] = useState(0)
 
   const orderedCategories = useMemo(() =>
     CATEGORY_ORDER.filter(cat => categoryCounts[cat]),
@@ -198,8 +182,22 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     return step - 1
   }
 
+  // Fetch connectors with server-side pagination/filtering
   useEffect(() => {
-    getConnectors().then(setConnectors).catch(console.error)
+    getConnectors({ search: debouncedSearch || undefined, category: templateCategoryFilter, page: templatePage })
+      .then(res => {
+        setConnectors(res.items)
+        setTemplatePageCount(res.page_count)
+        setFilteredTotal(res.total)
+      })
+      .catch(console.error)
+  }, [debouncedSearch, templateCategoryFilter, templatePage])
+
+  useEffect(() => {
+    getConnectorCategories().then(res => {
+      setCategoryCounts(res.categories)
+      setTotalConnectors(res.total)
+    }).catch(console.error)
     getIntegrationSchema().then(s => setSchema(s)).catch(console.error)
     getTargetModels().then(setTargetModels).catch(console.error)
     getRelayAgents().then(setRelayAgents).catch(() => {})
@@ -615,7 +613,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
           <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Start from a template</h3>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{filteredConnectors.length} connector{filteredConnectors.length !== 1 ? 's' : ''}</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{filteredTotal} connector{filteredTotal !== 1 ? 's' : ''}</span>
         </div>
 
         {/* Search + entity filter pills */}
@@ -648,13 +646,13 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
           </div>
         </div>
 
-        {pagedConnectors.length === 0 ? (
+        {connectors.length === 0 ? (
           <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
             No connectors match your search.
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
-            {pagedConnectors.map(c => (
+            {connectors.map(c => (
               <Card key={c.id} onClick={() => handleSelectConnector(c.id)} style={{ cursor: 'pointer', padding: 16 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                   <VendorLogo src={c.logo} size={32} />

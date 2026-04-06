@@ -164,8 +164,8 @@ class TestConnectorLoaderDiscovery:
     def test_loader_finds_cloud_connectors(self):
         from integrations.connector_loader import load_connectors, get_all_connectors, get_connector
         load_connectors()
-        all_connectors = get_all_connectors()
-        ids = [c["id"] for c in all_connectors]
+        result = get_all_connectors(page_size=500)
+        ids = [c["id"] for c in result["items"]]
         for cid in CLOUD_CONNECTORS:
             assert cid in ids, f"Connector loader did not discover {cid}"
 

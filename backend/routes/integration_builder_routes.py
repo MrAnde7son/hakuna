@@ -15,7 +15,7 @@ from models.models import (
     User, Integration, IntegrationCredential, IntegrationRun, DiscoveredSpec,
 )
 from integrations.schema import get_schema
-from integrations.connector_loader import get_all_connectors, get_connector
+from integrations.connector_loader import get_all_connectors, get_all_connectors_unpaginated, get_connector
 from integrations.model_registry import (
     get_registry, get_model_meta, get_target_schema, get_target_schema_expanded,
     list_targets as list_registry_targets,
@@ -85,9 +85,26 @@ def auto_suggest_fields(body: AutoSuggestRequest, user: User = Depends(require_a
 
 
 @router.get("/connectors")
-def list_connectors():
-    """Return all OOTB connector templates (summary)."""
-    return get_all_connectors()
+def list_connectors(
+    search: str = Query(None, description="Search by name or description"),
+    category: str = Query(None, description="Filter by category"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(12, ge=1, le=100),
+):
+    """Return paginated OOTB connector templates (summary)."""
+    return get_all_connectors(search=search, category=category, page=page, page_size=page_size)
+
+
+@router.get("/connectors-categories")
+def list_connector_categories():
+    """Return category counts for all connectors (unfiltered)."""
+    connectors = get_all_connectors_unpaginated()
+    counts = {}
+    for c in connectors:
+        cat = c.get("category", "")
+        if cat:
+            counts[cat] = counts.get(cat, 0) + 1
+    return {"categories": counts, "total": len(connectors)}
 
 
 @router.get("/connectors/{connector_id}")
