@@ -5,7 +5,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -85,7 +85,7 @@ async def list_scans(
 ):
     stmt = select(ScanRun).where(ScanRun.org_id == org_id)
     if domain:
-        stmt = stmt.where(ScanRun.target_domain == domain)
+        stmt = stmt.where(or_(ScanRun.target_domain == domain, ScanRun.target_domain.is_(None)))
     result = await db.execute(stmt.order_by(ScanRun.id.desc()).limit(limit))
     return result.scalars().all()
 
