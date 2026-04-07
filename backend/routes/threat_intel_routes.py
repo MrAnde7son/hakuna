@@ -3,7 +3,7 @@ Threat Intelligence Center — FastAPI routes
 Prefix: /api/threat-intel
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException
@@ -17,10 +17,11 @@ from models.threat_intel_models import (
     ThreatGroup, TTP, ThreatGroupTTP,
     ThreatCVE, ThreatCampaign, IntelRemediationCampaign, CisaAdvisory,
     ProductLifecycle, CWEEntry, ExploitReference, SSVCDecision,
-    MSRCPatch,
+    MSRCPatch, PatchAdvisory,
 )
 import threat_intel.threat_intel_sync as sync_engine
 import threat_intel.ttp_matcher as ttp_matcher
+import threat_intel.patch_catalog as patch_catalog
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threat-intel", tags=["threat-intel"])
@@ -245,6 +246,7 @@ def get_stats(db: Session = Depends(get_db)):
     ssvc_act_count = db.query(func.count(SSVCDecision.id)).filter(SSVCDecision.decision == "Act").scalar() or 0
     cwe_count = db.query(func.count(CWEEntry.id)).scalar() or 0
     msrc_patch_count = db.query(func.count(func.distinct(MSRCPatch.cve_id))).scalar() or 0
+    patch_advisory_count = db.query(func.count(PatchAdvisory.id)).scalar() or 0
 
     return {
         "total_cves": total_cves,
@@ -262,6 +264,7 @@ def get_stats(db: Session = Depends(get_db)):
         "ssvc_act_count": ssvc_act_count,
         "cwe_entries": cwe_count,
         "msrc_patched_cves": msrc_patch_count,
+        "patch_advisories": patch_advisory_count,
     }
 
 
@@ -510,9 +513,20 @@ def get_groups(
     motivation: Optional[str] = None,
     is_ransomware: Optional[bool] = None,
     in_scan: Optional[int] = None,  # scan_id — filter groups relevant to this scan's CVEs
+    group_ids: Optional[str] = None,  # comma-separated group IDs (for "in my env" filter)
+    page: int = 1,
+    page_size: int = 50,
     db: Session = Depends(get_db),
 ):
     q = db.query(ThreatGroup)
+
+    # If specific group IDs requested (e.g. exposed groups), filter directly
+    if group_ids:
+        id_list = [int(i) for i in group_ids.split(",") if i.strip().isdigit()]
+        if not id_list:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+        q = q.filter(ThreatGroup.id.in_(id_list))
+
     if search:
         q = q.filter(
             or_(
@@ -546,23 +560,24 @@ def get_groups(
                 # Fallback: show nation-state and ransomware groups (broad relevance)
                 q = q.filter(or_(ThreatGroup.is_nation_state == True, ThreatGroup.is_ransomware == True))
         else:
-            return []
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
-    groups = q.order_by(ThreatGroup.name).all()
+    total = q.count()
+    groups = q.order_by(ThreatGroup.name).offset((page - 1) * page_size).limit(page_size).all()
 
     # Count TTPs per group
-    group_ids = [g.id for g in groups]
+    fetched_ids = [g.id for g in groups]
     ttp_counts: dict = {}
-    if group_ids:
+    if fetched_ids:
         rows = (
             db.query(ThreatGroupTTP.group_id, func.count(ThreatGroupTTP.ttp_id))
-            .filter(ThreatGroupTTP.group_id.in_(group_ids))
+            .filter(ThreatGroupTTP.group_id.in_(fetched_ids))
             .group_by(ThreatGroupTTP.group_id)
             .all()
         )
         ttp_counts = {gid: cnt for gid, cnt in rows}
 
-    return [
+    items = [
         {
             "id": g.id,
             "mitre_id": g.mitre_id,
@@ -583,6 +598,7 @@ def get_groups(
         }
         for g in groups
     ]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 # ─────────────────────────────────────────────
@@ -1230,6 +1246,8 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
     background_tasks.add_task(_run_with_fresh_db, sync_engine.sync_metasploit_modules_to_db)
     background_tasks.add_task(_run_with_fresh_db, sync_engine.sync_exploitdb_to_db)
     background_tasks.add_task(_run_with_fresh_db, sync_engine.sync_msrc_patches_to_db)
+    # Multi-source patch catalog (Linux distros, Apple, third-party apps)
+    background_tasks.add_task(_run_with_fresh_db, sync_engine.sync_all_patch_advisories)
     # Extended enrichment (runs after the new sources are synced)
     background_tasks.add_task(_run_with_fresh_db, sync_engine.enrich_findings_extended)
 
@@ -1380,21 +1398,41 @@ def _compute_campaign_priority(cve_ids: list, db: Session) -> float:
 @router.get("/products")
 def list_products(
     search: Optional[str] = None,
-    is_eol: Optional[bool] = None,
+    eol_status: Optional[str] = None,  # all | eol | supported | soon
     in_scan: Optional[bool] = None,
+    page: int = 1,
+    page_size: int = 50,
     db: Session = Depends(get_db),
 ):
-    """List products with their lifecycle data, grouped by product slug."""
+    """List products with their lifecycle data, grouped by product slug, with server-side pagination."""
     from models.models import AggregatedSolution
 
-    q = db.query(ProductLifecycle)
+    # Build slug-level query (cheap — only distinct slugs)
+    slug_q = db.query(ProductLifecycle.slug).distinct()
     if search:
-        q = q.filter(or_(
+        slug_q = slug_q.filter(or_(
             ProductLifecycle.product_name.ilike(f"%{search}%"),
             ProductLifecycle.slug.ilike(f"%{search}%"),
         ))
 
-    # Get all scan component slugs for in_scan marking/filtering
+    # EOL status filter applied at SQL level
+    if eol_status == "eol":
+        eol_slugs = db.query(ProductLifecycle.slug).filter(ProductLifecycle.is_eol == True).subquery()
+        slug_q = slug_q.filter(ProductLifecycle.slug.in_(eol_slugs))
+    elif eol_status == "supported":
+        supported_slugs = db.query(ProductLifecycle.slug).filter(ProductLifecycle.is_eol == False).subquery()
+        slug_q = slug_q.filter(ProductLifecycle.slug.in_(supported_slugs))
+    elif eol_status == "soon":
+        six_months = (datetime.now(timezone.utc) + timedelta(days=180)).strftime("%Y-%m-%d")
+        soon_slugs = db.query(ProductLifecycle.slug).filter(
+            ProductLifecycle.is_eol == False,
+            ProductLifecycle.eol.notin_(["false", "true", ""]),
+            ProductLifecycle.eol != None,
+            ProductLifecycle.eol <= six_months,
+        ).subquery()
+        slug_q = slug_q.filter(ProductLifecycle.slug.in_(soon_slugs))
+
+    # Get scan slugs for in_scan marking/filtering
     scan_slugs = set()
     components = [r[0] for r in db.query(AggregatedSolution.affected_component).distinct().all() if r[0]]
     for comp in components:
@@ -1402,19 +1440,38 @@ def list_products(
         if slug:
             scan_slugs.add(slug)
 
-    rows = q.order_by(ProductLifecycle.slug, desc(ProductLifecycle.is_eol), ProductLifecycle.cycle).all()
+    all_slugs = [r[0] for r in slug_q.order_by(ProductLifecycle.slug).all()]
 
-    # Group by slug
-    products = {}
+    # Apply in_scan filter (needs scan_slugs — easiest in Python)
+    if in_scan is True:
+        all_slugs = [s for s in all_slugs if s in scan_slugs]
+    elif in_scan is False:
+        all_slugs = [s for s in all_slugs if s not in scan_slugs]
+
+    total = len(all_slugs)
+    page_slugs = all_slugs[(page - 1) * page_size: page * page_size]
+
+    if not page_slugs:
+        return {"items": [], "total": total, "page": page, "page_size": page_size}
+
+    # Fetch full cycle rows only for this page's slugs
+    rows = (
+        db.query(ProductLifecycle)
+        .filter(ProductLifecycle.slug.in_(page_slugs))
+        .order_by(ProductLifecycle.slug, desc(ProductLifecycle.is_eol), ProductLifecycle.cycle)
+        .all()
+    )
+
+    products_map = {}
     for r in rows:
-        if r.slug not in products:
-            products[r.slug] = {
+        if r.slug not in products_map:
+            products_map[r.slug] = {
                 "slug": r.slug,
                 "product_name": r.product_name,
                 "in_scan": r.slug in scan_slugs,
                 "cycles": [],
             }
-        products[r.slug]["cycles"].append({
+        products_map[r.slug]["cycles"].append({
             "cycle": r.cycle,
             "latest_version": r.latest_version,
             "release_date": r.release_date,
@@ -1426,20 +1483,8 @@ def list_products(
             "link": r.link,
         })
 
-    result = list(products.values())
-
-    # Apply filters that work on grouped data
-    if is_eol is not None:
-        if is_eol:
-            result = [p for p in result if any(c["is_eol"] for c in p["cycles"])]
-        else:
-            result = [p for p in result if any(not c["is_eol"] for c in p["cycles"])]
-    if in_scan is True:
-        result = [p for p in result if p["in_scan"]]
-    elif in_scan is False:
-        result = [p for p in result if not p["in_scan"]]
-
-    return result
+    items = [products_map[s] for s in page_slugs if s in products_map]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/products/{slug}")
@@ -1780,3 +1825,187 @@ def sync_msrc(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Sync MSRC Patch Tuesday data."""
     background_tasks.add_task(sync_engine.sync_msrc_patches_to_db, db)
     return {"status": "ok", "message": "MSRC Patch Tuesday sync started in background"}
+
+
+# ─────────────────────────────────────────────
+# Patch Catalog (multi-source advisories)
+# ─────────────────────────────────────────────
+
+@router.get("/patches")
+def get_patches_for_cve(
+    cve_id: Optional[str] = None,
+    source: Optional[str] = None,
+    search: Optional[str] = None,
+    severity: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    sort_by: str = "release_date",
+    order: str = "desc",
+    db: Session = Depends(get_db),
+):
+    """
+    List patch advisories. When cve_id is given, returns all patches (MSRC + multi-source)
+    for that CVE using the unified query layer.
+    """
+    # If a specific CVE is requested, use the unified query layer
+    if cve_id:
+        patches = patch_catalog.get_patches_for_cve(db, cve_id)
+        # Apply source filter if specified
+        if source:
+            patches = [p for p in patches if p["source"] == source]
+        return {
+            "cve_id": cve_id.upper(),
+            "total": len(patches),
+            "items": patches,
+        }
+
+    # Microsoft patches live in the MSRCPatch table, not PatchAdvisory
+    if source == "microsoft":
+        q = db.query(MSRCPatch)
+        if severity:
+            q = q.filter(func.lower(MSRCPatch.severity) == severity.lower())
+        if search:
+            q = q.filter(
+                or_(
+                    MSRCPatch.cve_id.ilike(f"%{search}%"),
+                    MSRCPatch.kb_id.ilike(f"%{search}%"),
+                    MSRCPatch.product_name.ilike(f"%{search}%"),
+                )
+            )
+
+        total = q.count()
+        sort_col = getattr(MSRCPatch, sort_by, MSRCPatch.release_date)
+        order_fn = desc if order == "desc" else asc
+        q = q.order_by(order_fn(sort_col))
+
+        offset = (page - 1) * page_size
+        records = q.offset(offset).limit(page_size).all()
+
+        return {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "items": [
+                {
+                    "id": r.id,
+                    "source": "microsoft",
+                    "advisory_id": r.kb_id or r.cve_id,
+                    "title": f"{r.cve_id} — {r.product_name or 'Microsoft'}",
+                    "severity": r.severity,
+                    "release_date": r.release_date,
+                    "advisory_url": r.article_url,
+                    "cve_ids": [r.cve_id],
+                    "cve_count": 1,
+                    "affected_packages": [r.product_name] if r.product_name else [],
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in records
+            ],
+        }
+
+    # Otherwise, browse PatchAdvisory records
+    q = db.query(PatchAdvisory)
+    if source:
+        q = q.filter(PatchAdvisory.source == source)
+    if severity:
+        q = q.filter(PatchAdvisory.severity == severity.lower())
+    if search:
+        q = q.filter(
+            or_(
+                PatchAdvisory.source_advisory_id.ilike(f"%{search}%"),
+                PatchAdvisory.title.ilike(f"%{search}%"),
+            )
+        )
+
+    total = q.count()
+
+    # Sorting
+    sort_col = getattr(PatchAdvisory, sort_by, PatchAdvisory.release_date)
+    order_fn = desc if order == "desc" else asc
+    q = q.order_by(order_fn(sort_col))
+
+    offset = (page - 1) * page_size
+    records = q.offset(offset).limit(page_size).all()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [
+            {
+                "id": r.id,
+                "source": r.source,
+                "advisory_id": r.source_advisory_id,
+                "title": r.title,
+                "severity": r.severity,
+                "release_date": r.release_date,
+                "advisory_url": r.advisory_url,
+                "cve_ids": r.cve_ids or [],
+                "cve_count": len(r.cve_ids) if r.cve_ids else 0,
+                "affected_packages": r.affected_packages or [],
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in records
+        ],
+    }
+
+
+@router.get("/patches/coverage")
+def get_patch_coverage(
+    cve_ids: str = Query(..., description="Comma-separated CVE IDs"),
+    db: Session = Depends(get_db),
+):
+    """Bulk coverage check: for each CVE, report whether patches exist and from which sources."""
+    cve_list = [c.strip() for c in cve_ids.split(",") if c.strip()]
+    if not cve_list:
+        raise HTTPException(status_code=400, detail="cve_ids parameter required")
+    if len(cve_list) > 200:
+        raise HTTPException(status_code=400, detail="Maximum 200 CVEs per request")
+
+    coverage = patch_catalog.get_patch_coverage_summary(db, cve_list)
+    patched = sum(1 for v in coverage.values() if v["has_patch"])
+
+    return {
+        "total_cves": len(cve_list),
+        "patched": patched,
+        "unpatched": len(cve_list) - patched,
+        "coverage": coverage,
+    }
+
+
+@router.get("/patches/stats")
+def get_patch_stats(db: Session = Depends(get_db)):
+    """Aggregate stats for the patch catalog — totals by source, recent advisories."""
+    return patch_catalog.get_patch_stats(db)
+
+
+@router.post("/patches/sync")
+def sync_all_patches(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Trigger a full patch catalog sync across all enabled sources."""
+    background_tasks.add_task(_run_with_fresh_db, sync_engine.sync_all_patch_advisories)
+    return {"status": "ok", "message": "Patch catalog sync started in background (all sources)"}
+
+
+@router.post("/patches/sync/{source}")
+def sync_patches_by_source(
+    source: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Trigger a patch catalog sync for a specific source."""
+    sync_map = {
+        "ubuntu": sync_engine.sync_ubuntu_usn_to_db,
+        "debian": sync_engine.sync_debian_dsa_to_db,
+        "rhel": sync_engine.sync_rhel_cves_to_db,
+        "amazon_linux": sync_engine.sync_amazon_alas_to_db,
+        "apple": sync_engine.sync_apple_security_to_db,
+        "chrome": sync_engine.sync_chrome_releases_to_db,
+        "firefox": sync_engine.sync_firefox_advisories_to_db,
+        "adobe": sync_engine.sync_adobe_bulletins_to_db,
+        "msrc": sync_engine.sync_msrc_patches_to_db,
+    }
+    if source not in sync_map:
+        raise HTTPException(status_code=400, detail=f"Unknown source '{source}'. Valid: {list(sync_map.keys())}")
+
+    background_tasks.add_task(_run_with_fresh_db, sync_map[source])
+    return {"status": "ok", "message": f"Patch sync for {source} started in background"}

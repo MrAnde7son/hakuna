@@ -21,6 +21,7 @@ from core.database import get_db, SessionLocal
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from models.models import Agent, CopilotConversation, User
 from agents.agent_tools import TOOL_REGISTRY
+from agents.tool_categories import select_tools_for_message
 from agents.agent_engine import (
     run_agent_streaming, get_default_model, get_available_providers,
     PROVIDER_FOR_MODEL, _get_anthropic_client, _get_openai_client,
@@ -148,6 +149,39 @@ def _conversation_to_dict(c: CopilotConversation) -> dict:
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
+
+
+def _build_native_history(messages: list) -> Optional[list]:
+    """Convert stored conversation messages to native user/assistant turns.
+
+    Returns a list of {role, content} dicts suitable for passing as
+    conversation_messages to the agent engine, or None if empty.
+    Truncates long assistant messages and limits to the last MAX_CONTEXT_TURNS
+    exchanges to keep context manageable.
+    """
+    if not messages:
+        return None
+
+    recent = messages[-MAX_CONTEXT_TURNS * 2:]
+    native = []
+    for msg in recent:
+        role = msg.get("role", "user")
+        if role not in ("user", "assistant"):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        if not content:
+            continue
+        # Truncate long assistant responses in history
+        if role == "assistant" and len(content) > 1500:
+            content = content[:1500] + "..."
+        native.append({"role": role, "content": content})
+
+    return native if native else None
 
 
 def _build_contextual_input(messages: list, new_message: str) -> str:
@@ -293,20 +327,29 @@ async def send_message(
 
     db.commit()
 
-    # Build contextual input with conversation history
     # Prepend page context (if provided) to the LLM input only, not stored in history
-    llm_message = (body.context + "\n\n" + body.message) if body.context else body.message
-    user_input = _build_contextual_input(messages[:-1], llm_message)
+    user_input = (body.context + "\n\n" + body.message) if body.context else body.message
     agent_id = copilot_agent.id
     conv_id = conv.id
     user_id = current_user.id
+
+    # Dynamic tool selection: pick only relevant tools instead of all ~111
+    selected_tools = select_tools_for_message(body.message, messages[:-1])
+
+    # Build native multi-turn history for provider-level prompt caching.
+    # Prior messages are sent as separate user/assistant turns instead of being
+    # baked into the user_input string, so providers can cache the prefix.
+    history = messages[:-1]  # exclude the just-appended current user msg
+    native_history = _build_native_history(history)
 
     async def event_stream():
         stream_db = SessionLocal()
         try:
             ag = stream_db.query(Agent).filter(Agent.id == agent_id).first()
+            ag.tools = selected_tools  # in-memory override, not persisted
             text_accum = ""
-            for event in run_agent_streaming(ag, user_input, stream_db):
+            for event in run_agent_streaming(ag, user_input, stream_db,
+                                             conversation_messages=native_history):
                 if event.get("type") == "text":
                     text_accum += event.get("text", "")
                 yield f"data: {json.dumps(event)}\n\n"
@@ -328,14 +371,24 @@ async def send_message(
                     c.updated_at = datetime.utcnow()
                     stream_db.commit()
 
-                    # Generate context-aware follow-up recommendations
-                    try:
-                        recs = _generate_recommendations(stream_db, ag.model, msgs)
-                        if recs:
-                            yield f"data: {json.dumps({'type': 'recommendations', 'recommendations': recs})}\n\n"
-                            await asyncio.sleep(0)
-                    except Exception as e:
-                        logger.warning(f"Recommendation generation failed: {e}")
+                    # Generate follow-up recommendations.
+                    # Skip the LLM call for the first exchange (<=2 messages: 1 user + 1 assistant)
+                    # — the conversation is too short for context-aware suggestions.
+                    # Use lightweight static suggestions instead.
+                    if len(msgs) <= 2:
+                        recs = [
+                            {"text": p["text"][:80], "icon": p["icon"]}
+                            for p in SUGGESTED_PROMPTS[:3]
+                        ]
+                    else:
+                        try:
+                            recs = _generate_recommendations(stream_db, ag.model, msgs)
+                        except Exception as e:
+                            logger.warning(f"Recommendation generation failed: {e}")
+                            recs = []
+                    if recs:
+                        yield f"data: {json.dumps({'type': 'recommendations', 'recommendations': recs})}\n\n"
+                        await asyncio.sleep(0)
 
             yield "data: [DONE]\n\n"
         finally:

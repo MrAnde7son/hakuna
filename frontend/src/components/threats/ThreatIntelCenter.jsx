@@ -20,6 +20,7 @@ import {
   getThreatIntelStats, getThreatCves, getThreatGroups, getThreatTtps,
   syncThreatIntel, getGroupExposure, getCisaAdvisories,
   getProductLifecycles, getProductLifecycle,
+  getPatchAdvisories, getPatchStats,
 } from '../../api.js'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -83,8 +84,8 @@ const MOTIVATION_COLORS = {
   unknown: '#6b7280',
 }
 
-const TAB_KEYS = ['newsroom', 'cves', 'groups', 'products']
-const TAB_ICONS = { newsroom: Radio, cves: Database, groups: Users, products: Package }
+const TAB_KEYS = ['newsroom', 'cves', 'groups', 'products', 'patches']
+const TAB_ICONS = { newsroom: Radio, cves: Database, groups: Users, products: Package, patches: Wrench }
 
 function getTabConfig(t) {
   return [
@@ -92,6 +93,7 @@ function getTabConfig(t) {
     { key: 'cves', label: t('threats.cve'), icon: Database },
     { key: 'groups', label: t('threats.threatGroups'), icon: Users },
     { key: 'products', label: 'Products', icon: Package },
+    { key: 'patches', label: 'Patch Catalog', icon: Wrench },
   ]
 }
 
@@ -314,9 +316,20 @@ function StatsBar({ stats, loading, syncing, onSync, syncResult, onStatClick, ac
   return (
     <div style={{ marginBottom: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Shield size={22} color="#6366f1" />
-          {t('threats.center')}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Shield size={22} color="#6366f1" />
+            {t('threats.center')}
+          </div>
+          {!loading && stats?.total_cves != null && (
+            <span style={{
+              fontSize: 12, fontWeight: 600, color: 'var(--text-muted)',
+              background: 'var(--bg-hover, #f3f4f6)', borderRadius: 999,
+              padding: '3px 10px',
+            }}>
+              {stats.total_cves.toLocaleString()} CVEs tracked
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {syncResult && (
@@ -331,101 +344,47 @@ function StatsBar({ stats, loading, syncing, onSync, syncResult, onStatClick, ac
         </div>
       </div>
       {loading ? (
-        <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
-            {Array.from({ length: 5 }).map((_, i) => <StatCardSkeleton key={i} />)}
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 12 }}>
-            {Array.from({ length: 4 }).map((_, i) => <StatCardSkeleton key={i} />)}
-          </div>
-        </>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          {Array.from({ length: 4 }).map((_, i) => <StatCardSkeleton key={i} />)}
+        </div>
       ) : (
-        <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
-            <StatCard
-              label="Total Intel CVEs"
-              value={stats?.total_cves?.toLocaleString() ?? '—'}
-              icon={Database}
-              color="#6366f1"
-              active={activeFilter === 'all_cves'}
-              onClick={() => onStatClick('all_cves')}
-            />
-            <StatCard
-              label="CISA KEV CVEs"
-              value={stats?.kev_count?.toLocaleString() ?? '—'}
-              icon={AlertTriangle}
-              color="#dc2626"
-              sub="Known exploited"
-              active={activeFilter === 'kev'}
-              onClick={() => onStatClick('kev')}
-            />
-            <StatCard
-              label="High EPSS (>0.5)"
-              value={stats?.high_epss_count?.toLocaleString() ?? '—'}
-              icon={TrendingUp}
-              color="#ea580c"
-              sub={stats?.avg_epss != null ? `Avg EPSS: ${(stats.avg_epss * 100).toFixed(1)}%` : undefined}
-              active={activeFilter === 'high_epss'}
-              onClick={() => onStatClick('high_epss')}
-            />
-            <StatCard
-              label="Threat Groups"
-              value={stats?.exposed_groups?.toLocaleString() ?? '—'}
-              icon={Users}
-              color="#d97706"
-              sub="≥50% TTP overlap"
-              active={activeFilter === 'exposed_groups'}
-              onClick={() => onStatClick('exposed_groups')}
-            />
-            <StatCard
-              label="Affected Assets"
-              value={stats?.affected_assets?.toLocaleString() ?? '—'}
-              icon={Server}
-              color="#0ea5e9"
-              active={activeFilter === 'affected_assets'}
-              onClick={() => onStatClick('affected_assets')}
-            />
-          </div>
-          {/* Second row: enrichment sources */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 12 }}>
-            <StatCard
-              label="Public Exploits"
-              value={stats?.exploit_ref_cves?.toLocaleString() ?? '—'}
-              icon={Code}
-              color="#dc2626"
-              sub="CVEs with PoC/exploit"
-              active={activeFilter === 'has_exploit'}
-              onClick={() => onStatClick('has_exploit')}
-            />
-            <StatCard
-              label="SSVC: Act"
-              value={stats?.ssvc_act_count?.toLocaleString() ?? '—'}
-              icon={Crosshair}
-              color="#7c3aed"
-              sub={`${stats?.ssvc_decisions?.toLocaleString() ?? 0} total decisions`}
-              active={activeFilter === 'ssvc_act'}
-              onClick={() => onStatClick('ssvc_act')}
-            />
-            <StatCard
-              label="MSRC Patches"
-              value={stats?.msrc_patched_cves?.toLocaleString() ?? '—'}
-              icon={Wrench}
-              color="#16a34a"
-              sub="Microsoft CVEs patched"
-              active={activeFilter === 'msrc_patches'}
-              onClick={() => onStatClick('msrc_patches')}
-            />
-            <StatCard
-              label="Products Tracked"
-              value={stats?.total_products?.toLocaleString() ?? '—'}
-              icon={Package}
-              color="#0891b2"
-              sub={stats?.eol_products > 0 ? `${stats.eol_products} end-of-life` : 'Lifecycle tracking'}
-              active={activeFilter === 'products'}
-              onClick={() => onStatClick('products')}
-            />
-          </div>
-        </>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          <StatCard
+            label="CISA KEV CVEs"
+            value={stats?.kev_count?.toLocaleString() ?? '—'}
+            icon={AlertTriangle}
+            color="#dc2626"
+            sub="Known exploited"
+            active={activeFilter === 'kev'}
+            onClick={() => onStatClick('kev')}
+          />
+          <StatCard
+            label="Public Exploits"
+            value={stats?.exploit_ref_cves?.toLocaleString() ?? '—'}
+            icon={Code}
+            color="#7c3aed"
+            sub="CVEs with PoC/exploit"
+            active={activeFilter === 'has_exploit'}
+            onClick={() => onStatClick('has_exploit')}
+          />
+          <StatCard
+            label="Threat Groups"
+            value={stats?.exposed_groups?.toLocaleString() ?? '—'}
+            icon={Users}
+            color="#d97706"
+            sub="≥50% TTP overlap"
+            active={activeFilter === 'exposed_groups'}
+            onClick={() => onStatClick('exposed_groups')}
+          />
+          <StatCard
+            label="Affected Assets"
+            value={stats?.affected_assets?.toLocaleString() ?? '—'}
+            icon={Server}
+            color="#0ea5e9"
+            active={activeFilter === 'affected_assets'}
+            onClick={() => onStatClick('affected_assets')}
+          />
+        </div>
       )}
     </div>
   )
@@ -511,8 +470,8 @@ function ThreatGroupSpotlight() {
   const [loading, setLoading] = useState(true)
   useEffect(() => {
     let cancelled = false
-    getThreatGroups({ limit: 6 })
-      .then(data => { if (!cancelled) setGroups(Array.isArray(data) ? data.slice(0, 6) : []) })
+    getThreatGroups({ page_size: 6 })
+      .then(data => { if (!cancelled) setGroups(data?.items || []) })
       .catch(() => { if (!cancelled) setGroups([]) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
@@ -1643,8 +1602,12 @@ function GroupCard({ group, exposure }) {
 function ThreatGroupsTab({ initialInMyEnv = false }) {
   const { t } = useTranslation()
   const { activeScanId } = useScan()
+  const PAGE_SIZE = 50
   const [groups, setGroups] = useState([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState(null)
   const [search, setSearch] = useState('')
   const [motivation, setMotivation] = useState('')
@@ -1656,22 +1619,41 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
   const [scanExposure, setScanExposure] = useState({})
   const [loadingExposure, setLoadingExposure] = useState(false)
 
-  const fetchGroups = useCallback(async () => {
-    setLoading(true)
+  const fetchGroups = useCallback(async (nextPage = 1, append = false) => {
+    if (append) setLoadingMore(true); else setLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams()
-      if (search) params.set('search', search)
-      if (motivation) params.set('motivation', motivation)
-      if (ransomwareOnly) params.set('is_ransomware', 'true')
-      // Don't use backend in_scan — we filter client-side using scanExposure
-      setGroups(await getThreatGroups(Object.fromEntries(params)))
+      const params = {}
+      if (search) params.search = search
+      if (motivation) params.motivation = motivation
+      if (ransomwareOnly) params.is_ransomware = 'true'
+      // When "In My Environment" is on, fetch only exposed group IDs
+      if (inScanOnly) {
+        const exposedIds = Object.entries(scanExposure).filter(([, e]) => e.meets_threshold).map(([id]) => id)
+        if (!exposedIds.length) {
+          setGroups([]); setTotal(0); setPage(1)
+          return
+        }
+        params.group_ids = exposedIds.join(',')
+        params.page_size = 200 // exposed set is small — fetch all at once
+      } else {
+        params.page = nextPage
+        params.page_size = PAGE_SIZE
+      }
+      const data = await getThreatGroups(params)
+      if (append) {
+        setGroups(prev => [...prev, ...(data.items || [])])
+      } else {
+        setGroups(data.items || [])
+      }
+      setTotal(data.total || 0)
+      setPage(nextPage)
     } catch (e) {
       setError(e.message)
     } finally {
-      setLoading(false)
+      if (append) setLoadingMore(false); else setLoading(false)
     }
-  }, [search, motivation, ransomwareOnly])
+  }, [search, motivation, ransomwareOnly, inScanOnly, scanExposure])
 
   // Fetch scan exposure whenever activeScanId changes (no scan = all scans)
   useEffect(() => {
@@ -1697,11 +1679,6 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
   // Only threshold-meeting groups count for the top banner and "In My Environment" filter
   const exposedGroups = Object.values(scanExposure).filter(e => e.meets_threshold).sort((a, b) => b.matched_findings - a.matched_findings)
   const totalExposedFindings = exposedGroups.reduce((s, e) => s + e.matched_findings, 0)
-
-  // "In My Environment" = meets 50% threshold; partial matches still show TTP highlights
-  const visibleGroups = inScanOnly
-    ? groups.filter(g => scanExposure[g.id]?.meets_threshold)
-    : groups
 
   return (
     <div>
@@ -1779,7 +1756,7 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
           {t('threats.inScanOnly')}
           {!loadingExposure && inScanOnly && (
             <span style={{ fontSize: 10, color: '#dc2626', fontWeight: 700, marginLeft: 2 }}>
-              ({visibleGroups.length})
+              ({groups.length})
             </span>
           )}
         </label>
@@ -1799,13 +1776,29 @@ function ThreatGroupsTab({ initialInMyEnv = false }) {
         />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14 }}>
-          {visibleGroups.map(g => (
+          {groups.map(g => (
             <GroupCard
               key={g.id}
               group={g}
               exposure={scanExposure[g.id] || null}
             />
           ))}
+        </div>
+      )}
+      {!inScanOnly && groups.length < total && (
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
+          <button
+            onClick={() => fetchGroups(page + 1, true)}
+            disabled={loadingMore}
+            style={{
+              padding: '10px 20px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+              cursor: loadingMore ? 'default' : 'pointer', border: '1px solid var(--border)',
+              background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
+              opacity: loadingMore ? 0.6 : 1,
+            }}
+          >
+            {loadingMore ? 'Loading…' : `Load more (${total - groups.length} remaining)`}
+          </button>
         </div>
       )}
     </div>
@@ -1857,39 +1850,49 @@ function EolBadge({ isEol, eolDate }) {
 }
 
 function ProductsTab() {
+  const PAGE_SIZE = 50
   const [products, setProducts] = useState([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [search, setSearch] = useState('')
   const [eolFilter, setEolFilter] = useState('all') // all | eol | supported | soon
   const [scanOnly, setScanOnly] = useState(false)
   const [expanded, setExpanded] = useState({})
-  const [visibleCount, setVisibleCount] = useState(50)
 
   useEffect(() => {
-    setVisibleCount(50)
+    setPage(1)
+    setProducts([])
     setLoading(true)
-    getProductLifecycles({ search: search || undefined, in_scan: scanOnly || undefined })
-      .then(setProducts)
-      .catch(() => setProducts([]))
+    getProductLifecycles({
+      search: search || undefined,
+      eol_status: eolFilter !== 'all' ? eolFilter : undefined,
+      in_scan: scanOnly || undefined,
+      page: 1,
+      page_size: PAGE_SIZE,
+    })
+      .then(r => { setProducts(r.items || []); setTotal(r.total || 0) })
+      .catch(() => { setProducts([]); setTotal(0) })
       .finally(() => setLoading(false))
-  }, [search, scanOnly])
+  }, [search, eolFilter, scanOnly])
+
+  const loadMore = () => {
+    const nextPage = page + 1
+    setLoadingMore(true)
+    getProductLifecycles({
+      search: search || undefined,
+      eol_status: eolFilter !== 'all' ? eolFilter : undefined,
+      in_scan: scanOnly || undefined,
+      page: nextPage,
+      page_size: PAGE_SIZE,
+    })
+      .then(r => { setProducts(prev => [...prev, ...(r.items || [])]); setTotal(r.total || 0); setPage(nextPage) })
+      .catch(() => {})
+      .finally(() => setLoadingMore(false))
+  }
 
   const toggleExpand = (slug) => setExpanded(prev => ({ ...prev, [slug]: !prev[slug] }))
-
-  // Client-side EOL filter
-  const filtered = products.filter(p => {
-    if (eolFilter === 'eol') return p.cycles.some(c => c.is_eol)
-    if (eolFilter === 'supported') return p.cycles.some(c => !c.is_eol)
-    if (eolFilter === 'soon') return p.cycles.some(c => {
-      if (c.is_eol || !c.eol || c.eol === 'false' || c.eol === 'true') return false
-      try {
-        const eol = new Date(c.eol)
-        const sixM = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000)
-        return eol <= sixM
-      } catch { return false }
-    })
-    return true
-  })
 
   if (loading) return <Spinner />
   if (!products.length) return (
@@ -1939,12 +1942,12 @@ function ProductsTab() {
       </div>
 
       <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-        {filtered.length} product{filtered.length !== 1 ? 's' : ''} tracked
+        {total} product{total !== 1 ? 's' : ''} tracked
       </div>
 
       {/* Product list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {filtered.slice(0, visibleCount).map(p => {
+        {products.map(p => {
           const isOpen = expanded[p.slug]
           const activeCycles = p.cycles.filter(c => !c.is_eol)
           const eolCycles = p.cycles.filter(c => c.is_eol)
@@ -2042,17 +2045,18 @@ function ProductsTab() {
             </Card>
           )
         })}
-        {visibleCount < filtered.length && (
+        {products.length < total && (
           <button
-            onClick={() => setVisibleCount(v => v + 50)}
+            onClick={loadMore}
+            disabled={loadingMore}
             style={{
               padding: '10px 20px', borderRadius: 8, fontSize: 13, fontWeight: 600,
-              cursor: 'pointer', border: '1px solid var(--border)',
+              cursor: loadingMore ? 'default' : 'pointer', border: '1px solid var(--border)',
               background: 'var(--bg-secondary)', color: 'var(--text-secondary)',
-              alignSelf: 'center', marginTop: 8,
+              alignSelf: 'center', marginTop: 8, opacity: loadingMore ? 0.6 : 1,
             }}
           >
-            Show more ({filtered.length - visibleCount} remaining)
+            {loadingMore ? 'Loading…' : `Load more (${total - products.length} remaining)`}
           </button>
         )}
       </div>
@@ -2061,9 +2065,406 @@ function ProductsTab() {
 }
 
 
+// ─── Patch Catalog Tab ────────────────────────────────────────────────────────
+
+const SOURCE_LABELS = {
+  microsoft: 'Microsoft',
+  ubuntu: 'Ubuntu',
+  debian: 'Debian',
+  rhel: 'RHEL',
+  amazon_linux: 'Amazon Linux',
+  apple: 'Apple',
+  chrome: 'Chrome',
+  firefox: 'Firefox',
+  adobe: 'Adobe',
+}
+
+const SOURCE_COLORS = {
+  microsoft: '#0078d4',
+  ubuntu: '#e95420',
+  debian: '#a80030',
+  rhel: '#ee0000',
+  amazon_linux: '#ff9900',
+  apple: '#555555',
+  chrome: '#4285f4',
+  firefox: '#ff7139',
+  adobe: '#ff0000',
+}
+
+function PatchCatalogTab() {
+  const [advisories, setAdvisories] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [stats, setStats] = useState(null)
+  const [search, setSearch] = useState('')
+  const [sourceFilter, setSourceFilter] = useState('')
+  const [severityFilter, setSeverityFilter] = useState('')
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
+  const [expanded, setExpanded] = useState({})
+  const [cveSearch, setCveSearch] = useState('')
+  const [cveResults, setCveResults] = useState(null)
+  const PAGE_SIZE = 50
+
+  // Fetch stats on mount
+  useEffect(() => {
+    getPatchStats().then(setStats).catch(() => {})
+  }, [])
+
+  // Fetch advisories
+  useEffect(() => {
+    setLoading(true)
+    const params = {
+      page,
+      page_size: PAGE_SIZE,
+      ...(search && { search }),
+      ...(sourceFilter && { source: sourceFilter }),
+      ...(severityFilter && { severity: severityFilter }),
+    }
+    getPatchAdvisories(params)
+      .then(data => {
+        setAdvisories(data.items || [])
+        setTotal(data.total || 0)
+      })
+      .catch(() => setAdvisories([]))
+      .finally(() => setLoading(false))
+  }, [search, sourceFilter, severityFilter, page])
+
+  const handleCveSearch = async () => {
+    if (!cveSearch.trim()) return
+    setCveResults(null)
+    try {
+      const data = await getPatchAdvisories({ cve_id: cveSearch.trim().toUpperCase() })
+      setCveResults(data)
+    } catch {
+      setCveResults({ items: [], total: 0, cve_id: cveSearch })
+    }
+  }
+
+  const toggleExpand = (id) => setExpanded(prev => ({ ...prev, [id]: !prev[id] }))
+
+  return (
+    <div>
+      {/* Stats cards */}
+      {stats && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10, marginBottom: 20 }}>
+          <div style={{
+            background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8,
+            padding: '14px 16px', textAlign: 'center',
+          }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>
+              {stats.total_advisories?.toLocaleString() ?? 0}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>Total Advisories</div>
+          </div>
+          {Object.entries(stats.by_source || {}).map(([source, count]) => (
+            <div
+              key={source}
+              onClick={() => setSourceFilter(sourceFilter === source ? '' : source)}
+              style={{
+                background: sourceFilter === source ? `${SOURCE_COLORS[source] || '#6b7280'}12` : 'var(--bg-card)',
+                border: sourceFilter === source ? `1px solid ${SOURCE_COLORS[source] || '#6b7280'}60` : '1px solid var(--border)',
+                borderRadius: 8, padding: '14px 16px', textAlign: 'center', cursor: 'pointer',
+                transition: 'all 0.15s',
+              }}
+            >
+              <div style={{ fontSize: 22, fontWeight: 700, color: SOURCE_COLORS[source] || 'var(--text-primary)' }}>
+                {count.toLocaleString()}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                {SOURCE_LABELS[source] || source}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* CVE lookup */}
+      <div style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8,
+        padding: '14px 18px', marginBottom: 16,
+      }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 8 }}>
+          CVE Patch Lookup
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            value={cveSearch}
+            onChange={e => setCveSearch(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleCveSearch() }}
+            placeholder="CVE-2024-1234"
+            style={{
+              flex: 1, padding: '7px 12px', borderRadius: 6,
+              border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+              color: 'var(--text-primary)', fontSize: 13, fontFamily: 'monospace',
+            }}
+          />
+          <button
+            onClick={handleCveSearch}
+            style={{
+              padding: '7px 16px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+              cursor: 'pointer', border: '1px solid var(--accent)',
+              background: 'var(--accent)', color: '#fff',
+            }}
+          >
+            Search
+          </button>
+        </div>
+        {cveResults && (
+          <div style={{ marginTop: 12 }}>
+            {cveResults.items?.length > 0 ? (
+              <>
+                <div style={{ fontSize: 12, color: '#10b981', fontWeight: 600, marginBottom: 8 }}>
+                  <CheckCircle size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
+                  {cveResults.items.length} patch{cveResults.items.length !== 1 ? 'es' : ''} found for {cveResults.cve_id}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {cveResults.items.map((p, i) => (
+                    <div key={i} style={{
+                      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                      background: 'var(--bg-secondary)', borderRadius: 6, fontSize: 12,
+                    }}>
+                      <Pill label={SOURCE_LABELS[p.source] || p.source} color={SOURCE_COLORS[p.source] || '#6b7280'} small />
+                      <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{p.advisory_id}</span>
+                      <span style={{ color: 'var(--text-muted)', flex: 1 }}>{p.title}</span>
+                      {p.severity && <SevBadge severity={p.severity} />}
+                      {p.url && (
+                        <a href={p.url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+                          <ExternalLink size={12} />
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize: 12, color: '#d97706' }}>
+                <AlertTriangle size={12} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
+                No patches found for {cveResults.cve_id}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Filters + sync */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
+          <Search size={14} style={{ position: 'absolute', left: 10, top: 9, color: 'var(--text-muted)' }} />
+          <input
+            value={search}
+            onChange={e => { setSearch(e.target.value); setPage(1) }}
+            onKeyDown={e => { if (e.key === 'Enter') e.preventDefault() }}
+            placeholder="Search advisories..."
+            style={{
+              width: '100%', padding: '7px 12px 7px 30px', borderRadius: 6,
+              border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+              color: 'var(--text-primary)', fontSize: 13,
+            }}
+          />
+        </div>
+        <select
+          value={severityFilter}
+          onChange={e => { setSeverityFilter(e.target.value); setPage(1) }}
+          style={{
+            padding: '7px 12px', borderRadius: 6, fontSize: 12,
+            border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+            color: 'var(--text-primary)', cursor: 'pointer',
+          }}
+        >
+          <option value="">All Severities</option>
+          <option value="critical">Critical</option>
+          <option value="important">Important</option>
+          <option value="moderate">Moderate</option>
+          <option value="low">Low</option>
+        </select>
+        {sourceFilter && (
+          <button
+            onClick={() => { setSourceFilter(''); setPage(1) }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4,
+              padding: '6px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+              border: `1px solid ${SOURCE_COLORS[sourceFilter] || '#6b7280'}60`,
+              background: `${SOURCE_COLORS[sourceFilter] || '#6b7280'}12`,
+              color: SOURCE_COLORS[sourceFilter] || '#6b7280',
+            }}
+          >
+            {SOURCE_LABELS[sourceFilter] || sourceFilter} <X size={11} />
+          </button>
+        )}
+      </div>
+
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+        {total} advisor{total !== 1 ? 'ies' : 'y'}
+        {sourceFilter ? ` from ${SOURCE_LABELS[sourceFilter] || sourceFilter}` : ''}
+        {page > 1 ? ` · Page ${page}` : ''}
+      </div>
+
+      {loading ? <Spinner /> : advisories.length === 0 ? (
+        <EmptyState
+          icon={Wrench}
+          title="No patch advisories"
+          sub="Run Sync Patches to fetch advisory data from all sources"
+        />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {advisories.map(a => {
+            const isOpen = expanded[a.id]
+            const srcColor = SOURCE_COLORS[a.source] || '#6b7280'
+
+            return (
+              <Card key={a.id} style={{ overflow: 'hidden' }}>
+                <div
+                  onClick={() => toggleExpand(a.id)}
+                  style={{ padding: '12px 18px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12 }}
+                >
+                  <Wrench size={16} style={{ color: srcColor, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <Pill label={SOURCE_LABELS[a.source] || a.source} color={srcColor} small />
+                      <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)', fontFamily: 'monospace' }}>
+                        {a.advisory_id}
+                      </span>
+                      {a.severity && <SevBadge severity={a.severity} />}
+                      {a.cve_count > 0 && (
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                          {a.cve_count} CVE{a.cve_count !== 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{
+                      fontSize: 12, color: 'var(--text-secondary)', marginTop: 3,
+                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                    }}>
+                      {a.title}
+                    </div>
+                  </div>
+                  {a.release_date && (
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                      {a.release_date}
+                    </span>
+                  )}
+                  {a.advisory_url && (
+                    <a
+                      href={a.advisory_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      style={{ color: 'var(--accent)', flexShrink: 0 }}
+                    >
+                      <ExternalLink size={13} />
+                    </a>
+                  )}
+                  {isOpen ? <ChevronUp size={16} style={{ color: 'var(--text-muted)' }} /> : <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />}
+                </div>
+
+                {isOpen && (
+                  <div style={{ borderTop: '1px solid var(--border)', padding: '12px 18px' }}>
+                    {/* CVEs */}
+                    {a.cve_ids?.length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>
+                          CVEs Addressed
+                        </div>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                          {a.cve_ids.map(cve => (
+                            <span key={cve} style={{
+                              padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+                              fontFamily: 'monospace', background: '#2563eb12', color: '#2563eb',
+                              border: '1px solid #2563eb30', cursor: 'pointer',
+                            }}
+                            onClick={() => { setCveSearch(cve); handleCveSearch() }}
+                            >
+                              {cve}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {/* Affected packages */}
+                    {a.affected_packages?.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>
+                          Affected Packages
+                        </div>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                          <thead>
+                            <tr style={{ color: 'var(--text-muted)', textTransform: 'uppercase', fontSize: 10 }}>
+                              <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>Package</th>
+                              <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>Fixed Version</th>
+                              <th style={{ textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid var(--border)' }}>Release</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {a.affected_packages.slice(0, 20).map((pkg, i) => (
+                              <tr key={i}>
+                                <td style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)', fontWeight: 600, color: 'var(--text-primary)' }}>
+                                  {pkg.name}
+                                </td>
+                                <td style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)', fontFamily: 'monospace', color: '#10b981' }}>
+                                  {pkg.version_fixed || '—'}
+                                </td>
+                                <td style={{ padding: '4px 8px', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+                                  {pkg.release || pkg.arch || '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {a.affected_packages.length > 20 && (
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                            +{a.affected_packages.length - 20} more packages
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Card>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {total > PAGE_SIZE && (
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 16 }}>
+          <button
+            disabled={page <= 1}
+            onClick={() => setPage(p => p - 1)}
+            style={{
+              padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+              cursor: page <= 1 ? 'not-allowed' : 'pointer',
+              border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+              color: 'var(--text-secondary)', opacity: page <= 1 ? 0.4 : 1,
+            }}
+          >
+            Previous
+          </button>
+          <span style={{ padding: '6px 12px', fontSize: 12, color: 'var(--text-muted)' }}>
+            Page {page} of {Math.ceil(total / PAGE_SIZE)}
+          </span>
+          <button
+            disabled={page >= Math.ceil(total / PAGE_SIZE)}
+            onClick={() => setPage(p => p + 1)}
+            style={{
+              padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+              cursor: page >= Math.ceil(total / PAGE_SIZE) ? 'not-allowed' : 'pointer',
+              border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+              color: 'var(--text-secondary)', opacity: page >= Math.ceil(total / PAGE_SIZE) ? 0.4 : 1,
+            }}
+          >
+            Next
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
-const VALID_STAT_FILTERS = ['all_cves', 'kev', 'high_epss', 'exposed_groups', 'affected_assets', 'has_exploit', 'ssvc_act', 'msrc_patches', 'products']
+const VALID_STAT_FILTERS = ['all_cves', 'kev', 'high_epss', 'exposed_groups', 'affected_assets', 'has_exploit', 'ssvc_act', 'msrc_patches', 'products', 'patch_advisories']
 
 export default function ThreatIntelCenter() {
   const { tab: tabParam } = useParams()
@@ -2186,7 +2587,7 @@ export default function ThreatIntelCenter() {
     if (activeFilter) {
       applyStatFilter(activeFilter)
       // Navigate to the right tab for this filter
-      const targetTab = activeFilter === 'exposed_groups' ? 'groups' : activeFilter === 'products' ? 'products' : 'cves'
+      const targetTab = activeFilter === 'exposed_groups' ? 'groups' : activeFilter === 'products' ? 'products' : activeFilter === 'patch_advisories' ? 'patches' : 'cves'
       if (tab !== targetTab) {
         navigate(`/threat-intel/${targetTab}?filter=${activeFilter}`, { replace: true })
       }
@@ -2198,17 +2599,17 @@ export default function ThreatIntelCenter() {
     if (activeFilter === key) {
       resetCveFilters()
       searchParams.delete('filter')
-      const targetTab = key === 'exposed_groups' ? 'groups' : key === 'products' ? 'products' : 'cves'
+      const targetTab = key === 'exposed_groups' ? 'groups' : key === 'products' ? 'products' : key === 'patch_advisories' ? 'patches' : 'cves'
       navigate(`/threat-intel/${targetTab}?${searchParams.toString()}`, { replace: true })
       return
     }
     // Set filter in URL — this triggers the useEffect above
-    const targetTab = key === 'exposed_groups' ? 'groups' : key === 'products' ? 'products' : 'cves'
+    const targetTab = key === 'exposed_groups' ? 'groups' : key === 'products' ? 'products' : key === 'patch_advisories' ? 'patches' : 'cves'
     navigate(`/threat-intel/${targetTab}?filter=${key}`, { replace: true })
   }
 
   return (
-    <div style={{ padding: '24px 28px', maxWidth: 1400, margin: '0 auto' }}>
+    <div style={{ padding: '24px 28px' }}>
       <NewSinceBanner pageKey="threat_intel" labelKey="notifications.newThreatIntel" />
       {/* Stats bar */}
       <StatsBar
@@ -2262,6 +2663,10 @@ export default function ThreatIntelCenter() {
 
       {tab === 'products' && (
         <ProductsTab />
+      )}
+
+      {tab === 'patches' && (
+        <PatchCatalogTab />
       )}
     </div>
   )

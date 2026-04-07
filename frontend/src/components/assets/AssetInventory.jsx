@@ -328,6 +328,7 @@ const ASSET_FILTER_SCHEMA = {
   serverRole: { default: '' },
   source: { default: '' },
   minSources: { default: '' },
+  credentialed: { default: null, type: 'boolean' },
   sort: { default: 'risk_score' },
   order: { default: 'desc' },
   page: { default: 1, type: 'number' },
@@ -408,7 +409,7 @@ export default function AssetInventory() {
   }
 
   const activeFilterCount = ['search', 'env', 'criticality', 'minRisk', 'maxRisk', 'minCritical', 'minHigh', 'serverRole', 'source', 'minSources']
-    .filter(k => filters[k]).length
+    .filter(k => filters[k]).length + (filters.credentialed !== null ? 1 : 0)
 
   const load = () => {
     setLoading(true)
@@ -425,6 +426,7 @@ export default function AssetInventory() {
       server_role: filters.serverRole || undefined,
       source: filters.source || undefined,
       min_sources: filters.minSources || undefined,
+      credentialed: filters.credentialed !== null ? filters.credentialed : undefined,
       first_seen_after: firstSeenAfter || undefined,
       sort_by: sortBy,
       order: sortOrder,

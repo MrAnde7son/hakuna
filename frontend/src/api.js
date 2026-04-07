@@ -706,6 +706,12 @@ export const threatImpactSearch = (data) =>
   })
 export const getProductLifecycles = (params = {}) => _ti('products', params)
 export const getProductLifecycle = (slug) => _ti(`products/${slug}`)
+// Patch Catalog
+export const getPatchAdvisories = (params = {}) => _ti('patches', params)
+export const getPatchCoverage = (cveIds) => _ti('patches/coverage', { cve_ids: cveIds })
+export const getPatchStats = () => _ti('patches/stats')
+export const syncPatchCatalog = (source = null) =>
+  request(`/threat-intel/patches/sync${source ? '/' + source : ''}`, { method: 'POST', timeout: 300_000 })
 export const getIntelCampaigns = () => _ti('remediation-campaigns')
 export const createIntelCampaign = (data) =>
   request('/threat-intel/remediation-campaigns', {

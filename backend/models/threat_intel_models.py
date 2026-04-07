@@ -408,6 +408,59 @@ class DomainBreach(Base):
     )
 
 
+@importable(
+    slug="patch_advisory",
+    display_name="Patch Advisory",
+    category="threat_intel",
+    dedup_keys=["source", "source_advisory_id"],
+    required_fields=["source", "source_advisory_id"],
+    description="Multi-source patch advisories — Ubuntu USN, Debian DSA, RHEL RHSA, Amazon ALAS, Apple, Chrome, Firefox, Adobe",
+)
+class PatchAdvisory(Base):
+    """Non-Microsoft patch advisories from Linux distros, Apple, and third-party apps."""
+    __tablename__ = "patch_advisories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source = Column(String, nullable=False, index=True)  # "ubuntu" | "debian" | "rhel" | "amazon_linux" | "apple" | "chrome" | "firefox" | "adobe"
+    source_advisory_id = Column(String, nullable=False, index=True)  # USN-1234-1, DSA-5678-1, RHSA-2024:5678, ALAS-2024-1234, HT214000
+    title = Column(String)
+    description = Column(Text)
+    severity = Column(String)  # "critical" | "important" | "moderate" | "low"
+    release_date = Column(String)
+    advisory_url = Column(String)
+    affected_packages = Column(JSON, default=list)  # [{"name": "openssl", "version_fixed": "1.1.1k-1", "version_affected": "<1.1.1k-1", "arch": "amd64"}]
+    cve_ids = Column(JSON, default=list)  # ["CVE-2024-1234", ...]
+    raw_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    platforms = relationship("PatchAdvisoryPlatform", back_populates="advisory", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("source", "source_advisory_id", name="uq_patch_advisory_source_id"),
+        Index("ix_patch_advisory_source", "source"),
+    )
+
+
+class PatchAdvisoryPlatform(Base):
+    """Platform targeting per patch advisory."""
+    __tablename__ = "patch_advisory_platforms"
+
+    id = Column(Integer, primary_key=True, index=True)
+    advisory_id = Column(Integer, ForeignKey("patch_advisories.id", ondelete="CASCADE"), nullable=False, index=True)
+    platform = Column(String, nullable=False)  # "ubuntu_22.04" | "debian_12" | "rhel_9" | "amazon_linux_2" | "macos_15" | "windows" | "all"
+    architecture = Column(String)  # "x86_64" | "arm64" | "all"
+    product_name = Column(String)  # "openssl" | "Google Chrome" | "Firefox" | "Adobe Acrobat"
+    product_version_min = Column(String)
+    product_version_max = Column(String)
+
+    advisory = relationship("PatchAdvisory", back_populates="platforms")
+
+    __table_args__ = (
+        Index("ix_patch_advisory_platform_advisory", "advisory_id"),
+    )
+
+
 class CorporateEntity(Base):
     """Legal entity from GLEIF — tracks corporate parent/subsidiary structure for M&A."""
     __tablename__ = "corporate_entities"

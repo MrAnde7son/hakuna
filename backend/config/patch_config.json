@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "sources": {
+    "ubuntu": { "enabled": true },
+    "debian": { "enabled": true },
+    "rhel": { "enabled": true },
+    "amazon_linux": { "enabled": true },
+    "apple": { "enabled": true },
+    "chrome": { "enabled": true },
+    "firefox": { "enabled": true },
+    "adobe": { "enabled": true }
+  },
+  "schedule_cron": "0 3 * * *",
+  "max_advisory_age_days": 365
+}

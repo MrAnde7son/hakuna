@@ -1148,7 +1148,8 @@ def run_agent(agent: Agent, user_input: str, db: Session) -> AgentRun:
     return run
 
 
-def run_agent_streaming(agent: Agent, user_input: str, db: Session):
+def run_agent_streaming(agent: Agent, user_input: str, db: Session,
+                        conversation_messages: Optional[list] = None):
     """Execute an agent and yield SSE events as it runs.
 
     Each event is a dict: {type, data} where type is one of:
@@ -1159,6 +1160,11 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session):
     - 'tool_result': tool finished
     - 'done': run completed
     - 'error': run failed
+
+    Args:
+        conversation_messages: Optional list of prior conversation messages
+            (user/assistant dicts) to prepend as native multi-turn context.
+            Enables provider-level prompt caching for repeated prefixes.
     """
     check_token_quota(agent.org_id, db)
     run = AgentRun(agent_id=agent.id, input=user_input, status="running")
@@ -1179,11 +1185,14 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session):
 
     def _dispatch_stream(m, p):
         if p == "anthropic":
-            return _stream_anthropic(agent, user_input, db, run, m)
+            return _stream_anthropic(agent, user_input, db, run, m,
+                                     conversation_messages=conversation_messages)
         elif p in ("openai", "groq", "ollama"):
-            return _stream_openai_compat(agent, user_input, db, run, m, p)
+            return _stream_openai_compat(agent, user_input, db, run, m, p,
+                                         conversation_messages=conversation_messages)
         elif p in ("google_gemini", "vertex_ai"):
-            return _stream_gemini(agent, user_input, db, run, m)
+            return _stream_gemini(agent, user_input, db, run, m,
+                                  conversation_messages=conversation_messages)
         else:
             raise RuntimeError(f"Unsupported provider: {p}")
 
@@ -1236,10 +1245,15 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session):
         yield {"type": "done", "run_id": run.id, "output": run.output, "steps_used": run.steps_used}
 
 
-def _stream_anthropic(agent, user_input, db, run, model):
+def _stream_anthropic(agent, user_input, db, run, model, *, conversation_messages=None):
     """Streaming variant of _run_anthropic."""
     trace = []
-    messages = [{"role": "user", "content": user_input}]
+    # Build initial messages: native multi-turn history (if provided) + current user message.
+    # Native messages enable Anthropic prompt caching on the conversation prefix.
+    if conversation_messages:
+        messages = list(conversation_messages) + [{"role": "user", "content": user_input}]
+    else:
+        messages = [{"role": "user", "content": user_input}]
     # Use cached system prompt blocks: static role definition cached, dynamic context appended
     system = _build_system_prompt_cached(agent)
     tools = get_claude_tool_schemas(agent.tools or [])
@@ -1329,7 +1343,7 @@ def _stream_anthropic(agent, user_input, db, run, model):
     run.trace = trace
 
 
-def _stream_openai_compat(agent, user_input, db, run, model, provider):
+def _stream_openai_compat(agent, user_input, db, run, model, provider, *, conversation_messages=None):
     """Streaming variant of _run_openai_compat."""
     trace = []
     system = _build_system_prompt(agent)
@@ -1343,7 +1357,11 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider):
     else:
         cl = _get_openai_client(db)
 
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": user_input}]
+    # Build messages: system + native history (if provided) + current user message
+    if conversation_messages:
+        messages = [{"role": "system", "content": system}] + list(conversation_messages) + [{"role": "user", "content": user_input}]
+    else:
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": user_input}]
 
     for step in range(max_steps):
         yield {"type": "thinking", "step": step}
@@ -1427,7 +1445,7 @@ def _stream_openai_compat(agent, user_input, db, run, model, provider):
     run.trace = trace
 
 
-def _stream_gemini(agent, user_input, db, run, model):
+def _stream_gemini(agent, user_input, db, run, model, *, conversation_messages=None):
     """Streaming variant of _run_gemini (direct Gemini or Vertex AI)."""
     from google.genai import types as genai_types
 
@@ -1450,7 +1468,17 @@ def _stream_gemini(agent, user_input, db, run, model):
                 parameters=_gemini_upcase_types({"type": "OBJECT", "properties": t["parameters"]}),
             ))
     gemini_tools = [genai_types.Tool(function_declarations=tool_declarations)] if tool_declarations else []
-    contents = [genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_input)])]
+    # Build contents: native history (if provided) + current user message
+    contents = []
+    if conversation_messages:
+        for msg in conversation_messages:
+            role = "model" if msg.get("role") == "assistant" else "user"
+            text = msg.get("content", "")
+            if isinstance(text, list):
+                text = " ".join(b.get("text", "") for b in text if isinstance(b, dict) and b.get("type") == "text")
+            if text:
+                contents.append(genai_types.Content(role=role, parts=[genai_types.Part.from_text(text=text)]))
+    contents.append(genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=user_input)]))
 
     for step in range(max_steps):
         yield {"type": "thinking", "step": step}

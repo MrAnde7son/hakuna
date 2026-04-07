@@ -2146,7 +2146,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
                   return {
                     label: 'Severity Mix', color: '#dc2626',
                     action: `${c} critical, ${h} high out of ${total} findings (${ratio}%) — remediate to reduce ratio`,
-                    drillUrl: '/findings?severity=4',
+                    drillUrl: '/findings?severity=4,3',
                   }
                 }
                 case 'exploit_exposure': {
@@ -2154,7 +2154,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
                   return {
                     label: 'Exploit Exposure', color: '#ea580c',
                     action: `${e} of ${total} findings have known exploits — patch these first`,
-                    drillUrl: '/findings?has_exploit=true',
+                    drillUrl: '/findings?exploit=true',
                   }
                 }
                 case 'remediation_velocity': {
@@ -2181,7 +2181,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
                   return {
                     label: 'Coverage', color: '#6366f1',
                     action: `${cred}/${total} assets credentialed — run credentialed scans on ${uncred} more`,
-                    drillUrl: '/assets',
+                    drillUrl: '/assets?credentialed=false',
                   }
                 }
                 default: return null

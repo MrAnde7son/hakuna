@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 from models.threat_intel_models import (
     ThreatCVE, ThreatGroup, TTP, ThreatGroupTTP, CisaAdvisory,
     CWEEntry, ExploitReference, SSVCDecision, MSRCPatch,
+    PatchAdvisory, PatchAdvisoryPlatform,
 )
 from models.models import Finding
 
@@ -2425,3 +2426,804 @@ def enrich_findings_extended(db, scan_id: int = None) -> dict:
 
     logger.info("Extended finding enrichment: %d enriched", enriched)
     return {"enriched": enriched}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Patch Catalog Aggregator — multi-source advisory sync
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_patch_config() -> dict:
+    """Load patch catalog configuration."""
+    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "patch_config.json")
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except Exception:
+        return {"enabled": True, "sources": {}, "max_advisory_age_days": 365}
+
+
+def _normalize_severity(raw: str) -> str:
+    """Normalize severity values to the Hakuna standard: critical/important/moderate/low."""
+    mapping = {
+        "critical": "critical",
+        "high": "important",
+        "important": "important",
+        "medium": "moderate",
+        "moderate": "moderate",
+        "low": "low",
+        "negligible": "low",
+        "unimportant": "low",
+        "not yet assigned": "moderate",
+    }
+    return mapping.get((raw or "").lower().strip("*"), "moderate")
+
+
+def _upsert_patch_advisory(db, source: str, source_advisory_id: str, **kwargs) -> bool:
+    """Upsert a PatchAdvisory record. Returns True if a new record was created."""
+    # Always normalize severity to Hakuna standard (critical/important/moderate/low)
+    if "severity" in kwargs and kwargs["severity"] is not None:
+        kwargs["severity"] = _normalize_severity(kwargs["severity"])
+    existing = (
+        db.query(PatchAdvisory)
+        .filter(PatchAdvisory.source == source, PatchAdvisory.source_advisory_id == source_advisory_id)
+        .first()
+    )
+    if existing:
+        for key, value in kwargs.items():
+            if value is not None:
+                setattr(existing, key, value)
+        existing.updated_at = datetime.utcnow()
+        return False
+    else:
+        record = PatchAdvisory(
+            source=source,
+            source_advisory_id=source_advisory_id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+            **{k: v for k, v in kwargs.items() if v is not None},
+        )
+        db.add(record)
+        return True
+
+
+def _fetch_json(url: str, timeout: int = 30) -> Optional[dict]:
+    """Fetch JSON from a URL with SSL and User-Agent handling."""
+    ctx = _get_ssl_context()
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        logger.warning("Failed to fetch %s: %s", url, exc)
+        return None
+
+
+def _fetch_text(url: str, timeout: int = 30) -> Optional[str]:
+    """Fetch text/XML from a URL."""
+    ctx = _get_ssl_context()
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        logger.warning("Failed to fetch %s: %s", url, exc)
+        return None
+
+
+def _fetch_gzip_text(url: str, timeout: int = 60) -> Optional[str]:
+    """Fetch gzip-compressed text."""
+    import gzip
+    ctx = _get_ssl_context()
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
+            raw = resp.read()
+        return gzip.decompress(raw).decode("utf-8", errors="replace")
+    except Exception as exc:
+        logger.warning("Failed to fetch gzip %s: %s", url, exc)
+        return None
+
+
+# ── Ubuntu USN ────────────────────────────────────────────────────────────────
+
+def sync_ubuntu_usn_to_db(db) -> dict:
+    """
+    Fetch Ubuntu Security Notices from the USN database JSON.
+    Returns {"added": int, "updated": int}.
+    """
+    url = "https://ubuntu.com/security/notices.json"
+    # Try the structured JSON endpoint first, fall back to RSS
+    data = _fetch_json(url, timeout=60)
+    added = 0
+    updated = 0
+
+    if data and isinstance(data, dict):
+        notices = data.get("notices", [])
+        if isinstance(data, list):
+            notices = data
+    else:
+        # Fallback: parse RSS feed
+        notices = _parse_ubuntu_rss()
+
+    for notice in notices:
+        if isinstance(notice, dict):
+            usn_id = notice.get("id", "") or notice.get("notice_id", "")
+            if not usn_id:
+                continue
+            # Normalize to USN-XXXX-X format
+            if not usn_id.startswith("USN-"):
+                usn_id = f"USN-{usn_id}"
+
+            title = notice.get("title", "") or notice.get("description", "")
+            cve_ids = notice.get("cves", [])
+            if isinstance(cve_ids, list):
+                cve_ids = [c if isinstance(c, str) else c.get("id", "") for c in cve_ids]
+                cve_ids = [c for c in cve_ids if c.startswith("CVE-")]
+
+            release_date = notice.get("published", "") or notice.get("date", "")
+            description = notice.get("description", "") or notice.get("summary", "")
+
+            # Extract affected packages
+            packages = []
+            release_packages = notice.get("release_packages", {})
+            if isinstance(release_packages, dict):
+                for release_name, pkgs in release_packages.items():
+                    if isinstance(pkgs, list):
+                        for pkg in pkgs:
+                            if isinstance(pkg, dict):
+                                packages.append({
+                                    "name": pkg.get("name", ""),
+                                    "version_fixed": pkg.get("version", ""),
+                                    "release": release_name,
+                                    "arch": pkg.get("arch", ""),
+                                })
+
+            severity = notice.get("priority", "medium")
+
+            is_new = _upsert_patch_advisory(
+                db, source="ubuntu", source_advisory_id=usn_id,
+                title=title[:500] if title else None,
+                description=description[:2000] if description else None,
+                severity=severity,
+                release_date=release_date[:10] if release_date else None,
+                advisory_url=f"https://ubuntu.com/security/notices/{usn_id}",
+                affected_packages=packages,
+                cve_ids=cve_ids,
+                raw_data=notice,
+            )
+            if is_new:
+                added += 1
+            else:
+                updated += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("sync_ubuntu_usn_to_db commit failed: %s", exc)
+        db.rollback()
+
+    logger.info("Ubuntu USN sync: %d added, %d updated", added, updated)
+    return {"added": added, "updated": updated}
+
+
+def _parse_ubuntu_rss() -> list:
+    """Parse Ubuntu Security Notices RSS feed as fallback."""
+    xml_text = _fetch_text("https://ubuntu.com/security/notices/rss.xml", timeout=30)
+    if not xml_text:
+        return []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    notices = []
+    for item in root.iter("item"):
+        title = item.findtext("title", "")
+        link = item.findtext("link", "")
+        pub_date = item.findtext("pubDate", "")
+        description = item.findtext("description", "")
+        # Extract USN ID from link
+        usn_id = ""
+        if "/notices/" in link:
+            usn_id = link.rsplit("/notices/", 1)[-1].strip("/")
+
+        # Extract CVEs from description
+        cve_ids = re.findall(r"CVE-\d{4}-\d{4,}", description + " " + title)
+
+        notices.append({
+            "id": usn_id,
+            "title": title,
+            "description": description,
+            "published": pub_date,
+            "cves": list(set(cve_ids)),
+        })
+    return notices
+
+
+# ── Debian Security Tracker ───────────────────────────────────────────────────
+
+def sync_debian_dsa_to_db(db) -> dict:
+    """
+    Fetch Debian Security Tracker JSON and upsert patch advisories.
+    The JSON is keyed by package name, each containing CVE → release status mappings.
+    Returns {"added": int, "updated": int}.
+    """
+    url = "https://security-tracker.debian.org/tracker/data/json"
+    data = _fetch_json(url, timeout=120)
+    if not data or not isinstance(data, dict):
+        return {"added": 0, "updated": 0}
+
+    added = 0
+    updated = 0
+
+    # Debian JSON structure: {package_name: {CVE-ID: {releases: {release: {status, fixed_version}}}}}
+    # We invert this to create per-CVE advisories grouped by package
+    cve_package_map: Dict[str, list] = {}
+
+    for pkg_name, cve_dict in data.items():
+        if not isinstance(cve_dict, dict):
+            continue
+        for cve_id, info in cve_dict.items():
+            if not cve_id.startswith("CVE-"):
+                continue
+            releases = info.get("releases", {})
+            if not isinstance(releases, dict):
+                continue
+            for release_name, release_info in releases.items():
+                if not isinstance(release_info, dict):
+                    continue
+                status = release_info.get("status", "")
+                fixed_version = release_info.get("fixed_version", "")
+                urgency = release_info.get("urgency", "")
+
+                if status == "resolved" and fixed_version:
+                    if cve_id not in cve_package_map:
+                        cve_package_map[cve_id] = []
+                    cve_package_map[cve_id].append({
+                        "name": pkg_name,
+                        "version_fixed": fixed_version,
+                        "release": release_name,
+                        "urgency": urgency,
+                    })
+
+    # Create one advisory per CVE (Debian doesn't have advisory IDs like DSA for all)
+    for cve_id, packages in cve_package_map.items():
+        advisory_id = f"DEB-{cve_id}"
+        severity = _debian_urgency_to_severity(packages[0].get("urgency", "")) if packages else "medium"
+
+        is_new = _upsert_patch_advisory(
+            db, source="debian", source_advisory_id=advisory_id,
+            title=f"Debian fix for {cve_id}",
+            severity=severity,
+            advisory_url=f"https://security-tracker.debian.org/tracker/{cve_id}",
+            affected_packages=packages,
+            cve_ids=[cve_id],
+        )
+        if is_new:
+            added += 1
+        else:
+            updated += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("sync_debian_dsa_to_db commit failed: %s", exc)
+        db.rollback()
+
+    logger.info("Debian sync: %d added, %d updated", added, updated)
+    return {"added": added, "updated": updated}
+
+
+def _debian_urgency_to_severity(urgency: str) -> str:
+    """Map Debian urgency to normalized severity."""
+    return _normalize_severity(urgency)
+
+
+# ── RHEL / CentOS ────────────────────────────────────────────────────────────
+
+def sync_rhel_cves_to_db(db) -> dict:
+    """
+    Fetch RHEL security data from Red Hat Security Data API.
+    Returns {"added": int, "updated": int}.
+    """
+    import time
+
+    # Fetch recent CVEs (paginated, last 90 days by default)
+    base_url = "https://access.redhat.com/hydra/rest/securitydata/cve.json"
+    added = 0
+    updated = 0
+    page = 1
+    per_page = 500
+
+    while True:
+        url = f"{base_url}?per_page={per_page}&page={page}"
+        data = _fetch_json(url, timeout=60)
+        if not data or not isinstance(data, list) or len(data) == 0:
+            break
+
+        for entry in data:
+            cve_id = entry.get("CVE", "")
+            if not cve_id.startswith("CVE-"):
+                continue
+
+            severity = entry.get("severity", "moderate")
+            advisory_ids = entry.get("advisories", [])
+            # Use the first RHSA/RHBA advisory ID, or synthesize one
+            rhsa_id = ""
+            for adv in (advisory_ids if isinstance(advisory_ids, list) else []):
+                if isinstance(adv, str) and adv.startswith("RH"):
+                    rhsa_id = adv
+                    break
+            if not rhsa_id:
+                rhsa_id = f"RHEL-{cve_id}"
+
+            bugzilla = entry.get("bugzilla", "")
+            bugzilla_desc = entry.get("bugzilla_description", "")
+            resource_url = entry.get("resource_url", "")
+            affected = entry.get("affected_packages", [])
+
+            packages = []
+            if isinstance(affected, list):
+                for pkg_str in affected:
+                    if isinstance(pkg_str, str):
+                        packages.append({"name": pkg_str, "version_fixed": "", "arch": ""})
+
+            is_new = _upsert_patch_advisory(
+                db, source="rhel", source_advisory_id=rhsa_id,
+                title=bugzilla_desc[:500] if bugzilla_desc else f"Red Hat fix for {cve_id}",
+                severity=_rhel_severity(severity),
+                advisory_url=resource_url or f"https://access.redhat.com/security/cve/{cve_id}",
+                affected_packages=packages,
+                cve_ids=[cve_id],
+                raw_data=entry,
+            )
+            if is_new:
+                added += 1
+            else:
+                updated += 1
+
+        # Paginate — stop after 5 pages or if we got fewer results than per_page
+        if len(data) < per_page or page >= 5:
+            break
+        page += 1
+        time.sleep(1.0)  # Be polite
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("sync_rhel_cves_to_db commit failed: %s", exc)
+        db.rollback()
+
+    logger.info("RHEL sync: %d added, %d updated", added, updated)
+    return {"added": added, "updated": updated}
+
+
+def _rhel_severity(severity: str) -> str:
+    """Normalize Red Hat severity to standard values."""
+    return _normalize_severity(severity)
+
+
+# ── Amazon Linux ──────────────────────────────────────────────────────────────
+
+def sync_amazon_alas_to_db(db) -> dict:
+    """
+    Fetch Amazon Linux Security Advisories from RSS feeds (AL2 + AL2023).
+    Returns {"added": int, "updated": int}.
+    """
+    feeds = [
+        ("https://alas.aws.amazon.com/alas2.rss", "amazon_linux_2"),
+        ("https://alas.aws.amazon.com/alas2023.rss", "amazon_linux_2023"),
+    ]
+    added = 0
+    updated = 0
+
+    for feed_url, al_version in feeds:
+        xml_text = _fetch_text(feed_url, timeout=30)
+        if not xml_text:
+            continue
+
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as exc:
+            logger.warning("Amazon Linux RSS parse failed for %s: %s", feed_url, exc)
+            continue
+
+        for item in root.iter("item"):
+            title = item.findtext("title", "")
+            link = item.findtext("link", "")
+            description = item.findtext("description", "")
+            pub_date = item.findtext("pubDate", "")
+
+            # Extract ALAS ID from title, e.g. "ALAS-2024-1234" or "ALAS2-2024-1234"
+            alas_match = re.search(r"(ALAS2?(?:023)?-\d{4}-\d+)", title)
+            alas_id = alas_match.group(1) if alas_match else ""
+            if not alas_id:
+                continue
+
+            # Extract CVEs from description
+            cve_ids = list(set(re.findall(r"CVE-\d{4}-\d{4,}", description + " " + title)))
+
+            # Determine severity from title
+            severity = "moderate"
+            title_lower = title.lower()
+            if "critical" in title_lower:
+                severity = "critical"
+            elif "important" in title_lower:
+                severity = "important"
+            elif "medium" in title_lower:
+                severity = "moderate"
+            elif "low" in title_lower:
+                severity = "low"
+
+            is_new = _upsert_patch_advisory(
+                db, source="amazon_linux", source_advisory_id=alas_id,
+                title=title[:500],
+                description=description[:2000] if description else None,
+                severity=severity,
+                release_date=pub_date[:10] if pub_date else None,
+                advisory_url=link,
+                cve_ids=cve_ids,
+                raw_data={"al_version": al_version},
+            )
+            if is_new:
+                added += 1
+            else:
+                updated += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("sync_amazon_alas_to_db commit failed: %s", exc)
+        db.rollback()
+
+    logger.info("Amazon Linux ALAS sync: %d added, %d updated", added, updated)
+    return {"added": added, "updated": updated}
+
+
+# ── Apple Security Releases ───────────────────────────────────────────────────
+
+def sync_apple_security_to_db(db) -> dict:
+    """
+    Scrape Apple Security Releases page for CVE-to-update mappings.
+    Returns {"added": int, "updated": int}.
+    """
+    url = "https://support.apple.com/en-us/100100"
+    html = _fetch_text(url, timeout=30)
+    if not html:
+        return {"added": 0, "updated": 0}
+
+    added = 0
+    updated = 0
+
+    # Parse the HTML table rows — each row has: update name, available for, release date
+    # Use regex to extract table rows (avoid BeautifulSoup dependency for consistency with codebase)
+    # Apple's page has <tr> rows with <td> cells containing update info and CVE links
+    rows = re.findall(
+        r'<tr[^>]*>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>',
+        html, re.DOTALL
+    )
+
+    for name_html, platforms_html, date_html in rows:
+        # Extract advisory name and URL
+        name_match = re.search(r'<a[^>]+href="([^"]*)"[^>]*>(.*?)</a>', name_html, re.DOTALL)
+        if not name_match:
+            continue
+        advisory_url = name_match.group(1)
+        advisory_name = re.sub(r'<[^>]+>', '', name_match.group(2)).strip()
+
+        if not advisory_name:
+            continue
+
+        # Generate an advisory ID from the name
+        advisory_id = re.sub(r'[^a-zA-Z0-9.-]', '_', advisory_name)
+
+        # Extract HT identifier from URL if present
+        ht_match = re.search(r'(HT\d+)', advisory_url)
+        if ht_match:
+            advisory_id = ht_match.group(1)
+
+        # Clean platform text
+        platforms_text = re.sub(r'<[^>]+>', '', platforms_html).strip()
+        release_date = re.sub(r'<[^>]+>', '', date_html).strip()
+
+        # Fetch CVEs from the advisory detail page
+        cve_ids = []
+        if advisory_url and advisory_url.startswith("http"):
+            detail_html = _fetch_text(advisory_url, timeout=15)
+            if detail_html:
+                cve_ids = list(set(re.findall(r"CVE-\d{4}-\d{4,}", detail_html)))
+
+        is_new = _upsert_patch_advisory(
+            db, source="apple", source_advisory_id=advisory_id,
+            title=advisory_name,
+            severity="important",  # Apple doesn't provide severity in the table
+            release_date=release_date,
+            advisory_url=advisory_url if advisory_url.startswith("http") else f"https://support.apple.com{advisory_url}",
+            cve_ids=cve_ids,
+            raw_data={"platforms": platforms_text},
+        )
+        if is_new:
+            added += 1
+        else:
+            updated += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("sync_apple_security_to_db commit failed: %s", exc)
+        db.rollback()
+
+    logger.info("Apple security sync: %d added, %d updated", added, updated)
+    return {"added": added, "updated": updated}
+
+
+# ── Google Chrome ─────────────────────────────────────────────────────────────
+
+def sync_chrome_releases_to_db(db) -> dict:
+    """
+    Fetch Chrome stable release versions and map to security advisories.
+    Returns {"added": int, "updated": int}.
+    """
+    url = "https://versionhistory.googleapis.com/v1/chrome/platforms/all/channels/stable/versions"
+    data = _fetch_json(url, timeout=30)
+    if not data or not isinstance(data, dict):
+        return {"added": 0, "updated": 0}
+
+    added = 0
+    updated = 0
+
+    versions = data.get("versions", [])
+    for version_info in versions[:50]:  # Limit to recent 50 versions
+        version = version_info.get("version", "")
+        if not version:
+            continue
+
+        # Chrome security advisories are on the Chrome Releases blog
+        # The version history API gives us versions; we create advisories per version
+        advisory_id = f"CHROME-{version}"
+
+        is_new = _upsert_patch_advisory(
+            db, source="chrome", source_advisory_id=advisory_id,
+            title=f"Google Chrome {version}",
+            advisory_url=f"https://chromereleases.googleblog.com/search/label/Stable%20updates",
+            affected_packages=[{"name": "google-chrome-stable", "version_fixed": version}],
+            raw_data=version_info,
+        )
+        if is_new:
+            added += 1
+        else:
+            updated += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("sync_chrome_releases_to_db commit failed: %s", exc)
+        db.rollback()
+
+    logger.info("Chrome sync: %d added, %d updated", added, updated)
+    return {"added": added, "updated": updated}
+
+
+# ── Mozilla Firefox ───────────────────────────────────────────────────────────
+
+def sync_firefox_advisories_to_db(db) -> dict:
+    """
+    Fetch Mozilla Firefox security advisories.
+    Returns {"added": int, "updated": int}.
+    """
+    import time
+
+    # Get current version info
+    versions_data = _fetch_json("https://product-details.mozilla.org/1.0/firefox_versions.json", timeout=15)
+
+    # Fetch security advisories index page
+    index_html = _fetch_text("https://www.mozilla.org/en-US/security/advisories/", timeout=30)
+    if not index_html:
+        return {"added": 0, "updated": 0}
+
+    added = 0
+    updated = 0
+
+    # Extract MFSA advisory links (e.g., mfsa2024-01)
+    mfsa_ids = re.findall(r'(mfsa\d{4}-\d+)', index_html)
+    mfsa_ids = list(dict.fromkeys(mfsa_ids))[:30]  # Dedupe, limit to recent 30
+
+    for mfsa_id in mfsa_ids:
+        advisory_url = f"https://www.mozilla.org/en-US/security/advisories/{mfsa_id}/"
+        detail_html = _fetch_text(advisory_url, timeout=15)
+        if not detail_html:
+            time.sleep(0.5)
+            continue
+
+        # Extract title
+        title_match = re.search(r'<title>(.*?)</title>', detail_html, re.DOTALL)
+        title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip() if title_match else mfsa_id
+
+        # Extract CVEs
+        cve_ids = list(set(re.findall(r"CVE-\d{4}-\d{4,}", detail_html)))
+
+        # Determine severity from page content
+        severity = "moderate"
+        detail_lower = detail_html.lower()
+        if "critical" in detail_lower:
+            severity = "critical"
+        elif "high" in detail_lower:
+            severity = "important"
+        elif "low" in detail_lower:
+            severity = "low"
+
+        # Extract affected product from title
+        product = "Firefox"
+        if "thunderbird" in title.lower():
+            product = "Thunderbird"
+        elif "firefox esr" in title.lower():
+            product = "Firefox ESR"
+
+        is_new = _upsert_patch_advisory(
+            db, source="firefox", source_advisory_id=mfsa_id.upper(),
+            title=title[:500],
+            severity=severity,
+            advisory_url=advisory_url,
+            cve_ids=cve_ids,
+            affected_packages=[{"name": product.lower().replace(" ", "-")}],
+            raw_data={"product": product},
+        )
+        if is_new:
+            added += 1
+        else:
+            updated += 1
+
+        time.sleep(0.5)  # Be polite to Mozilla
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("sync_firefox_advisories_to_db commit failed: %s", exc)
+        db.rollback()
+
+    logger.info("Firefox sync: %d added, %d updated", added, updated)
+    return {"added": added, "updated": updated}
+
+
+# ── Adobe Security Bulletins ──────────────────────────────────────────────────
+
+def sync_adobe_bulletins_to_db(db) -> dict:
+    """
+    Fetch Adobe Security Bulletins from RSS feed.
+    Returns {"added": int, "updated": int}.
+    """
+    url = "https://helpx.adobe.com/security/security-bulletin.rss"
+    xml_text = _fetch_text(url, timeout=30)
+    if not xml_text:
+        return {"added": 0, "updated": 0}
+
+    added = 0
+    updated = 0
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        logger.warning("Adobe RSS parse failed: %s", exc)
+        return {"added": 0, "updated": 0}
+
+    for item in root.iter("item"):
+        title = item.findtext("title", "")
+        link = item.findtext("link", "")
+        pub_date = item.findtext("pubDate", "")
+        description = item.findtext("description", "")
+
+        if not title:
+            continue
+
+        # Generate advisory ID from title or link
+        # Adobe bulletin IDs like APSB24-01
+        apsb_match = re.search(r"(APSB\d{2}-\d+)", title + " " + link)
+        advisory_id = apsb_match.group(1) if apsb_match else re.sub(r'[^a-zA-Z0-9.-]', '_', title[:50])
+
+        # Extract CVEs from description
+        cve_ids = list(set(re.findall(r"CVE-\d{4}-\d{4,}", description + " " + title)))
+
+        # Determine product from title
+        product = "adobe"
+        title_lower = title.lower()
+        if "acrobat" in title_lower or "reader" in title_lower:
+            product = "adobe-acrobat"
+        elif "flash" in title_lower:
+            product = "adobe-flash"
+        elif "photoshop" in title_lower:
+            product = "adobe-photoshop"
+        elif "illustrator" in title_lower:
+            product = "adobe-illustrator"
+        elif "indesign" in title_lower:
+            product = "adobe-indesign"
+        elif "premiere" in title_lower:
+            product = "adobe-premiere"
+        elif "after effects" in title_lower:
+            product = "adobe-after-effects"
+        elif "creative cloud" in title_lower:
+            product = "adobe-creative-cloud"
+        elif "commerce" in title_lower or "magento" in title_lower:
+            product = "adobe-commerce"
+        elif "coldfusion" in title_lower:
+            product = "adobe-coldfusion"
+        elif "experience manager" in title_lower:
+            product = "adobe-experience-manager"
+
+        # Determine severity
+        severity = "important"
+        if "critical" in description.lower() or "critical" in title_lower:
+            severity = "critical"
+
+        is_new = _upsert_patch_advisory(
+            db, source="adobe", source_advisory_id=advisory_id,
+            title=title[:500],
+            description=description[:2000] if description else None,
+            severity=severity,
+            release_date=pub_date[:10] if pub_date else None,
+            advisory_url=link,
+            cve_ids=cve_ids,
+            affected_packages=[{"name": product}],
+            raw_data={"product": product},
+        )
+        if is_new:
+            added += 1
+        else:
+            updated += 1
+
+    try:
+        db.commit()
+    except Exception as exc:
+        logger.warning("sync_adobe_bulletins_to_db commit failed: %s", exc)
+        db.rollback()
+
+    logger.info("Adobe sync: %d added, %d updated", added, updated)
+    return {"added": added, "updated": updated}
+
+
+# ── Patch Catalog Orchestrator ────────────────────────────────────────────────
+
+def sync_all_patch_advisories(db) -> dict:
+    """
+    Master orchestrator — syncs all enabled patch advisory sources.
+    Reads config/patch_config.json to determine which sources are enabled.
+    Returns {"results": {source: {added, updated}}, "total_added": int, "total_updated": int}.
+    """
+    config = _load_patch_config()
+    if not config.get("enabled", True):
+        logger.info("Patch catalog sync disabled in config")
+        return {"results": {}, "total_added": 0, "total_updated": 0}
+
+    sources = config.get("sources", {})
+    sync_map = {
+        "ubuntu": sync_ubuntu_usn_to_db,
+        "debian": sync_debian_dsa_to_db,
+        "rhel": sync_rhel_cves_to_db,
+        "amazon_linux": sync_amazon_alas_to_db,
+        "apple": sync_apple_security_to_db,
+        "chrome": sync_chrome_releases_to_db,
+        "firefox": sync_firefox_advisories_to_db,
+        "adobe": sync_adobe_bulletins_to_db,
+    }
+
+    results = {}
+    total_added = 0
+    total_updated = 0
+
+    for source_name, sync_fn in sync_map.items():
+        source_config = sources.get(source_name, {})
+        if not source_config.get("enabled", True):
+            logger.info("Patch source %s disabled, skipping", source_name)
+            continue
+
+        try:
+            result = sync_fn(db)
+            results[source_name] = result
+            total_added += result.get("added", 0)
+            total_updated += result.get("updated", 0)
+        except Exception as exc:
+            logger.warning("Patch source %s sync failed: %s", source_name, exc)
+            results[source_name] = {"error": str(exc)}
+
+    logger.info("Patch catalog sync complete: %d added, %d updated across %d sources",
+                total_added, total_updated, len(results))
+    return {"results": results, "total_added": total_added, "total_updated": total_updated}

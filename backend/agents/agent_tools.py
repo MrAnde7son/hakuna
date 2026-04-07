@@ -15,7 +15,9 @@ from models.models import (
     InventoryUser, InventoryGroup, InventoryService, InventoryNetConn,
     InventoryPatch, InventoryLoggedOn, InventoryScheduledTask,
     InventorySoftware, InventorySecurityControl, InventoryCertificate,
-    InventoryShare,
+    InventoryShare, InventoryComputer, InventoryDatabaseInstance,
+    InventoryCredential, InventoryDomainTrust,
+    AssetRelationship, FirewallPolicy,
     Tag, TagAssignment, SLAConfig, FindingException, FindingTicket,
     ScanComparison, Campaign, CampaignFinding,
     IntegrationConfig, AutoTagRule, OwnershipRule,
@@ -5295,3 +5297,364 @@ def run_sql_query(db: Session, params: dict):
     except Exception as e:
         db.rollback()
         return {"error": f"Query execution failed: {str(e)}"}
+
+
+@agent_tool(
+    "get_blast_radius",
+    "Compute blast radius for an asset — analyzes reachable assets, privileged users, "
+    "network connections, exploitable findings, and lateral movement paths to produce a "
+    "risk score (0–10) and list of attack vectors. "
+    "WHEN TO CALL: When assessing the impact of compromising a specific asset, evaluating "
+    "lateral movement risk, or understanding what an attacker could reach from a foothold.",
+    {
+        "asset_id": {"type": "integer", "description": "The asset ID to analyze (required)"},
+        "finding_id": {"type": "integer", "description": "Scope blast radius to a specific finding (optional)"},
+    },
+)
+def get_blast_radius_tool(db: Session, params: dict):
+    from sqlalchemy import or_
+
+    asset_id = params.get("asset_id")
+    finding_id = params.get("finding_id")
+    org_id = params.get("_org_id")
+    if not asset_id:
+        return {"error": "asset_id is required"}
+
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    if not asset:
+        return {"error": "Asset not found"}
+
+    # Determine org scope
+    asset_org_id = None
+    if asset.scan_id:
+        scan_row = db.query(Scan).filter(Scan.id == asset.scan_id).first()
+        if scan_row:
+            asset_org_id = scan_row.org_id
+
+    # Get all org assets for relationship lookups
+    if asset_org_id:
+        all_assets = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(
+            Scan.org_id == asset_org_id
+        ).all()
+        rel_asset_ids = {r[0] for r in db.query(AssetRelationship.target_asset_id).filter(
+            AssetRelationship.org_id == asset_org_id,
+        ).all()} | {r[0] for r in db.query(AssetRelationship.source_asset_id).filter(
+            AssetRelationship.org_id == asset_org_id,
+        ).all()}
+        if rel_asset_ids:
+            extra = db.query(Asset).filter(Asset.id.in_(rel_asset_ids), Asset.scan_id.is_(None)).all()
+            all_assets.extend(extra)
+    elif org_id:
+        all_assets = db.query(Asset).outerjoin(Scan, Asset.scan_id == Scan.id).filter(
+            or_(Scan.org_id == org_id, Asset.scan_id.is_(None))
+        ).all()
+    else:
+        all_assets = [asset]
+
+    asset_map = {a.id: a for a in all_assets}
+    ip_to_asset_id = {a.ip: a.id for a in all_assets if a.ip}
+    all_org_asset_ids = [a.id for a in all_assets]
+
+    # ── Reachable assets via network connections ──
+    reachable_ids = set()
+    for conn in db.query(InventoryNetConn).filter(
+        InventoryNetConn.asset_id == asset_id,
+        InventoryNetConn.state.in_(["ESTABLISHED", "established"]),
+    ).all():
+        if conn.remote_addr and conn.remote_addr in ip_to_asset_id:
+            dst_id = ip_to_asset_id[conn.remote_addr]
+            if dst_id != asset_id:
+                reachable_ids.add(dst_id)
+
+    # ── Reachable via infrastructure relationships ──
+    for rel in db.query(AssetRelationship).filter(
+        AssetRelationship.source_asset_id == asset_id,
+    ).all():
+        reachable_ids.add(rel.target_asset_id)
+    for rel in db.query(AssetRelationship).filter(
+        AssetRelationship.target_asset_id == asset_id,
+    ).all():
+        reachable_ids.add(rel.source_asset_id)
+    reachable_ids.discard(asset_id)
+
+    # ── Privileged users on this asset ──
+    priv_users = db.query(InventoryUser).filter(
+        InventoryUser.asset_id == asset_id,
+        or_(
+            InventoryUser.is_domain_admin == True,
+            InventoryUser.is_local_admin == True,
+            InventoryUser.is_privileged == True,
+        ),
+    ).all()
+
+    da_exposed = any(u.is_domain_admin for u in priv_users)
+    la_exposed = any(u.is_local_admin for u in priv_users)
+    kerb_exposed = any(bool(u.spns) for u in priv_users)
+
+    # ── Domain admin lateral movement: assets reachable via shared DA accounts ──
+    if da_exposed:
+        da_usernames = [u.username for u in priv_users if u.is_domain_admin and u.username]
+        for username in da_usernames:
+            for other_u in db.query(InventoryUser).filter(
+                InventoryUser.asset_id.in_(all_org_asset_ids),
+                InventoryUser.username == username,
+                InventoryUser.is_domain_admin == True,
+                InventoryUser.asset_id != asset_id,
+            ).limit(10).all():
+                reachable_ids.add(other_u.asset_id)
+
+    # ── Logged-on privileged users (credential exposure) ──
+    logged_on = db.query(InventoryLoggedOn).filter(
+        InventoryLoggedOn.asset_id == asset_id,
+    ).all()
+    cred_exposure_users = []
+    for logon in logged_on:
+        if not logon.username:
+            continue
+        user = db.query(InventoryUser).filter(
+            InventoryUser.asset_id.in_(all_org_asset_ids),
+            InventoryUser.username == logon.username,
+            or_(
+                InventoryUser.is_domain_admin == True,
+                InventoryUser.is_local_admin == True,
+                InventoryUser.is_privileged == True,
+            ),
+        ).first()
+        if user:
+            cred_exposure_users.append(user.username)
+
+    # ── Domain controller reachability ──
+    dc_asset_ids = set()
+    if reachable_ids:
+        for dc in db.query(InventoryComputer).filter(
+            InventoryComputer.asset_id.in_(reachable_ids),
+            InventoryComputer.is_domain_controller == True,
+        ).all():
+            dc_asset_ids.add(dc.asset_id)
+    dc_reachable = len(dc_asset_ids) > 0
+
+    # ── Exploitable findings ──
+    if finding_id:
+        scoped = db.query(Finding).filter(Finding.id == finding_id).first()
+        exploit_findings = [scoped] if scoped else []
+    else:
+        exploit_findings = db.query(Finding).filter(
+            Finding.asset_id == asset_id,
+            Finding.severity >= 3,
+            Finding.exploit_available == True,
+        ).limit(20).all()
+
+    # ── Weak credentials ──
+    weak_creds = db.query(InventoryCredential).filter(
+        InventoryCredential.asset_id == asset_id,
+    ).limit(5).all()
+    has_weak_creds = len(weak_creds) > 0
+
+    # ── Missing critical patches ──
+    missing_patches = db.query(InventoryPatch).filter(
+        InventoryPatch.asset_id == asset_id,
+    ).all()
+    critical_patches = [p for p in missing_patches if (p.vuln_count or 0) >= 5]
+
+    # ── Exposed databases ──
+    exposed_dbs = db.query(InventoryDatabaseInstance).filter(
+        InventoryDatabaseInstance.asset_id == asset_id,
+        InventoryDatabaseInstance.is_running == True,
+    ).all()
+
+    # ── Expired certificates ──
+    expired_certs = db.query(InventoryCertificate).filter(
+        InventoryCertificate.asset_id == asset_id,
+        InventoryCertificate.is_expired == True,
+    ).all()
+
+    # ── Writeable shares ──
+    writeable_shares = db.query(InventoryShare).filter(
+        InventoryShare.asset_id == asset_id,
+        InventoryShare.is_writeable == True,
+    ).limit(5).all()
+
+    # ── Domain trusts ──
+    is_dc = db.query(InventoryComputer).filter(
+        InventoryComputer.asset_id == asset_id,
+        InventoryComputer.is_domain_controller == True,
+    ).first() is not None
+    domain_trusts = []
+    if is_dc:
+        domain_trusts = db.query(InventoryDomainTrust).filter(
+            InventoryDomainTrust.asset_id == asset_id,
+        ).all()
+
+    # ── Listening risky services ──
+    _RISKY_PORTS = {
+        22: "SSH", 23: "Telnet", 135: "RPC", 139: "NetBIOS", 445: "SMB",
+        1433: "MSSQL", 1521: "Oracle", 3306: "MySQL", 3389: "RDP",
+        5432: "PostgreSQL", 5900: "VNC", 5985: "WinRM", 5986: "WinRM-S",
+        6379: "Redis", 27017: "MongoDB",
+    }
+    risky_services = []
+    for conn in db.query(InventoryNetConn).filter(
+        InventoryNetConn.asset_id == asset_id,
+        InventoryNetConn.state.in_(["LISTEN", "LISTENING"]),
+    ).all():
+        port = conn.local_port
+        if port and port in _RISKY_PORTS:
+            risky_services.append(f"{port}/{_RISKY_PORTS[port]}")
+
+    # ── Firewall lateral movement paths ──
+    firewall_lateral_paths = []
+    try:
+        import ipaddress as _ipamod
+        if asset.ip and org_id:
+            fw_policies = db.query(FirewallPolicy).filter(
+                FirewallPolicy.org_id == org_id,
+                FirewallPolicy.enabled.is_(True),
+                FirewallPolicy.action.in_(["allow", "accept", "permit"]),
+            ).all()
+            _FW_RISKY = {22, 23, 445, 3389, 5985, 5986}
+            for policy in fw_policies:
+                in_src = any(
+                    _ipamod.ip_address(asset.ip) in _ipamod.ip_network(c, strict=False)
+                    if c.strip().lower() != "any"
+                    else True
+                    for c in (policy.src_cidrs or [])
+                )
+                if not in_src:
+                    continue
+                ports = set()
+                for svc in (policy.services or []):
+                    if isinstance(svc, dict) and isinstance(svc.get("port"), int):
+                        ports.add(svc["port"])
+                risky = ports & _FW_RISKY
+                if risky:
+                    for dst_cidr in (policy.dst_cidrs or []):
+                        for other_a in all_assets:
+                            if not other_a.ip or other_a.id == asset_id:
+                                continue
+                            try:
+                                if dst_cidr.strip().lower() == "any" or _ipamod.ip_address(other_a.ip) in _ipamod.ip_network(dst_cidr, strict=False):
+                                    reachable_ids.add(other_a.id)
+                                    firewall_lateral_paths.append({
+                                        "rule_id": policy.rule_id,
+                                        "vendor": policy.vendor,
+                                        "dst_ip": other_a.ip,
+                                        "ports": sorted(risky),
+                                    })
+                            except (ValueError, TypeError):
+                                pass
+    except Exception:
+        pass
+
+    # ── Compute blast radius score (same formula as /api/blast-radius) ──
+    is_internet_facing = asset.is_internet_facing or False
+    reachable_count = len(reachable_ids) + (1 if is_internet_facing else 0)
+    has_exploitable = len(exploit_findings) > 0
+    has_trust_paths = len(domain_trusts) > 0
+    has_missing_patches = len(critical_patches) > 0
+    has_exposed_dbs = len(exposed_dbs) > 0
+    has_expired_certs = len(expired_certs) > 0
+    has_fw_lateral = len(firewall_lateral_paths) > 0
+
+    score = min(reachable_count * 1.5, 5.0)
+    if dc_reachable:              score += 3.0
+    if da_exposed:                score += 2.0
+    elif la_exposed:              score += 1.0
+    if kerb_exposed:              score += 1.0
+    if len(cred_exposure_users):  score += 0.5
+    if has_weak_creds:            score += 1.5
+    if has_exploitable:           score += 1.0
+    if has_trust_paths:           score += 0.5
+    if has_missing_patches:       score += 0.5
+    if has_exposed_dbs:           score += 0.5
+    if has_expired_certs:         score += 0.3
+    if is_internet_facing:        score += 1.5
+    if has_fw_lateral:            score += min(len(firewall_lateral_paths) * 0.5, 2.0)
+    if len(writeable_shares):     score += 0.5
+    score = min(round(score, 1), 10.0)
+
+    # ── Build attack vectors summary ──
+    vectors = []
+    if is_internet_facing:
+        vectors.append({"type": "internet_facing", "severity": "critical",
+                        "label": "Internet-facing asset — externally reachable"})
+    for u in priv_users:
+        if u.is_domain_admin:
+            vectors.append({"type": "domain_admin", "severity": "critical",
+                            "label": f"Domain Admin credential on host: {u.username}"})
+        elif u.is_local_admin:
+            vectors.append({"type": "local_admin", "severity": "high",
+                            "label": f"Local Admin account: {u.username}"})
+        if u.spns:
+            vectors.append({"type": "kerberoastable", "severity": "high",
+                            "label": f"Kerberoastable account: {u.username}"})
+    for username in cred_exposure_users:
+        vectors.append({"type": "credential_exposure", "severity": "high",
+                        "label": f"Credential exposure: {username} logged on"})
+    for f in exploit_findings:
+        cve_str = ", ".join((f.cves or [])[:3]) or f.plugin_name or f"Plugin {f.plugin_id}"
+        vectors.append({"type": "vuln_exploit", "severity": "critical" if f.severity >= 4 else "high",
+                        "label": f"Exploitable: {cve_str}" + (" [KEV]" if f.is_kev else "")})
+    for cred in weak_creds:
+        proto = (cred.protocol or "unknown").upper()
+        vectors.append({"type": "weak_credential", "severity": "critical",
+                        "label": f"{cred.credential_type or 'Weak'} credential ({proto}:{cred.port or '?'})"})
+    for share in writeable_shares:
+        vectors.append({"type": "writeable_share", "severity": "medium",
+                        "label": f"Writeable share: {share.share_name or '?'}"})
+    if risky_services:
+        vectors.append({"type": "service_exposure", "severity": "medium",
+                        "label": f"Risky services: {', '.join(risky_services[:6])}"})
+    if exposed_dbs:
+        db_names = ", ".join(f"{d.db_type}:{d.port}" for d in exposed_dbs[:3])
+        vectors.append({"type": "db_exposure", "severity": "high",
+                        "label": f"Running databases: {db_names}"})
+    if critical_patches:
+        total_cves = sum(p.vuln_count or 0 for p in critical_patches)
+        vectors.append({"type": "missing_patch", "severity": "high",
+                        "label": f"Missing {len(critical_patches)} critical patches ({total_cves} CVEs)"})
+    if expired_certs:
+        vectors.append({"type": "expired_cert", "severity": "medium",
+                        "label": f"{len(expired_certs)} expired certificate(s)"})
+    for trust in domain_trusts:
+        vectors.append({"type": "domain_trust", "severity": "medium",
+                        "label": f"Domain trust → {trust.trusted_domain}"})
+    for fwp in firewall_lateral_paths[:5]:
+        port_str = ", ".join(str(p) for p in fwp["ports"][:3])
+        vectors.append({"type": "firewall_lateral_movement", "severity": "high",
+                        "label": f"FW allow ({fwp['vendor']}): → {fwp['dst_ip']} on port {port_str}"})
+
+    # ── Reachable asset summaries ──
+    reachable_summary = []
+    for rid in list(reachable_ids)[:15]:
+        ra = asset_map.get(rid)
+        if ra:
+            reachable_summary.append({
+                "id": ra.id,
+                "label": ra.hostname or ra.fqdn or ra.ip or f"Asset {ra.id}",
+                "ip": ra.ip,
+                "risk_score": ra.risk_score,
+                "criticality": ra.criticality,
+                "is_internet_facing": ra.is_internet_facing,
+                "critical_count": ra.critical_count,
+                "high_count": ra.high_count,
+            })
+
+    return {
+        "asset_id": asset_id,
+        "asset_label": asset.hostname or asset.fqdn or asset.ip or f"Asset {asset_id}",
+        "finding_id": finding_id,
+        "score": score,
+        "reachable_assets": reachable_count,
+        "privileged_users": len(priv_users),
+        "da_exposed": da_exposed,
+        "dc_reachable": dc_reachable,
+        "kerberoastable_exposed": kerb_exposed,
+        "has_weak_creds": has_weak_creds,
+        "has_exploitable": has_exploitable,
+        "has_exposed_dbs": has_exposed_dbs,
+        "has_fw_lateral": has_fw_lateral,
+        "is_internet_facing": is_internet_facing,
+        "is_domain_controller": is_dc,
+        "vectors": vectors[:30],
+        "reachable_asset_details": reachable_summary,
+    }
