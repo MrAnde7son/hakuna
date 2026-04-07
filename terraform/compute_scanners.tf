@@ -7,11 +7,9 @@
 # One e2-standard-4 VM (4 vCPU, 16GB) hosts all scanner containers via Docker Compose.
 # The Cloud SQL Auth Proxy runs as a container alongside them.
 #
-# Redis DB allocation (Memorystore, shared):
-#   DB 0 — main API (cache, rate limiting, JWT denylist)
-#   DB 1 — vm-scanner Celery broker + result backend
-#   DB 2 — hakuna-scanner (EASM) Celery broker
-#   DB 3 — reserved for Phase 2 main Celery workers
+# Redis instances (Memorystore):
+#   hakuna-redis         — main API (DB 0) + EASM scanner (DB 2)
+#   hakuna-redis-vm-scanner — vm-scanner Celery broker (DB 0)
 
 locals {
   ar_base = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.main.repository_id}"
@@ -46,11 +44,13 @@ resource "google_compute_instance" "scanners" {
     # Non-sensitive runtime values — startup script reads these via metadata API.
     # Secrets are fetched from Secret Manager inside the startup script.
     sql-connection-name = google_sql_database_instance.primary.connection_name
-    redis-host          = google_redis_instance.main.host
-    redis-port          = tostring(google_redis_instance.main.port)
-    ar-base             = local.ar_base
-    project-id          = var.project_id
-    region              = var.region
+    redis-host             = google_redis_instance.main.host
+    redis-port             = tostring(google_redis_instance.main.port)
+    vm-scanner-redis-host  = google_redis_instance.vm_scanner.host
+    vm-scanner-redis-port  = tostring(google_redis_instance.vm_scanner.port)
+    ar-base                = local.ar_base
+    project-id             = var.project_id
+    region                 = var.region
   }
 
   metadata_startup_script = <<-STARTUP
@@ -79,10 +79,12 @@ resource "google_compute_instance" "scanners" {
     SQL_CONN=$(curl -sf -H "$H" "$META/sql-connection-name")
     REDIS_HOST=$(curl -sf -H "$H" "$META/redis-host")
     REDIS_PORT=$(curl -sf -H "$H" "$META/redis-port")
+    VM_REDIS_HOST=$(curl -sf -H "$H" "$META/vm-scanner-redis-host")
+    VM_REDIS_PORT=$(curl -sf -H "$H" "$META/vm-scanner-redis-port")
     AR_BASE=$(curl -sf -H "$H" "$META/ar-base")
     PROJECT_ID=$(curl -sf -H "$H" "$META/project-id")
     REGION=$(curl -sf -H "$H" "$META/region")
-    echo "Metadata loaded. SQL: $SQL_CONN  Redis: $REDIS_HOST:$REDIS_PORT"
+    echo "Metadata loaded. SQL: $SQL_CONN  Redis: $REDIS_HOST:$REDIS_PORT  VM Redis: $VM_REDIS_HOST:$VM_REDIS_PORT"
 
     # ── Configure Artifact Registry auth ───────────────────────────────────
     gcloud auth configure-docker "$${REGION}-docker.pkg.dev" --quiet
@@ -168,7 +170,7 @@ resource "google_compute_instance" "scanners" {
             condition: service_healthy
         restart: always
 
-      # ── vm-scanner (Nuclei) — Redis DB 1, main hakuna database ──────────
+      # ── vm-scanner (Nuclei) — dedicated Redis instance, main hakuna database ─
       vm-api:
         image: $${AR_BASE}/vm-scanner:latest
         command: uvicorn scanner.vm.api:create_app --factory --host 0.0.0.0 --port 8002
@@ -176,8 +178,8 @@ resource "google_compute_instance" "scanners" {
           - "8002:8002"
         environment:
           DATABASE_URL: "postgresql://hakuna:$${DB_PASS}@cloud-sql-proxy:5432/hakuna"
-          CELERY_BROKER_URL: "redis://$${REDIS_HOST}:$${REDIS_PORT}/1"
-          CELERY_RESULT_BACKEND: "redis://$${REDIS_HOST}:$${REDIS_PORT}/1"
+          CELERY_BROKER_URL: "redis://$${VM_REDIS_HOST}:$${VM_REDIS_PORT}/0"
+          CELERY_RESULT_BACKEND: "redis://$${VM_REDIS_HOST}:$${VM_REDIS_PORT}/0"
           PYTHONPATH: "/app"
           TEMPLATES_DIR: "/app/templates"
           NUCLEI_BIN: "/root/go/bin/nuclei"
@@ -194,8 +196,8 @@ resource "google_compute_instance" "scanners" {
         command: celery -A scanner.vm.celery_app:celery_app worker --loglevel=info --concurrency=4 -Q vm_queue
         environment:
           DATABASE_URL: "postgresql://hakuna:$${DB_PASS}@cloud-sql-proxy:5432/hakuna"
-          CELERY_BROKER_URL: "redis://$${REDIS_HOST}:$${REDIS_PORT}/1"
-          CELERY_RESULT_BACKEND: "redis://$${REDIS_HOST}:$${REDIS_PORT}/1"
+          CELERY_BROKER_URL: "redis://$${VM_REDIS_HOST}:$${VM_REDIS_PORT}/0"
+          CELERY_RESULT_BACKEND: "redis://$${VM_REDIS_HOST}:$${VM_REDIS_PORT}/0"
           PYTHONPATH: "/app"
           TEMPLATES_DIR: "/app/templates"
           NUCLEI_BIN: "/root/go/bin/nuclei"
@@ -210,8 +212,8 @@ resource "google_compute_instance" "scanners" {
         command: celery -A scanner.vm.celery_app:celery_app beat --loglevel=info
         environment:
           DATABASE_URL: "postgresql://hakuna:$${DB_PASS}@cloud-sql-proxy:5432/hakuna"
-          CELERY_BROKER_URL: "redis://$${REDIS_HOST}:$${REDIS_PORT}/1"
-          CELERY_RESULT_BACKEND: "redis://$${REDIS_HOST}:$${REDIS_PORT}/1"
+          CELERY_BROKER_URL: "redis://$${VM_REDIS_HOST}:$${VM_REDIS_PORT}/0"
+          CELERY_RESULT_BACKEND: "redis://$${VM_REDIS_HOST}:$${VM_REDIS_PORT}/0"
           PYTHONPATH: "/app"
         depends_on:
           cloud-sql-proxy:
@@ -256,6 +258,7 @@ resource "google_compute_instance" "scanners" {
     google_service_networking_connection.private_vpc_connection,
     google_sql_database_instance.primary,
     google_redis_instance.main,
+    google_redis_instance.vm_scanner,
     google_secret_manager_secret_version.db_password,
     google_secret_manager_secret_version.scanner_db_password,
     google_project_iam_member.scanner_roles,

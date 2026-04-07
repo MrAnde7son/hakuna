@@ -338,6 +338,66 @@ def get_risk_grade(
     else:
         grade, grade_color = "F", "#dc2626"
 
+    # ── Top solutions per component (for actionable tips) ──
+    top_solutions_by_component = {}
+    try:
+        sol_q = db.query(AggregatedSolution).join(Scan, AggregatedSolution.scan_id == Scan.id)
+        sol_q = apply_scan_org_filter(sol_q, org_ids)
+        if scan_id:
+            sol_q = sol_q.filter(AggregatedSolution.scan_id == scan_id)
+        sol_q = sol_q.order_by(desc(AggregatedSolution.risk_reduction))
+        all_solutions = sol_q.limit(50).all()
+
+        # Map solutions to the risk component they most improve
+        for sol in all_solutions:
+            mapped_components = []
+            rc = sol.root_cause_type or ""
+            at = sol.action_type or ""
+            # Severity mix: any fix that resolves critical/high findings
+            if (sol.severity_max or 0) >= 3:
+                mapped_components.append("severity_mix")
+            # Exploit exposure: fixes that resolve exploitable findings
+            if sol.finding_ids:
+                exploit_findings = db.query(func.count(Finding.id)).filter(
+                    Finding.id.in_(sol.finding_ids),
+                    Finding.exploit_available == True,
+                ).scalar() or 0
+                if exploit_findings > 0:
+                    mapped_components.append("exploit_exposure")
+            # Remediation velocity: quick wins that speed up MTTR
+            if sol.effort_level in ("low", "quick_win"):
+                mapped_components.append("remediation_velocity")
+            # SLA compliance: any fix for SLA-breached findings
+            if sol.finding_ids:
+                breached = db.query(func.count(Finding.id)).filter(
+                    Finding.id.in_(sol.finding_ids),
+                    Finding.sla_status == "breached",
+                ).scalar() or 0
+                if breached > 0:
+                    mapped_components.append("sla_compliance")
+            # Fallback: high risk-reduction solutions help severity mix
+            if not mapped_components and (sol.risk_reduction or 0) > 1:
+                mapped_components.append("severity_mix")
+
+            for comp in mapped_components:
+                if comp not in top_solutions_by_component:
+                    top_solutions_by_component[comp] = []
+                if len(top_solutions_by_component[comp]) < 2:
+                    top_solutions_by_component[comp].append({
+                        "id": sol.id,
+                        "title": sol.title,
+                        "affected_component": sol.affected_component,
+                        "risk_reduction": round(sol.risk_reduction or 0, 1),
+                        "finding_count": sol.finding_count or 0,
+                        "asset_count": sol.asset_count or 0,
+                        "effort_level": sol.effort_level,
+                        "action_type": sol.action_type,
+                        "finding_ids": sol.finding_ids or [],
+                        "owner_suggestion": sol.owner_suggestion,
+                    })
+    except Exception:
+        pass  # Graceful degradation — tips still work without solutions
+
     return {
         "score": composite,
         "grade": grade,
@@ -368,6 +428,7 @@ def get_risk_grade(
             "sla_at_risk": sla_counts.get("at_risk", 0),
             "avg_mttr_days": round(avg_mttr, 1) if mttr_vals else None,
         },
+        "top_solutions": top_solutions_by_component,
     }
 
 

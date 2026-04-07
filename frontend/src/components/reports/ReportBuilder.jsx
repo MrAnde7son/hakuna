@@ -46,6 +46,8 @@ import {
   getEasmBreaches,
   getEasmSubsidiaries,
   getControlAssessmentStats,
+  createCampaign,
+  runCampaign,
 } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast, useConfirm } from '../shared/ui.jsx'
 
@@ -54,7 +56,7 @@ import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button
 const STORAGE_KEY = 'nessus_custom_reports'
 const MIGRATED_KEY = 'nessus_reports_migrated'
 const LANDING_KEY = 'nessus_landing_report'
-const DEFAULT_REPORT_ID = 'default-executive-overview'
+const DEFAULT_REPORT_ID = 'default-security-overview'
 
 function loadLandingId() {
   return localStorage.getItem(LANDING_KEY) || DEFAULT_REPORT_ID
@@ -775,25 +777,25 @@ const DATA_PRESETS = {
   severity_trend: {
     label: 'Severity Trend', group: 'Severity', source: 'trending', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
-    xField: 'scan_name', fields: ['critical', 'high', 'medium', 'low'],
+    xField: 'scan_date', fields: ['critical', 'high', 'medium', 'low'],
     colors: { critical: '#dc2626', high: '#ea580c', medium: '#d97706', low: '#65a30d' },
   },
   risk_trend: {
     label: 'Risk Score Trend', group: 'Risk', source: 'metrics_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
-    xField: 'scan_name', fields: ['avg_risk_score', 'max_risk_score'],
+    xField: 'scan_date', fields: ['avg_risk_score', 'max_risk_score'],
     colors: { avg_risk_score: '#ef4444', max_risk_score: '#dc2626' },
   },
   sla_trend: {
     label: 'SLA Compliance Trend', group: 'SLA & Ops', source: 'metrics_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
-    xField: 'scan_name', fields: ['sla_compliance_pct'],
+    xField: 'scan_date', fields: ['sla_compliance_pct'],
     colors: { sla_compliance_pct: '#16a34a' },
   },
   scan_delta: {
     label: 'Scan Delta', group: 'SLA & Ops', source: 'delta_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d.map(r => ({ ...r, fixed_count: -(r.fixed_count || 0) })) : [],
-    xField: 'scan_name', fields: ['new_count', 'fixed_count'],
+    xField: 'scan_date', fields: ['new_count', 'fixed_count'],
     colors: { new_count: '#ef4444', fixed_count: '#22c55e' },
   },
   velocity_trend: {
@@ -805,61 +807,61 @@ const DATA_PRESETS = {
   metrics_overview: {
     label: 'Metrics Overview', group: 'Risk', source: 'metrics_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
-    xField: 'scan_name', fields: ['total_findings', 'actionable_findings', 'exploit_count'],
+    xField: 'scan_date', fields: ['total_findings', 'actionable_findings', 'exploit_count'],
     colors: { total_findings: '#6366f1', actionable_findings: '#8b5cf6', exploit_count: '#f59e0b' },
   },
   workflow_trend: {
     label: 'Workflow States', group: 'SLA & Ops', source: 'metrics_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
-    xField: 'scan_name', fields: ['workflow_open', 'workflow_in_progress', 'workflow_resolved'],
+    xField: 'scan_date', fields: ['workflow_open', 'workflow_in_progress', 'workflow_resolved'],
     colors: { workflow_open: '#6b7280', workflow_in_progress: '#3b82f6', workflow_resolved: '#22c55e' },
   },
   critical_trend: {
     label: 'Critical Trend', group: 'Severity', source: 'metrics_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
-    xField: 'scan_name', fields: ['critical'],
+    xField: 'scan_date', fields: ['critical'],
     colors: { critical: '#dc2626' },
   },
   high_trend: {
     label: 'High Trend', group: 'Severity', source: 'metrics_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
-    xField: 'scan_name', fields: ['high'],
+    xField: 'scan_date', fields: ['high'],
     colors: { high: '#ea580c' },
   },
   exploit_trend: {
     label: 'Exploit Count Trend', group: 'Risk', source: 'metrics_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
-    xField: 'scan_name', fields: ['exploit_count'],
+    xField: 'scan_date', fields: ['exploit_count'],
     colors: { exploit_count: '#f59e0b' },
   },
   asset_count_trend: {
     label: 'Asset Count Trend', group: 'Assets & Findings', source: 'metrics_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
-    xField: 'scan_name', fields: ['total_assets'],
+    xField: 'scan_date', fields: ['total_assets'],
     colors: { total_assets: '#6366f1' },
   },
   finding_count_trend: {
     label: 'Finding Count Trend', group: 'Assets & Findings', source: 'metrics_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
-    xField: 'scan_name', fields: ['total_findings', 'actionable_findings'],
+    xField: 'scan_date', fields: ['total_findings', 'actionable_findings'],
     colors: { total_findings: '#6366f1', actionable_findings: '#8b5cf6' },
   },
   sla_breakdown_trend: {
     label: 'SLA Breakdown Trend', group: 'SLA & Ops', source: 'metrics_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
-    xField: 'scan_name', fields: ['sla_on_track', 'sla_at_risk', 'sla_breached'],
+    xField: 'scan_date', fields: ['sla_on_track', 'sla_at_risk', 'sla_breached'],
     colors: { sla_on_track: '#16a34a', sla_at_risk: '#d97706', sla_breached: '#dc2626' },
   },
   mttr_trend: {
     label: 'MTTR Trend (days)', group: 'SLA & Ops', source: 'metrics_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d.filter(r => r.avg_mttr_days != null) : [],
-    xField: 'scan_name', fields: ['avg_mttr_days'],
+    xField: 'scan_date', fields: ['avg_mttr_days'],
     colors: { avg_mttr_days: '#8b5cf6' },
   },
   full_severity_trend: {
     label: 'Full Severity Trend', group: 'Severity', source: 'metrics_timeline', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
-    xField: 'scan_name', fields: ['critical', 'high', 'medium', 'low', 'info'],
+    xField: 'scan_date', fields: ['critical', 'high', 'medium', 'low', 'info'],
     colors: { critical: '#dc2626', high: '#ea580c', medium: '#d97706', low: '#65a30d', info: '#0ea5e9' },
   },
   // Dynamic composable series — metrics & grouping set via widget config
@@ -870,7 +872,7 @@ const DATA_PRESETS = {
       const rows = Array.isArray(d) ? d : []
       return aggregateByTimePeriod(rows, cfg?.time_group || 'scan')
     },
-    xField: 'scan_name',
+    xField: 'scan_date',
     fields: [],   // filled dynamically from cfg.metrics
     colors: {},   // filled dynamically from cfg.metrics
   },
@@ -956,8 +958,73 @@ const DATA_PRESETS = {
       { key: 'asset_count', label: 'Assets' },
       { key: 'finding_count', label: 'Findings' },
       { key: 'risk_reduction', label: 'Risk Reduction', render: v => v != null ? `${v.toFixed(1)}%` : '—' },
-      { key: 'effort_level', label: 'Effort' },
+      { key: 'effort_level', label: 'Effort', render: (v, row) => {
+        const isQuick = v === 'low' || v === 'quick_win'
+        return isQuick
+          ? React.createElement('span', { style: { background: '#16a34a18', color: '#16a34a', padding: '1px 6px', borderRadius: 4, fontWeight: 600, fontSize: 10 } }, 'Quick Win')
+          : v || '—'
+      }},
       { key: 'owner_suggestion', label: 'Owner' },
+    ],
+    rowActions: [
+      {
+        label: 'Create Campaign', quickLabel: 'Fix Now', variant: 'quickwin',
+        handler: (row, e, { handleCreateCampaign }) => handleCreateCampaign(row, e),
+      },
+    ],
+  },
+  quick_wins_actions: {
+    label: 'Quick Win Actions', group: 'Risk', source: 'aggregated_solutions', type: 'table',
+    extract: d => [...(d?.solutions ?? (Array.isArray(d) ? d : []))]
+      .filter(s => s.effort_level === 'low' || s.effort_level === 'quick_win')
+      .sort((a, b) => (b.risk_reduction ?? 0) - (a.risk_reduction ?? 0)),
+    rowDrillDown: row => row?.id ? `/aggregated-solutions?highlight=${row.id}` : null,
+    columns: [
+      { key: 'title', label: 'Action' },
+      { key: 'affected_component', label: 'Component' },
+      { key: 'asset_count', label: 'Assets' },
+      { key: 'finding_count', label: 'Findings' },
+      { key: 'risk_reduction', label: 'Risk Reduction', render: v => v != null ? `${v.toFixed(1)}%` : '—' },
+    ],
+    rowActions: [
+      {
+        label: 'Fix Now', variant: 'primary',
+        handler: (row, e, { handleCreateCampaign }) => handleCreateCampaign(row, e),
+      },
+    ],
+  },
+  solutions_by_owner: {
+    label: 'Actions by Owner', group: 'Risk', source: 'aggregated_solutions', type: 'table',
+    extract: d => {
+      const solutions = d?.solutions ?? (Array.isArray(d) ? d : [])
+      // Group by owner and show summary per owner with top action
+      const byOwner = {}
+      for (const s of solutions) {
+        const owner = s.owner_suggestion || 'Unassigned'
+        if (!byOwner[owner]) byOwner[owner] = { owner_suggestion: owner, action_count: 0, total_findings: 0, total_risk_reduction: 0, top_action: null }
+        byOwner[owner].action_count++
+        byOwner[owner].total_findings += s.finding_count || 0
+        byOwner[owner].total_risk_reduction += s.risk_reduction || 0
+        if (!byOwner[owner].top_action || (s.risk_reduction || 0) > (byOwner[owner].top_action.risk_reduction || 0)) {
+          byOwner[owner].top_action = s
+        }
+      }
+      return Object.values(byOwner).sort((a, b) => b.total_risk_reduction - a.total_risk_reduction)
+    },
+    columns: [
+      { key: 'owner_suggestion', label: 'Team' },
+      { key: 'action_count', label: 'Actions' },
+      { key: 'total_findings', label: 'Findings' },
+      { key: 'total_risk_reduction', label: 'Risk Reduction', render: v => v != null ? `${v.toFixed(1)}%` : '—' },
+      { key: 'top_action', label: 'Top Action', render: (v) => v?.title || '—' },
+    ],
+    rowActions: [
+      {
+        label: 'Create Campaign', variant: 'quickwin',
+        handler: (row, e, { handleCreateCampaign }) => {
+          if (row.top_action) handleCreateCampaign(row.top_action, e)
+        },
+      },
     ],
   },
   findings_list: {
@@ -1373,7 +1440,7 @@ function aggregateByTimePeriod(data, groupBy) {
   // Average the rate/score fields instead of summing
   const avgFields = ['sla_compliance_pct', 'avg_risk_score', 'max_risk_score', 'avg_mttr_days']
   return Object.values(buckets).map(b => {
-    const out = { scan_name: b._label }
+    const out = { scan_name: b._label, scan_date: b._label }
     for (const f of numFields) {
       if (b[f] != null) {
         out[f] = avgFields.includes(f) ? Math.round((b[f] / b._count) * 10) / 10 : b[f]
@@ -1435,24 +1502,27 @@ const DEFAULT_DASHBOARD = {
   name: 'Security Overview',
   createdAt: new Date(0).toISOString(),
   widgets: [
+    // ── Row 1: At-a-glance KPIs ──
     { id: 'dw1', type: 'card',      title: 'Critical',              width: 'quarter', config: { preset: 'critical_count' } },
     { id: 'dw2', type: 'card',      title: 'High',                  width: 'quarter', config: { preset: 'high_count' } },
     { id: 'dw3', type: 'card',      title: 'With Exploit',          width: 'quarter', config: { preset: 'exploit_count' } },
     { id: 'dw4', type: 'card',      title: 'Assets',                width: 'quarter', config: { preset: 'total_assets' } },
-    { id: 'dw5', type: 'pie_chart', title: 'Severity Breakdown',    width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
-    { id: 'dw6', type: 'line_chart',title: 'Vulnerability Trend',   width: 'half',    config: { preset: 'severity_trend' } },
-    { id: 'dw7', type: 'bar_chart', title: 'Top Plugin Families',   width: 'full',    config: { preset: 'family_breakdown' } },
-    { id: 'dw8', type: 'line_chart',title: 'Risk Score Trend',      width: 'full',    config: { preset: 'risk_trend' } },
-    { id: 'dw9', type: 'pie_chart', title: 'Effort Distribution',   width: 'half',    config: { preset: 'effort_breakdown', donut: true } },
+    // ── Row 2: Risk grade with actionable tips + solutions ──
+    { id: 'dw17',type: 'risk_grade', title: 'How to Improve Risk Score', width: 'full', config: { preset: 'risk_grade', show_tips: true } },
+    // ── Row 3: Quick win actions (low-effort, high-impact) ──
+    { id: 'dw19',type: 'table',      title: 'Quick Win Actions',         width: 'full', config: { preset: 'quick_wins_actions', limit: 5 } },
+    // ── Row 4: Full remediation actions + owner breakdown ──
+    { id: 'dw18',type: 'table',      title: 'Top Remediation Actions',   width: 'full', config: { preset: 'aggregated_solutions_table', limit: 10 } },
+    { id: 'dw20',type: 'table',      title: 'Actions by Owner',          width: 'half', config: { preset: 'solutions_by_owner', limit: 5 } },
     { id: 'dw10',type: 'pie_chart', title: 'SLA Status',            width: 'half',    config: { preset: 'sla_status', donut: true } },
-    { id: 'dw11',type: 'table',     title: 'Top Risky Assets',      width: 'full',    config: { preset: 'top_assets', limit: 10 } },
-    { id: 'dw13',type: 'table',     title: 'Quick Wins',            width: 'full',    config: { preset: 'quick_wins_table', limit: 5 } },
-    { id: 'dw12',type: 'table',     title: 'Remediation Queue',     width: 'full',    config: { preset: 'remediation_queue_data', limit: 10 } },
+    // ── Row 5: Trends & context ──
+    { id: 'dw6', type: 'line_chart',title: 'Vulnerability Trend',   width: 'half',    config: { preset: 'severity_trend' } },
+    { id: 'dw5', type: 'pie_chart', title: 'Severity Breakdown',    width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
+    // ── Row 6: Assets & age ──
+    { id: 'dw11',type: 'table',     title: 'Top Risky Assets',      width: 'full',    config: { preset: 'top_assets', limit: 5 } },
     { id: 'dw14',type: 'card',      title: 'Zombie Vulns',          width: 'quarter', config: { preset: 'zombie_count' } },
     { id: 'dw15',type: 'card',      title: 'Regressions',           width: 'quarter', config: { preset: 'regression_count' } },
     { id: 'dw16',type: 'bar_chart', title: 'Finding Age',           width: 'half',    config: { preset: 'age_distribution' } },
-    { id: 'dw17',type: 'risk_grade', title: 'How to Improve Risk Score', width: 'full', config: { preset: 'risk_grade', show_tips: true } },
-    { id: 'dw18',type: 'table',      title: 'Top Remediation Actions',   width: 'full', config: { preset: 'aggregated_solutions_table', limit: 10 } },
   ],
 }
 
@@ -1710,6 +1780,14 @@ const TOOLTIP_STYLE = { background: 'var(--bg-card)', border: '1px solid var(--b
 const TICK_STYLE = { fill: 'var(--text-muted)', fontSize: 11 }
 
 function truncLabel(s, max = 18) { return (s || '').length > max ? s.slice(0, max) + '...' : s || '' }
+function formatXLabel(val, field) {
+  if (!val) return ''
+  if (field === 'scan_date' || field === 'date' || field === 'created_at') {
+    const d = new Date(val)
+    if (!isNaN(d)) return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  }
+  return truncLabel(val)
+}
 
 // ─── Drill-down URL map ───────────────────────────────────────────────────────
 // For 'card' presets: a string URL or () => url
@@ -2040,6 +2118,46 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
     return preset
   })()
 
+  // ── Campaign creation helper for inline CTAs ──
+  const handleCreateCampaign = async (row, e) => {
+    if (e) { e.stopPropagation(); e.preventDefault() }
+    const btn = e?.currentTarget
+    if (btn) { btn.disabled = true; btn.textContent = 'Creating…' }
+    try {
+      const name = row.title || row.affected_component || 'Remediation Campaign'
+      const query = []
+      // Build rules using the campaign rule engine's supported fields & operators
+      const comp = row.affected_component
+      const actionType = row.action_type
+      if (comp) {
+        // Match findings by product/component name
+        query.push({ field: 'finding.plugin_name', op: 'contains', value: comp })
+      }
+      // Scope to the right severity level
+      if (row.severity_max != null && row.severity_max >= 3) {
+        query.push({ field: 'finding.severity', op: 'gte', value: row.severity_max })
+      }
+      // Action-type specific rules
+      if (actionType === 'apply_patch' || actionType === 'bulk_patch') {
+        query.push({ field: 'finding.missing_patches', op: 'is_true', value: true })
+      }
+      if (actionType === 'upgrade_component' || actionType === 'migrate_to_supported') {
+        // For upgrades, also match by product/CPE if available
+        if (comp) {
+          query.push({ field: 'finding.product', op: 'contains', value: comp })
+        }
+      }
+      const campaign = await createCampaign({ name, description: `Auto-created from: ${name}`, query, query_logic: 'AND' })
+      if (campaign?.id) {
+        await runCampaign(campaign.id)
+        navigate(`/campaigns/${campaign.id}`)
+      }
+    } catch (err) {
+      console.error('Failed to create campaign:', err)
+      if (btn) { btn.disabled = false; btn.textContent = 'Create Campaign' }
+    }
+  }
+
   switch (widget.type) {
     case 'card': {
       const val = typeof extracted === 'number' ? extracted : 0
@@ -2138,6 +2256,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
           )}
           {cfg.show_tips && (() => {
             const ctx = extracted?.context || {}
+            const topSolutions = extracted?.top_solutions || {}
             const buildTip = (key) => {
               switch (key) {
                 case 'severity_mix': {
@@ -2191,30 +2310,54 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
             const weakest = [...tipsOrder].sort((a, b) => (components[a] ?? 0) - (components[b] ?? 0)).filter(k => (components[k] ?? 0) < 80).slice(0, 3)
             if (weakest.length === 0) return null
             return (
-              <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>Top improvements</div>
                 {weakest.map((key, rank) => {
                   const val = Math.round(components[key] ?? 0)
                   const tip = buildTip(key)
                   if (!tip) return null
                   const valColor = val >= 60 ? '#d97706' : '#dc2626'
+                  const solutions = topSolutions[key] || []
                   return (
-                    <div
-                      key={key}
-                      onClick={() => navigate(tip.drillUrl)}
-                      style={{ display: 'grid', gridTemplateColumns: '10px 1fr auto auto', alignItems: 'center', gap: 8, padding: '5px 6px', borderRadius: 5, cursor: 'pointer', transition: 'background 0.1s' }}
-                      onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
-                      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
-                    >
-                      <div style={{ width: 10, height: 10, borderRadius: '50%', background: tip.color, opacity: 1 - rank * 0.2, flexShrink: 0 }} />
-                      <span style={{ fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        <span style={{ fontWeight: 700, color: 'var(--text-primary)', marginRight: 4 }}>{tip.label}:</span>
-                        {tip.action}
-                      </span>
-                      <span style={{ fontSize: 10, fontWeight: 700, color: valColor, flexShrink: 0, background: `${tip.color}18`, borderRadius: 4, padding: '1px 5px' }}>{val}/100</span>
-                      <span style={{ fontSize: 10, fontWeight: 700, color: '#16a34a', flexShrink: 0, background: '#16a34a18', borderRadius: 4, padding: '1px 5px', whiteSpace: 'nowrap' }}>
-                        +{Math.round((80 - val) * (weights[key] ?? 0))} pts
-                      </span>
+                    <div key={key} style={{ borderRadius: 6, border: '1px solid var(--border)', overflow: 'hidden' }}>
+                      <div
+                        onClick={() => navigate(tip.drillUrl)}
+                        style={{ display: 'grid', gridTemplateColumns: '10px 1fr auto auto', alignItems: 'center', gap: 8, padding: '6px 8px', cursor: 'pointer', transition: 'background 0.1s' }}
+                        onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+                      >
+                        <div style={{ width: 10, height: 10, borderRadius: '50%', background: tip.color, opacity: 1 - rank * 0.2, flexShrink: 0 }} />
+                        <span style={{ fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <span style={{ fontWeight: 700, color: 'var(--text-primary)', marginRight: 4 }}>{tip.label}:</span>
+                          {tip.action}
+                        </span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: valColor, flexShrink: 0, background: `${tip.color}18`, borderRadius: 4, padding: '1px 5px' }}>{val}/100</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: '#16a34a', flexShrink: 0, background: '#16a34a18', borderRadius: 4, padding: '1px 5px', whiteSpace: 'nowrap' }}>
+                          +{Math.round((80 - val) * (weights[key] ?? 0))} pts
+                        </span>
+                      </div>
+                      {solutions.length > 0 && (
+                        <div style={{ borderTop: '1px solid var(--border)', padding: '4px 8px 6px', background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                          {solutions.map((sol, si) => (
+                            <div key={si} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+                              <Zap size={11} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                              <span style={{ flex: 1, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {sol.title} — <span style={{ color: '#16a34a', fontWeight: 600 }}>{sol.risk_reduction}% risk reduction</span>
+                                <span style={{ color: 'var(--text-muted)' }}> ({sol.finding_count} findings, {sol.asset_count} assets)</span>
+                              </span>
+                              <button
+                                onClick={e => handleCreateCampaign(sol, e)}
+                                style={{
+                                  background: sol.effort_level === 'low' || sol.effort_level === 'quick_win' ? 'var(--accent)' : 'transparent',
+                                  color: sol.effort_level === 'low' || sol.effort_level === 'quick_win' ? '#fff' : 'var(--accent)',
+                                  border: sol.effort_level === 'low' || sol.effort_level === 'quick_win' ? 'none' : '1px solid var(--accent)',
+                                  padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+                                }}
+                              >{sol.effort_level === 'low' || sol.effort_level === 'quick_win' ? 'Fix Now' : 'Create Campaign'}</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )
                 })}
@@ -2288,7 +2431,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
       if (rows.length < 2) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.needDataPoints')}</div>
       const fields = resolvedPreset.fields || []
       if (fields.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.selectMetrics')}</div>
-      const chartData = rows.map(r => ({ name: truncLabel(r[resolvedPreset.xField]), ...Object.fromEntries(fields.map(f => [f, r[f] ?? null])) }))
+      const chartData = rows.map(r => ({ name: formatXLabel(r[resolvedPreset.xField], resolvedPreset.xField), ...Object.fromEntries(fields.map(f => [f, r[f] ?? null])) }))
       return (
         <ResponsiveContainer width="100%" height={200}>
           <BarChart data={chartData} stackOffset={cfg.stacked ? 'sign' : 'none'}>
@@ -2310,7 +2453,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
       if (rows.length < 2) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.needDataPoints')}</div>
       const fields = resolvedPreset.fields || []
       if (fields.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.selectMetrics')}</div>
-      const chartData = rows.map(r => ({ name: truncLabel(r[resolvedPreset.xField]), ...Object.fromEntries(fields.map(f => [f, r[f] ?? null])) }))
+      const chartData = rows.map(r => ({ name: formatXLabel(r[resolvedPreset.xField], resolvedPreset.xField), ...Object.fromEntries(fields.map(f => [f, r[f] ?? null])) }))
       const ChartComp = cfg.areaFill ? AreaChart : LineChart
       return (
         <ResponsiveContainer width="100%" height={220}>
@@ -2337,6 +2480,8 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
       const display = rows.slice(0, limit)
       const cols = preset.columns || []
       const rowDrill = preset.rowDrillDown
+      const rowActions = preset.rowActions || []
+      const hasActions = rowActions.length > 0
       if (display.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.noData')}</div>
       return (
         <div style={{ overflowX: 'auto' }}>
@@ -2346,6 +2491,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
                 {cols.map(c => (
                   <th key={c.key} style={{ padding: '6px 8px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{c.label}</th>
                 ))}
+                {hasActions && <th style={{ padding: '6px 8px', textAlign: 'right', color: 'var(--text-muted)', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Actions</th>}
               </tr>
             </thead>
             <tbody>
@@ -2356,16 +2502,38 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
                     key={i}
                     style={{ borderBottom: '1px solid var(--border)', cursor: drillUrl ? 'pointer' : 'default', transition: 'background 0.1s' }}
                     onClick={drillUrl ? () => navigate(drillUrl) : undefined}
-                    onMouseEnter={drillUrl ? e => { e.currentTarget.style.background = 'var(--bg-hover)' } : undefined}
-                    onMouseLeave={drillUrl ? e => { e.currentTarget.style.background = 'transparent' } : undefined}
+                    onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)' }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
                   >
                     {cols.map(c => {
                       const raw = row[c.key] ?? (c.fallback ? row[c.fallback] : null) ?? ''
-                      const val = c.render ? c.render(raw) : raw
+                      const val = c.render ? c.render(raw, row) : raw
                       return (
                         <td key={c.key} style={{ padding: '6px 8px', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{val}</td>
                       )
                     })}
+                    {hasActions && (
+                      <td style={{ padding: '6px 8px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                          {rowActions.map((action, ai) => {
+                            const isQuickWin = row.effort_level === 'low' || row.effort_level === 'quick_win'
+                            const btnStyle = action.variant === 'primary' || (action.variant === 'quickwin' && isQuickWin)
+                              ? { background: 'var(--accent)', color: '#fff', border: 'none', padding: '3px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }
+                              : { background: 'transparent', color: 'var(--accent)', border: '1px solid var(--accent)', padding: '3px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }
+                            const label = (action.variant === 'quickwin' && isQuickWin) ? (action.quickLabel || action.label) : action.label
+                            return (
+                              <button
+                                key={ai}
+                                style={btnStyle}
+                                onClick={e => action.handler(row, e, { navigate, handleCreateCampaign })}
+                                onMouseEnter={e => { e.currentTarget.style.opacity = '0.85' }}
+                                onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}
+                              >{label}</button>
+                            )
+                          })}
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 )
               })}
@@ -4037,7 +4205,7 @@ export default function ReportBuilder() {
       let needsReload = false
 
       // Ensure default dashboards exist and stay up-to-date
-      const ootb = [EXECUTIVE_DASHBOARD, DEFAULT_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD, EASM_DASHBOARD, OWNER_ACCOUNTABILITY_DASHBOARD]
+      const ootb = [DEFAULT_DASHBOARD, EXECUTIVE_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD, EASM_DASHBOARD, OWNER_ACCOUNTABILITY_DASHBOARD]
       for (const dash of ootb) {
         const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}:${w.config?.show_benchmark ? 'bm' : ''}`).join('|')
         const existing = templates.find(t => t.name === dash.name)
