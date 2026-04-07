@@ -8,7 +8,7 @@ and what is their metadata?"
 import logging
 from typing import List, Optional
 
-from sqlalchemy import or_, text, func, desc
+from sqlalchemy import or_, func, desc, String
 from sqlalchemy.orm import Session
 
 from models.threat_intel_models import MSRCPatch, PatchAdvisory
@@ -25,7 +25,7 @@ def _cve_json_filter(cve_id: str):
     # Both SQLite and PG: the JSON array is stored as '["CVE-2024-1234", ...]'
     # A LIKE match on the serialized string is safe for CVE IDs (no regex chars).
     pattern = f'%"{cve_id}"%'
-    return PatchAdvisory.cve_ids.cast(text("TEXT")).like(pattern)
+    return PatchAdvisory.cve_ids.cast(String).like(pattern)
 
 
 def get_patches_for_cve(db: Session, cve_id: str) -> list:

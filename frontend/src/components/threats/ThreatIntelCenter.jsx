@@ -2129,14 +2129,15 @@ function PatchCatalogTab() {
       .finally(() => setLoading(false))
   }, [search, sourceFilter, severityFilter, page])
 
-  const handleCveSearch = async () => {
-    if (!cveSearch.trim()) return
+  const handleCveSearch = async (overrideCve) => {
+    const cve = (overrideCve || cveSearch).trim()
+    if (!cve) return
     setCveResults(null)
     try {
-      const data = await getPatchAdvisories({ cve_id: cveSearch.trim().toUpperCase() })
+      const data = await getPatchAdvisories({ cve_id: cve.toUpperCase() })
       setCveResults(data)
     } catch {
-      setCveResults({ items: [], total: 0, cve_id: cveSearch })
+      setCveResults({ items: [], total: 0, cve_id: cve })
     }
   }
 
@@ -2372,7 +2373,7 @@ function PatchCatalogTab() {
                               fontFamily: 'monospace', background: '#2563eb12', color: '#2563eb',
                               border: '1px solid #2563eb30', cursor: 'pointer',
                             }}
-                            onClick={() => { setCveSearch(cve); handleCveSearch() }}
+                            onClick={() => { setCveSearch(cve); handleCveSearch(cve) }}
                             >
                               {cve}
                             </span>
