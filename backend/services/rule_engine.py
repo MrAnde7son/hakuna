@@ -28,6 +28,12 @@ Operators:
     Presence: is_true, is_false
     Tag:      has_tag, not_has_tag
 
+Extensibility — register new operators without modifying this module:
+    register_string_op(name, handler)       — (lowered_val, lowered_value) -> bool
+    register_string_raw_op(name, handler)   — (raw_val, raw_value) -> bool  (for cidr-like ops)
+    register_numeric_op(name, handler)      — (float_val, float_value) -> bool
+    register_tag_op(name, handler)          — (tags_lower, lowered_value) -> bool
+
 Backward-compat migration:
     migrate_autotag_condition()  — old auto-tag {field: "ip_range", value: ...}
     migrate_campaign_condition() — old campaign {type: "has_exploit", value: ...}
@@ -579,30 +585,85 @@ def migrate_conditions(conditions: list, mode: str = "autotag") -> list:
 
 
 # ─────────────────────────────────────────────────────────
-# Operator helpers
+# Operator registries  (OCP: add new operators without modifying evaluators)
 # ─────────────────────────────────────────────────────────
+
+# Each handler: (asset_val: str, value: str) -> bool   (both already lowered)
+_STRING_OPS: dict[str, callable] = {
+    "eq":           lambda av, v: av == v,
+    "neq":          lambda av, v: av != v,
+    "contains":     lambda av, v: v in av,
+    "not_contains": lambda av, v: v not in av,
+    "startswith":   lambda av, v: av.startswith(v),
+    "endswith":     lambda av, v: av.endswith(v),
+    "glob":         lambda av, v: bool(fnmatch.fnmatch(av, v)),
+}
+
+# These need the *original* (non-lowered) values, handled specially in _str_op
+_STRING_RAW_OPS: dict[str, callable] = {}
+
+
+def _regex_op(av: str, v: str) -> bool:
+    try:
+        return bool(re.search(v, av, re.IGNORECASE))
+    except re.error:
+        return False
+
+
+def _cidr_op(raw_val: str, raw_value: str) -> bool:
+    try:
+        return ipaddress.ip_address(raw_val) in ipaddress.ip_network(str(raw_value), strict=False)
+    except Exception:
+        return False
+
+
+_STRING_RAW_OPS["regex"] = _regex_op
+_STRING_RAW_OPS["cidr"] = _cidr_op
+
+# Each handler: (asset_num: float, v: float) -> bool   (v already coerced)
+_NUMERIC_OPS: dict[str, callable] = {
+    "eq":  lambda n, v: n == v,
+    "neq": lambda n, v: n != v,
+    "gt":  lambda n, v: n > v,
+    "lt":  lambda n, v: n < v,
+    "gte": lambda n, v: n >= v,
+    "lte": lambda n, v: n <= v,
+}
+
+
+def register_string_op(name: str, handler: callable) -> None:
+    """Register a custom string operator.
+
+    handler signature: (lowered_asset_val: str, lowered_value: str) -> bool
+    """
+    _STRING_OPS[name] = handler
+
+
+def register_string_raw_op(name: str, handler: callable) -> None:
+    """Register a string operator that receives original (non-lowered) values.
+
+    handler signature: (raw_asset_val: str, raw_value: str) -> bool
+    """
+    _STRING_RAW_OPS[name] = handler
+
+
+def register_numeric_op(name: str, handler: callable) -> None:
+    """Register a custom numeric operator.
+
+    handler signature: (asset_num: float, coerced_value: float) -> bool
+    """
+    _NUMERIC_OPS[name] = handler
+
 
 def _str_op(asset_val: str, op: str, value: str) -> bool:
     av = asset_val.lower()
     v  = str(value or "").lower()
-    if op == "eq":           return av == v
-    if op == "neq":          return av != v
-    if op == "contains":     return v in av
-    if op == "not_contains": return v not in av
-    if op == "startswith":   return av.startswith(v)
-    if op == "endswith":     return av.endswith(v)
-    if op == "glob":
-        return bool(fnmatch.fnmatch(asset_val.lower(), v))
-    if op == "regex":
-        try:
-            return bool(re.search(v, av, re.IGNORECASE))
-        except re.error:
-            return False
-    if op == "cidr":
-        try:
-            return ipaddress.ip_address(asset_val) in ipaddress.ip_network(str(value), strict=False)
-        except Exception:
-            return False
+    # Check raw-value operators first (regex, cidr, custom)
+    if op in _STRING_RAW_OPS:
+        return _STRING_RAW_OPS[op](asset_val, str(value or ""))
+    handler = _STRING_OPS.get(op)
+    if handler:
+        return handler(av, v)
     return False
 
 
@@ -611,12 +672,9 @@ def _num_op(asset_num: float, op: str, value) -> bool:
         v = float(value)
     except (TypeError, ValueError):
         return False
-    if op == "eq":  return asset_num == v
-    if op == "neq": return asset_num != v
-    if op == "gt":  return asset_num > v
-    if op == "lt":  return asset_num < v
-    if op == "gte": return asset_num >= v
-    if op == "lte": return asset_num <= v
+    handler = _NUMERIC_OPS.get(op)
+    if handler:
+        return handler(asset_num, v)
     return False
 
 
@@ -1075,11 +1133,25 @@ def _eval_tag(cond: dict, db: Session | None, asset_id: int | None,
         asset_tags = []
 
     tags_lower = [t.lower() for t in asset_tags]
-    if op == "has_tag":
-        return any(value in t for t in tags_lower)
-    if op == "not_has_tag":
-        return all(value not in t for t in tags_lower)
+    handler = _TAG_OPS.get(op)
+    if handler:
+        return handler(tags_lower, value)
     return False
+
+
+# Tag operator registry  (value is already lowered+stripped)
+_TAG_OPS: dict[str, callable] = {
+    "has_tag":     lambda tags, v: any(v in t for t in tags),
+    "not_has_tag": lambda tags, v: all(v not in t for t in tags),
+}
+
+
+def register_tag_op(name: str, handler: callable) -> None:
+    """Register a custom tag operator.
+
+    handler signature: (tags_lower: list[str], lowered_value: str) -> bool
+    """
+    _TAG_OPS[name] = handler
 
 
 # ─────────────────────────────────────────────────────────
