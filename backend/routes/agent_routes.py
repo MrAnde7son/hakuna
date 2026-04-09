@@ -566,6 +566,10 @@ def delete_agent(agent_id: int, db: Session = Depends(get_db), org_ids: Optional
     agent = q.first()
     if not agent:
         raise HTTPException(404, "Agent not found")
+    # AgentSchedule and AgentApproval FKs are not configured with cascade,
+    # so clear them explicitly before deleting the agent.
+    db.query(AgentApproval).filter(AgentApproval.agent_id == agent_id).delete(synchronize_session=False)
+    db.query(AgentSchedule).filter(AgentSchedule.agent_id == agent_id).delete(synchronize_session=False)
     db.delete(agent)
     db.commit()
     return {"ok": True}
