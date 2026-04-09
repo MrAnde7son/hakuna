@@ -1,0 +1,129 @@
+{
+  "id": "azure_storage_accounts",
+  "name": "Azure \u2014 Storage Accounts",
+  "description": "Pull Azure Storage Accounts as cloud storage workloads for CNAPP data exposure analysis",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/azure.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://management.azure.com",
+    "method": "GET",
+    "path": "/subscriptions/{{params.subscription_id}}/providers/Microsoft.Storage/storageAccounts",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "query_params": {
+      "api-version": "2023-01-01"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextLink",
+      "cursor_param": "_next_link_url",
+      "page_size": 100
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "client_credentials",
+    "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
+    "grant_type": "client_credentials",
+    "scopes": [
+      "https://management.azure.com/.default"
+    ],
+    "fields": [
+      {
+        "field": "client_id",
+        "label": "Application (Client) ID",
+        "type": "text",
+        "help": "From Azure AD \u2192 App registrations \u2192 your app \u2192 Overview"
+      },
+      {
+        "field": "client_secret",
+        "label": "Client Secret",
+        "type": "password",
+        "help": "From Azure AD \u2192 App registrations \u2192 your app \u2192 Certificates & secrets"
+      },
+      {
+        "field": "tenant_id",
+        "label": "Directory (Tenant) ID",
+        "type": "text",
+        "help": "Found in Azure Portal \u2192 App Registration \u2192 Overview"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/subscriptions/{{params.subscription_id}}/providers/Microsoft.Storage/storageAccounts",
+      "query_params": {
+        "api-version": "2023-01-01"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to Azure Storage. Verify your service principal has Reader role on the subscription."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "properties.primaryEndpoints.blob",
+      "target": "fqdn"
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_instance'"
+      }
+    },
+    {
+      "source": "properties.creationTime",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "id",
+      "target": "is_internet_facing",
+      "transform": {
+        "type": "expression",
+        "expr": "True if (record.get('properties', {}) or {}).get('allowBlobPublicAccess') is True else False"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'azure', 'service': 'storage', 'storage_account_name': record.get('name', ''), 'resource_id': record.get('id', ''), 'subscription_id': (str(record.get('id', '')).split('/')[2] if record.get('id') and len(str(record.get('id', '')).split('/')) > 2 else ''), 'resource_group': (str(record.get('id', '')).split('/')[4] if record.get('id') and len(str(record.get('id', '')).split('/')) > 4 else ''), 'region': record.get('location', ''), 'display_name': record.get('name', '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'azure', 'resource_type': 'storage_account', 'sku_name': (record.get('sku', {}) or {}).get('name', ''), 'sku_tier': (record.get('sku', {}) or {}).get('tier', ''), 'kind': record.get('kind', ''), 'access_tier': record.get('properties', {}).get('accessTier', ''), 'allow_blob_public_access': record.get('properties', {}).get('allowBlobPublicAccess', False), 'allow_shared_key_access': record.get('properties', {}).get('allowSharedKeyAccess', True), 'minimum_tls_version': record.get('properties', {}).get('minimumTlsVersion', ''), 'supports_https_traffic_only': record.get('properties', {}).get('supportsHttpsTrafficOnly', True), 'creation_time': record.get('properties', {}).get('creationTime', ''), 'public_network_access': record.get('properties', {}).get('publicNetworkAccess', ''), 'network_rules_default_action': (record.get('properties', {}).get('networkAcls', {}) or {}).get('defaultAction', ''), 'encryption_key_source': ((record.get('properties', {}).get('encryption', {}) or {}).get('keySource', '')), 'tags': record.get('tags', {})}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "subscription_id": {
+      "type": "string",
+      "required": true,
+      "description": "Azure Subscription ID (UUID)"
+    }
+  }
+}

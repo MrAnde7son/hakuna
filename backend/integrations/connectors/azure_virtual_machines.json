@@ -1,0 +1,127 @@
+{
+  "id": "azure_virtual_machines",
+  "name": "Azure \u2014 Virtual Machines",
+  "description": "Pull Azure Virtual Machines as cloud workloads for CNAPP inventory and posture analysis",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/azure.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://management.azure.com",
+    "method": "GET",
+    "path": "/subscriptions/{{params.subscription_id}}/providers/Microsoft.Compute/virtualMachines",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "query_params": {
+      "api-version": "2023-09-01",
+      "statusOnly": "false"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextLink",
+      "cursor_param": "_next_link_url",
+      "page_size": 100
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "client_credentials",
+    "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
+    "grant_type": "client_credentials",
+    "scopes": [
+      "https://management.azure.com/.default"
+    ],
+    "fields": [
+      {
+        "field": "client_id",
+        "label": "Application (Client) ID",
+        "type": "text",
+        "help": "From Azure AD \u2192 App registrations \u2192 your app \u2192 Overview"
+      },
+      {
+        "field": "client_secret",
+        "label": "Client Secret",
+        "type": "password",
+        "help": "From Azure AD \u2192 App registrations \u2192 your app \u2192 Certificates & secrets"
+      },
+      {
+        "field": "tenant_id",
+        "label": "Directory (Tenant) ID",
+        "type": "text",
+        "help": "Found in Azure Portal \u2192 App Registration \u2192 Overview"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/subscriptions/{{params.subscription_id}}/providers/Microsoft.Compute/virtualMachines",
+      "query_params": {
+        "api-version": "2023-09-01",
+        "$top": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to Azure Resource Manager. Verify your service principal has Reader role on the subscription."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "properties.osProfile.computerName",
+      "target": "fqdn"
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_instance'"
+      }
+    },
+    {
+      "source": "properties.timeCreated",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "properties.storageProfile.osDisk.osType",
+      "target": "os"
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'azure', 'service': 'compute', 'instance_id': record.get('properties', {}).get('vmId', ''), 'resource_id': record.get('id', ''), 'subscription_id': (str(record.get('id', '')).split('/')[2] if record.get('id') and len(str(record.get('id', '')).split('/')) > 2 else ''), 'resource_group': (str(record.get('id', '')).split('/')[4] if record.get('id') and len(str(record.get('id', '')).split('/')) > 4 else ''), 'region': record.get('location', ''), 'display_name': record.get('name', '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'azure', 'resource_type': 'virtual_machine', 'vm_size': record.get('properties', {}).get('hardwareProfile', {}).get('vmSize', ''), 'os_type': record.get('properties', {}).get('storageProfile', {}).get('osDisk', {}).get('osType', ''), 'os_publisher': record.get('properties', {}).get('storageProfile', {}).get('imageReference', {}).get('publisher', ''), 'os_offer': record.get('properties', {}).get('storageProfile', {}).get('imageReference', {}).get('offer', ''), 'os_sku': record.get('properties', {}).get('storageProfile', {}).get('imageReference', {}).get('sku', ''), 'computer_name': record.get('properties', {}).get('osProfile', {}).get('computerName', ''), 'admin_username': record.get('properties', {}).get('osProfile', {}).get('adminUsername', ''), 'provisioning_state': record.get('properties', {}).get('provisioningState', ''), 'location': record.get('location', ''), 'zones': record.get('zones', []), 'managed_identity': (record.get('identity', {}) or {}).get('type', ''), 'tags': record.get('tags', {})}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "subscription_id": {
+      "type": "string",
+      "required": true,
+      "description": "Azure Subscription ID (UUID)"
+    }
+  }
+}

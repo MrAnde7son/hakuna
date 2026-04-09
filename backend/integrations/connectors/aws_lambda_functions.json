@@ -1,0 +1,135 @@
+{
+  "id": "aws_lambda_functions",
+  "name": "AWS Lambda \u2014 Functions",
+  "description": "Pull Lambda functions as serverless cloud workloads for CNAPP inventory and posture analysis",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/aws.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://lambda.{{credentials.region}}.amazonaws.com",
+    "method": "GET",
+    "path": "/2015-03-31/functions/",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "auth_strategy": "aws_sigv4",
+    "aws_service": "lambda",
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "NextMarker",
+      "cursor_param": "Marker",
+      "page_size": 50,
+      "page_size_param": "MaxItems"
+    }
+  },
+  "records_path": "Functions",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the AWS Management Console and go to IAM \u2192 Users"
+      },
+      {
+        "instruction": "Create or select an IAM user and attach the AWSLambda_ReadOnlyAccess managed policy"
+      },
+      {
+        "instruction": "Go to Security credentials \u2192 Create access key \u2192 Choose 'Third-party service'"
+      },
+      {
+        "instruction": "Copy the Access Key ID",
+        "capture": {
+          "field": "access_key_id",
+          "label": "Paste Access Key ID here",
+          "type": "text",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the Secret Access Key",
+        "capture": {
+          "field": "secret_access_key",
+          "label": "Paste Secret Access Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Specify the AWS region to scan",
+        "capture": {
+          "field": "region",
+          "label": "AWS Region (e.g. us-east-1)",
+          "type": "text",
+          "default": "us-east-1"
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/2015-03-31/functions/",
+      "query_params": {
+        "MaxItems": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to AWS Lambda. Verify your access key has AWSLambda_ReadOnlyAccess permission and the region is correct."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "FunctionArn",
+      "target": "source_id"
+    },
+    {
+      "source": "FunctionName",
+      "target": "hostname"
+    },
+    {
+      "source": "FunctionArn",
+      "target": "fqdn"
+    },
+    {
+      "source": "FunctionName",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_instance'"
+      }
+    },
+    {
+      "source": "LastModified",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "FunctionName",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'aws', 'service': 'lambda', 'function_name': record.get('FunctionName', ''), 'arn': record.get('FunctionArn', ''), 'account_id': (str(record.get('FunctionArn', '')).split(':')[4] if record.get('FunctionArn') and len(str(record.get('FunctionArn', '')).split(':')) > 4 else ''), 'region': (str(record.get('FunctionArn', '')).split(':')[3] if record.get('FunctionArn') and len(str(record.get('FunctionArn', '')).split(':')) > 3 else '')}"
+      }
+    },
+    {
+      "source": "FunctionName",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'aws', 'resource_type': 'lambda_function', 'runtime': record.get('Runtime', ''), 'role': record.get('Role', ''), 'handler': record.get('Handler', ''), 'code_size': record.get('CodeSize', 0), 'memory_size': record.get('MemorySize', 0), 'timeout': record.get('Timeout', 0), 'last_modified': record.get('LastModified', ''), 'version': record.get('Version', ''), 'architectures': record.get('Architectures', []), 'package_type': record.get('PackageType', ''), 'state': record.get('State', ''), 'environment_variables': list((record.get('Environment', {}) or {}).get('Variables', {}).keys()) if record.get('Environment') else [], 'vpc_config': record.get('VpcConfig', {}), 'kms_key_arn': record.get('KMSKeyArn', '')}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "region": {
+      "type": "string",
+      "required": true,
+      "default": "us-east-1",
+      "description": "AWS region to scan for Lambda functions (e.g. us-east-1, eu-west-1)"
+    }
+  }
+}

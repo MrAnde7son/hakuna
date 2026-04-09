@@ -13,6 +13,86 @@ logger = logging.getLogger(__name__)
 # Template substitution: {{params.X}}, {{credentials.X}}, {{instance_url}}
 _TEMPLATE_RE = re.compile(r'\{\{(\w+(?:\.\w+)*)\}\}')
 
+# AWS Query API and other XML APIs commonly wrap list items in singular tags
+# (e.g. <Users><member>…</member><member>…</member></Users>). xmltodict collapses
+# single-element wrappers to dicts; force these well-known keys to always be lists
+# so dot-path resolution and pagination work consistently.
+_XML_FORCE_LIST_KEYS = frozenset({
+    "item", "member", "Bucket", "Tag", "Group", "Role", "User", "Policy",
+    "AttachedPolicy", "InstanceProfile", "AccessKeyMetadata", "ServerCertificate",
+    "Reservation", "Instance", "BlockDeviceMapping", "NetworkInterface",
+    "GroupIdentifier", "ProductCode", "SecurityGroup", "Address", "Volume",
+    "Snapshot", "Image", "KeyPair", "Subnet", "Vpc", "RouteTable", "Route",
+    "InternetGateway", "Attachment",
+})
+
+
+def _parse_response(resp: httpx.Response):
+    """Parse an HTTP response body as JSON or XML based on content-type.
+
+    AWS Query APIs (EC2, IAM, S3) return XML; we transparently convert that to
+    a JSON-shaped dict via xmltodict so connector field maps can use the same
+    dot-path syntax regardless of the underlying wire format.
+    """
+    content_type = (resp.headers.get("content-type") or "").lower()
+    body = resp.text or ""
+
+    # XML detection: explicit content-type or sniff the leading character.
+    is_xml = (
+        "xml" in content_type
+        or body.lstrip().startswith("<?xml")
+        or body.lstrip().startswith("<")
+        and not (body.lstrip().startswith("{") or body.lstrip().startswith("["))
+    )
+
+    if is_xml and body.strip():
+        try:
+            import xmltodict
+        except ImportError as exc:
+            raise RuntimeError(
+                "xmltodict is required to parse XML responses. Install it: pip install xmltodict"
+            ) from exc
+
+        def _force_list(path, key, value):
+            return key in _XML_FORCE_LIST_KEYS
+
+        parsed = xmltodict.parse(
+            body,
+            process_namespaces=False,
+            force_list=_force_list,
+            attr_prefix="@",
+            cdata_key="#text",
+        )
+        return _strip_xml_namespaces(parsed)
+
+    # Default: JSON
+    try:
+        return resp.json()
+    except Exception:
+        # Last resort: return raw text wrapped so callers don't crash
+        return {"_raw": body}
+
+
+def _strip_xml_namespaces(obj):
+    """Strip XML namespace prefixes from dict keys recursively (e.g. 'ns:Foo' -> 'Foo').
+
+    AWS XML responses sometimes use default namespaces; xmltodict preserves them
+    when process_namespaces=False, but the prefixes vary across services and
+    confuse field mapping. We normalize by stripping anything before the colon.
+    """
+    if isinstance(obj, dict):
+        cleaned = {}
+        for k, v in obj.items():
+            new_key = k.split(":", 1)[1] if ":" in k and not k.startswith("@") and not k.startswith("#") else k
+            # Skip XML namespace declaration attributes
+            if new_key.startswith("@xmlns"):
+                continue
+            cleaned[new_key] = _strip_xml_namespaces(v)
+        return cleaned
+    if isinstance(obj, list):
+        return [_strip_xml_namespaces(item) for item in obj]
+    return obj
+
 
 def _substitute(value, context: dict):
     """Recursively substitute {{key.subkey}} templates in strings, dicts, lists."""
@@ -36,13 +116,51 @@ def _substitute(value, context: dict):
 
 
 def _resolve_dot_path(obj, path):
-    """Resolve a dot-path like 'response.results' into an object."""
+    """Resolve a dot-path into an object, supporting array indexing.
+
+    Supports:
+      - simple keys:  'response.results'
+      - fixed index:  'reservationSet.item[0].instanceId'
+      - flatten all:  'reservationSet.item[*].instancesSet.item[*]'  (returns flat list)
+    """
     if not path:
         return obj
-    parts = path.split(".")
+    if "[*]" in path:
+        before, after = path.split("[*]", 1)
+        arr = _resolve_dot_path(obj, before)
+        if not isinstance(arr, list):
+            return None
+        after = after.lstrip(".")
+        if not after:
+            return arr
+        # Recursively resolve and flatten one level
+        flat = []
+        for item in arr:
+            sub = _resolve_dot_path(item, after)
+            if isinstance(sub, list):
+                flat.extend(sub)
+            elif sub is not None:
+                flat.append(sub)
+        return flat
+
+    parts = re.split(r'\.(?![^\[]*\])', path)
     current = obj
     for part in parts:
-        if isinstance(current, dict):
+        if current is None:
+            return None
+        # Handle bracket index: 'item[0]'
+        match = re.match(r'^(.+?)\[(\d+)\]$', part)
+        if match:
+            key, idx = match.group(1), int(match.group(2))
+            if isinstance(current, dict):
+                current = current.get(key)
+            else:
+                return None
+            if isinstance(current, list) and idx < len(current):
+                current = current[idx]
+            else:
+                return None
+        elif isinstance(current, dict):
             current = current.get(part)
         else:
             return None
@@ -193,7 +311,7 @@ class ApiTransport(BaseTransport):
                     raw_response=resp.text[:2000],
                 )
 
-            raw = resp.json()
+            raw = _parse_response(resp)
             records_path = config.get("records_path")
             records = _resolve_dot_path(raw, records_path) if records_path else raw
 
@@ -268,9 +386,14 @@ class ApiTransport(BaseTransport):
             async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
                 resp = await client.request(method, url, headers=headers, json=payload)
 
+            ct = resp.headers.get("content-type", "")
+            if ct.startswith("application/json") or "xml" in ct.lower():
+                response_payload = _parse_response(resp)
+            else:
+                response_payload = resp.text[:2000]
             return PushResult(
                 success=resp.status_code < 400,
-                response=resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text[:2000],
+                response=response_payload,
                 status_code=resp.status_code,
                 error=None if resp.status_code < 400 else f"HTTP {resp.status_code}",
             )
@@ -314,7 +437,7 @@ class ApiTransport(BaseTransport):
         if resp.status_code >= 400:
             raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
 
-        raw = resp.json()
+        raw = _parse_response(resp)
         records_path = config.get("records_path")
         records = _resolve_dot_path(raw, records_path) if records_path else raw
         if not isinstance(records, list):

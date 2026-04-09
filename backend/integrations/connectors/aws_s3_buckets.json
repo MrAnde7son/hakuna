@@ -1,0 +1,138 @@
+{
+  "id": "aws_s3_buckets",
+  "name": "AWS S3 \u2014 Buckets",
+  "description": "Pull S3 buckets as cloud storage workloads for CNAPP data exposure analysis",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/aws.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://s3.amazonaws.com",
+    "method": "GET",
+    "path": "/",
+    "headers": {},
+    "auth_strategy": "aws_sigv4",
+    "aws_service": "s3",
+    "pagination": {
+      "strategy": "none"
+    }
+  },
+  "records_path": "ListAllMyBucketsResult.Buckets.Bucket",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the AWS Management Console and go to IAM \u2192 Users"
+      },
+      {
+        "instruction": "Create or select an IAM user and attach the AmazonS3ReadOnlyAccess managed policy"
+      },
+      {
+        "instruction": "Go to Security credentials \u2192 Create access key \u2192 Choose 'Third-party service'"
+      },
+      {
+        "instruction": "Copy the Access Key ID",
+        "capture": {
+          "field": "access_key_id",
+          "label": "Paste Access Key ID here",
+          "type": "text",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the Secret Access Key",
+        "capture": {
+          "field": "secret_access_key",
+          "label": "Paste Secret Access Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "S3 ListBuckets is global. Provide a region for SigV4 signing.",
+        "capture": {
+          "field": "region",
+          "label": "AWS Region (for SigV4)",
+          "type": "text",
+          "default": "us-east-1"
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/",
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to AWS S3. Verify your access key has AmazonS3ReadOnlyAccess permission."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "Name",
+      "target": "source_id"
+    },
+    {
+      "source": "Name",
+      "target": "hostname"
+    },
+    {
+      "source": "Name",
+      "target": "fqdn",
+      "transform": {
+        "type": "expression",
+        "expr": "str(value) + '.s3.amazonaws.com'"
+      }
+    },
+    {
+      "source": "Name",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_instance'"
+      }
+    },
+    {
+      "source": "CreationDate",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "Name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'aws', 'service': 's3', 'bucket_name': record.get('Name', ''), 'arn': 'arn:aws:s3:::' + str(record.get('Name', '')), 'display_name': record.get('Name', '')}"
+      }
+    },
+    {
+      "source": "Name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'aws', 'resource_type': 's3_bucket', 'creation_date': record.get('CreationDate', ''), 'service': 's3'}"
+      }
+    },
+    {
+      "source": "Name",
+      "target": "easm_data.aws_s3.bucket_url",
+      "transform": {
+        "type": "expression",
+        "expr": "'https://' + str(value) + '.s3.amazonaws.com'"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "region": {
+      "type": "string",
+      "required": true,
+      "default": "us-east-1",
+      "description": "AWS region for SigV4 signing (S3 ListBuckets is global)"
+    }
+  }
+}

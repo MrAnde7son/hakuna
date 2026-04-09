@@ -1,0 +1,159 @@
+{
+  "id": "aws_ec2_instances",
+  "name": "AWS EC2 \u2014 Instances",
+  "description": "Pull EC2 instances as cloud workloads from AWS for CNAPP inventory and posture analysis",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/aws.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://ec2.{{credentials.region}}.amazonaws.com",
+    "method": "GET",
+    "path": "/",
+    "headers": {},
+    "query_params": {
+      "Action": "DescribeInstances",
+      "Version": "2016-11-15"
+    },
+    "auth_strategy": "aws_sigv4",
+    "aws_service": "ec2",
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "DescribeInstancesResponse.nextToken",
+      "cursor_param": "NextToken",
+      "page_size": 100,
+      "page_size_param": "MaxResults"
+    }
+  },
+  "records_path": "DescribeInstancesResponse.reservationSet.item[*].instancesSet.item[*]",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the AWS Management Console and go to IAM \u2192 Users"
+      },
+      {
+        "instruction": "Create a new user (or select an existing one) and attach the AmazonEC2ReadOnlyAccess managed policy"
+      },
+      {
+        "instruction": "Go to Security credentials \u2192 Create access key \u2192 Choose 'Third-party service'"
+      },
+      {
+        "instruction": "Copy the Access Key ID",
+        "capture": {
+          "field": "access_key_id",
+          "label": "Paste Access Key ID here",
+          "type": "text",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the Secret Access Key",
+        "capture": {
+          "field": "secret_access_key",
+          "label": "Paste Secret Access Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Specify the AWS region to scan",
+        "capture": {
+          "field": "region",
+          "label": "AWS Region (e.g. us-east-1)",
+          "type": "text",
+          "default": "us-east-1"
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/",
+      "query_params": {
+        "Action": "DescribeInstances",
+        "Version": "2016-11-15",
+        "MaxResults": "5"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to AWS EC2. Verify your access key has AmazonEC2ReadOnlyAccess permission and the region is correct."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "instanceId",
+      "target": "source_id"
+    },
+    {
+      "source": "instanceId",
+      "target": "hostname"
+    },
+    {
+      "source": "privateDnsName",
+      "target": "fqdn"
+    },
+    {
+      "source": "ipAddress",
+      "target": "ip_address"
+    },
+    {
+      "source": "instanceId",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_instance'"
+      }
+    },
+    {
+      "source": "instanceState.name",
+      "target": "tags",
+      "transform": {
+        "type": "expression",
+        "expr": "[str(value)] if value else []"
+      }
+    },
+    {
+      "source": "launchTime",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "instanceId",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'aws', 'instance_id': str(record.get('instanceId', '')), 'arn': 'arn:aws:ec2::' + str(record.get('instanceId', '')), 'region': (str(record.get('placement', {}).get('availabilityZone', ''))[:-1] if record.get('placement', {}).get('availabilityZone') else ''), 'availability_zone': record.get('placement', {}).get('availabilityZone', ''), 'display_name': record.get('instanceId', '')}"
+      }
+    },
+    {
+      "source": "instanceId",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'aws', 'resource_type': 'ec2_instance', 'instance_type': record.get('instanceType', ''), 'state': record.get('instanceState', {}).get('name', ''), 'vpc_id': record.get('vpcId', ''), 'subnet_id': record.get('subnetId', ''), 'availability_zone': record.get('placement', {}).get('availabilityZone', ''), 'image_id': record.get('imageId', ''), 'platform': record.get('platform', 'linux'), 'private_ip_address': record.get('privateIpAddress', ''), 'public_ip_address': record.get('ipAddress', ''), 'iam_instance_profile_arn': (record.get('iamInstanceProfile', {}) or {}).get('arn', ''), 'security_groups': [g.get('groupId', '') for g in (((record.get('groupSet') or {}).get('item') or []))], 'tags': {t.get('key', ''): t.get('value', '') for t in (((record.get('tagSet') or {}).get('item') or []))}}"
+      }
+    },
+    {
+      "source": "instanceId",
+      "target": "is_internet_facing",
+      "transform": {
+        "type": "expression",
+        "expr": "True if record.get('ipAddress') else False"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "region": {
+      "type": "string",
+      "required": true,
+      "default": "us-east-1",
+      "description": "AWS region to scan for EC2 instances (e.g. us-east-1, eu-west-1)"
+    }
+  }
+}

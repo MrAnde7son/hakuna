@@ -112,7 +112,10 @@ class TestCloudConnectorsAuth:
         acq = data["credential_acquisition"]
         assert acq["pattern"] == "oauth2"
         assert "authorization_url" in acq
-        assert acq["client_id"] == "{{env.GOOGLE_CLIENT_ID}}"
+        # Connectors share a single OAuth client per integration provider; the
+        # GCP convention is GOOGLE_INTEGRATION_CLIENT_ID (also used by
+        # gcp_scc_findings and google_docs).
+        assert acq["client_id"] == "{{env.GOOGLE_INTEGRATION_CLIENT_ID}}"
 
     def test_azure_client_credentials(self):
         data = _load_connector("azure_dns_api")

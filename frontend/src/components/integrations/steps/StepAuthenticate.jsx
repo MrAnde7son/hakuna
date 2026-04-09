@@ -99,6 +99,10 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
   // ── Guided Generation ──
   if (flow.pattern === 'guided_generation') {
     const steps = flow.steps || []
+    const simpleFields = flow.fields || []
+    const useSimpleForm = steps.length === 0 && simpleFields.length > 0
+    const allFieldsFilled = simpleFields.every(f => (values[f.field] || '').trim().length > 0)
+
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
         <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Authenticate</h3>
@@ -116,7 +120,40 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
           </div>
         )}
 
+        {/* Simple form — used when connector declares `fields` instead of `steps` */}
+        {useSimpleForm && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
+              Enter your {connectorDetail?.name || 'API'} credentials below. Hakuna will validate them by calling the provider.
+            </p>
+            {simpleFields.map(f => (
+              <div key={f.field}>
+                <label style={labelStyle}>{f.label}</label>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showPasswords[f.field] ? 'text' : (f.type || 'text')}
+                    value={values[f.field] || ''}
+                    onChange={e => setValues({ ...values, [f.field]: e.target.value })}
+                    placeholder={f.placeholder || f.label}
+                    style={inputStyle}
+                  />
+                  {f.type === 'password' && (
+                    <button
+                      onClick={() => setShowPasswords(p => ({ ...p, [f.field]: !p[f.field] }))}
+                      style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+                    >
+                      {showPasswords[f.field] ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  )}
+                </div>
+                {f.help && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{f.help}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Step wizard */}
+        {!useSimpleForm && (
         <div style={{ display: 'flex', gap: 24 }}>
           {/* Left: step list */}
           <div style={{ width: '40%', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -189,6 +226,7 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
             )}
           </div>
         </div>
+        )}
 
         {/* Status + actions */}
         {validated && (
@@ -211,7 +249,13 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
 
         <div style={{ display: 'flex', gap: 8 }}>
           {!validated && (
-            <Button onClick={handleValidate} disabled={validating || Object.keys(values).length === 0}>
+            <Button
+              onClick={handleValidate}
+              disabled={
+                validating ||
+                (useSimpleForm ? !allFieldsFilled : Object.keys(values).length === 0)
+              }
+            >
               {validating ? <InlineSpinner /> : 'Validate & Connect'}
             </Button>
           )}

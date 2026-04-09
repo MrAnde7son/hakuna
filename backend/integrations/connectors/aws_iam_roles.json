@@ -1,0 +1,146 @@
+{
+  "id": "aws_iam_roles",
+  "name": "AWS IAM \u2014 Roles",
+  "description": "Pull IAM roles as cloud identities (machine identities, service accounts, cross-account roles) for CIEM analysis",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/aws.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://iam.amazonaws.com",
+    "method": "GET",
+    "path": "/",
+    "headers": {},
+    "query_params": {
+      "Action": "ListRoles",
+      "Version": "2010-05-08"
+    },
+    "auth_strategy": "aws_sigv4",
+    "aws_service": "iam",
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "ListRolesResponse.ListRolesResult.Marker",
+      "cursor_param": "Marker",
+      "page_size": 100,
+      "page_size_param": "MaxItems"
+    }
+  },
+  "records_path": "ListRolesResponse.ListRolesResult.Roles.member",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Log into the AWS Management Console and go to IAM \u2192 Users"
+      },
+      {
+        "instruction": "Create or select an IAM user and attach the IAMReadOnlyAccess managed policy"
+      },
+      {
+        "instruction": "Go to Security credentials \u2192 Create access key \u2192 Choose 'Third-party service'"
+      },
+      {
+        "instruction": "Copy the Access Key ID",
+        "capture": {
+          "field": "access_key_id",
+          "label": "Paste Access Key ID here",
+          "type": "text",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the Secret Access Key",
+        "capture": {
+          "field": "secret_access_key",
+          "label": "Paste Secret Access Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "IAM is global. Provide a region for SigV4 signing.",
+        "capture": {
+          "field": "region",
+          "label": "AWS Region (for SigV4)",
+          "type": "text",
+          "default": "us-east-1"
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/",
+      "query_params": {
+        "Action": "ListRoles",
+        "Version": "2010-05-08",
+        "MaxItems": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to AWS IAM. Verify your access key has IAMReadOnlyAccess permission."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "RoleId",
+      "target": "source_id"
+    },
+    {
+      "source": "RoleName",
+      "target": "hostname"
+    },
+    {
+      "source": "Arn",
+      "target": "fqdn"
+    },
+    {
+      "source": "RoleId",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'identity'"
+      }
+    },
+    {
+      "source": "CreateDate",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "RoleLastUsed.LastUsedDate",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "RoleName",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'aws', 'identity_type': 'iam_role', 'role_name': record.get('RoleName', ''), 'role_id': record.get('RoleId', ''), 'arn': record.get('Arn', ''), 'account_id': (str(record.get('Arn', '')).split(':')[4] if record.get('Arn') and len(str(record.get('Arn', '')).split(':')) > 4 else ''), 'display_name': record.get('RoleName', '')}"
+      }
+    },
+    {
+      "source": "RoleName",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'aws', 'resource_type': 'iam_role', 'identity_subtype': 'machine_identity', 'path': record.get('Path', '/'), 'description': record.get('Description', ''), 'max_session_duration': record.get('MaxSessionDuration', 3600), 'create_date': record.get('CreateDate', ''), 'last_used_date': (record.get('RoleLastUsed', {}) or {}).get('LastUsedDate', ''), 'last_used_region': (record.get('RoleLastUsed', {}) or {}).get('Region', ''), 'assume_role_policy_document': record.get('AssumeRolePolicyDocument', ''), 'permissions_boundary': (record.get('PermissionsBoundary', {}) or {}).get('PermissionsBoundaryArn', ''), 'tags': {t.get('Key', ''): t.get('Value', '') for t in (record.get('Tags') or [])}}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "region": {
+      "type": "string",
+      "required": true,
+      "default": "us-east-1",
+      "description": "AWS region for SigV4 signing (IAM is a global service)"
+    }
+  }
+}

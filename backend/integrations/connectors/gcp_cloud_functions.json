@@ -1,0 +1,139 @@
+{
+  "id": "gcp_cloud_functions",
+  "name": "GCP Cloud Functions",
+  "description": "Pull GCP Cloud Functions as serverless cloud workloads for CNAPP inventory and posture analysis",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/gcp.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://cloudfunctions.googleapis.com",
+    "method": "GET",
+    "path": "/v2/projects/{{params.project_id}}/locations/-/functions",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "auth_strategy": "gcp_service_account",
+    "gcp_scopes": [
+      "https://www.googleapis.com/auth/cloud-platform.read-only"
+    ],
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextPageToken",
+      "cursor_param": "pageToken",
+      "page_size": 100,
+      "page_size_param": "pageSize"
+    }
+  },
+  "records_path": "functions",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Open GCP Console \u2192 IAM & Admin \u2192 Service Accounts"
+      },
+      {
+        "instruction": "Create a new service account (or select an existing one) and grant the 'Cloud Functions Viewer' role"
+      },
+      {
+        "instruction": "Click the service account \u2192 Keys \u2192 Add Key \u2192 Create new key \u2192 JSON, then open the downloaded file"
+      },
+      {
+        "instruction": "Copy the value of 'client_email'",
+        "capture": {
+          "field": "service_account_email",
+          "label": "Service Account Email",
+          "type": "text",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the value of 'private_key' (the full PEM block including headers)",
+        "capture": {
+          "field": "private_key",
+          "label": "Private Key (PEM)",
+          "type": "textarea",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/v2/projects/{{params.project_id}}/locations/-/functions",
+      "query_params": {
+        "pageSize": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to GCP Cloud Functions. Verify the service account has the Cloud Functions Viewer role on the project."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "name",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "hostname",
+      "transform": {
+        "type": "expression",
+        "expr": "(str(value).split('/')[-1] if value else '')"
+      }
+    },
+    {
+      "source": "serviceConfig.uri",
+      "target": "fqdn"
+    },
+    {
+      "source": "name",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_instance'"
+      }
+    },
+    {
+      "source": "updateTime",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "name",
+      "target": "is_internet_facing",
+      "transform": {
+        "type": "expression",
+        "expr": "True if (record.get('serviceConfig', {}) or {}).get('uri') else False"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'gcp', 'service': 'cloud_functions', 'function_name': (str(record.get('name', '')).split('/')[-1] if record.get('name') else ''), 'resource_name': record.get('name', ''), 'project_id': (str(record.get('name', '')).split('/')[1] if record.get('name') and len(str(record.get('name', '')).split('/')) > 1 else ''), 'region': (str(record.get('name', '')).split('/')[3] if record.get('name') and len(str(record.get('name', '')).split('/')) > 3 else ''), 'display_name': (str(record.get('name', '')).split('/')[-1] if record.get('name') else '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'gcp', 'resource_type': 'cloud_function', 'environment': record.get('environment', ''), 'state': record.get('state', ''), 'description': record.get('description', ''), 'runtime': (record.get('buildConfig', {}) or {}).get('runtime', ''), 'entry_point': (record.get('buildConfig', {}) or {}).get('entryPoint', ''), 'service_account_email': (record.get('serviceConfig', {}) or {}).get('serviceAccountEmail', ''), 'available_memory': (record.get('serviceConfig', {}) or {}).get('availableMemory', ''), 'timeout_seconds': (record.get('serviceConfig', {}) or {}).get('timeoutSeconds', 0), 'max_instance_count': (record.get('serviceConfig', {}) or {}).get('maxInstanceCount', 0), 'ingress_settings': (record.get('serviceConfig', {}) or {}).get('ingressSettings', ''), 'uri': (record.get('serviceConfig', {}) or {}).get('uri', ''), 'environment_variables': list(((record.get('serviceConfig', {}) or {}).get('environmentVariables', {}) or {}).keys()), 'labels': record.get('labels', {}), 'update_time': record.get('updateTime', '')}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "project_id": {
+      "type": "string",
+      "required": true,
+      "description": "GCP Project ID (e.g., my-project-123456)"
+    }
+  }
+}

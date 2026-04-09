@@ -1,0 +1,140 @@
+{
+  "id": "gcp_project_iam_bindings",
+  "name": "GCP \u2014 Project IAM Bindings",
+  "description": "Pull GCP project IAM policy bindings as cloud entitlements (role-to-member assignments) for CIEM analysis",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/gcp.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://cloudresourcemanager.googleapis.com",
+    "method": "POST",
+    "path": "/v3/projects/{{params.project_id}}:getIamPolicy",
+    "headers": {
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "options": {
+        "requestedPolicyVersion": 3
+      }
+    },
+    "auth_strategy": "gcp_service_account",
+    "gcp_scopes": [
+      "https://www.googleapis.com/auth/cloud-platform.read-only"
+    ],
+    "pagination": {
+      "strategy": "none"
+    }
+  },
+  "records_path": "bindings",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Open GCP Console \u2192 IAM & Admin \u2192 Service Accounts"
+      },
+      {
+        "instruction": "Create a new service account (or select an existing one) and grant the 'IAM Viewer' or 'Project IAM Admin' role at the project level"
+      },
+      {
+        "instruction": "Click the service account \u2192 Keys \u2192 Add Key \u2192 Create new key \u2192 JSON, then open the downloaded file"
+      },
+      {
+        "instruction": "Copy the value of 'client_email'",
+        "capture": {
+          "field": "service_account_email",
+          "label": "Service Account Email",
+          "type": "text",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the value of 'private_key' (the full PEM block including headers)",
+        "capture": {
+          "field": "private_key",
+          "label": "Private Key (PEM)",
+          "type": "textarea",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "POST",
+      "path": "/v3/projects/{{params.project_id}}:getIamPolicy",
+      "body": {
+        "options": {
+          "requestedPolicyVersion": 3
+        }
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not retrieve IAM policy for the GCP project. Verify the service account has the IAM Viewer (roles/iam.viewer) or resourcemanager.projects.getIamPolicy permission."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "role",
+      "target": "source_id",
+      "transform": {
+        "type": "expression",
+        "expr": "str(value) + '@' + str(record.get('_project_id', ''))"
+      }
+    },
+    {
+      "source": "role",
+      "target": "hostname"
+    },
+    {
+      "source": "role",
+      "target": "fqdn",
+      "transform": {
+        "type": "expression",
+        "expr": "str(value) + ' on ' + str(record.get('_project_id', ''))"
+      }
+    },
+    {
+      "source": "role",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_entitlement'"
+      }
+    },
+    {
+      "source": "role",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'gcp', 'entitlement_type': 'iam_binding', 'role': record.get('role', ''), 'project_id': record.get('_project_id', ''), 'member_count': len(record.get('members', []) or []), 'display_name': record.get('role', '')}"
+      }
+    },
+    {
+      "source": "role",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'gcp', 'resource_type': 'iam_binding', 'entitlement_kind': 'role_assignment', 'role': record.get('role', ''), 'role_kind': ('predefined' if str(record.get('role', '')).startswith('roles/') and not '/projects/' in str(record.get('role', '')) else 'custom'), 'members': record.get('members', []) or [], 'user_members': [m[5:] for m in (record.get('members') or []) if str(m).startswith('user:')], 'service_account_members': [m[15:] for m in (record.get('members') or []) if str(m).startswith('serviceAccount:')], 'group_members': [m[6:] for m in (record.get('members') or []) if str(m).startswith('group:')], 'has_all_users': any(m in ('allUsers', 'allAuthenticatedUsers') for m in (record.get('members') or [])), 'condition_title': (record.get('condition', {}) or {}).get('title', ''), 'condition_expression': (record.get('condition', {}) or {}).get('expression', '')}"
+      }
+    },
+    {
+      "source": "role",
+      "target": "is_internet_facing",
+      "transform": {
+        "type": "expression",
+        "expr": "True if any(m in ('allUsers', 'allAuthenticatedUsers') for m in (record.get('members') or [])) else False"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "project_id": {
+      "type": "string",
+      "required": true,
+      "description": "GCP Project ID (e.g., my-project-123456)"
+    }
+  }
+}

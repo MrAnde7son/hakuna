@@ -1,0 +1,137 @@
+{
+  "id": "azure_function_apps",
+  "name": "Azure \u2014 Function Apps",
+  "description": "Pull Azure Function Apps as serverless cloud workloads for CNAPP inventory and posture analysis",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/azure.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://management.azure.com",
+    "method": "GET",
+    "path": "/subscriptions/{{params.subscription_id}}/providers/Microsoft.Web/sites",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "query_params": {
+      "api-version": "2023-12-01"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextLink",
+      "cursor_param": "_next_link_url",
+      "page_size": 100
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "client_credentials",
+    "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
+    "grant_type": "client_credentials",
+    "scopes": [
+      "https://management.azure.com/.default"
+    ],
+    "fields": [
+      {
+        "field": "client_id",
+        "label": "Application (Client) ID",
+        "type": "text",
+        "help": "From Azure AD \u2192 App registrations \u2192 your app \u2192 Overview"
+      },
+      {
+        "field": "client_secret",
+        "label": "Client Secret",
+        "type": "password",
+        "help": "From Azure AD \u2192 App registrations \u2192 your app \u2192 Certificates & secrets"
+      },
+      {
+        "field": "tenant_id",
+        "label": "Directory (Tenant) ID",
+        "type": "text",
+        "help": "Found in Azure Portal \u2192 App Registration \u2192 Overview"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/subscriptions/{{params.subscription_id}}/providers/Microsoft.Web/sites",
+      "query_params": {
+        "api-version": "2023-12-01"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to Azure App Service. Verify your service principal has Reader role on the subscription."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "properties.defaultHostName",
+      "target": "fqdn"
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_instance'"
+      }
+    },
+    {
+      "source": "properties.lastModifiedTimeUtc",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "id",
+      "target": "is_internet_facing",
+      "transform": {
+        "type": "expression",
+        "expr": "True if (record.get('properties', {}) or {}).get('publicNetworkAccess') == 'Enabled' else False"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'azure', 'service': 'functions', 'function_app_name': record.get('name', ''), 'resource_id': record.get('id', ''), 'subscription_id': (str(record.get('id', '')).split('/')[2] if record.get('id') and len(str(record.get('id', '')).split('/')) > 2 else ''), 'resource_group': (str(record.get('id', '')).split('/')[4] if record.get('id') and len(str(record.get('id', '')).split('/')) > 4 else ''), 'region': record.get('location', ''), 'display_name': record.get('name', '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'azure', 'resource_type': 'function_app', 'kind': record.get('kind', ''), 'state': record.get('properties', {}).get('state', ''), 'enabled': record.get('properties', {}).get('enabled', True), 'default_host_name': record.get('properties', {}).get('defaultHostName', ''), 'host_names': record.get('properties', {}).get('hostNames', []), 'https_only': record.get('properties', {}).get('httpsOnly', False), 'client_cert_enabled': record.get('properties', {}).get('clientCertEnabled', False), 'reserved': record.get('properties', {}).get('reserved', False), 'public_network_access': record.get('properties', {}).get('publicNetworkAccess', ''), 'managed_identity': (record.get('identity', {}) or {}).get('type', ''), 'last_modified_time_utc': record.get('properties', {}).get('lastModifiedTimeUtc', ''), 'tags': record.get('tags', {})}"
+      }
+    },
+    {
+      "source": "properties.defaultHostName",
+      "target": "easm_data.azure_function_app.url",
+      "transform": {
+        "type": "expression",
+        "expr": "'https://' + str(value) if value else ''"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "subscription_id": {
+      "type": "string",
+      "required": true,
+      "description": "Azure Subscription ID (UUID)"
+    }
+  }
+}

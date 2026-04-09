@@ -15,7 +15,7 @@ from models.models import (
     WorkflowExecution, WorkflowExecutionLog,
     Finding, Asset, Campaign, CampaignFinding,
     Tag, TagAssignment, FindingOwnership, AssetOwnership,
-    Agent, AggregatedSolution,
+    Agent, AggregatedSolution, FindingException, Scan,
 )
 
 logger = logging.getLogger(__name__)
@@ -747,6 +747,95 @@ def _action_run_agent(db, config, items):
     return 1, items
 
 
+def _action_create_exception(db, config, items):
+    """Create persistent risk exceptions for matched findings and link them.
+
+    Groups items by plugin_id (+ asset_ip when scope=per_finding), creates one
+    FindingException row per group, then links each matched Finding via
+    exception_id and sets workflow_status to the exception type."""
+    exception_type = config.get("exception_type", "accepted_risk")
+    scope = config.get("scope", "per_finding")
+    reason = config.get("reason", "")
+    approved_by = config.get("approved_by", "workflow")
+    try:
+        expires_in_days = int(config.get("expires_in_days", 90) or 0)
+    except (TypeError, ValueError):
+        expires_in_days = 90
+    try:
+        review_in_days = int(config.get("review_in_days", 0) or 0)
+    except (TypeError, ValueError):
+        review_in_days = 0
+    compensating_control_detail = config.get("compensating_control_detail") or None
+    debt_category = config.get("debt_category") or None
+    mitigation_plan = config.get("mitigation_plan") or None
+    exclude_from_reports = bool(config.get("exclude_from_reports", True))
+
+    now = datetime.utcnow()
+    expires_at = now + timedelta(days=expires_in_days) if expires_in_days > 0 else None
+    review_by = now + timedelta(days=review_in_days) if review_in_days > 0 else None
+
+    # Group finding_ids by (plugin_id, asset_ip) or (plugin_id,) depending on scope.
+    groups: dict = {}
+    for item in items:
+        finding_id = item.get("finding_id")
+        plugin_id = item.get("plugin_id")
+        if not finding_id or not plugin_id:
+            continue
+        if scope == "per_plugin":
+            key = (plugin_id, None)
+        else:
+            key = (plugin_id, item.get("asset_ip"))
+        groups.setdefault(key, {
+            "plugin_name": item.get("plugin_name"),
+            "finding_ids": [],
+        })["finding_ids"].append(finding_id)
+
+    affected = 0
+    exceptions_created = 0
+    for (plugin_id, asset_ip), group in groups.items():
+        finding_ids = group["finding_ids"]
+        # Resolve org_id via the Finding's parent Scan (tenant scoping).
+        sample = db.query(Finding).filter(Finding.id == finding_ids[0]).first()
+        if not sample:
+            continue
+        parent_scan = db.query(Scan).filter(Scan.id == sample.scan_id).first()
+        sample_org_id = parent_scan.org_id if parent_scan else None
+
+        exc = FindingException(
+            org_id=sample_org_id,
+            plugin_id=plugin_id,
+            plugin_name=group["plugin_name"],
+            asset_ip=asset_ip,
+            exception_type=exception_type,
+            reason=reason,
+            approved_by=approved_by,
+            compensating_control_detail=compensating_control_detail if exception_type == "compensating_control" else None,
+            debt_category=debt_category if exception_type == "technical_debt" else None,
+            mitigation_plan=mitigation_plan if exception_type == "technical_debt" else None,
+            exclude_from_reports=exclude_from_reports,
+            expires_at=expires_at,
+            review_by=review_by,
+            is_active=True,
+        )
+        db.add(exc)
+        db.flush()
+        exceptions_created += 1
+
+        # Link each matched finding to the new exception.
+        findings = db.query(Finding).filter(Finding.id.in_(finding_ids)).all()
+        for f in findings:
+            f.exception_id = exc.id
+            f.workflow_status = exception_type
+            f.status_changed_at = now
+            affected += 1
+
+    logger.info(
+        f"[Workflow Exception] created={exceptions_created} linked_findings={affected} "
+        f"type={exception_type} scope={scope}"
+    )
+    return affected, items
+
+
 def _action_run_script(db, config, items):
     script_type = config.get("script_type", "bash")
     script = config.get("script", "")
@@ -766,6 +855,7 @@ _ACTION_HANDLERS = {
     "teams_notify": _action_teams_notify,
     "run_agent": _action_run_agent,
     "run_script": _action_run_script,
+    "create_exception": _action_create_exception,
 }
 
 

@@ -1,0 +1,146 @@
+{
+  "id": "gcp_compute_instances",
+  "name": "GCP Compute Engine \u2014 Instances",
+  "description": "Pull GCP Compute Engine instances as cloud workloads for CNAPP inventory and posture analysis",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/gcp.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://compute.googleapis.com",
+    "method": "GET",
+    "path": "/compute/v1/projects/{{params.project_id}}/aggregated/instances",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "auth_strategy": "gcp_service_account",
+    "gcp_scopes": [
+      "https://www.googleapis.com/auth/compute.readonly"
+    ],
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextPageToken",
+      "cursor_param": "pageToken",
+      "page_size": 500,
+      "page_size_param": "maxResults"
+    }
+  },
+  "records_path": "items",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Open GCP Console \u2192 IAM & Admin \u2192 Service Accounts"
+      },
+      {
+        "instruction": "Create a new service account (or select an existing one) and grant the 'Compute Viewer' role"
+      },
+      {
+        "instruction": "Click the service account \u2192 Keys \u2192 Add Key \u2192 Create new key \u2192 JSON, then open the downloaded file"
+      },
+      {
+        "instruction": "Copy the value of 'client_email'",
+        "capture": {
+          "field": "service_account_email",
+          "label": "Service Account Email",
+          "type": "text",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the value of 'private_key' (the full PEM block including headers)",
+        "capture": {
+          "field": "private_key",
+          "label": "Private Key (PEM)",
+          "type": "textarea",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/compute/v1/projects/{{params.project_id}}/aggregated/instances",
+      "query_params": {
+        "maxResults": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to GCP Compute Engine. Verify the service account has the Compute Viewer role on the project."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "networkInterfaces[0].networkIP",
+      "target": "ip_address"
+    },
+    {
+      "source": "networkInterfaces[0].accessConfigs[0].natIP",
+      "target": "fqdn"
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_instance'"
+      }
+    },
+    {
+      "source": "creationTimestamp",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "lastStartTimestamp",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "id",
+      "target": "is_internet_facing",
+      "transform": {
+        "type": "expression",
+        "expr": "True if any((ac.get('natIP') for ni in (record.get('networkInterfaces') or []) for ac in (ni.get('accessConfigs') or []))) else False"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'gcp', 'service': 'compute', 'instance_id': str(record.get('id', '')), 'instance_name': record.get('name', ''), 'project_id': (str(record.get('selfLink', '')).split('/projects/')[1].split('/')[0] if record.get('selfLink') and '/projects/' in str(record.get('selfLink', '')) else ''), 'zone': (str(record.get('zone', '')).split('/')[-1] if record.get('zone') else ''), 'self_link': record.get('selfLink', ''), 'display_name': record.get('name', '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'gcp', 'resource_type': 'compute_instance', 'machine_type': (str(record.get('machineType', '')).split('/')[-1] if record.get('machineType') else ''), 'status': record.get('status', ''), 'cpu_platform': record.get('cpuPlatform', ''), 'zone': (str(record.get('zone', '')).split('/')[-1] if record.get('zone') else ''), 'service_accounts': [sa.get('email', '') for sa in (record.get('serviceAccounts') or [])], 'tags': (record.get('tags', {}) or {}).get('items', []), 'labels': record.get('labels', {}), 'can_ip_forward': record.get('canIpForward', False), 'deletion_protection': record.get('deletionProtection', False), 'shielded_instance_config': record.get('shieldedInstanceConfig', {}), 'confidential_instance_config': record.get('confidentialInstanceConfig', {}), 'network_interfaces': [{'network': ni.get('network', ''), 'subnetwork': ni.get('subnetwork', ''), 'network_ip': ni.get('networkIP', '')} for ni in (record.get('networkInterfaces') or [])]}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "project_id": {
+      "type": "string",
+      "required": true,
+      "description": "GCP Project ID (e.g., my-project-123456)"
+    }
+  }
+}

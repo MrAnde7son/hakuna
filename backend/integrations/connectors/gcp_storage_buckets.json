@@ -1,0 +1,158 @@
+{
+  "id": "gcp_storage_buckets",
+  "name": "GCP Cloud Storage \u2014 Buckets",
+  "description": "Pull GCS buckets as cloud storage workloads for CNAPP data exposure analysis",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/gcp.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://storage.googleapis.com",
+    "method": "GET",
+    "path": "/storage/v1/b",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "project": "{{params.project_id}}"
+    },
+    "auth_strategy": "gcp_service_account",
+    "gcp_scopes": [
+      "https://www.googleapis.com/auth/devstorage.read_only"
+    ],
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "nextPageToken",
+      "cursor_param": "pageToken",
+      "page_size": 200,
+      "page_size_param": "maxResults"
+    }
+  },
+  "records_path": "items",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Open GCP Console \u2192 IAM & Admin \u2192 Service Accounts"
+      },
+      {
+        "instruction": "Create a new service account (or select an existing one) and grant the 'Storage Object Viewer' role"
+      },
+      {
+        "instruction": "Click the service account \u2192 Keys \u2192 Add Key \u2192 Create new key \u2192 JSON, then open the downloaded file"
+      },
+      {
+        "instruction": "Copy the value of 'client_email'",
+        "capture": {
+          "field": "service_account_email",
+          "label": "Service Account Email",
+          "type": "text",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the value of 'private_key' (the full PEM block including headers)",
+        "capture": {
+          "field": "private_key",
+          "label": "Private Key (PEM)",
+          "type": "textarea",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/storage/v1/b",
+      "query_params": {
+        "project": "{{params.project_id}}",
+        "maxResults": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not connect to GCP Cloud Storage. Verify the service account has Storage Object Viewer role on the project."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "name",
+      "target": "fqdn",
+      "transform": {
+        "type": "expression",
+        "expr": "str(value) + '.storage.googleapis.com'"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "'cloud_instance'"
+      }
+    },
+    {
+      "source": "timeCreated",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "updated",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "id",
+      "target": "is_internet_facing",
+      "transform": {
+        "type": "expression",
+        "expr": "False if ((record.get('iamConfiguration', {}) or {}).get('uniformBucketLevelAccess', {}) or {}).get('enabled') is True else True"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'gcp', 'service': 'storage', 'bucket_name': record.get('name', ''), 'bucket_id': record.get('id', ''), 'project_number': record.get('projectNumber', ''), 'self_link': record.get('selfLink', ''), 'location': record.get('location', ''), 'display_name': record.get('name', '')}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'cloud_provider': 'gcp', 'resource_type': 'storage_bucket', 'storage_class': record.get('storageClass', ''), 'location': record.get('location', ''), 'location_type': record.get('locationType', ''), 'time_created': record.get('timeCreated', ''), 'updated': record.get('updated', ''), 'versioning_enabled': (record.get('versioning', {}) or {}).get('enabled', False), 'public_access_prevention': (record.get('iamConfiguration', {}) or {}).get('publicAccessPrevention', ''), 'uniform_bucket_level_access': ((record.get('iamConfiguration', {}) or {}).get('uniformBucketLevelAccess', {}) or {}).get('enabled', False), 'encryption_default_kms_key': (record.get('encryption', {}) or {}).get('defaultKmsKeyName', ''), 'logging_log_bucket': (record.get('logging', {}) or {}).get('logBucket', ''), 'labels': record.get('labels', {})}"
+      }
+    },
+    {
+      "source": "name",
+      "target": "easm_data.gcp_storage.bucket_url",
+      "transform": {
+        "type": "expression",
+        "expr": "'https://storage.googleapis.com/' + str(value)"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "project_id": {
+      "type": "string",
+      "required": true,
+      "description": "GCP Project ID (e.g., my-project-123456)"
+    }
+  }
+}

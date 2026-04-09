@@ -261,9 +261,27 @@ def _apply_transform(value, transform, record):
     if t == "expression":
         expr = transform.get("expr", "")
         try:
-            # Safe eval: only allow basic operations
-            allowed_names = {"value": value, "record": record, "True": True, "False": False, "None": None}
-            result = eval(expr, {"__builtins__": {}}, allowed_names)  # noqa: S307
+            # Safe eval: expose `value`/`record` plus a curated set of pure
+            # built-ins so connector expressions can do common shape coercion
+            # (str/int/len/etc) without enabling dangerous calls (open, eval,
+            # __import__, etc).
+            allowed_names = {
+                "value": value,
+                "record": record,
+                "True": True,
+                "False": False,
+                "None": None,
+            }
+            safe_builtins = {
+                "str": str, "int": int, "float": float, "bool": bool,
+                "len": len, "list": list, "dict": dict, "tuple": tuple, "set": set,
+                "min": min, "max": max, "sum": sum, "sorted": sorted,
+                "abs": abs, "round": round, "any": any, "all": all,
+                "isinstance": isinstance, "type": type,
+                "enumerate": enumerate, "zip": zip, "range": range,
+                "map": map, "filter": filter,
+            }
+            result = eval(expr, {"__builtins__": safe_builtins}, allowed_names)  # noqa: S307
             return result, None
         except Exception as e:
             return None, f"Expression error: {e}"
