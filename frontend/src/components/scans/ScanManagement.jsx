@@ -852,7 +852,7 @@ function ScanRunHistory({ expanded, domain }) {
     if (!expanded) return
     const load = () => {
       if (!runs) setLoading(true)
-      getEasmScanRuns(20)
+      getEasmScanRuns(20, domain)
         .then(setRuns)
         .catch(() => setRuns([]))
         .finally(() => setLoading(false))
@@ -864,7 +864,7 @@ function ScanRunHistory({ expanded, domain }) {
       const interval = setInterval(load, 10000)
       return () => clearInterval(interval)
     }
-  }, [expanded, runs?.some?.(r => r.status === 'running' || r.status === 'queued')])
+  }, [expanded, domain, runs?.some?.(r => r.status === 'running' || r.status === 'queued')])
 
   if (!expanded) return null
 
@@ -1367,7 +1367,8 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
   const meta = getSourceMeta(scan.source_type)
   const isEasm = scan.source_type === 'easm'
   const isVm = scan.source_type === 'vm_scanner'
-  const age = scan.created_at ? formatAge(scan.created_at) : null
+  const lastRunAt = scan.last_run_at || scan.created_at
+  const age = lastRunAt ? formatAge(lastRunAt) : null
   const domain = isEasm ? scan.raw_metadata?.domain : null
   const scanStatus = (isEasm || isVm) ? scan.raw_metadata?.status : null
   const easmStatus = scanStatus  // keep compat

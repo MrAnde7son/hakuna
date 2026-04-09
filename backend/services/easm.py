@@ -277,18 +277,39 @@ def extract_corporate_domain(email: str) -> Optional[str]:
 
 async def _hakuna_request(method: str, path: str, **kwargs) -> Optional[dict]:
     """Make a request to hakuna-scanner API. Returns None on failure."""
+    data, _status, _err = await _hakuna_request_detailed(method, path, **kwargs)
+    return data
+
+
+async def _hakuna_request_detailed(
+    method: str, path: str, **kwargs,
+) -> tuple[Optional[dict], Optional[int], Optional[str]]:
+    """Make a request to hakuna-scanner API and return ``(data, status_code, error_str)``.
+
+    On HTTP errors: ``(None, status, message)``.
+    On network errors: ``(None, None, message)``.
+    On success: ``(data, status, None)``.
+
+    Use this when the caller needs to react to specific status codes (e.g.
+    self-healing on a stale org UUID 404 from /orgs/{id}/scans).
+    """
     url = f"{HAKUNA_API}{path}"
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.request(method, url, **kwargs)
             resp.raise_for_status()
-            return resp.json()
+            return resp.json(), resp.status_code, None
     except httpx.HTTPStatusError as e:
-        logger.warning(f"Hakuna API {method} {path} returned {e.response.status_code}: {e.response.text}")
-        return None
+        msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+        logger.warning(f"Hakuna API {method} {path} returned {msg}")
+        return None, e.response.status_code, msg
     except httpx.RequestError as e:
-        logger.warning(f"Hakuna API unreachable ({method} {path}): {e}")
-        return None
+        # str(e) is empty for several httpx error types — use repr to surface
+        # the exception class so logs are diagnostic instead of "unreachable: "
+        detail = str(e) or repr(e) or type(e).__name__
+        msg = f"Network error: {detail}"
+        logger.warning(f"Hakuna API unreachable ({method} {path}): {detail}")
+        return None, None, msg
 
 
 async def create_easm_org(org_name: str) -> Optional[str]:
@@ -953,6 +974,18 @@ async def import_easm_assets_for_domain(
     }
 
 
+async def _trigger_easm_scan_with_error(
+    hakuna_org_id: str, scan_type: str, target_domain: str,
+) -> tuple[Optional[str], Optional[int], Optional[str]]:
+    """Like ``trigger_easm_scan`` but returns ``(run_id, status_code, error)``.
+    Lets ``scan_domain`` distinguish a 404 (stale org UUID) from other failures."""
+    payload = {"scan_type": scan_type, "target_domain": target_domain}
+    data, status, err = await _hakuna_request_detailed(
+        "POST", f"/orgs/{hakuna_org_id}/scans", json=payload,
+    )
+    return (data.get("id") if data else None), status, err
+
+
 async def scan_domain(
     db: Session, org: Organization, domain: str, scan_type: str = "full",
 ) -> Optional[dict]:
@@ -960,6 +993,12 @@ async def scan_domain(
     Full flow: add domain to hakuna (idempotent), trigger scan,
     reuse existing scan record or create one marked as 'running'.
     Assets are imported later when the scan completes (via refresh_easm_scan).
+
+    Self-heals when ``org.easm_org_id`` references an org that no longer
+    exists in the scanner DB (404 on the trigger call) — this happens when
+    the scanner Postgres is wiped (``docker compose down -v``) but the
+    backend SQLite still has the stale UUID. On 404 we clear the cached
+    UUID, re-create the org via ``create_easm_org``, and retry once.
     """
     if not org.easm_org_id:
         return None
@@ -967,37 +1006,67 @@ async def scan_domain(
     # Ensure domain is registered in hakuna (idempotent)
     await add_easm_domain(org.easm_org_id, domain)
 
-    # Trigger scan in hakuna
-    run_id = await trigger_easm_scan(org.easm_org_id, scan_type, target_domain=domain)
+    # Trigger scan — capture status so we can self-heal on a stale org UUID
+    run_id, status, error = await _trigger_easm_scan_with_error(
+        org.easm_org_id, scan_type, domain,
+    )
 
-    # Reuse existing EASM scan for this domain, or create a new one
+    # Self-heal: stale easm_org_id (scanner DB was wiped). Clear and recreate.
+    if run_id is None and status == 404:
+        logger.warning(
+            f"EASM trigger 404 for org '{org.name}' (easm_org_id={org.easm_org_id}) "
+            f"— scanner does not know this org. Re-registering and retrying once."
+        )
+        new_hakuna_org_id = await create_easm_org(org.name)
+        if new_hakuna_org_id:
+            org.easm_org_id = new_hakuna_org_id
+            db.commit()
+            await add_easm_domain(new_hakuna_org_id, domain)
+            run_id, status, error = await _trigger_easm_scan_with_error(
+                new_hakuna_org_id, scan_type, domain,
+            )
+            logger.info(
+                f"EASM org '{org.name}' re-registered as {new_hakuna_org_id}; "
+                f"retry trigger run_id={run_id}"
+            )
+        else:
+            error = "Self-heal failed: could not re-register org on scanner"
+
+    # Build the metadata blob — when run_id is None, persist *why* it failed
+    # so the UI can show it instead of an empty error field.
+    failed = run_id is None
+    failure_reason = None
+    if failed:
+        failure_reason = error or f"Scanner trigger returned no run_id (status={status})"
+
     scan = _find_existing_easm_scan(db, org, domain)
     now = datetime.utcnow()
+    base_meta = {
+        "hakuna_org_id": org.easm_org_id,
+        "domain": domain,
+        "scan_type": scan_type,
+        "run_id": run_id,
+        "status": "failed" if failed else "running",
+    }
+    if failure_reason:
+        base_meta["error"] = failure_reason
+
     if scan:
         # Keep old assets/findings visible until the new scan completes
         scan.scan_date = now.isoformat()
-        scan.raw_metadata = {
-            "hakuna_org_id": org.easm_org_id,
-            "domain": domain,
-            "scan_type": scan_type,
-            "run_id": run_id,
-            "status": "running" if run_id else "failed",
-        }
+        scan.raw_metadata = base_meta
     else:
         scan = _create_easm_scan(db, org, domain, scan_type)
-        scan.raw_metadata = {
-            **scan.raw_metadata,
-            "run_id": run_id,
-            "status": "running" if run_id else "failed",
-        }
-    scan.status = "running" if run_id else "failed"
+        scan.raw_metadata = {**scan.raw_metadata, **base_meta}
+    scan.status = "failed" if failed else "running"
     db.commit()
 
     return {
         "scan_id": scan.id,
         "run_id": run_id,
         "domain": domain,
-        "status": "running" if run_id else "failed",
+        "status": scan.status,
+        "error": failure_reason,
     }
 
 
@@ -1022,12 +1091,54 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
     if current_status == "completed":
         return {"scan_id": scan.id, "status": "completed", "domain": domain}
 
-    # Check status in hakuna
+    # Check status in hakuna. Distinguish between three outcomes:
+    #   1. Scanner reachable + returned a known status → use it
+    #   2. Scanner reachable but returned 404 → run was wiped, mark failed
+    #   3. Scanner unreachable (transient network error) → DO NOT change status,
+    #      keep polling on the next refresh. This is critical: a 1-second
+    #      Docker network blip should not permanently fail an in-progress scan.
+    run_status: Optional[dict] = None
+    fetch_status: Optional[int] = None
+    fetch_error: Optional[str] = None
     if run_id:
-        run_status = await get_easm_scan_status(org.easm_org_id, run_id)
-        hakuna_status = (run_status or {}).get("status", "unknown")
+        run_status, fetch_status, fetch_error = await _hakuna_request_detailed(
+            "GET", f"/orgs/{org.easm_org_id}/scans/{run_id}",
+        )
     else:
+        # No run_id at all — the original trigger never produced one. Terminal failure.
+        fetch_error = "No run_id stored on scan record"
+
+    # Transient unreachability (no HTTP response at all): keep current state.
+    if run_id and run_status is None and fetch_status is None:
+        logger.info(
+            f"EASM refresh skipped for scan_id={scan.id} domain='{domain}' — "
+            f"scanner temporarily unreachable ({fetch_error}). Will retry next poll."
+        )
+        return {
+            "scan_id": scan.id,
+            "status": current_status or "running",
+            "domain": domain,
+            "transient_error": fetch_error,
+        }
+
+    # Got an HTTP response (or had no run_id). Map to a status string.
+    if run_status is not None:
+        hakuna_status = run_status.get("status", "unknown")
+    elif fetch_status == 404:
+        # Scan run literally doesn't exist on the scanner side. Terminal.
         hakuna_status = "failed"
+    else:
+        # Other HTTP errors (5xx, etc.) — treat as transient too, don't fail the scan.
+        logger.info(
+            f"EASM refresh got HTTP {fetch_status} for scan_id={scan.id} — treating as transient, "
+            f"will retry next poll. Detail: {fetch_error}"
+        )
+        return {
+            "scan_id": scan.id,
+            "status": current_status or "running",
+            "domain": domain,
+            "transient_error": fetch_error,
+        }
 
     # Map hakuna statuses
     if hakuna_status in ("completed", "done"):
@@ -1102,10 +1213,19 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             return {"scan_id": scan.id, "status": "failed", "domain": domain}
 
     elif hakuna_status in ("failed", "error", "unknown"):
-        scan.raw_metadata = {**meta, "status": "failed", "error": f"Scanner returned status: {hakuna_status}"}
+        # Prefer the scanner's own error string when present (it includes the
+        # actual exception from the celery task) over the generic status label.
+        scanner_error = (run_status or {}).get("error") if run_status else None
+        if scanner_error:
+            error_msg = f"Scanner: {scanner_error}"
+        elif fetch_status == 404:
+            error_msg = "Scanner does not have this scan run (404) — likely wiped"
+        else:
+            error_msg = f"Scanner returned status: {hakuna_status}"
+        scan.raw_metadata = {**meta, "status": "failed", "error": error_msg}
         scan.status = "failed"
         db.commit()
-        return {"scan_id": scan.id, "status": "failed", "domain": domain}
+        return {"scan_id": scan.id, "status": "failed", "domain": domain, "error": error_msg}
 
     else:
         # Still running/queued — relay progress info

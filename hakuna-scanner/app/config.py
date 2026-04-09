@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     nmap_timeout_seconds: int = 300
     nmap_max_rate: int = 100
     nmap_concurrency: int = 3
-    puredns_wordlist: str = "/app/wordlists/subdomains.txt"
+    puredns_wordlist: str = "/opt/hakuna/wordlists/subdomains.txt"
     katana_depth: int = 2
     katana_rate_limit: int = 50
     screenshot_dir: str = "/data/screenshots"

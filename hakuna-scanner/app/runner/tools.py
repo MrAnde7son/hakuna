@@ -210,19 +210,34 @@ class UncoverRunner(BaseRunner):
 
 
 class PurednsRunner(BaseRunner):
-    """Run puredns bruteforce with native wildcard filtering."""
+    """Run puredns bruteforce with native wildcard filtering.
+
+    puredns wraps massdns and requires both:
+      - massdns in PATH (installed in the Dockerfile)
+      - a public DNS resolvers list (--resolvers flag below)
+    Without --resolvers, puredns errors immediately at startup.
+    """
     tool_name = "puredns"
     timeout = 1200  # 20 min for brute force
 
-    def __init__(self, domain: str, wordlist: str = "/app/wordlists/subdomains.txt"):
+    def __init__(
+        self,
+        domain: str,
+        wordlist: str = "/opt/hakuna/wordlists/subdomains.txt",
+        resolvers: str = "/opt/hakuna/wordlists/resolvers.txt",
+    ):
         self.domain = domain
         self.wordlist = wordlist
+        self.resolvers = resolvers
         self._tmpfile: str | None = None
 
     def build_command(self) -> list[str]:
+        # Per puredns help: `puredns bruteforce wordlist.txt domain.com --resolvers public.txt`
+        # domain is a positional arg, not a -d flag.
         return [
-            "puredns", "bruteforce", self.wordlist,
-            "-d", self.domain, "--quiet",
+            "puredns", "bruteforce", self.wordlist, self.domain,
+            "--quiet",
+            "-r", self.resolvers,
             "-n", str(settings.puredns_threads),
         ]
 

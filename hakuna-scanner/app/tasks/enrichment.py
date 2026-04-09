@@ -158,7 +158,13 @@ async def _do_httpx(sf, org_id: str) -> dict:
         # Legacy enrichment (http_status, http_title, tech_stack, etc.)
         updated = await update_enrichment(db, uuid.UUID(org_id), result.results)
 
-    # Store full httpx JSON as AssetEnrichment records
+    # Store full httpx JSON as AssetEnrichment records.
+    #
+    # The CPE inference layer inside store_httpx_enrichment also wants the TLS
+    # cert for the host (subject CN can identify products like Jenkins). tlsx
+    # runs before httpx in the chain (see run_enrichment_chain step ordering),
+    # so the certs are already in asset_ports.tls_cert. Build a per-asset map
+    # once up front to avoid N round-trips inside the loop.
     async with sf() as db:
         for entry in result.results:
             host = (entry.get("input") or entry.get("host") or "").strip().lower()
@@ -169,8 +175,26 @@ async def _do_httpx(sf, org_id: str) -> dict:
                 {"org_id": org_id, "host": host},
             )
             asset_row = row.fetchone()
-            if asset_row:
-                await store_httpx_enrichment(db, uuid.UUID(org_id), asset_row.id, entry)
+            if not asset_row:
+                continue
+
+            # Look up the TLS cert for the port this httpx entry hit.
+            tls_cert = None
+            url = entry.get("url") or ""
+            scheme = url.split("://", 1)[0].lower() if "://" in url else ""
+            port = entry.get("port") or (443 if scheme == "https" else 80 if scheme == "http" else None)
+            if port:
+                tls_row = await db.execute(
+                    text("SELECT tls_cert FROM asset_ports WHERE asset_id = :aid AND port = :p"),
+                    {"aid": asset_row.id, "p": int(port)},
+                )
+                tr = tls_row.fetchone()
+                if tr and tr.tls_cert:
+                    tls_cert = tr.tls_cert
+
+            await store_httpx_enrichment(
+                db, uuid.UUID(org_id), asset_row.id, entry, tls_cert=tls_cert,
+            )
         await db.commit()
 
     return {"probed": len(result.results), "updated": updated}

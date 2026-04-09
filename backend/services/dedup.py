@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
 logger = logging.getLogger(__name__)
 
@@ -809,6 +810,27 @@ def _dedup_inventory_on_assets(db, asset_ids: set, cfg: dict, ENTITY_MODEL_MAP: 
     return total_removed
 
 
+def _asset_cdn_provider(asset) -> str | None:
+    """Return the CDN provider for an asset, or None. Checks the ``easm_data``
+    JSON blob (where the EASM pipeline writes it) with a fallback to a top-level
+    ``cdn_provider`` attribute in case some other source attaches it directly.
+
+    Assets fronted by a CDN share IPs with thousands of other hostnames
+    (Cloudflare, Fastly, Cloudfront, Akamai) — dedup on IP alone produces
+    false-positive merges. When this returns a non-empty value, the cross-scan
+    dedup layer excludes IP from the key set for that asset.
+    """
+    # Direct column first (future-proof in case we promote it)
+    direct = getattr(asset, "cdn_provider", None)
+    if direct:
+        return direct
+    # EASM nested blob
+    easm = getattr(asset, "easm_data", None) or {}
+    if isinstance(easm, dict):
+        return easm.get("cdn_provider") or None
+    return None
+
+
 def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) -> dict:
     """
     Cross-scan asset dedup: within each org, find duplicate assets (same key_fields
@@ -817,8 +839,14 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
     Partitions assets by asset_type and applies per-type dedup config.
 
     - org_id: restrict to one org; None = all orgs (superadmin / on-demand run)
-    - Survivor: asset from the highest scan_id (most recent upload)
+    - Survivor: asset with the most-recent ``last_seen`` (not the highest scan_id).
+      Using scan_id as the tiebreaker was wrong: scan_id is an autoincrement, so a
+      one-off integration sync (e.g. Cloudflare DNS import) could outrank a fresh
+      EASM scan just because it had a higher row id, silently siphoning newly-
+      discovered EASM assets into a stale integration scan.
     - Older duplicates: findings + inventory reassigned to survivor, then deleted
+    - CDN-fronted assets (cdn_provider set) are excluded from IP-based key matching
+      because CDN IPs are shared across unrelated hostnames.
     """
     from models.models import Asset, Scan
 
@@ -829,12 +857,25 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
     bool_fields = set(bool_fields_list)
     dict_fields = set(dict_fields_list)
 
-    # Load all assets joined with their scan, oldest scan first so the latest
-    # scan's asset ends up as the final value in `seen` (the survivor).
+    # Load all assets joined with their scan. Sort so the most recently-seen
+    # asset is processed LAST — it becomes the survivor via the merge/keep_last
+    # logic below. Tiebreakers (scan.id, asset.id) keep the ordering deterministic.
+    #
+    # NULL last_seen (legacy rows, never-run integration syncs) must sort FIRST
+    # so they get overwritten by anything with real data. SQLite and PostgreSQL
+    # disagree on the default NULL ordering with ASC, and SQLite rejects the
+    # explicit ``NULLS FIRST`` clause — so we use COALESCE to a constant epoch
+    # date, which is portable across both dialects.
+    _NULL_EPOCH = datetime(1970, 1, 1)
+    last_seen_sort = func.coalesce(Asset.last_seen, _NULL_EPOCH)
     q = (
         db.query(Asset, Scan.org_id.label("scan_org_id"))
         .join(Scan, Asset.scan_id == Scan.id)
-        .order_by(Scan.id.asc(), Asset.id.asc())
+        .order_by(
+            last_seen_sort.asc(),
+            Scan.id.asc(),
+            Asset.id.asc(),
+        )
     )
     if org_id is not None:
         # Include scans with matching org_id AND scans with no org (dev/legacy uploads)
@@ -869,9 +910,21 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
             effective_org = str(org_id) if org_id is not None else "0"
             asset_keys = []
 
+            # CDN-fronted assets share IPs across unrelated hostnames
+            # (Cloudflare, Fastly, Cloudfront, Akamai). Skip the "ip" key
+            # field for these — require a hostname/fqdn match instead.
+            #
+            # Without this: every EASM-discovered host on Cloudflare would
+            # dedup-merge into the first Cloudflare-IP asset the engine saw,
+            # silently losing distinct hostnames (the original bug).
+            is_cdn = _asset_cdn_provider(asset) is not None
+            effective_key_fields = (
+                [f for f in key_fields if f != "ip"] if is_cdn else key_fields
+            )
+
             if key_mode == "or":
                 # OR-style: each non-null field is its own key
-                for field in key_fields:
+                for field in effective_key_fields:
                     val = _get_asset_field(asset, field)
                     if val is not None and val != "":
                         asset_keys.append((effective_org, atype, field, str(val)))
@@ -879,7 +932,7 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
                 # AND-style: composite key from all fields
                 parts = [effective_org, atype]
                 has_any = False
-                for field in key_fields:
+                for field in effective_key_fields:
                     val = _get_asset_field(asset, field)
                     if val is not None and val != "":
                         parts.append(str(val))

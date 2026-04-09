@@ -34,3 +34,8 @@ celery.conf.update(
         "nmap.nmap_enrich_asset": {"queue": "nmap_queue"},
     },
 )
+
+# Side-effect import: registers the worker_ready signal handler that checks
+# every Pipeline A tool dependency is in PATH at boot. Without this import
+# the handler is never connected, so don't remove it.
+from app.runner import tool_health  # noqa: E402, F401

@@ -1,9 +1,12 @@
 FROM python:3.11-slim
 
-# System deps (gcc + libpcap-dev needed for naabu CGO build, nmap for fingerprinting)
-# chromium + deps needed for httpx -screenshot (headless browser)
+# System deps:
+#   gcc + libpcap-dev — naabu CGO build
+#   make + gcc        — massdns build (puredns runtime dep)
+#   nmap              — fingerprinting (Pipeline A nmap step)
+#   chromium + libs   — httpx -screenshot (headless browser)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget curl git ca-certificates unzip gcc libpcap-dev nmap \
+    wget curl git ca-certificates unzip gcc make libpcap-dev nmap \
     chromium fonts-liberation libappindicator3-1 libasound2 \
     libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 \
     libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 libx11-xcb1 \
@@ -39,18 +42,34 @@ RUN git clone --depth 1 https://github.com/projectdiscovery/naabu.git /tmp/naabu
     && CGO_ENABLED=1 go build -o /root/go/bin/naabu . \
     && rm -rf /tmp/naabu
 
-# Puredns (Go binary, handles wildcard filtering natively)
+# Massdns — runtime dep for puredns. Build from source (no apt package).
+RUN git clone --depth 1 https://github.com/blechschmidt/massdns.git /tmp/massdns \
+    && make -C /tmp/massdns \
+    && cp /tmp/massdns/bin/massdns /usr/local/bin/massdns \
+    && rm -rf /tmp/massdns
+
+# Puredns (Go binary, wraps massdns + handles wildcard filtering natively)
 RUN go install github.com/d3mondev/puredns/v2@latest
 
 # Clean up Go module cache to save image space
 RUN go clean -modcache
 
+# Wordlists live OUTSIDE /app on purpose: docker-compose bind-mounts the
+# host repo at /app for live reload, which would otherwise hide anything
+# the build put under /app/wordlists/.
+
 # Default subdomain wordlist for brute force
-RUN mkdir -p /app/wordlists \
+RUN mkdir -p /opt/hakuna/wordlists \
     && (wget -q "https://raw.githubusercontent.com/danielmiessler/SecLists/main/Discovery/DNS/subdomains-top1million-5000.txt" \
-       -O /app/wordlists/subdomains.txt \
+       -O /opt/hakuna/wordlists/subdomains.txt \
     || wget -q "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-5000.txt" \
-       -O /app/wordlists/subdomains.txt)
+       -O /opt/hakuna/wordlists/subdomains.txt)
+
+# Public DNS resolvers list for puredns/massdns. Curated by trickest, ~28k
+# validated public resolvers, refreshed daily upstream. Snapshot baked into
+# the image at build time — re-pulled on every rebuild.
+RUN wget -q "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt" \
+       -O /opt/hakuna/wordlists/resolvers.txt
 
 # Python deps
 WORKDIR /app

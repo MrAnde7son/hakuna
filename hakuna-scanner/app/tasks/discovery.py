@@ -155,7 +155,15 @@ async def _do_wildcard_and_bruteforce(sf, org_id: str) -> dict:
                 brute_hosts, removed = filter_wildcard_results(brute_hosts, fingerprint)
                 total_filtered += removed
         else:
-            logger.info("org=%s puredns not available, skipping brute force for %s", org_id, domain)
+            # WARNING level — this degrades Pipeline A Stage 1 silently if it
+            # fires repeatedly. Surfaces in monitoring/Sentry instead of being
+            # buried in worker INFO logs.
+            logger.warning(
+                "org=%s puredns not in PATH — skipping brute force for %s. "
+                "Subdomain discovery is degraded to passive sources only. "
+                "Check the worker image build (puredns + massdns + resolvers).",
+                org_id, domain,
+            )
 
         if not brute_hosts:
             continue

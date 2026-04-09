@@ -6,6 +6,7 @@ katana endpoint discovery, and nmap fingerprinting results.
 
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timezone
@@ -14,7 +15,13 @@ from urllib.parse import urlparse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ingest.cpe_infer import infer_cpes
+
 logger = logging.getLogger(__name__)
+
+# Stage 5 of the EASM pipeline: derive CPEs from httpx fingerprints so the
+# Nuclei router can target templates. Default-on; flip off via env to bisect.
+CPE_INFER_ENABLED = os.environ.get("CPE_INFER_ENABLED", "1").lower() not in {"0", "false", "no"}
 
 # Patterns that suggest an authentication page
 AUTH_INDICATORS = re.compile(
@@ -72,6 +79,60 @@ async def upsert_asset_port(
     )
     row = result.fetchone()
     return row.id if row else port_id
+
+
+async def upsert_asset_port_cpes(
+    db: AsyncSession,
+    asset_id: uuid.UUID,
+    port: int,
+    cpe_list: list[str],
+    protocol: str = "tcp",
+) -> None:
+    """Overwrite the cpe_list for a port. Used by the inference layer.
+
+    Distinct from ``upsert_asset_port`` (which uses COALESCE semantics so nmap's
+    authoritative CPEs survive subsequent partial updates). Inference is the
+    opposite: a rescan that loses a tech fingerprint should drop the stale CPE,
+    not preserve it. So this helper writes ``cpe_list = EXCLUDED.cpe_list``
+    directly. Inserts a new row if the (asset, port, protocol) tuple is missing.
+    """
+    if not cpe_list:
+        return
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        text("""
+            INSERT INTO asset_ports (id, asset_id, port, protocol, cpe_list, updated_at)
+            VALUES (:id, :asset_id, :port, :proto, cast(:cpe as jsonb), :now)
+            ON CONFLICT (asset_id, port, protocol) DO UPDATE SET
+                cpe_list = EXCLUDED.cpe_list,
+                updated_at = EXCLUDED.updated_at
+        """),
+        {
+            "id": uuid.uuid4(),
+            "asset_id": asset_id,
+            "port": port,
+            "proto": protocol,
+            "cpe": json.dumps(cpe_list),
+            "now": now,
+        },
+    )
+
+
+def _httpx_port_for_entry(httpx_entry: dict) -> int | None:
+    """Derive the port for a httpx entry. Mirrors assets.py update_enrichment."""
+    port = httpx_entry.get("port")
+    if port:
+        try:
+            return int(port)
+        except (TypeError, ValueError):
+            pass
+    url = httpx_entry.get("url") or ""
+    scheme = url.split("://", 1)[0].lower() if "://" in url else ""
+    if scheme == "https":
+        return 443
+    if scheme == "http":
+        return 80
+    return None
 
 
 async def store_tlsx_per_port(
@@ -156,8 +217,15 @@ async def store_httpx_enrichment(
     org_id: uuid.UUID,
     asset_id: uuid.UUID,
     httpx_entry: dict,
+    tls_cert: dict | None = None,
 ) -> uuid.UUID:
-    """Store full httpx JSON output as an AssetEnrichment record."""
+    """Store full httpx JSON output as an AssetEnrichment record.
+
+    When ``CPE_INFER_ENABLED`` (default on), also runs the CPE inference layer
+    over the httpx entry + optional ``tls_cert`` (looked up by the caller from
+    the asset's port records, since tlsx runs before httpx in the chain) and
+    writes the resulting CPE list onto the matching ``asset_ports`` row.
+    """
     enrichment_id = uuid.uuid4()
     now = datetime.now(timezone.utc)
 
@@ -186,6 +254,22 @@ async def store_httpx_enrichment(
             "now": now,
         },
     )
+
+    # CPE inference (Stage 5). Hard rule: enrichment must never fail because
+    # of inference — every error path swallows and logs.
+    if CPE_INFER_ENABLED:
+        try:
+            cpes = infer_cpes(httpx_entry, tls_cert)
+            if cpes:
+                port = _httpx_port_for_entry(httpx_entry)
+                if port is not None:
+                    await upsert_asset_port_cpes(db, asset_id, port, cpes)
+        except Exception as exc:  # noqa: BLE001 — never block enrichment on inference
+            logger.warning(
+                "cpe_infer failed for asset=%s url=%s: %s",
+                asset_id, httpx_entry.get("url"), exc,
+            )
+
     return enrichment_id
 
 

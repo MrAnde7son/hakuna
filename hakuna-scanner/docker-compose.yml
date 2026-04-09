@@ -40,7 +40,6 @@ services:
       PYTHONPATH: /app
     volumes:
       - .:/app
-      - pd_tools:/root/go/bin
       - screenshots:/data/screenshots
     depends_on:
       postgres:
@@ -64,7 +63,6 @@ services:
       PYTHONPATH: /app
     volumes:
       - .:/app
-      - pd_tools:/root/go/bin
       - screenshots:/data/screenshots
     deploy:
       resources:
@@ -93,7 +91,6 @@ services:
       PYTHONPATH: /app
     volumes:
       - .:/app
-      - pd_tools:/root/go/bin
     deploy:
       resources:
         limits:
@@ -124,5 +121,4 @@ services:
 
 volumes:
   pg_data:
-  pd_tools:
   screenshots:

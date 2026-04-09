@@ -82,7 +82,8 @@ def get_sources():
 @router.get("/api/scans")
 def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     q = apply_org_filter(db.query(Scan), Scan, org_ids)
-    scans = q.order_by(desc(Scan.created_at)).all()
+    # Order by most recent activity: last_run_at if present, else created_at
+    scans = q.order_by(desc(func.coalesce(Scan.last_run_at, Scan.created_at))).all()
     result = []
     for s in scans:
         finding_count = db.query(func.count(Finding.id)).filter(Finding.scan_id == s.id).scalar()

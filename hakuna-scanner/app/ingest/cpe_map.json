@@ -1,0 +1,51 @@
+{
+  "_comment": "CPE inference mapping table. Maps tech-detection signals (httpx -tech-detect tokens, HTTP Server header substrings, TLS cert subject CNs) to CPE 2.3 vendor:product pairs. CONTRACT: every {vendor, product} pair emitted from this file MUST exist as a key in hakuna-vm-scanner/templates/routing_table.json `cpe_map`. The regression test in tests/test_cpe_router_contract.py enforces this.",
+
+  "tech_to_cpe": {
+    "nginx":                {"vendor": "nginx",      "product": "nginx"},
+    "apache":               {"vendor": "apache",     "product": "http_server"},
+    "apache httpd":         {"vendor": "apache",     "product": "http_server"},
+    "apache http server":   {"vendor": "apache",     "product": "http_server"},
+    "tomcat":               {"vendor": "apache",     "product": "tomcat"},
+    "apache tomcat":        {"vendor": "apache",     "product": "tomcat"},
+    "iis":                  {"vendor": "microsoft",  "product": "iis"},
+    "microsoft-iis":        {"vendor": "microsoft",  "product": "iis"},
+
+    "php":                  {"vendor": "php",        "product": "php"},
+
+    "mysql":                {"vendor": "oracle",     "product": "mysql"},
+    "postgresql":           {"vendor": "postgresql", "product": "postgresql"},
+    "postgres":             {"vendor": "postgresql", "product": "postgresql"},
+    "redis":                {"vendor": "redis",      "product": "redis"},
+    "mongodb":              {"vendor": "mongodb",    "product": "mongodb"},
+    "elasticsearch":        {"vendor": "elastic",    "product": "elasticsearch"},
+
+    "wordpress":            {"vendor": "wordpress",  "product": "wordpress"},
+    "jenkins":              {"vendor": "jenkins",    "product": "jenkins"},
+    "grafana":              {"vendor": "grafana",    "product": "grafana"},
+
+    "outlook web app":      {"vendor": "microsoft",  "product": "exchange"},
+    "exchange server":      {"vendor": "microsoft",  "product": "exchange"},
+    "owa":                  {"vendor": "microsoft",  "product": "exchange"},
+
+    "openssh":              {"vendor": "openssh",    "product": "openssh"},
+    "openssl":              {"vendor": "openssl",    "product": "openssl"},
+    "docker":               {"vendor": "docker",     "product": "docker"},
+    "docker registry":      {"vendor": "docker",     "product": "docker"},
+    "consul":               {"vendor": "hashicorp",  "product": "consul"},
+    "vault":                {"vendor": "hashicorp",  "product": "vault"}
+  },
+
+  "server_header_to_cpe": [
+    {"match": "microsoft-iis", "vendor": "microsoft", "product": "iis"},
+    {"match": "apache-coyote", "vendor": "apache",    "product": "tomcat"},
+    {"match": "apache",        "vendor": "apache",    "product": "http_server"},
+    {"match": "nginx",         "vendor": "nginx",     "product": "nginx"},
+    {"match": "openssh",       "vendor": "openssh",   "product": "openssh"},
+    {"match": "jenkins",       "vendor": "jenkins",   "product": "jenkins"}
+  ],
+
+  "tls_subject_to_cpe": [
+    {"match": "jenkins", "vendor": "jenkins", "product": "jenkins"}
+  ]
+}

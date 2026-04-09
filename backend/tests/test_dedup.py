@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from services.dedup import (
     DEFAULT_CONFIG,
+    _asset_cdn_provider,
     _deep_merge,
     _make_keys,
     _merge_dicts,
@@ -485,3 +486,68 @@ class TestConfigIO:
         raw = json.loads(config_file.read_text())
         assert raw["enabled"] is True
         assert raw["my_key"] == "my_value"
+
+
+# ═══════════════════════════════════════════════════════════
+# CDN-aware dedup — _asset_cdn_provider helper
+#
+# Regression test for a bug where EASM-discovered assets on shared CDN
+# IPs (Cloudflare, Fastly, etc.) were wrong-merged into a single asset
+# because dedup treated IP as an identifying key. A scan of hakunahq.com
+# returned 4 distinct hostnames (www, app, email, autodiscover) but only
+# 1 survived cross-scan dedup — the other 3 got siphoned into an older
+# Cloudflare integration scan because they all shared 104.21.10.71.
+#
+# The fix: when an asset has cdn_provider set, dedup skips the IP key
+# and requires hostname/fqdn match instead.
+# ═══════════════════════════════════════════════════════════
+
+
+class _FakeAsset:
+    """Stand-in for a SQLAlchemy Asset model — only needs the attrs
+    _asset_cdn_provider reads. Tests don't hit a DB."""
+
+    def __init__(self, cdn_provider=None, easm_data=None):
+        if cdn_provider is not None:
+            self.cdn_provider = cdn_provider
+        self.easm_data = easm_data
+
+
+class TestAssetCdnProvider:
+    def test_returns_none_when_no_cdn(self):
+        asset = _FakeAsset(easm_data={"tech_stack": ["nginx"]})
+        assert _asset_cdn_provider(asset) is None
+
+    def test_reads_from_easm_data_blob(self):
+        asset = _FakeAsset(easm_data={"cdn_provider": "cloudflare"})
+        assert _asset_cdn_provider(asset) == "cloudflare"
+
+    def test_direct_column_takes_precedence(self):
+        # Future-proofing: if we ever promote cdn_provider to a column,
+        # the column should win over the JSON blob.
+        asset = _FakeAsset(
+            cdn_provider="fastly",
+            easm_data={"cdn_provider": "cloudflare"},
+        )
+        assert _asset_cdn_provider(asset) == "fastly"
+
+    def test_empty_string_treated_as_none(self):
+        asset = _FakeAsset(easm_data={"cdn_provider": ""})
+        assert _asset_cdn_provider(asset) is None
+
+    def test_missing_easm_data_ok(self):
+        asset = _FakeAsset(easm_data=None)
+        assert _asset_cdn_provider(asset) is None
+
+    def test_malformed_easm_data_ok(self):
+        # e.g. a legacy row where easm_data was a string or list
+        asset = _FakeAsset(easm_data="not a dict")
+        assert _asset_cdn_provider(asset) is None
+
+    def test_cloudflare_detected(self):
+        asset = _FakeAsset(easm_data={
+            "cdn_provider": "cloudflare",
+            "tech_stack": ["Cloudflare", "HSTS"],
+            "http_status": 200,
+        })
+        assert _asset_cdn_provider(asset) == "cloudflare"
