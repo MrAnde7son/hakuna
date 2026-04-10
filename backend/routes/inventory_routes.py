@@ -513,6 +513,16 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
     total_computers = _q(InventoryComputer).count()
     total_processes = _q(InventoryProcess).count()
     total_certs = _q(InventoryCertificate).count()
+    # Also count EASM assets with TLS certificates (stored in easm_data JSON)
+    from sqlalchemy import String, cast
+    easm_cert_q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(
+        Asset.easm_data.isnot(None),
+        cast(Asset.easm_data, String).like('%tls_cert%'),
+    )
+    easm_cert_q = apply_scan_org_filter(easm_cert_q, org_ids)
+    if scan_id:
+        easm_cert_q = easm_cert_q.filter(Asset.scan_id == scan_id)
+    easm_cert_count = easm_cert_q.count()
     total_logged_on = _q(InventoryLoggedOn).count()
     total_env_vars = _q(InventoryEnvVar).count()
     total_password_policies = _q(InventoryPasswordPolicy).count()
@@ -598,7 +608,7 @@ def get_inventory_summary(scan_id: Optional[int] = None, db: Session = Depends(g
             "software": total_software,
             "security_controls": total_controls,
             "computers": total_computers,
-            "certificates": total_certs,
+            "certificates": total_certs + easm_cert_count,
             "processes": total_processes,
             "logged_on": total_logged_on,
             "env_vars": total_env_vars,

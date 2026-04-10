@@ -2576,9 +2576,9 @@ function CertificatesTab({ scanId, assetId }) {
     }).then(data => { setRows(data.certificates); setTotal(data.total) }).catch(() => { setRows([]); setTotal(0) }).finally(() => setLoading(false))
   }, [scanId, assetId, search, expiredOnly, selfSignedOnly, sortBy, sortOrder, page])
 
-  // Fetch EASM TLS certs (once, merge client-side)
+  // Fetch EASM TLS certs (filtered by scan, merge client-side)
   useEffect(() => {
-    getEasmAssets().then(assets => {
+    getEasmAssets({ scan_id: scanId || null }).then(assets => {
       if (!Array.isArray(assets)) return
       const certs = assets
         .filter(a => a.tls_cert && (a.tls_cert.subject || a.tls_cert.subject_cn || a.tls_cert.issuer))
@@ -2610,7 +2610,7 @@ function CertificatesTab({ scanId, assetId }) {
         })
       setEasmCerts(certs)
     }).catch(() => {})
-  }, [])
+  }, [scanId])
 
   // Merge rows based on source filter
   const mergedRows = useMemo(() => {
@@ -3107,7 +3107,7 @@ function ProcessesTab({ scanId, assetId }) {
 
 // ─── Root ──────────────────────────────────────────────────
 // ─── EASM Assets tab ──────────────────────────────────────
-function EasmAssetsTab({ assetId }) {
+function EasmAssetsTab({ scanId, assetId }) {
   const { t } = useTranslation()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -3116,6 +3116,7 @@ function EasmAssetsTab({ assetId }) {
   const [expanded, setExpanded] = useState(null) // asset id for screenshot modal
   const [sortBy, setSortBy] = useState('last_seen')
   const [sortOrder, setSortOrder] = useState('desc')
+  const [activeFilter, setActiveFilter] = useState(null) // 'http', 'cdn', 'expired_tls', 'tech'
 
   const handleSort = (key) => {
     if (sortBy === key) { setSortOrder(o => o === 'asc' ? 'desc' : 'asc') }
@@ -3125,14 +3126,26 @@ function EasmAssetsTab({ assetId }) {
   useEffect(() => {
     setLoading(true)
     setError(null)
-    getEasmAssets({ asset_id: assetId || null })
+    getEasmAssets({ asset_id: assetId || null, scan_id: scanId || null })
       .then(data => setRows(Array.isArray(data) ? data : []))
       .catch(() => setError(t('inventory.easmLoadError')))
       .finally(() => setLoading(false))
-  }, [assetId])
+  }, [assetId, scanId])
 
   const filtered = useMemo(() => {
     let list = rows
+    if (activeFilter === 'http') {
+      list = list.filter(r => r.http_status != null)
+    } else if (activeFilter === 'cdn') {
+      list = list.filter(r => r.cdn_provider)
+    } else if (activeFilter === 'expired_tls') {
+      list = list.filter(r => {
+        const exp = r.tls_cert && (r.tls_cert.expiry || r.tls_cert.not_after)
+        return exp && new Date(exp) < new Date()
+      })
+    } else if (activeFilter === 'tech') {
+      list = list.filter(r => r.tech_stack && (Array.isArray(r.tech_stack) ? r.tech_stack.length > 0 : Object.keys(r.tech_stack).length > 0))
+    }
     if (search) {
       const q = search.toLowerCase()
       list = list.filter(a =>
@@ -3151,7 +3164,7 @@ function EasmAssetsTab({ assetId }) {
       return sortOrder === 'asc' ? cmp : -cmp
     })
     return list
-  }, [rows, search, sortBy, sortOrder])
+  }, [rows, search, sortBy, sortOrder, activeFilter])
 
   function TechPills({ stack }) {
     if (!stack) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
@@ -3246,11 +3259,33 @@ function EasmAssetsTab({ assetId }) {
   return (
     <>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 16 }}>
-        <StatCard label={t('inventory.easmTotal')} value={rows.length} icon={Globe} color="#0ea5e9" />
-        <StatCard label={t('inventory.easmWithHttp')} value={withHttp} icon={Globe} color="#16a34a" />
-        <StatCard label={t('inventory.easmWithCdn')} value={withCdn} icon={Shield} color="#6366f1" />
-        <StatCard label={t('inventory.easmExpiredTls')} value={expiredTls} icon={ShieldAlert} color="#ef4444" />
-        <StatCard label={t('inventory.easmTechDetected')} value={rows.filter(r => r.tech_stack && (Array.isArray(r.tech_stack) ? r.tech_stack.length > 0 : Object.keys(r.tech_stack).length > 0)).length} icon={Package} color="#f59e0b" />
+        <StatCard
+          label={t('inventory.easmTotal')} value={rows.length} icon={Globe} color="#0ea5e9"
+          onClick={() => setActiveFilter(null)}
+          active={activeFilter === null}
+        />
+        <StatCard
+          label={t('inventory.easmWithHttp')} value={withHttp} icon={Globe} color="#16a34a"
+          onClick={() => setActiveFilter(activeFilter === 'http' ? null : 'http')}
+          active={activeFilter === 'http'}
+        />
+        <StatCard
+          label={t('inventory.easmWithCdn')} value={withCdn} icon={Shield} color="#6366f1"
+          onClick={() => setActiveFilter(activeFilter === 'cdn' ? null : 'cdn')}
+          active={activeFilter === 'cdn'}
+        />
+        <StatCard
+          label={t('inventory.easmExpiredTls')} value={expiredTls} icon={ShieldAlert} color="#ef4444"
+          onClick={() => setActiveFilter(activeFilter === 'expired_tls' ? null : 'expired_tls')}
+          active={activeFilter === 'expired_tls'}
+        />
+        <StatCard
+          label={t('inventory.easmTechDetected')}
+          value={rows.filter(r => r.tech_stack && (Array.isArray(r.tech_stack) ? r.tech_stack.length > 0 : Object.keys(r.tech_stack).length > 0)).length}
+          icon={Package} color="#f59e0b"
+          onClick={() => setActiveFilter(activeFilter === 'tech' ? null : 'tech')}
+          active={activeFilter === 'tech'}
+        />
       </div>
       <Card>
         <FilterBar>
@@ -3348,7 +3383,7 @@ function EasmAssetsTab({ assetId }) {
 
 
 // ─── EASM Breaches tab ────────────────────────────────────
-function EasmBreachesTab({ assetId }) {
+function EasmBreachesTab({ scanId, assetId }) {
   const { t } = useTranslation()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -3365,11 +3400,11 @@ function EasmBreachesTab({ assetId }) {
   useEffect(() => {
     setLoading(true)
     setError(null)
-    getEasmBreaches({ asset_id: assetId || null })
+    getEasmBreaches({ asset_id: assetId || null, scan_id: scanId || null })
       .then(data => setRows(Array.isArray(data) ? data : []))
       .catch(() => setError('Failed to load breach data. Ensure HIBP sync has been run.'))
       .finally(() => setLoading(false))
-  }, [assetId])
+  }, [assetId, scanId])
 
   const filtered = useMemo(() => {
     let list = rows
@@ -3469,7 +3504,7 @@ function EasmBreachesTab({ assetId }) {
 
 
 // ─── EASM Corporate / M&A tab ─────────────────────────────
-function EasmCorporateTab({ assetId }) {
+function EasmCorporateTab({ scanId, assetId }) {
   const { t } = useTranslation()
   const [subsidiaries, setSubsidiaries] = useState([])
   const [loading, setLoading] = useState(true)
@@ -3480,11 +3515,11 @@ function EasmCorporateTab({ assetId }) {
   useEffect(() => {
     setLoading(true)
     setError(null)
-    getEasmSubsidiaries({ asset_id: assetId || null })
+    getEasmSubsidiaries({ asset_id: assetId || null, scan_id: scanId || null })
       .then(data => setSubsidiaries(Array.isArray(data) ? data : []))
       .catch(() => setError('Failed to load corporate structure.'))
       .finally(() => setLoading(false))
-  }, [assetId])
+  }, [assetId, scanId])
 
   const filtered = useMemo(() => {
     if (!search) return subsidiaries
@@ -3682,9 +3717,9 @@ export default function InventoryExplorer() {
     aitools:   <AIToolsTab           scanId={activeScanId} assetId={assetId} />,
     processes: <ProcessesTab         scanId={activeScanId} assetId={assetId} />,
     credentials: <CredentialsTab    scanId={activeScanId} assetId={assetId} />,
-    easm_assets:    <EasmAssetsTab assetId={assetId} />,
-    easm_breaches:  <EasmBreachesTab assetId={assetId} />,
-    easm_corporate: <EasmCorporateTab assetId={assetId} />,
+    easm_assets:    <EasmAssetsTab scanId={activeScanId} assetId={assetId} />,
+    easm_breaches:  <EasmBreachesTab scanId={activeScanId} assetId={assetId} />,
+    easm_corporate: <EasmCorporateTab scanId={activeScanId} assetId={assetId} />,
   }
 
   return (
