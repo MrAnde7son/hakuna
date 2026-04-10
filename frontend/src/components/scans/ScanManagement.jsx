@@ -6,6 +6,7 @@ import {
   Play, MonitorSmartphone, History, ChevronDown, ChevronUp,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
+import useURLFilters from '../../hooks/useURLFilters.js'
 import {
   uploadScan, deleteScan, getScanStatus, getEasmStatus, scanEasmDomain, rescanEasmScan, refreshEasmScan, setupEasm,
   getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
@@ -1554,8 +1555,18 @@ export default function ScanManagement() {
   const [uploads, setUploads] = useState([])
   const [deletingId, setDeletingId] = useState(null)
   const [showNewScan, setShowNewScan] = useState(false)
-  const [filter, setFilter] = useState('all')
-  const [search, setSearch] = useState('')
+  const { filters, setFilter, clearFilters: clearURLFilters } = useURLFilters({
+    source: { default: '' },
+    status: { default: '' },
+    time: { default: '' },
+    schedule: { default: '' },
+    q: { default: '' },
+  })
+  const sourceFilter = filters.source
+  const statusFilter = filters.status
+  const timeFilter = filters.time
+  const scheduleFilter = filters.schedule
+  const search = filters.q
   const [easmStatus, setEasmStatus] = useState(null)
 
   // Refresh scans on mount to avoid stale-context race on first login
@@ -1686,22 +1697,70 @@ export default function ScanManagement() {
 
   // ── Filter & search ──────────────────────────────────────────────
 
-  const sourceTypes = [...new Set(scans.map(s => s.source_type || 'nessus'))]
+  const sourceTypes = [...new Set(scans.map(s => s.source_type || 'nessus'))].sort()
+
+  // Normalize status across source types. File-imported scans (Nessus, Qualys,
+  // Rapid7, OpenVAS, etc.) don't carry a runtime status, so treat them as
+  // completed. EASM and VM scanner scans persist a status on raw_metadata.
+  const getNormalizedStatus = (s) => {
+    const isEasm = s.source_type === 'easm'
+    const isVm = s.source_type === 'vm_scanner'
+    if (!isEasm && !isVm) return 'completed'
+    const raw = s.raw_metadata?.status || 'unknown'
+    if (raw === 'running' || raw === 'queued') return raw
+    if (raw === 'failed' || raw === 'error') return 'failed'
+    if (raw === 'completed_with_errors') return 'partial'
+    if (raw === 'completed') return 'completed'
+    return raw
+  }
+
+  const TIME_WINDOWS = {
+    '24h': 24 * 60 * 60 * 1000,
+    '7d': 7 * 24 * 60 * 60 * 1000,
+    '30d': 30 * 24 * 60 * 60 * 1000,
+    '90d': 90 * 24 * 60 * 60 * 1000,
+  }
+
+  const now = Date.now()
   const filteredScans = scans.filter(s => {
     const st = s.source_type || 'nessus'
-    if (filter !== 'all' && st !== filter) return false
+    if (sourceFilter && st !== sourceFilter) return false
+    if (statusFilter && getNormalizedStatus(s) !== statusFilter) return false
+    if (scheduleFilter === 'scheduled' && !s.schedule) return false
+    if (scheduleFilter === 'manual' && s.schedule) return false
+    if (timeFilter && TIME_WINDOWS[timeFilter]) {
+      const iso = s.last_run_at || s.created_at
+      if (!iso) return false
+      const t = new Date(iso.endsWith('Z') ? iso : iso + 'Z').getTime()
+      if (isNaN(t) || now - t > TIME_WINDOWS[timeFilter]) return false
+    }
     if (search) {
       const q = search.toLowerCase()
       const name = (s.scan_name || s.filename || '').toLowerCase()
-      if (!name.includes(q)) return false
+      const domain = (s.raw_metadata?.domain || '').toLowerCase()
+      if (!name.includes(q) && !domain.includes(q)) return false
     }
     return true
   })
 
-  const counts = { all: scans.length }
-  scans.forEach(s => {
-    const st = s.source_type || 'nessus'
-    counts[st] = (counts[st] || 0) + 1
+  const activeFilterCount =
+    (sourceFilter ? 1 : 0) +
+    (statusFilter ? 1 : 0) +
+    (timeFilter ? 1 : 0) +
+    (scheduleFilter ? 1 : 0)
+
+  const clearFilters = () => clearURLFilters()
+
+  const selectStyle = (hasValue) => ({
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border)',
+    color: hasValue ? 'var(--text-primary)' : 'var(--text-muted)',
+    borderRadius: 6,
+    padding: '6px 10px',
+    fontSize: 12,
+    fontWeight: 500,
+    cursor: 'pointer',
+    outline: 'none',
   })
 
   return (
@@ -1718,35 +1777,17 @@ export default function ScanManagement() {
 
       {/* Filters bar */}
       <Card style={{ marginBottom: 16, padding: '12px 16px' }}>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', gap: 4, flex: 1 }}>
-            {['all', ...sourceTypes].map(st => (
-              <button
-                key={st}
-                onClick={() => setFilter(st)}
-                style={{
-                  padding: '5px 12px', borderRadius: 6, border: 'none',
-                  background: filter === st ? 'var(--accent)' : 'transparent',
-                  color: filter === st ? '#fff' : 'var(--text-muted)',
-                  cursor: 'pointer', fontSize: 12, fontWeight: 600,
-                  transition: 'all 0.15s', textTransform: 'capitalize',
-                }}
-              >
-                {st === 'all' ? 'All' : getSourceMeta(st).label}
-                {counts[st] != null && <span style={{ marginLeft: 4, opacity: 0.7 }}>({counts[st]})</span>}
-              </button>
-            ))}
-          </div>
-
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <div style={{
             display: 'flex', alignItems: 'center', gap: 6,
             padding: '5px 10px', borderRadius: 6,
-            border: '1px solid var(--border)', background: 'var(--bg)', minWidth: 200,
+            border: '1px solid var(--border)', background: 'var(--bg)',
+            minWidth: 220, flex: '1 1 220px',
           }}>
             <Search size={13} color="var(--text-muted)" />
             <input
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={e => setFilter('q', e.target.value)}
               placeholder="Search scans..."
               style={{
                 border: 'none', background: 'transparent', color: 'var(--text-primary)',
@@ -1754,11 +1795,79 @@ export default function ScanManagement() {
               }}
             />
             {search && (
-              <button onClick={() => setSearch('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 0 }}>
+              <button onClick={() => setFilter('q', '')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 0 }}>
                 <X size={12} />
               </button>
             )}
           </div>
+
+          <select
+            value={sourceFilter}
+            onChange={e => setFilter('source', e.target.value)}
+            style={selectStyle(!!sourceFilter)}
+            title="Filter by source"
+          >
+            <option value="">All sources</option>
+            {sourceTypes.map(st => (
+              <option key={st} value={st}>{getSourceMeta(st).label}</option>
+            ))}
+          </select>
+
+          <select
+            value={statusFilter}
+            onChange={e => setFilter('status', e.target.value)}
+            style={selectStyle(!!statusFilter)}
+            title="Filter by status"
+          >
+            <option value="">All statuses</option>
+            <option value="running">Running</option>
+            <option value="queued">Queued</option>
+            <option value="completed">Completed</option>
+            <option value="partial">Partial</option>
+            <option value="failed">Failed</option>
+          </select>
+
+          <select
+            value={timeFilter}
+            onChange={e => setFilter('time', e.target.value)}
+            style={selectStyle(!!timeFilter)}
+            title="Filter by last run"
+          >
+            <option value="">Any time</option>
+            <option value="24h">Last 24 hours</option>
+            <option value="7d">Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="90d">Last 90 days</option>
+          </select>
+
+          <select
+            value={scheduleFilter}
+            onChange={e => setFilter('schedule', e.target.value)}
+            style={selectStyle(!!scheduleFilter)}
+            title="Filter by schedule"
+          >
+            <option value="">All schedules</option>
+            <option value="scheduled">Scheduled</option>
+            <option value="manual">Manual</option>
+          </select>
+
+          {(activeFilterCount > 0 || search) && (
+            <button
+              onClick={clearFilters}
+              style={{
+                background: 'none', border: '1px solid var(--border)',
+                borderRadius: 6, padding: '6px 10px', cursor: 'pointer',
+                color: 'var(--text-muted)', fontSize: 12, fontWeight: 500,
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+              }}
+              title="Clear filters"
+            >
+              <X size={12} /> Clear
+              {activeFilterCount > 0 && (
+                <span style={{ marginLeft: 2, opacity: 0.7 }}>({activeFilterCount})</span>
+              )}
+            </button>
+          )}
         </div>
       </Card>
 
