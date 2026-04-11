@@ -285,6 +285,9 @@ def unresolve_finding(finding_id: int, db: Session = Depends(get_db)):
     finding = db.query(Finding).filter(Finding.id == finding_id).first()
     if not finding:
         raise HTTPException(404, "Finding not found")
+    # Capture resolved_at before clearing it — used for the patch rollback hook
+    # to decide if this reopen happened inside the rollback window.
+    _prior_resolved_at = finding.resolved_at
     finding.resolved_at = None
     # Recompute status from due date
     configs = db.query(SLAConfig).all()
@@ -294,6 +297,28 @@ def unresolve_finding(finding_id: int, db: Session = Depends(get_db)):
     finding.sla_status = _compute_sla_status(finding.sla_due_date, None, warn)
     db.commit()
     _endpoint_cache.clear()
+
+    # Fire patch reliability rollback signals if applicable. Non-fatal.
+    if _prior_resolved_at is not None:
+        try:
+            from models.models import Asset
+            import services.patch_reliability as patch_reliability
+            asset = db.query(Asset).filter(Asset.id == finding.asset_id).first() if finding.asset_id else None
+            patch_reliability.handle_finding_reopened(
+                db,
+                finding_id=finding.id,
+                cves=list(finding.cves or []),
+                asset_os=asset.os if asset else None,
+                asset_id=finding.asset_id,
+                org_id=finding.org_id,
+                resolved_at=_prior_resolved_at,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                "patch_reliability rollback hook failed for finding %s", finding_id
+            )
+
     return {"ok": True, "finding_id": finding_id, "sla_status": finding.sla_status}
 
 

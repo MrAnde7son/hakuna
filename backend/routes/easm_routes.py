@@ -300,6 +300,7 @@ def list_easm_assets(
         d = a.easm_data or {}
         result.append({
             "id": str(a.id),
+            "easm_asset_id": d.get("easm_asset_id"),
             "hostname": a.fqdn or a.hostname,
             "ip": a.ip,
             "last_seen": a.last_seen.isoformat() if a.last_seen else None,
@@ -316,6 +317,71 @@ def list_easm_assets(
             "tags": d.get("easm_tags"),
         })
     return result
+
+
+@router.get("/assets/{asset_id}/screenshot")
+async def get_easm_asset_screenshot(
+    asset_id: int,
+    db: Session = Depends(get_db),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Proxy the per-asset screenshot PNG from hakuna-scanner.
+
+    The main backend stores the scanner-side UUID at `Asset.easm_data.easm_asset_id`
+    and the scanner-side org UUID at `Organization.easm_org_id`. We look both up,
+    then stream the PNG from the scanner through this endpoint so the browser
+    can auth with its existing main-backend session and not talk to the scanner
+    directly.
+    """
+    from fastapi.responses import Response
+    import httpx as _httpx
+    from services.easm import HAKUNA_BASE_URL
+
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(404, "Asset not found")
+
+    scan = db.query(Scan).filter(Scan.id == asset.scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Asset not found")
+
+    # Tenant check — only allow access to assets in orgs the caller can reach
+    if org_ids is not None and scan.org_id not in org_ids:
+        raise HTTPException(404, "Asset not found")
+
+    easm_data = asset.easm_data or {}
+    easm_asset_uuid = easm_data.get("easm_asset_id")
+    if not easm_asset_uuid:
+        raise HTTPException(404, "No screenshot — asset is not from EASM")
+
+    org = db.query(Organization).filter(Organization.id == scan.org_id).first()
+    if not org or not getattr(org, "easm_org_id", None):
+        raise HTTPException(404, "Organization has no EASM configuration")
+
+    url = f"{HAKUNA_BASE_URL}/api/v1/orgs/{org.easm_org_id}/assets/{easm_asset_uuid}/screenshot"
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+    except _httpx.RequestError as exc:
+        logger.warning("Screenshot proxy failed for asset %s: %s", asset_id, exc)
+        raise HTTPException(502, "Scanner unreachable")
+    if resp.status_code == 404:
+        raise HTTPException(404, "No screenshot available for this asset")
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, "Scanner returned an error")
+    # Reject empty / non-PNG bodies before they reach the browser. httpx
+    # headless capture occasionally writes 0-byte screenshots for hosts that
+    # time out or return non-HTML, and FileResponse will happily serve those
+    # as image/png — producing a broken-image icon in the UI instead of a
+    # clean "no screenshot" message.
+    content = resp.content or b""
+    if len(content) < 8 or not content.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise HTTPException(404, "No valid screenshot available for this asset")
+    return Response(
+        content=content,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=300"},
+    )
 
 
 @router.post("/import")

@@ -461,6 +461,74 @@ class PatchAdvisoryPlatform(Base):
     )
 
 
+class PatchReliability(Base):
+    """
+    Rollup of how safe/stable a given patch is to deploy.
+
+    Keyed by (patch_source, patch_ref) so a single record works for MSRC KBs,
+    Ubuntu USNs, RHEL RHSAs, Chrome/Firefox releases, etc. Populated by the
+    scorer in services/patch_reliability.py from PatchReliabilitySignal rows.
+    """
+    __tablename__ = "patch_reliability"
+
+    id = Column(Integer, primary_key=True, index=True)
+    patch_source = Column(String, nullable=False, index=True)   # "msrc" | "ubuntu" | "debian" | "rhel" | "amazon_linux" | "apple" | "chrome" | "firefox" | "adobe"
+    patch_ref = Column(String, nullable=False, index=True)      # "KB5034763" | "USN-6612-1" | "RHSA-2024:5678" | ...
+
+    score = Column(Float, default=1.0, nullable=False)          # 0.0 (do not deploy) .. 1.0 (stable)
+    status = Column(String, default="stable", nullable=False)   # "stable" | "known_issues" | "recalled" | "superseded" | "unknown"
+
+    # Human-readable details for the UI
+    recalled_at = Column(DateTime, nullable=True)
+    recall_reason = Column(Text, nullable=True)
+    known_issues = Column(JSON, default=list)                   # [{"title","url","severity","observed_at"}, ...]
+    factors = Column(JSON, default=dict)                        # {"vendor_known_issues": 2, "internal_rollback": 1, ...}
+
+    signal_count = Column(Integer, default=0)                   # total signals observed (for UI — "based on N signals")
+    last_signal_at = Column(DateTime, nullable=True)
+    last_scored_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("patch_source", "patch_ref", name="uq_patch_reliability_source_ref"),
+        Index("ix_patch_reliability_status", "status"),
+    )
+
+
+class PatchReliabilitySignal(Base):
+    """
+    Append-only log of every signal that fed into a patch's reliability score.
+
+    Keeping signals immutable means the score is explainable ("why did you
+    flag KB5034763?") and replayable when weights are tuned later.
+    """
+    __tablename__ = "patch_reliability_signals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    patch_source = Column(String, nullable=False, index=True)
+    patch_ref = Column(String, nullable=False, index=True)
+
+    signal_source = Column(String, nullable=False)   # "msrc_known_issues" | "usn_regression" | "rhel_bugzilla" | "internal_rollback" | "internal_recheck" | "community" | "vendor_recall"
+    signal_type = Column(String, nullable=False)     # "recall" | "known_issue" | "rollback" | "regression" | "supersedence" | "success"
+    weight = Column(Float, nullable=False)           # contribution to score (negative = reliability hit, positive = confidence bump)
+
+    # Optional tenant scoping for internal signals. Null for external/vendor signals.
+    org_id = Column(Integer, nullable=True, index=True)
+
+    # Dedup fingerprint — two rows with the same (signal_source, fingerprint)
+    # represent the same underlying issue and must not double-count.
+    fingerprint = Column(String, nullable=True, index=True)
+
+    detail = Column(JSON, nullable=True)             # arbitrary structured context (URL, finding_id, asset_id, ...)
+    observed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_patch_reliability_signals_ref", "patch_source", "patch_ref"),
+        Index("ix_patch_reliability_signals_observed", "observed_at"),
+    )
+
+
 class CorporateEntity(Base):
     """Legal entity from GLEIF — tracks corporate parent/subsidiary structure for M&A."""
     __tablename__ = "corporate_entities"

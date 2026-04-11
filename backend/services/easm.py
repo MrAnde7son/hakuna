@@ -7,6 +7,7 @@ Responsibilities:
 3. Enrich Nessus-uploaded assets with EASM metadata (ports, tech, certs, CDN/WAF)
 """
 import os
+import re
 import logging
 from datetime import datetime
 from typing import Optional, Tuple
@@ -719,6 +720,93 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
             first_seen=now, last_seen=now,
         ))
 
+    # ── Exposed database ports ────────────────────────────────────
+    # Flag the classic "internet-facing database" anti-pattern. open_ports is
+    # already populated from naabu; services holds banner/product info when
+    # available. Critical when the banner confirms the expected DB service,
+    # High when only the port is open (could be a firewalled proxy, so one
+    # step lower confidence).
+    DB_PORTS = {
+        3306: ("MySQL", "mysql"),
+        5432: ("PostgreSQL", "postgres"),
+        27017: ("MongoDB", "mongo"),
+        6379: ("Redis", "redis"),
+        9200: ("Elasticsearch", "elastic"),
+        11211: ("Memcached", "memcache"),
+        1433: ("MSSQL", "mssql"),
+        1521: ("Oracle", "oracle"),
+        5984: ("CouchDB", "couch"),
+        7474: ("Neo4j", "neo4j"),
+        9042: ("Cassandra", "cassandra"),
+        2379: ("etcd", "etcd"),
+    }
+    for port in (ea.get("open_ports") or []):
+        try:
+            port_int = int(port)
+        except (TypeError, ValueError):
+            continue
+        if port_int not in DB_PORTS:
+            continue
+        db_name, banner_key = DB_PORTS[port_int]
+        pid = f"EASM-EXPOSED-DB-{port_int}"
+        svc = (services.get(str(port_int)) or services.get(port) or {}) if isinstance(services, dict) else {}
+        banner_blob = " ".join(
+            str(svc.get(k, "")) for k in ("name", "product", "version")
+        ).lower()
+        confirmed = banner_key in banner_blob
+        if confirmed:
+            db_sev, db_sev_label, db_risk = 4, "Critical", "Critical"
+            db_priority = 9.0
+        else:
+            db_sev, db_sev_label, db_risk = 3, "High", "High"
+            db_priority = 7.5
+        output_lines = [
+            f"Host: {hostname}",
+            f"Port: {port_int}/tcp",
+            f"Expected service: {db_name}",
+            f"Banner: {banner_blob.strip() or 'none'}",
+            f"Confirmed by banner: {'yes' if confirmed else 'no'}",
+        ]
+        if pid in existing_plugins:
+            db.query(Finding).filter(
+                Finding.scan_id == scan_id,
+                Finding.asset_id == asset.id,
+                Finding.plugin_id == pid,
+            ).update({
+                "severity": db_sev,
+                "severity_label": db_sev_label,
+                "risk_factor": db_risk,
+                "priority_score": db_priority,
+                "last_seen": now,
+                "plugin_output": "\n".join(output_lines),
+            })
+        else:
+            findings_to_add.append(Finding(
+                scan_id=scan_id, asset_id=asset.id,
+                source_type="easm", source_vuln_id=pid,
+                plugin_id=pid,
+                plugin_name=f"Exposed {db_name} Database ({port_int}/tcp)",
+                plugin_family="EASM: Exposed Service",
+                severity=db_sev, severity_label=db_sev_label, risk_factor=db_risk,
+                priority_score=db_priority, effort_level="medium",
+                owner_suggestion="IT",
+                port=str(port_int), protocol="tcp",
+                synopsis=f"{db_name} database port {port_int}/tcp is reachable from the internet on {hostname}.",
+                description=(
+                    f"External port scanning found {db_name} port {port_int}/tcp open on {hostname}. "
+                    f"Database services should not be directly reachable from the public internet — "
+                    f"they should live behind a VPN, bastion host, or private network segment. "
+                    f"{'Service banner confirms an active ' + db_name + ' instance.' if confirmed else 'Service banner does not confirm the expected service, but the port is commonly used by ' + db_name + '.'}"
+                ),
+                solution=(
+                    f"Close port {port_int}/tcp at the firewall or move the {db_name} instance behind a "
+                    f"VPN/bastion. If this port must remain open, restrict source IPs to trusted ranges "
+                    f"and require strong authentication and TLS."
+                ),
+                plugin_output="\n".join(output_lines),
+                first_seen=now, last_seen=now,
+            ))
+
     # ── TLS certificate ───────────────────────────────────────────
     cert = ea.get("tls_cert") or {}
     if cert.get("expiry"):
@@ -787,6 +875,92 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 plugin_output=_build_tls_output(hostname, cert, days_left),
                 first_seen=now, last_seen=now,
             ))
+
+    # ── Weak TLS protocols / ciphers ──────────────────────────────
+    # Grades the TLS version + cipher suite captured by tlsx. One finding
+    # per asset; all detected issues are bundled into plugin_output and the
+    # overall severity is the worst of the issues. Re-ingest updates
+    # severity in place (mirrors EASM-TLS-CERT).
+    if cert and (cert.get("version") or cert.get("cipher")):
+        tls_issues = []  # list[(severity_int, label, output_line)]
+        tls_version_raw = str(cert.get("version") or "").strip()
+        tls_version_norm = tls_version_raw.upper().replace("V", " ")
+        # Accept both "TLS 1.0" and "TLSv1" / "TLSv1.0" forms
+        if "TLS 1.0" in tls_version_norm or tls_version_raw.upper() in {"TLSV1", "TLSV1.0"}:
+            tls_issues.append((3, "High", f"Protocol {tls_version_raw} is deprecated (no longer permitted by PCI-DSS and most browsers)"))
+        elif "TLS 1.1" in tls_version_norm or tls_version_raw.upper() == "TLSV1.1":
+            tls_issues.append((2, "Medium", f"Protocol {tls_version_raw} is deprecated"))
+        elif tls_version_raw.upper() in {"SSLV3", "SSL 3.0", "SSLV2"}:
+            tls_issues.append((4, "Critical", f"Protocol {tls_version_raw} is broken and must not be used"))
+
+        cipher_raw = str(cert.get("cipher") or "").strip()
+        # Match common weak cipher names. "DES" alone is safe to match because
+        # AES/ChaCha20 don't contain the substring; this catches both legacy DES
+        # and triple-DES variants (DES-CBC3-SHA, DES-EDE3-CBC, 3DES-…).
+        if cipher_raw and re.search(r"RC4|DES|NULL|EXPORT|MD5|anon", cipher_raw, re.I):
+            tls_issues.append((3, "High", f"Weak cipher suite: {cipher_raw}"))
+
+        if tls_issues:
+            pid = "EASM-TLS-WEAK"
+            # Severity = worst issue (highest int)
+            weak_sev = max(i[0] for i in tls_issues)
+            weak_sev_label = next(lbl for s, lbl, _ in tls_issues if s == weak_sev)
+            weak_risk = weak_sev_label
+            if weak_sev >= 4:
+                weak_priority, weak_effort = 9.0, "medium"
+            elif weak_sev == 3:
+                weak_priority, weak_effort = 7.0, "medium"
+            else:
+                weak_priority, weak_effort = 5.0, "medium"
+            output_lines = [f"Host: {hostname}"]
+            if tls_version_raw:
+                output_lines.append(f"Protocol: {tls_version_raw}")
+            if cipher_raw:
+                output_lines.append(f"Cipher: {cipher_raw}")
+            output_lines.append("Issues:")
+            output_lines.extend(f"  - {line}" for _, _, line in tls_issues)
+
+            if pid in existing_plugins:
+                db.query(Finding).filter(
+                    Finding.scan_id == scan_id,
+                    Finding.asset_id == asset.id,
+                    Finding.plugin_id == pid,
+                ).update({
+                    "severity": weak_sev,
+                    "severity_label": weak_sev_label,
+                    "risk_factor": weak_risk,
+                    "priority_score": weak_priority,
+                    "effort_level": weak_effort,
+                    "last_seen": now,
+                    "plugin_output": "\n".join(output_lines),
+                })
+            else:
+                findings_to_add.append(Finding(
+                    scan_id=scan_id, asset_id=asset.id,
+                    source_type="easm", source_vuln_id=pid,
+                    plugin_id=pid,
+                    plugin_name="Weak TLS Configuration",
+                    plugin_family="EASM: TLS/SSL",
+                    severity=weak_sev, severity_label=weak_sev_label, risk_factor=weak_risk,
+                    priority_score=weak_priority, effort_level=weak_effort,
+                    owner_suggestion="IT",
+                    synopsis=f"{hostname} is using a weak TLS protocol or cipher suite.",
+                    description=(
+                        f"External TLS inspection of {hostname} detected a weak configuration. "
+                        f"Modern browsers and compliance regimes (PCI-DSS 4.0, NIST SP 800-52 Rev. 2) "
+                        f"require TLS 1.2+ with strong cipher suites. Continuing to support deprecated "
+                        f"protocols or weak ciphers leaves clients vulnerable to downgrade, BEAST, "
+                        f"POODLE, SWEET32, and related attacks."
+                    ),
+                    solution=(
+                        "Disable TLS 1.0, TLS 1.1, SSLv2, and SSLv3 on the server. Remove cipher "
+                        "suites containing RC4, 3DES, DES, NULL, EXPORT, MD5, or anonymous key exchange. "
+                        "Prefer TLS 1.2 and TLS 1.3 with AEAD cipher suites (e.g., "
+                        "ECDHE-RSA-AES128-GCM-SHA256)."
+                    ),
+                    plugin_output="\n".join(output_lines),
+                    first_seen=now, last_seen=now,
+                ))
 
     # ── CDN detection ─────────────────────────────────────────────
     cdn = ea.get("cdn_provider")

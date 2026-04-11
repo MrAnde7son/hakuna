@@ -23,7 +23,7 @@ import {
   getSecurityCoverage,
   getSBOMComponents, getSBOMComponentVulns, getSBOMAssetSummary,
   exportDownload,
-  getEasmAssets, getEasmBreaches, getEasmSubsidiaries,
+  getEasmAssets, getEasmBreaches, getEasmSubsidiaries, getEasmScreenshotUrl,
 } from '../../api.js'
 import { useScan } from '../../App.jsx'
 
@@ -3114,9 +3114,39 @@ function EasmAssetsTab({ scanId, assetId }) {
   const [error, setError] = useState(null)
   const [search, setSearch] = useState('')
   const [expanded, setExpanded] = useState(null) // asset id for screenshot modal
+  const [screenshotUrl, setScreenshotUrl] = useState(null) // blob URL for modal image
+  const [screenshotState, setScreenshotState] = useState('idle') // idle | loading | ready | missing
   const [sortBy, setSortBy] = useState('last_seen')
   const [sortOrder, setSortOrder] = useState('desc')
   const [activeFilter, setActiveFilter] = useState(null) // 'http', 'cdn', 'expired_tls', 'tech'
+
+  // Fetch the screenshot blob whenever the modal opens on a new asset.
+  // Tear down the old object URL to avoid leaking blobs.
+  useEffect(() => {
+    if (!expanded) {
+      if (screenshotUrl) URL.revokeObjectURL(screenshotUrl)
+      setScreenshotUrl(null)
+      setScreenshotState('idle')
+      return
+    }
+    let cancelled = false
+    setScreenshotState('loading')
+    getEasmScreenshotUrl(expanded).then(url => {
+      if (cancelled) {
+        if (url) URL.revokeObjectURL(url)
+        return
+      }
+      if (url) {
+        setScreenshotUrl(url)
+        setScreenshotState('ready')
+      } else {
+        setScreenshotUrl(null)
+        setScreenshotState('missing')
+      }
+    })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded])
 
   const handleSort = (key) => {
     if (sortBy === key) { setSortOrder(o => o === 'asc' ? 'desc' : 'asc') }
@@ -3326,6 +3356,43 @@ function EasmAssetsTab({ scanId, assetId }) {
               <button onClick={() => setExpanded(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
                 <X size={18} />
               </button>
+            </div>
+
+            {/* Screenshot */}
+            <div
+              style={{
+                marginBottom: 16,
+                borderRadius: 8,
+                overflow: 'hidden',
+                border: '1px solid var(--border)',
+                background: 'var(--bg-secondary)',
+                minHeight: 180,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              {screenshotState === 'loading' && (
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading screenshot…</span>
+              )}
+              {screenshotState === 'ready' && screenshotUrl && (
+                <img
+                  src={screenshotUrl}
+                  alt=""
+                  onError={() => {
+                    // Blob wasn't a decodable image (e.g. httpx headless
+                    // capture failed against this host — common for CDN-
+                    // fronted sites that serve challenge pages to bots).
+                    if (screenshotUrl) URL.revokeObjectURL(screenshotUrl)
+                    setScreenshotUrl(null)
+                    setScreenshotState('missing')
+                  }}
+                  style={{ maxWidth: '100%', maxHeight: 360, display: 'block' }}
+                />
+              )}
+              {screenshotState === 'missing' && (
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No screenshot captured for this host.</span>
+              )}
             </div>
 
             {/* Detail grid */}

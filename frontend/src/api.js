@@ -1089,6 +1089,32 @@ export const getEasmAssets = (params = {}) => {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
   return request(`/easm/assets${q.toString() ? '?' + q : ''}`)
 }
+
+// Fetch an EASM asset screenshot as a blob object URL. The <img> element
+// can't send auth headers itself, so we fetch the PNG with the current
+// session, wrap it in a blob URL, and return the URL for src binding.
+// Returns null if the scanner has no screenshot for this asset, if the
+// response body is empty, or if the content-type isn't an image (e.g.
+// when httpx screenshot capture failed and the scanner wrote a 0-byte file).
+export const getEasmScreenshotUrl = async (assetId) => {
+  const token = getStoredToken()
+  const orgContext = getOrgContext()
+  const headers = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  if (orgContext) headers['X-Org-Context'] = orgContext
+  try {
+    const resp = await fetch(`${BASE}/easm/assets/${assetId}/screenshot`, { headers })
+    if (!resp.ok) return null
+    const blob = await resp.blob()
+    // Filter out empty / non-image payloads early so the modal shows
+    // "No screenshot" instead of a broken image icon.
+    if (!blob || blob.size === 0) return null
+    if (blob.type && !blob.type.startsWith('image/')) return null
+    return URL.createObjectURL(blob)
+  } catch {
+    return null
+  }
+}
 export const getEasmBreaches = (params = {}) => {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
   return request(`/easm/breaches${q.toString() ? '?' + q : ''}`)

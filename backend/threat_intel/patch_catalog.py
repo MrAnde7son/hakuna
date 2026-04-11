@@ -12,6 +12,7 @@ from sqlalchemy import or_, func, desc, String
 from sqlalchemy.orm import Session
 
 from models.threat_intel_models import MSRCPatch, PatchAdvisory
+from services import patch_reliability as reliability_svc
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ def get_patches_for_cve(db: Session, cve_id: str) -> list:
     for r in msrc_records:
         results.append({
             "source": "microsoft",
+            "reliability_source": "msrc",
             "advisory_id": r.kb_id,
             "title": f"{r.kb_id} — {r.product_name}" if r.product_name else r.kb_id,
             "severity": r.severity,
@@ -73,6 +75,7 @@ def get_patches_for_cve(db: Session, cve_id: str) -> list:
     for adv in advisories:
         results.append({
             "source": adv.source,
+            "reliability_source": adv.source,
             "advisory_id": adv.source_advisory_id,
             "title": adv.title,
             "severity": adv.severity,
@@ -81,7 +84,28 @@ def get_patches_for_cve(db: Session, cve_id: str) -> list:
             "affected_packages": adv.affected_packages or [],
         })
 
+    # 3. Annotate each patch with its reliability record (single bulk query).
+    _attach_reliability(db, results)
+
     return results
+
+
+def _attach_reliability(db: Session, patches: list) -> None:
+    """
+    Bulk-load reliability for a list of patch dicts and merge it in-place.
+    Patches without a matching reliability record get the "unknown" shape.
+    """
+    pairs = [
+        (p.get("reliability_source") or p.get("source") or "", p.get("advisory_id") or "")
+        for p in patches
+    ]
+    records = reliability_svc.get_reliability_map(db, pairs)
+    for p in patches:
+        key = (
+            (p.get("reliability_source") or p.get("source") or "").strip().lower(),
+            (p.get("advisory_id") or "").strip(),
+        )
+        p["reliability"] = reliability_svc.reliability_to_dict(records.get(key))
 
 
 def get_patch_coverage_summary(db: Session, cve_ids: list) -> dict:
@@ -133,6 +157,8 @@ def get_patch_stats(db: Session) -> dict:
     Return aggregate stats for the patch catalog.
     All queries use COUNT aggregations — no full table scans.
     """
+    from models.threat_intel_models import PatchReliability
+
     # MSRC count
     msrc_count = db.query(func.count(MSRCPatch.id)).scalar() or 0
     msrc_cves = db.query(func.count(func.distinct(MSRCPatch.cve_id))).scalar() or 0
@@ -168,9 +194,23 @@ def get_patch_stats(db: Session) -> dict:
         for r in recent
     ]
 
+    # Reliability rollup — one aggregate query grouped by status.
+    reliability_counts = dict(
+        db.query(PatchReliability.status, func.count(PatchReliability.id))
+        .group_by(PatchReliability.status)
+        .all()
+    )
+
     return {
         "total_advisories": total_advisories,
         "by_source": by_source,
         "msrc_cves_covered": msrc_cves,
         "recent_advisories": recent_list,
+        "reliability": {
+            "stable": reliability_counts.get("stable", 0),
+            "known_issues": reliability_counts.get("known_issues", 0),
+            "recalled": reliability_counts.get("recalled", 0),
+            "unknown": reliability_counts.get("unknown", 0),
+            "scored_total": sum(reliability_counts.values()),
+        },
     }

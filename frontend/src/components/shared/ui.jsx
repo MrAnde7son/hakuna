@@ -751,6 +751,71 @@ export function EffortBadge({ effort }) {
   return <Pill label={c.label} color={c.color} />
 }
 
+/**
+ * Patch reliability badge — shows whether a patch is safe to deploy based
+ * on vendor known-issue signals, internal rollbacks, and recalls.
+ *
+ * Accepts the `reliability` block from the backend patch_reliability scorer:
+ *   { score, status, recalled_at, recall_reason, known_issues, signal_count, ... }
+ * The scorer always returns a well-formed object, but we handle null/undefined
+ * defensively for callers that pass patches from older cached responses.
+ */
+export function PatchReliabilityBadge({ reliability, size = 'md' }) {
+  const STATUS_MAP = {
+    stable:        { label: 'Stable',        color: '#10b981' },
+    known_issues:  { label: 'Known Issues',  color: '#f59e0b' },
+    recalled:      { label: 'Recalled',      color: '#dc2626' },
+    superseded:    { label: 'Superseded',    color: '#6b7280' },
+    unknown:       { label: 'Unverified',    color: '#6b7280' },
+  }
+
+  const r = reliability || {}
+  const status = r.status || 'unknown'
+  const cfg = STATUS_MAP[status] || STATUS_MAP.unknown
+
+  // Build a tooltip that explains the status. For recalled/known_issues we
+  // surface the actual reasons so the user doesn't have to click through.
+  const tooltipLines = []
+  if (status === 'recalled' && r.recall_reason) {
+    tooltipLines.push(`Recalled: ${r.recall_reason}`)
+  }
+  if (status === 'unknown') {
+    tooltipLines.push('No reliability signals observed yet')
+  }
+  if (Array.isArray(r.known_issues) && r.known_issues.length > 0) {
+    tooltipLines.push(...r.known_issues.slice(0, 3).map(i => `• ${i.title || 'Issue'}`))
+    if (r.known_issues.length > 3) tooltipLines.push(`+${r.known_issues.length - 3} more`)
+  }
+  if (typeof r.score === 'number') {
+    tooltipLines.push(`Score ${r.score.toFixed(2)} · ${r.signal_count || 0} signals`)
+  }
+
+  const small = size === 'sm'
+  return (
+    <span
+      title={tooltipLines.join('\n') || cfg.label}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        padding: small ? '1px 6px' : '2px 8px',
+        borderRadius: 999,
+        background: `${cfg.color}22`,
+        color: cfg.color,
+        border: `1px solid ${cfg.color}44`,
+        fontSize: small ? 10 : 11,
+        fontWeight: 600,
+        whiteSpace: 'nowrap',
+        cursor: tooltipLines.length > 0 ? 'help' : 'default',
+      }}
+    >
+      <span style={{
+        width: small ? 5 : 6, height: small ? 5 : 6, borderRadius: '50%',
+        background: cfg.color, display: 'inline-block',
+      }} />
+      {cfg.label}
+    </span>
+  )
+}
+
 export function OwnerBadge({ owner }) {
   const MAP = {
     IT: '#0ea5e9',

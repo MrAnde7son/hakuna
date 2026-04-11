@@ -292,6 +292,9 @@ const DATA_PRESETS = {
   easm_with_cdn:        { label: 'Behind CDN',           group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_cdn ?? 0, color: '#16a34a' },
   easm_expired_certs:   { label: 'Expired Certificates', group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_expired_cert ?? 0, color: '#dc2626' },
   easm_breach_count:    { label: 'Known Breaches',       group: 'EASM', source: 'easm_breaches', type: 'metric', extract: d => (Array.isArray(d) ? d : []).length, color: '#7c3aed' },
+  easm_exposed_dbs:     { label: 'Exposed Databases',    group: 'EASM', source: 'findings', type: 'metric', extract: d => ((d?.findings || []).filter(f => (f.plugin_id || '').startsWith('EASM-EXPOSED-DB-')).length), color: '#dc2626' },
+  easm_weak_tls:        { label: 'Weak TLS Configs',     group: 'EASM', source: 'findings', type: 'metric', extract: d => ((d?.findings || []).filter(f => f.plugin_id === 'EASM-TLS-WEAK').length), color: '#f97316' },
+  easm_dangling_dns:    { label: 'Dangling DNS',         group: 'EASM', source: 'findings', type: 'metric', extract: d => ((d?.findings || []).filter(f => f.plugin_id === 'EASM-DANGLING-DNS').length), color: '#ef4444' },
 
   // ── Control Assessment metrics ──
   ctrl_assessed:        { label: 'Assessed Findings',    group: 'Control Validation', source: 'control_assessment_stats', type: 'metric', extract: d => d?.assessed ?? 0, color: '#6366f1' },
@@ -354,6 +357,44 @@ const DATA_PRESETS = {
       arr.forEach(e => { const t = e.event_type || 'unknown'; counts[t] = (counts[t] || 0) + 1 })
       const colors = { new_asset: '#16a34a', ip_change: '#d97706', port_change: '#ea580c', tech_change: '#6366f1', cert_expiring: '#dc2626' }
       return Object.entries(counts).map(([name, value]) => ({ name: name.replace(/_/g, ' '), value, color: colors[name] || '#8b5cf6' }))
+    },
+  },
+  // "Categories of Security Risk" — mirrors Tenable ASM's header row. Buckets
+  // EASM findings by plugin_family (which is set in services/easm.py to values
+  // like "EASM: TLS/SSL", "EASM: Exposed Service", etc.) so users see at a
+  // glance which risk categories have open findings.
+  easm_risk_categories: {
+    label: 'Categories of Security Risk', group: 'EASM', source: 'findings', type: 'categories',
+    extract: d => {
+      const findings = (d?.findings || []).filter(f => (f.plugin_family || '').startsWith('EASM:'))
+      const counts = {}
+      findings.forEach(f => {
+        const name = (f.plugin_family || '').replace(/^EASM:\s*/, '') || 'Other'
+        counts[name] = (counts[name] || 0) + 1
+      })
+      return Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  // "Attack Surface Over Time" — mirrors Tenable's total-attack-surface trend.
+  // Groups change events by day, which gives a rough proxy for how fast the
+  // surface is moving (new assets + port/tech/cert changes).
+  easm_surface_over_time: {
+    label: 'Attack Surface Over Time', group: 'EASM', source: 'easm_events', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.events ?? [])
+      const counts = {}
+      arr.forEach(e => {
+        const ts = e.created_at || e.timestamp
+        if (!ts) return
+        const day = new Date(ts).toISOString().slice(0, 10)
+        counts[day] = (counts[day] || 0) + 1
+      })
+      return Object.entries(counts)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .slice(-30)  // last 30 days with activity
+        .map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
     },
   },
 
@@ -1695,11 +1736,19 @@ const EASM_DASHBOARD = {
   widgets: [
     // Header
     { id: 'ea1', type: 'header', title: 'External Attack Surface', width: 'full', config: { title: 'External Attack Surface', subtitle: 'Discovered assets, services, certificates, and change events from EASM scanning' } },
-    // Key metrics
+    // Risk summary — Tenable-style "Categories of Security Risk" row
+    { id: 'ea_r1', type: 'card',      title: 'Exposed Databases',    width: 'quarter', config: { preset: 'easm_exposed_dbs',   filters: { plugin_family: 'EASM: Exposed Service', page_size: 500 } } },
+    { id: 'ea_r2', type: 'card',      title: 'Weak TLS Configs',     width: 'quarter', config: { preset: 'easm_weak_tls',      filters: { plugin_family: 'EASM: TLS/SSL',         page_size: 500 } } },
+    { id: 'ea_r3', type: 'card',      title: 'Expired Certificates', width: 'quarter', config: { preset: 'easm_expired_certs' } },
+    { id: 'ea_r4', type: 'card',      title: 'Dangling DNS',         width: 'quarter', config: { preset: 'easm_dangling_dns',  filters: { plugin_family: 'EASM: DNS',             page_size: 500 } } },
+    // Categories breakdown + surface trend
+    { id: 'ea_c1', type: 'bar_chart', title: 'Categories of Security Risk', width: 'half', config: { preset: 'easm_risk_categories', filters: { search: 'EASM', page_size: 500 } } },
+    { id: 'ea_c2', type: 'bar_chart', title: 'Attack Surface Over Time',    width: 'half', config: { preset: 'easm_surface_over_time' } },
+    // Asset key metrics
     { id: 'ea2', type: 'card',      title: 'Discovered Assets',    width: 'quarter', config: { preset: 'easm_total_assets' } },
     { id: 'ea3', type: 'card',      title: 'With Open Ports',      width: 'quarter', config: { preset: 'easm_with_open_ports' } },
     { id: 'ea4', type: 'card',      title: 'HTTP Services',        width: 'quarter', config: { preset: 'easm_with_http' } },
-    { id: 'ea5', type: 'card',      title: 'Expired Certificates', width: 'quarter', config: { preset: 'easm_expired_certs' } },
+    { id: 'ea12',type: 'card',      title: 'Known Breaches',       width: 'quarter', config: { preset: 'easm_breach_count' } },
     // Asset overview
     { id: 'ea6', type: 'pie_chart', title: 'Asset Liveness',       width: 'half',    config: { preset: 'easm_asset_liveness', donut: true } },
     { id: 'ea7', type: 'pie_chart', title: 'Change Events',        width: 'half',    config: { preset: 'easm_event_types', donut: true } },
@@ -1709,7 +1758,6 @@ const EASM_DASHBOARD = {
     // CDN
     { id: 'ea10',type: 'pie_chart', title: 'CDN / WAF Providers',  width: 'half',    config: { preset: 'easm_cdn_providers', donut: true } },
     { id: 'ea11',type: 'card',      title: 'Behind CDN',           width: 'quarter', config: { preset: 'easm_with_cdn' } },
-    { id: 'ea12',type: 'card',      title: 'Known Breaches',       width: 'quarter', config: { preset: 'easm_breach_count' } },
     // Tables
     { id: 'ea13',type: 'table',     title: 'Discovered Assets',    width: 'full',    config: { preset: 'easm_assets_table', limit: 50 } },
     { id: 'ea14',type: 'table',     title: 'Recent Changes',       width: 'full',    config: { preset: 'easm_events_table', limit: 30 } },

@@ -20,6 +20,7 @@ from models.models import (
 )
 import services.tags as tag_engine
 import services.ownership_inference as ownership_inference
+import services.patch_reliability as patch_reliability
 from services.sla_engine import compute_sla_status as _compute_sla_status
 
 router = APIRouter()
@@ -639,6 +640,9 @@ def update_finding_status(finding_id: int, body: FindingStatusUpdate, db: Sessio
     if body.status not in VALID_WORKFLOW_STATUSES:
         raise HTTPException(400, f"Invalid status. Must be one of: {', '.join(VALID_WORKFLOW_STATUSES)}")
     _old_status = {"status": finding.workflow_status, "assigned_to": finding.workflow_assigned_to}
+    # Capture the prior resolved_at so we can detect a resolved→open reopen
+    # after we've already mutated the finding. Used for the patch rollback hook.
+    _prior_resolved_at = finding.resolved_at
     finding.workflow_status = body.status
     finding.status_changed_at = datetime.utcnow()
     if body.assigned_to is not None:
@@ -661,6 +665,29 @@ def update_finding_status(finding_id: int, body: FindingStatusUpdate, db: Sessio
               entity_name=finding.plugin_name,
               changes=_diff(_old_status, _new_status), actor=user)
     db.commit()
+
+    # After commit: if this was a resolved→open transition inside the rollback
+    # window, emit reliability signals against the patches that were supposed
+    # to fix this finding. Failures here must not break the status update, so
+    # we swallow exceptions and log.
+    if body.status == "open" and _prior_resolved_at is not None:
+        try:
+            asset = db.query(Asset).filter(Asset.id == finding.asset_id).first() if finding.asset_id else None
+            patch_reliability.handle_finding_reopened(
+                db,
+                finding_id=finding.id,
+                cves=list(finding.cves or []),
+                asset_os=asset.os if asset else None,
+                asset_id=finding.asset_id,
+                org_id=finding.org_id,
+                resolved_at=_prior_resolved_at,
+            )
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                "patch_reliability rollback hook failed for finding %s", finding_id
+            )
+
     return {
         "ok": True, "finding_id": finding_id,
         "workflow_status": finding.workflow_status,

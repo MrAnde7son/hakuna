@@ -14,7 +14,7 @@ import {
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { getAssetDisplayName } from '../../utils/assetDisplay.js'
-import { Card, Button, Spinner, EmptyState, StatCard, SeverityBadge, ScoreBar, SkeletonCard } from '../shared/ui.jsx'
+import { Card, Button, Spinner, EmptyState, StatCard, SeverityBadge, ScoreBar, SkeletonCard, PatchReliabilityBadge } from '../shared/ui.jsx'
 import NewSinceBanner from '../notifications/NewSinceBanner.jsx'
 import {
   getThreatIntelStats, getThreatCves, getThreatGroups, getThreatTtps,
@@ -2228,6 +2228,7 @@ function PatchCatalogTab() {
                       <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{p.advisory_id}</span>
                       <span style={{ color: 'var(--text-muted)', flex: 1 }}>{p.title}</span>
                       {p.severity && <SevBadge severity={p.severity} />}
+                      <PatchReliabilityBadge reliability={p.reliability} size="sm" />
                       {p.url && (
                         <a href={p.url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
                           <ExternalLink size={12} />
@@ -2326,6 +2327,7 @@ function PatchCatalogTab() {
                         {a.advisory_id}
                       </span>
                       {a.severity && <SevBadge severity={a.severity} />}
+                      <PatchReliabilityBadge reliability={a.reliability} size="sm" />
                       {a.cve_count > 0 && (
                         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                           {a.cve_count} CVE{a.cve_count !== 1 ? 's' : ''}
@@ -2360,6 +2362,45 @@ function PatchCatalogTab() {
 
                 {isOpen && (
                   <div style={{ borderTop: '1px solid var(--border)', padding: '12px 18px' }}>
+                    {/* Reliability detail */}
+                    {a.reliability && (a.reliability.status === 'recalled' || a.reliability.status === 'known_issues') && (
+                      <div style={{
+                        marginBottom: 12, padding: '10px 12px', borderRadius: 6,
+                        background: a.reliability.status === 'recalled' ? '#dc262612' : '#f59e0b12',
+                        border: `1px solid ${a.reliability.status === 'recalled' ? '#dc262640' : '#f59e0b40'}`,
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                          <AlertTriangle size={14} style={{ color: a.reliability.status === 'recalled' ? '#dc2626' : '#f59e0b' }} />
+                          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>
+                            {a.reliability.status === 'recalled' ? 'Patch Recalled' : 'Known Issues'}
+                          </span>
+                          {typeof a.reliability.score === 'number' && (
+                            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                              reliability {a.reliability.score.toFixed(2)}
+                            </span>
+                          )}
+                        </div>
+                        {a.reliability.recall_reason && (
+                          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
+                            {a.reliability.recall_reason}
+                          </div>
+                        )}
+                        {Array.isArray(a.reliability.known_issues) && a.reliability.known_issues.length > 0 && (
+                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-secondary)' }}>
+                            {a.reliability.known_issues.slice(0, 5).map((iss, idx) => (
+                              <li key={idx}>
+                                {iss.url ? (
+                                  <a href={iss.url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+                                    {iss.title || 'Issue'}
+                                  </a>
+                                ) : (iss.title || 'Issue')}
+                                {iss.source && <span style={{ color: 'var(--text-muted)' }}> — {iss.source}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
                     {/* CVEs */}
                     {a.cve_ids?.length > 0 && (
                       <div style={{ marginBottom: 12 }}>

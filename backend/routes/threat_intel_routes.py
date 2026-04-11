@@ -22,6 +22,9 @@ from models.threat_intel_models import (
 import threat_intel.threat_intel_sync as sync_engine
 import threat_intel.ttp_matcher as ttp_matcher
 import threat_intel.patch_catalog as patch_catalog
+from services import patch_reliability as reliability_svc
+from services import patch_signal_collectors as signal_collectors
+from models.threat_intel_models import PatchReliability, PatchReliabilitySignal
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/threat-intel", tags=["threat-intel"])
@@ -1881,6 +1884,10 @@ def get_patches_for_cve(
         offset = (page - 1) * page_size
         records = q.offset(offset).limit(page_size).all()
 
+        reliability_map = reliability_svc.get_reliability_map(
+            db, [("msrc", r.kb_id or "") for r in records if r.kb_id]
+        )
+
         return {
             "total": total,
             "page": page,
@@ -1898,6 +1905,9 @@ def get_patches_for_cve(
                     "cve_count": 1,
                     "affected_packages": [r.product_name] if r.product_name else [],
                     "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "reliability": reliability_svc.reliability_to_dict(
+                        reliability_map.get(("msrc", (r.kb_id or "").strip()))
+                    ),
                 }
                 for r in records
             ],
@@ -1927,6 +1937,10 @@ def get_patches_for_cve(
     offset = (page - 1) * page_size
     records = q.offset(offset).limit(page_size).all()
 
+    reliability_map = reliability_svc.get_reliability_map(
+        db, [(r.source, r.source_advisory_id) for r in records]
+    )
+
     return {
         "total": total,
         "page": page,
@@ -1944,6 +1958,9 @@ def get_patches_for_cve(
                 "cve_count": len(r.cve_ids) if r.cve_ids else 0,
                 "affected_packages": r.affected_packages or [],
                 "created_at": r.created_at.isoformat() if r.created_at else None,
+                "reliability": reliability_svc.reliability_to_dict(
+                    reliability_map.get(((r.source or "").strip().lower(), (r.source_advisory_id or "").strip()))
+                ),
             }
             for r in records
         ],
@@ -2009,3 +2026,201 @@ def sync_patches_by_source(
 
     background_tasks.add_task(_run_with_fresh_db, sync_map[source])
     return {"status": "ok", "message": f"Patch sync for {source} started in background"}
+
+
+# ─────────────────────────────────────────────
+# Patch Reliability
+# ─────────────────────────────────────────────
+
+
+class PatchReliabilitySignalIn(BaseModel):
+    patch_source: str
+    patch_ref: str
+    signal_source: str
+    signal_type: str                  # recall | known_issue | rollback | regression | supersedence | success
+    weight: Optional[float] = None    # defaults to SIGNAL_WEIGHTS[signal_type]
+    fingerprint: Optional[str] = None
+    detail: Optional[dict] = None
+    observed_at: Optional[datetime] = None
+
+
+@router.get("/patches/reliability/{patch_source}/{patch_ref}")
+def get_patch_reliability(
+    patch_source: str,
+    patch_ref: str,
+    include_signals: bool = Query(False, description="Include the full signal history"),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the reliability record for a specific patch. If no signals have been
+    observed the response is the 'unknown' shape — the scorer treats absence of
+    evidence as neutral, not as a fail.
+    """
+    record = (
+        db.query(PatchReliability)
+        .filter(
+            PatchReliability.patch_source == patch_source.strip().lower(),
+            PatchReliability.patch_ref == patch_ref.strip(),
+        )
+        .first()
+    )
+    response = {
+        "patch_source": patch_source.strip().lower(),
+        "patch_ref": patch_ref.strip(),
+        **reliability_svc.reliability_to_dict(record),
+    }
+
+    if include_signals:
+        signals = (
+            db.query(PatchReliabilitySignal)
+            .filter(
+                PatchReliabilitySignal.patch_source == patch_source.strip().lower(),
+                PatchReliabilitySignal.patch_ref == patch_ref.strip(),
+            )
+            .order_by(desc(PatchReliabilitySignal.observed_at))
+            .limit(200)
+            .all()
+        )
+        response["signals"] = [
+            {
+                "id": s.id,
+                "signal_source": s.signal_source,
+                "signal_type": s.signal_type,
+                "weight": s.weight,
+                "org_id": s.org_id,
+                "fingerprint": s.fingerprint,
+                "detail": s.detail or {},
+                "observed_at": s.observed_at.isoformat() if s.observed_at else None,
+            }
+            for s in signals
+        ]
+
+    return response
+
+
+@router.post("/patches/reliability/signal")
+def post_patch_reliability_signal(
+    payload: PatchReliabilitySignalIn,
+    db: Session = Depends(get_db),
+):
+    """
+    Record a reliability signal and immediately re-score the patch. Used by
+    sync collectors (vendor known-issue pages), community scrapers, and the
+    remediation engine's rollback hook.
+    """
+    valid_types = {"recall", "known_issue", "rollback", "regression", "supersedence", "success"}
+    if payload.signal_type not in valid_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"signal_type must be one of {sorted(valid_types)}",
+        )
+
+    signal = reliability_svc.record_signal(
+        db,
+        patch_source=payload.patch_source,
+        patch_ref=payload.patch_ref,
+        signal_source=payload.signal_source,
+        signal_type=payload.signal_type,
+        weight=payload.weight,
+        fingerprint=payload.fingerprint,
+        detail=payload.detail,
+        observed_at=payload.observed_at,
+    )
+    db.commit()
+
+    record = (
+        db.query(PatchReliability)
+        .filter(
+            PatchReliability.patch_source == payload.patch_source.strip().lower(),
+            PatchReliability.patch_ref == payload.patch_ref.strip(),
+        )
+        .first()
+    )
+    return {
+        "status": "ok",
+        "signal_id": signal.id,
+        "reliability": reliability_svc.reliability_to_dict(record),
+    }
+
+
+@router.post("/patches/reliability/{patch_source}/{patch_ref}/rescore")
+def rescore_single_patch(
+    patch_source: str,
+    patch_ref: str,
+    db: Session = Depends(get_db),
+):
+    """Re-run the scorer for one patch without inserting a new signal."""
+    record = reliability_svc.score_patch(db, patch_source, patch_ref)
+    return {
+        "status": "ok",
+        "reliability": reliability_svc.reliability_to_dict(record),
+    }
+
+
+@router.post("/patches/reliability/rescore-all")
+def rescore_all_patches(
+    background_tasks: BackgroundTasks,
+    since_days: Optional[int] = Query(None, ge=1, le=365),
+):
+    """
+    Trigger a full re-score pass in the background. Used by the nightly job
+    to apply decay. `since_days` optionally restricts to patches with signals
+    newer than the window (cheaper during the day).
+    """
+    since = datetime.utcnow() - timedelta(days=since_days) if since_days else None
+
+    def _run():
+        with SessionLocal() as db:
+            reliability_svc.rescore_all(db, since=since)
+
+    background_tasks.add_task(_run)
+    return {"status": "ok", "message": "Reliability rescore started in background"}
+
+
+@router.post("/patches/reliability/collect")
+def collect_reliability_signals(
+    background_tasks: BackgroundTasks,
+    source: Optional[str] = Query(
+        None,
+        description="Limit to a single collector: 'msrc_supercedence' | 'msrc_known_issues' | 'ubuntu_usn'",
+    ),
+    skip_network: bool = Query(False, description="Skip collectors that require outbound HTTP"),
+    msrc_months: int = Query(3, ge=1, le=12, description="How many recent Patch Tuesday docs to scan"),
+):
+    """
+    Run the reliability signal collectors. Each collector emits immutable
+    PatchReliabilitySignal rows and rescores affected patches.
+
+    Lanes:
+    * msrc_supercedence — local, reads MSRCPatch.supercedence and marks old KBs
+    * msrc_known_issues — fetches recent MSRC CVRF docs, pulls Type=7 Known Issues
+    * ubuntu_usn       — local, detects USN-NNNN-2/-3 follow-ups
+
+    Always runs in the background — the MSRC fetch alone can take 30–60s.
+    """
+    def _run_all():
+        with SessionLocal() as db:
+            signal_collectors.collect_all(db, msrc_months=msrc_months, skip_network=skip_network)
+
+    def _run_one(fn):
+        with SessionLocal() as db:
+            fn(db)
+            reliability_svc.rescore_all(db)
+
+    if source is None:
+        background_tasks.add_task(_run_all)
+        return {"status": "ok", "message": "All collectors started in background"}
+
+    COLLECTOR_MAP = {
+        "msrc_supercedence": signal_collectors.collect_msrc_supercedence,
+        "msrc_known_issues": lambda db: signal_collectors.collect_msrc_known_issues(db, months=msrc_months),
+        "ubuntu_usn": signal_collectors.collect_ubuntu_usn_regressions,
+    }
+    if source not in COLLECTOR_MAP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown collector '{source}'. Valid: {list(COLLECTOR_MAP.keys())}",
+        )
+
+    background_tasks.add_task(_run_one, COLLECTOR_MAP[source])
+    return {"status": "ok", "message": f"Collector '{source}' started in background"}

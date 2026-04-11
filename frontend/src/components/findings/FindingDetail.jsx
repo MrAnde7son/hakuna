@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, ExternalLink, Zap, Shield, ShieldCheck, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight, Layers, RefreshCw, Ticket } from 'lucide-react'
-import { getFinding, getFindingSources, getFindingAssessments, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign, syncFindingTickets } from '../../api.js'
-import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail, useToast, buildFindingBreakdown, useRiskWeights } from '../shared/ui.jsx'
+import { ArrowLeft, ExternalLink, Zap, Shield, ShieldCheck, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight, Layers, RefreshCw, Ticket, Wrench } from 'lucide-react'
+import { getFinding, getFindingSources, getFindingAssessments, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign, syncFindingTickets, getPatchAdvisories } from '../../api.js'
+import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail, useToast, buildFindingBreakdown, useRiskWeights, PatchReliabilityBadge } from '../shared/ui.jsx'
 import CustomAttributesCard from '../shared/CustomAttributesCard.jsx'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -149,6 +149,8 @@ export default function FindingDetail() {
   const [ctxSaving, setCtxSaving] = useState(false)
   const [fetchError, setFetchError] = useState(null)
   const [assessments, setAssessments] = useState([])
+  const [patches, setPatches] = useState([])
+  const [patchesLoading, setPatchesLoading] = useState(false)
 
   const loadFinding = () => {
     setLoading(true)
@@ -167,6 +169,40 @@ export default function FindingDetail() {
       .then(r => setAssessments(r.items || []))
       .catch(() => {})
   }, [finding?.id])
+
+  // Fetch available patches + reliability for the finding's CVEs. We dedupe
+  // by (source, advisory_id) across all CVEs so a Linux package shared by two
+  // CVEs only shows once. Capped at the first few CVEs to keep this cheap —
+  // findings with 50+ CVEs are rare but not unheard of (chromium updates).
+  useEffect(() => {
+    if (!finding?.cves || finding.cves.length === 0) {
+      setPatches([])
+      return
+    }
+    const cvesToFetch = finding.cves.slice(0, 8)
+    setPatchesLoading(true)
+    Promise.all(
+      cvesToFetch.map(cve =>
+        getPatchAdvisories({ cve_id: cve }).catch(() => ({ items: [] }))
+      )
+    ).then(responses => {
+      const dedup = new Map()
+      responses.forEach(resp => {
+        (resp.items || []).forEach(p => {
+          const key = `${p.source}:${p.advisory_id}`
+          if (!dedup.has(key)) dedup.set(key, p)
+        })
+      })
+      // Sort: recalled first (action required), then known_issues, then stable/unknown.
+      const order = { recalled: 0, known_issues: 1, stable: 2, superseded: 3, unknown: 4 }
+      const list = [...dedup.values()].sort((a, b) => {
+        const sa = order[a.reliability?.status || 'unknown'] ?? 4
+        const sb = order[b.reliability?.status || 'unknown'] ?? 4
+        return sa - sb
+      })
+      setPatches(list)
+    }).finally(() => setPatchesLoading(false))
+  }, [finding?.id, finding?.cves?.join(',')])
 
   const handleCreateCampaign = async () => {
     if (!finding) return
@@ -1060,6 +1096,94 @@ export default function FindingDetail() {
           </div>
         )}
       </Section>
+
+      {/* Available patches for the finding's CVEs, annotated with reliability */}
+      {finding.cves && finding.cves.length > 0 && (
+        <Section title="Available Patches" icon={Wrench} defaultOpen={true}>
+          {patchesLoading ? (
+            <Spinner />
+          ) : patches.length === 0 ? (
+            <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '8px 0' }}>
+              No patch advisories found for this finding's CVEs.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {patches.map((p, i) => {
+                const isRecalled = p.reliability?.status === 'recalled'
+                const hasKnown = p.reliability?.status === 'known_issues'
+                return (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 10,
+                    padding: '10px 12px', borderRadius: 6,
+                    background: isRecalled ? '#dc262608' : hasKnown ? '#f59e0b08' : 'var(--bg-secondary)',
+                    border: `1px solid ${isRecalled ? '#dc262640' : hasKnown ? '#f59e0b40' : 'var(--border)'}`,
+                  }}>
+                    <Wrench size={14} style={{ color: 'var(--text-muted)', marginTop: 3, flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <Pill label={p.source} color="#6366f1" />
+                        <span style={{ fontWeight: 600, fontSize: 13, fontFamily: 'monospace', color: 'var(--text-primary)' }}>
+                          {p.advisory_id}
+                        </span>
+                        {p.severity && <SeverityBadge severity={p.severity} />}
+                        <PatchReliabilityBadge reliability={p.reliability} size="sm" />
+                      </div>
+                      {p.title && (
+                        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>
+                          {p.title}
+                        </div>
+                      )}
+                      {(isRecalled || hasKnown) && (
+                        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
+                          {p.reliability?.recall_reason && (
+                            <div style={{ color: '#dc2626', fontWeight: 600, marginBottom: 4 }}>
+                              {p.reliability.recall_reason}
+                            </div>
+                          )}
+                          {Array.isArray(p.reliability?.known_issues) && p.reliability.known_issues.length > 0 && (
+                            <ul style={{ margin: 0, paddingLeft: 16 }}>
+                              {p.reliability.known_issues.slice(0, 3).map((iss, idx) => (
+                                <li key={idx}>
+                                  {iss.url ? (
+                                    <a href={iss.url} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+                                      {iss.title || 'Issue'}
+                                    </a>
+                                  ) : (iss.title || 'Issue')}
+                                </li>
+                              ))}
+                              {p.reliability.known_issues.length > 3 && (
+                                <li style={{ color: 'var(--text-muted)' }}>
+                                  +{p.reliability.known_issues.length - 3} more
+                                </li>
+                              )}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {p.url && (
+                      <a
+                        href={p.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: 'var(--accent)', flexShrink: 0 }}
+                        title="Open advisory"
+                      >
+                        <ExternalLink size={13} />
+                      </a>
+                    )}
+                  </div>
+                )
+              })}
+              {finding.cves.length > 8 && (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                  Showing patches for the first 8 CVEs (of {finding.cves.length}).
+                </div>
+              )}
+            </div>
+          )}
+        </Section>
+      )}
       </>)}
 
       {activeTab === 'sources' && <FindingSourcesTab finding={finding} />}
