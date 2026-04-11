@@ -49,10 +49,14 @@ class DnsxRunner(BaseRunner):
 class NaabuRunner(BaseRunner):
     tool_name = "naabu"
 
-    def __init__(self, hosts: list[str], ports: str | None = None, timeout_seconds: int | None = None):
+    def __init__(self, hosts: list[str], ports: str | None = None,
+                 timeout_seconds: int | None = None, timeout: int | None = None):
         self.hosts = hosts
         self.ports = ports
         self.custom_timeout = timeout_seconds
+        # timeout is the overall tool timeout (scheduler timeout); timeout_seconds
+        # is the per-port probe timeout passed to naabu's --timeout flag.
+        self.timeout = timeout
         self._tmpfile: str | None = None
 
     def _write_hosts(self) -> str:
@@ -83,10 +87,12 @@ class NaabuRunner(BaseRunner):
 class HttpxRunner(BaseRunner):
     tool_name = "httpx"
 
-    def __init__(self, hosts: list[str], screenshots: bool = False, screenshot_dir: str | None = None):
+    def __init__(self, hosts: list[str], screenshots: bool = False,
+                 screenshot_dir: str | None = None, timeout: int | None = None):
         self.hosts = hosts
         self.screenshots = screenshots
         self.screenshot_dir = screenshot_dir
+        self.timeout = timeout
         self._tmpfile: str | None = None
 
     def _write_hosts(self) -> str:
@@ -123,9 +129,10 @@ class HttpxRunner(BaseRunner):
 class TlsxRunner(BaseRunner):
     tool_name = "tlsx"
 
-    def __init__(self, hosts: list[str]):
+    def __init__(self, hosts: list[str], timeout: int | None = None):
         """hosts can be hostname:port format to scan non-443 ports."""
         self.hosts = hosts
+        self.timeout = timeout
         self._tmpfile: str | None = None
 
     def _write_hosts(self) -> str:
@@ -153,31 +160,30 @@ class TlsxRunner(BaseRunner):
 
 
 class CdncheckRunner(BaseRunner):
+    """cdncheck reads IPs/hostnames from stdin and emits JSON lines.
+
+    Previous invocation used `-l <file>` and `-json` — neither flag exists
+    in cdncheck (v1.2.30), so the tool was exiting with code 2 on every run
+    and producing zero CDN data. We pipe hosts to stdin instead and use the
+    correct `-jsonl` / `-resp` flags.
+
+    max_retries=0 because exit=2 means "CLI config error", not a transient
+    network issue — retrying an invalid invocation just wastes wall time.
+    """
     tool_name = "cdncheck"
     timeout = 120
+    max_retries = 0
 
     def __init__(self, hosts: list[str]):
         self.hosts = hosts
-        self._tmpfile: str | None = None
-
-    def _write_hosts(self) -> str:
-        fd, path = tempfile.mkstemp(suffix=".txt", prefix="cdncheck_")
-        with os.fdopen(fd, "w") as f:
-            f.write("\n".join(self.hosts))
-        self._tmpfile = path
-        return path
+        # Piped to subprocess stdin by BaseRunner._execute.
+        self.stdin_input = ("\n".join(hosts) + "\n").encode("utf-8")
 
     def build_command(self) -> list[str]:
-        path = self._write_hosts()
-        return ["cdncheck", "-l", path, "-json", "-silent",
-                "-c", str(settings.cdncheck_threads)]
-
-    async def run(self, org_id: str | None = None):
-        try:
-            return await super().run(org_id)
-        finally:
-            if self._tmpfile and os.path.exists(self._tmpfile):
-                os.unlink(self._tmpfile)
+        # -jsonl  → one JSON object per line on stdout
+        # -resp   → include detected technology name in the output
+        # -silent → suppress banner / progress
+        return ["cdncheck", "-jsonl", "-resp", "-silent"]
 
 
 class AsnmapRunner(BaseRunner):
@@ -315,10 +321,12 @@ class PurednsRunner(BaseRunner):
 class KatanaRunner(BaseRunner):
     """Run katana web crawler on HTTP/HTTPS targets."""
     tool_name = "katana"
-    timeout = 300  # 5 min per batch
+    timeout = 300  # 5 min per batch (default; override per-call for big batches)
 
-    def __init__(self, hosts: list[str]):
+    def __init__(self, hosts: list[str], timeout: int | None = None):
         self.hosts = hosts
+        if timeout is not None:
+            self.timeout = timeout
         self._tmpfile: str | None = None
 
     def _write_hosts(self) -> str:

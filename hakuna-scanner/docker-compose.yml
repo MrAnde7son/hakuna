@@ -50,10 +50,14 @@ services:
   worker:
     build: .
     tty: true
+    # --concurrency=4 so up to 4 scan chains run in parallel. Pair with a
+    # 4-core CPU budget below so each worker process gets ~1 core. Bumped
+    # from 2 after observing queued scans stacking up in the UI — every
+    # extra running scan cuts the queue wait for subsequent ones.
     command: >
       celery -A app.celery_app:celery worker
       --loglevel=info
-      --concurrency=2
+      --concurrency=4
       -Q celery
     env_file: .env
     environment:
@@ -67,8 +71,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          memory: 2G
+          cpus: "4.0"
+          memory: 4G
     depends_on:
       postgres:
         condition: service_healthy

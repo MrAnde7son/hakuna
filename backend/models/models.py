@@ -1865,7 +1865,7 @@ class Notification(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
-    category = Column(String, nullable=False)  # scan_complete | critical_findings | new_assets | kev_update | campaign_findings | sla_breach
+    category = Column(String, nullable=False)  # scan_complete | scan_failed | critical_findings | new_assets | kev_update | campaign_findings | sla_breach
     title = Column(String, nullable=False)
     body = Column(Text, nullable=True)
     link = Column(String, nullable=True)        # e.g. "/findings?scan_id=5"

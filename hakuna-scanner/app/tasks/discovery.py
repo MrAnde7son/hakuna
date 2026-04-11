@@ -27,6 +27,13 @@ from app.ingest.liveness import (
     validate_and_update_assets,
 )
 from app.ingest.wildcard import detect_wildcard, filter_wildcard_results
+from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel
+from app.tasks.scoping import (
+    build_stale_clause,
+    build_target_scope,
+    compose_where,
+    load_scan_run_scope,
+)
 from app.runner.tools import (
     AsnmapRunner,
     DnsxRunner,
@@ -36,6 +43,11 @@ from app.runner.tools import (
     SubfinderRunner,
     UncoverRunner,
 )
+
+# Batch sizes for liveness gate. These are lightweight probes (quick naabu
+# recheck + httpx HEAD), so batches can be larger than enrichment.
+LIVENESS_NAABU_BATCH_SIZE = 1000
+LIVENESS_HTTPX_BATCH_SIZE = 1000
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +61,31 @@ def _run_async(coro):
         loop.close()
 
 
-async def _get_target_domains(sf, org_id: str) -> list[str]:
+async def _get_target_domains(
+    sf,
+    org_id: str,
+    target_scope: str | None = None,
+) -> list[str]:
+    """Active target domains for an org.
+
+    When `target_scope` is set (a single domain string from scan_runs.target_domain),
+    returns only that domain if it's active — effectively restricting a scan
+    to one target even though the org has many.
+    """
     async with sf() as db:
-        result = await db.execute(
-            text("SELECT domain FROM target_domains WHERE org_id = :org_id AND active = true"),
-            {"org_id": org_id},
-        )
+        if target_scope:
+            result = await db.execute(
+                text("""
+                    SELECT domain FROM target_domains
+                    WHERE org_id = :org_id AND active = true AND domain = :td
+                """),
+                {"org_id": org_id, "td": target_scope},
+            )
+        else:
+            result = await db.execute(
+                text("SELECT domain FROM target_domains WHERE org_id = :org_id AND active = true"),
+                {"org_id": org_id},
+            )
         return [row.domain for row in result.fetchall()]
 
 
@@ -65,33 +96,70 @@ async def _get_org_name(sf, org_id: str) -> str | None:
         return row.name if row else None
 
 
-async def _get_asset_hostnames(sf, org_id: str) -> list[str]:
+async def _get_asset_hostnames(
+    sf,
+    org_id: str,
+    target_scope: str | list[str] | None = None,
+    apply_stale: bool = False,
+    stale_hours: int = 24,
+) -> list[str]:
+    """Hostnames to process in discovery stages.
+
+    `target_scope` restricts to assets belonging to the given domain(s) —
+    apex + subdomains. `apply_stale=True` additionally excludes assets with
+    a recent `last_enriched` (within `stale_hours`), so re-scans skip work
+    that was already done.
+    """
+    scope_sql, scope_params = build_target_scope(target_scope)
+    stale_sql = build_stale_clause(enabled=apply_stale, stale_hours=stale_hours)
+    extra = compose_where(scope_sql, stale_sql)
+    params = {"org_id": org_id, **scope_params}
     async with sf() as db:
         result = await db.execute(
-            text("SELECT hostname FROM assets WHERE org_id = :org_id"),
-            {"org_id": org_id},
+            text(f"SELECT hostname FROM assets WHERE org_id = :org_id{extra}"),
+            params,
         )
         return [row.hostname for row in result.fetchall()]
 
 
-async def _get_asset_ids(sf, org_id: str) -> list[uuid.UUID]:
+async def _get_asset_ids(
+    sf,
+    org_id: str,
+    target_scope: str | list[str] | None = None,
+    apply_stale: bool = False,
+    stale_hours: int = 24,
+) -> list[uuid.UUID]:
+    scope_sql, scope_params = build_target_scope(target_scope)
+    stale_sql = build_stale_clause(enabled=apply_stale, stale_hours=stale_hours)
+    extra = compose_where(scope_sql, stale_sql)
+    params = {"org_id": org_id, **scope_params}
     async with sf() as db:
         result = await db.execute(
-            text("SELECT id FROM assets WHERE org_id = :org_id"),
-            {"org_id": org_id},
+            text(f"SELECT id FROM assets WHERE org_id = :org_id{extra}"),
+            params,
         )
         return [row.id for row in result.fetchall()]
 
 
-async def _get_assets_with_ports(sf, org_id: str) -> list[dict]:
-    """Get assets that have open ports (for liveness HTTP check)."""
+async def _get_assets_with_ports(
+    sf,
+    org_id: str,
+    target_scope: str | list[str] | None = None,
+    apply_stale: bool = False,
+    stale_hours: int = 24,
+) -> list[dict]:
+    """Assets that have open ports (for liveness HTTP check)."""
+    scope_sql, scope_params = build_target_scope(target_scope)
+    stale_sql = build_stale_clause(enabled=apply_stale, stale_hours=stale_hours)
+    extra = compose_where(scope_sql, stale_sql)
+    params = {"org_id": org_id, **scope_params}
     async with sf() as db:
         result = await db.execute(
-            text("""
+            text(f"""
                 SELECT id, hostname, host(ip) as ip, open_ports
-                FROM assets WHERE org_id = :org_id AND open_ports IS NOT NULL
+                FROM assets WHERE org_id = :org_id AND open_ports IS NOT NULL{extra}
             """),
-            {"org_id": org_id},
+            params,
         )
         return [
             {"id": row.id, "hostname": row.hostname, "ip": row.ip, "open_ports": row.open_ports}
@@ -102,8 +170,8 @@ async def _get_assets_with_ports(sf, org_id: str) -> list[dict]:
 # --- Step functions ---
 
 
-async def _do_subfinder(sf, org_id: str) -> dict:
-    domains = await _get_target_domains(sf, org_id)
+async def _do_subfinder(sf, org_id: str, target_scope: str | None = None) -> dict:
+    domains = await _get_target_domains(sf, org_id, target_scope=target_scope)
     all_hosts: list[dict] = []
     for domain in domains:
         runner = SubfinderRunner(domain)
@@ -117,7 +185,7 @@ async def _do_subfinder(sf, org_id: str) -> dict:
     return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
 
 
-async def _do_wildcard_and_bruteforce(sf, org_id: str) -> dict:
+async def _do_wildcard_and_bruteforce(sf, org_id: str, target_scope: str | None = None) -> dict:
     """Extension 1: Detect wildcard DNS and run safe brute force.
 
     For each target domain:
@@ -126,7 +194,7 @@ async def _do_wildcard_and_bruteforce(sf, org_id: str) -> dict:
     3. Filter results matching wildcard fingerprint
     4. Tag wildcard-domain assets
     """
-    domains = await _get_target_domains(sf, org_id)
+    domains = await _get_target_domains(sf, org_id, target_scope=target_scope)
     total_new = 0
     total_bruteforced = 0
     total_filtered = 0
@@ -197,7 +265,11 @@ async def _do_wildcard_and_bruteforce(sf, org_id: str) -> dict:
     }
 
 
-async def _do_asnmap(sf, org_id: str) -> dict:
+async def _do_asnmap(sf, org_id: str, target_scope: str | None = None) -> dict:
+    # target_scope is accepted for signature parity with the other step
+    # functions (so the chain's _run_step closure can pass it uniformly),
+    # but asnmap scans by org name, not by domain, so it ignores the value.
+    _ = target_scope  # intentionally unused
     org_name = await _get_org_name(sf, org_id)
     if not org_name:
         return {"error": "org not found"}
@@ -213,8 +285,8 @@ async def _do_asnmap(sf, org_id: str) -> dict:
     return {"ranges_found": len(result.results), "upserted": total, "new": len(new_ids)}
 
 
-async def _do_uncover(sf, org_id: str) -> dict:
-    domains = await _get_target_domains(sf, org_id)
+async def _do_uncover(sf, org_id: str, target_scope: str | None = None) -> dict:
+    domains = await _get_target_domains(sf, org_id, target_scope=target_scope)
     all_hosts: list[dict] = []
     for domain in domains:
         runner = UncoverRunner(domain)
@@ -229,35 +301,69 @@ async def _do_uncover(sf, org_id: str) -> dict:
     return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
 
 
-async def _do_dnsx(sf, org_id: str) -> dict:
-    hostnames = await _get_asset_hostnames(sf, org_id)
+async def _do_dnsx(sf, org_id: str, target_scope: str | None = None) -> dict:
+    # Staleness filter: skip assets that were already enriched within the last
+    # 24h. First-ever discovery still runs because last_enriched is NULL.
+    hostnames = await _get_asset_hostnames(
+        sf, org_id, target_scope=target_scope, apply_stale=True,
+    )
     if not hostnames:
-        return {"resolved": 0}
+        logger.info("org=%s dnsx: no fresh assets to resolve (all within staleness window)", org_id)
+        return {"resolved": 0, "skipped_fresh": True}
 
-    runner = DnsxRunner(hostnames)
-    result = await runner.run(org_id=org_id)
+    # dnsx is fast but can still stall on 10k+ hosts; batch defensively and
+    # run batches in parallel bounded by discovery_batch_concurrency.
+    batches = batch_hosts(hostnames, 2000)
+    per_batch_timeout = BaseRunner.timeout_for_host_count(2000, per_host_seconds=0.2)
+
+    def _build(batch):
+        r = DnsxRunner(batch)
+        r.timeout = per_batch_timeout
+        return r
+
+    all_results = await run_batches_parallel(
+        build_runner=_build,
+        batches=batches,
+        org_id=org_id,
+        concurrency=settings.discovery_batch_concurrency,
+        stage_name="dnsx",
+    )
 
     async with sf() as db:
-        updated = await update_dns_records(db, uuid.UUID(org_id), result.results)
+        total_updated = await update_dns_records(db, uuid.UUID(org_id), all_results)
 
-    return {"resolved": updated}
+    return {"resolved": total_updated, "batches": len(batches)}
 
 
-async def _do_naabu(sf, org_id: str) -> dict:
-    hostnames = await _get_asset_hostnames(sf, org_id)
+async def _do_naabu(sf, org_id: str, target_scope: str | None = None) -> dict:
+    hostnames = await _get_asset_hostnames(
+        sf, org_id, target_scope=target_scope, apply_stale=True,
+    )
     if not hostnames:
-        return {"scanned": 0}
+        logger.info("org=%s naabu: no fresh assets to port-scan (all within staleness window)", org_id)
+        return {"scanned": 0, "skipped_fresh": True}
 
-    runner = NaabuRunner(hostnames)
-    result = await runner.run(org_id=org_id)
+    batches = batch_hosts(hostnames, 1000)
+    per_batch_timeout = BaseRunner.timeout_for_host_count(1000, per_host_seconds=0.5)
+    logger.info("org=%s naabu hosts=%d batches=%d concurrency=%d per_batch_timeout=%ds",
+                org_id, len(hostnames), len(batches),
+                settings.discovery_batch_concurrency, per_batch_timeout)
+
+    all_results = await run_batches_parallel(
+        build_runner=lambda batch: NaabuRunner(batch, timeout=per_batch_timeout),
+        batches=batches,
+        org_id=org_id,
+        concurrency=settings.discovery_batch_concurrency,
+        stage_name="naabu",
+    )
 
     async with sf() as db:
-        updated = await update_ports(db, uuid.UUID(org_id), result.results)
+        updated = await update_ports(db, uuid.UUID(org_id), all_results)
 
-    return {"ports_found": len(result.results), "hosts_updated": updated}
+    return {"ports_found": len(all_results), "hosts_updated": updated, "batches": len(batches)}
 
 
-async def _do_liveness_gate(sf, org_id: str) -> dict:
+async def _do_liveness_gate(sf, org_id: str, target_scope: str | None = None) -> dict:
     """Extension 2: Validate asset liveness after port scanning.
 
     Runs three checks per asset:
@@ -268,11 +374,16 @@ async def _do_liveness_gate(sf, org_id: str) -> dict:
     Routes assets to confirmed_alive / unconfirmed / likely_dead.
     Creates findings for dangling DNS.
     """
-    asset_ids = await _get_asset_ids(sf, org_id)
+    asset_ids = await _get_asset_ids(
+        sf, org_id, target_scope=target_scope, apply_stale=True,
+    )
     if not asset_ids:
-        return {"validated": 0}
+        logger.info("org=%s liveness_gate: no fresh assets to validate", org_id)
+        return {"validated": 0, "skipped_fresh": True}
 
-    assets_data = await _get_assets_with_ports(sf, org_id)
+    assets_data = await _get_assets_with_ports(
+        sf, org_id, target_scope=target_scope, apply_stale=True,
+    )
 
     # Check 2: Quick Naabu recheck on known ports
     port_check_results: dict[str, bool] = {}
@@ -288,10 +399,25 @@ async def _do_liveness_gate(sf, org_id: str) -> dict:
                     all_ports.add(p)
 
         ports_str = ",".join(str(p) for p in sorted(all_ports))
-        runner = NaabuRunner(hosts_with_ports, ports=ports_str, timeout_seconds=3)
-        result = await runner.run(org_id=org_id)
-
-        for entry in result.results:
+        naabu_batches = batch_hosts(hosts_with_ports, LIVENESS_NAABU_BATCH_SIZE)
+        naabu_timeout = BaseRunner.timeout_for_host_count(
+            LIVENESS_NAABU_BATCH_SIZE, per_host_seconds=0.3
+        )
+        logger.info(
+            "org=%s liveness naabu hosts=%d batches=%d concurrency=%d per_batch_timeout=%ds",
+            org_id, len(hosts_with_ports), len(naabu_batches),
+            settings.discovery_batch_concurrency, naabu_timeout,
+        )
+        naabu_results = await run_batches_parallel(
+            build_runner=lambda batch: NaabuRunner(
+                batch, ports=ports_str, timeout_seconds=3, timeout=naabu_timeout,
+            ),
+            batches=naabu_batches,
+            org_id=org_id,
+            concurrency=settings.discovery_batch_concurrency,
+            stage_name="liveness.naabu",
+        )
+        for entry in naabu_results:
             host = (entry.get("host") or entry.get("ip") or "").strip().lower()
             if host:
                 port_check_results[host] = True
@@ -306,9 +432,23 @@ async def _do_liveness_gate(sf, org_id: str) -> dict:
             http_hosts.append(a["hostname"])
 
     if http_hosts:
-        runner = HttpxRunner(http_hosts)
-        result = await runner.run(org_id=org_id)
-        for entry in result.results:
+        httpx_batches = batch_hosts(http_hosts, LIVENESS_HTTPX_BATCH_SIZE)
+        httpx_timeout = BaseRunner.timeout_for_host_count(
+            LIVENESS_HTTPX_BATCH_SIZE, per_host_seconds=0.5
+        )
+        logger.info(
+            "org=%s liveness httpx hosts=%d batches=%d concurrency=%d per_batch_timeout=%ds",
+            org_id, len(http_hosts), len(httpx_batches),
+            settings.discovery_batch_concurrency, httpx_timeout,
+        )
+        httpx_results = await run_batches_parallel(
+            build_runner=lambda batch: HttpxRunner(batch, timeout=httpx_timeout),
+            batches=httpx_batches,
+            org_id=org_id,
+            concurrency=settings.discovery_batch_concurrency,
+            stage_name="liveness.httpx",
+        )
+        for entry in httpx_results:
             host = (entry.get("input") or entry.get("host") or "").strip().lower()
             if host and (entry.get("status_code") or entry.get("status-code")):
                 http_check_results[host] = True
@@ -348,13 +488,13 @@ async def _do_liveness_gate(sf, org_id: str) -> dict:
 
 
 @celery.task(bind=True, name="discovery.run_subfinder")
-def run_subfinder(self, org_id: str) -> dict:
-    return _run_async(_do_subfinder(get_task_session(), org_id))
+def run_subfinder(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_subfinder(get_task_session(), org_id, target_scope=target_scope))
 
 
 @celery.task(bind=True, name="discovery.run_wildcard_bruteforce")
-def run_wildcard_bruteforce(self, org_id: str) -> dict:
-    return _run_async(_do_wildcard_and_bruteforce(get_task_session(), org_id))
+def run_wildcard_bruteforce(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_wildcard_and_bruteforce(get_task_session(), org_id, target_scope=target_scope))
 
 
 @celery.task(bind=True, name="discovery.run_asnmap")
@@ -363,58 +503,83 @@ def run_asnmap(self, org_id: str) -> dict:
 
 
 @celery.task(bind=True, name="discovery.run_uncover")
-def run_uncover(self, org_id: str) -> dict:
-    return _run_async(_do_uncover(get_task_session(), org_id))
+def run_uncover(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_uncover(get_task_session(), org_id, target_scope=target_scope))
 
 
 @celery.task(bind=True, name="discovery.run_dnsx")
-def run_dnsx(self, org_id: str) -> dict:
-    return _run_async(_do_dnsx(get_task_session(), org_id))
+def run_dnsx(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_dnsx(get_task_session(), org_id, target_scope=target_scope))
 
 
 @celery.task(bind=True, name="discovery.run_naabu")
-def run_naabu(self, org_id: str) -> dict:
-    return _run_async(_do_naabu(get_task_session(), org_id))
+def run_naabu(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_naabu(get_task_session(), org_id, target_scope=target_scope))
 
 
 @celery.task(bind=True, name="discovery.run_liveness_gate")
-def run_liveness_gate(self, org_id: str) -> dict:
-    return _run_async(_do_liveness_gate(get_task_session(), org_id))
+def run_liveness_gate(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_liveness_gate(get_task_session(), org_id, target_scope=target_scope))
 
 
 @celery.task(bind=True, name="discovery.run_discovery_chain",
-             soft_time_limit=5400, time_limit=5700)  # 90 min / 95 min
+             soft_time_limit=14400, time_limit=14700)  # 4h / 4h5min — large scans (10k+ assets)
 def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> dict:
-    """Full discovery chain:
-    subfinder → wildcard_bruteforce → asnmap → uncover → dnsx → naabu → liveness_gate.
+    """Full discovery chain, organized into parallel groups.
 
-    Calls runners directly (no subtask dispatch) to avoid Celery deadlocks.
+    Group 1 (parallel): subfinder, wildcard_bruteforce, uncover
+        All three read target_domains and append to assets via idempotent
+        upserts. No inter-step dependency, so they run concurrently.
+
+    Group 2 (parallel): dnsx, naabu
+        Both read hostnames from assets. dnsx writes dns_records; naabu writes
+        open_ports. Disjoint columns → safe to parallelize.
+
+    Group 3 (sequential): liveness_gate
+        Depends on open_ports from naabu, so it runs after Group 2.
+
+    asnmap is deliberately NOT in the chain: the ProjectDiscovery binary
+    requires a PDCP API key and hangs on an interactive stdin prompt when
+    unset, wasting 90s of every scan for zero data. The standalone
+    `discovery.run_asnmap` task is still registered for users who have a
+    key configured and want to invoke it manually.
     """
 
     async def _run():
         sf = get_task_session()
 
-        steps = [
-            ("subfinder", _do_subfinder),
-            ("wildcard_bruteforce", _do_wildcard_and_bruteforce),
-            ("asnmap", _do_asnmap),
-            ("uncover", _do_uncover),
-            ("dnsx", _do_dnsx),
-            ("naabu", _do_naabu),
-            ("liveness_gate", _do_liveness_gate),
+        # Step groups — see the docstring above for the rationale.
+        step_groups: list[list[tuple[str, object]]] = [
+            [
+                ("subfinder", _do_subfinder),
+                ("wildcard_bruteforce", _do_wildcard_and_bruteforce),
+                ("uncover", _do_uncover),
+            ],
+            [
+                ("dnsx", _do_dnsx),
+                ("naabu", _do_naabu),
+            ],
+            [("liveness_gate", _do_liveness_gate)],
         ]
+        # Flat list preserved for step-count bookkeeping.
+        steps = [s for group in step_groups for s in group]
 
+        # Read the target_domain scope + scan_type from scan_runs in a single
+        # query. target_scope is None for nightly full-org scans (no scoping)
+        # and a domain string for user-triggered targeted scans.
+        target_scope: str | None = None
         async with sf() as db:
             if scan_run_id:
-                # Check scan type to set correct total upfront (discovery + enrichment for full scans)
                 row = await db.execute(
-                    text("SELECT scan_type FROM scan_runs WHERE id = :id"),
+                    text("SELECT scan_type, target_domain FROM scan_runs WHERE id = :id"),
                     {"id": scan_run_id},
                 )
                 scan_type_row = row.fetchone()
                 total = len(steps)
-                if scan_type_row and scan_type_row.scan_type == "full":
-                    total += ENRICHMENT_STEP_COUNT
+                if scan_type_row:
+                    if scan_type_row.scan_type == "full":
+                        total += ENRICHMENT_STEP_COUNT
+                    target_scope = scan_type_row.target_domain
 
                 await db.execute(
                     text("""
@@ -430,10 +595,23 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
         results = {}
         stage_log = []
 
-        for i, (step_name, step_fn) in enumerate(steps):
+        async def _run_step(step_name: str, step_fn) -> tuple[str, dict, float, Exception | None]:
+            """Run a single discovery step, capturing duration + errors."""
             step_start = datetime.now(timezone.utc)
+            try:
+                out = await step_fn(get_task_session(), org_id, target_scope=target_scope)
+                duration = (datetime.now(timezone.utc) - step_start).total_seconds()
+                return step_name, out, duration, None
+            except Exception as e:
+                duration = (datetime.now(timezone.utc) - step_start).total_seconds()
+                logger.error("discovery step %s failed for org %s: %s", step_name, org_id, e)
+                return step_name, {"error": str(e)}, duration, e
 
-            # Update current stage
+        step_cursor = 0
+        for group in step_groups:
+            group_names = [name for name, _ in group]
+            first_absolute_idx = step_cursor + 1
+
             if scan_run_id:
                 async with get_task_session()() as db:
                     await db.execute(
@@ -443,26 +621,48 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                                 stage_started_at = :now
                             WHERE id = :id
                         """),
-                        {"id": scan_run_id, "stage": step_name, "idx": i + 1, "now": step_start},
+                        {
+                            "id": scan_run_id,
+                            "stage": (
+                                group_names[0] if len(group) == 1
+                                else "+".join(group_names)
+                            ),
+                            "idx": first_absolute_idx,
+                            "now": datetime.now(timezone.utc),
+                        },
                     )
                     await db.commit()
 
-            try:
-                results[step_name] = await step_fn(get_task_session(), org_id)
-                duration = (datetime.now(timezone.utc) - step_start).total_seconds()
-                stage_log.append({"stage": step_name, "status": "done", "duration_s": round(duration, 1)})
-            except Exception as e:
-                logger.error("discovery step %s failed for org %s: %s", step_name, org_id, e)
-                results[step_name] = {"error": str(e)}
-                duration = (datetime.now(timezone.utc) - step_start).total_seconds()
-                stage_log.append({"stage": step_name, "status": "error", "duration_s": round(duration, 1), "error": str(e)})
+            logger.info("org=%s discovery group starting: %s", org_id, group_names)
+            group_outputs = await asyncio.gather(
+                *(_run_step(name, fn) for name, fn in group),
+                return_exceptions=False,  # _run_step already traps exceptions
+            )
 
-            # Persist stage_log so frontend can show completed steps
+            for step_name, out, duration, _err in group_outputs:
+                results[step_name] = out
+                stage_log.append({
+                    "stage": step_name,
+                    "status": "error" if _err else "done",
+                    "duration_s": round(duration, 1),
+                    **({"error": str(_err)} if _err else {}),
+                })
+
+            step_cursor += len(group)
+
             if scan_run_id:
                 async with get_task_session()() as db:
                     await db.execute(
-                        text("UPDATE scan_runs SET stage_log = :log WHERE id = :id"),
-                        {"id": scan_run_id, "log": json.dumps(stage_log)},
+                        text("""
+                            UPDATE scan_runs SET
+                                stage_log = :log, stage_index = :idx
+                            WHERE id = :id
+                        """),
+                        {
+                            "id": scan_run_id,
+                            "log": json.dumps(stage_log),
+                            "idx": step_cursor,
+                        },
                     )
                     await db.commit()
 

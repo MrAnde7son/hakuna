@@ -1,51 +1,26 @@
 {
-  "_comment": "CPE inference mapping table. Maps tech-detection signals (httpx -tech-detect tokens, HTTP Server header substrings, TLS cert subject CNs) to CPE 2.3 vendor:product pairs. CONTRACT: every {vendor, product} pair emitted from this file MUST exist as a key in hakuna-vm-scanner/templates/routing_table.json `cpe_map`. The regression test in tests/test_cpe_router_contract.py enforces this.",
+  "_comment": "CPE inference aliases. The inference layer in cpe_infer.py is open-ended: for every Server header or httpx tech-detect token, it emits a CPE with vendor=product=token (lowercased) by default. This file lists only the exceptions where the common name differs from the NVD canonical product name — for example, the Server header 'Apache/2.4.49' should become 'apache:http_server', not 'apache:apache'. Adding an entry here is optional; omitting one just means the token is emitted as-is and the matcher in backend/services/cpe_matcher.py does its own fuzzy matching against NVD. Exact vendor identity only matters for Nuclei template routing via hakuna-vm-scanner/templates/routing_table.json; CVE correlation ignores vendor entirely.",
 
-  "tech_to_cpe": {
-    "nginx":                {"vendor": "nginx",      "product": "nginx"},
-    "apache":               {"vendor": "apache",     "product": "http_server"},
-    "apache httpd":         {"vendor": "apache",     "product": "http_server"},
-    "apache http server":   {"vendor": "apache",     "product": "http_server"},
-    "tomcat":               {"vendor": "apache",     "product": "tomcat"},
-    "apache tomcat":        {"vendor": "apache",     "product": "tomcat"},
-    "iis":                  {"vendor": "microsoft",  "product": "iis"},
-    "microsoft-iis":        {"vendor": "microsoft",  "product": "iis"},
-
-    "php":                  {"vendor": "php",        "product": "php"},
-
-    "mysql":                {"vendor": "oracle",     "product": "mysql"},
-    "postgresql":           {"vendor": "postgresql", "product": "postgresql"},
-    "postgres":             {"vendor": "postgresql", "product": "postgresql"},
-    "redis":                {"vendor": "redis",      "product": "redis"},
-    "mongodb":              {"vendor": "mongodb",    "product": "mongodb"},
-    "elasticsearch":        {"vendor": "elastic",    "product": "elasticsearch"},
-
-    "wordpress":            {"vendor": "wordpress",  "product": "wordpress"},
-    "jenkins":              {"vendor": "jenkins",    "product": "jenkins"},
-    "grafana":              {"vendor": "grafana",    "product": "grafana"},
-
-    "outlook web app":      {"vendor": "microsoft",  "product": "exchange"},
-    "exchange server":      {"vendor": "microsoft",  "product": "exchange"},
-    "owa":                  {"vendor": "microsoft",  "product": "exchange"},
-
-    "openssh":              {"vendor": "openssh",    "product": "openssh"},
-    "openssl":              {"vendor": "openssl",    "product": "openssl"},
-    "docker":               {"vendor": "docker",     "product": "docker"},
-    "docker registry":      {"vendor": "docker",     "product": "docker"},
-    "consul":               {"vendor": "hashicorp",  "product": "consul"},
-    "vault":                {"vendor": "hashicorp",  "product": "vault"}
+  "token_aliases": {
+    "apache":              {"vendor": "apache",     "product": "http_server"},
+    "apache httpd":        {"vendor": "apache",     "product": "http_server"},
+    "apache http server":  {"vendor": "apache",     "product": "http_server"},
+    "apache-coyote":       {"vendor": "apache",     "product": "tomcat"},
+    "apache tomcat":       {"vendor": "apache",     "product": "tomcat"},
+    "microsoft-iis":       {"vendor": "microsoft",  "product": "iis"},
+    "iis":                 {"vendor": "microsoft",  "product": "iis"},
+    "outlook web app":     {"vendor": "microsoft",  "product": "exchange"},
+    "owa":                 {"vendor": "microsoft",  "product": "exchange"},
+    "exchange server":     {"vendor": "microsoft",  "product": "exchange"},
+    "mysql":               {"vendor": "oracle",     "product": "mysql"},
+    "postgres":            {"vendor": "postgresql", "product": "postgresql"},
+    "elasticsearch":       {"vendor": "elastic",    "product": "elasticsearch"},
+    "docker registry":     {"vendor": "docker",     "product": "docker"},
+    "consul":              {"vendor": "hashicorp",  "product": "consul"},
+    "vault":               {"vendor": "hashicorp",  "product": "vault"}
   },
 
-  "server_header_to_cpe": [
-    {"match": "microsoft-iis", "vendor": "microsoft", "product": "iis"},
-    {"match": "apache-coyote", "vendor": "apache",    "product": "tomcat"},
-    {"match": "apache",        "vendor": "apache",    "product": "http_server"},
-    {"match": "nginx",         "vendor": "nginx",     "product": "nginx"},
-    {"match": "openssh",       "vendor": "openssh",   "product": "openssh"},
-    {"match": "jenkins",       "vendor": "jenkins",   "product": "jenkins"}
-  ],
-
-  "tls_subject_to_cpe": [
+  "tls_subject_aliases": [
     {"match": "jenkins", "vendor": "jenkins", "product": "jenkins"}
   ]
 }

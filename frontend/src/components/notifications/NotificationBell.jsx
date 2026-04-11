@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Bell, X, Check, CheckCheck, ShieldAlert, Server, Scan, Target, AlertTriangle, Skull, Clock } from 'lucide-react'
+import { Bell, X, Check, CheckCheck, ShieldAlert, Server, Scan, Target, AlertTriangle, Skull, Clock, XCircle } from 'lucide-react'
 import { getNotifications, getUnreadNotificationCount, markNotificationRead, markAllNotificationsRead } from '../../api'
 
 const POLL_INTERVAL = 60_000 // 60s
 const CATEGORY_CONFIG = {
   scan_complete:     { icon: Scan,          color: '#2563eb' },
+  scan_failed:       { icon: XCircle,       color: '#dc2626' },
   critical_findings: { icon: ShieldAlert,   color: '#dc2626' },
   new_assets:        { icon: Server,        color: '#16a34a' },
   kev_update:        { icon: AlertTriangle, color: '#ea580c' },

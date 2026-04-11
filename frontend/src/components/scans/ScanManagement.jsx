@@ -677,6 +677,7 @@ function SourceOption({ icon: Icon, label, description, color, disabled, disable
 // ── EASM scan status badge ────────────────────────────────────────────
 
 const STAGE_LABELS = {
+  // Individual steps
   subfinder: 'Subdomain Discovery',
   wildcard_bruteforce: 'Wildcard Check',
   asnmap: 'ASN Mapping',
@@ -689,14 +690,39 @@ const STAGE_LABELS = {
   cdncheck: 'CDN Detection',
   katana: 'Web Crawling',
   nmap_dispatch: 'Fingerprinting',
+  // Composite stage names emitted by the discovery/enrichment chains when
+  // multiple steps run in parallel under a single UI banner. These match
+  // the exact strings the scanner writes to scan_runs.current_stage.
+  'subfinder+wildcard_bruteforce+uncover': 'Subdomain Discovery',
+  'dnsx+naabu': 'DNS + Port Scanning',
+  'tlsx+httpx+cdncheck': 'Service Inspection',
+}
+
+// Given a stage value from scan_runs.current_stage (either a single step
+// like "liveness_gate" or a composite like "dnsx+naabu"), return the set of
+// individual step names it contains. Used by the progress-bar to figure out
+// which dots should be highlighted as active when a parallel group is running.
+function stageMembers(stage) {
+  if (!stage) return new Set()
+  return new Set(stage.split('+'))
 }
 
 function EasmStatusBadge({ status, metadata }) {
   if (!status || status === 'completed') return null
-  const isRunning = status === 'running' || status === 'queued'
+  // A scan is "queued" when Celery has accepted the task but no worker has
+  // picked it up yet (stage_index=0, started_at=NULL on the backend). It's
+  // visually distinct from "running" — no spinner, amber-ish tint — so
+  // users understand the scan hasn't actually started yet, usually because
+  // worker concurrency is saturated by other scans.
+  const isQueued = status === 'queued'
+  const isRunning = status === 'running'
   const isFailed = status === 'failed' || status === 'error'
   const isCompletedWithErrors = status === 'completed_with_errors'
-  const color = isRunning ? '#0ea5e9' : isFailed ? '#dc2626' : isCompletedWithErrors ? '#f59e0b' : '#a78bfa'
+  const color = isQueued ? '#f59e0b'
+    : isRunning ? '#0ea5e9'
+    : isFailed ? '#dc2626'
+    : isCompletedWithErrors ? '#f59e0b'
+    : '#a78bfa'
 
   const stage = metadata?.current_stage
   const stageIndex = metadata?.stage_index || 0
@@ -708,7 +734,10 @@ function EasmStatusBadge({ status, metadata }) {
   const isVm = totalJobs > 0 && !stage
 
   const stageLabel = stage ? (STAGE_LABELS[stage] || stage) : null
-  const label = isFailed ? 'Failed' : isCompletedWithErrors ? 'Partial' : !isRunning ? status : null
+  const label = isQueued ? 'Queued'
+    : isFailed ? 'Failed'
+    : isCompletedWithErrors ? 'Partial'
+    : (!isRunning ? status : null)
 
   return (
     <span style={{
@@ -741,15 +770,25 @@ function ScanProgressBar({ metadata }) {
 
   if (!stage && stageLog.length === 0) return null
 
-  // Build combined step list from scan type context
-  // Discovery has 7 steps, enrichment has 5
-  const discoverySteps = ['subfinder', 'wildcard_bruteforce', 'asnmap', 'uncover', 'dnsx', 'naabu', 'liveness_gate']
+  // Build combined step list. Discovery has 6 steps (asnmap was removed —
+  // the ProjectDiscovery binary hangs on an interactive API-key prompt and
+  // was wasting 90s per scan for zero data). Enrichment has 5.
+  const discoverySteps = ['subfinder', 'wildcard_bruteforce', 'uncover', 'dnsx', 'naabu', 'liveness_gate']
   const enrichmentSteps = ['tlsx', 'httpx', 'cdncheck', 'katana', 'nmap_dispatch']
 
-  // Determine which pipeline we're in based on current stage or log
-  const allKnownStages = [...stageLog.map(s => s.stage), stage].filter(Boolean)
+  // Stage names in the DB can be composites like "dnsx+naabu" when multiple
+  // steps ran concurrently. Flatten the current stage + every stage_log
+  // entry into individual step names before deciding which pipeline we're in.
+  const stageLogMembers = stageLog.flatMap(s => [...stageMembers(s.stage)])
+  const currentMembers = [...stageMembers(stage)]
+  const allKnownStages = [...stageLogMembers, ...currentMembers]
   const isEnrichment = allKnownStages.some(s => enrichmentSteps.includes(s))
   const isDiscovery = allKnownStages.some(s => discoverySteps.includes(s))
+
+  // Members of the currently-running group. When the scanner is in a
+  // parallel group like "dnsx+naabu", every member dot should highlight
+  // as active, not just one.
+  const activeMembers = stageMembers(stage)
 
   // For a "full" scan, show both pipelines
   const steps = isDiscovery && !isEnrichment
@@ -758,8 +797,14 @@ function ScanProgressBar({ metadata }) {
     ? enrichmentSteps
     : [...discoverySteps, ...enrichmentSteps]
 
-  const completedStages = new Set(stageLog.filter(s => s.status === 'done').map(s => s.stage))
-  const errorStages = new Set(stageLog.filter(s => s.status === 'error').map(s => s.stage))
+  // stage_log entries can also be composite (e.g. the chain writes one
+  // entry per step, not per group, but defensive split handles both shapes).
+  const completedStages = new Set(
+    stageLog.filter(s => s.status === 'done').flatMap(s => [...stageMembers(s.stage)])
+  )
+  const errorStages = new Set(
+    stageLog.filter(s => s.status === 'error').flatMap(s => [...stageMembers(s.stage)])
+  )
   const pct = totalStages > 0 ? Math.round(((stageIndex - 1) / totalStages) * 100) : 0
 
   // Estimate time remaining: elapsed / completed% = total → remaining = total - elapsed
@@ -799,7 +844,10 @@ function ScanProgressBar({ metadata }) {
         {steps.map((step, i) => {
           const isDone = completedStages.has(step)
           const isError = errorStages.has(step)
-          const isActive = step === stage
+          // A step is "active" if it's the current single stage OR a member
+          // of the currently-running composite group (e.g. "dnsx+naabu"
+          // → both dnsx and naabu light up simultaneously).
+          const isActive = activeMembers.has(step)
           const color = isDone ? '#22c55e' : isError ? '#dc2626' : isActive ? '#0ea5e9' : 'var(--border)'
 
           return (
@@ -915,7 +963,9 @@ function ScanRunHistory({ expanded, domain }) {
                 }}>
                   {(run.status === 'running' && run.current_stage)
                     ? `${STAGE_LABELS[run.current_stage] || run.current_stage} (${run.stage_index}/${run.total_stages})`
-                    : run.status}
+                    : run.status === 'queued'
+                      ? 'queued'
+                      : run.status}
                 </span>
               </div>
               {run.error && (

@@ -12,10 +12,11 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_db
-from app.models.asset import Asset
+from app.models.asset import Asset, AssetPort
 
 router = APIRouter(prefix="/api/v1/orgs/{org_id}/assets", tags=["assets"])
 
@@ -49,6 +50,11 @@ class AssetResponse(BaseModel):
     source: str | None = None
     nessus_asset_id: str | None = None
     liveness_state: str = "unconfirmed"
+    # Aggregated across all asset_ports rows for this asset. Populated by
+    # the CPE inference layer (ingest/cpe_infer.py) during httpx storage.
+    # Consumers (e.g. backend EASM → CVE correlator) use these to look up
+    # matching CVEs in threat intel.
+    cpe_list: list[str] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -61,6 +67,49 @@ class AssetStats(BaseModel):
     with_expired_cert: int
 
 
+def _asset_to_response(asset: Asset) -> AssetResponse:
+    """Build an AssetResponse including CPEs aggregated across asset_ports.
+
+    Assumes ``asset.ports`` has been eager-loaded via ``selectinload`` — if it
+    hasn't, the attribute access triggers a lazy load which is fine for single-
+    asset endpoints but catastrophic for list endpoints (N+1).
+    """
+    cpes: set[str] = set()
+    for port in (asset.ports or []):
+        if port.cpe_list:
+            # cpe_list is a JSONB list[str]; tolerate bad data
+            if isinstance(port.cpe_list, list):
+                cpes.update(str(c) for c in port.cpe_list if c)
+    return AssetResponse.model_validate(
+        {
+            "id": asset.id,
+            "org_id": asset.org_id,
+            "hostname": asset.hostname,
+            "ip": asset.ip,
+            "asn": asset.asn,
+            "asn_org": asset.asn_org,
+            "open_ports": asset.open_ports,
+            "services": asset.services,
+            "http_status": asset.http_status,
+            "http_title": asset.http_title,
+            "http_url": asset.http_url,
+            "tech_stack": asset.tech_stack,
+            "cdn_provider": asset.cdn_provider,
+            "waf": asset.waf,
+            "tls_cert": asset.tls_cert,
+            "dns_records": asset.dns_records,
+            "tags": asset.tags,
+            "first_seen": asset.first_seen,
+            "last_seen": asset.last_seen,
+            "last_enriched": asset.last_enriched,
+            "source": asset.source,
+            "nessus_asset_id": asset.nessus_asset_id,
+            "liveness_state": asset.liveness_state,
+            "cpe_list": sorted(cpes) if cpes else None,
+        }
+    )
+
+
 @router.get("", response_model=list[AssetResponse])
 async def list_assets(
     org_id: uuid.UUID,
@@ -71,7 +120,12 @@ async def list_assets(
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
-    q = select(Asset).where(Asset.org_id == org_id)
+    # Eager-load ports so _asset_to_response can aggregate cpe_list without N+1.
+    q = (
+        select(Asset)
+        .where(Asset.org_id == org_id)
+        .options(selectinload(Asset.ports))
+    )
 
     if tag:
         q = q.where(Asset.tags.any(tag))
@@ -82,7 +136,7 @@ async def list_assets(
 
     q = q.order_by(Asset.last_seen.desc()).limit(limit).offset(offset)
     result = await db.execute(q)
-    return result.scalars().all()
+    return [_asset_to_response(a) for a in result.scalars().all()]
 
 
 @router.get("/stats", response_model=AssetStats)
@@ -115,12 +169,14 @@ async def asset_stats(org_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 @router.get("/{asset_id}", response_model=AssetResponse)
 async def get_asset(org_id: uuid.UUID, asset_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(Asset).where(Asset.id == asset_id, Asset.org_id == org_id)
+        select(Asset)
+        .where(Asset.id == asset_id, Asset.org_id == org_id)
+        .options(selectinload(Asset.ports))
     )
     asset = result.scalar_one_or_none()
     if not asset:
         raise HTTPException(404, "Asset not found")
-    return asset
+    return _asset_to_response(asset)
 
 
 @router.get("/{asset_id}/screenshot")

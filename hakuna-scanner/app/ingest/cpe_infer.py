@@ -1,30 +1,36 @@
 """CPE inference — derive CPE 2.3 strings from httpx + tlsx fingerprints.
 
-Why this exists
+Strategy
+--------
+The inference layer is open-ended: for every Server header token or httpx
+``-tech-detect`` token it sees, it emits a CPE 2.3 string of the form
+``cpe:2.3:a:{token}:{token}:{version}:*``, where ``{token}`` is the lowercased
+identifier and ``{version}`` is extracted opportunistically.
+
+A small alias table (``cpe_map.json``) handles the handful of cases where the
+common-name token doesn't match the NVD canonical product — e.g. the Server
+header ``Apache/2.4.49`` should become ``apache:http_server``, not
+``apache:apache``. Anything not in the alias table is emitted as-is.
+
+Why open-ended?
 ---------------
-Pipeline B's Nuclei router (hakuna-vm-scanner/scanner/vm/router.py) selects
-templates by CPE first. Without an inference layer, ``asset_ports.cpe_list``
-is only populated by libnmap on the small subset of ports nmap can identify
-— the rest of the web tier reaches the router with cpe_list = NULL and
-falls through to the generic ``"generic,exposure"`` tag set.
+``services.cpe_matcher.match_cves_for_cpes`` feeds the product+version into
+``services.downstream_impact._query_threat_intel_cves``, which queries
+``ThreatCVE.affected_products`` via ``LIKE`` + a slug matcher. Vendor is
+ignored. That means the inference layer only needs to get the *product name*
+right — emitting a speculative CPE for an unknown product costs one empty
+SQL lookup and nothing else, and covers the long tail of web servers (Yaws,
+Caddy, LiteSpeed, Gunicorn, OpenResty, …) that a hand-curated allow-list
+would miss.
 
-This module bridges that gap. It takes the data already captured by httpx
-and tlsx, runs a small hand-curated mapping table over it, and emits CPE
-2.3 strings that match the routing_table.json `cpe_map` keys.
-
-Routing only uses vendor:product (router.py:157), so version-accurate CPEs
-are not required — emitting ``cpe:2.3:a:nginx:nginx:*:*:*:*:*:*:*:*`` is
-fully sufficient to route templates. Versions are extracted opportunistically
-when trivially available, for future CVE correlation.
-
-Usage
------
-    from app.ingest.cpe_infer import infer_cpes
-    cpes = infer_cpes(httpx_entry, tls_cert=tls_cert_for_host)
-
-The function is pure: no I/O, no DB, no exceptions on empty input. The map
-file is loaded once at module import.
+Nuclei template routing (``hakuna-vm-scanner/scanner/vm/router.py``) reads
+the same ``cpe_list`` but silently ignores vendor:product pairs it doesn't
+know — so "extra" CPEs don't break routing, they just don't trigger any tag
+expansion. That decouples CVE correlation (needs broad coverage) from
+routing (needs a curated template set).
 """
+
+from __future__ import annotations
 
 import json
 import logging
@@ -34,8 +40,23 @@ import re
 logger = logging.getLogger(__name__)
 
 _MAP_PATH = os.path.join(os.path.dirname(__file__), "cpe_map.json")
+# First token + optional version. Separator is "/" or " " so both
+# "nginx/1.18.0" and "Yaws 2.0.6" parse.
 _SERVER_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)(?:[/ ]([0-9][0-9A-Za-z._\-]*))?")
 _VERSION_SAFE_RE = re.compile(r"^[0-9][0-9A-Za-z._\-]*$")
+# Strip characters outside the CPE-product-name safe set. Applied after
+# lowercasing, so this also collapses whitespace and punctuation that crept
+# into the token (e.g. trailing commas).
+_TOKEN_SAFE_RE = re.compile(r"[^a-z0-9_.\-]")
+
+# Tokens that are too generic to produce useful CVE correlation. These are
+# typically deployment labels ("server", "unknown") rather than product
+# names, and would produce noisy LIKE matches against every CVE description
+# that happens to mention them. Keep this list short — Option 2 (NVD-derived
+# product index) will do the real filtering.
+_TOKEN_DENYLIST = frozenset({
+    "server", "unknown", "none", "http", "https", "web", "httpd",
+})
 
 
 def _load_map() -> dict:
@@ -44,85 +65,134 @@ def _load_map() -> dict:
             data = json.load(f)
     except (OSError, json.JSONDecodeError) as exc:
         logger.error("cpe_infer: failed to load %s: %s", _MAP_PATH, exc)
-        return {"tech_to_cpe": {}, "server_header_to_cpe": [], "tls_subject_to_cpe": []}
+        return {"token_aliases": {}, "tls_subject_aliases": []}
 
-    # Normalize: lowercase tech_to_cpe keys, lowercase substring matchers.
-    tech = {k.lower(): v for k, v in (data.get("tech_to_cpe") or {}).items()}
-    headers = [
-        {**entry, "match": entry["match"].lower()}
-        for entry in (data.get("server_header_to_cpe") or [])
-        if "match" in entry
-    ]
-    subjects = [
-        {**entry, "match": entry["match"].lower()}
-        for entry in (data.get("tls_subject_to_cpe") or [])
-        if "match" in entry
-    ]
     return {
-        "tech_to_cpe": tech,
-        "server_header_to_cpe": headers,
-        "tls_subject_to_cpe": subjects,
+        "token_aliases": {
+            k.lower(): v for k, v in (data.get("token_aliases") or {}).items()
+        },
+        "tls_subject_aliases": [
+            {**entry, "match": entry["match"].lower()}
+            for entry in (data.get("tls_subject_aliases") or [])
+            if "match" in entry
+        ],
     }
 
 
 _MAP = _load_map()
 
 
+def _sanitize_version(version: str) -> str:
+    if not version:
+        return "*"
+    return version if _VERSION_SAFE_RE.match(version) else "*"
+
+
+def _sanitize_token(token: str) -> str:
+    """Normalize a token for use in a CPE segment: lowercase, drop unsafe chars."""
+    return _TOKEN_SAFE_RE.sub("", token.strip().lower())
+
+
 def _format_cpe(vendor: str, product: str, version: str = "*") -> str:
-    """Build a CPE 2.3 application string. Versions are sanitized."""
-    if version != "*" and not _VERSION_SAFE_RE.match(version):
-        version = "*"
     return f"cpe:2.3:a:{vendor}:{product}:{version}:*:*:*:*:*:*:*"
 
 
-def _emit(cpes: list[str], seen: set[str], vendor: str, product: str, version: str = "*") -> None:
-    """Append a CPE if (vendor, product) not yet emitted. Dedup ignores version."""
+def _emit(
+    cpes: list[str],
+    seen: set[str],
+    vendor: str,
+    product: str,
+    version: str = "*",
+) -> None:
+    """Append a CPE if (vendor, product) has not been emitted yet.
+    Dedup ignores version — first-seen version wins for a given pair."""
+    if not vendor or not product:
+        return
     key = f"{vendor}:{product}"
     if key in seen:
         return
     seen.add(key)
-    cpes.append(_format_cpe(vendor, product, version))
+    cpes.append(_format_cpe(vendor, product, _sanitize_version(version)))
+
+
+def _resolve_token(
+    token: str, version: str, cpes: list[str], seen: set[str],
+) -> None:
+    """Resolve one (token, version) pair into an emitted CPE.
+
+    Precedence:
+      1. Exact alias hit on the lowercased token (multi-word aliases allowed).
+      2. First-word alias hit, for unknown multi-word tokens.
+      3. Open-ended emission with (vendor=product=sanitized_token).
+
+    Empty tokens and deny-listed tokens are dropped silently.
+    """
+    if not token:
+        return
+    key = token.strip().lower()
+    if not key or key in _TOKEN_DENYLIST:
+        return
+
+    aliases = _MAP["token_aliases"]
+    alias = aliases.get(key)
+    if alias:
+        _emit(cpes, seen, alias["vendor"], alias["product"], version)
+        return
+
+    # Fall back to the first whitespace-delimited word for unknown multi-word
+    # tokens like "Foo Bar Server 1.2".
+    first = key.split()[0] if " " in key else key
+    if first != key:
+        alias = aliases.get(first)
+        if alias:
+            _emit(cpes, seen, alias["vendor"], alias["product"], version)
+            return
+
+    if first in _TOKEN_DENYLIST:
+        return
+    safe = _sanitize_token(first)
+    if not safe or safe in _TOKEN_DENYLIST:
+        return
+    _emit(cpes, seen, safe, safe, version)
 
 
 def _from_tech_tokens(tech: object, cpes: list[str], seen: set[str]) -> None:
-    """httpx -tech-detect output. Tokens are typically just names ('Nginx'),
-    occasionally name:version ('Nginx:1.18.0')."""
+    """httpx -tech-detect output. Tokens like 'Nginx' or 'Nginx:1.18.0',
+    occasionally a dict {'Nginx': '1.18.0'}."""
     if not tech:
         return
     if isinstance(tech, dict):
-        tokens = list(tech.keys())
+        pairs = [(str(k), str(v) if v else "") for k, v in tech.items()]
     elif isinstance(tech, list):
-        tokens = [str(t) for t in tech]
+        pairs = []
+        for t in tech:
+            tok = str(t)
+            name, _, version = tok.partition(":")
+            pairs.append((name, version))
     else:
         return
 
-    table = _MAP["tech_to_cpe"]
-    for tok in tokens:
-        if not tok:
-            continue
-        name, _, version = tok.partition(":")
-        hit = table.get(name.strip().lower())
-        if hit:
-            _emit(cpes, seen, hit["vendor"], hit["product"], version.strip() or "*")
+    for name, version in pairs:
+        _resolve_token(name, version or "*", cpes, seen)
 
 
 def _from_server_header(server: str, cpes: list[str], seen: set[str]) -> None:
-    """HTTP Server header. e.g. 'nginx/1.18.0 (Ubuntu)' or 'Microsoft-IIS/10.0'."""
+    """HTTP Server header, e.g. 'nginx/1.18.0 (Ubuntu)', 'Yaws 2.0.6'."""
     if not server:
         return
-    server_lower = server.lower()
     m = _SERVER_RE.match(server)
-    version = (m.group(2) or "*") if m else "*"
+    if not m:
+        return
+    token = m.group(1) or ""
+    version = m.group(2) or "*"
+    _resolve_token(token, version, cpes, seen)
 
-    for entry in _MAP["server_header_to_cpe"]:
-        if entry["match"] in server_lower:
-            _emit(cpes, seen, entry["vendor"], entry["product"], version)
-            break  # first match wins — keep ordering meaningful
 
-
-def _from_tls_subject(tls_cert: dict | None, cpes: list[str], seen: set[str]) -> None:
-    """TLS cert subject CN. Most certs are hostname-issued, so this rarely fires.
-    Only matches when the subject string contains a known appliance/product token."""
+def _from_tls_subject(
+    tls_cert: dict | None, cpes: list[str], seen: set[str],
+) -> None:
+    """TLS cert subject CN. Most certs are hostname-issued so this rarely
+    fires. Only matches when the subject contains a known appliance token."""
     if not tls_cert:
         return
     subject = tls_cert.get("subject") or tls_cert.get("subject_dn") or ""
@@ -130,28 +200,21 @@ def _from_tls_subject(tls_cert: dict | None, cpes: list[str], seen: set[str]) ->
         return
     subject_lower = subject.lower()
 
-    for entry in _MAP["tls_subject_to_cpe"]:
+    for entry in _MAP["tls_subject_aliases"]:
         if entry["match"] in subject_lower:
             _emit(cpes, seen, entry["vendor"], entry["product"])
 
 
-def infer_cpes(httpx_entry: dict | None, tls_cert: dict | None = None) -> list[str]:
+def infer_cpes(
+    httpx_entry: dict | None, tls_cert: dict | None = None,
+) -> list[str]:
     """Derive CPE 2.3 strings from a httpx JSON entry and optional TLS cert.
 
-    Parameters
-    ----------
-    httpx_entry
-        A single line of httpx JSON output. May contain ``tech``, ``webserver``
-        / ``web_server``, etc. Tolerates None and missing fields.
-    tls_cert
-        Optional dict with ``subject`` / ``issuer`` keys, as stored in
-        ``asset_ports.tls_cert`` by tlsx ingest.
+    The inference layer is open-ended: any Server header or tech token
+    becomes a CPE unless it is on the deny-list or empty after normalization.
+    See the module docstring for the rationale.
 
-    Returns
-    -------
-    list[str]
-        Ordered, deduped list of CPE 2.3 strings. Empty list when nothing
-        matched. Never raises.
+    Returns an ordered, deduped list. Never raises.
     """
     cpes: list[str] = []
     seen: set[str] = set()

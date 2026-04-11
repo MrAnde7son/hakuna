@@ -30,6 +30,11 @@ samples = [
      "/findings?scan_id=1", "scan", 1,
      {"assets": 142, "findings": 1847, "scan_name": "Q1 Internal Scan"}),
 
+    ("scan_failed", "EASM scan 'tenable.com' failed",
+     "Scanner: subfinder exited with code 1",
+     "/settings?tab=upload", "scan", 1,
+     {"scan_name": "tenable.com", "domain": "tenable.com", "source_type": "easm", "phase": "scanner"}),
+
     ("critical_findings", "23 critical/high findings in 'Q1 Internal Scan'",
      None, "/findings?scan_id=1&severity=3,4", "scan", 1,
      {"count": 23, "scan_name": "Q1 Internal Scan"}),

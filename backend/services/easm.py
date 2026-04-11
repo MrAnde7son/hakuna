@@ -28,6 +28,54 @@ logger = logging.getLogger(__name__)
 HAKUNA_BASE_URL = os.getenv("HAKUNA_SCANNER_URL", "http://localhost:8001")
 
 
+# ── Shared HTTP client for scanner calls ────────────────────────────
+#
+# Historical behavior (before 2026-04): every call to the scanner instantiated
+# a fresh `httpx.AsyncClient`, which paid a TCP handshake + new connection
+# pool setup per request. On orgs with active UI polling (scan-runs, status,
+# domains refreshed every few seconds) this added ~100-300ms per call and
+# made the backend brittle to scanner restarts — any in-flight connection
+# would surface as `httpx.ReadError('')` because the per-call client had no
+# retry policy and nothing to reuse.
+#
+# Now: a single module-level `AsyncClient` is created lazily on first use
+# (you can't construct one at import time because httpx wants an event loop),
+# and every call reuses its connection pool. Transient errors get one retry
+# via `_hakuna_request_detailed` below.
+_hakuna_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_hakuna_client() -> httpx.AsyncClient:
+    """Return the module-level shared AsyncClient, constructing it lazily.
+
+    Safe to call from any async context; the first call creates it and
+    subsequent calls reuse the same instance (and connection pool).
+    """
+    global _hakuna_client
+    if _hakuna_client is None:
+        _hakuna_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=5.0),
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
+    return _hakuna_client
+
+
+async def close_hakuna_client() -> None:
+    """Close the shared client. Call from FastAPI's shutdown hook.
+
+    Not strictly required — AsyncClient cleans up its transport when
+    garbage-collected — but pairing an explicit close with the app lifecycle
+    keeps logs quiet on graceful shutdown.
+    """
+    global _hakuna_client
+    if _hakuna_client is not None:
+        try:
+            await _hakuna_client.aclose()
+        except Exception:  # pragma: no cover - best-effort cleanup
+            pass
+        _hakuna_client = None
+
+
 def _extract_core_name(name: str) -> list[str]:
     """Extract candidate domain names from a company name.
 
@@ -151,11 +199,60 @@ def _associate_subsidiary_domains(db: Session, org_id: int):
         logger.info("Associated domains for %d entities", updated)
 
 
+def _emit_easm_scan_failed_notification(
+    db: Session,
+    org_id: int,
+    scan: Scan,
+    domain: Optional[str],
+    error_msg: str,
+    phase: str,
+) -> None:
+    """Fire-and-forget scan_failed notification for an EASM scan.
+
+    Kept separate from the main flow so notification failures never mask the
+    underlying scan failure. `phase` is either "import" (failure while we were
+    ingesting assets into the platform) or "scanner" (failure reported by the
+    remote hakuna-scanner worker).
+    """
+    try:
+        from services.notifications import create_notification
+        scan_label = scan.scan_name or domain or f"scan #{scan.id}"
+        title_suffix = " during import" if phase == "import" else ""
+        create_notification(
+            db, org_id, "scan_failed",
+            f"EASM scan '{scan_label}' failed{title_suffix}",
+            body=(error_msg or "")[:200],
+            link="/settings?tab=upload",
+            entity_type="scan", entity_id=scan.id,
+            metadata={
+                "scan_name": scan_label,
+                "domain": domain,
+                "source_type": "easm",
+                "phase": phase,
+                "error": (error_msg or "")[:500],
+            },
+        )
+        db.commit()
+    except Exception:
+        logger.exception(
+            f"Failed to emit EASM scan_failed notification for scan_id={scan.id} (non-fatal)"
+        )
+
+
 def _clear_scan_data(db: Session, scan_id: int):
     """Delete all findings, dependents, and non-shared assets for a scan.
 
     Deletes dependent rows first to avoid FK constraint violations.
+
+    Preserves any asset with non-EASM provenance — either referenced by
+    findings from another scan, or carrying source_systems/observations
+    from a non-EASM source (e.g. a Cloudflare connector contributed facts
+    without creating findings). Without this guard, re-running an EASM
+    scan cascade-deletes AssetObservation rows and wipes source_systems
+    entries that other integrations accumulated onto the asset.
     """
+    from models.models import AssetObservation
+
     is_sqlite = db.bind.dialect.name == "sqlite"
     if is_sqlite:
         db.execute(sa_text("PRAGMA foreign_keys=OFF"))
@@ -167,17 +264,50 @@ def _clear_scan_data(db: Session, scan_id: int):
                 db.query(model).filter(model.finding_id.in_(finding_ids)).delete(synchronize_session=False)
         db.query(Finding).filter(Finding.scan_id == scan_id).delete(synchronize_session=False)
 
-        # Delete assets not referenced by findings from other scans
-        cross_scan_asset_ids = {
+        # Collect asset IDs to preserve (any non-EASM provenance)
+        scan_asset_ids = {r[0] for r in db.query(Asset.id).filter(Asset.scan_id == scan_id).all()}
+        if not scan_asset_ids:
+            db.flush()
+            return
+
+        preserve_ids = set()
+
+        # 1. Referenced by findings from another scan
+        preserve_ids.update(
             r[0] for r in db.query(Finding.asset_id).filter(
-                Finding.asset_id.in_(db.query(Asset.id).filter(Asset.scan_id == scan_id)),
+                Finding.asset_id.in_(scan_asset_ids),
                 Finding.scan_id != scan_id,
             ).all()
-        }
+        )
+
+        # 2. Carries source_systems from a source other than "easm"
+        for asset in db.query(Asset).filter(Asset.id.in_(scan_asset_ids)).all():
+            sources = asset.source_systems or []
+            if any(s and s != "easm" for s in sources):
+                preserve_ids.add(asset.id)
+
+        # 3. Has an observation row from a non-EASM source
+        preserve_ids.update(
+            r[0] for r in db.query(AssetObservation.asset_id).filter(
+                AssetObservation.asset_id.in_(scan_asset_ids),
+                AssetObservation.source_system != "easm",
+            ).all()
+        )
+
         q_del = db.query(Asset).filter(Asset.scan_id == scan_id)
-        if cross_scan_asset_ids:
-            q_del = q_del.filter(~Asset.id.in_(cross_scan_asset_ids))
+        if preserve_ids:
+            q_del = q_del.filter(~Asset.id.in_(preserve_ids))
         q_del.delete(synchronize_session=False)
+
+        # For preserved assets, drop their EASM observation row so the
+        # re-import records a fresh one. Other sources' observations
+        # stay put. source_systems stays intact.
+        if preserve_ids:
+            db.query(AssetObservation).filter(
+                AssetObservation.asset_id.in_(preserve_ids),
+                AssetObservation.source_system == "easm",
+            ).delete(synchronize_session=False)
+
         db.flush()
     finally:
         if is_sqlite:
@@ -281,35 +411,78 @@ async def _hakuna_request(method: str, path: str, **kwargs) -> Optional[dict]:
     return data
 
 
+# Transient httpx errors that warrant exactly one retry. These correspond
+# to mid-request failures where the connection pool handed us a dead socket
+# (typically after the scanner restarts) — a second attempt with a fresh
+# connection almost always succeeds. ConnectError is a first-attempt failure
+# with the same remedy (retry once after brief delay).
+_RETRYABLE_HTTPX_ERRORS: tuple[type[Exception], ...] = (
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.RemoteProtocolError,
+    httpx.ConnectError,
+    httpx.PoolTimeout,
+)
+
+
 async def _hakuna_request_detailed(
     method: str, path: str, **kwargs,
 ) -> tuple[Optional[dict], Optional[int], Optional[str]]:
     """Make a request to hakuna-scanner API and return ``(data, status_code, error_str)``.
 
     On HTTP errors: ``(None, status, message)``.
-    On network errors: ``(None, None, message)``.
+    On network errors (after 1 retry): ``(None, None, message)``.
     On success: ``(data, status, None)``.
+
+    Uses the module-level shared `AsyncClient` for connection reuse, and
+    retries exactly once on transient network errors (dead-pooled-socket,
+    mid-read, protocol reset) since those are overwhelmingly caused by the
+    scanner restarting and they resolve on the next attempt. HTTP status
+    errors are NOT retried — if the scanner returned 4xx/5xx, the request
+    made it and the response is authoritative.
 
     Use this when the caller needs to react to specific status codes (e.g.
     self-healing on a stale org UUID 404 from /orgs/{id}/scans).
     """
     url = f"{HAKUNA_API}{path}"
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
+    client = _get_hakuna_client()
+
+    last_transient: Optional[Exception] = None
+    for attempt in range(2):  # 0 = initial, 1 = retry
+        try:
             resp = await client.request(method, url, **kwargs)
             resp.raise_for_status()
             return resp.json(), resp.status_code, None
-    except httpx.HTTPStatusError as e:
-        msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
-        logger.warning(f"Hakuna API {method} {path} returned {msg}")
-        return None, e.response.status_code, msg
-    except httpx.RequestError as e:
-        # str(e) is empty for several httpx error types — use repr to surface
-        # the exception class so logs are diagnostic instead of "unreachable: "
-        detail = str(e) or repr(e) or type(e).__name__
-        msg = f"Network error: {detail}"
-        logger.warning(f"Hakuna API unreachable ({method} {path}): {detail}")
-        return None, None, msg
+        except httpx.HTTPStatusError as e:
+            # Real server response — don't retry, let caller decide.
+            msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+            logger.warning(f"Hakuna API {method} {path} returned {msg}")
+            return None, e.response.status_code, msg
+        except _RETRYABLE_HTTPX_ERRORS as e:
+            last_transient = e
+            if attempt == 0:
+                detail = str(e) or repr(e) or type(e).__name__
+                logger.info(
+                    f"Hakuna API transient {type(e).__name__} on {method} {path}: "
+                    f"{detail} — retrying once"
+                )
+                continue
+            # Fall through to generic handler below on second failure.
+            break
+        except httpx.RequestError as e:
+            # Non-retryable network error (e.g. InvalidURL, UnsupportedProtocol).
+            detail = str(e) or repr(e) or type(e).__name__
+            msg = f"Network error: {detail}"
+            logger.warning(f"Hakuna API unreachable ({method} {path}): {detail}")
+            return None, None, msg
+
+    # Both attempts on a retryable error exhausted.
+    detail = str(last_transient) or repr(last_transient) or type(last_transient).__name__
+    msg = f"Network error: {detail}"
+    logger.warning(
+        f"Hakuna API unreachable ({method} {path}) after retry: {detail}"
+    )
+    return None, None, msg
 
 
 async def create_easm_org(org_name: str) -> Optional[str]:
@@ -450,6 +623,10 @@ def _build_easm_data(ea: dict) -> dict:
         "last_seen_easm": ea.get("last_seen"),
         "last_enriched_easm": ea.get("last_enriched"),
         "liveness_state": ea.get("liveness_state", "unconfirmed"),
+        # CPE list aggregated from asset_ports by the scanner API. Populated
+        # by the CPE inference layer (hakuna-scanner/app/ingest/cpe_infer.py).
+        # Used downstream by services/cpe_matcher.py for CPE → CVE correlation.
+        "cpe_list": ea.get("cpe_list") or [],
     }
 
 
@@ -711,6 +888,91 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 first_seen=now, last_seen=now,
             ))
 
+    # ── CVEs via CPE → CVE correlation ────────────────────────────
+    # Matches CPEs (populated by hakuna-scanner's CPE inference layer) against
+    # the ThreatCVE table. Version-less CPEs ("cpe:2.3:a:nginx:nginx:*:...")
+    # are skipped by the matcher — they produce no finding but still route
+    # Nuclei templates via the VM scanner. See services/cpe_matcher.py.
+    cpe_list = ea.get("cpe_list") or []
+    if cpe_list:
+        from services.cpe_matcher import match_cves_for_cpes
+        try:
+            matched_cves = match_cves_for_cpes(db, cpe_list)
+        except Exception:
+            logger.exception(f"CPE→CVE matching failed for {hostname} (non-fatal)")
+            matched_cves = []
+
+        for cve in matched_cves:
+            cve_id = cve.get("cve_id")
+            if not cve_id:
+                continue
+            pid = f"EASM-CVE-{cve_id}"
+            if pid in existing_plugins:
+                # Refresh last_seen on existing CVE finding
+                db.query(Finding).filter(
+                    Finding.scan_id == scan_id,
+                    Finding.asset_id == asset.id,
+                    Finding.plugin_id == pid,
+                ).update({"last_seen": now})
+                continue
+
+            # Map CVSS score → severity band matching the existing taxonomy
+            cvss = cve.get("cvss3_score") or 0.0
+            if cvss >= 9.0:
+                sev, sev_label, risk = 4, "Critical", "Critical"
+            elif cvss >= 7.0:
+                sev, sev_label, risk = 3, "High", "High"
+            elif cvss >= 4.0:
+                sev, sev_label, risk = 2, "Medium", "Medium"
+            elif cvss > 0.0:
+                sev, sev_label, risk = 1, "Low", "Low"
+            else:
+                sev, sev_label, risk = 0, "Info", "None"
+
+            # Priority: CVSS baseline, big bump for KEV (known exploited), smaller for public exploit
+            priority = float(cvss)
+            if cve.get("in_kev"):
+                priority = max(priority, 9.0)
+            elif cve.get("has_public_exploit"):
+                priority = max(priority, priority + 1.5)
+
+            matched_cpe = cve.get("matched_cpe", "")
+            badges = []
+            if cve.get("in_kev"):
+                badges.append("CISA KEV")
+            if cve.get("has_public_exploit"):
+                badges.append("Public exploit")
+            badge_str = f" [{', '.join(badges)}]" if badges else ""
+
+            findings_to_add.append(Finding(
+                scan_id=scan_id, asset_id=asset.id,
+                source_type="easm", source_vuln_id=cve_id,
+                plugin_id=pid,
+                plugin_name=f"{cve_id}: Known vulnerability{badge_str}",
+                plugin_family="EASM: CVE",
+                severity=sev, severity_label=sev_label, risk_factor=risk,
+                priority_score=round(priority, 1),
+                effort_level="medium",
+                owner_suggestion="SecOps",
+                cvss3_base_score=cvss or None,
+                synopsis=f"{cve_id} affects technology detected on {hostname}.",
+                description=(cve.get("description") or "")[:1000]
+                    or f"CVE {cve_id} matches the CPE fingerprint observed on {hostname}.",
+                solution=(
+                    "Update or patch the affected software to a version not listed "
+                    "in the CVE's affected range."
+                ),
+                plugin_output=(
+                    f"Host: {hostname}\n"
+                    f"Matched CPE: {matched_cpe}\n"
+                    f"CVE: {cve_id}\n"
+                    f"CVSS3: {cvss}\n"
+                    f"KEV: {cve.get('in_kev', False)}\n"
+                    f"Public exploit: {cve.get('has_public_exploit', False)}"
+                ),
+                first_seen=now, last_seen=now,
+            ))
+
     for f in findings_to_add:
         f.source_systems = ["easm"]
     db.add_all(findings_to_add)
@@ -847,6 +1109,11 @@ def _import_assets_for_domain(
             asset.os = os_hint or asset.os
             asset.easm_data = easm_data
             asset.last_seen = now
+            # Accumulate EASM as a source without clobbering other integrations'
+            # contributions (e.g. cloudflare_api) to source_systems.
+            current_sources = asset.source_systems or []
+            if "easm" not in current_sources:
+                asset.source_systems = current_sources + ["easm"]
         else:
             # Evaluate asset-type rules for EASM assets
             # Pass all EASM enrichment data — normalize_asset_data() will
@@ -1143,6 +1410,15 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
     # Map hakuna statuses
     if hakuna_status in ("completed", "done"):
         try:
+            # Snapshot existing asset identities BEFORE clearing so we can
+            # compute "how many are new this run" for the notification.
+            # _clear_scan_data deletes EASM-only assets, so without this
+            # snapshot every re-imported asset would look brand new.
+            prior_identities: set[tuple[str, str]] = {
+                (a.ip or "", (a.fqdn or a.hostname or "").lower())
+                for a in db.query(Asset).filter(Asset.scan_id == scan.id).all()
+            }
+
             _clear_scan_data(db, scan.id)
 
             # Import assets now that scan is done
@@ -1200,6 +1476,74 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             except Exception:
                 logger.exception(f"Corporate structure sync failed for domain '{domain}' (non-fatal)")
 
+            # ── Notifications ──
+            # Mirror the Nessus ingest pattern in app.py:_run_scan_ingest so
+            # users get notified on EASM completion the same way they do for
+            # uploaded scans. Fire scan_complete unconditionally, plus
+            # new_assets/critical_findings when those counts are non-zero.
+            try:
+                from services.notifications import create_notification
+
+                scan_label = scan.scan_name or domain or f"scan #{scan.id}"
+
+                # Count newly-discovered assets (not present in prior_identities)
+                new_asset_count = 0
+                for a in db.query(Asset).filter(Asset.scan_id == scan.id).all():
+                    key = (a.ip or "", (a.fqdn or a.hostname or "").lower())
+                    if key not in prior_identities:
+                        new_asset_count += 1
+
+                # Count critical/high findings from this scan
+                crit_high = (
+                    db.query(Finding)
+                    .filter(Finding.scan_id == scan.id, Finding.severity >= 3)
+                    .count()
+                )
+
+                create_notification(
+                    db, org.id, "scan_complete",
+                    f"EASM scan '{scan_label}' completed",
+                    body=f"{created} assets, {findings_created} findings processed",
+                    link=f"/findings?scan_id={scan.id}",
+                    entity_type="scan", entity_id=scan.id,
+                    metadata={
+                        "assets": created,
+                        "findings": findings_created,
+                        "scan_name": scan_label,
+                        "domain": domain,
+                        "source_type": "easm",
+                    },
+                )
+                if crit_high > 0:
+                    create_notification(
+                        db, org.id, "critical_findings",
+                        f"{crit_high} critical/high findings in EASM scan '{scan_label}'",
+                        link=f"/findings?scan_id={scan.id}&severity=3,4",
+                        entity_type="scan", entity_id=scan.id,
+                        metadata={
+                            "count": crit_high,
+                            "scan_name": scan_label,
+                            "domain": domain,
+                            "source_type": "easm",
+                        },
+                    )
+                if new_asset_count > 0:
+                    create_notification(
+                        db, org.id, "new_assets",
+                        f"{new_asset_count} new assets discovered in EASM scan '{scan_label}'",
+                        link=f"/assets?scan_id={scan.id}",
+                        entity_type="scan", entity_id=scan.id,
+                        metadata={
+                            "count": new_asset_count,
+                            "scan_name": scan_label,
+                            "domain": domain,
+                            "source_type": "easm",
+                        },
+                    )
+                db.commit()
+            except Exception:
+                logger.exception(f"EASM completion notification failed for '{domain}' (non-fatal)")
+
             logger.info(f"EASM scan completed for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
 
             return {"scan_id": scan.id, "status": "completed", "created": created, "findings_created": findings_created, "domain": domain}
@@ -1207,9 +1551,15 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             db.rollback()
             logger.exception(f"EASM import failed for '{domain}' (scan_id={scan.id}), marking as failed")
             import traceback
-            scan.raw_metadata = {**meta, "status": "failed", "error": traceback.format_exc()[-500:]}
+            error_tail = traceback.format_exc()[-500:]
+            scan.raw_metadata = {**meta, "status": "failed", "error": error_tail}
             scan.status = "failed"
             db.commit()
+            _emit_easm_scan_failed_notification(
+                db, org.id, scan, domain,
+                error_msg=str(exc) or "Import failed",
+                phase="import",
+            )
             return {"scan_id": scan.id, "status": "failed", "domain": domain}
 
     elif hakuna_status in ("failed", "error", "unknown"):
@@ -1225,6 +1575,9 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
         scan.raw_metadata = {**meta, "status": "failed", "error": error_msg}
         scan.status = "failed"
         db.commit()
+        _emit_easm_scan_failed_notification(
+            db, org.id, scan, domain, error_msg=error_msg, phase="scanner",
+        )
         return {"scan_id": scan.id, "status": "failed", "domain": domain, "error": error_msg}
 
     else:

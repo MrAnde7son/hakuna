@@ -365,7 +365,7 @@ export default function FindingExplorer() {
 
   const [findings, setFindings] = useState([])
   const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => !searchParams.get('q'))
   const [families, setFamilies] = useState([])
   const [assets, setAssets] = useState([])
   const [openGroups, setOpenGroups] = useState({})

@@ -20,14 +20,26 @@ class Settings(BaseSettings):
     katana_rate_limit: int = 50
     screenshot_dir: str = "/data/screenshots"
 
-    # Per-tool thread/concurrency caps
+    # Per-tool thread/concurrency caps. Combined with parallel batch execution
+    # (see ENRICHMENT_BATCH_CONCURRENCY below), a single stage runs up to
+    # concurrency × threads connections — e.g. httpx = 4 × 50 = 200 sockets.
     subfinder_threads: int = 5
-    dnsx_threads: int = 15
-    naabu_rate: int = 500
-    httpx_threads: int = 15
-    tlsx_threads: int = 10
-    cdncheck_threads: int = 10
+    dnsx_threads: int = 50
+    naabu_rate: int = 2000
+    httpx_threads: int = 50
+    tlsx_threads: int = 30
+    cdncheck_threads: int = 25
     puredns_threads: int = 10
+
+    # Max concurrent tool invocations per stage. Each invocation is one batch
+    # running in its own subprocess; this bounds CPU/network fan-out.
+    enrichment_batch_concurrency: int = 4
+    discovery_batch_concurrency: int = 4
+
+    # Skip httpx screenshots on scans larger than this (headless Chromium is
+    # the single biggest slowdown — ~1s per host — so large scans trade the
+    # UX nicety for wall-time).
+    screenshot_max_hosts: int = 500
 
     # Celery task safety limits (seconds)
     task_soft_time_limit: int = 1800   # 30 min soft limit

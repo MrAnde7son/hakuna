@@ -34,8 +34,19 @@ class TestEmptyInputs:
     def test_unrelated_fields(self):
         assert infer_cpes({"status_code": 200, "title": "Hello"}, None) == []
 
-    def test_unknown_tech(self):
-        assert infer_cpes({"tech": ["SomeUnknownThing", "AlsoUnknown"]}, None) == []
+    def test_unknown_tech_emits_speculative_cpe(self):
+        # Open-ended emission: tokens not in the alias table still produce
+        # a CPE with vendor=product=token. The matcher in the backend does
+        # its own NVD lookup, so unknown products yield zero findings but
+        # don't break anything. See cpe_infer.py module docstring.
+        cpes = infer_cpes({"tech": ["SomeUnknownThing", "AlsoUnknown"]}, None)
+        assert _has_cpe(cpes, "someunknownthing", "someunknownthing")
+        assert _has_cpe(cpes, "alsounknown", "alsounknown")
+
+    def test_denylisted_token_dropped(self):
+        # Generic deployment labels are deny-listed — too noisy to correlate.
+        cpes = infer_cpes({"tech": ["Server", "Unknown"]}, None)
+        assert cpes == []
 
 
 # ---------------------------------------------------------------------------
@@ -117,9 +128,20 @@ class TestServerHeader:
         cpes = infer_cpes({"web_server": "nginx/1.18.0"}, None)
         assert _has_cpe(cpes, "nginx", "nginx")
 
-    def test_no_match_returns_empty(self):
-        cpes = infer_cpes({"webserver": "SomeWeirdServer/9.9"}, None)
-        assert cpes == []
+    def test_unknown_server_emits_speculative_cpe(self):
+        # The motivating case: Yaws (and every other obscure web server) is
+        # not in the alias table, but the matcher should still get a chance
+        # to correlate it against NVD.
+        cpes = infer_cpes({"webserver": "Yaws 2.0.6"}, None)
+        assert cpes == ["cpe:2.3:a:yaws:yaws:2.0.6:*:*:*:*:*:*:*"]
+
+    def test_unknown_server_no_version(self):
+        cpes = infer_cpes({"webserver": "SomeWeirdServer"}, None)
+        assert cpes == ["cpe:2.3:a:someweirdserver:someweirdserver:*:*:*:*:*:*:*:*"]
+
+    def test_unknown_server_with_slash_version(self):
+        cpes = infer_cpes({"webserver": "Caddy/2.7.5"}, None)
+        assert cpes == ["cpe:2.3:a:caddy:caddy:2.7.5:*:*:*:*:*:*:*"]
 
 
 # ---------------------------------------------------------------------------

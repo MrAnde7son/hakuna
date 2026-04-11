@@ -9,6 +9,54 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+def batch_hosts(hosts: list, batch_size: int) -> list[list]:
+    """Split a host list into batches of at most batch_size."""
+    if batch_size <= 0 or len(hosts) <= batch_size:
+        return [hosts] if hosts else []
+    return [hosts[i:i + batch_size] for i in range(0, len(hosts), batch_size)]
+
+
+async def run_batches_parallel(
+    build_runner,
+    batches: list,
+    org_id: str | None,
+    concurrency: int,
+    stage_name: str = "",
+) -> list:
+    """Run a batch of runner invocations in parallel, bounded by concurrency.
+
+    build_runner(batch) -> BaseRunner-like instance with an async .run() method.
+    Returns a flat list of all result dicts from every batch (ignores failed batches).
+    """
+    if not batches:
+        return []
+
+    sem = asyncio.Semaphore(max(1, concurrency))
+    total = len(batches)
+
+    async def _run_one(idx: int, batch):
+        async with sem:
+            runner = build_runner(batch)
+            result = await runner.run(org_id=org_id)
+            logger.info(
+                "stage=%s org=%s batch=%d/%d size=%d results=%d duration=%.1fs",
+                stage_name, org_id, idx, total, len(batch),
+                len(result.results), result.duration_seconds,
+            )
+            return result.results
+
+    tasks = [_run_one(i + 1, b) for i, b in enumerate(batches)]
+    results_per_batch = await asyncio.gather(*tasks, return_exceptions=True)
+
+    flat: list = []
+    for r in results_per_batch:
+        if isinstance(r, Exception):
+            logger.error("stage=%s org=%s batch failed: %s", stage_name, org_id, r)
+            continue
+        flat.extend(r)
+    return flat
+
+
 @dataclass
 class RunResult:
     tool: str
@@ -32,12 +80,22 @@ class BaseRunner:
     tool_name: str = ""
     max_retries: int = 2
     timeout: int | None = None
+    # If set (bytes), piped to subprocess stdin. Default behavior remains
+    # DEVNULL so existing runners are unaffected.
+    stdin_input: bytes | None = None
 
     def build_command(self) -> list[str]:
         raise NotImplementedError
 
     def _get_timeout(self) -> int:
         return self.timeout or settings.scan_timeout_seconds
+
+    @staticmethod
+    def timeout_for_host_count(host_count: int, per_host_seconds: float = 0.5) -> int:
+        """Scale timeout based on host count. Returns at least the default."""
+        base = settings.scan_timeout_seconds
+        scaled = int(host_count * per_host_seconds)
+        return max(base, scaled)
 
     async def run(self, org_id: str | None = None) -> RunResult:
         cmd = self.build_command()
@@ -80,9 +138,10 @@ class BaseRunner:
         return last_result
 
     async def _execute(self, cmd: list[str]) -> RunResult:
+        use_stdin = self.stdin_input is not None
         proc = await asyncio.create_subprocess_exec(
             *cmd,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE if use_stdin else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=1024 * 1024,  # 1MB line buffer (httpx can emit long JSON lines)
@@ -90,6 +149,18 @@ class BaseRunner:
 
         results: list[dict] = []
         stderr_chunks: list[str] = []
+
+        async def write_stdin():
+            if not use_stdin or proc.stdin is None:
+                return
+            try:
+                proc.stdin.write(self.stdin_input)  # type: ignore[arg-type]
+                await proc.stdin.drain()
+            finally:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
 
         async def read_stdout():
             assert proc.stdout is not None
@@ -109,7 +180,7 @@ class BaseRunner:
 
         try:
             await asyncio.wait_for(
-                asyncio.gather(read_stdout(), read_stderr(), proc.wait()),
+                asyncio.gather(write_stdin(), read_stdout(), read_stderr(), proc.wait()),
                 timeout=self._get_timeout(),
             )
         except asyncio.TimeoutError:
