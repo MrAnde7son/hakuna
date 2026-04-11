@@ -25,6 +25,7 @@ const ROUTES = [
   { path: '/inventory', name: 'Inventory' },
   { path: '/agents', name: 'Agents' },
   { path: '/tags', name: 'Tags' },
+  { path: '/custom-fields', name: 'Custom Fields' },
   { path: '/threat-intel', name: 'Threat Intel' },
   { path: '/settings', name: 'Settings' },
   { path: '/profile', name: 'Profile' },

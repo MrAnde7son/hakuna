@@ -103,6 +103,7 @@ def _migrate_add_columns():
             ("asset_type", "VARCHAR DEFAULT 'host'"),
             ("asset_identity", "JSON"),
             ("asset_attributes", "JSON"),
+            ("custom_fields", "JSON"),
         ],
         "findings": [
             ("first_seen", "TIMESTAMP"),
@@ -127,6 +128,7 @@ def _migrate_add_columns():
             ("source_system", "VARCHAR"),
             ("user_edited_fields", "JSON"),
             ("source_systems", "JSON"),
+            ("custom_fields", "JSON"),
         ],
         "threat_cves": [
             ("cvss4_score", "FLOAT"),

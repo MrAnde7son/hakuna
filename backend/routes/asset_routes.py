@@ -4,7 +4,7 @@ Asset endpoints — CRUD, relationships, graph, risk breakdown, sources.
 from typing import Optional, List
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, or_, cast, Text
 
@@ -25,12 +25,47 @@ router = APIRouter()
 
 # ─── Helper: sort ────────────────────────────────────────────────────────────
 
+def _json_text_at(col, key: str):
+    """Return a SQL expression that extracts a JSON string value at `key` from a JSON column.
+
+    Portable: uses json_extract on SQLite and the ->> operator on Postgres.
+    """
+    from core.database import engine as _engine
+    if _engine.dialect.name == "postgresql":
+        return col.op("->>")(key)
+    return func.json_extract(col, f"$.{key}")
+
+
 def _apply_sort(q, model, sort_by: str, order: str, default_attr):
-    """Apply ORDER BY to a query, falling back to default_attr if sort_by is invalid."""
-    col = getattr(model, sort_by, None)
+    """Apply ORDER BY to a query, falling back to default_attr if sort_by is invalid.
+
+    Supports `custom_fields.<key>` sort via the JSON column — works on both
+    SQLite (json_extract) and Postgres (->> operator).
+    """
+    col = None
+    if sort_by and sort_by.startswith("custom_fields.") and hasattr(model, "custom_fields"):
+        key = sort_by.split(".", 1)[1]
+        if key:
+            col = _json_text_at(model.custom_fields, key)
+    if col is None:
+        col = getattr(model, sort_by, None)
     if col is None:
         col = default_attr
     return q.order_by(desc(col) if order == "desc" else col)
+
+
+def _apply_custom_field_filters(q, model, request: Request):
+    """Apply `cf_<key>=<value>` query params as JSON contains filters."""
+    if not hasattr(model, "custom_fields"):
+        return q
+    for param, value in request.query_params.multi_items():
+        if not param.startswith("cf_") or not value:
+            continue
+        key = param[3:]
+        if not key:
+            continue
+        q = q.filter(_json_text_at(model.custom_fields, key).ilike(f"%{value}%"))
+    return q
 
 
 # ─── Helper: Domain Controller resolution ────────────────────────────────────
@@ -296,6 +331,9 @@ def _asset_to_dict(a: Asset) -> dict:
         "asset_type": a.asset_type or "host",
         "asset_identity": a.asset_identity or {},
         "asset_attributes": a.asset_attributes or {},
+        # User-defined custom fields
+        "custom_fields": a.custom_fields or {},
+        "user_edited_fields": a.user_edited_fields or [],
     }
 
 
@@ -305,6 +343,7 @@ def _asset_to_dict(a: Asset) -> dict:
 
 @router.get("/api/assets")
 def list_assets(
+    request: Request,
     scan_id: Optional[int] = None,
     min_risk: Optional[float] = None,
     max_risk: Optional[float] = None,
@@ -386,6 +425,8 @@ def list_assets(
         q = q.filter(cast(Asset.source_systems, Text).ilike(f'%"{source}"%'))
     if min_sources is not None:
         q = q.filter(func.json_array_length(Asset.source_systems) >= min_sources)
+    # Custom field filters: ?cf_<key>=<value>
+    q = _apply_custom_field_filters(q, Asset, request)
     if tags:
         pairs = tag_engine.parse_tag_filter(tags)
         id_sets = tag_engine.resolve_tag_ids(pairs, expand_children, db)
@@ -745,9 +786,13 @@ def update_asset(
     business_context_confirmed: Optional[bool] = None,
     biz_num_users: Optional[int] = None,
     biz_revenue_impact: Optional[str] = None,
+    custom_fields: Optional[dict] = Body(None, embed=True),
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id == asset_id)
+    q = apply_scan_org_filter(q, org_ids)
+    asset = q.first()
     if not asset:
         raise HTTPException(404, "Asset not found")
     if criticality is not None:
@@ -766,5 +811,48 @@ def update_asset(
         asset.biz_num_users = biz_num_users
     if biz_revenue_impact is not None:
         asset.biz_revenue_impact = biz_revenue_impact
+    if custom_fields:
+        _apply_manual_custom_fields(db, asset, custom_fields, "asset")
     db.commit()
     return _asset_to_dict(asset)
+
+
+def _apply_manual_custom_fields(db: Session, entity, payload: dict, entity_type: str):
+    """Merge manual custom field values into entity.custom_fields + user_edited_fields.
+
+    Rejects attempts to set computed (mapping/formula) fields — those come from
+    ingest only. Keys not defined are silently ignored.
+    """
+    from models.models import CustomFieldDefinition
+    from services.custom_field_resolver import _coerce_value
+
+    # Resolve org_id from the entity's scan
+    scan = db.query(Scan).filter(Scan.id == entity.scan_id).first()
+    org_id = scan.org_id if scan else None
+    if not org_id:
+        return
+
+    defs = db.query(CustomFieldDefinition).filter(
+        CustomFieldDefinition.org_id == org_id,
+        CustomFieldDefinition.entity_type == entity_type,
+        CustomFieldDefinition.is_active.is_(True),
+    ).all()
+    def_map = {d.key: d for d in defs}
+
+    current = dict(entity.custom_fields or {})
+    edited = list(entity.user_edited_fields or [])
+    for key, raw_value in payload.items():
+        definition = def_map.get(key)
+        if not definition:
+            raise HTTPException(400, f"Unknown custom field '{key}'")
+        if definition.source_type != "manual":
+            raise HTTPException(400, f"custom field '{key}' is computed and cannot be set manually")
+        if raw_value is None:
+            current.pop(key, None)
+        else:
+            current[key] = _coerce_value(raw_value, definition.data_type)
+        marker = f"custom_fields.{key}"
+        if marker not in edited:
+            edited.append(marker)
+    entity.custom_fields = current
+    entity.user_edited_fields = edited

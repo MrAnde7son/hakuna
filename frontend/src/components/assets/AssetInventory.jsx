@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import useURLFilters from '../../hooks/useURLFilters.js'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight, Zap, Radar, Filter, ChevronDown, ChevronUp } from 'lucide-react'
 import { useScan, useIsMobile } from '../../App.jsx'
-import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags, createCampaign, startVmScan } from '../../api.js'
+import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags, createCampaign, startVmScan, listCustomFieldDefinitions } from '../../api.js'
 import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
@@ -399,6 +399,14 @@ export default function AssetInventory() {
     try { const s = localStorage.getItem('assetColumns'); return s ? JSON.parse(s) : {} } catch { return {} }
   })
   const updateColVis = (next) => { setColVis(next); localStorage.setItem('assetColumns', JSON.stringify(next)) }
+
+  // User-defined custom field definitions for this org
+  const [customFieldDefs, setCustomFieldDefs] = useState([])
+  useEffect(() => {
+    listCustomFieldDefinitions('asset')
+      .then(defs => setCustomFieldDefs((defs || []).filter(d => d.is_active)))
+      .catch(() => setCustomFieldDefs([]))
+  }, [])
 
   const handleSort = (key) => {
     if (sortBy === key) {
@@ -857,6 +865,23 @@ export default function AssetInventory() {
         return <span style={{ fontSize: 11, fontWeight: 600, color: colors[v] || 'var(--text-secondary)', textTransform: 'uppercase' }}>{v}</span>
       },
     },
+    // Dynamic user-defined custom field columns
+    ...customFieldDefs.map(def => ({
+      key: `custom_fields.${def.key}`,
+      label: def.label,
+      sortable: true,
+      render: (_, row) => {
+        const v = row.custom_fields?.[def.key]
+        if (v === null || v === undefined || v === '') return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        if (def.data_type === 'boolean') {
+          const b = typeof v === 'boolean' ? v : String(v).toLowerCase() === 'true'
+          return <span style={{ fontSize: 12, color: b ? 'var(--success)' : 'var(--text-muted)' }}>{b ? '✓' : '—'}</span>
+        }
+        return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
+      },
+      _isCustomField: true,
+      _defaultHidden: !def.show_in_list,
+    })),
     {
       key: '_actions', label: '', width: '40px',
       render: (_, row) => <RowActions row={row} onNavigate={navigate} />,
@@ -864,9 +889,14 @@ export default function AssetInventory() {
   ]
 
   const defaultHidden = new Set(['is_internet_facing', 'scan_start', 'biz_revenue_impact', 'sbom_risk', 'source_systems'])
-  const visibleColumns = allColumns.filter(c =>
-    c.key === '_select' || c.key === '_actions' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
-  )
+  const visibleColumns = allColumns.filter(c => {
+    if (c.key === '_select' || c.key === '_actions') return true
+    if (c._isCustomField) {
+      // Honor explicit user toggle if set, else default to `show_in_list`
+      return colVis[c.key] !== undefined ? colVis[c.key] : !c._defaultHidden
+    }
+    return colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key)
+  })
 
   return (
     <div>

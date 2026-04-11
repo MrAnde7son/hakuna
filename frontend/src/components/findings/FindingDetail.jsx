@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { ArrowLeft, ExternalLink, Zap, Shield, ShieldCheck, Terminal, Info, Crosshair, Clock, CheckCircle, RotateCcw, ShieldOff, UserCheck, MessageSquare, Eye, Briefcase, ChevronDown, ChevronRight, Layers, RefreshCw, Ticket } from 'lucide-react'
 import { getFinding, getFindingSources, getFindingAssessments, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign, syncFindingTickets } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail, useToast, buildFindingBreakdown, useRiskWeights } from '../shared/ui.jsx'
+import CustomAttributesCard from '../shared/CustomAttributesCard.jsx'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import BlastRadiusPanel from '../campaigns/BlastRadiusPanel.jsx'
@@ -330,6 +331,14 @@ export default function FindingDetail() {
           </div>
         )}
       </Card>
+
+      {/* Custom attributes (user-defined fields) */}
+      <CustomAttributesCard
+        entityType="finding"
+        entityId={finding.id}
+        values={finding.custom_fields}
+        onChange={next => setFinding(prev => ({ ...prev, custom_fields: next }))}
+      />
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>

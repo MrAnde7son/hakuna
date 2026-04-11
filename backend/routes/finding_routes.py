@@ -8,7 +8,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import desc, or_, cast, Text
+from sqlalchemy import desc, or_, cast, Text, func
 
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids, apply_scan_org_filter
@@ -23,6 +23,14 @@ import services.ownership_inference as ownership_inference
 from services.sla_engine import compute_sla_status as _compute_sla_status
 
 router = APIRouter()
+
+
+def _json_text_at(col, key: str):
+    """Portable JSON string extraction: json_extract on SQLite, ->> on Postgres."""
+    from core.database import engine as _engine
+    if _engine.dialect.name == "postgresql":
+        return col.op("->>")(key)
+    return func.json_extract(col, f"$.{key}")
 
 
 # ─────────────────────────────────────────────
@@ -137,6 +145,12 @@ def list_findings(
         )
     if source:
         q = q.filter(cast(Finding.source_systems, Text).ilike(f'%"{source}"%'))
+    # Custom field filters: ?cf_<key>=<value>
+    for _cf_param, _cf_value in request.query_params.multi_items():
+        if _cf_param.startswith("cf_") and _cf_value:
+            _cf_key = _cf_param[3:]
+            if _cf_key:
+                q = q.filter(_json_text_at(Finding.custom_fields, _cf_key).ilike(f"%{_cf_value}%"))
     if tags:
         pairs = tag_engine.parse_tag_filter(tags)
         id_sets = tag_engine.resolve_tag_ids(pairs, expand_children, db)
@@ -182,8 +196,12 @@ def list_findings(
             # Group has no TTPs — return empty
             q = q.filter(False)
 
-    # Sort
-    sort_col = getattr(Finding, sort_by, Finding.priority_score)
+    # Sort (supports custom_fields.<key>)
+    if sort_by and sort_by.startswith("custom_fields."):
+        _cf_key = sort_by.split(".", 1)[1]
+        sort_col = _json_text_at(Finding.custom_fields, _cf_key) if _cf_key else Finding.priority_score
+    else:
+        sort_col = getattr(Finding, sort_by, Finding.priority_score)
     if order == "desc":
         q = q.order_by(desc(sort_col))
     else:
@@ -512,6 +530,9 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset:
         "auto_resolved_by_scan_id": f.auto_resolved_by_scan_id,
         # Ticket tracking (lightweight for list view)
         "has_ticket": len(f.tickets) > 0 if f.tickets else False,
+        # User-defined custom fields
+        "custom_fields": f.custom_fields or {},
+        "user_edited_fields": f.user_edited_fields or [],
     }
     if include_full:
         base.update({
@@ -690,6 +711,61 @@ def update_finding_context(finding_id: int, body: FindingContextUpdate, db: Sess
     if changes:
         log_audit(db, "update", "finding_context", finding_id,
                   entity_name=finding.plugin_name, changes=changes, actor=user)
+    db.commit()
+    return _finding_to_dict(finding, db, include_full=True)
+
+
+@router.patch("/api/findings/{finding_id}/custom-fields")
+def update_finding_custom_fields(
+    finding_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Set manual custom field values on a finding.
+
+    Rejects attempts to set computed (mapping/formula) fields — those come
+    from ingest only. Unknown keys raise 400.
+    """
+    q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id).filter(Finding.id == finding_id)
+    q = apply_scan_org_filter(q, org_ids)
+    finding = q.first()
+    if not finding:
+        raise HTTPException(404, "Finding not found")
+
+    from models.models import CustomFieldDefinition
+    from services.custom_field_resolver import _coerce_value
+
+    scan = db.query(Scan).filter(Scan.id == finding.scan_id).first()
+    org_id = scan.org_id if scan else None
+    if not org_id:
+        raise HTTPException(400, "Finding has no org context")
+
+    defs = db.query(CustomFieldDefinition).filter(
+        CustomFieldDefinition.org_id == org_id,
+        CustomFieldDefinition.entity_type == "finding",
+        CustomFieldDefinition.is_active.is_(True),
+    ).all()
+    def_map = {d.key: d for d in defs}
+
+    current = dict(finding.custom_fields or {})
+    edited = list(finding.user_edited_fields or [])
+    for key, raw_value in (payload or {}).items():
+        definition = def_map.get(key)
+        if not definition:
+            raise HTTPException(400, f"Unknown custom field '{key}'")
+        if definition.source_type != "manual":
+            raise HTTPException(400, f"custom field '{key}' is computed and cannot be set manually")
+        if raw_value is None:
+            current.pop(key, None)
+        else:
+            current[key] = _coerce_value(raw_value, definition.data_type)
+        marker = f"custom_fields.{key}"
+        if marker not in edited:
+            edited.append(marker)
+
+    finding.custom_fields = current
+    finding.user_edited_fields = edited
     db.commit()
     return _finding_to_dict(finding, db, include_full=True)
 

@@ -69,6 +69,7 @@ def engine():
             ("os_confidence", "INTEGER"), ("source_systems", "JSON"),
             ("asset_type", "VARCHAR DEFAULT 'host'"),
             ("asset_identity", "JSON"), ("asset_attributes", "JSON"),
+            ("custom_fields", "JSON"),
         ],
         "findings": [
             ("org_id", "INTEGER"),
@@ -87,6 +88,7 @@ def engine():
             ("greynoise_seen", "BOOLEAN DEFAULT FALSE"),
             ("source_id", "VARCHAR"), ("source_system", "VARCHAR"),
             ("user_edited_fields", "JSON"), ("source_systems", "JSON"),
+            ("custom_fields", "JSON"),
         ],
         "scans": [
             ("org_id", "INTEGER"),

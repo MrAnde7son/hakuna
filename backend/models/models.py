@@ -324,6 +324,9 @@ class Asset(Base):
     source_systems = Column(JSON, default=list)         # All sources that contributed data: ["nessus", "easm", "crowdstrike"]
     user_edited_fields = Column(JSON, default=list)     # Fields manually changed by user (protected from overwrite)
 
+    # User-defined custom fields (see CustomFieldDefinition). Flat {key: value} dict keyed by definition.key
+    custom_fields = Column(JSON, default=dict)
+
     scan = relationship("Scan", back_populates="assets")
     findings = relationship("Finding", back_populates="asset", cascade="all, delete-orphan")
     observations = relationship("AssetObservation", back_populates="asset", cascade="all, delete-orphan")
@@ -514,6 +517,9 @@ class Finding(Base):
     source_systems = Column(JSON, default=list)         # All sources that contributed data: ["nessus", "easm", "qualys"]
     user_edited_fields = Column(JSON, default=list)     # Fields manually changed by user (protected from overwrite)
 
+    # User-defined custom fields (see CustomFieldDefinition). Flat {key: value} dict keyed by definition.key
+    custom_fields = Column(JSON, default=dict)
+
     scan = relationship("Scan", back_populates="findings", foreign_keys="[Finding.scan_id]")
     asset = relationship("Asset", back_populates="findings")
     automate_clicks = relationship("AutomateClick", back_populates="finding", cascade="all, delete-orphan")
@@ -546,6 +552,42 @@ class FindingObservation(Base):
     times_seen = Column(Integer, default=1)
 
     finding = relationship("Finding", back_populates="observations")
+
+
+class CustomFieldDefinition(Base):
+    """Per-org user-defined custom field on Asset or Finding entities.
+
+    Values are resolved at ingest (or via PATCH for manual) and stored in the
+    `custom_fields` JSON column on the target entity, keyed by `key`.
+    """
+    __tablename__ = "custom_field_definitions"
+    __table_args__ = (
+        UniqueConstraint("org_id", "entity_type", "key", name="uq_custom_field_org_entity_key"),
+        Index("ix_custom_field_defs_org_entity", "org_id", "entity_type"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    entity_type = Column(String, nullable=False)        # "asset" | "finding"
+    key = Column(String, nullable=False)                # snake_case slug, e.g. "data_center"
+    label = Column(String, nullable=False)              # display label
+    description = Column(Text, nullable=True)
+
+    data_type = Column(String, nullable=False, default="string")   # string|number|boolean|date|enum
+    enum_values = Column(JSON, nullable=True)                       # list[str] when data_type == "enum"
+
+    source_type = Column(String, nullable=False, default="manual")  # mapping | formula | manual
+    mapping_source = Column(String, nullable=True)                  # dot-path into source observation raw_fields
+    mapping_transform = Column(JSON, nullable=True)                 # same shape field_mapper._apply_transform accepts
+    mapping_source_system = Column(String, nullable=True)           # optional: restrict mapping to a specific source_system
+    formula_expression = Column(Text, nullable=True)                # sandboxed expression over merged entity dict
+
+    show_in_list = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class FindingTicket(Base):

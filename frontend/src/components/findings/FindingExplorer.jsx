@@ -4,7 +4,7 @@ import useURLFilters from '../../hooks/useURLFilters.js'
 import { useTranslation } from 'react-i18next'
 import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon, Zap, Filter } from 'lucide-react'
 import { useScan, useIsMobile } from '../../App.jsx'
-import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign } from '../../api.js'
+import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign, listCustomFieldDefinitions } from '../../api.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, MultiSelect,
   Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable, useToast
@@ -400,6 +400,14 @@ export default function FindingExplorer() {
     setColVis(next)
     localStorage.setItem('findingColumns', JSON.stringify(next))
   }
+
+  // User-defined custom field definitions for this org
+  const [customFieldDefs, setCustomFieldDefs] = useState([])
+  useEffect(() => {
+    listCustomFieldDefinitions('finding')
+      .then(defs => setCustomFieldDefs((defs || []).filter(d => d.is_active)))
+      .catch(() => setCustomFieldDefs([]))
+  }, [])
 
   // Sync tag filter from URL params on first load (e.g. when navigating from Tag Manager)
   const tagsSynced = useRef(false)
@@ -897,13 +905,34 @@ export default function FindingExplorer() {
         return <Pill label={v} color={colorMap[v] || '#6b7280'} />
       }
     },
+    // Dynamic user-defined custom field columns
+    ...customFieldDefs.map(def => ({
+      key: `custom_fields.${def.key}`,
+      label: def.label,
+      sortable: true,
+      render: (_, row) => {
+        const v = row.custom_fields?.[def.key]
+        if (v === null || v === undefined || v === '') return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        if (def.data_type === 'boolean') {
+          const b = typeof v === 'boolean' ? v : String(v).toLowerCase() === 'true'
+          return <span style={{ fontSize: 12, color: b ? 'var(--success)' : 'var(--text-muted)' }}>{b ? '✓' : '—'}</span>
+        }
+        return <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
+      },
+      _isCustomField: true,
+      _defaultHidden: !def.show_in_list,
+    })),
   ]
 
   // Filter columns by visibility (all visible by default, KEV/EPSS/Ransomware/Trending hidden by default)
   const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen', 'vulnerability_state', 'vpr_score', 'risk_factor', 'port', 'workflow_status', 'workflow_assigned_to', 'exploit_maturity', 'ssvc_decision', 'exploit_count', 'exploit_maturity_level', 'source_systems', 'has_ticket'])
-  const visibleColumns = allColumns.filter(c =>
-    c.key === '_select' || (colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key))
-  )
+  const visibleColumns = allColumns.filter(c => {
+    if (c.key === '_select') return true
+    if (c._isCustomField) {
+      return colVis[c.key] !== undefined ? colVis[c.key] : !c._defaultHidden
+    }
+    return colVis[c.key] !== undefined ? colVis[c.key] : !defaultHidden.has(c.key)
+  })
 
   return (
     <div>

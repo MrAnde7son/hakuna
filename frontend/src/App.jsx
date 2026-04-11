@@ -76,6 +76,7 @@ const InventoryExplorer = React.lazy(() => import('./components/assets/Inventory
 const Settings = React.lazy(() => import('./components/settings/Settings.jsx'))
 const UploadScan = React.lazy(() => import('./components/upload/UploadScan.jsx'))
 const TagManager = React.lazy(() => import('./components/settings/TagManager.jsx'))
+const CustomFieldManager = React.lazy(() => import('./components/settings/CustomFieldManager.jsx'))
 const ThreatIntelCenter = React.lazy(() => import('./components/threats/ThreatIntelCenter.jsx'))
 const WorkflowBuilder = React.lazy(() => import('./components/workflows/WorkflowBuilder.jsx'))
 const AgentBuilder = React.lazy(() => import('./components/agents/AgentBuilder.jsx'))
@@ -1106,6 +1107,7 @@ function AppShell() {
                 <Route path="/inventory" element={<InventoryExplorer />} />
                 <Route path="/agents" element={<AgentBuilder />} />
                 <Route path="/tags" element={<TagManager />} />
+                <Route path="/custom-fields" element={<CustomFieldManager />} />
                 <Route path="/threat-intel/:tab?" element={<ThreatIntelCenter />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/scans" element={<Navigate to="/settings?tab=upload" replace />} />

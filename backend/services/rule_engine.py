@@ -332,7 +332,84 @@ def get_condition_catalog(db: Session = None, org_ids=None) -> list:
             opts = cond.get("options")
             if isinstance(opts, str) and opts in _dynamic_resolvers:
                 cond["options"] = _dynamic_resolvers[opts]()
+
+    # Append per-org custom field definitions as dynamic groups
+    custom_groups = _resolve_custom_field_groups(db, org_ids)
+    catalog.extend(custom_groups)
+
     return catalog
+
+
+def _resolve_custom_field_groups(db, org_ids) -> list:
+    """Load org CustomFieldDefinition rows and convert them into catalog groups.
+
+    Asset custom fields use field id `cf:<key>`; finding custom fields use
+    `finding.cf:<key>`. Evaluation is handled in _eval_asset / _eval_finding_row.
+    """
+    if db is None:
+        return []
+    try:
+        from models.models import CustomFieldDefinition
+    except Exception:
+        return []
+
+    try:
+        q = db.query(CustomFieldDefinition).filter(
+            CustomFieldDefinition.is_active.is_(True),
+        )
+        if org_ids:
+            q = q.filter(CustomFieldDefinition.org_id.in_(org_ids))
+        defs = q.all()
+    except Exception:
+        logger.debug("Failed to resolve custom field definitions", exc_info=True)
+        return []
+
+    if not defs:
+        return []
+
+    # Deduplicate across orgs by (entity_type, key) — last wins
+    by_key: dict = {}
+    for d in defs:
+        by_key[(d.entity_type, d.key)] = d
+
+    asset_conds: list = []
+    finding_conds: list = []
+    for (entity_type, key), d in by_key.items():
+        value_type, ops = _custom_field_ops(d.data_type, d.enum_values)
+        cond = {
+            "field": f"cf:{key}" if entity_type == "asset" else f"finding.cf:{key}",
+            "label": d.label or key,
+            "ops": ops,
+            "value_type": value_type,
+            "placeholder": d.description or "",
+        }
+        if d.data_type == "enum" and d.enum_values:
+            cond["options"] = [{"label": v, "value": v} for v in d.enum_values]
+        if entity_type == "asset":
+            asset_conds.append(cond)
+        else:
+            finding_conds.append(cond)
+
+    groups: list = []
+    if asset_conds:
+        groups.append({"group": "Custom Fields (Asset)", "conditions": sorted(asset_conds, key=lambda c: c["label"])})
+    if finding_conds:
+        groups.append({"group": "Custom Fields (Finding)", "conditions": sorted(finding_conds, key=lambda c: c["label"])})
+    return groups
+
+
+def _custom_field_ops(data_type: str, enum_values):
+    """Return (value_type, ops) for a custom field definition's data_type."""
+    if data_type == "number":
+        return "number", ["eq", "neq", "gt", "lt", "gte", "lte"]
+    if data_type == "boolean":
+        return "boolean", ["is_true", "is_false"]
+    if data_type == "enum":
+        return "enum", ["eq", "neq"]
+    if data_type == "date":
+        return "string", ["eq", "neq", "gt", "lt", "gte", "lte"]
+    # string / fallback
+    return "string", ["eq", "neq", "contains", "not_contains", "startswith", "endswith", "regex"]
 
 
 def _resolve_product_options(db):
@@ -384,11 +461,17 @@ def _resolve_source_options(db, org_ids=None):
         q = q.filter(or_(Scan.org_id.in_(org_ids), Scan.org_id.is_(None)))
     scan_sources = {r[0] for r in q.all() if r[0]}
 
-    # Collect source_type values from findings (covers integration builder data)
-    fq = db.query(Finding.source_type).distinct()
-    if org_ids:
-        fq = fq.filter(Finding.org_id.in_(org_ids))
-    finding_sources = {r[0] for r in fq.all() if r[0]}
+    # Collect source_type values from findings (covers integration builder data).
+    # Finding.org_id is only present in production where it's added via ALTER TABLE
+    # migration; handle its absence gracefully so the catalog still loads.
+    try:
+        fq = db.query(Finding.source_type).distinct()
+        if org_ids and hasattr(Finding, "org_id"):
+            fq = fq.filter(Finding.org_id.in_(org_ids))
+        finding_sources = {r[0] for r in fq.all() if r[0]}
+    except Exception:
+        logger.debug("Failed to resolve finding sources for catalog", exc_info=True)
+        finding_sources = set()
 
     # Build a label map from integration names (template_id/custom → friendly name)
     integration_labels = {}
@@ -560,11 +643,45 @@ def _list_has(items: list, value) -> bool:
     return False
 
 
+_NUMERIC_OPS = {"gt", "lt", "gte", "lte"}
+
+
+def _eval_custom_field_value(raw, op: str, value) -> bool:
+    """Evaluate a user-defined custom field value.
+
+    Duck-types on the stored value: numeric ops coerce to float, boolean ops
+    check truthiness, everything else uses string comparison. This keeps the
+    evaluator agnostic to the CustomFieldDefinition's data_type — the op the
+    user picked in the RuleBuilder (constrained by value_type in the catalog)
+    implicitly selects the right comparison mode.
+    """
+    # Presence check works uniformly — empty string/None/0 are falsy
+    if op in ("is_true", "is_false"):
+        truthy = bool(raw) and raw not in ("false", "False", "0")
+        return truthy if op == "is_true" else not truthy
+
+    # Numeric ops: coerce both sides to float, False if either fails
+    if op in _NUMERIC_OPS:
+        try:
+            return _num_op(float(raw if raw is not None else 0), op, value)
+        except (TypeError, ValueError):
+            return False
+
+    # Default: string comparison
+    return _str_op("" if raw is None else str(raw), op, value)
+
+
 def _eval_asset(cond: dict, asset: dict) -> bool:
     """Evaluate an asset-namespace condition against an asset dict."""
     field = cond["field"]
     op    = cond.get("op", "eq")
     value = cond.get("value")
+
+    # User-defined custom fields: cf:<key> → look up in asset.custom_fields
+    if field.startswith("cf:"):
+        key = field[3:]
+        custom = asset.get("custom_fields") or {}
+        return _eval_custom_field_value(custom.get(key), op, value)
 
     # source_systems is a JSON list — check membership
     if field == "source":
@@ -608,6 +725,12 @@ def _eval_finding_row(cond: dict, finding) -> bool:
     sub   = cond["field"][len("finding."):]
     op    = cond.get("op", "eq")
     value = cond.get("value")
+
+    # User-defined custom fields: finding.cf:<key>
+    if sub.startswith("cf:"):
+        key = sub[3:]
+        custom = getattr(finding, "custom_fields", None) or {}
+        return _eval_custom_field_value(custom.get(key), op, value)
 
     if sub == "severity":
         return _num_op(float(finding.severity or 0), op, value)
@@ -1104,6 +1227,7 @@ def get_matching_assets(
                 "low_count": a.low_count or 0,
                 "info_count": a.info_count or 0,
                 "source_systems": a.source_systems or [],
+                "custom_fields": a.custom_fields or {},
             },
             db=db, asset_id=a.id, scan_id=scan_id,
         )

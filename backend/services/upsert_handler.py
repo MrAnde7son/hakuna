@@ -16,6 +16,7 @@ from sqlalchemy import and_
 from models.models import Asset, Finding
 from integrations.model_registry import get_model_meta
 from services.asset_observations import record_observation, record_finding_observation
+from services.custom_field_resolver import apply_custom_fields, load_custom_field_defs
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +32,20 @@ class UpsertResult:
 
 
 def upsert(db: Session, entity_type: str, mapped_record: dict, dedup_key: list,
-           integration_id: str, scan_id: int = None) -> UpsertResult:
-    """Upsert a single mapped record into the database."""
+           integration_id: str, scan_id: int = None,
+           custom_field_defs: dict = None) -> UpsertResult:
+    """Upsert a single mapped record into the database.
+
+    `custom_field_defs` is an optional pre-loaded dict of
+    {entity_type: list[CustomFieldDefinition]} to avoid N queries in batch mode.
+    """
     # Hardcoded paths for backward compatibility (asset/finding have special logic)
     if entity_type == "asset":
-        return _upsert_asset(db, mapped_record, dedup_key, integration_id, scan_id)
+        return _upsert_asset(db, mapped_record, dedup_key, integration_id, scan_id,
+                              custom_field_defs=custom_field_defs)
     elif entity_type == "finding":
-        return _upsert_finding(db, mapped_record, dedup_key, integration_id, scan_id)
+        return _upsert_finding(db, mapped_record, dedup_key, integration_id, scan_id,
+                                custom_field_defs=custom_field_defs)
     elif entity_type == "action":
         return UpsertResult(action="skipped", errors=["Action entity push not implemented in upsert"])
 
@@ -49,7 +57,7 @@ def upsert(db: Session, entity_type: str, mapped_record: dict, dedup_key: list,
 
 
 def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: str,
-                   scan_id: int) -> UpsertResult:
+                   scan_id: int, custom_field_defs: dict = None) -> UpsertResult:
     """Upsert an asset record."""
     source_system = record.get("source_system", "")
     source_id = record.get("source_id", "")
@@ -110,6 +118,10 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
 
         # Side effect: create asset relationships if mapped
         _handle_relationship_map(db, record, existing.id, scan_id)
+
+        # Resolve user-defined custom fields (mapping/formula)
+        if _apply_custom_fields_for(db, existing, record, "asset", scan_id, custom_field_defs):
+            updated = True
 
         # Record per-source observation
         record_observation(
@@ -173,6 +185,9 @@ def _upsert_asset(db: Session, record: dict, dedup_key: list, integration_id: st
 
         # Side effect: create asset relationships if mapped
         _handle_relationship_map(db, record, asset.id, scan_id)
+
+        # Resolve user-defined custom fields (mapping/formula)
+        _apply_custom_fields_for(db, asset, record, "asset", scan_id, custom_field_defs)
 
         # Record per-source observation
         record_observation(
@@ -296,7 +311,7 @@ def _handle_relationship_map(db, record, asset_id, scan_id):
 
 
 def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: str,
-                     scan_id: int) -> UpsertResult:
+                     scan_id: int, custom_field_defs: dict = None) -> UpsertResult:
     """Upsert a finding record."""
     source_system = record.get("source_system", "")
     source_id = record.get("source_id", "")
@@ -356,6 +371,10 @@ def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: 
         _accumulate_source(existing, source_system)
         # Do NOT change workflow_status if user has set it
 
+        # Resolve user-defined custom fields (mapping/formula)
+        if _apply_custom_fields_for(db, existing, record, "finding", scan_id, custom_field_defs):
+            updated = True
+
         # Record per-source finding observation
         record_finding_observation(
             db, finding_id=existing.id, source_system=source_system,
@@ -389,6 +408,9 @@ def _upsert_finding(db: Session, record: dict, dedup_key: list, integration_id: 
         )
         db.add(finding)
         db.flush()
+
+        # Resolve user-defined custom fields (mapping/formula)
+        _apply_custom_fields_for(db, finding, record, "finding", scan_id, custom_field_defs)
 
         # Record per-source finding observation
         record_finding_observation(
@@ -477,9 +499,14 @@ def upsert_batch(db: Session, entity_type: str, mapped_records: list, dedup_key:
     """Process a batch of records. Returns aggregate counts and new IDs."""
     counts = {"inserted": 0, "updated": 0, "skipped": 0, "errors": [],
               "new_asset_ids": [], "new_finding_ids": []}
+
+    # Preload custom field definitions once per batch (avoid N queries)
+    custom_field_defs = _preload_custom_field_defs(db, entity_type, scan_id)
+
     for record in mapped_records:
         try:
-            result = upsert(db, entity_type, record, dedup_key, integration_id, scan_id)
+            result = upsert(db, entity_type, record, dedup_key, integration_id, scan_id,
+                            custom_field_defs=custom_field_defs)
             counts[result.action] = counts.get(result.action, 0) + 1
             if result.action == "inserted" and result.id:
                 if entity_type == "asset":
@@ -501,6 +528,48 @@ def upsert_batch(db: Session, entity_type: str, mapped_records: list, dedup_key:
 
 
 # ── Helpers ──
+
+def _resolve_org_id(db: Session, scan_id: int = None) -> int | None:
+    """Resolve org_id from a scan_id (cached per call)."""
+    if not scan_id:
+        return None
+    from models.models import Scan
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    return scan.org_id if scan else None
+
+
+def _preload_custom_field_defs(db: Session, entity_type: str, scan_id: int = None) -> dict:
+    """Preload active custom field definitions for the scan's org.
+
+    Returns {entity_type: list[CustomFieldDefinition]} — resolves both 'asset'
+    and 'finding' together since a finding upsert can touch its parent asset.
+    """
+    org_id = _resolve_org_id(db, scan_id)
+    if not org_id:
+        return {}
+    return {
+        "asset": load_custom_field_defs(db, org_id, "asset"),
+        "finding": load_custom_field_defs(db, org_id, "finding"),
+    }
+
+
+def _apply_custom_fields_for(
+    db: Session, entity, record: dict, entity_type: str,
+    scan_id: int = None, custom_field_defs: dict = None,
+) -> bool:
+    """Apply org custom field definitions to an entity, loading on-demand if needed."""
+    defs = None
+    if custom_field_defs is not None:
+        defs = custom_field_defs.get(entity_type)
+    if defs is None:
+        org_id = _resolve_org_id(db, scan_id)
+        if not org_id:
+            return False
+        defs = load_custom_field_defs(db, org_id, entity_type)
+    if not defs:
+        return False
+    return apply_custom_fields(entity, record, defs)
+
 
 def _find_existing(db, model, record, dedup_key, source_system, source_id,
                     scan_id: int = None):

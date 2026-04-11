@@ -19,6 +19,7 @@ import {
   ErrorBanner, SkeletonDetail, TagPill, EmptyState, InlineSpinner,
   buildAssetBreakdown, useAssetRiskWeights
 } from '../shared/ui.jsx'
+import CustomAttributesCard from '../shared/CustomAttributesCard.jsx'
 import { useScan } from '../../App.jsx'
 import { getAssetDisplayName, getAssetSecondaryInfo, getAssetTypeLabel } from '../../utils/assetDisplay.js'
 
@@ -213,6 +214,14 @@ function OverviewTab({ asset, blastRadius, onReload, riskComponents, assetRiskWe
           )}
         </div>
       </Section>
+
+      {/* Custom attributes (user-defined fields) */}
+      <CustomAttributesCard
+        entityType="asset"
+        entityId={asset.id}
+        values={asset.custom_fields}
+        onChange={onReload}
+      />
 
       {/* Network & Identity */}
       <Section title={t('assetDetail.networkIdentity')} icon={Network}>

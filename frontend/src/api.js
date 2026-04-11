@@ -590,6 +590,52 @@ export const unassignTags = (data) => request('/tags/unassign', {
   body: JSON.stringify(data),
 })
 
+// ── Custom fields (user-defined fields on Asset / Finding) ─────────────────
+
+export const listCustomFieldDefinitions = (entityType) => {
+  const p = new URLSearchParams()
+  if (entityType) p.set('entity_type', entityType)
+  return request(`/custom-fields?${p}`)
+}
+
+export const createCustomFieldDefinition = (data) => request('/custom-fields', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const updateCustomFieldDefinition = (id, data) => request(`/custom-fields/${id}`, {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const deleteCustomFieldDefinition = (id) =>
+  request(`/custom-fields/${id}`, { method: 'DELETE' })
+
+export const backfillCustomFieldDefinition = (id) =>
+  request(`/custom-fields/${id}/backfill`, { method: 'POST' })
+
+export const previewCustomField = (data) => request('/custom-fields/preview', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const setAssetCustomFields = (assetId, customFields) =>
+  request(`/assets/${assetId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ custom_fields: customFields }),
+  })
+
+export const setFindingCustomFields = (findingId, customFields) =>
+  request(`/findings/${findingId}/custom-fields`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(customFields),
+  })
+
 // Auto-tag rules
 export const getAutoTagRules = () => request('/auto-tag-rules')
 export const createAutoTagRule = (data) => request('/auto-tag-rules', {

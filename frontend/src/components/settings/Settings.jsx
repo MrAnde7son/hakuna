@@ -7,6 +7,7 @@ import { useAuth } from '../../contexts/AuthContext.jsx'
 import RiskSettings from './RiskSettings.jsx'
 import ScanManagement from '../scans/ScanManagement.jsx'
 import TagManager from './TagManager.jsx'
+import CustomFieldManager from './CustomFieldManager.jsx'
 import SLASettings from './SLASettings.jsx'
 import IntegrationSettings from './IntegrationSettings.jsx'
 import GlobalExceptions from './GlobalExceptions.jsx'
@@ -449,7 +450,7 @@ function EntityCard({ entityKey, label, cfg, onChange, runEntityKey, availableSo
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { isAdmin, isSuperadmin, isMSSP } = useAuth()
-  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'sla', 'exceptions', 'integrations', 'integration-builder', 'relay-agents', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'sso']
+  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'custom-fields', 'sla', 'exceptions', 'integrations', 'integration-builder', 'relay-agents', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'sso']
   const tabParam = searchParams.get('tab')
   const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'upload'
   const setActiveTab = (id) => setSearchParams(prev => { prev.set('tab', id); return prev })
@@ -529,8 +530,9 @@ export default function Settings() {
     {
       label: 'Organization',
       items: [
-        { id: 'tags',      label: 'Tags',       icon: <Tag size={14} /> },
-        { id: 'ownership', label: 'Ownership',  icon: <UserCheck size={14} /> },
+        { id: 'tags',          label: 'Tags',          icon: <Tag size={14} /> },
+        { id: 'custom-fields', label: 'Custom Fields', icon: <Layers size={14} /> },
+        { id: 'ownership',     label: 'Ownership',     icon: <UserCheck size={14} /> },
       ],
     },
     ...(accessControlItems.length > 0 ? [{
@@ -598,6 +600,9 @@ export default function Settings() {
 
       {/* Tags tab */}
       {activeTab === 'tags' && <TagManager />}
+
+      {/* Custom Fields tab */}
+      {activeTab === 'custom-fields' && <CustomFieldManager />}
 
       {/* SLA tab */}
       {activeTab === 'sla' && <SLASettings />}

@@ -96,6 +96,7 @@ from routes.finding_routes import router as finding_router, _finding_to_dict
 from routes.report_routes import router as report_router
 from routes.campaign_routes import router as campaign_router
 from routes.tag_routes import router as tag_router
+from routes.custom_field_routes import router as custom_field_router
 from routes.sla_integration_routes import router as sla_integration_router
 from routes.rule_routes import router as rule_router
 from routes.scan_routes import router as scan_router
@@ -312,6 +313,7 @@ app.include_router(finding_router)
 app.include_router(report_router)
 app.include_router(campaign_router)
 app.include_router(tag_router)
+app.include_router(custom_field_router)
 app.include_router(sla_integration_router)
 app.include_router(rule_router)
 app.include_router(scan_router)
