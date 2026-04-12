@@ -374,6 +374,46 @@ def infer_cpes(
     return CpeInferResult(cpes, techs)
 
 
+def filter_cpe_list(cpe_list: list[str]) -> CpeInferResult:
+    """Retroactively filter an existing cpe_list into CVE-matchable vs. detected.
+
+    Use this at read time to clean up stale data written before the filtering
+    logic was deployed. Applies the same rules as ``infer_cpes``:
+      - Aliases with ``skip_cpe: true`` → detected_technologies only
+      - Versionless open-ended tokens (vendor == product, version == *) → detected only
+      - Everything else → both lists
+    """
+    cpes: list[str] = []
+    techs: list[str] = []
+
+    aliases = _MAP["token_aliases"]
+    # Build a reverse lookup: (vendor, product) → alias entry
+    _skip_pairs: set[str] = set()
+    for alias in aliases.values():
+        if alias.get("skip_cpe"):
+            _skip_pairs.add(f"{alias['vendor']}:{alias['product']}")
+
+    for cpe_str in cpe_list:
+        parts = cpe_str.split(":")
+        if len(parts) < 6:
+            continue
+        vendor = parts[3]
+        product = parts[4]
+        version = parts[5]
+        vp = f"{vendor}:{product}"
+
+        if vp in _skip_pairs:
+            techs.append(cpe_str)
+        elif vendor == product and version == "*":
+            # Versionless open-ended token — too speculative for CVE matching
+            techs.append(cpe_str)
+        else:
+            cpes.append(cpe_str)
+            techs.append(cpe_str)
+
+    return CpeInferResult(cpes, techs)
+
+
 def reload_map() -> None:
     """Force-reload the map file from disk. For tests."""
     global _MAP, _JARM_DB

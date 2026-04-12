@@ -456,10 +456,23 @@ def _query_threat_intel_cves(
             if _version_in_range(version, prod):
                 matched.append({
                     "cve_id": cve.cve_id,
+                    "cvss2_score": cve.cvss2_score,
                     "cvss3_score": cve.cvss3_score,
+                    "cvss3_vector": cve.cvss3_vector,
+                    "cvss4_score": cve.cvss4_score,
+                    "cvss4_vector": cve.cvss4_vector,
                     "severity": _classify_severity(cve.cvss3_score),
                     "in_kev": cve.in_kev or False,
                     "has_public_exploit": cve.has_public_exploit or False,
+                    "epss_score": cve.epss_score,
+                    "epss_percentile": cve.epss_percentile,
+                    "ransomware_linked": bool(
+                        cve.kev_ransomware_use
+                        and cve.kev_ransomware_use.lower() not in ("", "unknown")
+                    ),
+                    "trending_in_news": cve.trending_in_news or False,
+                    "exploit_count": cve.exploit_count or 0,
+                    "exploit_maturity_level": cve.exploit_maturity_level,
                     "description": (cve.description or "")[:200],
                 })
                 break

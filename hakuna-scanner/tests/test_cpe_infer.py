@@ -7,7 +7,7 @@ which enforces that this file covers all of them.
 
 import pytest
 
-from app.ingest.cpe_infer import CpeInferResult, infer_cpes
+from app.ingest.cpe_infer import CpeInferResult, filter_cpe_list, infer_cpes
 
 
 def _has_cpe(cpes: list[str], vendor: str, product: str) -> bool:
@@ -282,6 +282,63 @@ class TestNonSoftwareFiltering:
         # Everything in cpe_list must also be in detected_technologies
         for cpe in result.cpe_list:
             assert cpe in result.detected_technologies
+
+
+# ---------------------------------------------------------------------------
+# Retroactive filtering (filter_cpe_list)
+# ---------------------------------------------------------------------------
+
+
+class TestFilterCpeList:
+    """Test the read-time filter that cleans stale cpe_list data."""
+
+    def test_filters_example_from_scan(self):
+        """The exact cpe_list from the user's scan report."""
+        raw = [
+            "cpe:2.3:a:cloudflare:cloudflare:*:*:*:*:*:*:*:*",
+            "cpe:2.3:a:hsts:hsts:*:*:*:*:*:*:*:*",
+            "cpe:2.3:a:jquery:jquery:3.1.1:*:*:*:*:*:*:*",
+            "cpe:2.3:a:jquery:jquery_ui:1.12.1:*:*:*:*:*:*:*",
+            "cpe:2.3:a:microsoft:microsoft:*:*:*:*:*:*:*:*",
+            "cpe:2.3:a:momentjs:moment:2.29.1:*:*:*:*:*:*:*",
+            "cpe:2.3:a:mustache.js_project:mustache.js:2.3.0:*:*:*:*:*:*:*",
+            "cpe:2.3:a:recaptcha:recaptcha:*:*:*:*:*:*:*:*",
+        ]
+        result = filter_cpe_list(raw)
+        # CVE-matchable: only the versioned real libraries
+        assert result.cpe_list == [
+            "cpe:2.3:a:jquery:jquery:3.1.1:*:*:*:*:*:*:*",
+            "cpe:2.3:a:jquery:jquery_ui:1.12.1:*:*:*:*:*:*:*",
+            "cpe:2.3:a:momentjs:moment:2.29.1:*:*:*:*:*:*:*",
+            "cpe:2.3:a:mustache.js_project:mustache.js:2.3.0:*:*:*:*:*:*:*",
+        ]
+        # detected_technologies: includes everything except fully dropped items
+        assert len(result.detected_technologies) == len(raw)
+
+    def test_empty_list(self):
+        result = filter_cpe_list([])
+        assert result.cpe_list == []
+        assert result.detected_technologies == []
+
+    def test_all_good_cpes_pass_through(self):
+        good = [
+            "cpe:2.3:a:nginx:nginx:1.18.0:*:*:*:*:*:*:*",
+            "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*",
+        ]
+        result = filter_cpe_list(good)
+        assert result.cpe_list == good
+
+    def test_versionless_vendor_eq_product_goes_to_detected_only(self):
+        raw = ["cpe:2.3:a:microsoft:microsoft:*:*:*:*:*:*:*:*"]
+        result = filter_cpe_list(raw)
+        assert result.cpe_list == []
+        assert result.detected_technologies == raw
+
+    def test_skip_cpe_pair_goes_to_detected_only(self):
+        raw = ["cpe:2.3:a:cloudflare:cloudflare:*:*:*:*:*:*:*:*"]
+        result = filter_cpe_list(raw)
+        assert result.cpe_list == []
+        assert result.detected_technologies == raw
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_db
+from app.ingest.cpe_infer import filter_cpe_list
 from app.models.asset import Asset, AssetPort
 
 router = APIRouter(prefix="/api/v1/orgs/{org_id}/assets", tags=["assets"])
@@ -50,11 +51,10 @@ class AssetResponse(BaseModel):
     source: str | None = None
     nessus_asset_id: str | None = None
     liveness_state: str = "unconfirmed"
-    # Aggregated across all asset_ports rows for this asset. Populated by
-    # the CPE inference layer (ingest/cpe_infer.py) during httpx storage.
-    # Consumers (e.g. backend EASM → CVE correlator) use these to look up
-    # matching CVEs in threat intel.
+    # CVE-matchable CPEs only (excludes CDNs, WAFs, analytics, policies).
     cpe_list: list[str] | None = None
+    # All detected technologies including non-software (for UI display).
+    detected_technologies: list[str] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -74,12 +74,17 @@ def _asset_to_response(asset: Asset) -> AssetResponse:
     hasn't, the attribute access triggers a lazy load which is fine for single-
     asset endpoints but catastrophic for list endpoints (N+1).
     """
-    cpes: set[str] = set()
+    raw_cpes: set[str] = set()
     for port in (asset.ports or []):
         if port.cpe_list:
             # cpe_list is a JSONB list[str]; tolerate bad data
             if isinstance(port.cpe_list, list):
-                cpes.update(str(c) for c in port.cpe_list if c)
+                raw_cpes.update(str(c) for c in port.cpe_list if c)
+
+    # Filter out non-software CPEs (CDNs, WAFs, analytics, HTTP policies)
+    # at read time so stale data written before the filtering logic is cleaned.
+    filtered = filter_cpe_list(sorted(raw_cpes)) if raw_cpes else None
+
     return AssetResponse.model_validate(
         {
             "id": asset.id,
@@ -105,7 +110,8 @@ def _asset_to_response(asset: Asset) -> AssetResponse:
             "source": asset.source,
             "nessus_asset_id": asset.nessus_asset_id,
             "liveness_state": asset.liveness_state,
-            "cpe_list": sorted(cpes) if cpes else None,
+            "cpe_list": filtered.cpe_list if filtered else None,
+            "detected_technologies": filtered.detected_technologies if filtered else None,
         }
     )
 

@@ -604,6 +604,7 @@ def redetect_reachability(scan_id: int, db: Session = Depends(get_db)):
 
     # Recompute risk if any assets were updated
     if stats["updated"]:
-        _app._recompute_risk_for_scan(db, scan_id)
+        from services.post_ingest import _recompute_risk_scores
+        _recompute_risk_scores(db, scan_id)
 
     return {"scan_id": scan_id, **stats}

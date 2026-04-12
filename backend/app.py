@@ -1322,8 +1322,7 @@ def _run_scan_ingest(
             db.rollback()
             logger.warning(f"Reachability detection failed (non-fatal): {e}")
 
-        # ── Recompute asset risk scores using full formula (findings + inventory) ──
-        _recompute_risk_for_scan(db, scan.id, risk_cfg)
+        # ── Risk scores now recomputed inside finalize_scan (post-ingest pipeline) ──
 
         # ── Detect security controls from services + software (catalog matching) ──
         try:

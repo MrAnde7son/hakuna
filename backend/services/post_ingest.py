@@ -112,7 +112,13 @@ def finalize_scan(
             lambda: _run_control_assessment(db, org_id, scan_id),
         )
 
-    # 13. Fire event-driven workflow triggers for new data
+    # 13. Asset risk score recomputation
+    results["risk_scores"] = _step(
+        db, "Risk score recomputation",
+        lambda: _recompute_risk_scores(db, scan_id),
+    )
+
+    # 14. Fire event-driven workflow triggers for new data
     results["workflows"] = _step(
         db, "Workflow triggers",
         lambda: _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids),
@@ -346,6 +352,90 @@ def _auto_vm_scan_for_easm(db, org_id, scan_id):
     except RuntimeError:
         asyncio.run(_trigger_with_own_session())
     return {"triggered": True, "domain": domain}
+
+
+def _recompute_risk_scores(db, scan_id):
+    """Recompute risk scores for every asset in a scan using the full formula."""
+    from models.models import Asset, Finding, InventorySecurityControl, InventoryNetConn
+    from core import risk_config as risk_engine
+
+    cfg = risk_engine.load_config()
+    assets = db.query(Asset).filter(Asset.scan_id == scan_id).all()
+    updated = 0
+    for asset in assets:
+        findings = db.query(Finding).filter(Finding.asset_id == asset.id).all()
+        findings_dicts = [
+            {
+                "severity":          f.severity,
+                "port":              f.port,
+                "exploit_available": f.exploit_available,
+                "exploit_maturity":  f.exploit_maturity,
+                "vpr_score":         f.vpr_score,
+                "zero_day":          f.zero_day,
+                "is_kev":            f.is_kev or False,
+                "epss_score":        f.epss_score,
+                "ransomware_linked": f.ransomware_linked or False,
+                "trending_in_news":  f.trending_in_news or False,
+            }
+            for f in findings
+        ]
+        # Build inventory context for compensating controls + reachability
+        av = db.query(InventorySecurityControl).filter(
+            InventorySecurityControl.asset_id == asset.id,
+            InventorySecurityControl.control_type == "av",
+            InventorySecurityControl.is_enabled == True,
+        ).first()
+        fw = db.query(InventorySecurityControl).filter(
+            InventorySecurityControl.asset_id == asset.id,
+            InventorySecurityControl.control_type == "firewall",
+            InventorySecurityControl.is_enabled == True,
+        ).first()
+        netconns = db.query(InventoryNetConn.local_port, InventoryNetConn.state).filter(
+            InventoryNetConn.asset_id == asset.id,
+            InventoryNetConn.local_port.isnot(None),
+        ).all()
+        listening_ports = set()
+        established_ports = set()
+        for row in netconns:
+            if row.local_port is None:
+                continue
+            state = (row.state or "").upper()
+            if state in ("LISTEN", "LISTENING"):
+                listening_ports.add(row.local_port)
+            elif state == "ESTABLISHED":
+                established_ports.add(row.local_port)
+
+        is_internet_facing = False
+        if asset.is_internet_facing:
+            is_internet_facing = True
+        else:
+            env = (asset.environment_tag or "").lower()
+            if env in ("external", "dmz"):
+                is_internet_facing = True
+            elif asset.ip and not asset.ip.startswith(("10.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.", "192.168.", "127.")):
+                is_internet_facing = True
+
+        inv_ctx = {
+            "has_av":                  av is not None if av is not None else None,
+            "has_firewall":            fw is not None if fw is not None else None,
+            "established_connections": len(established_ports),
+            "listening_ports":         listening_ports,
+            "established_ports":       established_ports,
+            "is_internet_facing":      is_internet_facing,
+        }
+        new_score = risk_engine.compute_asset_risk_score(
+            findings_dicts,
+            asset_criticality=asset.criticality or 5,
+            inventory=inv_ctx,
+            cfg=cfg,
+        )
+        if asset.risk_score != new_score:
+            asset.risk_score = new_score
+            updated += 1
+    if updated:
+        db.flush()
+        logger.info("Risk scores: %d asset(s) updated for scan %d", updated, scan_id)
+    return {"updated": updated, "total_assets": len(assets)}
 
 
 def _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids):

@@ -28,6 +28,46 @@ logger = logging.getLogger(__name__)
 
 HAKUNA_BASE_URL = os.getenv("HAKUNA_SCANNER_URL", "http://localhost:8001")
 
+# Non-software vendor:product pairs that should be excluded from cpe_list
+# (used for CVE correlation) but kept in detected_technologies (UI display).
+# Mirrors skip_cpe entries in hakuna-scanner/app/ingest/cpe_map.json.
+_NON_SOFTWARE_CPE_PAIRS = frozenset({
+    "cloudflare:cloudflare", "akamai:akamai", "fastly:fastly",
+    "amazon:cloudfront", "hsts:hsts", "google:recaptcha",
+    "google:analytics", "google:tag_manager", "google:font_api",
+    "google:maps", "facebook:pixel", "hotjar:hotjar",
+    "intercom:intercom", "hubspot:hubspot", "segment:segment",
+    "mixpanel:mixpanel", "heap:heap", "zendesk:zendesk",
+    "drift:drift", "crisp:crisp", "tawk:tawk.to",
+    "automattic:gravatar", "fontawesome:font_awesome",
+    "unpkg:unpkg", "cdnjs:cdnjs", "jsdelivr:jsdelivr",
+    "sucuri:sucuri", "imperva:incapsula",
+})
+
+
+def _filter_cpe_list(cpe_list: list) -> list:
+    """Remove non-software CPEs from a cpe_list at read time.
+
+    Filters out:
+    1. Known non-software pairs (CDNs, WAFs, analytics, etc.)
+    2. Versionless open-ended tokens where vendor == product and version is *
+    """
+    result = []
+    for cpe_str in cpe_list:
+        if not isinstance(cpe_str, str):
+            continue
+        parts = cpe_str.split(":")
+        if len(parts) < 6:
+            continue
+        vendor, product, version = parts[3], parts[4], parts[5]
+        vp = f"{vendor}:{product}"
+        if vp in _NON_SOFTWARE_CPE_PAIRS:
+            continue
+        if vendor == product and version == "*":
+            continue
+        result.append(cpe_str)
+    return result
+
 
 # ── Shared HTTP client for scanner calls ────────────────────────────
 #
@@ -629,10 +669,12 @@ def _build_easm_data(ea: dict) -> dict:
         "last_seen_easm": ea.get("last_seen"),
         "last_enriched_easm": ea.get("last_enriched"),
         "liveness_state": ea.get("liveness_state", "unconfirmed"),
-        # CPE list aggregated from asset_ports by the scanner API. Populated
-        # by the CPE inference layer (hakuna-scanner/app/ingest/cpe_infer.py).
-        # Used downstream by services/cpe_matcher.py for CPE → CVE correlation.
-        "cpe_list": ea.get("cpe_list") or [],
+        # CPE list (CVE-matchable only — excludes CDNs, WAFs, analytics, policies).
+        # Filtered by hakuna-scanner's CPE inference layer; also filtered here
+        # at read time via _filter_cpe_list to clean up stale data.
+        "cpe_list": _filter_cpe_list(ea.get("cpe_list") or []),
+        # All detected technologies including non-software (for UI display).
+        "detected_technologies": ea.get("detected_technologies") or ea.get("cpe_list") or [],
     }
 
 
@@ -1133,7 +1175,20 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 priority_score=round(priority, 1),
                 effort_level="medium",
                 owner_suggestion="SecOps",
+                cves=[cve_id],
+                cvss2_score=cve.get("cvss2_score"),
                 cvss3_score=cvss or None,
+                cvss3_vector=cve.get("cvss3_vector"),
+                cvss4_score=cve.get("cvss4_score"),
+                cvss4_vector=cve.get("cvss4_vector"),
+                is_kev=cve.get("in_kev", False),
+                exploit_available=cve.get("has_public_exploit", False),
+                exploit_count=cve.get("exploit_count") or 0,
+                exploit_maturity_level=cve.get("exploit_maturity_level"),
+                epss_score=cve.get("epss_score"),
+                epss_percentile=cve.get("epss_percentile"),
+                ransomware_linked=cve.get("ransomware_linked", False),
+                trending_in_news=cve.get("trending_in_news", False),
                 synopsis=f"{cve_id} affects technology detected on {hostname}.",
                 description=(cve.get("description") or "")[:1000]
                     or f"CVE {cve_id} matches the CPE fingerprint observed on {hostname}.",
@@ -1147,7 +1202,9 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     f"CVE: {cve_id}\n"
                     f"CVSS3: {cvss}\n"
                     f"KEV: {cve.get('in_kev', False)}\n"
-                    f"Public exploit: {cve.get('has_public_exploit', False)}"
+                    f"Public exploit: {cve.get('has_public_exploit', False)}\n"
+                    f"EPSS: {cve.get('epss_score', 'N/A')}\n"
+                    f"Exploit maturity: {cve.get('exploit_maturity_level', 'N/A')}"
                 ),
                 first_seen=now, last_seen=now,
             ))
@@ -1610,7 +1667,7 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 from threat_intel.threat_intel_sync import sync_cves_for_cpes
                 all_cpes = []
                 for ea in easm_assets:
-                    all_cpes.extend(ea.get("cpe_list") or [])
+                    all_cpes.extend(_filter_cpe_list(ea.get("cpe_list") or []))
                 if all_cpes:
                     cpe_result = sync_cves_for_cpes(db, cpe_list=all_cpes)
                     logger.info(f"EASM CPE→CVE sync for '{domain}': {cpe_result}")
