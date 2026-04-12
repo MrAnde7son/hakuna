@@ -261,11 +261,24 @@ async def store_httpx_enrichment(
     # of inference — every error path swallows and logs.
     if CPE_INFER_ENABLED:
         try:
-            cpes = infer_cpes(httpx_entry, tls_cert, jarm_hash=jarm_hash)
-            if cpes:
-                port = _httpx_port_for_entry(httpx_entry)
-                if port is not None:
-                    await upsert_asset_port_cpes(db, asset_id, port, cpes)
+            result = infer_cpes(httpx_entry, tls_cert, jarm_hash=jarm_hash)
+            port = _httpx_port_for_entry(httpx_entry)
+            if result.cpe_list and port is not None:
+                await upsert_asset_port_cpes(db, asset_id, port, result.cpe_list)
+            # Store the full technology profile (including non-software like
+            # CDNs, WAFs, analytics) on the enrichment record for UI display.
+            if result.detected_technologies:
+                await db.execute(
+                    text("""
+                        UPDATE asset_enrichments
+                        SET tech_stack = cast(:tech as jsonb)
+                        WHERE id = :eid
+                    """),
+                    {
+                        "eid": enrichment_id,
+                        "tech": json.dumps(result.detected_technologies),
+                    },
+                )
         except Exception as exc:  # noqa: BLE001 — never block enrichment on inference
             logger.warning(
                 "cpe_infer failed for asset=%s url=%s: %s",

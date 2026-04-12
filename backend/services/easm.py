@@ -1133,7 +1133,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 priority_score=round(priority, 1),
                 effort_level="medium",
                 owner_suggestion="SecOps",
-                cvss3_base_score=cvss or None,
+                cvss3_score=cvss or None,
                 synopsis=f"{cve_id} affects technology detected on {hostname}.",
                 description=(cve.get("description") or "")[:1000]
                     or f"CVE {cve_id} matches the CPE fingerprint observed on {hostname}.",
@@ -1602,6 +1602,21 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
 
             # Import assets now that scan is done
             easm_assets = await get_easm_assets(org.easm_org_id) or []
+
+            # Pull NVD CVEs for any new CPEs detected during enrichment.
+            # This must run BEFORE _import_assets_for_domain so the CPE→CVE
+            # correlation in _generate_easm_findings can find matching CVEs.
+            try:
+                from threat_intel.threat_intel_sync import sync_cves_for_cpes
+                all_cpes = []
+                for ea in easm_assets:
+                    all_cpes.extend(ea.get("cpe_list") or [])
+                if all_cpes:
+                    cpe_result = sync_cves_for_cpes(db, cpe_list=all_cpes)
+                    logger.info(f"EASM CPE→CVE sync for '{domain}': {cpe_result}")
+            except Exception:
+                logger.exception(f"CPE→CVE sync failed for '{domain}' (non-fatal)")
+
             created, findings_created = _import_assets_for_domain(db, scan, easm_assets, domain)
 
             now = datetime.utcnow()

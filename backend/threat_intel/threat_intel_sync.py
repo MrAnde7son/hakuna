@@ -367,6 +367,244 @@ def sync_nvd_scores(db, batch_size: int = 50) -> dict:
     return {"updated": updated, "failed": failed, "skipped": skipped}
 
 
+def _fetch_nvd_cves_by_cpe(vendor: str, product: str, max_results: int = 200) -> List[dict]:
+    """Query NVD API v2 for CVEs affecting a specific CPE vendor:product.
+
+    Returns a list of normalized CVE dicts (same format as fetch_nvd_cve).
+    Uses the cpeName parameter with a wildcard version to get all CVEs for
+    any version of the product.
+    """
+    cpe_match = f"cpe:2.3:a:{vendor}:{product}"
+    params = {"virtualMatchString": cpe_match, "resultsPerPage": str(min(max_results, 2000))}
+    url = "https://services.nvd.nist.gov/rest/json/cves/2.0?" + urllib.parse.urlencode(params)
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30, context=_get_ssl_context()) as resp:
+                if resp.status == 429:
+                    logger.warning("NVD CPE query rate-limited for %s:%s", vendor, product)
+                    return []
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as http_err:
+            if http_err.code == 429:
+                logger.warning("NVD CPE query rate-limited (429) for %s:%s", vendor, product)
+                return []
+            raise
+
+        results = []
+        for vuln in data.get("vulnerabilities", []):
+            cve_data = vuln.get("cve", {})
+            cve_id = cve_data.get("id", "")
+            if not cve_id:
+                continue
+
+            descriptions = cve_data.get("descriptions", [])
+            description = next(
+                (d["value"] for d in descriptions if d.get("lang") == "en"), ""
+            )
+
+            metrics = cve_data.get("metrics", {})
+
+            cvss2_score = None
+            for m in metrics.get("cvssMetricV2", []):
+                cvss2_score = m.get("cvssData", {}).get("baseScore")
+                break
+
+            cvss3_score = None
+            cvss3_vector = None
+            for key in ("cvssMetricV31", "cvssMetricV30"):
+                metric_list = metrics.get(key, [])
+                if metric_list:
+                    cvss_data = metric_list[0].get("cvssData", {})
+                    cvss3_score = cvss_data.get("baseScore")
+                    cvss3_vector = cvss_data.get("vectorString")
+                    break
+
+            cvss4_score = None
+            cvss4_vector = None
+            for m in metrics.get("cvssMetricV40", []):
+                cvss_data = m.get("cvssData", {})
+                cvss4_score = cvss_data.get("baseScore")
+                cvss4_vector = cvss_data.get("vectorString")
+                break
+
+            affected_products = []
+            for config in cve_data.get("configurations", []):
+                for node in config.get("nodes", []):
+                    for cpe_match in node.get("cpeMatch", []):
+                        cpe_uri = cpe_match.get("criteria", "")
+                        parts = cpe_uri.split(":")
+                        if len(parts) >= 5:
+                            cpe_version = parts[5] if len(parts) > 5 and parts[5] not in ("*", "-", "") else ""
+                            prod = {
+                                "vendor": parts[3],
+                                "product": parts[4],
+                                "cpe_version": cpe_version,
+                            }
+                            for field in ("versionStartIncluding", "versionStartExcluding",
+                                          "versionEndIncluding", "versionEndExcluding"):
+                                val = cpe_match.get(field, "")
+                                if val:
+                                    prod[field] = val
+                            prod["versions"] = (
+                                cpe_match.get("versionEndIncluding")
+                                or cpe_match.get("versionEndExcluding")
+                                or cpe_version
+                                or ""
+                            )
+                            affected_products.append(prod)
+
+            cwe_ids = []
+            for weakness in cve_data.get("weaknesses", []):
+                for desc in weakness.get("description", []):
+                    val = desc.get("value", "")
+                    if val and val not in ("NVD-CWE-Other", "NVD-CWE-noinfo"):
+                        cwe_ids.append(val)
+
+            results.append({
+                "cve_id": cve_id,
+                "description": description,
+                "cvss2_score": cvss2_score,
+                "cvss3_score": cvss3_score,
+                "cvss3_vector": cvss3_vector,
+                "cvss4_score": cvss4_score,
+                "cvss4_vector": cvss4_vector,
+                "published_date": cve_data.get("published", ""),
+                "modified_date": cve_data.get("lastModified", ""),
+                "affected_products": affected_products,
+                "cwe_ids": cwe_ids,
+                "nvd_url": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+            })
+
+        logger.info(
+            "NVD CPE query for %s:%s returned %d CVEs (total_results=%s)",
+            vendor, product, len(results), data.get("totalResults"),
+        )
+        return results
+
+    except Exception as exc:
+        logger.warning("NVD CPE query failed for %s:%s: %s", vendor, product, exc)
+        return []
+
+
+def sync_cves_for_cpes(db, cpe_list: Optional[List[str]] = None) -> dict:
+    """Pull CVEs from NVD for CPE vendor:product pairs not yet covered in threat_cves.
+
+    If cpe_list is None, collects CPEs from all EASM asset_ports in the DB.
+    Only queries NVD for products that have zero matching CVEs in threat_cves,
+    so repeated calls are cheap (no redundant API hits).
+
+    Returns {"products_queried": int, "cves_added": int, "cves_updated": int}.
+    """
+    import time
+
+    # Step 1: Collect unique vendor:product pairs from CPE strings.
+    if cpe_list is None:
+        # Pull CPEs from EASM asset data stored on scan assets.
+        from models.models import Asset
+        try:
+            assets = db.query(Asset.easm_data).filter(
+                Asset.easm_data.isnot(None),
+            ).all()
+            cpe_list = []
+            for (easm_data,) in assets:
+                if isinstance(easm_data, dict):
+                    cpe_list.extend(easm_data.get("cpe_list") or [])
+        except Exception:
+            cpe_list = []
+
+    # Parse vendor:product from CPE 2.3 strings.
+    products_to_query: dict[tuple[str, str], bool] = {}
+    for cpe_str in cpe_list:
+        parts = cpe_str.split(":")
+        if len(parts) >= 5:
+            vendor, product = parts[3], parts[4]
+            if vendor and product and product != "*":
+                products_to_query[(vendor, product)] = True
+
+    if not products_to_query:
+        return {"products_queried": 0, "cves_added": 0, "cves_updated": 0}
+
+    # Step 2: Filter out products already covered in threat_cves.
+    # Check if any CVE's affected_products JSON contains the product name.
+    from sqlalchemy import cast, String
+    uncovered = []
+    for vendor, product in products_to_query:
+        count = db.query(ThreatCVE).filter(
+            cast(ThreatCVE.affected_products, String).like(f'%"{product}"%'),
+        ).limit(1).count()
+        if count == 0:
+            uncovered.append((vendor, product))
+
+    if not uncovered:
+        logger.info("sync_cves_for_cpes: all %d products already covered", len(products_to_query))
+        return {"products_queried": 0, "cves_added": 0, "cves_updated": 0}
+
+    logger.info("sync_cves_for_cpes: querying NVD for %d uncovered products", len(uncovered))
+
+    # Step 3: Query NVD for each uncovered product.
+    total_added = 0
+    total_updated = 0
+
+    for i, (vendor, product) in enumerate(uncovered):
+        if i > 0:
+            time.sleep(0.7)  # NVD rate limit: ~5 req/s without API key
+
+        cves = _fetch_nvd_cves_by_cpe(vendor, product)
+
+        for cve_data in cves:
+            cve_id = cve_data["cve_id"]
+            existing = db.query(ThreatCVE).filter(ThreatCVE.cve_id == cve_id).first()
+
+            if existing:
+                # Update affected_products if we have richer data
+                if cve_data.get("affected_products") and not existing.affected_products:
+                    existing.affected_products = cve_data["affected_products"]
+                if cve_data.get("cvss3_score") and not existing.cvss3_score:
+                    existing.cvss3_score = cve_data["cvss3_score"]
+                    existing.cvss3_vector = cve_data.get("cvss3_vector")
+                if cve_data.get("description") and not existing.description:
+                    existing.description = cve_data["description"]
+                existing.updated_at = datetime.utcnow()
+                total_updated += 1
+            else:
+                record = ThreatCVE(
+                    cve_id=cve_id,
+                    description=cve_data.get("description", ""),
+                    cvss2_score=cve_data.get("cvss2_score"),
+                    cvss3_score=cve_data.get("cvss3_score"),
+                    cvss3_vector=cve_data.get("cvss3_vector"),
+                    cvss4_score=cve_data.get("cvss4_score"),
+                    cvss4_vector=cve_data.get("cvss4_vector"),
+                    published_date=cve_data.get("published_date", ""),
+                    modified_date=cve_data.get("modified_date", ""),
+                    affected_products=cve_data.get("affected_products", []),
+                    cwe_ids=cve_data.get("cwe_ids", []),
+                    nvd_url=cve_data.get("nvd_url", ""),
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                db.add(record)
+                total_added += 1
+
+        # Commit per product to avoid huge transactions
+        try:
+            db.commit()
+        except Exception as exc:
+            logger.warning("sync_cves_for_cpes commit failed for %s:%s: %s", vendor, product, exc)
+            db.rollback()
+
+    logger.info(
+        "sync_cves_for_cpes done: %d products queried, %d CVEs added, %d updated",
+        len(uncovered), total_added, total_updated,
+    )
+    return {"products_queried": len(uncovered), "cves_added": total_added, "cves_updated": total_updated}
+
+
 def sync_epss_for_scan_cves(db, scan_id: int = None) -> dict:
     """
     Fetch EPSS scores for all CVEs in the threat_cves table (KEV catalog + scan CVEs).

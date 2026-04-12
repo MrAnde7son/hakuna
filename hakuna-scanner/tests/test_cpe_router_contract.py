@@ -88,7 +88,8 @@ def test_inference_output_routes_through_router():
     cpe_map = _routing_cpe_map()
 
     for vendor, product, httpx_entry, tls_cert in COVERAGE_FIXTURES:
-        cpes = infer_cpes(httpx_entry, tls_cert)
+        result = infer_cpes(httpx_entry, tls_cert)
+        cpes = result.cpe_list
         assert cpes, f"inference produced no CPEs for {vendor}:{product}"
 
         # Replicate router._route_from_cpe locally to avoid importing

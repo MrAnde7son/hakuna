@@ -12,6 +12,20 @@ common-name token doesn't match the NVD canonical product — e.g. the Server
 header ``Apache/2.4.49`` should become ``apache:http_server``, not
 ``apache:apache``. Anything not in the alias table is emitted as-is.
 
+Filtering
+---------
+Not every detected technology is useful for CVE correlation. Tokens that
+represent CDN/WAF services, HTTP policies, analytics embeds, or third-party
+widgets are tracked as ``detected_technologies`` (for UI display) but excluded
+from ``cpe_list`` (used for CVE matching and Nuclei routing).
+
+Filtering happens at two levels:
+  1. **Alias-level**: entries in ``cpe_map.json`` with ``"skip_cpe": true``
+     are emitted only to ``detected_technologies``.
+  2. **Open-ended path**: tokens not in the alias table that have no version
+     (``*``) are treated as low-confidence and routed to
+     ``detected_technologies`` only. Versioned tokens still get a CPE.
+
 Why open-ended?
 ---------------
 ``services.cpe_matcher.match_cves_for_cpes`` feeds the product+version into
@@ -36,6 +50,7 @@ import json
 import logging
 import os
 import re
+from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +75,20 @@ _TOKEN_DENYLIST = frozenset({
 })
 
 
+class CpeInferResult(NamedTuple):
+    """Split inference output: CVE-matchable CPEs vs. all detected technologies.
+
+    ``cpe_list`` contains only CPEs suitable for CVE correlation and Nuclei
+    routing — real software with a version or a known-good alias.
+
+    ``detected_technologies`` contains *everything* the inference layer saw,
+    including CDNs, WAFs, analytics scripts, and versionless generic tokens.
+    Use this for the asset's technology profile in the UI.
+    """
+    cpe_list: list[str]
+    detected_technologies: list[str]
+
+
 def _load_map() -> dict:
     try:
         with open(_MAP_PATH) as f:
@@ -71,6 +100,7 @@ def _load_map() -> dict:
     return {
         "token_aliases": {
             k.lower(): v for k, v in (data.get("token_aliases") or {}).items()
+            if not k.startswith("_")
         },
         "tls_subject_aliases": [
             {**entry, "match": entry["match"].lower()}
@@ -118,27 +148,52 @@ def _emit(
     vendor: str,
     product: str,
     version: str = "*",
+    *,
+    techs: list[str] | None = None,
+    tech_only: bool = False,
 ) -> None:
     """Append a CPE if (vendor, product) has not been emitted yet.
-    Dedup ignores version — first-seen version wins for a given pair."""
+
+    Dedup ignores version — first-seen version wins for a given pair.
+
+    If *tech_only* is True the CPE is added to *techs* (detected technologies)
+    but **not** to *cpes* (CVE-matchable list). This is used for non-software
+    detections like CDNs, WAFs, and analytics embeds that should appear in the
+    asset's technology profile but not trigger CVE correlation.
+    """
     if not vendor or not product:
         return
     key = f"{vendor}:{product}"
     if key in seen:
         return
     seen.add(key)
-    cpes.append(_format_cpe(vendor, product, _sanitize_version(version)))
+    cpe_str = _format_cpe(vendor, product, _sanitize_version(version))
+    if tech_only:
+        if techs is not None:
+            techs.append(cpe_str)
+    else:
+        cpes.append(cpe_str)
+        if techs is not None:
+            techs.append(cpe_str)
 
 
 def _resolve_token(
-    token: str, version: str, cpes: list[str], seen: set[str],
+    token: str,
+    version: str,
+    cpes: list[str],
+    seen: set[str],
+    *,
+    techs: list[str] | None = None,
 ) -> None:
     """Resolve one (token, version) pair into an emitted CPE.
 
     Precedence:
       1. Exact alias hit on the lowercased token (multi-word aliases allowed).
+         If the alias has ``"skip_cpe": true``, emit to *techs* only.
       2. First-word alias hit, for unknown multi-word tokens.
       3. Open-ended emission with (vendor=product=sanitized_token).
+         Versionless open-ended tokens go to *techs* only — they're too
+         speculative for CVE matching (e.g. ``microsoft:microsoft:*``).
 
     Empty tokens and deny-listed tokens are dropped silently.
     """
@@ -151,7 +206,10 @@ def _resolve_token(
     aliases = _MAP["token_aliases"]
     alias = aliases.get(key)
     if alias:
-        _emit(cpes, seen, alias["vendor"], alias["product"], version)
+        _emit(
+            cpes, seen, alias["vendor"], alias["product"], version,
+            techs=techs, tech_only=bool(alias.get("skip_cpe")),
+        )
         return
 
     # Fall back to the first whitespace-delimited word for unknown multi-word
@@ -160,7 +218,10 @@ def _resolve_token(
     if first != key:
         alias = aliases.get(first)
         if alias:
-            _emit(cpes, seen, alias["vendor"], alias["product"], version)
+            _emit(
+                cpes, seen, alias["vendor"], alias["product"], version,
+                techs=techs, tech_only=bool(alias.get("skip_cpe")),
+            )
             return
 
     if first in _TOKEN_DENYLIST:
@@ -168,10 +229,17 @@ def _resolve_token(
     safe = _sanitize_token(first)
     if not safe or safe in _TOKEN_DENYLIST:
         return
-    _emit(cpes, seen, safe, safe, version)
+
+    # Open-ended path: no alias matched. Versionless tokens are too
+    # speculative for CVE correlation (e.g. "microsoft:microsoft:*") —
+    # route them to detected_technologies only.
+    is_versionless = (version == "*" or not version)
+    _emit(cpes, seen, safe, safe, version, techs=techs, tech_only=is_versionless)
 
 
-def _from_tech_tokens(tech: object, cpes: list[str], seen: set[str]) -> None:
+def _from_tech_tokens(
+    tech: object, cpes: list[str], seen: set[str], *, techs: list[str] | None = None,
+) -> None:
     """httpx -tech-detect output. Tokens like 'Nginx' or 'Nginx:1.18.0',
     occasionally a dict {'Nginx': '1.18.0'}."""
     if not tech:
@@ -188,10 +256,12 @@ def _from_tech_tokens(tech: object, cpes: list[str], seen: set[str]) -> None:
         return
 
     for name, version in pairs:
-        _resolve_token(name, version or "*", cpes, seen)
+        _resolve_token(name, version or "*", cpes, seen, techs=techs)
 
 
-def _from_server_header(server: str, cpes: list[str], seen: set[str]) -> None:
+def _from_server_header(
+    server: str, cpes: list[str], seen: set[str], *, techs: list[str] | None = None,
+) -> None:
     """HTTP Server header, e.g. 'nginx/1.18.0 (Ubuntu)', 'Yaws 2.0.6'."""
     if not server:
         return
@@ -200,11 +270,12 @@ def _from_server_header(server: str, cpes: list[str], seen: set[str]) -> None:
         return
     token = m.group(1) or ""
     version = m.group(2) or "*"
-    _resolve_token(token, version, cpes, seen)
+    _resolve_token(token, version, cpes, seen, techs=techs)
 
 
 def _from_tls_subject(
     tls_cert: dict | None, cpes: list[str], seen: set[str],
+    *, techs: list[str] | None = None,
 ) -> None:
     """TLS cert subject CN. Most certs are hostname-issued so this rarely
     fires. Only matches when the subject contains a known appliance token."""
@@ -217,11 +288,12 @@ def _from_tls_subject(
 
     for entry in _MAP["tls_subject_aliases"]:
         if entry["match"] in subject_lower:
-            _emit(cpes, seen, entry["vendor"], entry["product"])
+            _emit(cpes, seen, entry["vendor"], entry["product"], techs=techs)
 
 
 def _from_jarm(
     jarm_hash: str | None, cpes: list[str], seen: set[str],
+    *, techs: list[str] | None = None,
 ) -> list[str]:
     """Match a JARM TLS fingerprint against known server hashes.
 
@@ -242,7 +314,7 @@ def _from_jarm(
     match = full.get(jarm_hash)
     if match:
         if match.get("cpe_vendor") and match.get("cpe_product"):
-            _emit(cpes, seen, match["cpe_vendor"], match["cpe_product"])
+            _emit(cpes, seen, match["cpe_vendor"], match["cpe_product"], techs=techs)
         tags.extend(match.get("tags", []))
         return tags
 
@@ -251,7 +323,7 @@ def _from_jarm(
     for prefix, pmatch in prefixes.items():
         if jarm_hash.startswith(prefix):
             if pmatch.get("cpe_vendor") and pmatch.get("cpe_product"):
-                _emit(cpes, seen, pmatch["cpe_vendor"], pmatch["cpe_product"])
+                _emit(cpes, seen, pmatch["cpe_vendor"], pmatch["cpe_product"], techs=techs)
             tags.extend(pmatch.get("tags", []))
             break
 
@@ -262,41 +334,44 @@ def infer_cpes(
     httpx_entry: dict | None,
     tls_cert: dict | None = None,
     jarm_hash: str | None = None,
-) -> list[str]:
+) -> CpeInferResult:
     """Derive CPE 2.3 strings from a httpx JSON entry and optional TLS cert.
 
-    The inference layer is open-ended: any Server header or tech token
-    becomes a CPE unless it is on the deny-list or empty after normalization.
-    See the module docstring for the rationale.
+    Returns a ``CpeInferResult`` with two lists:
 
-    When ``jarm_hash`` is provided (from tlsx -jarm), it is matched against
-    the JARM fingerprint database to identify server products — especially
-    useful for C2 framework detection and appliance identification.
+    * ``cpe_list`` — CPEs suitable for CVE correlation and Nuclei routing.
+      Excludes non-software detections (CDNs, WAFs, analytics) and
+      versionless open-ended tokens.
+    * ``detected_technologies`` — *all* detected technologies including
+      non-software items. Use for the asset's tech profile in the UI.
 
-    Returns an ordered, deduped list. Never raises.
+    Never raises.
     """
     cpes: list[str] = []
+    techs: list[str] = []
     seen: set[str] = set()
 
     if not httpx_entry and not tls_cert and not jarm_hash:
-        return cpes
+        return CpeInferResult(cpes, techs)
 
     if httpx_entry:
         _from_tech_tokens(
             httpx_entry.get("tech") or httpx_entry.get("technologies"),
             cpes,
             seen,
+            techs=techs,
         )
         _from_server_header(
             (httpx_entry.get("webserver") or httpx_entry.get("web_server") or "").strip(),
             cpes,
             seen,
+            techs=techs,
         )
 
-    _from_tls_subject(tls_cert, cpes, seen)
-    _from_jarm(jarm_hash, cpes, seen)
+    _from_tls_subject(tls_cert, cpes, seen, techs=techs)
+    _from_jarm(jarm_hash, cpes, seen, techs=techs)
 
-    return cpes
+    return CpeInferResult(cpes, techs)
 
 
 def reload_map() -> None:

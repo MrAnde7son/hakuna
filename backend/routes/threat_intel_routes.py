@@ -1231,6 +1231,9 @@ def sync_intel(background_tasks: BackgroundTasks, db: Session = Depends(get_db))
     # NVD CVSS backfill — moderate speed (~3 req/s), run in background
     background_tasks.add_task(sync_engine.sync_nvd_scores, db)
 
+    # CPE→CVE enrichment: pull NVD CVEs for EASM-detected technologies
+    background_tasks.add_task(_run_with_fresh_db, sync_engine.sync_cves_for_cpes)
+
     # MITRE is slow (~30 MB download) — run in background with notifications
     background_tasks.add_task(_sync_mitre_with_notification, db)
 
