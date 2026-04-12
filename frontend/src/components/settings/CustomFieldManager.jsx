@@ -287,6 +287,8 @@ function DefinitionForm({ definition, defaultEntityType, onSave, onCancel }) {
   const [error, setError] = useState(null)
   const [preview, setPreview] = useState(null)
   const [sampleText, setSampleText] = useState('{\n  "easm_data": {\n    "cloudflare_dns": { "ttl": 1 }\n  }\n}')
+  const [portalContainer, setPortalContainer] = useState(null)
+  useEffect(() => { setPortalContainer(document.body) }, [])
   const [selectedSampleEntity, setSelectedSampleEntity] = useState(null)
   const [loadingSample, setLoadingSample] = useState(false)
 
@@ -402,6 +404,8 @@ function DefinitionForm({ definition, defaultEntityType, onSave, onCancel }) {
     border: '1px solid var(--border)', boxShadow: 'var(--shadow)',
   }
   const labelStyle = { fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4, display: 'block' }
+
+  if (!portalContainer) return null
 
   return createPortal(
     <div style={modalStyle} onClick={onCancel}>
@@ -654,7 +658,7 @@ function DefinitionForm({ definition, defaultEntityType, onSave, onCancel }) {
         </div>
       </div>
     </div>,
-    document.body
+    portalContainer
   )
 }
 
