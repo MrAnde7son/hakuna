@@ -84,17 +84,50 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
     q = apply_org_filter(db.query(Scan), Scan, org_ids)
     # Order by most recent activity: last_run_at if present, else created_at
     scans = q.order_by(desc(func.coalesce(Scan.last_run_at, Scan.created_at))).all()
+
+    scan_ids = [s.id for s in scans]
+    if not scan_ids:
+        return []
+
+    # Batch finding counts in one query
+    finding_counts = dict(
+        db.query(Finding.scan_id, func.count(Finding.id))
+        .filter(Finding.scan_id.in_(scan_ids))
+        .group_by(Finding.scan_id)
+        .all()
+    )
+
+    # Batch asset counts: direct scan_id linkage
+    direct_asset_counts = dict(
+        db.query(Asset.scan_id, func.count(Asset.id))
+        .filter(Asset.scan_id.in_(scan_ids))
+        .group_by(Asset.scan_id)
+        .all()
+    )
+
+    # VM scans may link findings to assets from other scans — get those extra asset IDs
+    vm_scan_ids = [s.id for s in scans if s.source_type == "vm_scanner"]
+    vm_extra_asset_counts = {}
+    if vm_scan_ids:
+        # Count distinct assets linked via findings (including cross-scan assets)
+        vm_asset_counts = dict(
+            db.query(Finding.scan_id, func.count(distinct(Finding.asset_id)))
+            .filter(Finding.scan_id.in_(vm_scan_ids), Finding.asset_id.isnot(None))
+            .group_by(Finding.scan_id)
+            .all()
+        )
+        # For VM scans, use the larger of direct assets or finding-linked assets
+        for sid in vm_scan_ids:
+            direct = direct_asset_counts.get(sid, 0)
+            via_findings = vm_asset_counts.get(sid, 0)
+            vm_extra_asset_counts[sid] = max(direct, via_findings)
+
     result = []
     for s in scans:
-        finding_count = db.query(func.count(Finding.id)).filter(Finding.scan_id == s.id).scalar()
-        # VM scans may link findings to existing assets (different scan_id), so union both
         if s.source_type == "vm_scanner":
-            asset_count = db.query(func.count(distinct(Asset.id))).filter(
-                or_(Asset.scan_id == s.id,
-                    Asset.id.in_(db.query(Finding.asset_id).filter(Finding.scan_id == s.id)))
-            ).scalar()
+            asset_count = vm_extra_asset_counts.get(s.id, 0)
         else:
-            asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == s.id).scalar()
+            asset_count = direct_asset_counts.get(s.id, 0)
         result.append({
             "id": s.id,
             "filename": s.filename,
@@ -107,7 +140,7 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
             "raw_metadata": s.raw_metadata,
             "created_at": s.created_at.isoformat() if s.created_at else None,
             "asset_count": asset_count,
-            "finding_count": finding_count,
+            "finding_count": finding_counts.get(s.id, 0),
             "schedule": s.schedule,
             "status": s.status or "completed",
             "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
