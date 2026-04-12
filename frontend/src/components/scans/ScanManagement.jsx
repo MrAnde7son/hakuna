@@ -899,20 +899,22 @@ function ScanRunHistory({ expanded, domain }) {
 
   useEffect(() => {
     if (!expanded) return
+    let cancelled = false
     const load = () => {
       if (!runs) setLoading(true)
       getEasmScanRuns(20, domain)
-        .then(setRuns)
-        .catch(() => setRuns([]))
-        .finally(() => setLoading(false))
+        .then(data => { if (!cancelled) setRuns(data) })
+        .catch(() => { if (!cancelled) setRuns([]) })
+        .finally(() => { if (!cancelled) setLoading(false) })
     }
     load()
     // Refresh while any run is active
     const hasRunning = runs?.some(r => r.status === 'running' || r.status === 'queued')
-    if (hasRunning || !runs) {
+    if (hasRunning) {
       const interval = setInterval(load, 10000)
-      return () => clearInterval(interval)
+      return () => { cancelled = true; clearInterval(interval) }
     }
+    return () => { cancelled = true }
   }, [expanded, domain, runs?.some?.(r => r.status === 'running' || r.status === 'queued')])
 
   if (!expanded) return null
@@ -1644,14 +1646,21 @@ export default function ScanManagement() {
     )
     if (runningEasm.length === 0 && runningVm.length === 0) return
 
+    let polling = false
     const interval = setInterval(async () => {
-      for (const s of runningEasm) {
-        try { await refreshEasmScan(s.id) } catch { /* ignore */ }
+      if (polling) return  // Skip if previous poll is still in-flight
+      polling = true
+      try {
+        for (const s of runningEasm) {
+          try { await refreshEasmScan(s.id) } catch { /* ignore */ }
+        }
+        for (const s of runningVm) {
+          try { await refreshVmScan(s.id) } catch { /* ignore */ }
+        }
+        await refreshScans()
+      } finally {
+        polling = false
       }
-      for (const s of runningVm) {
-        try { await refreshVmScan(s.id) } catch { /* ignore */ }
-      }
-      await refreshScans()
     }, 10000)
     return () => clearInterval(interval)
   }, [scans, refreshScans])

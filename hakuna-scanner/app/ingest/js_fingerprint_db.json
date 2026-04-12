@@ -1,0 +1,254 @@
+{
+  "_comment": "JavaScript library fingerprinting patterns. Each entry has: (1) url_patterns — regexes matched against <script src> URLs to extract version from the filename, (2) content_patterns — regexes matched against the first 8KB of the JS file body to extract version from source code comments/globals. Patterns use named group (?P<version>...) for version extraction. cpe_vendor/cpe_product map to NVD naming.",
+
+  "libraries": [
+    {
+      "name": "jQuery",
+      "cpe_vendor": "jquery",
+      "cpe_product": "jquery",
+      "url_patterns": [
+        "jquery[.-](?P<version>\\d+\\.\\d+\\.\\d+)",
+        "jquery\\.min\\.js\\?v=(?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "jQuery (?:JavaScript Library v|v)(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "jquery\\.fn\\.jquery\\s*=\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']",
+        "jQuery\\.fn\\.jquery,\"(?P<version>\\d+\\.\\d+\\.\\d+)\""
+      ]
+    },
+    {
+      "name": "jQuery UI",
+      "cpe_vendor": "jquery",
+      "cpe_product": "jquery_ui",
+      "url_patterns": [
+        "jquery[.-]ui[.-](?P<version>\\d+\\.\\d+\\.\\d+)",
+        "jquery\\.ui\\.min\\.js\\?v=(?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "jQuery UI[- ]+v?(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "jQuery UI (?:Widget |Mouse |Sortable |Draggable )?(?P<version>\\d+\\.\\d+\\.\\d+)"
+      ]
+    },
+    {
+      "name": "jQuery Migrate",
+      "cpe_vendor": "jquery",
+      "cpe_product": "jquery_migrate",
+      "url_patterns": [
+        "jquery[.-]migrate[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "jQuery Migrate[) -]+(?P<version>\\d+\\.\\d+\\.\\d+)"
+      ]
+    },
+    {
+      "name": "Moment.js",
+      "cpe_vendor": "momentjs",
+      "cpe_product": "moment",
+      "url_patterns": [
+        "moment[.-](?P<version>\\d+\\.\\d+\\.\\d+)",
+        "moment\\.min\\.js\\?v=(?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "//! moment\\.js\\n.*?//! version : (?P<version>\\d+\\.\\d+\\.\\d+)",
+        "moment\\.version\\s*=\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']",
+        "momentProperties.*?version.*?[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']"
+      ]
+    },
+    {
+      "name": "Bootstrap",
+      "cpe_vendor": "getbootstrap",
+      "cpe_product": "bootstrap",
+      "url_patterns": [
+        "bootstrap[.-](?P<version>\\d+\\.\\d+\\.\\d+)",
+        "bootstrap\\.min\\.js\\?v=(?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "Bootstrap v(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "Bootstrap \\(v(?P<version>\\d+\\.\\d+\\.\\d+)\\)"
+      ]
+    },
+    {
+      "name": "Lodash",
+      "cpe_vendor": "lodash",
+      "cpe_product": "lodash",
+      "url_patterns": [
+        "lodash[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "Lodash (?:<https.*?>|)(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "lodash\\.VERSION\\s*=\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']",
+        "var VERSION\\s*=\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"'].*?lodash"
+      ]
+    },
+    {
+      "name": "Angular",
+      "cpe_vendor": "angularjs",
+      "cpe_product": "angular.js",
+      "url_patterns": [
+        "angular[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "AngularJS v(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "angular\\.version.*?full:\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']"
+      ]
+    },
+    {
+      "name": "React",
+      "cpe_vendor": "facebook",
+      "cpe_product": "react",
+      "url_patterns": [
+        "react[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "React v(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "react\\.production\\.min.*?(?P<version>\\d+\\.\\d+\\.\\d+)"
+      ]
+    },
+    {
+      "name": "Vue.js",
+      "cpe_vendor": "vuejs",
+      "cpe_product": "vue",
+      "url_patterns": [
+        "vue[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "Vue\\.js v(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "Vue\\.version\\s*=\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']"
+      ]
+    },
+    {
+      "name": "FancyBox",
+      "cpe_vendor": "fancybox_project",
+      "cpe_product": "fancybox",
+      "url_patterns": [
+        "fancybox[.-](?P<version>\\d+\\.\\d+\\.\\d+)",
+        "fancybox.*?v(?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "fancyBox v(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "fancyBox - jQuery Plugin.*?version.*?(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "@version\\s+(?P<version>\\d+\\.\\d+\\.\\d+).*?fancybox"
+      ]
+    },
+    {
+      "name": "Mustache.js",
+      "cpe_vendor": "mustache.js_project",
+      "cpe_product": "mustache.js",
+      "url_patterns": [
+        "mustache[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "mustache\\.js - Logic-less.*?(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "mustache\\.version\\s*=\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']"
+      ]
+    },
+    {
+      "name": "MediaElement.js",
+      "cpe_vendor": "mediaelementjs",
+      "cpe_product": "mediaelement.js",
+      "url_patterns": [
+        "mediaelement[.-](?P<version>\\d+\\.\\d+\\.\\d+)",
+        "mediaelement-and-player[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "MediaElement\\.js.*?(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "mediaelement-and-player.*?(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "mejs\\.version\\s*=\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']"
+      ]
+    },
+    {
+      "name": "D3.js",
+      "cpe_vendor": "d3js",
+      "cpe_product": "d3",
+      "url_patterns": [
+        "d3[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "d3\\.version\\s*=\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']"
+      ]
+    },
+    {
+      "name": "Backbone.js",
+      "cpe_vendor": "backbonejs",
+      "cpe_product": "backbone.js",
+      "url_patterns": [
+        "backbone[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "Backbone\\.js (?P<version>\\d+\\.\\d+\\.\\d+)",
+        "Backbone\\.VERSION\\s*=\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']"
+      ]
+    },
+    {
+      "name": "Underscore.js",
+      "cpe_vendor": "underscorejs",
+      "cpe_product": "underscore",
+      "url_patterns": [
+        "underscore[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "Underscore\\.js (?P<version>\\d+\\.\\d+\\.\\d+)",
+        "_\\.VERSION\\s*=\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']"
+      ]
+    },
+    {
+      "name": "Handlebars",
+      "cpe_vendor": "handlebarsjs",
+      "cpe_product": "handlebars",
+      "url_patterns": [
+        "handlebars[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "Handlebars v(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "Handlebars\\.VERSION\\s*=\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']"
+      ]
+    },
+    {
+      "name": "Select2",
+      "cpe_vendor": "select2",
+      "cpe_product": "select2",
+      "url_patterns": [
+        "select2[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "Select2 (?P<version>\\d+\\.\\d+\\.\\d+)"
+      ]
+    },
+    {
+      "name": "Ember.js",
+      "cpe_vendor": "emberjs",
+      "cpe_product": "ember.js",
+      "url_patterns": [
+        "ember[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "Ember\\.VERSION\\s*=\\s*[\"'](?P<version>\\d+\\.\\d+\\.\\d+)[\"']",
+        "Ember v(?P<version>\\d+\\.\\d+\\.\\d+)"
+      ]
+    },
+    {
+      "name": "Modernizr",
+      "cpe_vendor": "modernizr",
+      "cpe_product": "modernizr",
+      "url_patterns": [
+        "modernizr[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "Modernizr (?P<version>\\d+\\.\\d+\\.\\d+)",
+        "Modernizr v(?P<version>\\d+\\.\\d+\\.\\d+)"
+      ]
+    },
+    {
+      "name": "Popper.js",
+      "cpe_vendor": "popperjs",
+      "cpe_product": "popper.js",
+      "url_patterns": [
+        "popper[.-](?P<version>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "content_patterns": [
+        "Popper\\.js.*?v(?P<version>\\d+\\.\\d+\\.\\d+)",
+        "@popperjs/core v(?P<version>\\d+\\.\\d+\\.\\d+)"
+      ]
+    }
+  ]
+}

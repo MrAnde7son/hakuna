@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # UX nicety for wall-time).
     screenshot_max_hosts: int = 500
 
+    # JS fingerprinting: detect client-side libraries (jQuery, Moment.js, etc.)
+    # by fetching HTML + JS files and matching version patterns.
+    js_fingerprint_concurrency: int = 20
+    js_fingerprint_connect_timeout: int = 10
+
     # Celery task safety limits (seconds)
     task_soft_time_limit: int = 1800   # 30 min soft limit
     task_time_limit: int = 2100        # 35 min hard kill

@@ -592,6 +592,16 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                 )
                 await db.commit()
 
+        # Seed target domains themselves as assets so the base domain is
+        # always present even when subdomain enumeration finds nothing.
+        seed_domains = await _get_target_domains(sf, org_id, target_scope=target_scope)
+        if seed_domains:
+            seed_hosts = [{"host": d} for d in seed_domains]
+            async with sf() as db:
+                total, new_ids = await upsert_discovered_hosts(db, uuid.UUID(org_id), seed_hosts, "seed")
+                await emit_new_asset_events(db, uuid.UUID(org_id), new_ids)
+            logger.info("org=%s seeded %d target domain(s) as assets (%d new)", org_id, total, len(new_ids))
+
         results = {}
         stage_log = []
 

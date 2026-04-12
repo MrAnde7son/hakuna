@@ -438,3 +438,88 @@ async def store_nmap_results(
         "ports_updated": ports_updated,
         "duration": duration,
     }
+
+
+# Stage 6: JS library fingerprinting. Default-on; flip off via env to bisect.
+JS_FINGERPRINT_ENABLED = os.environ.get("JS_FINGERPRINT_ENABLED", "1").lower() not in {"0", "false", "no"}
+
+
+async def store_js_fingerprints(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    js_results: dict[str, list[dict]],
+) -> dict:
+    """Merge JS fingerprint detections into asset_ports.cpe_list.
+
+    js_results: hostname → list of detection dicts from js_fingerprint.fingerprint_assets.
+    Each detection has: name, version, cpe_vendor, cpe_product, cpe.
+
+    Merges with existing CPEs (from httpx inference / nmap) rather than
+    overwriting, so all sources contribute to the final cpe_list.
+
+    Returns {"assets_updated": int, "cpes_added": int}.
+    """
+    assets_updated = 0
+    cpes_added = 0
+
+    for hostname, detections in js_results.items():
+        if not detections:
+            continue
+
+        # Find asset.
+        row = await db.execute(
+            text("SELECT id FROM assets WHERE org_id = :org_id AND hostname = :host"),
+            {"org_id": org_id, "host": hostname},
+        )
+        asset_row = row.fetchone()
+        if not asset_row:
+            continue
+
+        asset_id = asset_row.id
+
+        # Determine the port to write CPEs to (prefer 443, then 80).
+        port_row = await db.execute(
+            text("""
+                SELECT port, cpe_list FROM asset_ports
+                WHERE asset_id = :aid AND port IN (443, 80, 8443, 8080)
+                ORDER BY CASE port WHEN 443 THEN 1 WHEN 80 THEN 2 WHEN 8443 THEN 3 ELSE 4 END
+                LIMIT 1
+            """),
+            {"aid": asset_id},
+        )
+        existing_port = port_row.fetchone()
+
+        # Merge existing CPEs with new JS detections.
+        existing_cpes: list[str] = []
+        target_port = 443
+        if existing_port:
+            target_port = existing_port.port
+            existing_cpes = existing_port.cpe_list or []
+
+        # Build set of existing vendor:product for dedup.
+        existing_keys: set[str] = set()
+        for cpe_str in existing_cpes:
+            parts = cpe_str.split(":")
+            if len(parts) >= 5:
+                existing_keys.add(f"{parts[3]}:{parts[4]}")
+
+        new_cpes = list(existing_cpes)
+        added = 0
+        for det in detections:
+            key = f"{det['cpe_vendor']}:{det['cpe_product']}"
+            if key not in existing_keys:
+                existing_keys.add(key)
+                new_cpes.append(det["cpe"])
+                added += 1
+
+        if added > 0:
+            await upsert_asset_port_cpes(db, asset_id, target_port, new_cpes)
+            assets_updated += 1
+            cpes_added += added
+
+    await db.commit()
+    logger.info(
+        "org=%s js_fingerprint: assets_updated=%d cpes_added=%d",
+        org_id, assets_updated, cpes_added,
+    )
+    return {"assets_updated": assets_updated, "cpes_added": cpes_added}

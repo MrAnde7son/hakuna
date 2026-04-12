@@ -11,3 +11,4 @@ redis==5.0.7
 httptools==0.6.1
 python-multipart==0.0.9
 python-libnmap==0.7.3
+aiohttp>=3.9.0

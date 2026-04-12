@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-ENRICHMENT_STEP_COUNT = 5  # tlsx, httpx, cdncheck, katana, nmap_dispatch
+ENRICHMENT_STEP_COUNT = 6  # tlsx, httpx, cdncheck, js_fingerprint, katana, nmap_dispatch
 
 from app.celery_app import celery
 from app.config import settings
@@ -22,10 +22,13 @@ from app.database import get_task_session
 from app.ingest.assets import update_enrichment, update_tls, update_cdn
 from app.ingest.delta import detect_cert_expiring, auto_tag_assets, detect_changes
 from app.ingest.enrichment import (
+    JS_FINGERPRINT_ENABLED,
     store_httpx_enrichment,
+    store_js_fingerprints,
     store_katana_endpoints,
     store_tlsx_per_port,
 )
+from app.ingest.js_fingerprint import fingerprint_assets
 from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel
 from app.runner.tools import CdncheckRunner, HttpxRunner, KatanaRunner, TlsxRunner
 from app.tasks.scoping import (
@@ -314,6 +317,56 @@ async def _do_httpx(sf, org_id: str, target_scope: str | None = None) -> dict:
     return {"probed": len(all_results), "updated": updated, "batches": len(batches)}
 
 
+async def _do_js_fingerprint(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Run JS library fingerprinting on confirmed_alive HTTP assets.
+
+    Fetches HTML pages, parses <script> tags, downloads JS files, and matches
+    version patterns to detect client-side libraries (jQuery, Moment.js, etc.)
+    that httpx's Wappalyzer misses. Results are merged into asset_ports.cpe_list.
+    """
+    if not JS_FINGERPRINT_ENABLED:
+        return {"fingerprinted": 0, "disabled": True}
+
+    assets = await _get_confirmed_alive_assets(
+        sf, org_id, target_scope=target_scope, apply_stale=True,
+    )
+    if not assets:
+        logger.info("org=%s js_fingerprint: no fresh assets to fingerprint", org_id)
+        return {"fingerprinted": 0, "skipped_fresh": True}
+
+    # Filter to assets with HTTP ports (CDN assets are fine — we fetch the
+    # actual page content, so Cloudflare etc. don't interfere).
+    HTTP_PORTS = {80, 443, 8080, 8443}
+    http_assets = []
+    for asset in assets:
+        ports = set(asset.get("open_ports") or [])
+        if ports & HTTP_PORTS:
+            http_assets.append(asset)
+
+    if not http_assets:
+        return {"fingerprinted": 0}
+
+    logger.info("org=%s js_fingerprint: scanning %d assets", org_id, len(http_assets))
+
+    js_results = await fingerprint_assets(
+        http_assets,
+        concurrency=settings.js_fingerprint_concurrency,
+        connect_timeout=settings.js_fingerprint_connect_timeout,
+    )
+
+    # Store results — merge into asset_ports.cpe_list.
+    async with sf() as db:
+        store_result = await store_js_fingerprints(db, uuid.UUID(org_id), js_results)
+
+    total_libs = sum(len(dets) for dets in js_results.values())
+    return {
+        "fingerprinted": len(http_assets),
+        "assets_with_js": len(js_results),
+        "total_libs_detected": total_libs,
+        **store_result,
+    }
+
+
 async def _do_cdncheck(sf, org_id: str, target_scope: str | None = None) -> dict:
     hostnames = await _get_confirmed_alive_hostnames(
         sf, org_id, target_scope=target_scope, apply_stale=True,
@@ -468,6 +521,11 @@ async def _dispatch_nmap(sf, org_id: str, target_scope: str | None = None) -> di
 # --- Individual tasks ---
 
 
+@celery.task(bind=True, name="enrichment.run_js_fingerprint")
+def run_js_fingerprint(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_js_fingerprint(get_task_session(), org_id, target_scope=target_scope))
+
+
 @celery.task(bind=True, name="enrichment.run_httpx")
 def run_httpx(self, org_id: str, target_scope: str | None = None) -> dict:
     return _run_async(_do_httpx(get_task_session(), org_id, target_scope=target_scope))
@@ -514,7 +572,10 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                 ("httpx", _do_httpx),
                 ("cdncheck", _do_cdncheck),
             ],
-            [("katana", _do_katana)],
+            [
+                ("js_fingerprint", _do_js_fingerprint),
+                ("katana", _do_katana),
+            ],
             [("nmap_dispatch", None)],  # handled separately
         ]
         # Flat list preserved for step-count bookkeeping.
