@@ -147,7 +147,7 @@ class TlsxRunner(BaseRunner):
         return [
             "tlsx", "-l", path, "-json", "-silent",
             "-so", "-cipher", "-tls-version",
-            "-expired",
+            "-expired", "-jarm",
             "-c", str(settings.tlsx_threads),
         ]
 

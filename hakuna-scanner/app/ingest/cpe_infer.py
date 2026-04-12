@@ -40,6 +40,7 @@ import re
 logger = logging.getLogger(__name__)
 
 _MAP_PATH = os.path.join(os.path.dirname(__file__), "cpe_map.json")
+_JARM_DB_PATH = os.path.join(os.path.dirname(__file__), "jarm_hash_db.json")
 # First token + optional version. Separator is "/" or " " so both
 # "nginx/1.18.0" and "Yaws 2.0.6" parse.
 _SERVER_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)(?:[/ ]([0-9][0-9A-Za-z._\-]*))?")
@@ -79,7 +80,21 @@ def _load_map() -> dict:
     }
 
 
+def _load_jarm_db() -> dict:
+    try:
+        with open(_JARM_DB_PATH) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("cpe_infer: failed to load JARM DB %s: %s", _JARM_DB_PATH, exc)
+        return {"full_hashes": {}, "prefix_hashes": {}}
+    return {
+        "full_hashes": data.get("full_hashes", {}),
+        "prefix_hashes": data.get("prefix_hashes", {}),
+    }
+
+
 _MAP = _load_map()
+_JARM_DB = _load_jarm_db()
 
 
 def _sanitize_version(version: str) -> str:
@@ -205,8 +220,48 @@ def _from_tls_subject(
             _emit(cpes, seen, entry["vendor"], entry["product"])
 
 
+def _from_jarm(
+    jarm_hash: str | None, cpes: list[str], seen: set[str],
+) -> list[str]:
+    """Match a JARM TLS fingerprint against known server hashes.
+
+    Returns a list of tags (e.g. ['c2']) if the JARM match has associated tags.
+    JARM is especially valuable for detecting:
+      - C2 frameworks (Cobalt Strike, Sliver, Metasploit) that have unique TLS stacks
+      - Specific web servers and load balancers
+      - Appliances behind generic reverse proxies
+    """
+    tags: list[str] = []
+    if not jarm_hash or len(jarm_hash) < 10:
+        return tags
+    # Skip all-zero hashes (no TLS response).
+    if jarm_hash.replace("0", "") == "":
+        return tags
+
+    full = _JARM_DB.get("full_hashes", {})
+    match = full.get(jarm_hash)
+    if match:
+        if match.get("cpe_vendor") and match.get("cpe_product"):
+            _emit(cpes, seen, match["cpe_vendor"], match["cpe_product"])
+        tags.extend(match.get("tags", []))
+        return tags
+
+    # Fall back to prefix matching (first 20 chars).
+    prefixes = _JARM_DB.get("prefix_hashes", {})
+    for prefix, pmatch in prefixes.items():
+        if jarm_hash.startswith(prefix):
+            if pmatch.get("cpe_vendor") and pmatch.get("cpe_product"):
+                _emit(cpes, seen, pmatch["cpe_vendor"], pmatch["cpe_product"])
+            tags.extend(pmatch.get("tags", []))
+            break
+
+    return tags
+
+
 def infer_cpes(
-    httpx_entry: dict | None, tls_cert: dict | None = None,
+    httpx_entry: dict | None,
+    tls_cert: dict | None = None,
+    jarm_hash: str | None = None,
 ) -> list[str]:
     """Derive CPE 2.3 strings from a httpx JSON entry and optional TLS cert.
 
@@ -214,12 +269,16 @@ def infer_cpes(
     becomes a CPE unless it is on the deny-list or empty after normalization.
     See the module docstring for the rationale.
 
+    When ``jarm_hash`` is provided (from tlsx -jarm), it is matched against
+    the JARM fingerprint database to identify server products — especially
+    useful for C2 framework detection and appliance identification.
+
     Returns an ordered, deduped list. Never raises.
     """
     cpes: list[str] = []
     seen: set[str] = set()
 
-    if not httpx_entry and not tls_cert:
+    if not httpx_entry and not tls_cert and not jarm_hash:
         return cpes
 
     if httpx_entry:
@@ -235,11 +294,13 @@ def infer_cpes(
         )
 
     _from_tls_subject(tls_cert, cpes, seen)
+    _from_jarm(jarm_hash, cpes, seen)
 
     return cpes
 
 
 def reload_map() -> None:
     """Force-reload the map file from disk. For tests."""
-    global _MAP
+    global _MAP, _JARM_DB
     _MAP = _load_map()
+    _JARM_DB = _load_jarm_db()

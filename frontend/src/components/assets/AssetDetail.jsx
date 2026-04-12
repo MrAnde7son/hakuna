@@ -587,6 +587,32 @@ const FIELD_LABELS = {
   scan_start: 'Scan Start', scan_end: 'Scan End', system_type: 'System Type',
 }
 
+function CopyRawButton({ data }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = () => {
+    navigator.clipboard.writeText(JSON.stringify(data, null, 2)).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+  return (
+    <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 0 4px' }}>
+      <button
+        onClick={handleCopy}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 5,
+          padding: '4px 10px', fontSize: 12, color: copied ? 'var(--success)' : 'var(--text-muted)',
+          background: 'none', border: '1px solid var(--border)', borderRadius: 5,
+          cursor: 'pointer',
+        }}
+      >
+        {copied ? <Check size={13} /> : <Copy size={13} />}
+        {copied ? 'Copied' : 'Copy raw data'}
+      </button>
+    </div>
+  )
+}
+
 function SourcesTab({ asset }) {
   const [sources, setSources] = useState([])
   const [loading, setLoading] = useState(true)
@@ -651,6 +677,7 @@ function SourcesTab({ asset }) {
               </button>
               {isOpen && (
                 <div style={{ padding: '0 16px 16px', borderTop: '1px solid var(--border)' }}>
+                  <CopyRawButton data={fields} />
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
                     {Object.entries(fields)
                       .filter(([, v]) => v != null && v !== '' && typeof v !== 'object')

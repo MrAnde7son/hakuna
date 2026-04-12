@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-ENRICHMENT_STEP_COUNT = 6  # tlsx, httpx, cdncheck, js_fingerprint, katana, nmap_dispatch
+ENRICHMENT_STEP_COUNT = 8  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, nmap_dispatch
 
 from app.celery_app import celery
 from app.config import settings
@@ -22,12 +22,19 @@ from app.database import get_task_session
 from app.ingest.assets import update_enrichment, update_tls, update_cdn
 from app.ingest.delta import detect_cert_expiring, auto_tag_assets, detect_changes
 from app.ingest.enrichment import (
+    ENDPOINT_PROBE_ENABLED,
+    FAVICON_FINGERPRINT_ENABLED,
     JS_FINGERPRINT_ENABLED,
+    store_endpoint_probe_results,
+    store_favicon_fingerprints,
     store_httpx_enrichment,
+    store_jarm_fingerprints,
     store_js_fingerprints,
     store_katana_endpoints,
     store_tlsx_per_port,
 )
+from app.ingest.endpoint_probe import probe_assets
+from app.ingest.favicon_fingerprint import fingerprint_assets as favicon_fingerprint_assets
 from app.ingest.js_fingerprint import fingerprint_assets
 from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel
 from app.runner.tools import CdncheckRunner, HttpxRunner, KatanaRunner, TlsxRunner
@@ -94,10 +101,11 @@ async def _get_confirmed_alive_assets(
     target_scope: str | list[str] | None = None,
     apply_stale: bool = False,
     stale_hours: int = 24,
+    stale_column: str = "last_enriched",
 ) -> list[dict]:
     """Get confirmed_alive (or HTTP-responsive unconfirmed) assets with ports for enrichment routing."""
     scope_sql, scope_params = build_target_scope(target_scope)
-    stale_sql = build_stale_clause(enabled=apply_stale, stale_hours=stale_hours)
+    stale_sql = build_stale_clause(enabled=apply_stale, stale_hours=stale_hours, column=stale_column)
     extra = compose_where(scope_sql, stale_sql)
     params = {"org_id": org_id, **scope_params}
     async with sf() as db:
@@ -205,10 +213,19 @@ async def _do_tlsx(sf, org_id: str, target_scope: str | None = None) -> dict:
     async with sf() as db:
         await update_tls(db, uuid.UUID(org_id), all_results)
 
+    # Store JARM fingerprints and run JARM → CPE inference
+    jarm_result = {"jarm_matched": 0, "c2_detected": 0}
+    jarm_entries = [e for e in all_results if e.get("jarm_hash") or e.get("jarm")]
+    if jarm_entries:
+        async with sf() as db:
+            jarm_result = await store_jarm_fingerprints(db, uuid.UUID(org_id), jarm_entries)
+
     return {
         "inspected": len(all_results),
         "per_port_updated": per_port_result["updated"],
         "new_sans_discovered": per_port_result["new_sans"],
+        "jarm_matched": jarm_result["jarm_matched"],
+        "c2_detected": jarm_result["c2_detected"],
         "batches": len(batches),
     }
 
@@ -295,8 +312,9 @@ async def _do_httpx(sf, org_id: str, target_scope: str | None = None) -> dict:
             if not asset_row:
                 continue
 
-            # Look up the TLS cert for the port this httpx entry hit.
+            # Look up the TLS cert and JARM hash for the port this httpx entry hit.
             tls_cert = None
+            jarm_hash = None
             url = entry.get("url") or ""
             scheme = url.split("://", 1)[0].lower() if "://" in url else ""
             port = entry.get("port") or (443 if scheme == "https" else 80 if scheme == "http" else None)
@@ -308,9 +326,11 @@ async def _do_httpx(sf, org_id: str, target_scope: str | None = None) -> dict:
                 tr = tls_row.fetchone()
                 if tr and tr.tls_cert:
                     tls_cert = tr.tls_cert
+                    jarm_hash = tls_cert.get("jarm_hash") if isinstance(tls_cert, dict) else None
 
             await store_httpx_enrichment(
-                db, uuid.UUID(org_id), asset_row.id, entry, tls_cert=tls_cert,
+                db, uuid.UUID(org_id), asset_row.id, entry,
+                tls_cert=tls_cert, jarm_hash=jarm_hash,
             )
         await db.commit()
 
@@ -327,8 +347,11 @@ async def _do_js_fingerprint(sf, org_id: str, target_scope: str | None = None) -
     if not JS_FINGERPRINT_ENABLED:
         return {"fingerprinted": 0, "disabled": True}
 
+    # Use a dedicated stale column so we aren't blocked by last_enriched
+    # (which is set by httpx/cdncheck in Group 1 before we run).
     assets = await _get_confirmed_alive_assets(
-        sf, org_id, target_scope=target_scope, apply_stale=True,
+        sf, org_id, target_scope=target_scope,
+        apply_stale=True, stale_column="last_js_fingerprinted",
     )
     if not assets:
         logger.info("org=%s js_fingerprint: no fresh assets to fingerprint", org_id)
@@ -358,11 +381,115 @@ async def _do_js_fingerprint(sf, org_id: str, target_scope: str | None = None) -
     async with sf() as db:
         store_result = await store_js_fingerprints(db, uuid.UUID(org_id), js_results)
 
+    # Stamp all scanned assets (including those with no detections) so the
+    # stale check skips them on the next run.
+    scanned_ids = [a["id"] for a in http_assets]
+    async with sf() as db:
+        await db.execute(
+            text("UPDATE assets SET last_js_fingerprinted = NOW() WHERE id = ANY(:ids)"),
+            {"ids": scanned_ids},
+        )
+        await db.commit()
+
     total_libs = sum(len(dets) for dets in js_results.values())
     return {
         "fingerprinted": len(http_assets),
         "assets_with_js": len(js_results),
         "total_libs_detected": total_libs,
+        **store_result,
+    }
+
+
+async def _do_favicon_fingerprint(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Run favicon hash fingerprinting on confirmed_alive HTTP assets.
+
+    Downloads /favicon.ico (and <link rel=icon> paths), computes mmh3 hashes,
+    and matches against a known hash database to identify technologies like
+    Jenkins, Grafana, Tomcat, etc. Results are merged into asset_ports.cpe_list.
+    """
+    if not FAVICON_FINGERPRINT_ENABLED:
+        return {"fingerprinted": 0, "disabled": True}
+
+    assets = await _get_confirmed_alive_assets(
+        sf, org_id, target_scope=target_scope, apply_stale=False,
+    )
+    if not assets:
+        logger.info("org=%s favicon_fingerprint: no assets to fingerprint", org_id)
+        return {"fingerprinted": 0}
+
+    HTTP_PORTS = {80, 443, 8080, 8443}
+    http_assets = [a for a in assets if set(a.get("open_ports") or []) & HTTP_PORTS]
+
+    if not http_assets:
+        return {"fingerprinted": 0}
+
+    logger.info("org=%s favicon_fingerprint: scanning %d assets", org_id, len(http_assets))
+
+    favicon_results = await favicon_fingerprint_assets(
+        http_assets,
+        concurrency=settings.favicon_fingerprint_concurrency,
+        connect_timeout=settings.favicon_fingerprint_connect_timeout,
+    )
+
+    async with sf() as db:
+        store_result = await store_favicon_fingerprints(db, uuid.UUID(org_id), favicon_results)
+
+    total_detected = sum(len(dets) for dets in favicon_results.values())
+    return {
+        "fingerprinted": len(http_assets),
+        "assets_with_favicon_match": len(favicon_results),
+        "total_detected": total_detected,
+        **store_result,
+    }
+
+
+async def _do_endpoint_probe(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Run default endpoint probing on confirmed_alive HTTP assets.
+
+    Sends requests to known application paths (/wp-login.php, /owa/auth/logon.aspx,
+    /actuator/health, etc.) and confirms technology by checking status codes and
+    response body patterns. Results are merged into asset_ports.cpe_list.
+    """
+    if not ENDPOINT_PROBE_ENABLED:
+        return {"probed": 0, "disabled": True}
+
+    assets = await _get_confirmed_alive_assets(
+        sf, org_id, target_scope=target_scope, apply_stale=False,
+    )
+    if not assets:
+        logger.info("org=%s endpoint_probe: no assets to probe", org_id)
+        return {"probed": 0}
+
+    HTTP_PORTS = {80, 443, 8080, 8443}
+    # Skip CDN assets — endpoint probes against CDN origins are noisy and slow.
+    http_assets = [
+        a for a in assets
+        if set(a.get("open_ports") or []) & HTTP_PORTS
+        and not a.get("cdn_provider")
+        and "cdn" not in (a.get("tags") or [])
+    ]
+
+    if not http_assets:
+        skipped_cdn = len(assets) - len(http_assets) if assets else 0
+        logger.info("org=%s endpoint_probe: no non-CDN HTTP assets to probe (skipped_cdn=%d)", org_id, skipped_cdn)
+        return {"probed": 0, "skipped_cdn": skipped_cdn}
+
+    logger.info("org=%s endpoint_probe: probing %d assets", org_id, len(http_assets))
+
+    probe_results = await probe_assets(
+        http_assets,
+        concurrency=settings.endpoint_probe_concurrency,
+        connect_timeout=settings.endpoint_probe_connect_timeout,
+    )
+
+    async with sf() as db:
+        store_result = await store_endpoint_probe_results(db, uuid.UUID(org_id), probe_results)
+
+    total_detected = sum(len(dets) for dets in probe_results.values())
+    return {
+        "probed": len(http_assets),
+        "assets_with_matches": len(probe_results),
+        "total_detected": total_detected,
         **store_result,
     }
 
@@ -526,6 +653,16 @@ def run_js_fingerprint(self, org_id: str, target_scope: str | None = None) -> di
     return _run_async(_do_js_fingerprint(get_task_session(), org_id, target_scope=target_scope))
 
 
+@celery.task(bind=True, name="enrichment.run_favicon_fingerprint")
+def run_favicon_fingerprint(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_favicon_fingerprint(get_task_session(), org_id, target_scope=target_scope))
+
+
+@celery.task(bind=True, name="enrichment.run_endpoint_probe")
+def run_endpoint_probe(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_endpoint_probe(get_task_session(), org_id, target_scope=target_scope))
+
+
 @celery.task(bind=True, name="enrichment.run_httpx")
 def run_httpx(self, org_id: str, target_scope: str | None = None) -> dict:
     return _run_async(_do_httpx(get_task_session(), org_id, target_scope=target_scope))
@@ -574,6 +711,8 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
             ],
             [
                 ("js_fingerprint", _do_js_fingerprint),
+                ("favicon_fingerprint", _do_favicon_fingerprint),
+                ("endpoint_probe", _do_endpoint_probe),
                 ("katana", _do_katana),
             ],
             [("nmap_dispatch", None)],  # handled separately

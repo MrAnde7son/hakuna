@@ -32,6 +32,7 @@ class Asset(Base):
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_enriched: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_js_fingerprinted: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     nessus_asset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
@@ -126,6 +127,11 @@ class ScanRun(Base):
     total_stages: Mapped[int] = mapped_column(Integer, default=0)
     stage_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stage_log: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Orphan recovery: how many times this run has been re-dispatched after
+    # the worker lost it (crash, OOM, deploy). Capped at MAX_RECOVERY_ATTEMPTS
+    # in app.tasks.recovery.
+    recovery_attempts: Mapped[int] = mapped_column(Integer, default=0)
 
     org: Mapped["Org"] = relationship(back_populates="scan_runs")  # noqa: F821
 

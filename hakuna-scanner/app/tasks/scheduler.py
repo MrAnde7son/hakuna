@@ -78,4 +78,8 @@ celery.conf.beat_schedule = {
         "task": "scheduler.trigger_all_enrichment",
         "schedule": crontab(hour=4, minute=0),
     },
+    "recover-orphaned-scans-5min": {
+        "task": "recovery.recover_orphaned_scans",
+        "schedule": 300.0,  # every 5 minutes
+    },
 }

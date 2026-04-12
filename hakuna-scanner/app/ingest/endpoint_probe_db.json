@@ -1,0 +1,249 @@
+{
+  "_comment": "Default endpoint probing database. Each entry defines a path to request and conditions that confirm the technology. Only high-confidence probes — we check status code and optionally a body pattern to avoid false positives from generic 200 responses or custom error pages.",
+
+  "probes": [
+    {
+      "path": "/wp-login.php",
+      "name": "WordPress",
+      "cpe_vendor": "wordpress",
+      "cpe_product": "wordpress",
+      "match_status": [200],
+      "body_pattern": "wp-login|WordPress",
+      "version_pattern": "ver=(?P<version>[0-9][0-9.]*)"
+    },
+    {
+      "path": "/wp-json/wp/v2/",
+      "name": "WordPress REST API",
+      "cpe_vendor": "wordpress",
+      "cpe_product": "wordpress",
+      "match_status": [200],
+      "body_pattern": "\"namespace\"\\s*:\\s*\"wp/v2\""
+    },
+    {
+      "path": "/xmlrpc.php",
+      "name": "WordPress XML-RPC",
+      "cpe_vendor": "wordpress",
+      "cpe_product": "wordpress",
+      "match_status": [200, 405],
+      "body_pattern": "XML-RPC server accepts POST requests only|xmlrpc"
+    },
+    {
+      "path": "/user/login",
+      "name": "Drupal",
+      "cpe_vendor": "drupal",
+      "cpe_product": "drupal",
+      "match_status": [200],
+      "body_pattern": "Drupal|drupal\\.js"
+    },
+    {
+      "path": "/administrator/",
+      "name": "Joomla",
+      "cpe_vendor": "joomla",
+      "cpe_product": "joomla\\!",
+      "match_status": [200],
+      "body_pattern": "Joomla|com_login"
+    },
+    {
+      "path": "/owa/auth/logon.aspx",
+      "name": "Outlook Web App",
+      "cpe_vendor": "microsoft",
+      "cpe_product": "exchange",
+      "match_status": [200, 302, 401],
+      "body_pattern": "Outlook|OWA|logon\\.aspx"
+    },
+    {
+      "path": "/ecp/",
+      "name": "Exchange Control Panel",
+      "cpe_vendor": "microsoft",
+      "cpe_product": "exchange",
+      "match_status": [200, 302, 401, 443],
+      "body_pattern": "Exchange|ECP"
+    },
+    {
+      "path": "/remote/login",
+      "name": "FortiGate SSL VPN",
+      "cpe_vendor": "fortinet",
+      "cpe_product": "fortios",
+      "match_status": [200],
+      "body_pattern": "FortiGate|fortigate|/remote/login"
+    },
+    {
+      "path": "/global-protect/login.esp",
+      "name": "Palo Alto GlobalProtect",
+      "cpe_vendor": "paloaltonetworks",
+      "cpe_product": "globalprotect",
+      "match_status": [200],
+      "body_pattern": "GlobalProtect|global-protect"
+    },
+    {
+      "path": "/dana-na/auth/url_default/welcome.cgi",
+      "name": "Ivanti Connect Secure",
+      "cpe_vendor": "ivanti",
+      "cpe_product": "connect_secure",
+      "match_status": [200, 302],
+      "body_pattern": "welcome\\.cgi|Pulse Secure|Ivanti"
+    },
+    {
+      "path": "/manage/",
+      "name": "Jenkins",
+      "cpe_vendor": "jenkins",
+      "cpe_product": "jenkins",
+      "match_status": [200, 403],
+      "body_pattern": "Jenkins|Dashboard \\[Jenkins\\]",
+      "version_pattern": "Jenkins ver\\.\\s*(?P<version>[0-9][0-9.]*)"
+    },
+    {
+      "path": "/login",
+      "name": "Grafana",
+      "cpe_vendor": "grafana",
+      "cpe_product": "grafana",
+      "match_status": [200],
+      "body_pattern": "Grafana|grafana-app"
+    },
+    {
+      "path": "/app/kibana",
+      "name": "Kibana",
+      "cpe_vendor": "elastic",
+      "cpe_product": "kibana",
+      "match_status": [200, 302],
+      "body_pattern": "Kibana|kbn-"
+    },
+    {
+      "path": "/confluence/",
+      "name": "Atlassian Confluence",
+      "cpe_vendor": "atlassian",
+      "cpe_product": "confluence",
+      "match_status": [200, 302],
+      "body_pattern": "Confluence|confluence"
+    },
+    {
+      "path": "/jira/",
+      "name": "Atlassian Jira",
+      "cpe_vendor": "atlassian",
+      "cpe_product": "jira",
+      "match_status": [200, 302],
+      "body_pattern": "JIRA|Jira|jira"
+    },
+    {
+      "path": "/phpmyadmin/",
+      "name": "phpMyAdmin",
+      "cpe_vendor": "phpmyadmin",
+      "cpe_product": "phpmyadmin",
+      "match_status": [200, 401],
+      "body_pattern": "phpMyAdmin"
+    },
+    {
+      "path": "/.env",
+      "name": "Exposed .env file",
+      "cpe_vendor": "_exposed_config",
+      "cpe_product": "env_file",
+      "match_status": [200],
+      "body_pattern": "DB_|APP_KEY|SECRET|PASSWORD|API_KEY"
+    },
+    {
+      "path": "/server-status",
+      "name": "Apache mod_status",
+      "cpe_vendor": "apache",
+      "cpe_product": "http_server",
+      "match_status": [200],
+      "body_pattern": "Apache Server Status|Server Version"
+    },
+    {
+      "path": "/actuator/health",
+      "name": "Spring Boot Actuator",
+      "cpe_vendor": "vmware",
+      "cpe_product": "spring_boot",
+      "match_status": [200],
+      "body_pattern": "\"status\"\\s*:\\s*\"UP\""
+    },
+    {
+      "path": "/actuator/env",
+      "name": "Spring Boot Actuator Env",
+      "cpe_vendor": "vmware",
+      "cpe_product": "spring_boot",
+      "match_status": [200],
+      "body_pattern": "\"propertySources\""
+    },
+    {
+      "path": "/api/v4/projects",
+      "name": "GitLab API",
+      "cpe_vendor": "gitlab",
+      "cpe_product": "gitlab",
+      "match_status": [200, 401],
+      "body_pattern": "\"id\"|401 Unauthorized"
+    },
+    {
+      "path": "/v2/_catalog",
+      "name": "Docker Registry",
+      "cpe_vendor": "docker",
+      "cpe_product": "registry",
+      "match_status": [200, 401],
+      "body_pattern": "\"repositories\"|UNAUTHORIZED"
+    },
+    {
+      "path": "/v1/sys/health",
+      "name": "HashiCorp Vault",
+      "cpe_vendor": "hashicorp",
+      "cpe_product": "vault",
+      "match_status": [200, 429, 472, 473, 501, 503],
+      "body_pattern": "\"initialized\""
+    },
+    {
+      "path": "/v1/agent/self",
+      "name": "HashiCorp Consul",
+      "cpe_vendor": "hashicorp",
+      "cpe_product": "consul",
+      "match_status": [200],
+      "body_pattern": "\"Config\""
+    },
+    {
+      "path": "/solr/admin/cores",
+      "name": "Apache Solr",
+      "cpe_vendor": "apache",
+      "cpe_product": "solr",
+      "match_status": [200],
+      "body_pattern": "\"responseHeader\"",
+      "version_pattern": "\"lucene-spec-version\"\\s*:\\s*\"(?P<version>[0-9][0-9.]*)\""
+    },
+    {
+      "path": "/api/v1/namespaces",
+      "name": "Kubernetes API",
+      "cpe_vendor": "kubernetes",
+      "cpe_product": "kubernetes",
+      "match_status": [200, 401, 403],
+      "body_pattern": "\"kind\"\\s*:\\s*\"NamespaceList\"|Forbidden|Unauthorized"
+    },
+    {
+      "path": "/cgi-bin/luci/",
+      "name": "OpenWrt LuCI",
+      "cpe_vendor": "openwrt",
+      "cpe_product": "openwrt",
+      "match_status": [200, 302],
+      "body_pattern": "LuCI|OpenWrt"
+    },
+    {
+      "path": "/webfig/",
+      "name": "MikroTik RouterOS",
+      "cpe_vendor": "mikrotik",
+      "cpe_product": "routeros",
+      "match_status": [200],
+      "body_pattern": "mikrotik|RouterOS|webfig"
+    },
+    {
+      "path": "/certsrv/",
+      "name": "Microsoft AD CS",
+      "cpe_vendor": "microsoft",
+      "cpe_product": "active_directory_certificate_services",
+      "match_status": [200, 401],
+      "body_pattern": "Certificate Services|certsrv"
+    },
+    {
+      "path": "/adfs/ls/",
+      "name": "Microsoft ADFS",
+      "cpe_vendor": "microsoft",
+      "cpe_product": "active_directory_federation_services",
+      "match_status": [200, 302],
+      "body_pattern": "ADFS|adfs"
+    }
+  ]
+}

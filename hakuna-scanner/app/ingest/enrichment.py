@@ -218,13 +218,15 @@ async def store_httpx_enrichment(
     asset_id: uuid.UUID,
     httpx_entry: dict,
     tls_cert: dict | None = None,
+    jarm_hash: str | None = None,
 ) -> uuid.UUID:
     """Store full httpx JSON output as an AssetEnrichment record.
 
     When ``CPE_INFER_ENABLED`` (default on), also runs the CPE inference layer
     over the httpx entry + optional ``tls_cert`` (looked up by the caller from
-    the asset's port records, since tlsx runs before httpx in the chain) and
-    writes the resulting CPE list onto the matching ``asset_ports`` row.
+    the asset's port records, since tlsx runs before httpx in the chain) +
+    optional ``jarm_hash`` (from tlsx -jarm) and writes the resulting CPE list
+    onto the matching ``asset_ports`` row.
     """
     enrichment_id = uuid.uuid4()
     now = datetime.now(timezone.utc)
@@ -259,7 +261,7 @@ async def store_httpx_enrichment(
     # of inference — every error path swallows and logs.
     if CPE_INFER_ENABLED:
         try:
-            cpes = infer_cpes(httpx_entry, tls_cert)
+            cpes = infer_cpes(httpx_entry, tls_cert, jarm_hash=jarm_hash)
             if cpes:
                 port = _httpx_port_for_entry(httpx_entry)
                 if port is not None:
@@ -443,6 +445,12 @@ async def store_nmap_results(
 # Stage 6: JS library fingerprinting. Default-on; flip off via env to bisect.
 JS_FINGERPRINT_ENABLED = os.environ.get("JS_FINGERPRINT_ENABLED", "1").lower() not in {"0", "false", "no"}
 
+# Stage 7: Favicon hash fingerprinting. Default-on.
+FAVICON_FINGERPRINT_ENABLED = os.environ.get("FAVICON_FINGERPRINT_ENABLED", "1").lower() not in {"0", "false", "no"}
+
+# Stage 8: Default endpoint probing. Default-on.
+ENDPOINT_PROBE_ENABLED = os.environ.get("ENDPOINT_PROBE_ENABLED", "1").lower() not in {"0", "false", "no"}
+
 
 async def store_js_fingerprints(
     db: AsyncSession,
@@ -523,3 +531,266 @@ async def store_js_fingerprints(
         org_id, assets_updated, cpes_added,
     )
     return {"assets_updated": assets_updated, "cpes_added": cpes_added}
+
+
+async def store_favicon_fingerprints(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    favicon_results: dict[str, list[dict]],
+) -> dict:
+    """Merge favicon hash detections into asset_ports.cpe_list.
+
+    Same merge strategy as store_js_fingerprints: appends new CPEs without
+    overwriting existing ones from other sources.
+
+    Returns {"assets_updated": int, "cpes_added": int}.
+    """
+    assets_updated = 0
+    cpes_added = 0
+
+    for hostname, detections in favicon_results.items():
+        if not detections:
+            continue
+
+        row = await db.execute(
+            text("SELECT id FROM assets WHERE org_id = :org_id AND hostname = :host"),
+            {"org_id": org_id, "host": hostname},
+        )
+        asset_row = row.fetchone()
+        if not asset_row:
+            continue
+
+        asset_id = asset_row.id
+
+        port_row = await db.execute(
+            text("""
+                SELECT port, cpe_list FROM asset_ports
+                WHERE asset_id = :aid AND port IN (443, 80, 8443, 8080)
+                ORDER BY CASE port WHEN 443 THEN 1 WHEN 80 THEN 2 WHEN 8443 THEN 3 ELSE 4 END
+                LIMIT 1
+            """),
+            {"aid": asset_id},
+        )
+        existing_port = port_row.fetchone()
+
+        existing_cpes: list[str] = []
+        target_port = 443
+        if existing_port:
+            target_port = existing_port.port
+            existing_cpes = existing_port.cpe_list or []
+
+        existing_keys: set[str] = set()
+        for cpe_str in existing_cpes:
+            parts = cpe_str.split(":")
+            if len(parts) >= 5:
+                existing_keys.add(f"{parts[3]}:{parts[4]}")
+
+        new_cpes = list(existing_cpes)
+        added = 0
+        for det in detections:
+            key = f"{det['cpe_vendor']}:{det['cpe_product']}"
+            if key not in existing_keys:
+                existing_keys.add(key)
+                new_cpes.append(det["cpe"])
+                added += 1
+
+        if added > 0:
+            await upsert_asset_port_cpes(db, asset_id, target_port, new_cpes)
+            assets_updated += 1
+            cpes_added += added
+
+    await db.commit()
+    logger.info(
+        "org=%s favicon_fingerprint: assets_updated=%d cpes_added=%d",
+        org_id, assets_updated, cpes_added,
+    )
+    return {"assets_updated": assets_updated, "cpes_added": cpes_added}
+
+
+async def store_endpoint_probe_results(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    probe_results: dict[str, list[dict]],
+) -> dict:
+    """Merge endpoint probe detections into asset_ports.cpe_list.
+
+    Same merge strategy as store_js_fingerprints.
+
+    Returns {"assets_updated": int, "cpes_added": int}.
+    """
+    assets_updated = 0
+    cpes_added = 0
+
+    for hostname, detections in probe_results.items():
+        if not detections:
+            continue
+
+        row = await db.execute(
+            text("SELECT id FROM assets WHERE org_id = :org_id AND hostname = :host"),
+            {"org_id": org_id, "host": hostname},
+        )
+        asset_row = row.fetchone()
+        if not asset_row:
+            continue
+
+        asset_id = asset_row.id
+
+        port_row = await db.execute(
+            text("""
+                SELECT port, cpe_list FROM asset_ports
+                WHERE asset_id = :aid AND port IN (443, 80, 8443, 8080)
+                ORDER BY CASE port WHEN 443 THEN 1 WHEN 80 THEN 2 WHEN 8443 THEN 3 ELSE 4 END
+                LIMIT 1
+            """),
+            {"aid": asset_id},
+        )
+        existing_port = port_row.fetchone()
+
+        existing_cpes: list[str] = []
+        target_port = 443
+        if existing_port:
+            target_port = existing_port.port
+            existing_cpes = existing_port.cpe_list or []
+
+        existing_keys: set[str] = set()
+        for cpe_str in existing_cpes:
+            parts = cpe_str.split(":")
+            if len(parts) >= 5:
+                existing_keys.add(f"{parts[3]}:{parts[4]}")
+
+        new_cpes = list(existing_cpes)
+        added = 0
+        for det in detections:
+            key = f"{det['cpe_vendor']}:{det['cpe_product']}"
+            if key not in existing_keys:
+                existing_keys.add(key)
+                new_cpes.append(det["cpe"])
+                added += 1
+
+        if added > 0:
+            await upsert_asset_port_cpes(db, asset_id, target_port, new_cpes)
+            assets_updated += 1
+            cpes_added += added
+
+    await db.commit()
+    logger.info(
+        "org=%s endpoint_probe: assets_updated=%d cpes_added=%d",
+        org_id, assets_updated, cpes_added,
+    )
+    return {"assets_updated": assets_updated, "cpes_added": cpes_added}
+
+
+async def store_jarm_fingerprints(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    tls_results: list[dict],
+) -> dict:
+    """Store JARM hashes from tlsx output onto asset_ports and run CPE inference.
+
+    tlsx -jarm adds a "jarm_hash" field to each JSON line. This function:
+    1. Writes the JARM hash into asset_ports.tls_cert (merged with existing cert data).
+    2. Runs the JARM → CPE inference layer and merges into cpe_list.
+
+    Returns {"jarm_matched": int, "c2_detected": int}.
+    """
+    from app.ingest.cpe_infer import _from_jarm, _emit
+
+    jarm_matched = 0
+    c2_detected = 0
+
+    for entry in tls_results:
+        jarm_hash = entry.get("jarm_hash") or entry.get("jarm") or ""
+        if not jarm_hash or jarm_hash.replace("0", "") == "":
+            continue
+
+        host_raw = (entry.get("host") or entry.get("input") or "").strip().lower()
+        if not host_raw:
+            continue
+
+        if ":" in host_raw:
+            hostname, port_str = host_raw.rsplit(":", 1)
+            try:
+                port = int(port_str)
+            except ValueError:
+                hostname = host_raw
+                port = 443
+        else:
+            hostname = host_raw
+            port = 443
+
+        row = await db.execute(
+            text("SELECT id FROM assets WHERE org_id = :org_id AND hostname = :host"),
+            {"org_id": org_id, "host": hostname},
+        )
+        asset_row = row.fetchone()
+        if not asset_row:
+            continue
+
+        # Merge JARM hash into tls_cert JSONB.
+        await db.execute(
+            text("""
+                UPDATE asset_ports SET
+                    tls_cert = COALESCE(tls_cert, '{}'::jsonb) || jsonb_build_object('jarm_hash', :jarm),
+                    updated_at = :now
+                WHERE asset_id = :aid AND port = :port AND protocol = 'tcp'
+            """),
+            {
+                "aid": asset_row.id,
+                "port": port,
+                "jarm": jarm_hash,
+                "now": datetime.now(timezone.utc),
+            },
+        )
+
+        # Run JARM CPE inference.
+        cpes: list[str] = []
+        seen: set[str] = set()
+        tags = _from_jarm(jarm_hash, cpes, seen)
+
+        if cpes:
+            # Merge with existing CPEs on this port.
+            port_row = await db.execute(
+                text("SELECT cpe_list FROM asset_ports WHERE asset_id = :aid AND port = :port AND protocol = 'tcp'"),
+                {"aid": asset_row.id, "port": port},
+            )
+            existing = port_row.fetchone()
+            existing_cpes = (existing.cpe_list or []) if existing else []
+
+            existing_keys: set[str] = set()
+            for cpe_str in existing_cpes:
+                parts = cpe_str.split(":")
+                if len(parts) >= 5:
+                    existing_keys.add(f"{parts[3]}:{parts[4]}")
+
+            merged = list(existing_cpes)
+            for cpe in cpes:
+                parts = cpe.split(":")
+                if len(parts) >= 5:
+                    key = f"{parts[3]}:{parts[4]}"
+                    if key not in existing_keys:
+                        existing_keys.add(key)
+                        merged.append(cpe)
+
+            if len(merged) > len(existing_cpes):
+                await upsert_asset_port_cpes(db, asset_row.id, port, merged)
+                jarm_matched += 1
+
+        if "c2" in tags:
+            c2_detected += 1
+            # Tag the asset as potential C2.
+            await db.execute(
+                text("""
+                    UPDATE assets SET tags = array_append(
+                        array_remove(tags, 'potential_c2'), 'potential_c2'
+                    )
+                    WHERE id = :aid AND org_id = :org_id
+                """),
+                {"aid": asset_row.id, "org_id": org_id},
+            )
+
+    await db.commit()
+    logger.info(
+        "org=%s jarm: matched=%d c2_detected=%d",
+        org_id, jarm_matched, c2_detected,
+    )
+    return {"jarm_matched": jarm_matched, "c2_detected": c2_detected}

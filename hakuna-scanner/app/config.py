@@ -43,8 +43,18 @@ class Settings(BaseSettings):
 
     # JS fingerprinting: detect client-side libraries (jQuery, Moment.js, etc.)
     # by fetching HTML + JS files and matching version patterns.
+    # Also covers meta tag extraction (generator tags, HTML artifacts).
     js_fingerprint_concurrency: int = 20
     js_fingerprint_connect_timeout: int = 10
+
+    # Favicon hash fingerprinting: identify technologies by /favicon.ico mmh3 hash.
+    favicon_fingerprint_concurrency: int = 20
+    favicon_fingerprint_connect_timeout: int = 10
+
+    # Default endpoint probing: detect technologies by probing known paths.
+    # Lower concurrency than JS/favicon since each host gets ~30 probes.
+    endpoint_probe_concurrency: int = 10
+    endpoint_probe_connect_timeout: int = 8
 
     # Celery task safety limits (seconds)
     task_soft_time_limit: int = 1800   # 30 min soft limit

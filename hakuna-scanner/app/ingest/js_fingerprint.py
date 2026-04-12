@@ -1,11 +1,15 @@
-"""JavaScript library fingerprinting — detect client-side libraries with versions.
+"""JavaScript library + HTML meta tag fingerprinting.
 
 Fetches HTML pages, extracts <script> tags, downloads JS files, and matches
 version patterns against a fingerprint database (js_fingerprint_db.json).
 
+Also extracts <meta name="generator"> and other HTML artifacts to detect CMS
+platforms (WordPress, Drupal, Joomla, etc.) using meta_fingerprint_db.json.
+
 This fills the gap where httpx's Wappalyzer-based -tech-detect catches
 server-side tech (nginx, ASP.NET) but misses client-side libraries like
-jQuery 3.1.1 or Moment.js 2.29.1 that Tenable ASM detects.
+jQuery 3.1.1 or Moment.js 2.29.1 that Tenable ASM detects, and also misses
+CMS/framework identification that meta generator tags reveal.
 """
 
 from __future__ import annotations
@@ -20,9 +24,37 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
+try:
+    from playwright.async_api import async_playwright
+    _HAS_PLAYWRIGHT = True
+except ImportError:
+    _HAS_PLAYWRIGHT = False
+
 logger = logging.getLogger(__name__)
 
+# Chromium path baked into the Docker image (also used by httpx screenshots).
+_CHROMIUM_PATH = os.environ.get("CHROMIUM_PATH", "/usr/bin/chromium")
+
+# Patterns that indicate a WAF/bot challenge page (not the real site content).
+_CHALLENGE_INDICATORS = [
+    "Just a moment...",
+    "cf_chl_opt",
+    "challenge-platform",
+    "Checking your browser",
+    "Attention Required! | Cloudflare",
+    "Enable JavaScript and cookies to continue",
+]
+
+
+def _is_challenge_page(html: str) -> bool:
+    """Detect Cloudflare and similar WAF challenge/interstitial pages."""
+    # Challenge pages are typically small and contain specific markers.
+    if len(html) > 100_000:
+        return False
+    return any(indicator in html for indicator in _CHALLENGE_INDICATORS)
+
 _DB_PATH = os.path.join(os.path.dirname(__file__), "js_fingerprint_db.json")
+_META_DB_PATH = os.path.join(os.path.dirname(__file__), "meta_fingerprint_db.json")
 
 # How many bytes to read from each JS file (version banners are at the top).
 _JS_HEAD_BYTES = 8192
@@ -51,29 +83,53 @@ def _load_db() -> list[dict]:
     return libs
 
 
+def _load_meta_db() -> dict:
+    try:
+        with open(_META_DB_PATH) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("js_fingerprint: failed to load meta DB %s: %s", _META_DB_PATH, exc)
+        return {"generator_patterns": [], "html_patterns": []}
+    gen = data.get("generator_patterns", [])
+    for entry in gen:
+        entry["_compiled"] = re.compile(entry["pattern"], re.IGNORECASE)
+    html = data.get("html_patterns", [])
+    for entry in html:
+        entry["_compiled"] = re.compile(entry["pattern"], re.IGNORECASE)
+    return {"generator_patterns": gen, "html_patterns": html}
+
+
 _DB: list[dict] = _load_db()
+_META_DB: dict = _load_meta_db()
 
 
 class _ScriptExtractor(HTMLParser):
-    """Extract script src URLs and inline script content from HTML."""
+    """Extract script src URLs, inline script content, and meta tags from HTML."""
 
     def __init__(self):
         super().__init__()
         self.script_srcs: list[str] = []
         self.inline_scripts: list[str] = []
+        self.meta_generators: list[str] = []
         self._in_script = False
         self._current_script = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]):
-        if tag.lower() != "script":
-            return
-        attr_dict = dict(attrs)
-        src = attr_dict.get("src")
-        if src:
-            self.script_srcs.append(src)
-        else:
-            self._in_script = True
-            self._current_script = []
+        tag_lower = tag.lower()
+        if tag_lower == "script":
+            attr_dict = dict(attrs)
+            src = attr_dict.get("src")
+            if src:
+                self.script_srcs.append(src)
+            else:
+                self._in_script = True
+                self._current_script = []
+        elif tag_lower == "meta":
+            attr_dict = {(k or "").lower(): v for k, v in attrs}
+            name = (attr_dict.get("name") or "").lower()
+            content = attr_dict.get("content") or ""
+            if name == "generator" and content:
+                self.meta_generators.append(content)
 
     def handle_data(self, data: str):
         if self._in_script:
@@ -163,6 +219,84 @@ async def fingerprint_url(
             return []
 
 
+# Limit concurrent browser renders — Chromium is memory-heavy.
+_BROWSER_SEMAPHORE = asyncio.Semaphore(3)
+
+
+# JS globals to probe in the browser — maps global accessor → (name, cpe_vendor, cpe_product).
+# The accessor is evaluated in page context; it should return a version string or null.
+_JS_GLOBAL_PROBES: list[dict] = [
+    {"expr": "window.jQuery && jQuery.fn.jquery", "name": "jQuery", "cpe_vendor": "jquery", "cpe_product": "jquery"},
+    {"expr": "window.jQuery && jQuery.ui && jQuery.ui.version", "name": "jQuery UI", "cpe_vendor": "jquery", "cpe_product": "jquery_ui"},
+    {"expr": "window.moment && moment.version", "name": "Moment.js", "cpe_vendor": "momentjs", "cpe_product": "moment"},
+    {"expr": "window.React && React.version", "name": "React", "cpe_vendor": "facebook", "cpe_product": "react"},
+    {"expr": "window.Vue && Vue.version", "name": "Vue.js", "cpe_vendor": "vuejs", "cpe_product": "vue"},
+    {"expr": "window.angular && angular.version && angular.version.full", "name": "Angular", "cpe_vendor": "angularjs", "cpe_product": "angular.js"},
+    {"expr": "window._ && _.VERSION", "name": "Lodash", "cpe_vendor": "lodash", "cpe_product": "lodash"},
+    {"expr": "window.Backbone && Backbone.VERSION", "name": "Backbone.js", "cpe_vendor": "backbonejs", "cpe_product": "backbone.js"},
+    {"expr": "window.Ember && Ember.VERSION", "name": "Ember.js", "cpe_vendor": "emberjs", "cpe_product": "ember.js"},
+    {"expr": "window.d3 && d3.version", "name": "D3.js", "cpe_vendor": "d3js", "cpe_product": "d3"},
+    {"expr": "window.Handlebars && Handlebars.VERSION", "name": "Handlebars", "cpe_vendor": "handlebarsjs", "cpe_product": "handlebars"},
+    {"expr": "window.Modernizr && Modernizr._version", "name": "Modernizr", "cpe_vendor": "modernizr", "cpe_product": "modernizr"},
+    {"expr": "window.Mustache && Mustache.version", "name": "Mustache.js", "cpe_vendor": "mustache.js_project", "cpe_product": "mustache.js"},
+    {"expr": "window.Bootstrap && Bootstrap.VERSION", "name": "Bootstrap", "cpe_vendor": "getbootstrap", "cpe_product": "bootstrap"},
+]
+
+
+async def _render_with_browser(url: str) -> tuple[str | None, list[dict]]:
+    """Render a page with headless Chromium via Playwright.
+
+    Used as a fallback when the initial HTTP fetch returns a WAF challenge
+    page (e.g. Cloudflare "Just a moment..."). Returns (rendered_html, global_detections).
+    Also probes window.* globals to detect bundled libraries that have no
+    version banners in their source code.
+    """
+    if not _HAS_PLAYWRIGHT:
+        return None, []
+    if not os.path.isfile(_CHROMIUM_PATH):
+        logger.debug("js_fingerprint: chromium not found at %s, skipping browser render", _CHROMIUM_PATH)
+        return None, []
+
+    try:
+        async with _BROWSER_SEMAPHORE, async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                executable_path=_CHROMIUM_PATH,
+                headless=True,
+                args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+            )
+            try:
+                page = await browser.new_page(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    ignore_https_errors=True,
+                )
+                await page.goto(url, wait_until="networkidle", timeout=20_000)
+                html = await page.content()
+
+                # Probe JS globals for library versions.
+                global_detections: list[dict] = []
+                for probe in _JS_GLOBAL_PROBES:
+                    try:
+                        version = await page.evaluate(f"() => {{ try {{ return {probe['expr']} || null; }} catch {{ return null; }} }}")
+                        if version and isinstance(version, str):
+                            global_detections.append({
+                                "name": probe["name"],
+                                "version": version,
+                                "cpe_vendor": probe["cpe_vendor"],
+                                "cpe_product": probe["cpe_product"],
+                                "source": "js_global",
+                            })
+                    except Exception:
+                        pass
+
+                html = html[:512_000] if len(html) > 512_000 else html
+                return html, global_detections
+            finally:
+                await browser.close()
+    except Exception as exc:
+        logger.debug("js_fingerprint: browser render failed for %s: %s", url, exc)
+        return None, []
+
+
 async def _fingerprint_url_inner(
     session: aiohttp.ClientSession,
     url: str,
@@ -176,6 +310,17 @@ async def _fingerprint_url_inner(
         html = await resp.text(errors="replace")
         if len(html) > 512_000:
             html = html[:512_000]
+
+    # Step 1b: If we got a WAF challenge page, try rendering with a real browser.
+    browser_detections: list[dict] = []
+    if _is_challenge_page(html):
+        logger.info("js_fingerprint: challenge page detected for %s, trying browser render", url)
+        rendered, browser_detections = await _render_with_browser(url)
+        if rendered and not _is_challenge_page(rendered):
+            html = rendered
+        else:
+            logger.debug("js_fingerprint: browser render didn't bypass challenge for %s", url)
+            return []
 
     # Step 2: Extract script tags.
     parser = _ScriptExtractor()
@@ -197,7 +342,35 @@ async def _fingerprint_url_inner(
         )
         all_detections.append(det)
 
-    # Step 3: Match script src URLs (fast — no HTTP needed).
+    # Step 3a: Match meta generator tags against meta_fingerprint_db.
+    for gen_content in parser.meta_generators:
+        for entry in _META_DB.get("generator_patterns", []):
+            m = entry["_compiled"].search(gen_content)
+            if m:
+                version = m.group("version") if "version" in m.groupdict() else None
+                _add({
+                    "name": entry["name"],
+                    "version": version,
+                    "cpe_vendor": entry["cpe_vendor"],
+                    "cpe_product": entry["cpe_product"],
+                    "source": "meta_generator",
+                })
+                break  # One match per generator string.
+
+    # Step 3b: Match HTML body artifacts (framework-specific paths, comments, etc.)
+    for entry in _META_DB.get("html_patterns", []):
+        m = entry["_compiled"].search(html)
+        if m:
+            version = m.group("version") if "version" in m.groupdict() else None
+            _add({
+                "name": entry["name"],
+                "version": version,
+                "cpe_vendor": entry["cpe_vendor"],
+                "cpe_product": entry["cpe_product"],
+                "source": entry.get("source", "html_artifact"),
+            })
+
+    # Step 3c: Match script src URLs (fast — no HTTP needed).
     script_srcs = parser.script_srcs[:_MAX_SCRIPTS_PER_PAGE]
     resolved_urls = _resolve_script_urls(url, script_srcs)
 
@@ -236,6 +409,19 @@ async def _fingerprint_url_inner(
             continue
 
         for det in _match_content(js_text):
+            _add(det)
+
+    # Step 6: Add browser global detections (from Playwright page.evaluate).
+    for det in browser_detections:
+        _add(det)
+
+    # Step 7: If regex-based detection found nothing but the page has scripts,
+    # try browser global probing as a fallback. Bundled/minified JS strips
+    # version banners but the runtime globals (window.jQuery, etc.) still exist.
+    if not all_detections and (parser.script_srcs or parser.inline_scripts) and _HAS_PLAYWRIGHT:
+        logger.info("js_fingerprint: no regex matches on %s, trying browser global probing", url)
+        _, global_dets = await _render_with_browser(url)
+        for det in global_dets:
             _add(det)
 
     return all_detections
@@ -331,5 +517,6 @@ async def _run_one(
 
 def reload_db() -> None:
     """Force-reload the fingerprint DB from disk. For tests."""
-    global _DB
+    global _DB, _META_DB
     _DB = _load_db()
+    _META_DB = _load_meta_db()

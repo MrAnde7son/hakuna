@@ -308,6 +308,11 @@ def _clear_scan_data(db: Session, scan_id: int):
                 AssetObservation.asset_id.in_(preserve_ids),
                 AssetObservation.source_system == "easm",
             ).delete(synchronize_session=False)
+            # Reset enrichment timestamps so the next scan re-enriches these assets.
+            db.query(Asset).filter(Asset.id.in_(preserve_ids)).update(
+                {"last_enriched": None, "last_js_fingerprinted": None},
+                synchronize_session=False,
+            )
 
         db.flush()
     finally:

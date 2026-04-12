@@ -1,0 +1,33 @@
+{
+  "_comment": "JARM TLS fingerprint database. JARM hashes are 62-character strings produced by tlsx -jarm. Maps known fingerprints to server products. An all-zero hash means the server didn't respond to any probes (filtered/down) and is excluded. Partial matches use the first 30 chars (cipher+version component) when full-hash matches fail.",
+
+  "full_hashes": {
+    "2ad2ad16d2ad2ad00042d42d00042de4f6bcea6f921ff4c3c2b8e4634f2eaa": {"name": "Cobalt Strike", "cpe_vendor": "cobaltstrike", "cpe_product": "cobalt_strike", "tags": ["c2"]},
+    "07d14d16d21d21d00042d43d000000aa99ce74e2c6d013c745aa52b5cc042d": {"name": "Cobalt Strike", "cpe_vendor": "cobaltstrike", "cpe_product": "cobalt_strike", "tags": ["c2"]},
+    "07d14d16d21d21d07c42d41d00041d24a458a375eef0c576d23a7bab9a9fb1": {"name": "Cobalt Strike", "cpe_vendor": "cobaltstrike", "cpe_product": "cobalt_strike", "tags": ["c2"]},
+    "29d29d15d29d29d21c29d29d29d29de1a3c0d4ca0a6421d4b7a65fd034e80d": {"name": "Metasploit", "cpe_vendor": "rapid7", "cpe_product": "metasploit", "tags": ["c2"]},
+    "29d29d00029d29d21c29d29d29d29d2a81b3a07344baf4a4dff6c4ed22e8e0": {"name": "Metasploit", "cpe_vendor": "rapid7", "cpe_product": "metasploit", "tags": ["c2"]},
+    "21d10d00021d21d21c21d10d21d21d1a36a414a51a1562e5ee8eaff8bba622": {"name": "Sliver C2", "cpe_vendor": "bishopfox", "cpe_product": "sliver", "tags": ["c2"]},
+    "00000000000000000041d00000041d9535d504f4033cc6b1b2db4ff0dcfa79": {"name": "Mythic C2", "cpe_vendor": "mythic", "cpe_product": "mythic", "tags": ["c2"]},
+    "27d40d40d29d40d1dc42d43d00041d4689ee210f31609f580c42db00e3366e": {"name": "Apache HTTP Server", "cpe_vendor": "apache", "cpe_product": "http_server"},
+    "27d40d40d29d40d1dc42d43d00041d2956e94cc57762e5a2a5ca82b898ef4c": {"name": "Apache HTTP Server (older)", "cpe_vendor": "apache", "cpe_product": "http_server"},
+    "29d29d15d29d29d21c29d29d29d29d43f5d5a0ce4e20aa23cab63bb704b02b": {"name": "nginx", "cpe_vendor": "nginx", "cpe_product": "nginx"},
+    "29d29d00029d29d00041d29d29d29dc78c8e8d70adcf3bf68cf70f3c0e6bc0": {"name": "nginx (ALPN)", "cpe_vendor": "nginx", "cpe_product": "nginx"},
+    "2ad2ad0002ad2ad22c2ad2ad2ad2ad3f3a3e0802e1a12a4b5b07b5e0a68a70": {"name": "Microsoft IIS", "cpe_vendor": "microsoft", "cpe_product": "iis"},
+    "2ad2ad16d2ad2ad22c42d42d00042d58c7162162b6a603d3d90a2b76865b53": {"name": "Microsoft IIS 10", "cpe_vendor": "microsoft", "cpe_product": "iis"},
+    "29d29d15d29d29d21c29d29d29d29d7e18ef1e1511ba8649ea2c33e7d13e17": {"name": "Cloudflare", "cpe_vendor": "cloudflare", "cpe_product": "cloudflare"},
+    "27d3ed3ed0003ed1dc42d43d00041d6183ff1bfae51ebd88d70b": {"name": "HAProxy", "cpe_vendor": "haproxy", "cpe_product": "haproxy"},
+    "21d14d00021d21d21c21d14d21d21d111f910e2a4369b1e7c6d45abb5e620d": {"name": "Caddy", "cpe_vendor": "caddyserver", "cpe_product": "caddy"},
+    "29d29d15d29d29d21c29d29d29d29d4a40e6cdf27a0c5a5de93dd3b4b0e7a2": {"name": "OpenSSL (generic)", "cpe_vendor": "openssl", "cpe_product": "openssl"},
+    "2ad2ad0002ad2ad00042d42d000000ad9bf51cc3f5a1e29eecb81d0c7b06eb": {"name": "Fortinet FortiOS", "cpe_vendor": "fortinet", "cpe_product": "fortios"},
+    "28d28d28d00028d00041d28d28d28df4f26df2fed5c300c7b9893fc3fe9bbe": {"name": "Citrix ADC", "cpe_vendor": "citrix", "cpe_product": "application_delivery_controller"},
+    "00000000000000000041d00000041d9535d504f4033cc6b1b2db4ff0dcfa79a": {"name": "SonicWall SMA", "cpe_vendor": "sonicwall", "cpe_product": "sma_100"}
+  },
+
+  "prefix_hashes": {
+    "2ad2ad16d2ad2ad0004": {"name": "Cobalt Strike (family)", "tags": ["c2"]},
+    "29d29d15d29d29d21c29": {"name": "OpenSSL-based server"},
+    "2ad2ad0002ad2ad22c2a": {"name": "Microsoft IIS (family)", "cpe_vendor": "microsoft", "cpe_product": "iis"},
+    "27d40d40d29d40d1dc42": {"name": "Apache (family)", "cpe_vendor": "apache", "cpe_product": "http_server"}
+  }
+}

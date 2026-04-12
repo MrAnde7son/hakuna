@@ -76,6 +76,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Playwright uses the system chromium already installed above.
+# Skip browser download — we point it at /usr/bin/chromium via CHROMIUM_PATH.
+ENV PLAYWRIGHT_BROWSERS_PATH=0
+
 # App code
 COPY . .
 

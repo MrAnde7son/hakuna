@@ -1,0 +1,230 @@
+{
+  "_comment": "Meta tag and HTML artifact fingerprint database. Matches <meta name='generator'>, framework-specific HTML patterns, and other DOM artifacts to technology+version for CPE inference.",
+
+  "generator_patterns": [
+    {
+      "pattern": "^WordPress\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "wordpress",
+      "cpe_product": "wordpress",
+      "name": "WordPress"
+    },
+    {
+      "pattern": "^Drupal\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "drupal",
+      "cpe_product": "drupal",
+      "name": "Drupal"
+    },
+    {
+      "pattern": "^Joomla!?\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "joomla",
+      "cpe_product": "joomla\\!",
+      "name": "Joomla"
+    },
+    {
+      "pattern": "^Hugo\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "gohugo",
+      "cpe_product": "hugo",
+      "name": "Hugo"
+    },
+    {
+      "pattern": "^Jekyll\\s*v?(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "jekyllrb",
+      "cpe_product": "jekyll",
+      "name": "Jekyll"
+    },
+    {
+      "pattern": "^Ghost\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "ghost",
+      "cpe_product": "ghost",
+      "name": "Ghost"
+    },
+    {
+      "pattern": "^Gatsby\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "gatsbyjs",
+      "cpe_product": "gatsby",
+      "name": "Gatsby"
+    },
+    {
+      "pattern": "^Next\\.js\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "vercel",
+      "cpe_product": "next.js",
+      "name": "Next.js"
+    },
+    {
+      "pattern": "^Nuxt\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "nuxtjs",
+      "cpe_product": "nuxt",
+      "name": "Nuxt"
+    },
+    {
+      "pattern": "^TYPO3\\s*(?:CMS\\s*)?(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "typo3",
+      "cpe_product": "typo3",
+      "name": "TYPO3"
+    },
+    {
+      "pattern": "^Shopify",
+      "cpe_vendor": "shopify",
+      "cpe_product": "shopify",
+      "name": "Shopify"
+    },
+    {
+      "pattern": "^Squarespace",
+      "cpe_vendor": "squarespace",
+      "cpe_product": "squarespace",
+      "name": "Squarespace"
+    },
+    {
+      "pattern": "^Wix\\.com",
+      "cpe_vendor": "wix",
+      "cpe_product": "wix",
+      "name": "Wix"
+    },
+    {
+      "pattern": "^MediaWiki\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "mediawiki",
+      "cpe_product": "mediawiki",
+      "name": "MediaWiki"
+    },
+    {
+      "pattern": "^Plone\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "plone",
+      "cpe_product": "plone",
+      "name": "Plone"
+    },
+    {
+      "pattern": "^DNN\\s*(?:Platform\\s*)?(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "dnnsoftware",
+      "cpe_product": "dotnetnuke",
+      "name": "DNN"
+    },
+    {
+      "pattern": "^Concrete(?:5| CMS)\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "concretecms",
+      "cpe_product": "concrete_cms",
+      "name": "Concrete CMS"
+    },
+    {
+      "pattern": "^Liferay\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "liferay",
+      "cpe_product": "liferay_portal",
+      "name": "Liferay"
+    },
+    {
+      "pattern": "^Adobe Experience Manager\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "adobe",
+      "cpe_product": "experience_manager",
+      "name": "Adobe Experience Manager"
+    },
+    {
+      "pattern": "^Sitecore\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "sitecore",
+      "cpe_product": "experience_platform",
+      "name": "Sitecore"
+    },
+    {
+      "pattern": "^Kentico\\s*(?:CMS\\s*)?(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "kentico",
+      "cpe_product": "kentico_cms",
+      "name": "Kentico"
+    },
+    {
+      "pattern": "^Magento\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "magento",
+      "cpe_product": "magento",
+      "name": "Magento"
+    },
+    {
+      "pattern": "^PrestaShop\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "prestashop",
+      "cpe_product": "prestashop",
+      "name": "PrestaShop"
+    },
+    {
+      "pattern": "^OpenCart\\s*(?P<version>[0-9][0-9.]*)?",
+      "cpe_vendor": "opencart",
+      "cpe_product": "opencart",
+      "name": "OpenCart"
+    }
+  ],
+
+  "html_patterns": [
+    {
+      "pattern": "/wp-content/|/wp-includes/",
+      "cpe_vendor": "wordpress",
+      "cpe_product": "wordpress",
+      "name": "WordPress",
+      "source": "html_path"
+    },
+    {
+      "pattern": "Drupal\\.settings|/sites/default/files/",
+      "cpe_vendor": "drupal",
+      "cpe_product": "drupal",
+      "name": "Drupal",
+      "source": "html_artifact"
+    },
+    {
+      "pattern": "/media/jui/|/components/com_",
+      "cpe_vendor": "joomla",
+      "cpe_product": "joomla\\!",
+      "name": "Joomla",
+      "source": "html_path"
+    },
+    {
+      "pattern": "<!-- Powered by phpBB",
+      "cpe_vendor": "phpbb",
+      "cpe_product": "phpbb",
+      "name": "phpBB",
+      "source": "html_comment"
+    },
+    {
+      "pattern": "content=\"Discourse\\s*(?P<version>[0-9][0-9.]*)?\"",
+      "cpe_vendor": "discourse",
+      "cpe_product": "discourse",
+      "name": "Discourse",
+      "source": "html_meta"
+    },
+    {
+      "pattern": "data-reactroot|__next",
+      "cpe_vendor": "vercel",
+      "cpe_product": "next.js",
+      "name": "Next.js",
+      "source": "html_artifact"
+    },
+    {
+      "pattern": "__NUXT__|nuxt-link",
+      "cpe_vendor": "nuxtjs",
+      "cpe_product": "nuxt",
+      "name": "Nuxt",
+      "source": "html_artifact"
+    },
+    {
+      "pattern": "cf-ray|cf-cache-status",
+      "cpe_vendor": "cloudflare",
+      "cpe_product": "cloudflare",
+      "name": "Cloudflare",
+      "source": "html_header"
+    },
+    {
+      "pattern": "<meta[^>]+content=\"GitLab",
+      "cpe_vendor": "gitlab",
+      "cpe_product": "gitlab",
+      "name": "GitLab",
+      "source": "html_meta"
+    },
+    {
+      "pattern": "Powered by <a[^>]*>Grafana",
+      "cpe_vendor": "grafana",
+      "cpe_product": "grafana",
+      "name": "Grafana",
+      "source": "html_artifact"
+    },
+    {
+      "pattern": "<title>Kibana</title>|kbn-injected-metadata",
+      "cpe_vendor": "elastic",
+      "cpe_product": "kibana",
+      "name": "Kibana",
+      "source": "html_artifact"
+    }
+  ]
+}
