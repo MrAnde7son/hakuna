@@ -310,6 +310,8 @@ class Asset(Base):
 
     # EASM enrichment (from hakuna-scanner)
     easm_data = Column(JSON, nullable=True)  # {tech_stack, open_ports, tls_cert, cdn_provider, waf, dns_records, http_status, http_title, http_url, easm_tags, easm_source, easm_asset_id}
+    last_enriched = Column(DateTime, nullable=True)            # Set by scanner after enrichment pass; NULL → needs re-enrichment
+    last_js_fingerprinted = Column(DateTime, nullable=True)    # Set by scanner after JS fingerprinting pass
 
     # Lifecycle tracking (cross-scan)
     first_seen = Column(DateTime, nullable=True)       # Earliest scan date this IP appeared
