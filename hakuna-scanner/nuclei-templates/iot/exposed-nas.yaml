@@ -1,0 +1,41 @@
+id: exposed-nas-device
+
+info:
+  name: Exposed NAS Device
+  author: hakuna
+  severity: high
+  description: |
+    Detects an internet-exposed Network Attached Storage device (QNAP QTS or
+    Synology DSM). NAS devices are high-value targets for ransomware (DeadBolt,
+    eCh0raix) and frequently have critical pre-auth RCE vulnerabilities.
+    Exposure gives attackers access to stored files, backup data, and a
+    persistent foothold in the network.
+  tags: iot,nas,qnap,synology,exposure
+  metadata:
+    asset_type: nas
+    finding_type: exposed_iot_service
+  reference:
+    - https://nvd.nist.gov/vuln/detail/CVE-2024-32764
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+      - "{{BaseURL}}/webapi/auth.cgi?api=SYNO.API.Info&version=1&method=query"
+
+    stop-at-first-match: true
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        words:
+          - "QNAP"
+          - "QTS"
+          - "Synology"
+          - "DiskStation"
+          - "SYNO."
+        condition: or

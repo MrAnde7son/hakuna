@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-ENRICHMENT_STEP_COUNT = 8  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, nmap_dispatch
+ENRICHMENT_STEP_COUNT = 10  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, classify_assets, nmap_dispatch
 
 from app.celery_app import celery
 from app.config import settings
@@ -33,9 +33,11 @@ from app.ingest.enrichment import (
     store_katana_endpoints,
     store_tlsx_per_port,
 )
+from app.ingest.asset_classifier import classify_asset
 from app.ingest.endpoint_probe import probe_assets
 from app.ingest.favicon_fingerprint import fingerprint_assets as favicon_fingerprint_assets
 from app.ingest.js_fingerprint import fingerprint_assets
+from app.ingest.protocol_probe import probe_batch as protocol_probe_batch
 from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel
 from app.runner.tools import CdncheckRunner, HttpxRunner, KatanaRunner, TlsxRunner
 from app.tasks.scoping import (
@@ -494,6 +496,149 @@ async def _do_endpoint_probe(sf, org_id: str, target_scope: str | None = None) -
     }
 
 
+async def _do_protocol_probe(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Probe non-HTTP protocols (Modbus, S7, MQTT, RTSP, etc.) on open ports.
+
+    Sends lightweight read-only identification payloads to detect OT/ICS,
+    IoT, and AI infrastructure. Creates critical/high findings for
+    internet-exposed industrial protocols.
+    """
+    assets = await _get_confirmed_alive_assets(
+        sf, org_id, target_scope=target_scope, apply_stale=False,
+    )
+    if not assets:
+        return {"probed": 0}
+
+    # Only probe assets that have non-HTTP ports open
+    from app.ingest.protocol_probe import PROTOCOL_PROBES
+    probe_ports = {p["port"] for p in PROTOCOL_PROBES}
+    candidates = [
+        a for a in assets
+        if set(a.get("open_ports") or []) & probe_ports
+    ]
+    if not candidates:
+        return {"probed": 0, "no_protocol_ports": True}
+
+    logger.info("org=%s protocol_probe: probing %d assets with OT/IoT/AI ports", org_id, len(candidates))
+
+    probe_results = await protocol_probe_batch(candidates, concurrency=10)
+
+    # Store results and create findings
+    total_detections = 0
+    findings_created = 0
+    async with sf() as db:
+        for hostname, detections in probe_results.items():
+            total_detections += len(detections)
+            # Find asset
+            row = await db.execute(
+                text("SELECT id FROM assets WHERE org_id = :org_id AND hostname = :host"),
+                {"org_id": org_id, "host": hostname},
+            )
+            asset_row = row.fetchone()
+            if not asset_row:
+                continue
+
+            # Store protocol detections on asset
+            await db.execute(
+                text("UPDATE assets SET protocol_detections = :det WHERE id = :id"),
+                {"det": json.dumps(detections), "id": asset_row.id},
+            )
+
+            # Create findings for critical/high exposed protocols
+            for det in detections:
+                finding_id = uuid.uuid4()
+                await db.execute(
+                    text("""
+                        INSERT INTO findings (id, org_id, asset_id, finding_type, severity,
+                                              title, description, metadata, status, created_at)
+                        VALUES (:id, :org_id, :aid, :ftype, :sev, :title, :desc, :meta, 'open', :now)
+                        ON CONFLICT DO NOTHING
+                    """),
+                    {
+                        "id": finding_id,
+                        "org_id": org_id,
+                        "aid": asset_row.id,
+                        "ftype": f"exposed_{det['protocol']}",
+                        "sev": det["severity"],
+                        "title": det["finding_title"],
+                        "desc": (
+                            f"Detected {det['name']} on port {det['port']}. "
+                            f"This service should not be exposed to the internet."
+                        ),
+                        "meta": json.dumps(det.get("metadata", {})),
+                        "now": datetime.now(timezone.utc),
+                    },
+                )
+                findings_created += 1
+
+        await db.commit()
+
+    return {
+        "probed": len(candidates),
+        "assets_with_detections": len(probe_results),
+        "total_detections": total_detections,
+        "findings_created": findings_created,
+    }
+
+
+async def _do_classify_assets(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Classify all enriched assets by type (AI, IoT, OT, IT).
+
+    Runs after all fingerprinting stages to aggregate signals from:
+    endpoint probes, protocol probes, nmap banners, tech stack, and ports.
+    """
+    scope_sql, scope_params = build_target_scope(target_scope)
+    extra = compose_where(scope_sql)
+    params = {"org_id": org_id, **scope_params}
+    async with sf() as db:
+        result = await db.execute(
+            text(f"""
+                SELECT a.id, a.hostname, a.open_ports, a.tech_stack,
+                       a.protocol_detections, a.asset_type as current_type,
+                       array_agg(ap.service_name) FILTER (WHERE ap.service_name IS NOT NULL) as service_names,
+                       array_agg(ap.banner) FILTER (WHERE ap.banner IS NOT NULL) as banners
+                FROM assets a
+                LEFT JOIN asset_ports ap ON ap.asset_id = a.id
+                WHERE a.org_id = :org_id
+                  AND (a.liveness_state = 'confirmed_alive'
+                       OR (a.liveness_state = 'unconfirmed' AND a.http_status IS NOT NULL))
+                  {extra}
+                GROUP BY a.id
+            """),
+            params,
+        )
+        assets = result.fetchall()
+
+    classified = 0
+    async with sf() as db:
+        for asset in assets:
+            tech_stack = asset.tech_stack
+            tech_list = []
+            if isinstance(tech_stack, dict):
+                tech_list = list(tech_stack.keys()) if tech_stack else []
+            elif isinstance(tech_stack, list):
+                tech_list = tech_stack
+
+            asset_type = classify_asset(
+                open_ports=asset.open_ports,
+                service_names=list(asset.service_names or []),
+                banners=list(asset.banners or []),
+                tech_stack=tech_list,
+                protocol_probe_results=asset.protocol_detections if isinstance(asset.protocol_detections, list) else None,
+            )
+
+            if asset_type and asset_type != asset.current_type:
+                await db.execute(
+                    text("UPDATE assets SET asset_type = :atype WHERE id = :id"),
+                    {"atype": asset_type, "id": asset.id},
+                )
+                classified += 1
+
+        await db.commit()
+
+    return {"total_assets": len(assets), "classified": classified}
+
+
 async def _do_cdncheck(sf, org_id: str, target_scope: str | None = None) -> dict:
     hostnames = await _get_confirmed_alive_hostnames(
         sf, org_id, target_scope=target_scope, apply_stale=True,
@@ -713,7 +858,11 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                 ("js_fingerprint", _do_js_fingerprint),
                 ("favicon_fingerprint", _do_favicon_fingerprint),
                 ("endpoint_probe", _do_endpoint_probe),
+                ("protocol_probe", _do_protocol_probe),
                 ("katana", _do_katana),
+            ],
+            [
+                ("classify_assets", _do_classify_assets),
             ],
             [("nmap_dispatch", None)],  # handled separately
         ]

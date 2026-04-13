@@ -1,0 +1,39 @@
+id: exposed-ollama-api
+
+info:
+  name: Exposed Ollama API
+  author: hakuna
+  severity: high
+  description: |
+    Detects an internet-exposed Ollama LLM inference server. Ollama typically
+    listens on port 11434 and serves an OpenAI-compatible API. An exposed
+    instance allows unauthenticated model enumeration, prompt injection, and
+    unauthorized inference — consuming GPU resources and potentially leaking
+    model weights or training data.
+  tags: ai,llm,ollama,exposure
+  metadata:
+    asset_type: ai_inference
+    finding_type: exposed_ai_service
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/api/tags"
+      - "{{BaseURL}}/api/version"
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        words:
+          - '"models"'
+        condition: and
+
+      - type: word
+        words:
+          - '"version"'
+
+    extractors:
+      - type: json
+        json:
+          - '.version'
+        part: body

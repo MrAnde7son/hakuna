@@ -1,0 +1,38 @@
+id: exposed-siemens-s7
+
+info:
+  name: Internet-Exposed Siemens S7 PLC
+  author: hakuna
+  severity: critical
+  description: |
+    Detects an internet-exposed Siemens S7 PLC via the S7comm protocol
+    (port 102). S7comm allows reading CPU state, downloading programs, and
+    writing memory areas on Siemens SIMATIC S7-300, S7-400, S7-1200, and
+    S7-1500 PLCs. Exposure enables direct industrial process manipulation.
+  tags: ot,ics,scada,siemens,s7,plc,exposure
+  metadata:
+    asset_type: plc
+    finding_type: exposed_ot_service
+
+network:
+  - inputs:
+      # COTP Connection Request (ISO 8073 CR)
+      - data: "0300001611e00000000100c0010ac1020100c2020102"
+        type: hex
+
+    host:
+      - "{{Hostname}}"
+      - "{{Host}}:102"
+
+    matchers-condition: and
+    matchers:
+      # COTP Connection Confirm (CC = 0xD0)
+      - type: binary
+        binary:
+          - "0300"
+        part: body
+
+      - type: binary
+        binary:
+          - "d0"
+        part: body

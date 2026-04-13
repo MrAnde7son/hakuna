@@ -36,6 +36,10 @@ class Asset(Base):
     source: Mapped[str | None] = mapped_column(String(32), nullable=True)
     nessus_asset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Extension 5: Asset classification and protocol probing
+    asset_type: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    protocol_detections: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Extension 2: Liveness validation
     liveness_state: Mapped[str] = mapped_column(String(32), default="unconfirmed")
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)

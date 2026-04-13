@@ -1,0 +1,34 @@
+id: exposed-ethernet-ip
+
+info:
+  name: Internet-Exposed EtherNet/IP (CIP) Service
+  author: hakuna
+  severity: critical
+  description: |
+    Detects an internet-exposed EtherNet/IP service (port 44818). EtherNet/IP
+    is used by Allen-Bradley/Rockwell ControlLogix and CompactLogix PLCs.
+    The List Identity command reveals device type, serial number, product name,
+    and firmware version. Full CIP access allows reading/writing tags and
+    changing PLC programs without authentication.
+  tags: ot,ics,scada,ethernet-ip,cip,rockwell,plc,exposure
+  metadata:
+    asset_type: plc
+    finding_type: exposed_ot_service
+
+network:
+  - inputs:
+      # EtherNet/IP List Identity command
+      - data: "63000000000000000000000000000000000000000000000000000000"
+        type: hex
+
+    host:
+      - "{{Hostname}}"
+      - "{{Host}}:44818"
+
+    matchers-condition: and
+    matchers:
+      # List Identity response command code
+      - type: binary
+        binary:
+          - "6300"
+        part: body

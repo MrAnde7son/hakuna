@@ -1,0 +1,36 @@
+id: exposed-langserve
+
+info:
+  name: Exposed LangServe / LangChain Endpoint
+  author: hakuna
+  severity: high
+  description: |
+    Detects an internet-exposed LangServe endpoint serving LangChain chains or
+    agents. LangServe exposes /invoke, /stream, and /playground endpoints that
+    allow direct chain execution. This can lead to prompt injection, server-side
+    request forgery via tool use, or access to connected data sources.
+  tags: ai,langchain,langserve,agent,exposure
+  metadata:
+    asset_type: ai_inference
+    finding_type: exposed_ai_service
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/docs"
+      - "{{BaseURL}}/playground"
+
+    stop-at-first-match: true
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        words:
+          - "langserve"
+          - "LangServe"
+          - "/invoke"
+        condition: or
