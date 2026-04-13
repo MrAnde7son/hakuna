@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func, case, distinct
+from sqlalchemy import func, case, distinct, or_
 from models.models import (
     Asset, Finding, Scan, User, Organization,
     InventoryUser, InventoryGroup, InventoryService, InventoryNetConn,
@@ -3011,7 +3011,11 @@ def analyze_attack_surface(db: Session, params: dict):
             db.query(InventoryUser)
             .filter(
                 InventoryUser.asset_id.in_(inet_ids),
-                InventoryUser.privilege_level.in_(["admin", "root", "domain_admin", "Administrator"]),
+                or_(
+                    InventoryUser.is_local_admin == True,
+                    InventoryUser.is_domain_admin == True,
+                    InventoryUser.is_privileged == True,
+                ),
             )
             .limit(50)
             .all()
