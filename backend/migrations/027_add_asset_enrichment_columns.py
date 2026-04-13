@@ -34,7 +34,8 @@ def upgrade():
     with engine.connect() as conn:
         for col in ("last_enriched", "last_js_fingerprinted"):
             if not _column_exists(conn, "assets", col):
-                conn.execute(text(f"ALTER TABLE assets ADD COLUMN {col} DATETIME"))
+                col_type = "TIMESTAMP" if "postgresql" in str(engine.url) else "DATETIME"
+                conn.execute(text(f"ALTER TABLE assets ADD COLUMN {col} {col_type}"))
         conn.commit()
 
 
