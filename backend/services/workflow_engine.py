@@ -16,6 +16,7 @@ from models.models import (
     Finding, Asset, Campaign, CampaignFinding,
     Tag, TagAssignment, FindingOwnership, AssetOwnership,
     Agent, AggregatedSolution, FindingException, Scan,
+    ReportTemplate,
 )
 
 logger = logging.getLogger(__name__)
@@ -673,7 +674,17 @@ def _action_set_criticality(db, config, items):
 
 def _action_send_email(db, config, items):
     import services.integrations as integrations
-    result = integrations.send_email(db, config, items)
+    # Collect any report attachments passed down from an upstream generate_report node.
+    carriers = [i for i in items if isinstance(i, dict) and i.get("_report_attachment")]
+    real_items = [i for i in items if not (isinstance(i, dict) and i.get("_report_attachment"))]
+    if carriers:
+        merged = dict(config)
+        existing = list(merged.get("attachments") or [])
+        existing.extend(c["_report_attachment"] for c in carriers)
+        merged["attachments"] = existing
+        result = integrations.send_email(db, merged, real_items)
+    else:
+        result = integrations.send_email(db, config, items)
     logger.info(f"[Workflow Email] Sent to {result.get('recipients', [])}, {len(items)} items")
     return len(items), items
 
@@ -843,6 +854,64 @@ def _action_run_script(db, config, items):
     return len(items), items
 
 
+def _action_generate_report(db, config, items):
+    """Render a saved ReportTemplate to PDF and pass it downstream.
+
+    config keys:
+      report_template_id   — ID of the ReportTemplate to render (required, unless report_name given)
+      report_name          — Alternative lookup by template name
+      attach_to_email      — when True (default), place the PDF into
+                             downstream items under `_pdf_attachment` so a
+                             following `send_email` node picks it up as an
+                             attachment via config.attachments.
+
+    The rendered PDF bytes are stored on a synthetic item so the next
+    `send_email` node (which iterates over items) can attach them.
+    """
+    from services.report_renderer import render_report_pdf
+
+    template = None
+    tpl_id = config.get("report_template_id")
+    if tpl_id:
+        template = db.query(ReportTemplate).filter(ReportTemplate.id == int(tpl_id)).first()
+    if not template and config.get("report_name"):
+        template = db.query(ReportTemplate).filter(
+            ReportTemplate.name == config["report_name"]
+        ).first()
+    if not template:
+        logger.warning("[Workflow Report] template not found (id=%s name=%s)",
+                       tpl_id, config.get("report_name"))
+        return 0, items
+
+    try:
+        pdf_bytes = render_report_pdf(db, template)
+    except Exception as e:
+        logger.exception("[Workflow Report] render failed for template %s", template.id)
+        return 0, items
+
+    filename = f"{(template.name or 'report').replace('/', '-')}-{datetime.utcnow().strftime('%Y%m%d')}.pdf"
+    attachment = {
+        "filename": filename,
+        "content": pdf_bytes,
+        "mime_type": "application/pdf",
+    }
+    # Emit a synthetic item carrying the attachment so the next send_email node
+    # can pick it up via _attachments_from_items() without changing its signature.
+    carrier = {
+        "_report_attachment": attachment,
+        "_report_template_id": template.id,
+        "_report_name": template.name,
+    }
+    logger.info("[Workflow Report] rendered '%s' (%d bytes)", template.name, len(pdf_bytes))
+
+    if config.get("attach_to_email", True):
+        # Prepend the carrier so downstream can find it easily.
+        items = [carrier] + list(items)
+    else:
+        items = [carrier]
+    return 1, items
+
+
 _ACTION_HANDLERS = {
     "assign_owner": _action_assign_owner,
     "add_tag": _action_add_tag,
@@ -856,6 +925,7 @@ _ACTION_HANDLERS = {
     "run_agent": _action_run_agent,
     "run_script": _action_run_script,
     "create_exception": _action_create_exception,
+    "generate_report": _action_generate_report,
 }
 
 

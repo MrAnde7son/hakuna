@@ -1601,6 +1601,41 @@ class ReportTemplate(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ReportSchedule(Base):
+    """Schedule for automated delivery of a saved report as an email attachment."""
+    __tablename__ = "report_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
+    report_template_id = Column(Integer, ForeignKey("report_templates.id", ondelete="CASCADE"),
+                                nullable=False, index=True)
+    name = Column(String, nullable=True)                # optional display name; defaults to template name
+    # Delivery
+    recipients = Column(Text, nullable=False)            # comma-separated email list
+    subject_template = Column(String, nullable=True)
+    body_template = Column(Text, nullable=True)
+    format = Column(String, default="pdf")               # pdf (only supported format today)
+    # Schedule
+    frequency = Column(String, default="weekly")         # daily | weekly | monthly | custom
+    day_of_week = Column(Integer, nullable=True)         # 0=Mon..6=Sun (weekly)
+    day_of_month = Column(Integer, nullable=True)        # 1..28 (monthly)
+    hour = Column(Integer, default=8)                    # 0-23 UTC
+    minute = Column(Integer, default=0)                  # 0-59
+    cron_expression = Column(String, nullable=True)      # used when frequency == "custom"
+    timezone = Column(String, default="UTC")
+    # State
+    is_enabled = Column(Boolean, default=True)
+    last_run_at = Column(DateTime, nullable=True)
+    last_status = Column(String, nullable=True)          # success | error
+    last_error = Column(Text, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    template = relationship("ReportTemplate")
+
+
 class ScanComparison(Base):
     """Cached result of comparing two scans — tracks new/fixed/recurring findings."""
     __tablename__ = "scan_comparisons"

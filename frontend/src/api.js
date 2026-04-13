@@ -936,6 +936,28 @@ export const updateReportTemplate = (id, data) => request(`/report-templates/${i
 })
 export const deleteReportTemplate = (id) => request(`/report-templates/${id}`, { method: 'DELETE' })
 
+// Report Schedules (email delivery of saved reports as PDF)
+export const listReportSchedulesForTemplate = (templateId) =>
+  request(`/report-templates/${templateId}/schedules`)
+export const createReportSchedule = (templateId, data) =>
+  request(`/report-templates/${templateId}/schedules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+export const listAllReportSchedules = () => request('/report-schedules')
+export const getReportSchedule = (id) => request(`/report-schedules/${id}`)
+export const updateReportSchedule = (id, data) =>
+  request(`/report-schedules/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+export const deleteReportSchedule = (id) =>
+  request(`/report-schedules/${id}`, { method: 'DELETE' })
+export const runReportScheduleNow = (id) =>
+  request(`/report-schedules/${id}/run-now`, { method: 'POST' })
+
 // Tag-based Risk Reports
 export const getRiskByTags = (params = {}) => {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))

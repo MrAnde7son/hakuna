@@ -94,6 +94,7 @@ from routes.blast_radius_routes import router as blast_radius_router
 from routes.asset_routes import router as asset_router
 from routes.finding_routes import router as finding_router, _finding_to_dict
 from routes.report_routes import router as report_router
+from routes.report_schedule_routes import router as report_schedule_router
 from routes.campaign_routes import router as campaign_router
 from routes.tag_routes import router as tag_router
 from routes.custom_field_routes import router as custom_field_router
@@ -311,6 +312,7 @@ app.include_router(blast_radius_router)
 app.include_router(asset_router)
 app.include_router(finding_router)
 app.include_router(report_router)
+app.include_router(report_schedule_router)
 app.include_router(campaign_router)
 app.include_router(tag_router)
 app.include_router(custom_field_router)
@@ -355,6 +357,10 @@ def _deferred_startup():
     from services.easm_scheduler import start_scheduler as start_easm_scheduler
     start_easm_scheduler()
     logger.info("EASM scan scheduler started")
+    # Start report scheduler for scheduled email delivery of report PDFs
+    from services.report_scheduler import start_scheduler as start_report_scheduler
+    start_report_scheduler()
+    logger.info("Report scheduler started")
     # Schedule threat intel auto-update every 24 hours
     from threat_intel.intel_updater import update_intel
     from apscheduler.schedulers.background import BackgroundScheduler as _BGScheduler

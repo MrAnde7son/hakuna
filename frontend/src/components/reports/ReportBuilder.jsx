@@ -13,9 +13,10 @@ import {
   CheckCircle, LayoutGrid, Maximize2, Minimize2, X, PenLine,
   TrendingUp, Zap, Clock, Home, Upload, GitCompare,
   Download, FileImage, FileText, FileBarChart2, Sparkles, Filter,
-  Crosshair, TreePine, Gauge, Search
+  Crosshair, TreePine, Gauge, Search, Send
 } from 'lucide-react'
 import NLPReportBuilder from './NLPReportBuilder.jsx'
+import ScheduleReportModal from './ScheduleReportModal.jsx'
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, Legend, CartesianGrid, LineChart, Line,
@@ -3789,6 +3790,7 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
   const [globalTagLogic, setGlobalTagLogic] = useState('AND')
   const [tagInputDraft, setTagInputDraft] = useState('')
   const [availableTags, setAvailableTags] = useState([])
+  const [showSchedule, setShowSchedule] = useState(false)
   const canvasRef = useRef()
 
   useEffect(() => {
@@ -3899,7 +3901,30 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
           {saved ? <><CheckCircle size={14} /> {t('reports.saved')}</> : <><Save size={14} /> {t('common.save')}</>}
         </button>
 
+        <button
+          onClick={() => setShowSchedule(true)}
+          disabled={!report.id}
+          title={report.id ? t('reports.scheduleEmail') : t('reports.saved')}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
+            background: 'transparent', border: '1px solid var(--border)',
+            color: report.id ? 'var(--text-secondary)' : 'var(--text-muted)',
+            borderRadius: 6, cursor: report.id ? 'pointer' : 'not-allowed',
+            fontSize: 13, fontWeight: 500, opacity: report.id ? 1 : 0.55,
+          }}
+        >
+          <Send size={14} /> {t('reports.scheduleEmail')}
+        </button>
+
         <ExportDropdown canvasRef={canvasRef} reportName={name} disabled={widgets.length === 0} />
+
+        {showSchedule && (
+          <ScheduleReportModal
+            reportId={report.id}
+            reportName={name}
+            onClose={() => setShowSchedule(false)}
+          />
+        )}
       </div>
 
       {/* Global tag filter bar */}
