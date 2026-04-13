@@ -701,7 +701,7 @@ def _list_has(items: list, value) -> bool:
     return False
 
 
-_NUMERIC_OPS = {"gt", "lt", "gte", "lte"}
+_CF_NUMERIC_OPS = {"gt", "lt", "gte", "lte"}
 
 
 def _eval_custom_field_value(raw, op: str, value) -> bool:
@@ -719,7 +719,7 @@ def _eval_custom_field_value(raw, op: str, value) -> bool:
         return truthy if op == "is_true" else not truthy
 
     # Numeric ops: coerce both sides to float, False if either fails
-    if op in _NUMERIC_OPS:
+    if op in _CF_NUMERIC_OPS:
         try:
             return _num_op(float(raw if raw is not None else 0), op, value)
         except (TypeError, ValueError):
