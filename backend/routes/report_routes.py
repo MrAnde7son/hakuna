@@ -455,8 +455,8 @@ def get_trending(
 ):
     """Return severity counts over time for trend view.
 
-    mode=per_scan  — counts per individual scan (default)
-    mode=cumulative — running total of open findings across scans
+    mode=per_scan   — counts per individual scan (default)
+    mode=cumulative — total open (unresolved) findings as of each scan date
     """
     _ck = f"trending:{mode}:{sorted(org_ids or [])}"
     cached = _cache_get(_ck)
@@ -466,39 +466,69 @@ def get_trending(
     scans = apply_org_filter(db.query(Scan), Scan, org_ids).order_by(Scan.created_at).all()
     scan_ids = [s.id for s in scans]
 
-    # Single aggregation query instead of 5 COUNT queries per scan
-    rows = db.query(
-        Finding.scan_id,
-        func.count(sa_case((Finding.severity == 4, 1))).label("critical"),
-        func.count(sa_case((Finding.severity == 3, 1))).label("high"),
-        func.count(sa_case((Finding.severity == 2, 1))).label("medium"),
-        func.count(sa_case((Finding.severity == 1, 1))).label("low"),
-        func.count(sa_case((Finding.severity == 0, 1))).label("info_count"),
-    ).filter(Finding.scan_id.in_(scan_ids)).group_by(Finding.scan_id).all()
+    if mode == "cumulative":
+        # For each scan date, count all findings that were open at that point:
+        # first_seen <= scan_date AND (resolved_at IS NULL OR resolved_at > scan_date)
+        base_q = apply_org_filter(db.query(Finding), Finding, org_ids).filter(
+            Finding.first_seen != None
+        )
+        all_findings = base_q.with_entities(
+            Finding.severity, Finding.first_seen, Finding.resolved_at
+        ).all()
 
-    counts_map = {r.scan_id: r for r in rows}
+        result = []
+        for s in scans:
+            scan_dt = s.scan_date or s.created_at.isoformat()
+            # Parse scan date to compare
+            if isinstance(scan_dt, str):
+                try:
+                    cutoff = datetime.fromisoformat(scan_dt.replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    cutoff = s.created_at
+            else:
+                cutoff = scan_dt
 
-    result = []
-    cum = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-    for s in scans:
-        c = counts_map.get(s.id)
-        counts = {
-            "critical": c.critical if c else 0,
-            "high": c.high if c else 0,
-            "medium": c.medium if c else 0,
-            "low": c.low if c else 0,
-            "info": c.info_count if c else 0,
-        }
-        if mode == "cumulative":
-            for k in cum:
-                cum[k] += counts[k]
-            counts = dict(cum)
-        result.append({
-            "scan_id": s.id,
-            "scan_name": s.scan_name,
-            "scan_date": s.scan_date or s.created_at.isoformat(),
-            **counts,
-        })
+            counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+            sev_map = {4: "critical", 3: "high", 2: "medium", 1: "low", 0: "info"}
+            for sev, first_seen, resolved_at in all_findings:
+                if first_seen and first_seen <= cutoff:
+                    if resolved_at is None or resolved_at > cutoff:
+                        key = sev_map.get(sev)
+                        if key:
+                            counts[key] += 1
+
+            result.append({
+                "scan_id": s.id,
+                "scan_name": s.scan_name,
+                "scan_date": scan_dt if isinstance(scan_dt, str) else scan_dt.isoformat(),
+                **counts,
+            })
+    else:
+        # per_scan: counts per individual scan
+        rows = db.query(
+            Finding.scan_id,
+            func.count(sa_case((Finding.severity == 4, 1))).label("critical"),
+            func.count(sa_case((Finding.severity == 3, 1))).label("high"),
+            func.count(sa_case((Finding.severity == 2, 1))).label("medium"),
+            func.count(sa_case((Finding.severity == 1, 1))).label("low"),
+            func.count(sa_case((Finding.severity == 0, 1))).label("info_count"),
+        ).filter(Finding.scan_id.in_(scan_ids)).group_by(Finding.scan_id).all()
+
+        counts_map = {r.scan_id: r for r in rows}
+
+        result = []
+        for s in scans:
+            c = counts_map.get(s.id)
+            result.append({
+                "scan_id": s.id,
+                "scan_name": s.scan_name,
+                "scan_date": s.scan_date or s.created_at.isoformat(),
+                "critical": c.critical if c else 0,
+                "high": c.high if c else 0,
+                "medium": c.medium if c else 0,
+                "low": c.low if c else 0,
+                "info": c.info_count if c else 0,
+            })
     _cache_set(_ck, result)
     return result
 

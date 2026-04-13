@@ -1557,7 +1557,7 @@ const DEFAULT_DASHBOARD = {
     { id: 'dw20',type: 'table',      title: 'Actions by Owner',          width: 'half', config: { preset: 'solutions_by_owner', limit: 5 } },
     { id: 'dw10',type: 'pie_chart', title: 'SLA Status',            width: 'half',    config: { preset: 'sla_status', donut: true } },
     // ── Row 5: Trends & context ──
-    { id: 'dw6', type: 'line_chart',title: 'Vulnerability Trend',   width: 'half',    config: { preset: 'severity_trend' } },
+    { id: 'dw6', type: 'line_chart',title: 'Vulnerability Trend',   width: 'half',    config: { preset: 'severity_trend', trending_mode: 'cumulative' } },
     { id: 'dw5', type: 'pie_chart', title: 'Severity Breakdown',    width: 'half',    config: { preset: 'severity_breakdown', donut: true } },
     // ── Row 6: Assets & age ──
     { id: 'dw11',type: 'table',     title: 'Top Risky Assets',      width: 'full',    config: { preset: 'top_assets', limit: 5 } },
@@ -1587,7 +1587,7 @@ const EXECUTIVE_DASHBOARD = {
     { id: 'ex18',type: 'line_chart',title: 'MTTR Trend',            width: 'half',    config: { preset: 'mttr_trend' } },
     { id: 'ex10',type: 'line_chart',title: 'SLA Compliance Trend',  width: 'half',    config: { preset: 'sla_trend', areaFill: true } },
     { id: 'ex9', type: 'line_chart',title: 'Risk Score Trend',      width: 'half',    config: { preset: 'risk_trend' } },
-    { id: 'ex12',type: 'line_chart',title: 'Severity Trend',        width: 'half',    config: { preset: 'severity_trend' } },
+    { id: 'ex12',type: 'line_chart',title: 'Severity Trend',        width: 'half',    config: { preset: 'severity_trend', trending_mode: 'cumulative' } },
     { id: 'ex11',type: 'bar_chart', title: 'Remediation Velocity',  width: 'full',    config: { preset: 'velocity_trend', stacked: true } },
     { id: 'ex7', type: 'bar_chart', title: 'Risk by Business Unit', width: 'full',    config: { preset: 'risk_by_tags', horizontal: true } },
     { id: 'ex8', type: 'table',     title: 'Business Unit Benchmark', width: 'full',  config: { preset: 'tag_benchmark' } },
@@ -3207,8 +3207,8 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
             value={cfg.trending_mode || 'per_scan'}
             onChange={v => set('trending_mode', v)}
             options={[
-              { value: 'per_scan', label: 'Per Scan' },
-              { value: 'cumulative', label: 'Cumulative' },
+              { value: 'per_scan', label: 'Per Scan (findings in each scan)' },
+              { value: 'cumulative', label: 'Cumulative (total open over time)' },
             ]}
           />
         </Field>
