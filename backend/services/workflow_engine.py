@@ -4,6 +4,11 @@ Supports OOTB templates, custom workflows, retry logic, and cron scheduling.
 
 Node catalog and templates live in workflow_catalog.py (OCP: add new node
 types without modifying execution logic).
+
+Extensibility — register new handlers without modifying this module:
+    register_action(subtype, handler)           — (db, config, items) -> (affected, items)
+    register_filter(subtype, handler)           — (item, config, db) -> bool
+    register_trigger_matcher(event_type, fn)    — (node, event_data) -> bool
 """
 import logging
 import threading
@@ -877,6 +882,34 @@ def _execute_action(db: Session, node: WorkflowNode, items: list) -> dict:
     }
 
 
+# ─────────────────────────────────────────────
+# Public registration API  (OCP: extend without modifying this module)
+# ─────────────────────────────────────────────
+
+def register_action(subtype: str, handler: callable) -> None:
+    """Register a workflow action handler.
+
+    handler signature: (db: Session, config: dict, items: list) -> (affected: int, items: list)
+    """
+    _ACTION_HANDLERS[subtype] = handler
+
+
+def register_filter(subtype: str, handler: callable) -> None:
+    """Register a workflow filter handler.
+
+    handler signature: (item: dict, config: dict, db: Session) -> bool
+    """
+    _FILTER_HANDLERS[subtype] = handler
+
+
+def register_trigger_matcher(event_type: str, matcher: callable) -> None:
+    """Register a trigger matcher for an event type.
+
+    matcher signature: (node: WorkflowNode, event_data: dict) -> bool
+    """
+    _TRIGGER_MATCHERS[event_type] = matcher
+
+
 def _render_template(template: str, items: list) -> str:
     """Simple template rendering with {{var}} placeholders."""
     if not template:
@@ -1171,71 +1204,86 @@ def fire_event_workflows(db: Session, event_type: str, event_data: dict = None):
         return 0
 
 
-def _trigger_matches_event(node: WorkflowNode, event_type: str, event_data: dict) -> bool:
-    """Check if a trigger node's config matches the incoming event data."""
+def _match_on_upload(node: WorkflowNode, event_data: dict) -> bool:
+    return True  # on_upload triggers always match
+
+
+def _match_on_integration_execution(node: WorkflowNode, event_data: dict) -> bool:
     config = node.config or {}
+    if config.get("integration_id") and config["integration_id"] != event_data.get("integration_id"):
+        return False
+    status = event_data.get("status", "")
+    status_filter = config.get("status_filter")
 
-    if event_type == "on_upload":
-        return True  # on_upload triggers always match
+    # Legacy: on_integration_error only fires on error
+    if node.node_subtype == "on_integration_error":
+        return status == "error"
+    # Legacy: on_integration_complete fires on any (or specific status)
+    if node.node_subtype == "on_integration_complete":
+        single_filter = config.get("status_filter", "")
+        return not single_filter or single_filter == status
 
-    if event_type == "on_integration_execution":
-        # Check integration_id filter
-        if config.get("integration_id") and config["integration_id"] != event_data.get("integration_id"):
+    # New unified: status_filter is a list
+    if isinstance(status_filter, list) and status_filter:
+        return status in status_filter
+    return True  # no filter = any status
+
+
+def _match_on_new_threat_intel(node: WorkflowNode, event_data: dict) -> bool:
+    config = node.config or {}
+    intel_type = config.get("intel_type", "any")
+    event_intel_type = event_data.get("intel_type", "any")
+    if intel_type != "any" and intel_type != event_intel_type:
+        return False
+
+    severity_threshold = config.get("severity_threshold", "")
+    if severity_threshold and event_intel_type == "cve":
+        max_cvss = event_data.get("max_cvss", 0)
+        if max_cvss < float(severity_threshold):
             return False
-        # Check status filter
-        status = event_data.get("status", "")
-        status_filter = config.get("status_filter")
 
-        # Legacy: on_integration_error only fires on error
-        if node.node_subtype == "on_integration_error":
-            return status == "error"
-        # Legacy: on_integration_complete fires on any (or specific status)
-        if node.node_subtype == "on_integration_complete":
-            single_filter = config.get("status_filter", "")
-            return not single_filter or single_filter == status
-
-        # New unified: status_filter is a list
-        if isinstance(status_filter, list) and status_filter:
-            return status in status_filter
-        return True  # no filter = any status
-
-    if event_type == "on_new_threat_intel":
-        intel_type = config.get("intel_type", "any")
-        event_intel_type = event_data.get("intel_type", "any")
-        if intel_type != "any" and intel_type != event_intel_type:
-            return False
-
-        # Severity threshold — only for CVE events
-        severity_threshold = config.get("severity_threshold", "")
-        if severity_threshold and event_intel_type == "cve":
-            max_cvss = event_data.get("max_cvss", 0)
-            if max_cvss < float(severity_threshold):
-                return False
-
-        # Only affecting environment — check if any findings exist for new CVEs
-        if config.get("only_affecting_environment", False):
-            return event_data.get("affects_environment", False)
-
-        return True
-
-    if event_type == "on_new_asset":
-        asset_filter = config.get("asset_filter", "any")
-        if asset_filter == "any":
-            return True
-        if asset_filter == "internet_facing":
-            return any(a.get("is_internet_facing") for a in event_data.get("assets", []))
-        if asset_filter == "high_criticality":
-            return any((a.get("criticality") or 5) <= 3 for a in event_data.get("assets", []))
-        return True
-
-    if event_type == "on_new_finding":
-        min_severity = int(config.get("min_severity", "0"))
-        only_exploitable = config.get("only_exploitable", False)
-        findings = event_data.get("findings", [])
-        if min_severity:
-            findings = [f for f in findings if (f.get("severity") or 0) >= min_severity]
-        if only_exploitable:
-            findings = [f for f in findings if f.get("exploit_available")]
-        return len(findings) > 0
+    if config.get("only_affecting_environment", False):
+        return event_data.get("affects_environment", False)
 
     return True
+
+
+def _match_on_new_asset(node: WorkflowNode, event_data: dict) -> bool:
+    config = node.config or {}
+    asset_filter = config.get("asset_filter", "any")
+    if asset_filter == "any":
+        return True
+    if asset_filter == "internet_facing":
+        return any(a.get("is_internet_facing") for a in event_data.get("assets", []))
+    if asset_filter == "high_criticality":
+        return any((a.get("criticality") or 5) <= 3 for a in event_data.get("assets", []))
+    return True
+
+
+def _match_on_new_finding(node: WorkflowNode, event_data: dict) -> bool:
+    config = node.config or {}
+    min_severity = int(config.get("min_severity", "0"))
+    only_exploitable = config.get("only_exploitable", False)
+    findings = event_data.get("findings", [])
+    if min_severity:
+        findings = [f for f in findings if (f.get("severity") or 0) >= min_severity]
+    if only_exploitable:
+        findings = [f for f in findings if f.get("exploit_available")]
+    return len(findings) > 0
+
+
+_TRIGGER_MATCHERS: dict[str, callable] = {
+    "on_upload": _match_on_upload,
+    "on_integration_execution": _match_on_integration_execution,
+    "on_new_threat_intel": _match_on_new_threat_intel,
+    "on_new_asset": _match_on_new_asset,
+    "on_new_finding": _match_on_new_finding,
+}
+
+
+def _trigger_matches_event(node: WorkflowNode, event_type: str, event_data: dict) -> bool:
+    """Check if a trigger node's config matches the incoming event data."""
+    matcher = _TRIGGER_MATCHERS.get(event_type)
+    if matcher:
+        return matcher(node, event_data)
+    return True  # unknown event types pass through

@@ -410,11 +410,11 @@ class TestDedupInventory:
         assert result["users"] == []
         assert result["software"] == []
 
-    def test_missing_entity_in_inventory_defaults_to_empty_list(self):
+    def test_empty_inventory_returns_empty_dict(self):
         inventory = {}
         cfg = self._enabled_cfg()
         result = dedup_inventory(inventory, cfg)
-        assert result.get("users") == []
+        assert result == {}
 
     def test_multiple_entity_types_deduplicated_independently(self):
         inventory = {
