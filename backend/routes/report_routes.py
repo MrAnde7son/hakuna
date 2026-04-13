@@ -448,13 +448,22 @@ def get_plugin_families(scan_id: Optional[int] = None, tags: Optional[str] = Non
 
 
 @router.get("/api/reports/trending")
-def get_trending(db: Session = Depends(get_db)):
-    """Return per-scan summary for trend view."""
-    cached = _cache_get("trending")
+def get_trending(
+    mode: str = "per_scan",
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return severity counts over time for trend view.
+
+    mode=per_scan  — counts per individual scan (default)
+    mode=cumulative — running total of open findings across scans
+    """
+    _ck = f"trending:{mode}:{sorted(org_ids or [])}"
+    cached = _cache_get(_ck)
     if cached is not None:
         return cached
     from sqlalchemy import case as sa_case
-    scans = db.query(Scan).order_by(Scan.created_at).all()
+    scans = apply_org_filter(db.query(Scan), Scan, org_ids).order_by(Scan.created_at).all()
     scan_ids = [s.id for s in scans]
 
     # Single aggregation query instead of 5 COUNT queries per scan
@@ -470,19 +479,27 @@ def get_trending(db: Session = Depends(get_db)):
     counts_map = {r.scan_id: r for r in rows}
 
     result = []
+    cum = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     for s in scans:
         c = counts_map.get(s.id)
-        result.append({
-            "scan_id": s.id,
-            "scan_name": s.scan_name,
-            "scan_date": s.scan_date or s.created_at.isoformat(),
+        counts = {
             "critical": c.critical if c else 0,
             "high": c.high if c else 0,
             "medium": c.medium if c else 0,
             "low": c.low if c else 0,
             "info": c.info_count if c else 0,
+        }
+        if mode == "cumulative":
+            for k in cum:
+                cum[k] += counts[k]
+            counts = dict(cum)
+        result.append({
+            "scan_id": s.id,
+            "scan_name": s.scan_name,
+            "scan_date": s.scan_date or s.created_at.isoformat(),
+            **counts,
         })
-    _cache_set("trending", result)
+    _cache_set(_ck, result)
     return result
 
 

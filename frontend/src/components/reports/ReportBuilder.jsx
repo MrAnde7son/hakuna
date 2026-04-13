@@ -109,7 +109,7 @@ const PALETTE = ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#0ea5e9', '#22c55e
 const DATA_SOURCES = {
   summary:            (scanId, f) => getSummary(scanId, f?.tags, f?.tag_logic),
   sla:                (scanId, f) => getSLASummary(scanId),
-  trending:           (scanId, f) => getTrending(),
+  trending:           (scanId, f) => getTrending(f?.trending_mode),
   metrics_timeline:   (scanId, f) => getMetricsTimeline(),
   delta_timeline:     (scanId, f) => getScanDeltaTimeline(),
   velocity:           (scanId, f) => getRemediationVelocity(f?.period || 'month'),
@@ -900,7 +900,7 @@ const DATA_PRESETS = {
     colors: { avg_mttr_days: '#8b5cf6' },
   },
   full_severity_trend: {
-    label: 'Full Severity Trend', group: 'Severity', source: 'metrics_timeline', type: 'series',
+    label: 'Full Severity Trend', group: 'Severity', source: 'trending', type: 'series',
     extract: d => Array.isArray(d) ? d : [],
     xField: 'scan_date', fields: ['critical', 'high', 'medium', 'low', 'info'],
     colors: { critical: '#dc2626', high: '#ea580c', medium: '#d97706', low: '#65a30d', info: '#0ea5e9' },
@@ -2097,7 +2097,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
   const cfg = widget.config || {}
   const preset = DATA_PRESETS[cfg.preset]
   const sourceId = preset?.source || null
-  const filters = { ...(cfg.filters || {}), category: cfg.category, period: cfg.period }
+  const filters = { ...(cfg.filters || {}), category: cfg.category, period: cfg.period, trending_mode: cfg.trending_mode }
   const { data, loading } = useWidgetData(sourceId, scanId, filters, globalTags, globalTagLogic)
 
   // Benchmark overlay — fetches benchmark data when show_benchmark is toggled on
@@ -3201,6 +3201,19 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
         </Field>
       )}
 
+      {DATA_PRESETS[cfg.preset]?.source === 'trending' && (
+        <Field label="Trend Mode">
+          <Select
+            value={cfg.trending_mode || 'per_scan'}
+            onChange={v => set('trending_mode', v)}
+            options={[
+              { value: 'per_scan', label: 'Per Scan' },
+              { value: 'cumulative', label: 'Cumulative' },
+            ]}
+          />
+        </Field>
+      )}
+
       {widget.type === 'table' && (
         <Field label={t('reports.rowLimit')}>
           <Select value={String(cfg.limit || 10)} onChange={v => set('limit', v)}
@@ -3838,7 +3851,7 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       {/* Top bar */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px',
@@ -3914,7 +3927,7 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
       />
 
       {/* Body */}
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
         {/* Widget library */}
         {!preview && <WidgetLibrary onAdd={addWidget} />}
 
@@ -4381,7 +4394,7 @@ export default function ReportBuilder() {
 
   if (activeReport) {
     return (
-      <div style={{ margin: '-24px', flex: 1, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ margin: '-18px', display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
         <Builder
           report={activeReport}
           onSave={saveReport}
