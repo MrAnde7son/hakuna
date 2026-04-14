@@ -2085,6 +2085,28 @@ class SIEMEvent(Base):
     )
 
 
+class IngestEndpoint(Base):
+    """Token-authenticated push endpoint for SIEM event ingestion."""
+    __tablename__ = "ingest_endpoints"
+
+    id = Column(String, primary_key=True, default=_gen_uuid)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    integration_id = Column(String, ForeignKey("integrations.id"), nullable=True)
+    name = Column(String, nullable=False)
+    token_hash = Column(String, nullable=False)           # bcrypt hash of bearer token
+    token_prefix = Column(String, nullable=True)          # first 8 chars for display
+    hmac_secret_hash = Column(String, nullable=False)     # bcrypt hash of HMAC secret
+    parser_type = Column(String, nullable=False, default="json")  # json | hec | cef | leef | syslog_rfc5424
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=True)
+    request_count = Column(Integer, default=0)
+
+    __table_args__ = (
+        Index("ix_ingest_endpoints_org", "org_id"),
+    )
+
+
 # ─────────────────────────────────────────────────────────
 # Relay Agents (on-prem connectivity)
 # ─────────────────────────────────────────────────────────

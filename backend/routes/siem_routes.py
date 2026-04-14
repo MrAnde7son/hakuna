@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
 from core.audit import log_audit
-from models.models import SIEMEvent
+from models.models import SIEMEvent, IngestEndpoint
 from services.event_store import get_event_store, EventFilter
 
 router = APIRouter()
@@ -340,3 +340,117 @@ async def cleanup_retention(
               actor=current_user)
 
     return {"deleted": deleted, "cutoff": cutoff.isoformat()}
+
+
+# ── Ingest Endpoint Management ─────────────────────────
+
+class EndpointCreate(BaseModel):
+    name: str
+    parser_type: str = "json"
+    integration_id: Optional[str] = None
+
+
+VALID_PARSER_TYPES = {"json", "hec", "cef", "leef", "syslog_rfc5424"}
+
+
+@router.post("/api/siem/endpoints")
+async def create_ingest_endpoint(
+    body: EndpointCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Create an ingest endpoint. Returns plaintext token + HMAC secret ONCE."""
+    if current_user.role not in ("org_admin", "super_admin"):
+        raise HTTPException(403, "Admin access required")
+    if body.parser_type not in VALID_PARSER_TYPES:
+        raise HTTPException(400, f"Invalid parser_type. Must be one of: {', '.join(sorted(VALID_PARSER_TYPES))}")
+
+    import secrets
+    from passlib.hash import bcrypt
+
+    org_id = org_ids[0] if org_ids else current_user.org_id
+    token = f"hki_{secrets.token_urlsafe(32)}"
+    hmac_secret = secrets.token_urlsafe(32)
+
+    ep = IngestEndpoint(
+        org_id=org_id,
+        integration_id=body.integration_id,
+        name=body.name,
+        token_hash=bcrypt.hash(token),
+        token_prefix=token[:12],
+        hmac_secret_hash=bcrypt.hash(hmac_secret),
+        parser_type=body.parser_type,
+    )
+    db.add(ep)
+    db.commit()
+    db.refresh(ep)
+
+    log_audit(db, "create", "ingest_endpoint", ep.id,
+              entity_name=ep.name,
+              changes={"parser_type": ep.parser_type},
+              actor=current_user)
+
+    return {
+        "id": ep.id,
+        "name": ep.name,
+        "parser_type": ep.parser_type,
+        "token": token,
+        "hmac_secret": hmac_secret,
+        "token_prefix": ep.token_prefix,
+        "warning": "Save token and HMAC secret now — they will not be shown again.",
+    }
+
+
+@router.get("/api/siem/endpoints")
+async def list_ingest_endpoints(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """List all ingest endpoints for the org."""
+    endpoints = db.query(IngestEndpoint).filter(
+        IngestEndpoint.org_id.in_(org_ids),
+    ).order_by(IngestEndpoint.created_at.desc()).all()
+
+    return [
+        {
+            "id": ep.id,
+            "name": ep.name,
+            "parser_type": ep.parser_type,
+            "token_prefix": ep.token_prefix,
+            "is_active": ep.is_active,
+            "last_used_at": ep.last_used_at.isoformat() if ep.last_used_at else None,
+            "request_count": ep.request_count or 0,
+            "created_at": ep.created_at.isoformat() if ep.created_at else None,
+        }
+        for ep in endpoints
+    ]
+
+
+@router.delete("/api/siem/endpoints/{endpoint_id}")
+async def delete_ingest_endpoint(
+    endpoint_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Delete an ingest endpoint."""
+    if current_user.role not in ("org_admin", "super_admin"):
+        raise HTTPException(403, "Admin access required")
+
+    ep = db.query(IngestEndpoint).filter(
+        IngestEndpoint.id == endpoint_id,
+        IngestEndpoint.org_id.in_(org_ids),
+    ).first()
+    if not ep:
+        raise HTTPException(404, "Endpoint not found")
+
+    db.delete(ep)
+    db.commit()
+
+    log_audit(db, "delete", "ingest_endpoint", endpoint_id,
+              entity_name=ep.name,
+              actor=current_user)
+
+    return {"deleted": True}
