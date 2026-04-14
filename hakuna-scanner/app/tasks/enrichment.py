@@ -956,7 +956,7 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                             "stage": (
                                 first_step_name if len(group) == 1
                                 else "+".join(group_names)
-                            ),
+                            )[:64],
                             "idx": first_absolute_idx,
                             "now": datetime.now(timezone.utc),
                         },
