@@ -943,7 +943,11 @@ function CommandPalette({ open, onClose }) {
 
 function AppShell() {
   const [scans, setScans] = useState([])
-  const [activeScanId, setActiveScanId] = useState(null)
+  const [activeScanId, setActiveScanId] = useState(() => {
+    const p = new URLSearchParams(window.location.search)
+    const sid = p.get('scan_id')
+    return sid ? parseInt(sid) : null
+  })
   const [navCollapsed, setNavCollapsed] = useState(false)
   const [scansLoaded, setScansLoaded] = useState(false)
   const [scansFailed, setScansFailed] = useState(false)
