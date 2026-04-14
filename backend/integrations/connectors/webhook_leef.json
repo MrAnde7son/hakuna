@@ -1,0 +1,22 @@
+{
+  "id": "webhook_leef",
+  "name": "LEEF (QRadar)",
+  "description": "Receive events in Log Event Extended Format from QRadar and compatible tools",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/ibm.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "leef"
+  },
+  "default_field_map": [
+    { "source": "devTime", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "devName", "target": "source_system" },
+    { "source": "cat", "target": "event_type" },
+    { "source": "sev", "target": "severity" },
+    { "source": "src", "target": "source_ip" },
+    { "source": "dst", "target": "destination_ip" }
+  ],
+  "dedup_key": ["source_system", "source_id"]
+}

@@ -1,0 +1,26 @@
+{
+  "id": "webhook_aws_cloudtrail",
+  "name": "AWS CloudTrail",
+  "description": "Receive AWS CloudTrail audit logs via webhook",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/aws.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "json",
+    "envelope_path": "Records"
+  },
+  "default_field_map": [
+    { "source": "eventTime", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "eventSource", "target": "source_system" },
+    { "source": "eventID", "target": "source_id" },
+    { "source": "eventName", "target": "event_type" },
+    { "source": "sourceIPAddress", "target": "source_ip" },
+    { "source": "userIdentity.arn", "target": "actor" },
+    { "source": "awsRegion", "target": "region" },
+    { "source": "errorCode", "target": "severity", "transform": { "type": "map", "map": { "AccessDenied": "high", "UnauthorizedAccess": "critical" }, "default": "info" } },
+    { "source": "requestParameters", "target": "raw_event", "transform": { "type": "json_stringify" } }
+  ],
+  "dedup_key": ["source_system", "source_id"]
+}

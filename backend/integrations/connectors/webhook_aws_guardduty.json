@@ -1,0 +1,25 @@
+{
+  "id": "webhook_aws_guardduty",
+  "name": "AWS GuardDuty",
+  "description": "Receive AWS GuardDuty threat detection findings via webhook",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/aws.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "json"
+  },
+  "default_field_map": [
+    { "source": "detail.updatedAt", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "detail.type", "target": "event_type" },
+    { "source": "detail.id", "target": "source_id" },
+    { "source": "source", "target": "source_system" },
+    { "source": "detail.severity", "target": "severity", "transform": { "type": "map", "map": { "8": "critical", "5": "high", "2": "medium" }, "default": "low" } },
+    { "source": "detail.title", "target": "message" },
+    { "source": "detail.resource.resourceType", "target": "asset_type" },
+    { "source": "detail.service.action.networkConnectionAction.remoteIpDetails.ipAddressV4", "target": "source_ip" },
+    { "source": "detail.region", "target": "region" }
+  ],
+  "dedup_key": ["source_system", "source_id"]
+}

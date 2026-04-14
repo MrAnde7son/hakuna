@@ -1,0 +1,21 @@
+{
+  "id": "webhook_syslog",
+  "name": "Syslog (RFC 5424)",
+  "description": "Receive events in RFC 5424 syslog format via HTTP relay",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/syslog.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "syslog_rfc5424"
+  },
+  "default_field_map": [
+    { "source": "timestamp", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "hostname", "target": "source_system" },
+    { "source": "appname", "target": "event_type" },
+    { "source": "severity", "target": "severity" },
+    { "source": "message", "target": "message" }
+  ],
+  "dedup_key": ["source_system", "source_id"]
+}

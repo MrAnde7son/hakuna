@@ -1,0 +1,21 @@
+{
+  "id": "webhook_splunk_hec",
+  "name": "Splunk HEC",
+  "description": "Receive events via Splunk HTTP Event Collector protocol",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/splunk.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "hec"
+  },
+  "default_field_map": [
+    { "source": "time", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "source", "target": "source_system" },
+    { "source": "sourcetype", "target": "event_type" },
+    { "source": "host", "target": "source_ip" },
+    { "source": "event", "target": "raw_event" }
+  ],
+  "dedup_key": ["source_system", "source_id"]
+}

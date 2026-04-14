@@ -1,0 +1,25 @@
+{
+  "id": "webhook_microsoft365",
+  "name": "Microsoft 365 / Entra ID",
+  "description": "Receive Microsoft 365 and Entra ID audit and sign-in events via webhook",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/microsoft.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "json"
+  },
+  "default_field_map": [
+    { "source": "createdDateTime", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "servicePrincipalId", "target": "source_system" },
+    { "source": "id", "target": "source_id" },
+    { "source": "activityDisplayName", "target": "event_type" },
+    { "source": "initiatedBy.user.userPrincipalName", "target": "actor" },
+    { "source": "initiatedBy.user.ipAddress", "target": "source_ip" },
+    { "source": "result", "target": "severity", "transform": { "type": "map", "map": { "failure": "high", "success": "info" }, "default": "medium" } },
+    { "source": "activityDisplayName", "target": "message" },
+    { "source": "category", "target": "category" }
+  ],
+  "dedup_key": ["source_system", "source_id"]
+}

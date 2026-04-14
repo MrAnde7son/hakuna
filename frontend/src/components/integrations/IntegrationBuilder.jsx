@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, ArrowRight, Check, ChevronRight, ChevronDown, Zap, Database as DbIcon, FileText, Globe, Wand2, Eye, EyeOff, List, Server, Search, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, ChevronRight, ChevronDown, Zap, Database as DbIcon, FileText, Globe, Wand2, Eye, EyeOff, List, Server, Search, X, Plug, Copy, Radio } from 'lucide-react'
 import { Card, Button, useToast } from '../shared/ui.jsx'
 import {
   getConnectors, getConnectorCategories, getConnector, getIntegrationSchema, getAcquisitionFlow,
@@ -35,8 +35,16 @@ const STEPS_FILE = [
   { key: 'preview', label: 'Preview' },
   { key: 'save', label: 'Save' },
 ]
+const STEPS_WEBHOOK = [
+  { key: 'source', label: 'Choose Source' },
+  { key: 'records', label: 'Parser' },
+  { key: 'target', label: 'Pick Target' },
+  { key: 'map', label: 'Map Fields' },
+  { key: 'preview', label: 'Preview' },
+  { key: 'save', label: 'Save' },
+]
 
-const TRANSPORT_ICONS = { api: Globe, sql: DbIcon, file: FileText, mcp: Zap, ldap: Server }
+const TRANSPORT_ICONS = { api: Globe, sql: DbIcon, file: FileText, mcp: Zap, ldap: Server, webhook: Plug }
 
 const AUTH_TYPES = [
   { value: 'none', label: 'None' },
@@ -66,7 +74,8 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [connectedUser, setConnectedUser] = useState(null)
   const [transportConfig, setTransportConfig] = useState({})
   const [transportType, setTransportType] = useState('api')
-  const STEPS = transportType === 'file' ? STEPS_FILE : STEPS_API
+  const STEPS = transportType === 'webhook' ? STEPS_WEBHOOK : transportType === 'file' ? STEPS_FILE : STEPS_API
+  const stepKeyIndex = (key) => STEPS.findIndex(s => s.key === key)
   const [recordsPath, setRecordsPath] = useState('')
   const [rawResponse, setRawResponse] = useState(null)
   const [sampleRecords, setSampleRecords] = useState([])
@@ -74,6 +83,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [fieldMap, setFieldMap] = useState([])
   const [schema, setSchema] = useState([])
   const [previewRecords, setPreviewRecords] = useState([])
+  const [webhookCredentials, setWebhookCredentials] = useState(null)
   const [suggestions, setSuggestions] = useState(null)
   const [integrationName, setIntegrationName] = useState('')
   const [direction, setDirection] = useState('pull')
@@ -105,7 +115,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const CATEGORY_ORDER = [
     'Vulnerability Management', 'Cloud Security', 'Endpoint Security', 'DAST', 'SAST',
     'EASM', 'BAS', 'SSPM', 'Identity Security', 'OT',
-    'SIEM', 'Threat Intelligence', 'Bug Bounty',
+    'SIEM', 'Event Ingest', 'Threat Intelligence', 'Bug Bounty',
     'Network Security', 'SSE', 'Patch Management', 'Data Security',
     'ITSM', 'DNS', 'HR', 'Collaboration',
   ]
@@ -178,6 +188,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [selectedEndpoint, setSelectedEndpoint] = useState(null)
 
   const getPrevStep = () => {
+    if (transportType === 'webhook') return step - 1
     if (step === 2 && !connectorDetail?.credential_acquisition) return 0
     return step - 1
   }
@@ -242,7 +253,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       } catch (e) {
         console.warn('Could not fetch live data for edit:', e.message)
       }
-      setStep(5) // jump to field mapper for edits
+      setStep(stepKeyIndex('map')) // jump to field mapper for edits
     }).catch(console.error)
   }, [editId])
 
@@ -266,7 +277,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
 
   // Auto-run auto-suggest when reaching Map Fields step with no existing mappings
   useEffect(() => {
-    if (step === 5 && fieldMap.length === 0 && detectedPaths.length > 0 && schema.length > 0 && !connectorDetail?.default_field_map?.length) {
+    if (STEPS[step]?.key === 'map' && fieldMap.length === 0 && detectedPaths.length > 0 && schema.length > 0 && !connectorDetail?.default_field_map?.length) {
       handleAutoSuggest()
     }
   }, [step]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -299,8 +310,12 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         setSchema(s || {})
       }
 
-      // Go to auth if connector needs it, otherwise configure
-      if (!detail.credential_acquisition) {
+      // For webhook templates, skip auth/configure — go straight to target or map
+      if (detail.transport_type === 'webhook') {
+        // If template has default field map, skip to map step; else go to target
+        const targetIdx = STEPS_WEBHOOK.findIndex(s => s.key === (detail.default_field_map?.length ? 'map' : 'target'))
+        setStep(targetIdx)
+      } else if (!detail.credential_acquisition) {
         setStep(2)
       } else {
         setStep(1)
@@ -316,9 +331,17 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     setTransportType(type)
     setSelectedConnector(null)
     setConnectorDetail(null)
-    setDirection('pull')
-    setEntity('finding')
-    setStep(2) // go to configure (which now has inline auth)
+    if (type === 'webhook') {
+      setDirection('push')
+      setEntity('siem_event')
+      setTransportConfig({ parser_type: 'json' })
+      // For webhook STEPS, 'records' (parser) is index 1
+      setStep(1)
+    } else {
+      setDirection('pull')
+      setEntity('finding')
+      setStep(2) // go to configure (which now has inline auth)
+    }
   }
 
   // ── Step 2: Connect ──
@@ -414,7 +437,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       // skip the records picker — records are already extracted
       const isFlat = transportType === 'file' && (result.sample_records || []).length > 0
         && !result.detected_records_path
-      setStep(isFlat ? 4 : 3) // skip to Pick Target if records are flat
+      setStep(stepKeyIndex(isFlat ? 'target' : 'records'))
     } catch (e) {
       setConnectError(e.message)
     } finally {
@@ -435,7 +458,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       })
       setSampleRecords(result.sample_records || [])
       setDetectedPaths(result.detected_paths || [])
-      setStep(4) // advance to Pick Target
+      setStep(stepKeyIndex('target'))
     } catch (e) {
       toast.error('Failed to fetch records at path: ' + e.message)
     } finally {
@@ -457,7 +480,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         sample_records: sampleRecords.length ? sampleRecords : undefined,
       })
       setPreviewRecords(result.records || [])
-      setStep(6)
+      setStep(stepKeyIndex('preview'))
     } catch (e) {
       toast.error('Preview failed: ' + e.message)
     } finally {
@@ -519,6 +542,13 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         result = await ibCreateIntegration(payload)
       }
 
+      // For webhook integrations, show credential reveal instead of navigating away
+      if (result.ingest_endpoint) {
+        setWebhookCredentials(result.ingest_endpoint)
+        toast.success('Webhook integration created')
+        return
+      }
+
       if (andRun && result.id) {
         // Fire run in background — don't block the UI
         import('../../api.js').then(api => api.ibRunIntegration(result.id)).catch(() => {})
@@ -536,15 +566,16 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
 
   // ── Render steps ──
   const renderStep = () => {
-    switch (step) {
-      case 0: return renderChooseSource()
-      case 1: return renderAuth()
-      case 2: return renderConfigure()
-      case 3: return renderRecordsPicker()
-      case 4: return renderPickTarget()
-      case 5: return renderFieldMapper()
-      case 6: return renderPreview()
-      case 7: return renderSave()
+    const key = STEPS[step]?.key
+    switch (key) {
+      case 'source': return renderChooseSource()
+      case 'auth': return renderAuth()
+      case 'configure': return renderConfigure()
+      case 'records': return transportType === 'webhook' ? renderWebhookParser() : renderRecordsPicker()
+      case 'target': return renderPickTarget()
+      case 'map': return renderFieldMapper()
+      case 'preview': return renderPreview()
+      case 'save': return renderSave()
       default: return null
     }
   }
@@ -798,8 +829,8 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       {/* Section C: Build custom */}
       <div>
         <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 600 }}>Build custom</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-          {['api', 'sql', 'file', 'mcp'].map(t => {
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
+          {['api', 'sql', 'file', 'mcp', 'webhook'].map(t => {
             const Icon = TRANSPORT_ICONS[t]
             return (
               <Card key={t} onClick={() => handleSelectCustomTransport(t)} style={{ cursor: 'pointer', padding: 16, textAlign: 'center' }}>
@@ -1522,6 +1553,50 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     </div>
   )
 
+  // ── Webhook: Parser Picker ──
+  const PARSER_OPTIONS = [
+    { id: 'json', label: 'JSON', desc: 'Generic structured JSON payloads', icon: '{ }' },
+    { id: 'hec', label: 'Splunk HEC', desc: 'Splunk HTTP Event Collector format', icon: 'HEC' },
+    { id: 'cef', label: 'CEF', desc: 'ArcSight Common Event Format', icon: 'CEF' },
+    { id: 'leef', label: 'LEEF', desc: 'QRadar Log Event Extended Format', icon: 'LEEF' },
+    { id: 'syslog_rfc5424', label: 'Syslog', desc: 'RFC 5424 syslog messages', icon: 'SYS' },
+  ]
+
+  const renderWebhookParser = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div>
+        <h3 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 600 }}>Event Format</h3>
+        <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
+          Select the format of events this endpoint will receive.
+        </p>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
+        {PARSER_OPTIONS.map(p => {
+          const isSelected = (transportConfig.parser_type || 'json') === p.id
+          return (
+            <Card key={p.id}
+              onClick={() => setTransportConfig(tc => ({ ...tc, parser_type: p.id }))}
+              style={{
+                cursor: 'pointer', padding: 16,
+                border: isSelected ? '2px solid var(--accent)' : '1px solid var(--border)',
+                background: isSelected ? 'var(--accent)08' : undefined,
+              }}
+            >
+              <div style={{ fontWeight: 700, fontSize: 11, color: 'var(--accent)', fontFamily: 'var(--mono)', marginBottom: 6 }}>
+                {p.icon}
+              </div>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{p.label}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>{p.desc}</div>
+            </Card>
+          )
+        })}
+      </div>
+      <Button onClick={() => setStep(stepKeyIndex('target'))} style={{ alignSelf: 'flex-start' }}>
+        Continue <ArrowRight size={14} style={{ marginLeft: 6 }} />
+      </Button>
+    </div>
+  )
+
   // ── Step 3: Pick Records from Response ──
   const renderRecordsPicker = () => (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1598,7 +1673,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         setFieldMap([])
       }
       setSuggestions(null)
-      setStep(5) // advance to field mapper
+      setStep(stepKeyIndex('map'))
     } catch (e) {
       console.error('Failed to load target schema:', e)
     } finally {
@@ -1705,7 +1780,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       schema={entitySchema}
       entity={entity}
       entityDisplayName={targetModels.find(t => t.slug === entity)?.display_name || entity}
-      onChangeTarget={() => setStep(4)}
+      onChangeTarget={() => setStep(stepKeyIndex('target'))}
       fieldMap={fieldMap}
       onFieldMapChange={setFieldMap}
       onAutoSuggest={handleAutoSuggest}
@@ -1757,18 +1832,114 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       </div>
 
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button onClick={() => setStep(5)} style={{ background: 'transparent', color: 'var(--text)', border: '1px solid var(--border)' }}>
+        <Button onClick={() => setStep(stepKeyIndex('map'))} style={{ background: 'transparent', color: 'var(--text)', border: '1px solid var(--border)' }}>
           <ArrowLeft size={14} /> Fix Mappings
         </Button>
-        <Button onClick={() => setStep(7)}>Looks Good <ArrowRight size={14} style={{ marginLeft: 4 }} /></Button>
+        <Button onClick={() => setStep(stepKeyIndex('save'))}>Looks Good <ArrowRight size={14} style={{ marginLeft: 4 }} /></Button>
       </div>
     </div>
   )
 
   // ── Step 6: Save & Schedule ──
-  const renderSave = () => (
+  const [copiedField, setCopiedField] = useState(null)
+  const copyToClipboard = (text, field) => {
+    navigator.clipboard.writeText(text)
+    setCopiedField(field)
+    setTimeout(() => setCopiedField(null), 2000)
+  }
+
+  const renderWebhookCredentialReveal = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 560 }}>
+      <div style={{ padding: 20, borderRadius: 10, background: '#22c55e08', border: '1px solid #22c55e40' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+          <Check size={18} color="#22c55e" />
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#22c55e' }}>Webhook Endpoint Created</h3>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label style={{ ...labelStyle, fontSize: 11, color: 'var(--text-muted)' }}>Endpoint URL</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <code style={{ flex: 1, padding: '8px 12px', borderRadius: 6, background: 'var(--bg-secondary)', border: '1px solid var(--border)', fontSize: 12, fontFamily: 'var(--mono)', wordBreak: 'break-all', color: 'var(--text)' }}>
+                {window.location.origin}/api/ingest/events/{webhookCredentials.endpoint_id}
+              </code>
+              <button onClick={() => copyToClipboard(`${window.location.origin}/api/ingest/events/${webhookCredentials.endpoint_id}`, 'url')}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+                {copiedField === 'url' ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label style={{ ...labelStyle, fontSize: 11, color: 'var(--text-muted)' }}>Bearer Token</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <code style={{ flex: 1, padding: '8px 12px', borderRadius: 6, background: 'var(--bg-secondary)', border: '1px solid var(--border)', fontSize: 12, fontFamily: 'var(--mono)', wordBreak: 'break-all', color: 'var(--text)' }}>
+                {webhookCredentials.token}
+              </code>
+              <button onClick={() => copyToClipboard(webhookCredentials.token, 'token')}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+                {copiedField === 'token' ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label style={{ ...labelStyle, fontSize: 11, color: 'var(--text-muted)' }}>HMAC Secret</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <code style={{ flex: 1, padding: '8px 12px', borderRadius: 6, background: 'var(--bg-secondary)', border: '1px solid var(--border)', fontSize: 12, fontFamily: 'var(--mono)', wordBreak: 'break-all', color: 'var(--text)' }}>
+                {webhookCredentials.hmac_secret}
+              </code>
+              <button onClick={() => copyToClipboard(webhookCredentials.hmac_secret, 'hmac')}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+                {copiedField === 'hmac' ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 16, padding: '10px 14px', borderRadius: 6, background: '#eab30810', border: '1px solid #eab30830', fontSize: 12, color: '#eab308' }}>
+          Save these credentials now — they will not be shown again.
+        </div>
+
+        <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-muted)' }}>
+          Parser: <strong>{webhookCredentials.parser_type?.toUpperCase()}</strong>
+        </div>
+      </div>
+
+      {/* cURL example */}
+      <div>
+        <label style={{ ...labelStyle, fontSize: 11, color: 'var(--text-muted)' }}>Example cURL</label>
+        <div style={{ position: 'relative' }}>
+          <pre style={{ margin: 0, padding: 14, borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border)', fontSize: 11, fontFamily: 'var(--mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--text)', lineHeight: 1.5 }}>
+{`curl -X POST ${window.location.origin}/api/ingest/events/${webhookCredentials.endpoint_id} \\
+  -H "Authorization: Bearer ${webhookCredentials.token}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"events": [{"source": "test", "message": "hello"}]}'`}
+          </pre>
+          <button onClick={() => copyToClipboard(
+            `curl -X POST ${window.location.origin}/api/ingest/events/${webhookCredentials.endpoint_id} -H "Authorization: Bearer ${webhookCredentials.token}" -H "Content-Type: application/json" -d '{"events": [{"source": "test", "message": "hello"}]}'`,
+            'curl'
+          )} style={{ position: 'absolute', top: 8, right: 8, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+            {copiedField === 'curl' ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
+          </button>
+        </div>
+      </div>
+
+      <Button onClick={goDone} style={{ alignSelf: 'flex-start' }}>
+        Done
+      </Button>
+    </div>
+  )
+
+  const renderSave = () => {
+    // Show credential reveal panel after webhook save
+    if (webhookCredentials) return renderWebhookCredentialReveal()
+
+    return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 500 }}>
-      <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Save & Schedule</h3>
+      <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
+        {transportType === 'webhook' ? 'Save Webhook' : 'Save & Schedule'}
+      </h3>
 
       <div>
         <label style={labelStyle}>Integration Name</label>
@@ -1784,11 +1955,13 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         }}>
           {targetModels.find(t => t.slug === entity)?.display_name || entity.toUpperCase()}
         </div>
-        <button onClick={() => setStep(4)} style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11, textDecoration: 'underline' }}>
+        <button onClick={() => setStep(stepKeyIndex('target'))} style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 11, textDecoration: 'underline' }}>
           change
         </button>
       </div>
 
+      {/* Schedule — not applicable for webhook transports */}
+      {transportType !== 'webhook' && (
       <div>
         <label style={labelStyle}>Schedule</label>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -1830,23 +2003,35 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
           />
         )}
       </div>
+      )}
 
+      {transportType !== 'webhook' && (
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
         <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
         <span style={{ fontSize: 13 }}>Enable immediately</span>
       </label>
+      )}
+
+      {transportType === 'webhook' && (
+        <div style={{ padding: '10px 14px', borderRadius: 6, background: 'var(--accent)08', border: '1px solid var(--accent)20', fontSize: 12, color: 'var(--text-muted)' }}>
+          <Radio size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+          Saving will create a webhook endpoint. You'll receive a token and HMAC secret to authenticate incoming events.
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
         <Button onClick={() => handleSave(false)} disabled={loading || !integrationName}>
-          {loading ? <InlineSpinner /> : 'Save'}
+          {loading ? <InlineSpinner /> : transportType === 'webhook' ? 'Create Endpoint' : 'Save'}
         </Button>
+        {transportType !== 'webhook' && (
         <Button onClick={() => handleSave(true)} disabled={loading || !integrationName}
           style={{ background: 'var(--accent)' }}>
           {loading ? <InlineSpinner /> : 'Save & Run Now'}
         </Button>
+        )}
       </div>
     </div>
-  )
+  )}
 
   return (
     <div style={{ padding: '24px 32px', maxWidth: 1100 }}>

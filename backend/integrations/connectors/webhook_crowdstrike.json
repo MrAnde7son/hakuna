@@ -1,0 +1,29 @@
+{
+  "id": "webhook_crowdstrike",
+  "name": "CrowdStrike Falcon",
+  "description": "Receive CrowdStrike Falcon detection and incident alerts via webhook",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/crowdstrike.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "json"
+  },
+  "default_field_map": [
+    { "source": "metadata.eventCreationTime", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "metadata.eventType", "target": "event_type" },
+    { "source": "event.DetectId", "target": "source_id" },
+    { "source": "event.DetectDescription", "target": "message" },
+    { "source": "event.SeverityName", "target": "severity", "transform": { "type": "lowercase" } },
+    { "source": "event.UserName", "target": "actor" },
+    { "source": "event.LocalIP", "target": "source_ip" },
+    { "source": "event.ComputerName", "target": "hostname" },
+    { "source": "event.Tactic", "target": "mitre_tactic" },
+    { "source": "event.Technique", "target": "mitre_technique" }
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "static_fields": {
+    "source_system": "crowdstrike"
+  }
+}

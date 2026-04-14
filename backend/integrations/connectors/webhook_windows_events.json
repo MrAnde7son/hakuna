@@ -1,0 +1,25 @@
+{
+  "id": "webhook_windows_events",
+  "name": "Windows Event Log",
+  "description": "Receive Windows Event Logs forwarded via NXLog, Winlogbeat, or WEF in JSON format",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/microsoft.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "json"
+  },
+  "default_field_map": [
+    { "source": "TimeCreated", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "Channel", "target": "source_system" },
+    { "source": "EventRecordID", "target": "source_id" },
+    { "source": "EventID", "target": "event_type" },
+    { "source": "Computer", "target": "hostname" },
+    { "source": "IpAddress", "target": "source_ip" },
+    { "source": "TargetUserName", "target": "actor" },
+    { "source": "Level", "target": "severity", "transform": { "type": "map", "map": { "1": "critical", "2": "high", "3": "medium", "4": "info" }, "default": "info" } },
+    { "source": "Message", "target": "message" }
+  ],
+  "dedup_key": ["source_system", "source_id"]
+}

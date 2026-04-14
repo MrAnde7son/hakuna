@@ -92,7 +92,6 @@ const OnboardingWizard = React.lazy(() => import('./components/onboarding/Onboar
 const EventSearch = React.lazy(() => import('./components/siem/EventSearch.jsx'))
 const DetectionRules = React.lazy(() => import('./components/siem/DetectionRules.jsx'))
 const AlertTriage = React.lazy(() => import('./components/siem/AlertTriage.jsx'))
-const IngestSources = React.lazy(() => import('./components/siem/IngestSources.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
@@ -133,7 +132,6 @@ const NAV_GROUPS = [
       { path: '/siem/search', labelKey: 'nav.eventSearch', icon: Radio, permission: 'page_siem' },
       { path: '/siem/rules', labelKey: 'nav.detectionRules', icon: Shield, permission: 'page_siem' },
       { path: '/siem/alerts', labelKey: 'nav.alerts', icon: AlertTriangle, permission: 'page_siem' },
-      { path: '/siem/sources', labelKey: 'nav.ingestSources', icon: Plug, permission: 'page_siem' },
     ],
   },
   {
@@ -1138,7 +1136,6 @@ function AppShell() {
                 <Route path="/siem/search" element={<EventSearch />} />
                 <Route path="/siem/rules" element={<DetectionRules />} />
                 <Route path="/siem/alerts" element={<AlertTriage />} />
-                <Route path="/siem/sources" element={<IngestSources />} />
                 <Route path="/docs" element={<UserDocs />} />
               </Routes>
             </Suspense>

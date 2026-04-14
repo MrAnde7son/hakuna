@@ -1,0 +1,29 @@
+{
+  "id": "webhook_palo_alto",
+  "name": "Palo Alto Networks",
+  "description": "Receive Palo Alto PAN-OS threat and traffic logs via HTTP log forwarding",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/palo_alto.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "json"
+  },
+  "default_field_map": [
+    { "source": "receive_time", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "type", "target": "event_type" },
+    { "source": "seqno", "target": "source_id" },
+    { "source": "threatid", "target": "message" },
+    { "source": "severity", "target": "severity", "transform": { "type": "lowercase" } },
+    { "source": "src", "target": "source_ip" },
+    { "source": "dst", "target": "dest_ip" },
+    { "source": "srcuser", "target": "actor" },
+    { "source": "rule", "target": "rule_name" },
+    { "source": "action", "target": "outcome" }
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "static_fields": {
+    "source_system": "palo_alto"
+  }
+}

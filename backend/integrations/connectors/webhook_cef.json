@@ -1,0 +1,23 @@
+{
+  "id": "webhook_cef",
+  "name": "CEF (ArcSight)",
+  "description": "Receive events in Common Event Format from ArcSight and compatible tools",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/arcsight.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "cef"
+  },
+  "default_field_map": [
+    { "source": "rt", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "deviceVendor", "target": "source_system" },
+    { "source": "deviceEventClassId", "target": "event_type" },
+    { "source": "name", "target": "message" },
+    { "source": "severity", "target": "severity" },
+    { "source": "src", "target": "source_ip" },
+    { "source": "dst", "target": "destination_ip" }
+  ],
+  "dedup_key": ["source_system", "source_id"]
+}

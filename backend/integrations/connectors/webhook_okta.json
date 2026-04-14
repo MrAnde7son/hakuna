@@ -1,0 +1,29 @@
+{
+  "id": "webhook_okta",
+  "name": "Okta System Log",
+  "description": "Receive Okta System Log events via webhook (Event Hooks)",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/okta.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "json",
+    "envelope_path": "data.events"
+  },
+  "default_field_map": [
+    { "source": "published", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "eventType", "target": "event_type" },
+    { "source": "uuid", "target": "source_id" },
+    { "source": "displayMessage", "target": "message" },
+    { "source": "actor.displayName", "target": "actor" },
+    { "source": "client.ipAddress", "target": "source_ip" },
+    { "source": "client.userAgent.rawUserAgent", "target": "user_agent" },
+    { "source": "severity", "target": "severity", "transform": { "type": "lowercase" } },
+    { "source": "outcome.result", "target": "outcome" }
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "static_fields": {
+    "source_system": "okta"
+  }
+}
