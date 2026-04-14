@@ -2260,3 +2260,62 @@ class FirewallPolicy(Base):
         Index("ix_fwp_org_vendor", "org_id", "vendor"),
         Index("ix_fwp_action", "org_id", "action"),
     )
+
+
+# ─────────────────────────────────────────────────────────
+# SIEM Detection Rules & Alerts
+# ─────────────────────────────────────────────────────────
+
+class DetectionRule(Base):
+    """A stateful, windowed detection rule that queries SIEM events."""
+    __tablename__ = "detection_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    severity = Column(String, nullable=False, default="medium")      # low | medium | high | critical
+    enabled = Column(Boolean, default=True)
+    query = Column(JSON, nullable=False, default=dict)               # filters in rule_engine format
+    window_seconds = Column(Integer, default=300)                    # time window for threshold
+    threshold = Column(Integer, default=1)                           # fire if event count >= threshold
+    group_by = Column(JSON, default=list)                            # group by fields (e.g. ["source_ip", "user_name"])
+    schedule_minutes = Column(Integer, default=5)                    # run every N minutes
+    mitre_techniques = Column(JSON, default=list)                    # e.g. ["T1110", "T1059.001"]
+    source = Column(String, default="manual")                       # manual | sigma
+    sigma_rule_id = Column(String, nullable=True)                   # original Sigma rule ID
+    last_run_at = Column(DateTime, nullable=True)
+    last_alert_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    alerts = relationship("Alert", back_populates="rule", cascade="all, delete-orphan")
+
+
+class Alert(Base):
+    """An alert fired by a detection rule when threshold is met."""
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    rule_id = Column(Integer, ForeignKey("detection_rules.id", ondelete="CASCADE"), nullable=False, index=True)
+    fired_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    severity = Column(String, nullable=False, default="medium")
+    status = Column(String, default="open")                         # open | triaged | closed | false_positive
+    event_count = Column(Integer, default=0)
+    group_key = Column(String, nullable=True)                       # serialized group-by values
+    first_event_id = Column(String, nullable=True)
+    last_event_id = Column(String, nullable=True)
+    context = Column(JSON, default=dict)                            # matching events sample, group values
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True)
+    assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    rule = relationship("DetectionRule", back_populates="alerts")
+
+    __table_args__ = (
+        Index("ix_alerts_org_status", "org_id", "status"),
+        Index("ix_alerts_org_fired", "org_id", fired_at.desc()),
+    )

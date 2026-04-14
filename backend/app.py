@@ -105,6 +105,8 @@ from routes.admin_routes import router as admin_router
 from routes.inventory_routes import router as inventory_router
 from routes.siem_routes import router as siem_router
 from routes.siem_ingest_routes import router as siem_ingest_router
+from routes.detection_routes import router as detection_router
+from routes.siem_report_routes import router as siem_report_router
 from services.blast_radius import resolve_dc_asset_ids as _resolve_dc_asset_ids
 
 logging.basicConfig(level=logging.INFO)
@@ -325,6 +327,8 @@ app.include_router(admin_router)
 app.include_router(inventory_router)
 app.include_router(siem_router)
 app.include_router(siem_ingest_router)
+app.include_router(detection_router)
+app.include_router(siem_report_router)
 
 
 INTEL_PATH = Path(__file__).parent / "data" / "intel.json"
@@ -368,6 +372,12 @@ def _deferred_startup():
     # Start SIEM event drain scheduler (hot → lake, every 15 min)
     from services.event_drain import start_drain_scheduler
     start_drain_scheduler()
+    # Start SIEM detection engine (rule evaluator, every 1 min)
+    from services.detection_engine import start_detection_scheduler
+    start_detection_scheduler()
+    # Start SIEM lake maintenance + hot retention scheduler
+    from services.lake_maintenance import start_maintenance_scheduler
+    start_maintenance_scheduler()
     # Schedule threat intel auto-update every 24 hours
     from threat_intel.intel_updater import update_intel
     from apscheduler.schedulers.background import BackgroundScheduler as _BGScheduler

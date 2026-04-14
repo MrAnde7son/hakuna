@@ -1,0 +1,14 @@
+title: Authentication Brute Force Attempt
+id: hakuna-sigma-001
+status: stable
+level: high
+description: Detects multiple failed authentication attempts from the same source IP within 5 minutes
+tags:
+  - attack.t1110
+  - attack.credential_access
+detection:
+  selection:
+    event_type: authentication
+    outcome: failure
+  condition: selection | count(source_ip) by source_ip >= 10
+  timeframe: 5m

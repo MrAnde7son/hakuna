@@ -45,6 +45,10 @@ import {
   Search,
   FileText,
   ArrowRight,
+  Radio,
+  Shield,
+  AlertTriangle,
+  Plug,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -85,6 +89,10 @@ const UserManagement = React.lazy(() => import('./components/settings/UserManage
 const UserDocs = React.lazy(() => import('./components/docs/UserDocs.jsx'))
 const CopilotPanel = React.lazy(() => import('./components/copilot/CopilotPanel.jsx'))
 const OnboardingWizard = React.lazy(() => import('./components/onboarding/OnboardingWizard.jsx'))
+const EventSearch = React.lazy(() => import('./components/siem/EventSearch.jsx'))
+const DetectionRules = React.lazy(() => import('./components/siem/DetectionRules.jsx'))
+const AlertTriage = React.lazy(() => import('./components/siem/AlertTriage.jsx'))
+const IngestSources = React.lazy(() => import('./components/siem/IngestSources.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
@@ -117,6 +125,15 @@ const NAV_GROUPS = [
       { path: '/assets', labelKey: 'nav.assets', icon: Server, permission: 'page_assets' },
       { path: '/findings', labelKey: 'nav.findings', icon: Bug, permission: 'page_findings' },
       { path: '/inventory', labelKey: 'nav.inventory', icon: Database, permission: 'page_inventory' },
+    ],
+  },
+  {
+    labelKey: 'nav.siem',
+    items: [
+      { path: '/siem/search', labelKey: 'nav.eventSearch', icon: Radio, permission: 'page_siem' },
+      { path: '/siem/rules', labelKey: 'nav.detectionRules', icon: Shield, permission: 'page_siem' },
+      { path: '/siem/alerts', labelKey: 'nav.alerts', icon: AlertTriangle, permission: 'page_siem' },
+      { path: '/siem/sources', labelKey: 'nav.ingestSources', icon: Plug, permission: 'page_siem' },
     ],
   },
   {
@@ -1118,6 +1135,10 @@ function AppShell() {
                 <Route path="/upload" element={<Navigate to="/settings?tab=upload" replace />} />
                 <Route path="/profile" element={<UserManagement />} />
                 <Route path="/billing" element={<Navigate to="/profile" replace />} />
+                <Route path="/siem/search" element={<EventSearch />} />
+                <Route path="/siem/rules" element={<DetectionRules />} />
+                <Route path="/siem/alerts" element={<AlertTriage />} />
+                <Route path="/siem/sources" element={<IngestSources />} />
                 <Route path="/docs" element={<UserDocs />} />
               </Routes>
             </Suspense>

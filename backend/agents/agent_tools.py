@@ -5665,3 +5665,241 @@ def get_blast_radius_tool(db: Session, params: dict):
         "vectors": vectors[:30],
         "reachable_asset_details": reachable_summary,
     }
+
+
+# ─────────────────────────────────────────────────────────
+# SIEM Event & Alert Tools
+# ─────────────────────────────────────────────────────────
+
+@agent_tool(
+    name="query_events",
+    description="Search SIEM events with filters. Returns matching events for investigation.",
+    parameters={
+        "source_system": {"type": "string", "description": "Filter by source system (e.g. palo_alto, crowdstrike)"},
+        "severity": {"type": "string", "description": "Filter by severity: info, low, medium, high, critical"},
+        "event_type": {"type": "string", "description": "Filter by event type (authentication, network, process)"},
+        "source_ip": {"type": "string", "description": "Filter by source IP address"},
+        "user_name": {"type": "string", "description": "Filter by username"},
+        "host_name": {"type": "string", "description": "Filter by hostname"},
+        "q": {"type": "string", "description": "Full-text search on event message"},
+        "time_from": {"type": "string", "description": "Start time (ISO 8601)"},
+        "time_to": {"type": "string", "description": "End time (ISO 8601)"},
+        "limit": {"type": "integer", "description": "Max results to return (default 20)"},
+    },
+)
+def query_events(db: Session, params: dict):
+    from models.models import SIEMEvent
+    from datetime import timedelta
+
+    q = db.query(SIEMEvent)
+    org_id = params.get("_org_id")
+    if org_id:
+        q = q.filter(SIEMEvent.org_id == org_id)
+
+    if params.get("source_system"):
+        q = q.filter(SIEMEvent.source_system == params["source_system"])
+    if params.get("severity"):
+        q = q.filter(SIEMEvent.severity == params["severity"])
+    if params.get("event_type"):
+        q = q.filter(SIEMEvent.event_type == params["event_type"])
+    if params.get("source_ip"):
+        q = q.filter(SIEMEvent.source_ip == params["source_ip"])
+    if params.get("user_name"):
+        q = q.filter(SIEMEvent.user_name.ilike(f"%{params['user_name']}%"))
+    if params.get("host_name"):
+        q = q.filter(SIEMEvent.host_name.ilike(f"%{params['host_name']}%"))
+    if params.get("q"):
+        q = q.filter(SIEMEvent.message.ilike(f"%{params['q']}%"))
+    if params.get("time_from"):
+        q = q.filter(SIEMEvent.event_time >= params["time_from"])
+    if params.get("time_to"):
+        q = q.filter(SIEMEvent.event_time <= params["time_to"])
+
+    limit = min(int(params.get("limit", 20)), 100)
+    events = q.order_by(SIEMEvent.event_time.desc()).limit(limit).all()
+
+    return {
+        "count": len(events),
+        "events": [{
+            "id": e.id, "event_time": e.event_time.isoformat() if e.event_time else None,
+            "source_system": e.source_system, "event_type": e.event_type,
+            "severity": e.severity, "source_ip": e.source_ip, "dest_ip": e.dest_ip,
+            "user_name": e.user_name, "host_name": e.host_name,
+            "message": (e.message or "")[:500], "action": e.action, "outcome": e.outcome,
+        } for e in events],
+    }
+
+
+@agent_tool(
+    name="get_event_context",
+    description="Get a single SIEM event with nearby events from the same asset/user in a surrounding time window.",
+    parameters={
+        "event_id": {"type": "string", "description": "Event ID to look up"},
+        "window_minutes": {"type": "integer", "description": "Minutes before/after to include nearby events (default 5)"},
+    },
+)
+def get_event_context(db: Session, params: dict):
+    from models.models import SIEMEvent
+    from datetime import timedelta
+
+    event_id = params.get("event_id")
+    if not event_id:
+        return {"error": "event_id is required"}
+
+    org_id = params.get("_org_id")
+    ev = db.query(SIEMEvent).filter(SIEMEvent.id == event_id).first()
+    if not ev or (org_id and ev.org_id != org_id):
+        return {"error": "Event not found"}
+
+    window = timedelta(minutes=int(params.get("window_minutes", 5)))
+    nearby = db.query(SIEMEvent).filter(
+        SIEMEvent.org_id == ev.org_id,
+        SIEMEvent.event_time >= ev.event_time - window,
+        SIEMEvent.event_time <= ev.event_time + window,
+        SIEMEvent.id != ev.id,
+        or_(
+            SIEMEvent.source_ip == ev.source_ip,
+            SIEMEvent.user_name == ev.user_name,
+            SIEMEvent.host_name == ev.host_name,
+        ) if (ev.source_ip or ev.user_name or ev.host_name) else True,
+    ).order_by(SIEMEvent.event_time).limit(20).all()
+
+    return {
+        "event": {
+            "id": ev.id, "event_time": ev.event_time.isoformat() if ev.event_time else None,
+            "source_system": ev.source_system, "event_type": ev.event_type,
+            "severity": ev.severity, "message": ev.message,
+            "source_ip": ev.source_ip, "dest_ip": ev.dest_ip,
+            "user_name": ev.user_name, "host_name": ev.host_name,
+            "raw": ev.raw,
+        },
+        "nearby_events": [{
+            "id": n.id, "event_time": n.event_time.isoformat() if n.event_time else None,
+            "source_system": n.source_system, "severity": n.severity,
+            "message": (n.message or "")[:200],
+        } for n in nearby],
+    }
+
+
+@agent_tool(
+    name="list_alerts",
+    description="List SIEM alerts with optional filters.",
+    parameters={
+        "status": {"type": "string", "description": "Filter: open, triaged, closed, false_positive"},
+        "severity": {"type": "string", "description": "Filter: info, low, medium, high, critical"},
+        "limit": {"type": "integer", "description": "Max results (default 20)"},
+    },
+)
+def list_alerts(db: Session, params: dict):
+    from models.models import Alert, DetectionRule
+
+    org_id = params.get("_org_id")
+    q = db.query(Alert).join(DetectionRule)
+    if org_id:
+        q = q.filter(Alert.org_id == org_id)
+    if params.get("status"):
+        q = q.filter(Alert.status == params["status"])
+    if params.get("severity"):
+        q = q.filter(Alert.severity == params["severity"])
+
+    limit = min(int(params.get("limit", 20)), 50)
+    alerts = q.order_by(Alert.fired_at.desc()).limit(limit).all()
+
+    return {
+        "count": len(alerts),
+        "alerts": [{
+            "id": a.id, "rule_name": a.rule.name if a.rule else None,
+            "severity": a.severity, "status": a.status,
+            "event_count": a.event_count, "group_key": a.group_key,
+            "fired_at": a.fired_at.isoformat() if a.fired_at else None,
+        } for a in alerts],
+    }
+
+
+@agent_tool(
+    name="get_alert_with_events",
+    description="Get full alert details including matching event samples.",
+    parameters={
+        "alert_id": {"type": "integer", "description": "Alert ID"},
+    },
+)
+def get_alert_with_events(db: Session, params: dict):
+    from models.models import Alert
+
+    alert_id = params.get("alert_id")
+    if not alert_id:
+        return {"error": "alert_id is required"}
+
+    org_id = params.get("_org_id")
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert or (org_id and alert.org_id != org_id):
+        return {"error": "Alert not found"}
+
+    return {
+        "id": alert.id,
+        "rule_name": alert.rule.name if alert.rule else None,
+        "severity": alert.severity,
+        "status": alert.status,
+        "event_count": alert.event_count,
+        "group_key": alert.group_key,
+        "fired_at": alert.fired_at.isoformat() if alert.fired_at else None,
+        "context": alert.context,
+        "mitre_techniques": alert.rule.mitre_techniques if alert.rule else [],
+    }
+
+
+@agent_tool(
+    name="update_alert_status",
+    description="Update an alert's status (requires write permission).",
+    parameters={
+        "alert_id": {"type": "integer", "description": "Alert ID"},
+        "status": {"type": "string", "description": "New status: open, triaged, closed, false_positive"},
+        "note": {"type": "string", "description": "Optional triage note"},
+    },
+)
+def update_alert_status(db: Session, params: dict):
+    from models.models import Alert
+
+    alert_id = params.get("alert_id")
+    new_status = params.get("status")
+    if not alert_id or not new_status:
+        return {"error": "alert_id and status are required"}
+
+    org_id = params.get("_org_id")
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert or (org_id and alert.org_id != org_id):
+        return {"error": "Alert not found"}
+
+    alert.status = new_status
+    alert.updated_at = datetime.utcnow()
+    db.commit()
+
+    return {"id": alert.id, "status": alert.status, "updated": True}
+
+
+@agent_tool(
+    name="run_detection_rule_now",
+    description="Manually trigger a detection rule for hunt mode. Returns any new alerts generated.",
+    parameters={
+        "rule_id": {"type": "integer", "description": "Detection rule ID to run"},
+    },
+)
+def run_detection_rule_now(db: Session, params: dict):
+    from models.models import DetectionRule
+    from services.detection_engine import run_rule
+
+    rule_id = params.get("rule_id")
+    if not rule_id:
+        return {"error": "rule_id is required"}
+
+    org_id = params.get("_org_id")
+    rule = db.query(DetectionRule).filter(DetectionRule.id == rule_id).first()
+    if not rule or (org_id and rule.org_id != org_id):
+        return {"error": "Rule not found"}
+
+    alerts = run_rule(db, rule)
+    return {
+        "rule_name": rule.name,
+        "alerts_created": len(alerts),
+        "alerts": [{"id": a.id, "severity": a.severity, "event_count": a.event_count} for a in alerts],
+    }

@@ -1340,3 +1340,43 @@ export const runControlAssessment = (params = {}) => {
   return request(`/control-assessments/run${qs ? '?' + qs : ''}`, { method: 'POST' })
 }
 export const getControlAssessmentStats = () => request('/control-assessments/stats')
+
+// ── SIEM Events ───────────────────────────────────────
+
+export const searchSiemEvents = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/siem/events/search?${q}`)
+}
+export const getSiemEvent = (id) => request(`/siem/events/${id}`)
+export const ingestSiemEvent = (data) => request('/siem/events', { method: 'POST', body: JSON.stringify(data) })
+export const ingestSiemEventsBatch = (events) => request('/siem/events/batch', { method: 'POST', body: JSON.stringify({ events }) })
+
+// ── SIEM Detection Rules ──────────────────────────────
+
+export const getDetectionRules = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/detection-rules?${q}`)
+}
+export const getDetectionRule = (id) => request(`/detection-rules/${id}`)
+export const createDetectionRule = (data) => request('/detection-rules', { method: 'POST', body: JSON.stringify(data) })
+export const updateDetectionRule = (id, data) => request(`/detection-rules/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+export const deleteDetectionRule = (id) => request(`/detection-rules/${id}`, { method: 'DELETE' })
+export const testDetectionRule = (data) => request('/detection-rules/test', { method: 'POST', body: JSON.stringify(data) })
+
+// ── SIEM Alerts ───────────────────────────────────────
+
+export const getAlerts = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/alerts?${q}`)
+}
+export const getAlert = (id) => request(`/alerts/${id}`)
+export const updateAlert = (id, data) => request(`/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(data) })
+export const triageAlert = (id, data) => request(`/alerts/${id}/triage`, { method: 'POST', body: JSON.stringify(data) })
+
+// ── SIEM Ingest Endpoints ─────────────────────────────
+
+export const getSiemEndpoints = () => request('/siem/endpoints')
+export const createSiemEndpoint = (data) => request('/siem/endpoints', { method: 'POST', body: JSON.stringify(data) })
+export const deleteSiemEndpoint = (id) => request(`/siem/endpoints/${id}`, { method: 'DELETE' })
+export const getVectorTemplates = () => request('/siem/vector-templates')
+export const generateVectorConfig = (data) => request('/siem/vector-config', { method: 'POST', body: JSON.stringify(data) })
