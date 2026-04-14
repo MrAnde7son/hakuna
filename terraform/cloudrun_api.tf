@@ -178,6 +178,20 @@ resource "google_cloud_run_v2_service" "api" {
         value = "https://${var.app_domain}"
       }
 
+      # Base URL headless Chromium navigates to when rendering scheduled
+      # report PDFs. Same origin as the SPA — GCS/CDN serves the static app,
+      # the load balancer forwards /api/* back to this Cloud Run service.
+      env {
+        name  = "FRONTEND_BASE_URL"
+        value = "https://${var.app_domain}"
+      }
+
+      # Playwright Chromium location inside the image (pinned in Dockerfile.prod).
+      env {
+        name  = "PLAYWRIGHT_BROWSERS_PATH"
+        value = "/ms-playwright"
+      }
+
       # ── Stripe billing ──────────────────────────────────────────────────
 
       env {

@@ -9,6 +9,8 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 from datetime import datetime
 from typing import Optional
 
@@ -315,11 +317,33 @@ def send_email(db: Session, config: dict, items: list) -> dict:
             table_lines.append(f"\n... and {len(items) - 50} more findings")
         body += "\n".join(table_lines)
 
-    msg = MIMEMultipart("alternative")
+    # If any attachments are supplied we need a mixed multipart envelope.
+    # `attachments` in the config is a list of dicts:
+    #   {"filename": str, "content": bytes, "mime_type": "application/pdf"}
+    attachments = config.get("attachments") or []
+    if attachments:
+        msg = MIMEMultipart("mixed")
+    else:
+        msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = from_addr
     msg["To"] = ", ".join(to_addrs)
     msg.attach(MIMEText(body, "plain"))
+
+    for att in attachments:
+        content = att.get("content")
+        if not content:
+            continue
+        mime_type = att.get("mime_type", "application/octet-stream")
+        maintype, _, subtype = mime_type.partition("/")
+        part = MIMEBase(maintype or "application", subtype or "octet-stream")
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        part.set_payload(content)
+        encoders.encode_base64(part)
+        filename = att.get("filename", "attachment")
+        part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+        msg.attach(part)
 
     try:
         if use_tls:
@@ -331,7 +355,12 @@ def send_email(db: Session, config: dict, items: list) -> dict:
             server.login(smtp_user, smtp_pass)
         server.sendmail(from_addr, to_addrs, msg.as_string())
         server.quit()
-        return {"status": "sent", "recipients": to_addrs, "items_count": len(items)}
+        return {
+            "status": "sent",
+            "recipients": to_addrs,
+            "items_count": len(items),
+            "attachments": [a.get("filename") for a in attachments],
+        }
     except Exception as e:
         logger.error(f"Email send failed: {e}")
         raise

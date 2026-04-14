@@ -2,8 +2,25 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# System deps needed by Chromium (headless shell). `playwright install --with-deps`
+# would run apt-get for us, but doing it explicitly keeps layers cacheable and
+# avoids needing sudo inside the Python install step.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+    libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+    libgbm1 libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0 \
+    libx11-6 libxcb1 libxext6 fonts-liberation \
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Chromium for the scheduled-report PDF renderer. Use the headless
+# shell build only (smaller) and pin the browsers path so the renderer can
+# locate the binary reliably.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN python -m playwright install chromium
 
 # Copy backend app code
 COPY backend/ /app/
