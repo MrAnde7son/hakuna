@@ -10,6 +10,10 @@ services:
     environment:
       - DATABASE_URL=sqlite:////app/data/nessus_remediation.db
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      # Used by the scheduled-report PDF renderer — headless Chromium inside
+      # the backend container reaches the sibling `frontend` service by its
+      # Compose network hostname. Override via env for custom setups.
+      - FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-http://frontend:3000}
 
   frontend:
     build: ./frontend

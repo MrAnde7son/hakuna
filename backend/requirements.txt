@@ -30,3 +30,4 @@ ddgs>=6.0.0
 sqlglot>=26.0.0
 python3-saml>=1.16.0
 ldap3>=2.9.0
+playwright>=1.47.0
