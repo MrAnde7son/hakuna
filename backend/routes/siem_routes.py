@@ -15,8 +15,9 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
 from core.audit import log_audit
-from models.models import SIEMEvent, IngestEndpoint
+from models.models import SIEMEvent, IngestEndpoint, Integration
 from services.event_store import get_event_store, EventFilter
+from services.vector_config import generate_config, generate_install_script, list_templates, AVAILABLE_TEMPLATES
 
 router = APIRouter()
 
@@ -454,3 +455,118 @@ async def delete_ingest_endpoint(
               actor=current_user)
 
     return {"deleted": True}
+
+
+# ── Vector Config Generation ───────────────────────────
+
+@router.get("/api/siem/vector-templates")
+async def get_vector_templates(
+    current_user=Depends(get_current_user),
+):
+    """List available Vector source templates."""
+    return list_templates()
+
+
+class VectorConfigRequest(BaseModel):
+    template_id: str = "linux_syslog"
+    endpoint_id: str
+    token: str
+    hakuna_url: str = "http://localhost:8000"
+    listen_port: Optional[int] = None
+    custom_vrl: Optional[str] = None
+
+
+@router.post("/api/siem/vector-config")
+async def generate_vector_config(
+    body: VectorConfigRequest,
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+    db: Session = Depends(get_db),
+):
+    """Generate a Vector config YAML for a given template + endpoint."""
+    # Verify the endpoint belongs to this org
+    ep = db.query(IngestEndpoint).filter(
+        IngestEndpoint.id == body.endpoint_id,
+        IngestEndpoint.org_id.in_(org_ids),
+    ).first()
+    if not ep:
+        raise HTTPException(404, "Ingest endpoint not found")
+
+    config_yaml = generate_config(
+        integration_name=ep.name,
+        template_id=body.template_id,
+        endpoint_id=body.endpoint_id,
+        token=body.token,
+        hakuna_url=body.hakuna_url,
+        listen_port=body.listen_port,
+        custom_vrl=body.custom_vrl,
+    )
+    return {"config": config_yaml, "template_id": body.template_id, "endpoint_id": body.endpoint_id}
+
+
+@router.post("/api/siem/vector-config/install-script")
+async def generate_vector_install_script(
+    body: VectorConfigRequest,
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+    db: Session = Depends(get_db),
+):
+    """Generate a bootstrap shell script for Vector installation."""
+    ep = db.query(IngestEndpoint).filter(
+        IngestEndpoint.id == body.endpoint_id,
+        IngestEndpoint.org_id.in_(org_ids),
+    ).first()
+    if not ep:
+        raise HTTPException(404, "Ingest endpoint not found")
+
+    script = generate_install_script(
+        endpoint_id=body.endpoint_id,
+        token=body.token,
+        template_id=body.template_id,
+        hakuna_url=body.hakuna_url,
+        listen_port=body.listen_port,
+    )
+    return {"script": script, "template_id": body.template_id}
+
+
+@router.get("/api/siem/integrations/{integration_id}/vector-config")
+async def get_integration_vector_config(
+    integration_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Get the Vector config for a stream-type integration."""
+    integration = db.query(Integration).filter(
+        Integration.id == integration_id,
+        Integration.org_id.in_(org_ids),
+    ).first()
+    if not integration:
+        raise HTTPException(404, "Integration not found")
+    if integration.transport_type != "stream":
+        raise HTTPException(400, "Integration is not a stream transport type")
+
+    stream_cfg = integration.stream_config or {}
+    template_id = stream_cfg.get("template_id", "linux_syslog")
+
+    # Find linked ingest endpoint
+    ep = db.query(IngestEndpoint).filter(
+        IngestEndpoint.integration_id == integration_id,
+        IngestEndpoint.org_id.in_(org_ids),
+    ).first()
+    if not ep:
+        raise HTTPException(400, "No ingest endpoint linked to this integration. Create one first.")
+
+    hakuna_url = stream_cfg.get("hakuna_url", "http://localhost:8000")
+    listen_port = stream_cfg.get("listen_port")
+
+    config_yaml = generate_config(
+        integration_name=integration.name,
+        template_id=template_id,
+        endpoint_id=ep.id,
+        token="<YOUR_TOKEN>",  # Token is one-time — user must supply
+        hakuna_url=hakuna_url,
+        listen_port=listen_port,
+        custom_vrl=stream_cfg.get("vrl_transform"),
+    )
+    return {"config": config_yaml, "template_id": template_id, "endpoint_id": ep.id}

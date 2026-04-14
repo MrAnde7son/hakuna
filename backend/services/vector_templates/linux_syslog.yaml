@@ -1,0 +1,32 @@
+# Vector source template: Linux syslog (generic)
+# Input: Syslog (RFC 3164/5424) from Linux hosts
+# Output: ECS-normalized JSON events
+source:
+  type: syslog
+  mode: tcp
+  address: "0.0.0.0:{{listen_port|default('6514')}}"
+
+transform_vrl: |
+  .source_system = "linux_syslog"
+  .event_type = "system"
+  .host_name = .host ?? ""
+
+  # Map syslog severity
+  sev = to_int!(.severity ?? "6")
+  .severity = if sev <= 2 { "critical" }
+    else if sev == 3 { "high" }
+    else if sev == 4 { "medium" }
+    else if sev == 5 { "low" }
+    else { "info" }
+
+  # Detect auth events
+  if contains(to_string!(.appname ?? ""), "sshd") || contains(to_string!(.appname ?? ""), "sudo") || contains(to_string!(.appname ?? ""), "pam") {
+    .event_type = "authentication"
+  }
+
+  # Extract username from common patterns
+  user_match = parse_regex(.message, r'user[= ]+(?P<user>\w+)') ?? {}
+  .user_name = get(user_match, "user") ?? ""
+
+sample_event: |
+  <38>Apr 14 10:30:00 web-01 sshd[12345]: Failed password for admin from 10.0.0.5 port 54321 ssh2

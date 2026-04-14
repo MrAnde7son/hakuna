@@ -1995,8 +1995,9 @@ class Integration(Base):
     name = Column(String, nullable=False)
     direction = Column(String, nullable=False)  # pull | push
     entity = Column(String, nullable=False)  # asset | finding | action
-    transport_type = Column(String, nullable=False)  # api | sql | file | mcp | relay
+    transport_type = Column(String, nullable=False)  # api | sql | file | mcp | relay | stream
     transport_config = Column(JSON, nullable=False, default=dict)
+    stream_config = Column(JSON, nullable=True)  # parser, sample_event, vrl_transform (for transport_type=stream)
     credentials_id = Column(String, ForeignKey("integration_credentials.id"), nullable=True)
     records_path = Column(String, nullable=True)  # dot-path to records array in response
     field_map = Column(JSON, nullable=False, default=list)

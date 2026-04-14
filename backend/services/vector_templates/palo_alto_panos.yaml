@@ -1,0 +1,34 @@
+# Vector source template: Palo Alto PAN-OS syslog
+# Input: Syslog (RFC 5424) from PAN-OS firewalls
+# Output: ECS-normalized JSON events
+source:
+  type: syslog
+  mode: tcp
+  address: "0.0.0.0:{{listen_port|default('6514')}}"
+
+transform_vrl: |
+  # Parse PAN-OS syslog fields
+  .source_system = "palo_alto_panos"
+  .event_type = "network"
+
+  # Extract CSV fields from PAN-OS traffic log
+  parts = split!(.message, ",")
+  if length(parts) > 30 {
+    .source_ip = get(parts, [7]) ?? ""
+    .dest_ip = get(parts, [8]) ?? ""
+    .action = get(parts, [30]) ?? ""
+    .host_name = get(parts, [1]) ?? ""
+    .user_name = get(parts, [12]) ?? ""
+  }
+
+  # Map PAN-OS severity
+  .severity = if includes(["critical", "high"], downcase!(.severity)) {
+    downcase!(.severity)
+  } else if includes(["medium", "informational", "low"], downcase!(.severity)) {
+    downcase!(.severity)
+  } else {
+    "info"
+  }
+
+sample_event: |
+  <14>1 2026-04-14T10:30:00Z PA-5260 - - - - 1,2026/04/14 10:30:00,001234567890,TRAFFIC,end,2560,2026/04/14 10:30:00,10.0.0.5,203.0.113.50,0.0.0.0,0.0.0.0,allow-all,,,web-browsing,vsys1,trust,untrust,ethernet1/1,ethernet1/2,Log-Default,2026/04/14 10:30:00,12345,1,54321,443,0,0,0x400000,tcp,allow,1234,567,890,5,2026/04/14 10:30:00,1,any,0

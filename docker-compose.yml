@@ -41,6 +41,18 @@ services:
       timeout: 20s
       retries: 3
 
+  vector-dev:
+    image: timberio/vector:0.49.0-alpine
+    ports:
+      - "6514:6514"   # syslog TCP
+      - "9514:9514/udp" # syslog UDP
+      - "8088:8088"   # HEC / HTTP
+    volumes:
+      - ./deploy/vector:/etc/vector:ro
+    depends_on:
+      - backend
+    command: ["--config", "/etc/vector/vector.dev.yaml"]
+
   minio-init:
     image: minio/mc:latest
     depends_on:

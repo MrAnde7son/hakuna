@@ -1,0 +1,30 @@
+# Vector source template: AWS CloudTrail (via S3 or HTTP push)
+# Input: CloudTrail JSON events
+# Output: ECS-normalized JSON events
+source:
+  type: http_server
+  address: "0.0.0.0:{{listen_port|default('8088')}}"
+
+transform_vrl: |
+  .source_system = "aws_cloudtrail"
+  .event_type = .eventType ?? "AwsApiCall"
+  .event_category = .eventSource ?? ""
+  .user_name = .userIdentity.userName ?? .userIdentity.arn ?? ""
+  .source_ip = .sourceIPAddress ?? ""
+  .host_name = .requestParameters.instanceId ?? ""
+
+  # Map error events to severity
+  .severity = if .errorCode != null {
+    "medium"
+  } else if contains(to_string!(.eventName ?? ""), "Delete") || contains(to_string!(.eventName ?? ""), "Terminate") {
+    "high"
+  } else {
+    "info"
+  }
+
+  .action = .eventName ?? ""
+  .outcome = if .errorCode != null { "failure" } else { "success" }
+  .message = join!([to_string!(.eventName ?? ""), " by ", to_string!(.user_name), " from ", to_string!(.source_ip)], "")
+
+sample_event: |
+  {"eventVersion": "1.08", "eventSource": "iam.amazonaws.com", "eventName": "CreateUser", "awsRegion": "us-east-1", "sourceIPAddress": "10.0.0.5", "userIdentity": {"type": "IAMUser", "userName": "admin"}, "requestParameters": {"userName": "new-user"}}
