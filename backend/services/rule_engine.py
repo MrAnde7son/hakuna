@@ -125,6 +125,12 @@ CONDITION_CATALOG = [
                 "value_type": "enum",
                 "options": "__dynamic:sources__",
             },
+            {
+                "field": "scan", "label": "Scan",
+                "ops": ["eq", "neq"],
+                "value_type": "enum",
+                "options": "__dynamic:scans__",
+            },
         ],
     },
     {
@@ -330,6 +336,7 @@ def get_condition_catalog(db: Session = None, org_ids=None) -> list:
     catalog = copy.deepcopy(CONDITION_CATALOG)
     _dynamic_resolvers = {
         "__dynamic:sources__": lambda: _resolve_source_options(db, org_ids),
+        "__dynamic:scans__": lambda: _resolve_scan_options(db, org_ids),
         "__dynamic:products__": lambda: _resolve_product_options(db),
         "__dynamic:cpes__": lambda: _resolve_cpe_options(db),
     }
@@ -497,6 +504,30 @@ def _resolve_source_options(db, org_ids=None):
     all_sources = sorted(scan_sources | finding_sources)
     combined_labels = {**_SOURCE_LABELS, **integration_labels}
     return [{"label": combined_labels.get(s, s), "value": s} for s in all_sources]
+
+
+def _resolve_scan_options(db, org_ids=None):
+    """Build scan options from Scan table for the condition catalog."""
+    if db is None:
+        return []
+    from sqlalchemy import or_
+    from models.models import Scan
+
+    try:
+        q = db.query(Scan.id, Scan.filename, Scan.source_type, Scan.created_at).order_by(Scan.created_at.desc())
+        if org_ids:
+            q = q.filter(or_(Scan.org_id.in_(org_ids), Scan.org_id.is_(None)))
+        scans = q.limit(200).all()
+        options = []
+        for s in scans:
+            source = _SOURCE_LABELS.get(s.source_type, s.source_type or "")
+            name = s.filename or f"Scan #{s.id}"
+            label = f"{name} ({source})" if source else name
+            options.append({"label": label, "value": s.id})
+        return options
+    except Exception:
+        logger.debug("Failed to resolve scan options for catalog", exc_info=True)
+        return []
 
 
 # ─────────────────────────────────────────────────────────
@@ -727,6 +758,24 @@ def _eval_custom_field_value(raw, op: str, value) -> bool:
 
     # Default: string comparison
     return _str_op("" if raw is None else str(raw), op, value)
+
+
+def _eval_scan(cond: dict, db: Session, asset_id: int) -> bool:
+    """Evaluate whether an asset has findings in a given scan."""
+    from models.models import Finding
+    op = cond.get("op", "eq")
+    value = cond.get("value")
+    if value is None:
+        return False
+    try:
+        target_scan_id = int(value)
+    except (ValueError, TypeError):
+        return False
+    has_findings = db.query(Finding.id).filter(
+        Finding.asset_id == asset_id,
+        Finding.scan_id == target_scan_id,
+    ).first() is not None
+    return has_findings if op == "eq" else not has_findings
 
 
 def _eval_asset(cond: dict, asset: dict) -> bool:
@@ -1190,6 +1239,11 @@ def evaluate_condition(
             if db is None or asset_id is None:
                 return False
             return _eval_finding_asset(cond, db, asset_id, scan_id)
+
+        if field == "scan":
+            if db is None or asset_id is None:
+                return False
+            return _eval_scan(cond, db, asset_id)
 
         # Asset namespace
         if asset_dict is not None:
