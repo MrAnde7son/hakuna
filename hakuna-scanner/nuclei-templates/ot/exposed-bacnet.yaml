@@ -1,0 +1,31 @@
+id: exposed-bacnet
+
+info:
+  name: Internet-Exposed BACnet Service
+  author: hakuna
+  severity: high
+  description: |
+    Detects an internet-exposed BACnet/IP service (port 47808). BACnet is the
+    dominant protocol in building automation systems (HVAC, lighting, access
+    control, fire alarm). Exposure allows reading sensor values, modifying
+    setpoints, and controlling building systems without authentication.
+  tags: ot,ics,bacnet,building-automation,exposure
+  metadata:
+    asset_type: smart_building
+    finding_type: exposed_ot_service
+
+network:
+  - inputs:
+      # BACnet Who-Is broadcast (simpler probe)
+      - data: "810a00110104000005010c0c020000001900"
+        type: hex
+
+    host:
+      - "{{Host}}:47808"
+
+    matchers:
+      # BACnet BVLC header
+      - type: binary
+        binary:
+          - "81"
+        part: body

@@ -1,0 +1,49 @@
+id: exposed-vector-db
+
+info:
+  name: Exposed Vector Database
+  author: hakuna
+  severity: high
+  description: |
+    Detects an internet-exposed vector database (Qdrant, Weaviate, Chroma, or
+    Milvus). Vector databases store embeddings used by RAG pipelines and AI
+    applications. Exposure allows enumeration of collections, extraction of
+    embedded data, and potential poisoning of retrieval-augmented generation.
+  tags: ai,vectordb,qdrant,weaviate,chroma,milvus,exposure
+  metadata:
+    asset_type: vector_db
+    finding_type: exposed_ai_service
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/collections"
+      - "{{BaseURL}}/v1/schema"
+      - "{{BaseURL}}/api/v1/collections"
+      - "{{BaseURL}}/api/v1/health"
+
+    stop-at-first-match: true
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        name: qdrant
+        words:
+          - '"collections"'
+          - '"result"'
+        condition: and
+
+      - type: word
+        name: weaviate
+        words:
+          - '"classes"'
+
+      - type: word
+        name: chroma
+        words:
+          - 'chroma'
+
+      - type: word
+        name: milvus
+        words:
+          - '"isHealthy"'

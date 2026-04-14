@@ -244,6 +244,607 @@
       "cpe_product": "active_directory_federation_services",
       "match_status": [200, 302],
       "body_pattern": "ADFS|adfs"
+    },
+
+    {"_comment": "──────────── AI / LLM Infrastructure ────────────"},
+
+    {
+      "path": "/v1/models",
+      "name": "OpenAI-Compatible API",
+      "cpe_vendor": "_ai",
+      "cpe_product": "openai_compatible_api",
+      "match_status": [200],
+      "body_pattern": "\"object\"\\s*:\\s*\"list\"|\"data\"\\s*:\\s*\\[",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/v1/chat/completions",
+      "name": "OpenAI-Compatible Chat API",
+      "cpe_vendor": "_ai",
+      "cpe_product": "openai_compatible_api",
+      "match_status": [200, 405, 422],
+      "body_pattern": "\"model\"|\"choices\"|method not allowed|Method Not Allowed",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/api/tags",
+      "name": "Ollama",
+      "cpe_vendor": "ollama",
+      "cpe_product": "ollama",
+      "match_status": [200],
+      "body_pattern": "\"models\"\\s*:\\s*\\[",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/api/version",
+      "name": "Ollama",
+      "cpe_vendor": "ollama",
+      "cpe_product": "ollama",
+      "match_status": [200],
+      "body_pattern": "\"version\"",
+      "version_pattern": "\"version\"\\s*:\\s*\"(?P<version>[0-9][0-9.]*)",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/v1/models",
+      "name": "vLLM Inference Server",
+      "cpe_vendor": "vllm",
+      "cpe_product": "vllm",
+      "match_status": [200],
+      "body_pattern": "vllm|\"owned_by\"\\s*:\\s*\"vllm\"",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/v1/models",
+      "name": "LocalAI",
+      "cpe_vendor": "localai",
+      "cpe_product": "localai",
+      "match_status": [200],
+      "body_pattern": "localai|LocalAI|ggml|gguf",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/v1/worker/get_status",
+      "name": "FastChat Controller",
+      "cpe_vendor": "lmsys",
+      "cpe_product": "fastchat",
+      "match_status": [200],
+      "body_pattern": "model_names|speed",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/api/v1/models",
+      "name": "LiteLLM Proxy",
+      "cpe_vendor": "litellm",
+      "cpe_product": "litellm",
+      "match_status": [200],
+      "body_pattern": "\"data\"|litellm",
+      "asset_type": "ai_gateway"
+    },
+    {
+      "path": "/health",
+      "name": "LiteLLM Proxy Health",
+      "cpe_vendor": "litellm",
+      "cpe_product": "litellm",
+      "match_status": [200],
+      "body_pattern": "litellm|\"healthy\"",
+      "asset_type": "ai_gateway"
+    },
+    {
+      "path": "/api/v1/chat",
+      "name": "Open WebUI",
+      "cpe_vendor": "openwebui",
+      "cpe_product": "open_webui",
+      "match_status": [200, 401, 403],
+      "body_pattern": "open.?webui|Ollama Web|chat",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/docs",
+      "name": "LangServe",
+      "cpe_vendor": "langchain",
+      "cpe_product": "langserve",
+      "match_status": [200],
+      "body_pattern": "langserve|LangServe|/invoke|/stream",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/playground",
+      "name": "LangServe Playground",
+      "cpe_vendor": "langchain",
+      "cpe_product": "langserve",
+      "match_status": [200],
+      "body_pattern": "langserve|playground|/invoke",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/sse",
+      "name": "MCP Server (SSE Transport)",
+      "cpe_vendor": "_ai",
+      "cpe_product": "mcp_server",
+      "match_status": [200],
+      "body_pattern": "text/event-stream|event:\\s*endpoint",
+      "asset_type": "ai_agent",
+      "headers_pattern": "text/event-stream"
+    },
+    {
+      "path": "/mcp",
+      "name": "MCP Server (StreamableHTTP)",
+      "cpe_vendor": "_ai",
+      "cpe_product": "mcp_server",
+      "match_status": [200, 405],
+      "body_pattern": "jsonrpc|tools/list|method",
+      "asset_type": "ai_agent"
+    },
+    {
+      "path": "/api/v1/prediction",
+      "name": "Flowise",
+      "cpe_vendor": "flowise",
+      "cpe_product": "flowise",
+      "match_status": [200, 401, 405],
+      "body_pattern": "flowise|Flowise|chatflow",
+      "asset_type": "ai_agent"
+    },
+    {
+      "path": "/api/v1/flows",
+      "name": "LangFlow",
+      "cpe_vendor": "langflow",
+      "cpe_product": "langflow",
+      "match_status": [200, 401],
+      "body_pattern": "langflow|LangFlow|flows",
+      "asset_type": "ai_agent"
+    },
+    {
+      "path": "/api/health",
+      "name": "Dify.ai",
+      "cpe_vendor": "dify",
+      "cpe_product": "dify",
+      "match_status": [200],
+      "body_pattern": "dify|Dify",
+      "asset_type": "ai_agent"
+    },
+    {
+      "path": "/",
+      "name": "Gradio Interface",
+      "cpe_vendor": "gradio",
+      "cpe_product": "gradio",
+      "match_status": [200],
+      "body_pattern": "gradio|__gradio|gr\\.Interface",
+      "version_pattern": "gradio[/_ -]?(?P<version>[0-9][0-9.]*)",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/_stcore/health",
+      "name": "Streamlit App",
+      "cpe_vendor": "streamlit",
+      "cpe_product": "streamlit",
+      "match_status": [200],
+      "body_pattern": "ok|streamlit",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/collections",
+      "name": "Qdrant Vector DB",
+      "cpe_vendor": "qdrant",
+      "cpe_product": "qdrant",
+      "match_status": [200],
+      "body_pattern": "\"result\"\\s*:|\"collections\"",
+      "asset_type": "vector_db"
+    },
+    {
+      "path": "/v1/schema",
+      "name": "Weaviate Vector DB",
+      "cpe_vendor": "weaviate",
+      "cpe_product": "weaviate",
+      "match_status": [200],
+      "body_pattern": "\"classes\"|weaviate",
+      "asset_type": "vector_db"
+    },
+    {
+      "path": "/api/v1/collections",
+      "name": "Chroma Vector DB",
+      "cpe_vendor": "chroma",
+      "cpe_product": "chroma",
+      "match_status": [200],
+      "body_pattern": "chroma|\\[",
+      "asset_type": "vector_db"
+    },
+    {
+      "path": "/api/v1/health",
+      "name": "Milvus Vector DB",
+      "cpe_vendor": "milvus",
+      "cpe_product": "milvus",
+      "match_status": [200],
+      "body_pattern": "milvus|\"isHealthy\"",
+      "asset_type": "vector_db"
+    },
+    {
+      "path": "/api/v2/models/stats",
+      "name": "Triton Inference Server",
+      "cpe_vendor": "nvidia",
+      "cpe_product": "triton_inference_server",
+      "match_status": [200],
+      "body_pattern": "model_stats|triton",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/v2/health/ready",
+      "name": "Triton Inference Server",
+      "cpe_vendor": "nvidia",
+      "cpe_product": "triton_inference_server",
+      "match_status": [200],
+      "body_pattern": "",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/api/2.0/mlflow/experiments/search",
+      "name": "MLflow",
+      "cpe_vendor": "databricks",
+      "cpe_product": "mlflow",
+      "match_status": [200, 401, 403],
+      "body_pattern": "experiments|mlflow|MLflow",
+      "asset_type": "ai_inference"
+    },
+    {
+      "path": "/_cluster/health",
+      "name": "Elasticsearch",
+      "cpe_vendor": "elastic",
+      "cpe_product": "elasticsearch",
+      "match_status": [200],
+      "body_pattern": "\"cluster_name\"|\"status\"\\s*:\\s*\"(green|yellow|red)\"",
+      "version_pattern": "\"number\"\\s*:\\s*\"(?P<version>[0-9][0-9.]*)\""
+    },
+    {
+      "path": "/api/v1/manage/keys",
+      "name": "AI Gateway (Kong/Portkey)",
+      "cpe_vendor": "_ai",
+      "cpe_product": "ai_gateway",
+      "match_status": [200, 401, 403],
+      "body_pattern": "keys|gateway|portkey|kong",
+      "asset_type": "ai_gateway"
+    },
+
+    {"_comment": "──────────── IoT Devices ────────────"},
+
+    {
+      "path": "/",
+      "name": "Hikvision Camera",
+      "cpe_vendor": "hikvision",
+      "cpe_product": "ip_camera",
+      "match_status": [200],
+      "body_pattern": "Hikvision|HIKVISION|hikvision|doc/page/login\\.asp",
+      "version_pattern": "(?:V|v)(?P<version>[0-9][0-9.]*)",
+      "asset_type": "camera"
+    },
+    {
+      "path": "/ISAPI/System/deviceInfo",
+      "name": "Hikvision ISAPI",
+      "cpe_vendor": "hikvision",
+      "cpe_product": "ip_camera",
+      "match_status": [200, 401],
+      "body_pattern": "deviceName|Hikvision|ISAPI",
+      "asset_type": "camera"
+    },
+    {
+      "path": "/",
+      "name": "Dahua Camera",
+      "cpe_vendor": "dahua",
+      "cpe_product": "ip_camera",
+      "match_status": [200],
+      "body_pattern": "Dahua|DahuaTech|DHVideo|amcrest",
+      "asset_type": "camera"
+    },
+    {
+      "path": "/cgi-bin/magicBox.cgi?action=getDeviceType",
+      "name": "Dahua API",
+      "cpe_vendor": "dahua",
+      "cpe_product": "ip_camera",
+      "match_status": [200],
+      "body_pattern": "deviceType|DH-",
+      "asset_type": "camera"
+    },
+    {
+      "path": "/",
+      "name": "Axis Camera",
+      "cpe_vendor": "axis",
+      "cpe_product": "network_camera",
+      "match_status": [200],
+      "body_pattern": "AXIS|axis|Axis Communications",
+      "asset_type": "camera"
+    },
+    {
+      "path": "/axis-cgi/param.cgi?action=list&group=Brand",
+      "name": "Axis Camera API",
+      "cpe_vendor": "axis",
+      "cpe_product": "network_camera",
+      "match_status": [200, 401],
+      "body_pattern": "Brand\\.ProdFullName|AXIS",
+      "asset_type": "camera"
+    },
+    {
+      "path": "/cgi-bin/viewer/video.jpg",
+      "name": "Vivotek Camera",
+      "cpe_vendor": "vivotek",
+      "cpe_product": "ip_camera",
+      "match_status": [200, 401],
+      "body_pattern": "image/jpeg|VIVOTEK",
+      "asset_type": "camera"
+    },
+    {
+      "path": "/stw-cgi/system.cgi?msubmenu=deviceinfo&action=view",
+      "name": "Samsung/Hanwha Camera",
+      "cpe_vendor": "hanwha",
+      "cpe_product": "ip_camera",
+      "match_status": [200, 401],
+      "body_pattern": "DeviceType|Hanwha|Samsung|Wisenet",
+      "asset_type": "camera"
+    },
+    {
+      "path": "/",
+      "name": "Reolink Camera",
+      "cpe_vendor": "reolink",
+      "cpe_product": "ip_camera",
+      "match_status": [200],
+      "body_pattern": "Reolink|reolink",
+      "asset_type": "camera"
+    },
+    {
+      "path": "/hp/device/this.LCDispatcher",
+      "name": "HP Printer",
+      "cpe_vendor": "hp",
+      "cpe_product": "printer",
+      "match_status": [200],
+      "body_pattern": "HP|Hewlett.Packard|LaserJet|OfficeJet|PageWide",
+      "asset_type": "printer"
+    },
+    {
+      "path": "/general/status.html",
+      "name": "Brother Printer",
+      "cpe_vendor": "brother",
+      "cpe_product": "printer",
+      "match_status": [200],
+      "body_pattern": "Brother|BROTHER|MFC-|HL-|DCP-",
+      "asset_type": "printer"
+    },
+    {
+      "path": "/",
+      "name": "Epson Printer",
+      "cpe_vendor": "epson",
+      "cpe_product": "printer",
+      "match_status": [200],
+      "body_pattern": "EPSON|Epson|WorkForce|EcoTank|Expression",
+      "asset_type": "printer"
+    },
+    {
+      "path": "/sws/app/information/home/home.html",
+      "name": "Samsung/HP Printer (SWS)",
+      "cpe_vendor": "samsung",
+      "cpe_product": "printer",
+      "match_status": [200],
+      "body_pattern": "Samsung|SyncThru|Xpress",
+      "asset_type": "printer"
+    },
+    {
+      "path": "/SSI/digit498.htm",
+      "name": "Xerox Printer",
+      "cpe_vendor": "xerox",
+      "cpe_product": "printer",
+      "match_status": [200],
+      "body_pattern": "Xerox|XEROX|Phaser|WorkCentre|VersaLink|AltaLink",
+      "asset_type": "printer"
+    },
+    {
+      "path": "/",
+      "name": "QNAP NAS",
+      "cpe_vendor": "qnap",
+      "cpe_product": "qts",
+      "match_status": [200],
+      "body_pattern": "QNAP|QTS|qts|Photo Station|Qsync",
+      "version_pattern": "QTS\\s+(?P<version>[0-9][0-9.]*)",
+      "asset_type": "nas"
+    },
+    {
+      "path": "/webapi/auth.cgi?api=SYNO.API.Info&version=1&method=query",
+      "name": "Synology NAS",
+      "cpe_vendor": "synology",
+      "cpe_product": "diskstation_manager",
+      "match_status": [200],
+      "body_pattern": "SYNO\\.|\"success\"\\s*:\\s*true",
+      "asset_type": "nas"
+    },
+    {
+      "path": "/",
+      "name": "Synology DSM",
+      "cpe_vendor": "synology",
+      "cpe_product": "diskstation_manager",
+      "match_status": [200],
+      "body_pattern": "Synology|DiskStation|synology",
+      "asset_type": "nas"
+    },
+    {
+      "path": "/",
+      "name": "UniFi Controller",
+      "cpe_vendor": "ui",
+      "cpe_product": "unifi_network_application",
+      "match_status": [200],
+      "body_pattern": "UniFi|ubnt|Ubiquiti",
+      "asset_type": "router"
+    },
+    {
+      "path": "/api/s/default/stat/device",
+      "name": "UniFi API",
+      "cpe_vendor": "ui",
+      "cpe_product": "unifi_network_application",
+      "match_status": [200, 401],
+      "body_pattern": "meta|api_error|UniFi",
+      "asset_type": "router"
+    },
+    {
+      "path": "/api/system",
+      "name": "TP-Link Router",
+      "cpe_vendor": "tp-link",
+      "cpe_product": "router",
+      "match_status": [200],
+      "body_pattern": "TP-LINK|tp-link|Archer|Deco",
+      "asset_type": "router"
+    },
+    {
+      "path": "/",
+      "name": "Netgear Router",
+      "cpe_vendor": "netgear",
+      "cpe_product": "router",
+      "match_status": [200, 401],
+      "body_pattern": "NETGEAR|Netgear|Nighthawk|Orbi",
+      "asset_type": "router"
+    },
+    {
+      "path": "/info.html",
+      "name": "Ubiquiti EdgeRouter",
+      "cpe_vendor": "ui",
+      "cpe_product": "edgeos",
+      "match_status": [200],
+      "body_pattern": "EdgeOS|EdgeRouter|Ubiquiti",
+      "asset_type": "router"
+    },
+    {
+      "path": "/cgi-bin/home.ha",
+      "name": "Honeywell Smart Building",
+      "cpe_vendor": "honeywell",
+      "cpe_product": "building_controller",
+      "match_status": [200, 401],
+      "body_pattern": "Honeywell|Tridium|Niagara",
+      "asset_type": "smart_building"
+    },
+    {
+      "path": "/",
+      "name": "Crestron AV Controller",
+      "cpe_vendor": "crestron",
+      "cpe_product": "controller",
+      "match_status": [200],
+      "body_pattern": "Crestron|CRESTRON|crestron",
+      "asset_type": "smart_building"
+    },
+
+    {"_comment": "──────────── OT / ICS / SCADA ────────────"},
+
+    {
+      "path": "/",
+      "name": "Siemens SIMATIC HMI",
+      "cpe_vendor": "siemens",
+      "cpe_product": "simatic_hmi",
+      "match_status": [200],
+      "body_pattern": "Siemens|SIMATIC|WinCC|S7-|simatic",
+      "asset_type": "hmi"
+    },
+    {
+      "path": "/Portal/Portal.mwsl",
+      "name": "Siemens WinCC Portal",
+      "cpe_vendor": "siemens",
+      "cpe_product": "wincc",
+      "match_status": [200],
+      "body_pattern": "WinCC|Siemens|Portal",
+      "asset_type": "scada"
+    },
+    {
+      "path": "/",
+      "name": "Schneider Electric HMI",
+      "cpe_vendor": "schneider-electric",
+      "cpe_product": "hmi",
+      "match_status": [200],
+      "body_pattern": "Schneider|Modicon|Magelis|PowerLogic|EcoStruxure",
+      "asset_type": "hmi"
+    },
+    {
+      "path": "/",
+      "name": "Allen-Bradley / Rockwell",
+      "cpe_vendor": "rockwellautomation",
+      "cpe_product": "controllogix",
+      "match_status": [200],
+      "body_pattern": "Allen-Bradley|Rockwell|ControlLogix|CompactLogix|FactoryTalk",
+      "asset_type": "plc"
+    },
+    {
+      "path": "/",
+      "name": "GE iFIX / CIMPLICITY",
+      "cpe_vendor": "ge",
+      "cpe_product": "ifix",
+      "match_status": [200],
+      "body_pattern": "iFIX|CIMPLICITY|Proficy|GE Digital|GE Fanuc",
+      "asset_type": "scada"
+    },
+    {
+      "path": "/",
+      "name": "ABB HMI",
+      "cpe_vendor": "abb",
+      "cpe_product": "hmi",
+      "match_status": [200],
+      "body_pattern": "ABB|Ability|Symphony|AC500",
+      "asset_type": "hmi"
+    },
+    {
+      "path": "/",
+      "name": "Moxa Industrial Gateway",
+      "cpe_vendor": "moxa",
+      "cpe_product": "nport",
+      "match_status": [200],
+      "body_pattern": "Moxa|MOXA|NPort|ioLogik|EDS-|MGate",
+      "version_pattern": "(?:Firmware|Version)[:\\s]+(?P<version>[0-9][0-9.]*)",
+      "asset_type": "industrial_gateway"
+    },
+    {
+      "path": "/",
+      "name": "Advantech WebAccess",
+      "cpe_vendor": "advantech",
+      "cpe_product": "webaccess",
+      "match_status": [200],
+      "body_pattern": "Advantech|WebAccess|ADAM",
+      "asset_type": "scada"
+    },
+    {
+      "path": "/",
+      "name": "Tridium Niagara",
+      "cpe_vendor": "tridium",
+      "cpe_product": "niagara",
+      "match_status": [200],
+      "body_pattern": "Niagara|Tridium|niagara|JACE",
+      "version_pattern": "Niagara\\s+(?P<version>[0-9][0-9.]*)",
+      "asset_type": "smart_building"
+    },
+    {
+      "path": "/",
+      "name": "WAGO PLC",
+      "cpe_vendor": "wago",
+      "cpe_product": "plc",
+      "match_status": [200],
+      "body_pattern": "WAGO|Wago|e!COCKPIT|PFC100|PFC200",
+      "asset_type": "plc"
+    },
+    {
+      "path": "/",
+      "name": "Phoenix Contact PLC",
+      "cpe_vendor": "phoenixcontact",
+      "cpe_product": "plc",
+      "match_status": [200],
+      "body_pattern": "Phoenix Contact|PHOENIX|PLCnext|ILC|AXC",
+      "asset_type": "plc"
+    },
+    {
+      "path": "/",
+      "name": "Delta Industrial Gateway",
+      "cpe_vendor": "delta",
+      "cpe_product": "industrial_automation",
+      "match_status": [200],
+      "body_pattern": "Delta|DELTA|DVP|InfraSuite",
+      "asset_type": "industrial_gateway"
+    },
+    {
+      "path": "/",
+      "name": "Emerson DeltaV",
+      "cpe_vendor": "emerson",
+      "cpe_product": "deltav",
+      "match_status": [200],
+      "body_pattern": "DeltaV|Emerson|Fisher|Ovation",
+      "asset_type": "scada"
     }
   ]
 }

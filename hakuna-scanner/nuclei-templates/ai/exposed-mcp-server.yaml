@@ -1,0 +1,53 @@
+id: exposed-mcp-server
+
+info:
+  name: Exposed MCP Server
+  author: hakuna
+  severity: high
+  description: |
+    Detects an internet-exposed Model Context Protocol (MCP) server. MCP servers
+    provide tools to AI agents via SSE or StreamableHTTP transports. An exposed
+    server allows unauthenticated tool enumeration and invocation, which may
+    grant access to internal systems, databases, or file systems depending on
+    the tools configured.
+  tags: ai,mcp,agent,exposure
+  metadata:
+    asset_type: ai_agent
+    finding_type: exposed_ai_service
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/sse"
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        part: header
+        words:
+          - "text/event-stream"
+
+  - method: POST
+    path:
+      - "{{BaseURL}}/mcp"
+
+    headers:
+      Content-Type: application/json
+
+    body: '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}'
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        words:
+          - '"jsonrpc"'
+          - '"tools"'
+        condition: or

@@ -43,6 +43,34 @@
     "933822578": {"name": "Traefik", "cpe_vendor": "traefik", "cpe_product": "traefik"},
     "-1214741498": {"name": "Vault", "cpe_vendor": "hashicorp", "cpe_product": "vault"},
     "484238934": {"name": "Consul", "cpe_vendor": "hashicorp", "cpe_product": "consul"},
-    "1117651437": {"name": "ArgoCD", "cpe_vendor": "argoproj", "cpe_product": "argo_cd"}
+    "1117651437": {"name": "ArgoCD", "cpe_vendor": "argoproj", "cpe_product": "argo_cd"},
+
+    "_comment_ai": "AI / LLM / ML infrastructure favicons",
+    "-1293240037": {"name": "Gradio", "cpe_vendor": "gradio", "cpe_product": "gradio", "asset_type": "ai_inference"},
+    "1467638619": {"name": "Streamlit", "cpe_vendor": "streamlit", "cpe_product": "streamlit", "asset_type": "ai_inference"},
+    "-803527991": {"name": "MLflow", "cpe_vendor": "databricks", "cpe_product": "mlflow", "asset_type": "ai_inference"},
+    "1289346988": {"name": "Jupyter Notebook", "cpe_vendor": "jupyter", "cpe_product": "notebook", "asset_type": "ai_inference"},
+    "-1051602021": {"name": "JupyterHub", "cpe_vendor": "jupyter", "cpe_product": "jupyterhub", "asset_type": "ai_inference"},
+    "1758498077": {"name": "Flowise", "cpe_vendor": "flowise", "cpe_product": "flowise", "asset_type": "ai_agent"},
+    "-442891534": {"name": "Open WebUI", "cpe_vendor": "openwebui", "cpe_product": "open_webui", "asset_type": "ai_inference"},
+    "862987561": {"name": "Dify", "cpe_vendor": "dify", "cpe_product": "dify", "asset_type": "ai_agent"},
+    "2047097578": {"name": "LangFlow", "cpe_vendor": "langflow", "cpe_product": "langflow", "asset_type": "ai_agent"},
+    "-1506307681": {"name": "Qdrant", "cpe_vendor": "qdrant", "cpe_product": "qdrant", "asset_type": "vector_db"},
+    "1845239287": {"name": "Weaviate", "cpe_vendor": "weaviate", "cpe_product": "weaviate", "asset_type": "vector_db"},
+
+    "_comment_iot": "IoT device favicons",
+    "-836297433": {"name": "Hikvision", "cpe_vendor": "hikvision", "cpe_product": "ip_camera", "asset_type": "camera"},
+    "999357577": {"name": "Dahua", "cpe_vendor": "dahua", "cpe_product": "ip_camera", "asset_type": "camera"},
+    "2054050674": {"name": "Axis Camera", "cpe_vendor": "axis", "cpe_product": "network_camera", "asset_type": "camera"},
+    "-1312865275": {"name": "Synology DSM", "cpe_vendor": "synology", "cpe_product": "diskstation_manager", "asset_type": "nas"},
+    "1726975498": {"name": "QNAP QTS", "cpe_vendor": "qnap", "cpe_product": "qts", "asset_type": "nas"},
+    "735210099": {"name": "UniFi", "cpe_vendor": "ui", "cpe_product": "unifi_network_application", "asset_type": "router"},
+
+    "_comment_ot": "OT / ICS / SCADA favicons",
+    "-1982583886": {"name": "Siemens SIMATIC", "cpe_vendor": "siemens", "cpe_product": "simatic_hmi", "asset_type": "hmi"},
+    "1607547440": {"name": "Schneider Electric", "cpe_vendor": "schneider-electric", "cpe_product": "hmi", "asset_type": "hmi"},
+    "-647498014": {"name": "Moxa", "cpe_vendor": "moxa", "cpe_product": "nport", "asset_type": "industrial_gateway"},
+    "1174441781": {"name": "Tridium Niagara", "cpe_vendor": "tridium", "cpe_product": "niagara", "asset_type": "smart_building"},
+    "-1435346774": {"name": "Advantech WebAccess", "cpe_vendor": "advantech", "cpe_product": "webaccess", "asset_type": "scada"}
   }
 }

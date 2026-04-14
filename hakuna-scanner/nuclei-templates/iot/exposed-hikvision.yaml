@@ -1,0 +1,42 @@
+id: exposed-hikvision-camera
+
+info:
+  name: Exposed Hikvision IP Camera
+  author: hakuna
+  severity: high
+  description: |
+    Detects an internet-exposed Hikvision IP camera web interface. Hikvision
+    cameras have a history of critical vulnerabilities (CVE-2021-36260 command
+    injection, CVE-2017-7921 authentication bypass) and are frequently targeted
+    by botnets. Exposure enables video surveillance access, credential brute
+    force, and exploitation of known CVEs.
+  tags: iot,camera,hikvision,exposure
+  metadata:
+    asset_type: camera
+    finding_type: exposed_iot_service
+  reference:
+    - https://nvd.nist.gov/vuln/detail/CVE-2021-36260
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+      - "{{BaseURL}}/ISAPI/System/deviceInfo"
+
+    stop-at-first-match: true
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+          - 401
+
+      - type: word
+        words:
+          - "Hikvision"
+          - "HIKVISION"
+          - "hikvision"
+          - "DNVRS"
+          - "doc/page/login.asp"
+        condition: or

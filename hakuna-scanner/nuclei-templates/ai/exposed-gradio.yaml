@@ -1,0 +1,38 @@
+id: exposed-gradio-interface
+
+info:
+  name: Exposed Gradio ML Interface
+  author: hakuna
+  severity: medium
+  description: |
+    Detects an internet-exposed Gradio web interface serving a machine learning
+    model. Gradio interfaces often provide direct model inference access without
+    authentication, enabling prompt injection, model extraction, or abuse of
+    compute resources.
+  tags: ai,ml,gradio,exposure
+  metadata:
+    asset_type: ai_inference
+    finding_type: exposed_ai_service
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        words:
+          - "gradio"
+          - "__gradio"
+        condition: or
+
+    extractors:
+      - type: regex
+        regex:
+          - 'gradio[/_ -]?([0-9]+\.[0-9]+[0-9.]*)'
+        group: 1
