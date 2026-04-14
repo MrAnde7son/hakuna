@@ -45,7 +45,6 @@ import {
   Search,
   FileText,
   ArrowRight,
-  Send,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -73,7 +72,6 @@ const FindingDetail = React.lazy(() => import('./components/findings/FindingDeta
 const Campaigns = React.lazy(() => import('./components/campaigns/Campaigns.jsx'))
 const CampaignDetail = React.lazy(() => import('./components/campaigns/CampaignDetail.jsx'))
 const Reports = React.lazy(() => import('./components/reports/Reports.jsx'))
-const ScheduledReports = React.lazy(() => import('./components/reports/ScheduledReports.jsx'))
 const InventoryExplorer = React.lazy(() => import('./components/assets/InventoryExplorer.jsx'))
 const Settings = React.lazy(() => import('./components/settings/Settings.jsx'))
 const UploadScan = React.lazy(() => import('./components/upload/UploadScan.jsx'))
@@ -110,7 +108,6 @@ const NAV_GROUPS = [
     labelKey: 'nav.intelligence',
     items: [
       { path: '/', labelKey: 'nav.reports', icon: BarChart3, exact: true, alsoPaths: ['/reports'], permission: 'page_reports' },
-      { path: '/reports/schedules', labelKey: 'nav.scheduledReports', icon: Send, permission: 'page_reports' },
       { path: '/threat-intel', labelKey: 'nav.threatIntel', icon: ShieldAlert, permission: 'page_threat_intel' },
     ],
   },
@@ -1098,7 +1095,6 @@ function AppShell() {
             <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: 'var(--muted)' }}>Loading...</div>}>
               <Routes>
                 <Route path="/" element={<Reports />} />
-                <Route path="/reports/schedules" element={<ScheduledReports />} />
                 <Route path="/reports/:reportId" element={<Reports />} />
                 <Route path="/assets" element={<AssetInventory />} />
                 <Route path="/assets/:id" element={<AssetDetail />} />

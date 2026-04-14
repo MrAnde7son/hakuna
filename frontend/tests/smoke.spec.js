@@ -13,7 +13,6 @@ import { test, expect } from '@playwright/test'
 // Keep this list in sync with App.jsx <Route> definitions.
 const ROUTES = [
   { path: '/', name: 'Reports' },
-  { path: '/reports/schedules', name: 'Scheduled Reports' },
   { path: '/reports/1', name: 'Report Detail' },
   { path: '/assets', name: 'Assets' },
   { path: '/assets/1', name: 'Asset Detail' },

@@ -16,6 +16,7 @@ import {
   Crosshair, TreePine, Gauge, Search, Send
 } from 'lucide-react'
 import NLPReportBuilder from './NLPReportBuilder.jsx'
+import ScheduledReports from './ScheduledReports.jsx'
 import ScheduleReportModal from './ScheduleReportModal.jsx'
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -4227,6 +4228,7 @@ function TabBar({ active, onChange }) {
   const tabs = [
     { id: 'reports', label: t('reports.title'), icon: BarChart2 },
     { id: 'ai-query', label: t('reports.aiQuery'), icon: Sparkles },
+    { id: 'scheduled', label: t('nav.scheduledReports'), icon: Send },
   ]
   return (
     <div style={{
@@ -4438,6 +4440,8 @@ export default function ReportBuilder() {
       <div style={{ flex: 1, padding: 18, overflowY: 'auto' }}>
         {activeTab === 'ai-query' ? (
           <NLPReportBuilder />
+        ) : activeTab === 'scheduled' ? (
+          <ScheduledReports />
         ) : (
           <ReportList
             reports={reports}

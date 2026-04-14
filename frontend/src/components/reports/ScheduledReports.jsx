@@ -81,7 +81,7 @@ export default function ScheduledReports() {
   }
 
   return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
+    <div style={{ maxWidth: 1100 }}>
       <div style={{ marginBottom: 16 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>
           {t('reports.scheduleEmailTitle')}
