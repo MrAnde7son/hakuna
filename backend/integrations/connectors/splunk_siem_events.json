@@ -1,0 +1,146 @@
+{
+  "id": "splunk_siem_events",
+  "relay_capable": true,
+  "name": "Splunk — SIEM Events",
+  "description": "Pull security events from Splunk into the SIEM event lake with cursor-based incremental sync",
+  "category": "SIEM",
+  "logo": "/logos/vendors/splunk.svg",
+  "direction": "pull",
+  "entity": "siem_event",
+  "transport_type": "api",
+  "incremental": {
+    "cursor_field": "last_event_time",
+    "default_lookback": "-24h"
+  },
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "steps": [
+      {
+        "id": "create_search",
+        "method": "POST",
+        "path": "/services/search/jobs",
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Authorization": "Bearer {{credentials.token}}"
+        },
+        "body": {
+          "search": "{{params.search_query}}",
+          "output_mode": "json",
+          "earliest_time": "{{cursor.last_event_time|default(params.earliest_time)}}",
+          "latest_time": "now"
+        },
+        "extract": {
+          "sid": "sid"
+        }
+      },
+      {
+        "id": "poll_status",
+        "method": "GET",
+        "path": "/services/search/jobs/{{steps.create_search.sid}}",
+        "headers": {
+          "Authorization": "Bearer {{credentials.token}}"
+        },
+        "query_params": {
+          "output_mode": "json"
+        },
+        "poll": {
+          "interval_seconds": 3,
+          "timeout_seconds": 600,
+          "until": "response.entry[0].content.isDone == true"
+        }
+      },
+      {
+        "id": "get_results",
+        "method": "GET",
+        "path": "/services/search/jobs/{{steps.create_search.sid}}/results",
+        "headers": {
+          "Authorization": "Bearer {{credentials.token}}"
+        },
+        "query_params": {
+          "output_mode": "json",
+          "count": "1000",
+          "offset": "{{pagination.offset}}"
+        }
+      }
+    ],
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 1000,
+      "offset_param": "offset",
+      "total_field": "results_count"
+    }
+  },
+  "records_path": "results",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Splunk Management URL",
+      "placeholder": "https://splunk.yourcompany.com:8089"
+    },
+    "steps": [
+      {
+        "instruction": "Log into Splunk as an administrator"
+      },
+      {
+        "instruction": "Go to Settings → Tokens",
+        "deeplink_path": "/en-US/manager/launcher/authorization/tokens"
+      },
+      {
+        "instruction": "Click New Token, set an expiration, and click Create. Copy the token value.",
+        "capture": {
+          "field": "token",
+          "label": "Paste Bearer Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/services/authentication/current-context",
+      "headers": {
+        "Authorization": "Bearer {{token}}"
+      },
+      "query_params": {
+        "output_mode": "json"
+      },
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "connected_user": "entry[0].content.username"
+      },
+      "error_message": "Could not authenticate with Splunk. Check the token and management URL."
+    }
+  },
+  "default_field_map": [
+    {"source": "_time", "target": "event_time", "transform": {"type": "datetime"}},
+    {"source": "source", "target": "source_system"},
+    {"source": "event_id", "target": "source_id"},
+    {"source": "sourcetype", "target": "event_type"},
+    {"source": "severity", "target": "severity", "transform": {"type": "map", "mapping": {"critical": "critical", "high": "high", "medium": "medium", "low": "low", "informational": "info"}}},
+    {"source": "action", "target": "action"},
+    {"source": "user", "target": "user_name"},
+    {"source": "src_ip", "target": "source_ip"},
+    {"source": "dest_ip", "target": "dest_ip"},
+    {"source": "host", "target": "host_name"},
+    {"source": "_raw", "target": "message"}
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "cursor_update": {
+    "field": "last_event_time",
+    "from_record": "_time",
+    "strategy": "max"
+  },
+  "params_schema": {
+    "search_query": {
+      "type": "string",
+      "required": true,
+      "default": "search index=* sourcetype=*",
+      "description": "SPL search query for security events"
+    },
+    "earliest_time": {
+      "type": "string",
+      "default": "-24h",
+      "description": "Initial lookback window (used on first run only)"
+    }
+  }
+}

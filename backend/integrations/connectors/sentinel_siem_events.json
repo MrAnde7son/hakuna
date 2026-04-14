@@ -1,0 +1,79 @@
+{
+  "id": "sentinel_siem_events",
+  "name": "Microsoft Sentinel — SIEM Events",
+  "description": "Pull security incidents and alerts from Microsoft Sentinel into the SIEM event lake with cursor-based pagination",
+  "category": "SIEM",
+  "logo": "/logos/vendors/azure.svg",
+  "direction": "pull",
+  "entity": "siem_event",
+  "transport_type": "api",
+  "incremental": {
+    "cursor_field": "last_event_time",
+    "default_lookback": "24h"
+  },
+  "transport_config": {
+    "base_url": "https://management.azure.com",
+    "method": "GET",
+    "path": "/subscriptions/{{credentials.subscription_id}}/resourceGroups/{{credentials.resource_group}}/providers/Microsoft.OperationalInsights/workspaces/{{credentials.workspace_name}}/providers/Microsoft.SecurityInsights/incidents",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "api-version": "2023-11-01",
+      "$filter": "properties/createdTimeUtc ge {{cursor.last_event_time|default(params.lookback_from)}}",
+      "$orderby": "properties/createdTimeUtc asc",
+      "$top": "100"
+    },
+    "auth": {
+      "type": "oauth2_client_credentials",
+      "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
+      "scope": "https://management.azure.com/.default"
+    },
+    "pagination": {
+      "strategy": "link",
+      "next_link_field": "nextLink"
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "client_credentials",
+    "fields": [
+      {"field": "tenant_id", "label": "Azure Tenant ID", "type": "text", "required": true},
+      {"field": "client_id", "label": "App Registration Client ID", "type": "text", "required": true},
+      {"field": "client_secret", "label": "Client Secret", "type": "password", "required": true},
+      {"field": "subscription_id", "label": "Subscription ID", "type": "text", "required": true},
+      {"field": "resource_group", "label": "Resource Group", "type": "text", "required": true},
+      {"field": "workspace_name", "label": "Log Analytics Workspace Name", "type": "text", "required": true}
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/subscriptions/{{subscription_id}}/resourceGroups/{{resource_group}}/providers/Microsoft.OperationalInsights/workspaces/{{workspace_name}}",
+      "query_params": {"api-version": "2023-09-01"},
+      "success_condition": "status == 200",
+      "error_message": "Could not access the Sentinel workspace. Check credentials and resource path."
+    }
+  },
+  "default_field_map": [
+    {"source": "properties.createdTimeUtc", "target": "event_time", "transform": {"type": "datetime"}},
+    {"source": "properties.incidentNumber", "target": "source_id", "transform": {"type": "expression", "expr": "str(value)"}},
+    {"source": "properties.title", "target": "message"},
+    {"source": "properties.severity", "target": "severity", "transform": {"type": "map", "mapping": {"Informational": "info", "Low": "low", "Medium": "medium", "High": "high", "Critical": "critical"}}},
+    {"source": "properties.status", "target": "outcome", "transform": {"type": "map", "mapping": {"New": "unknown", "Active": "unknown", "Closed": "success"}}},
+    {"source": "properties.classification", "target": "event_category"},
+    {"source": "properties.owner.assignedTo", "target": "user_name"},
+    {"source": "properties.additionalData.alertsCount", "target": "event_type", "transform": {"type": "expression", "expr": "'incident'"}}
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "cursor_update": {
+    "field": "last_event_time",
+    "from_record": "properties.createdTimeUtc",
+    "strategy": "max"
+  },
+  "params_schema": {
+    "lookback_from": {
+      "type": "string",
+      "default": "2026-04-13T00:00:00Z",
+      "description": "Initial lookback start time (ISO 8601, used on first run only)"
+    }
+  }
+}

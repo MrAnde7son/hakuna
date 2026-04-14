@@ -1998,6 +1998,7 @@ class Integration(Base):
     transport_type = Column(String, nullable=False)  # api | sql | file | mcp | relay | stream
     transport_config = Column(JSON, nullable=False, default=dict)
     stream_config = Column(JSON, nullable=True)  # parser, sample_event, vrl_transform (for transport_type=stream)
+    cursor_state = Column(JSON, nullable=True)   # incremental sync state: {last_event_time, offset, token, ...}
     credentials_id = Column(String, ForeignKey("integration_credentials.id"), nullable=True)
     records_path = Column(String, nullable=True)  # dot-path to records array in response
     field_map = Column(JSON, nullable=False, default=list)

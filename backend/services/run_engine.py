@@ -89,6 +89,12 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
         config = integration.transport_config or {}
         config["records_path"] = integration.records_path
 
+        # Inject cursor state into params for template rendering
+        cursor_state = integration.cursor_state or {}
+        if not integration.params:
+            integration.params = {}
+        integration.params["cursor"] = cursor_state
+
         pull_scan_id = None
         if integration.direction == "pull":
             pull_scan_id = await _execute_pull(
@@ -99,10 +105,13 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
                 db, transport, config, credentials, integration, run, progress
             )
 
-        # Run full post-ingest pipeline on pulled data
-        if integration.direction == "pull":
+        # Run full post-ingest pipeline on pulled data (skip for siem_event — no Scan)
+        if integration.direction == "pull" and integration.entity != "siem_event":
             from services.post_ingest import finalize_scan
             finalize_scan(db, scan_id=pull_scan_id, org_id=integration.org_id)
+
+        # Update cursor state from connector template config
+        _update_cursor_state(db, integration, run)
 
         # Mark success
         run.status = "success" if not run.errors else "partial"
@@ -139,6 +148,37 @@ async def execute(db: Session, integration_id: str, triggered_by: str = "manual"
         _fire_integration_workflows(db, integration, run)
 
     return run.id
+
+
+def _update_cursor_state(db: Session, integration: Integration, run: IntegrationRun):
+    """Persist incremental sync cursor after a successful pull.
+
+    Reads cursor_update config from the connector template and saves the
+    latest position (e.g., last_event_time) to integration.cursor_state
+    so the next run starts from where this one left off.
+    """
+    if not integration.template_id or run.status == "error":
+        return
+    try:
+        from integrations.connector_loader import get_connector
+        tpl = get_connector(integration.template_id)
+        if not tpl or "cursor_update" not in tpl:
+            return
+
+        cursor_cfg = tpl["cursor_update"]
+        cursor_field = cursor_cfg.get("field")
+        if not cursor_field:
+            return
+
+        # The cursor value is tracked during pull via step_log's last record timestamp
+        # For now, use last_run_at as the cursor for the next run
+        new_cursor = dict(integration.cursor_state or {})
+        new_cursor[cursor_field] = datetime.utcnow().isoformat() + "Z"
+        integration.cursor_state = new_cursor
+        db.flush()
+        logger.info("Cursor updated for integration %s: %s", integration.id, new_cursor)
+    except Exception as e:
+        logger.warning("Failed to update cursor state: %s", e)
 
 
 def _fire_integration_workflows(db: Session, integration: Integration, run: IntegrationRun):
@@ -200,28 +240,31 @@ async def _execute_pull(db, transport, config, credentials, integration, run, pr
     # Check if this connector requires LLM extraction (unstructured sources)
     llm_extract_config = config.get("llm_extract")
 
-    # Reuse existing scan for this integration, or create one if first run
-    scan_filename = f"integration:{integration.name or integration.id}"
-    placeholder_scan = (
-        db.query(Scan)
-        .filter(Scan.org_id == integration.org_id, Scan.filename == scan_filename)
-        .order_by(Scan.created_at.desc())
-        .first()
-    )
-    if placeholder_scan:
-        placeholder_scan.status = "completed"
-        placeholder_scan.last_run_at = datetime.utcnow()
-        db.flush()
-    else:
-        placeholder_scan = Scan(
-            org_id=integration.org_id,
-            filename=scan_filename,
-            source_type=source_system,
-            status="completed",
+    # SIEM events go directly to siem_events table — no Scan wrapper needed
+    scan_id = None
+    if entity != "siem_event":
+        # Reuse existing scan for this integration, or create one if first run
+        scan_filename = f"integration:{integration.name or integration.id}"
+        placeholder_scan = (
+            db.query(Scan)
+            .filter(Scan.org_id == integration.org_id, Scan.filename == scan_filename)
+            .order_by(Scan.created_at.desc())
+            .first()
         )
-        db.add(placeholder_scan)
-        db.flush()
-    scan_id = placeholder_scan.id
+        if placeholder_scan:
+            placeholder_scan.status = "completed"
+            placeholder_scan.last_run_at = datetime.utcnow()
+            db.flush()
+        else:
+            placeholder_scan = Scan(
+                org_id=integration.org_id,
+                filename=scan_filename,
+                source_type=source_system,
+                status="completed",
+            )
+            db.add(placeholder_scan)
+            db.flush()
+        scan_id = placeholder_scan.id
 
     batch = []
     batch_size = 500
@@ -320,6 +363,20 @@ async def _execute_pull(db, transport, config, credentials, integration, run, pr
                 mapped["source_system"] = source_system
             if "source_id" not in mapped or not mapped.get("source_id"):
                 mapped["source_id"] = str(total_fetched)
+
+            # SIEM events need org_id + dedup_hash injected
+            if entity == "siem_event":
+                mapped["org_id"] = integration.org_id
+                if "dedup_hash" not in mapped or not mapped.get("dedup_hash"):
+                    import hashlib
+                    _key = "|".join([
+                        str(integration.org_id),
+                        str(mapped.get("source_system", "")),
+                        str(mapped.get("source_id", "")),
+                        str(mapped.get("event_time", "")),
+                        str(mapped.get("event_type", "")),
+                    ])
+                    mapped["dedup_hash"] = hashlib.sha256(_key.encode()).hexdigest()
 
             # Collect mapping errors
             for err in result["errors"]:

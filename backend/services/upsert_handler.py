@@ -464,6 +464,10 @@ def _generic_insert(db: Session, meta, record: dict) -> UpsertResult:
         value = _coerce(record.get(col_name), col["type"])
         if value is not None:
             setattr(obj, col_name, value)
+    # Also set org_id if present in record and model has it (auto-managed but
+    # required for SIEM events and other org-scoped entities via integration pull)
+    if "org_id" in record and hasattr(obj, "org_id") and record["org_id"] is not None:
+        obj.org_id = record["org_id"]
     db.add(obj)
     db.flush()
     return UpsertResult(action="inserted", id=obj.id)
@@ -745,5 +749,17 @@ def _coerce(value, col_type: str):
         if isinstance(value, str):
             return value.lower() in ("true", "1", "yes")
         return bool(value)
-    # string / json / datetime — pass through as-is
+    if col_type == "datetime":
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%f",
+                        "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(value, fmt)
+                except ValueError:
+                    continue
+            return None
+        return None
+    # string / json — pass through as-is
     return value
