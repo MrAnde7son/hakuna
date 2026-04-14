@@ -2042,6 +2042,50 @@ class IntegrationRun(Base):
 
 
 # ─────────────────────────────────────────────────────────
+# SIEM Events (hot tier)
+# ─────────────────────────────────────────────────────────
+
+@importable(
+    slug="siem_event",
+    display_name="SIEM Event",
+    category="siem",
+    dedup_keys=["org_id", "dedup_hash"],
+    required_fields=["event_time", "source_system", "event_type"],
+    description="Security event from SIEM sources (logs, alerts, telemetry)",
+)
+class SIEMEvent(Base):
+    """Security event stored in the hot tier (Postgres, last 72h)."""
+    __tablename__ = "siem_events"
+
+    id = Column(String, primary_key=True, default=_gen_uuid)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    event_time = Column(DateTime, nullable=False, index=True)
+    ingested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    source_system = Column(String, nullable=False, index=True)       # e.g. palo_alto, crowdstrike, syslog
+    source_id = Column(String, nullable=True)                        # original event ID in source
+    event_type = Column(String, nullable=False, index=True)          # e.g. authentication, network, process
+    event_category = Column(String, nullable=True)                   # ECS category: threat, intrusion_detection, etc.
+    severity = Column(String, nullable=False, default="info")        # low | medium | high | critical | info
+    action = Column(String, nullable=True)                           # allowed, denied, dropped, etc.
+    outcome = Column(String, nullable=True)                          # success, failure, unknown
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
+    user_name = Column(String, nullable=True)
+    source_ip = Column(String, nullable=True)
+    dest_ip = Column(String, nullable=True)
+    host_name = Column(String, nullable=True)
+    message = Column(Text, nullable=True)
+    raw = Column(JSON, nullable=True)                                # original event payload
+    normalized = Column(JSON, nullable=True)                         # ECS-normalized fields
+    dedup_hash = Column(String, nullable=False, index=True)          # unique per org for dedup
+    integration_id = Column(String, ForeignKey("integrations.id"), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "dedup_hash", name="uq_siem_events_org_dedup"),
+        Index("ix_siem_events_org_time", "org_id", event_time.desc()),
+    )
+
+
+# ─────────────────────────────────────────────────────────
 # Relay Agents (on-prem connectivity)
 # ─────────────────────────────────────────────────────────
 
