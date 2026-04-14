@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Search, Clock, Filter, ChevronDown, ChevronRight, X, Radio } from 'lucide-react'
 import { searchSiemEvents, getSiemEvent } from '../../api'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
+import { PageHeader, EmptyState } from '../shared/ui'
 
 const SEVERITY_COLORS = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#3b82f6', info: '#6b7280' }
 const TIME_RANGES = [
@@ -64,37 +65,38 @@ export default function EventSearch() {
   }
 
   return (
-    <div style={{ padding: '24px', maxWidth: 1400, margin: '0 auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-        <Radio size={24} style={{ color: 'var(--accent)' }} />
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{t('siem.eventSearch', 'Event Search')}</h1>
-        <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>{total.toLocaleString()} {t('siem.events', 'events')}</span>
-      </div>
+    <div>
+      <PageHeader
+        title={t('siem.eventSearch', 'Event Search')}
+        subtitle={t('siem.eventsCount', '{{count}} events', { count: total.toLocaleString() })}
+        action={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', fontSize: 13 }}
+                    value={timeRange} onChange={e => setTimeRange(Number(e.target.value))}>
+              {TIME_RANGES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+            </select>
+            <select style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', fontSize: 13 }}
+                    value={severity} onChange={e => setSeverity(e.target.value)}>
+              <option value="">{t('siem.allSeverities', 'All severities')}</option>
+              {['critical', 'high', 'medium', 'low', 'info'].map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <input
+              style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', width: 160, fontSize: 13 }}
+              placeholder={t('siem.sourceSystem', 'Source system')} value={sourceSystem}
+              onChange={e => setSourceSystem(e.target.value)}
+            />
+          </div>
+        }
+      />
 
-      {/* Search bar + filters */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 300, position: 'relative' }}>
-          <Search size={16} style={{ position: 'absolute', left: 10, top: 10, color: 'var(--text-muted)' }} />
-          <input
-            style={{ width: '100%', padding: '8px 8px 8px 32px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)' }}
-            placeholder={t('siem.searchPlaceholder', 'Search event messages...')}
-            value={query} onChange={e => setQuery(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && loadEvents()}
-          />
-        </div>
-        <select style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)' }}
-                value={timeRange} onChange={e => setTimeRange(Number(e.target.value))}>
-          {TIME_RANGES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-        </select>
-        <select style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)' }}
-                value={severity} onChange={e => setSeverity(e.target.value)}>
-          <option value="">{t('siem.allSeverities', 'All severities')}</option>
-          {['critical', 'high', 'medium', 'low', 'info'].map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
+      {/* Search bar */}
+      <div style={{ marginBottom: 16, position: 'relative' }}>
+        <Search size={16} style={{ position: 'absolute', left: 10, top: 10, color: 'var(--text-muted)' }} />
         <input
-          style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', width: 160 }}
-          placeholder={t('siem.sourceSystem', 'Source system')} value={sourceSystem}
-          onChange={e => setSourceSystem(e.target.value)}
+          style={{ width: '100%', padding: '8px 8px 8px 32px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', fontSize: 13 }}
+          placeholder={t('siem.searchPlaceholder', 'Search event messages...')}
+          value={query} onChange={e => setQuery(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && loadEvents()}
         />
       </div>
 
@@ -124,9 +126,9 @@ export default function EventSearch() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>{t('app.loading', 'Loading...')}</td></tr>
+              <tr><td colSpan={6}><EmptyState icon={Radio} title={t('app.loading', 'Loading...')} /></td></tr>
             ) : events.length === 0 ? (
-              <tr><td colSpan={6} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>{t('siem.noEvents', 'No events found')}</td></tr>
+              <tr><td colSpan={6}><EmptyState icon={Radio} title={t('siem.noEvents', 'No events found')} sub={t('siem.noEventsHint', 'Events will appear here once data is ingested through your ingest sources.')} /></td></tr>
             ) : events.map(ev => (
               <tr key={ev.id} onClick={() => handleEventClick(ev)} style={{ borderBottom: '1px solid var(--border)', cursor: 'pointer' }}
                   onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}

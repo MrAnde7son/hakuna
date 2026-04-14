@@ -36,19 +36,25 @@ transforms:
     source: |
       .source_system = "syslog"
       .event_type = "system"
-      .host_name = .host ?? ""
-      .event_time = to_string!(.timestamp ?? now())
+      .host_name = to_string(.host) ?? ""
+      .event_time = to_string(.timestamp) ?? to_string(now())
 
       # Map syslog severity (0=emergency..7=debug)
-      sev = to_int!(.severity ?? "6")
-      .severity = if sev <= 2 { "critical" }
-        else if sev == 3 { "high" }
-        else if sev == 4 { "medium" }
-        else if sev == 5 { "low" }
-        else { "info" }
+      sev = to_int(.severity) ?? 6
+      if sev <= 2 {
+        .severity = "critical"
+      } else if sev == 3 {
+        .severity = "high"
+      } else if sev == 4 {
+        .severity = "medium"
+      } else if sev == 5 {
+        .severity = "low"
+      } else {
+        .severity = "info"
+      }
 
       # Detect auth events
-      appname = to_string!(.appname ?? "")
+      appname = to_string(.appname) ?? ""
       if contains(appname, "sshd") || contains(appname, "sudo") {
         .event_type = "authentication"
       }
@@ -58,10 +64,10 @@ transforms:
     inputs:
       - hec_input
     source: |
-      .source_system = .source ?? "hec"
-      .event_type = .sourcetype ?? "hec_event"
-      .host_name = .host ?? ""
-      .event_time = to_string!(.timestamp ?? now())
+      .source_system = to_string(.source) ?? "hec"
+      .event_type = to_string(.sourcetype) ?? "hec_event"
+      .host_name = to_string(.host) ?? ""
+      .event_time = to_string(.timestamp) ?? to_string(now())
       .severity = "info"
 
 sinks:

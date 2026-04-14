@@ -32,7 +32,7 @@ ALL_PERMISSION_KEYS = [
     "page_dashboard", "page_assets", "page_findings", "page_reports",
     "page_inventory", "page_campaigns", "page_remediation", "page_agents",
     "page_tags", "page_upload", "page_settings", "page_threat_intel",
-    "page_workflows",
+    "page_workflows", "page_siem",
 ]
 
 # Built-in role defaults — what each role gets out of the box.
@@ -56,7 +56,7 @@ BUILTIN_ROLE_DEFAULTS = {
         "page_reports": True, "page_inventory": True, "page_campaigns": True,
         "page_remediation": True, "page_agents": True, "page_tags": True,
         "page_upload": True, "page_threat_intel": True, "page_workflows": True,
-        "page_settings": True,
+        "page_settings": True, "page_siem": True,
     },
     "viewer": {
         "read_scans": True, "read_assets": True, "read_findings": True,

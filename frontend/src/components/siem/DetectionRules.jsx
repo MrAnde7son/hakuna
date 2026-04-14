@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Shield, Plus, Trash2, Edit2, Play, Upload, ToggleLeft, ToggleRight } from 'lucide-react'
 import { getDetectionRules, createDetectionRule, updateDetectionRule, deleteDetectionRule, testDetectionRule } from '../../api'
+import { PageHeader, EmptyState, Button } from '../shared/ui'
 
 const SEVERITY_COLORS = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#3b82f6', info: '#6b7280' }
 
@@ -54,18 +55,16 @@ export default function DetectionRules() {
   }
 
   return (
-    <div style={{ padding: '24px', maxWidth: 1200, margin: '0 auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Shield size={24} style={{ color: 'var(--accent)' }} />
-          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{t('siem.detectionRules', 'Detection Rules')}</h1>
-          <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>{total} {t('siem.rules', 'rules')}</span>
-        </div>
-        <button onClick={() => setShowCreate(true)}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 8, border: 'none', background: 'var(--accent)', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
-          <Plus size={16} /> {t('siem.createRule', 'Create Rule')}
-        </button>
-      </div>
+    <div>
+      <PageHeader
+        title={t('siem.detectionRules', 'Detection Rules')}
+        subtitle={`${total} ${t('siem.rules', 'rules')}`}
+        action={
+          <Button onClick={() => setShowCreate(true)}>
+            <Plus size={14} /> {t('siem.createRule', 'Create Rule')}
+          </Button>
+        }
+      />
 
       {/* Test result banner */}
       {testResult && (
@@ -79,8 +78,8 @@ export default function DetectionRules() {
 
       {/* Rules list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {loading ? <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>{t('app.loading')}</div>
-        : rules.length === 0 ? <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>{t('siem.noRules', 'No detection rules yet')}</div>
+        {loading ? <EmptyState icon={Shield} title={t('app.loading')} />
+        : rules.length === 0 ? <EmptyState icon={Shield} title={t('siem.noRules', 'No detection rules yet')} sub={t('siem.noRulesHint', 'Create a detection rule to automatically monitor events and trigger alerts.')} />
         : rules.map(rule => (
           <div key={rule.id} style={{ padding: '14px 18px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)',
                                        display: 'flex', alignItems: 'center', gap: 12, opacity: rule.enabled ? 1 : 0.6 }}>

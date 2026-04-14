@@ -72,6 +72,7 @@ def init_db():
     )
     Base.metadata.create_all(bind=engine)
     _migrate_add_columns()
+    _run_migrations()
 
 
 def _migrate_add_columns():
@@ -215,6 +216,10 @@ def _migrate_add_columns():
             ("password_reset_token", "VARCHAR"),
             ("password_reset_expires", "TIMESTAMP"),
             ("google_id", "VARCHAR"),
+            ("email_verified", "BOOLEAN DEFAULT FALSE"),
+            ("email_verify_token", "VARCHAR"),
+            ("email_verify_expires", "TIMESTAMP"),
+            ("saml_subject_id", "VARCHAR"),
         ],
         "organizations": [
             ("stripe_customer_id", "VARCHAR"),
@@ -223,6 +228,8 @@ def _migrate_add_columns():
             ("subscription_status", "VARCHAR"),
             ("trial_ends_at", "TIMESTAMP"),
             ("current_period_end", "TIMESTAMP"),
+            ("ai_tokens_used", "INTEGER DEFAULT 0"),
+            ("ai_tokens_reset_at", "TIMESTAMP"),
         ],
         "integrations": [
             ("logo_url", "VARCHAR"),
@@ -266,6 +273,51 @@ def _migrate_add_columns():
                     conn.commit()
             except Exception as exc:
                 logger.warning("_migrate_add_columns: skipping %s.%s — %s", table, col_name, exc)
+
+
+def _run_migrations():
+    """Auto-run all migration scripts in backend/migrations/ in numeric order.
+
+    Each script must expose an upgrade() function and be idempotent.
+    Tracks which migrations have already been applied in a _migrations table.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    migrations_dir = Path(__file__).resolve().parent.parent / "migrations"
+    if not migrations_dir.is_dir():
+        return
+
+    # Ensure tracking table exists
+    with engine.connect() as conn:
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS _migrations ("
+            "  name VARCHAR PRIMARY KEY,"
+            "  applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        ))
+        conn.commit()
+        applied = {row[0] for row in conn.execute(text("SELECT name FROM _migrations")).fetchall()}
+
+    scripts = sorted(migrations_dir.glob("[0-9]*.py"))
+    for script in scripts:
+        if script.name in applied:
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location(script.stem, script)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if hasattr(mod, "upgrade"):
+                mod.upgrade()
+                with engine.connect() as conn:
+                    conn.execute(text("INSERT INTO _migrations (name) VALUES (:name)"), {"name": script.name})
+                    conn.commit()
+                logger.info("Migration applied: %s", script.name)
+            else:
+                logger.warning("Migration %s has no upgrade() — skipping", script.name)
+        except Exception as exc:
+            logger.error("Migration %s failed: %s", script.name, exc)
+            break  # Stop on first failure to preserve order
 
 
 def get_pool_status() -> dict:

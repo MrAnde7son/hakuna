@@ -296,6 +296,10 @@ def _determine_effort(root_cause_type, finding_count, asset_count):
         return "quick_win"
     if root_cause_type == "missing_patch" and finding_count > 20:
         return "complex"
+    if root_cause_type == "missing_patch" and asset_count <= 5:
+        return "quick_win"
+    if root_cause_type == "outdated_version" and asset_count <= 5:
+        return "quick_win"
     if asset_count > 10:
         return "complex"
     return "medium"

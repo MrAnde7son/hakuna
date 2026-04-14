@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Plug, Plus, Trash2, Copy, Check, RefreshCw } from 'lucide-react'
 import { getSiemEndpoints, createSiemEndpoint, deleteSiemEndpoint, getVectorTemplates, generateVectorConfig } from '../../api'
+import { PageHeader, EmptyState, Button } from '../shared/ui'
 
 export default function IngestSources() {
   const { t } = useTranslation()
@@ -57,17 +58,16 @@ export default function IngestSources() {
   }
 
   return (
-    <div style={{ padding: '24px', maxWidth: 1200, margin: '0 auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Plug size={24} style={{ color: 'var(--accent)' }} />
-          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{t('siem.ingestSources', 'Ingest Sources')}</h1>
-        </div>
-        <button onClick={() => setShowCreate(true)}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 8, border: 'none', background: 'var(--accent)', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
-          <Plus size={16} /> {t('siem.addSource', 'Add Source')}
-        </button>
-      </div>
+    <div>
+      <PageHeader
+        title={t('siem.ingestSources', 'Ingest Sources')}
+        subtitle={t('siem.ingestSourcesDesc', 'Webhook endpoints for receiving security events')}
+        action={
+          <Button onClick={() => setShowCreate(true)}>
+            <Plus size={14} /> {t('siem.addSource', 'Add Source')}
+          </Button>
+        }
+      />
 
       {/* New endpoint credentials (shown once after creation) */}
       {newEndpoint && (
@@ -90,8 +90,8 @@ export default function IngestSources() {
 
       {/* Endpoints list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {loading ? <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>{t('app.loading')}</div>
-        : endpoints.length === 0 ? <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>{t('siem.noEndpoints', 'No ingest endpoints configured')}</div>
+        {loading ? <EmptyState icon={Plug} title={t('app.loading')} />
+        : endpoints.length === 0 ? <EmptyState icon={Plug} title={t('siem.noEndpoints', 'No ingest endpoints configured')} sub={t('siem.noEndpointsHint', 'Add an ingest source to start receiving security events via webhook.')} />
         : endpoints.map(ep => (
           <div key={ep.id} style={{ padding: '14px 18px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)',
                                      display: 'flex', alignItems: 'center', gap: 12 }}>

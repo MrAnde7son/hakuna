@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, CheckCircle, XCircle, User, Clock, ChevronRight } from 'lucide-react'
 import { getAlerts, triageAlert, getAlert } from '../../api'
+import { PageHeader, EmptyState } from '../shared/ui'
 
 const SEVERITY_COLORS = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#3b82f6', info: '#6b7280' }
 const STATUS_ICONS = { open: AlertTriangle, triaged: Clock, closed: CheckCircle, false_positive: XCircle }
@@ -45,12 +46,11 @@ export default function AlertTriage() {
   }
 
   return (
-    <div style={{ padding: '24px', maxWidth: 1400, margin: '0 auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-        <AlertTriangle size={24} style={{ color: '#f97316' }} />
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{t('siem.alertTriage', 'Alert Triage')}</h1>
-        <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>{total} {t('siem.alertsLabel', 'alerts')}</span>
-      </div>
+    <div>
+      <PageHeader
+        title={t('siem.alertTriage', 'Alert Triage')}
+        subtitle={`${total} ${t('siem.alertsLabel', 'alerts')}`}
+      />
 
       {/* Status filter tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
@@ -67,8 +67,8 @@ export default function AlertTriage() {
       <div style={{ display: 'flex', gap: 16 }}>
         {/* Alert list */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {loading ? <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>{t('app.loading')}</div>
-          : alerts.length === 0 ? <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>{t('siem.noAlerts', 'No alerts')}</div>
+          {loading ? <EmptyState icon={AlertTriangle} title={t('app.loading')} />
+          : alerts.length === 0 ? <EmptyState icon={AlertTriangle} title={t('siem.noAlerts', 'No alerts')} sub={t('siem.noAlertsHint', 'Alerts will appear when detection rules are triggered by matching events.')} />
           : alerts.map(alert => (
             <div key={alert.id} onClick={() => handleSelect(alert)}
                  style={{ padding: '12px 16px', borderRadius: 8, border: '1px solid var(--border)',

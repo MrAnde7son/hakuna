@@ -460,7 +460,7 @@ export default function AggregatedSolutions() {
   }
 
   return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
+    <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
         <PageHeader
           title={t('aggregated.title')}
