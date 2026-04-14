@@ -1,0 +1,262 @@
+name: Deploy to GCP
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      components:
+        description: "Components to deploy (comma-separated: api,frontend,scanners,migrate)"
+        required: false
+        default: "api,frontend,migrate"
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: hakuna-prod-2026
+  REGION: me-west1
+  ZONE: me-west1-a
+  REGISTRY: me-west1-docker.pkg.dev/hakuna-prod-2026/hakuna
+  CLOUD_RUN_SERVICE: hakuna-api
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Run backend tests
+        run: python -m pytest tests/ -x -q
+        working-directory: backend
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+
+  deploy-api:
+    name: Deploy API
+    needs: test
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.inputs.components, 'api')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build and push API image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            -f Dockerfile.prod \
+            -t "${{ env.REGISTRY }}/api:${{ github.sha }}" \
+            -t "${{ env.REGISTRY }}/api:latest" \
+            .
+          docker push "${{ env.REGISTRY }}/api:${{ github.sha }}"
+          docker push "${{ env.REGISTRY }}/api:latest"
+
+      - name: Get scanner VM IP from Terraform
+        id: tf
+        run: |
+          cd terraform
+          terraform init -backend=true -input=false
+          SCANNER_IP=$(terraform output -raw scanner_vm_ip 2>/dev/null || true)
+          echo "scanner_ip=$SCANNER_IP" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Deploy to Cloud Run
+        run: |
+          GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret="google-oauth-client-id")
+          GOOGLE_INTEGRATION_CLIENT_ID=$(gcloud secrets versions access latest --secret="google-integration-client-id" 2>/dev/null || true)
+          GOOGLE_INTEGRATION_CLIENT_SECRET=$(gcloud secrets versions access latest --secret="google-integration-client-secret" 2>/dev/null || true)
+
+          ENV_VARS="GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}"
+          if [[ -n "${{ steps.tf.outputs.scanner_ip }}" ]]; then
+            ENV_VARS="${ENV_VARS},HAKUNA_SCANNER_URL=http://${{ steps.tf.outputs.scanner_ip }}:8001"
+            ENV_VARS="${ENV_VARS},VM_SCANNER_URL=http://${{ steps.tf.outputs.scanner_ip }}:8002"
+          fi
+          if [[ -n "${GOOGLE_INTEGRATION_CLIENT_ID}" ]]; then
+            ENV_VARS="${ENV_VARS},GOOGLE_INTEGRATION_CLIENT_ID=${GOOGLE_INTEGRATION_CLIENT_ID}"
+            ENV_VARS="${ENV_VARS},OAUTH_CLIENT_SECRET=${GOOGLE_INTEGRATION_CLIENT_SECRET}"
+          fi
+
+          gcloud run services update "${{ env.CLOUD_RUN_SERVICE }}" \
+            --image="${{ env.REGISTRY }}/api:${{ github.sha }}" \
+            --region="${{ env.REGION }}" \
+            --update-env-vars="${ENV_VARS}" \
+            --quiet
+
+  deploy-frontend:
+    name: Deploy Frontend
+    needs: test
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.inputs.components, 'frontend')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          export VITE_GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret="google-oauth-client-id")
+          export VITE_SENTRY_DSN=$(gcloud secrets versions access latest --secret="sentry-dsn-frontend" 2>/dev/null || true)
+          export VITE_ENVIRONMENT=production
+          npm ci
+          npm run build
+
+      - name: Get frontend bucket
+        id: bucket
+        run: |
+          cd terraform
+          terraform init -backend=true -input=false
+          BUCKET=$(terraform output -raw frontend_bucket 2>/dev/null || echo "hakuna-frontend-${{ env.PROJECT_ID }}")
+          echo "name=$BUCKET" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Upload hashed assets (long cache)
+        run: |
+          BUCKET="${{ steps.bucket.outputs.name || format('hakuna-frontend-{0}', env.PROJECT_ID) }}"
+          gsutil -m -h "Cache-Control:public, max-age=31536000, immutable" \
+            rsync -r -x "^index\.html$" frontend/dist "gs://${BUCKET}"
+
+      - name: Invalidate CDN cache
+        run: |
+          gcloud compute url-maps invalidate-cdn-cache hakuna-url-map \
+            --path "/*" --global --quiet || true
+
+      - name: Upload index.html (no cache)
+        run: |
+          BUCKET="${{ steps.bucket.outputs.name || format('hakuna-frontend-{0}', env.PROJECT_ID) }}"
+          gsutil -h "Cache-Control:no-cache, no-store, must-revalidate" \
+            cp frontend/dist/index.html "gs://${BUCKET}/index.html"
+
+      - name: Clean stale assets
+        run: |
+          BUCKET="${{ steps.bucket.outputs.name || format('hakuna-frontend-{0}', env.PROJECT_ID) }}"
+          gsutil -m rsync -r -d -x "^index\.html$" frontend/dist "gs://${BUCKET}" || true
+
+  migrate:
+    name: Run Migrations
+    needs: deploy-api
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.inputs.components, 'migrate')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Run backend migrations
+        run: |
+          cd terraform
+          terraform init -backend=true -input=false
+          SQL_CONN=$(terraform output -raw cloud_sql_connection_name)
+          cd ..
+
+          DB_PASS=$(gcloud secrets versions access latest --secret="hakuna-db-password")
+          DB_PASS_ENCODED=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote_plus(sys.stdin.read().strip()))" <<< "${DB_PASS}")
+          DB_URL="postgresql://hakuna:${DB_PASS_ENCODED}@/hakuna?host=/cloudsql/${SQL_CONN}"
+
+          SERVICE_ACCOUNT="hakuna-api@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
+          VPC_CONNECTOR="projects/${{ env.PROJECT_ID }}/locations/${{ env.REGION }}/connectors/hakuna-vpc-connector"
+          MIGRATE_CMD='cd /app && for f in migrations/[0-9]*.py; do [ -f "$f" ] && echo "Applying: $f" && python "$f"; done && echo "All migrations applied."'
+
+          gcloud run jobs delete hakuna-migrate --region="${{ env.REGION }}" --quiet 2>/dev/null || true
+          gcloud run jobs create hakuna-migrate \
+            --region="${{ env.REGION }}" \
+            --image="${{ env.REGISTRY }}/api:${{ github.sha }}" \
+            --command="sh" \
+            --args="-c,${MIGRATE_CMD}" \
+            --set-env-vars="DATABASE_URL=${DB_URL}" \
+            --vpc-connector="${VPC_CONNECTOR}" \
+            --vpc-egress=private-ranges-only \
+            --set-cloudsql-instances="${SQL_CONN}" \
+            --service-account="${SERVICE_ACCOUNT}" \
+            --max-retries=0 \
+            --task-timeout=300s \
+            --execute-now \
+            --wait
+
+      - name: Run scanner migrations
+        run: |
+          gcloud compute ssh hakuna-scanners --zone="${{ env.ZONE }}" --tunnel-through-iap \
+            --command="cd /opt/hakuna-scanners && sudo docker compose exec -T -e PYTHONPATH=/app easm-api alembic upgrade head" \
+            --quiet

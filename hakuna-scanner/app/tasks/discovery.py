@@ -636,7 +636,7 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                             "stage": (
                                 group_names[0] if len(group) == 1
                                 else "+".join(group_names)
-                            ),
+                            )[:64],
                             "idx": first_absolute_idx,
                             "now": datetime.now(timezone.utc),
                         },

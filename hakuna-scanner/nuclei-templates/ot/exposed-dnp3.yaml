@@ -1,0 +1,33 @@
+id: exposed-dnp3
+
+info:
+  name: Internet-Exposed DNP3 Service
+  author: hakuna
+  severity: critical
+  description: |
+    Detects an internet-exposed DNP3 (Distributed Network Protocol 3) service
+    on port 20000. DNP3 is used in electric utilities, water treatment, and oil
+    & gas SCADA systems. The protocol has no native authentication in most
+    deployments. Exposure allows reading measurement data, sending control
+    commands (e.g., opening circuit breakers), and disrupting utility operations.
+  tags: ot,ics,scada,dnp3,utility,exposure
+  metadata:
+    asset_type: plc
+    finding_type: exposed_ot_service
+
+network:
+  - inputs:
+      # DNP3 Data Link Layer: Reset Link (FC=0)
+      - data: "056405c001000000"
+        type: hex
+
+    host:
+      - "{{Hostname}}"
+      - "{{Host}}:20000"
+
+    matchers:
+      # DNP3 start bytes
+      - type: binary
+        binary:
+          - "0564"
+        part: body

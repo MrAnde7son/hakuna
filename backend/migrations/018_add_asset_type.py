@@ -51,7 +51,7 @@ def upgrade():
                     'ip', COALESCE(ip, ''),
                     'hostname', COALESCE(hostname, ''),
                     'fqdn', COALESCE(fqdn, '')
-                )::text
+                )::json
                 WHERE asset_identity IS NULL
             """))
         else:

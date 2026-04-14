@@ -425,7 +425,7 @@ export const getBenchmarks = (scanId, industry, orgSize, source) => {
   const qs = p.toString()
   return request(`/benchmarks${qs ? `?${qs}` : ''}`)
 }
-export const getTrending = () => request('/reports/trending')
+export const getTrending = (mode) => request(`/reports/trending${mode ? `?mode=${mode}` : ''}`)
 export const getMetricsTimeline = () => request('/reports/metrics-timeline')
 export const getFunnel = (body) => request('/reports/funnel', {
   method: 'POST',

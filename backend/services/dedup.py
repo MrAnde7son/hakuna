@@ -595,38 +595,32 @@ def dedup_inventory(inventory: dict, cfg: dict) -> dict:
 
     cfg is the full loaded config (from load_config()).
     Returns a new inventory dict with duplicates removed/merged.
+
+    Inventory keys are discovered from the config + any dynamically registered
+    types (via entity_registry.register_inventory_type) — no hardcoded KEY_MAP.
     """
     if not cfg.get("enabled") or not cfg.get("apply_on_upload"):
         return inventory
 
     inv_cfg = cfg.get("inventory", {})
+
+    # Merge dynamic defaults from registry (registered types that aren't in the
+    # JSON config yet still get deduped with their declared defaults).
+    from models.entity_registry import get_dedup_defaults
+    dynamic_defaults = get_dedup_defaults()
+
+    # Process every key present in the inventory dict — covers both config-file
+    # entries and dynamically registered types.
     result = {}
+    for inv_key, records in inventory.items():
+        if not records:
+            result[inv_key] = records
+            continue
 
-    # Map inventory_extractor keys → dedup config keys
-    KEY_MAP = {
-        "users": "users",
-        "groups": "groups",
-        "services": "services",
-        "netconns": "netconns",
-        "scheduled_tasks": "scheduled_tasks",
-        "patches": "patches",
-        "logged_on": "logged_on",
-        "shares": "shares",
-        "software": "software",
-        "security_controls": "security_controls",
-        "computers": "computers",
-        "password_policies": "password_policies",
-        "env_vars": "env_vars",
-        "processes": "processes",
-        "certificates": "certificates",
-        "ai_tools": "ai_tools",
-        "database_instances": "database_instances",
-    }
+        # Config-file entry takes precedence; fall back to registered defaults.
+        entity_cfg = inv_cfg.get(inv_key) or dynamic_defaults.get(inv_key, {})
 
-    for inv_key, dedup_key in KEY_MAP.items():
-        records = inventory.get(inv_key, [])
-        entity_cfg = inv_cfg.get(dedup_key, {})
-        if records and entity_cfg.get("enabled", True):
+        if entity_cfg.get("enabled", True):
             before = len(records)
             records = dedup_records(
                 records,

@@ -127,7 +127,7 @@ def severity_breakdown_grouped(query) -> dict:
     """Single GROUP BY query for severity counts instead of 5 separate COUNTs."""
     from models.models import Finding
     sev_labels = {4: "critical", 3: "high", 2: "medium", 1: "low", 0: "info"}
-    rows = query.with_entities(Finding.severity, func.count()).group_by(Finding.severity).all()
+    rows = query.order_by(None).with_entities(Finding.severity, func.count()).group_by(Finding.severity).all()
     breakdown = {label: 0 for label in sev_labels.values()}
     for sev_int, count in rows:
         label = sev_labels.get(sev_int)

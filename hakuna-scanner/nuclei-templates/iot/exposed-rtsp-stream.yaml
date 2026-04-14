@@ -1,0 +1,37 @@
+id: exposed-rtsp-stream
+
+info:
+  name: Exposed RTSP Camera Stream
+  author: hakuna
+  severity: high
+  description: |
+    Detects an internet-exposed RTSP (Real Time Streaming Protocol) service,
+    typically indicating an IP camera, DVR, or NVR with accessible video
+    streams. Many RTSP implementations allow unauthenticated viewing or use
+    default credentials, enabling surveillance, privacy violations, and
+    physical security reconnaissance.
+  tags: iot,camera,rtsp,surveillance,exposure
+  metadata:
+    asset_type: camera
+    finding_type: exposed_iot_service
+
+network:
+  - inputs:
+      - data: "OPTIONS rtsp://{{Hostname}}/ RTSP/1.0\r\nCSeq: 1\r\n\r\n"
+
+    host:
+      - "{{Hostname}}"
+      - "{{Host}}:554"
+      - "{{Host}}:8554"
+
+    matchers-condition: and
+    matchers:
+      - type: word
+        words:
+          - "RTSP/1.0"
+
+    extractors:
+      - type: regex
+        regex:
+          - 'Server:\s*(.+)'
+        group: 1

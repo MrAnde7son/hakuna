@@ -1,0 +1,47 @@
+id: exposed-network-printer
+
+info:
+  name: Exposed Network Printer
+  author: hakuna
+  severity: medium
+  description: |
+    Detects an internet-exposed network printer web interface (HP, Brother,
+    Xerox, Canon, Epson). Exposed printers can leak printed documents, stored
+    credentials, network configuration (LDAP, SMTP, AD), and provide a pivot
+    point into internal networks via print protocol vulnerabilities.
+  tags: iot,printer,exposure
+  metadata:
+    asset_type: printer
+    finding_type: exposed_iot_service
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+      - "{{BaseURL}}/hp/device/this.LCDispatcher"
+      - "{{BaseURL}}/general/status.html"
+      - "{{BaseURL}}/SSI/digit498.htm"
+
+    stop-at-first-match: true
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        words:
+          - "LaserJet"
+          - "OfficeJet"
+          - "Brother"
+          - "MFC-"
+          - "Xerox"
+          - "VersaLink"
+          - "WorkCentre"
+          - "EPSON"
+          - "Canon"
+          - "Ricoh"
+          - "Kyocera"
+          - "Lexmark"
+        condition: or

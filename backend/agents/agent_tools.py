@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func, case, distinct
+from sqlalchemy import func, case, distinct, or_
 from models.models import (
     Asset, Finding, Scan, User, Organization,
     InventoryUser, InventoryGroup, InventoryService, InventoryNetConn,
@@ -3011,7 +3011,11 @@ def analyze_attack_surface(db: Session, params: dict):
             db.query(InventoryUser)
             .filter(
                 InventoryUser.asset_id.in_(inet_ids),
-                InventoryUser.privilege_level.in_(["admin", "root", "domain_admin", "Administrator"]),
+                or_(
+                    InventoryUser.is_local_admin == True,
+                    InventoryUser.is_domain_admin == True,
+                    InventoryUser.is_privileged == True,
+                ),
             )
             .limit(50)
             .all()
@@ -3077,9 +3081,12 @@ def analyze_attack_surface(db: Session, params: dict):
         paths = []
         if asset_exploits:
             top_exploit = asset_exploits[0]
-            path = f"External attacker exploits {top_exploit.plugin_name} (CVE: {top_exploit.cve or 'N/A'})"
+            _cve = top_exploit.cves[0] if top_exploit.cves else "N/A"
+            path = f"External attacker exploits {top_exploit.plugin_name} (CVE: {_cve})"
             if asset_priv:
-                path += f" → escalates to {asset_priv[0].username} ({asset_priv[0].privilege_level})"
+                _u = asset_priv[0]
+                _lvl = "domain_admin" if _u.is_domain_admin else "local_admin" if _u.is_local_admin else "privileged"
+                path += f" → escalates to {_u.username} ({_lvl})"
             if asset_conns:
                 internal_targets = set(c.remote_addr for c in asset_conns if c.remote_addr)
                 if internal_targets:
@@ -3097,8 +3104,8 @@ def analyze_attack_surface(db: Session, params: dict):
             "high_findings": a.high_count,
             "exploitable_count": len(asset_exploits),
             "kev_count": len(asset_kev),
-            "privileged_users": [{"username": u.username, "level": u.privilege_level} for u in asset_priv],
-            "exposed_services": [{"name": s.name, "port": s.port} for s in asset_services[:10]],
+            "privileged_users": [{"username": u.username, "level": "domain_admin" if u.is_domain_admin else "local_admin" if u.is_local_admin else "privileged"} for u in asset_priv],
+            "exposed_services": [{"name": s.service_name, "startup_type": s.startup_type} for s in asset_services[:10]],
             "internal_connections": len(asset_conns),
             "attack_paths": paths,
         })

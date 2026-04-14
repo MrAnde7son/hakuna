@@ -1,0 +1,41 @@
+id: exposed-mqtt-broker
+
+info:
+  name: Exposed MQTT Broker
+  author: hakuna
+  severity: high
+  description: |
+    Detects an internet-exposed MQTT message broker accepting anonymous
+    connections. MQTT is widely used in IoT deployments for device telemetry
+    and command-and-control. An open broker allows subscription to all topics
+    (sensor data, credentials, device commands) and publishing malicious
+    messages to connected devices.
+  tags: iot,mqtt,broker,exposure
+  metadata:
+    asset_type: iot_gateway
+    finding_type: exposed_iot_service
+
+network:
+  - inputs:
+      # MQTT CONNECT with empty client ID (anonymous)
+      - data: "\x10\x0c\x00\x04MQTT\x04\x02\x00\x3c\x00\x00"
+        type: hex
+
+    host:
+      - "{{Hostname}}"
+      - "{{Host}}:1883"
+
+    matchers-condition: and
+    matchers:
+      # CONNACK = 0x20, remaining length, session present, return code
+      - type: binary
+        binary:
+          - "20"
+        part: body
+        condition: or
+
+    extractors:
+      - type: regex
+        regex:
+          - '(.{4})'
+        part: body

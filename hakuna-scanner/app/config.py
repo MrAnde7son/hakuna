@@ -8,7 +8,51 @@ class Settings(BaseSettings):
 
     celery_concurrency: int = 4
     scan_timeout_seconds: int = 600
-    naabu_ports: str = "21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1433,1521,2049,3306,3389,5432,5900,5985,6379,8080,8443,8888,9000,9443,3000,5000,27017"
+    naabu_ports: str = (
+        # ── Standard IT services ──
+        "21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,"
+        "1433,1521,2049,3306,3389,5432,5900,5985,6379,8080,8443,"
+        "8888,9000,9443,3000,5000,27017,"
+        # ── AI / LLM / ML infrastructure ──
+        "8000,"   # vLLM, FastChat, Chroma, LangServe, generic FastAPI
+        "11434,"  # Ollama
+        "5001,"   # LocalAI, MLflow
+        "3080,"   # LibreChat
+        "8501,"   # Streamlit
+        "7860,"   # Gradio / HuggingFace Spaces
+        "4000,"   # LiteLLM proxy
+        "9090,"   # Prometheus (also AI monitoring)
+        "6333,"   # Qdrant vector DB
+        "19530,"  # Milvus vector DB
+        "8527,"   # Weaviate vector DB (gRPC)
+        # ── IoT devices ──
+        "554,"    # RTSP (cameras)
+        "8554,"   # RTSP alternate
+        "1883,"   # MQTT
+        "8883,"   # MQTTS
+        "5683,"   # CoAP (UDP, but probe TCP fallback)
+        "1900,"   # UPnP/SSDP
+        "9100,"   # Printer (RAW/JetDirect)
+        "631,"    # IPP (CUPS)
+        "161,"    # SNMP
+        "49152,"  # UPnP alt
+        "37777,"  # Dahua camera
+        "34567,"  # XMEye / generic DVR
+        # ── OT / ICS / SCADA ──
+        "502,"    # Modbus TCP
+        "102,"    # Siemens S7comm
+        "44818,"  # EtherNet/IP (CIP)
+        "47808,"  # BACnet (UDP, but probe TCP)
+        "20000,"  # DNP3
+        "4840,"   # OPC-UA
+        "2404,"   # IEC 60870-5-104
+        "1911,"   # Niagara Fox (Tridium)
+        "789,"    # Red Lion Crimson
+        "18245,"  # GE SRTP
+        "2222"    # EtherNet/IP alt
+    )
+    # UDP ports for specialized protocols (requires nmap -sU)
+    nmap_udp_ports: str = "161,47808,1900,5683,5353,1194,4500"
     subfinder_sources: str = "all"
     uncover_sources: str = "shodan,censys,fofa"
     org_scan_stagger_seconds: int = 120

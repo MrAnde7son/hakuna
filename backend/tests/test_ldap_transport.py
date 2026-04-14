@@ -22,8 +22,8 @@ from services.transports.ldap_transport import (
 class TestFiletimeToIso:
     def test_normal_filetime(self):
         # 2023-10-15 12:00:00 UTC in FILETIME ticks
-        # 1601-01-01 to 2023-10-15 12:00:00 = ~133,413,288,000,000,000 ticks
-        ticks = 133413288000000000
+        # 1601-01-01 to 2023-10-15 12:00:00 = 133,418,448,000,000,000 ticks
+        ticks = 133418448000000000
         result = filetime_to_iso(ticks)
         assert result is not None
         assert "2023-10-15" in result

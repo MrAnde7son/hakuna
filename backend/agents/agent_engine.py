@@ -1238,7 +1238,12 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session,
             yield {"type": "error", "error": str(e)}
 
     run.finished_at = datetime.utcnow()
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        db.add(run)
+        db.commit()
     db.refresh(run)
 
     if run.status == "done":

@@ -1,0 +1,35 @@
+id: exposed-modbus-tcp
+
+info:
+  name: Internet-Exposed Modbus TCP Service
+  author: hakuna
+  severity: critical
+  description: |
+    Detects an internet-exposed Modbus TCP service (port 502). Modbus has NO
+    authentication or encryption — any client can read/write PLC registers,
+    coils, and holding registers. This enables direct manipulation of industrial
+    processes: opening valves, changing setpoints, stopping motors, or causing
+    physical damage. Internet-exposed Modbus is a CISA-reportable condition.
+  tags: ot,ics,scada,modbus,plc,exposure
+  metadata:
+    asset_type: plc
+    finding_type: exposed_ot_service
+  reference:
+    - https://www.cisa.gov/topics/industrial-control-systems
+
+network:
+  - inputs:
+      # Modbus Read Device Identification (FC 43, MEI 14)
+      - data: "000100000005002b0e0100"
+        type: hex
+
+    host:
+      - "{{Hostname}}"
+      - "{{Host}}:502"
+
+    matchers-condition: and
+    matchers:
+      - type: binary
+        binary:
+          - "2b0e"
+        part: body

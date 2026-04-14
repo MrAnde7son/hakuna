@@ -1,0 +1,32 @@
+id: exposed-opcua
+
+info:
+  name: Internet-Exposed OPC-UA Service
+  author: hakuna
+  severity: critical
+  description: |
+    Detects an internet-exposed OPC-UA (Open Platform Communications Unified
+    Architecture) service on port 4840. OPC-UA is the standard communication
+    protocol for modern SCADA/DCS systems. Exposure enables browsing the
+    address space, reading process values, and potentially writing setpoints
+    depending on the security policy configuration.
+  tags: ot,ics,scada,opcua,exposure
+  metadata:
+    asset_type: scada
+    finding_type: exposed_ot_service
+
+network:
+  - inputs:
+      # OPC-UA Hello message
+      - data: "48454c46{{len}}00000000ffff0000ffff00000000000000000000001a0000006f70632e7463703a2f2f6c6f63616c686f73743a34383430"
+        type: hex
+
+    host:
+      - "{{Hostname}}"
+      - "{{Host}}:4840"
+
+    matchers:
+      # OPC-UA Acknowledge starts with "ACK"
+      - type: word
+        words:
+          - "ACK"

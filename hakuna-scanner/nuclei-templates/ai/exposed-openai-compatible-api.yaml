@@ -1,0 +1,38 @@
+id: exposed-openai-compatible-api
+
+info:
+  name: Exposed OpenAI-Compatible API
+  author: hakuna
+  severity: high
+  description: |
+    Detects an internet-exposed OpenAI-compatible inference API (vLLM, LocalAI,
+    FastChat, LiteLLM, or custom). The /v1/models endpoint is accessible without
+    authentication, allowing model enumeration and potentially unrestricted
+    inference access.
+  tags: ai,llm,openai,vllm,localai,exposure
+  metadata:
+    asset_type: ai_inference
+    finding_type: exposed_ai_service
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/v1/models"
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        words:
+          - '"object"'
+          - '"data"'
+        condition: and
+
+    extractors:
+      - type: json
+        json:
+          - '.data[].id'
+        part: body
