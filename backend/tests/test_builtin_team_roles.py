@@ -9,7 +9,7 @@ from core.builtin_team_roles import (
     apply_owner_scope_to_assets,
 )
 from core.ownership_teams import OWNERSHIP_ROLES
-from models.models import CustomRole, UserCustomRole, User, Asset, Finding, Scan
+from models.models import CustomRole, UserCustomRole, User, Asset, Finding, Scan, Tag, TagPermission
 from core.auth import hash_password
 
 
@@ -27,7 +27,7 @@ class TestBuiltinRoleSpecs:
     def test_vm_role_present(self):
         specs = {s["scope_owner_role"]: s for s in builtin_team_role_specs()}
         assert "VM" in specs
-        assert specs["VM"]["name"] == "Team: VM"
+        assert specs["VM"]["name"] == "VM"
         assert specs["VM"]["base_permissions"]["read_findings"] is True
 
 
@@ -47,13 +47,42 @@ class TestSeeding:
         first_count = db_session.query(CustomRole).filter(
             CustomRole.org_id == test_org.id
         ).count()
-        # Second run should not add any new roles.
+        first_tag_count = db_session.query(Tag).filter(Tag.category == "team").count()
+        first_perm_count = db_session.query(TagPermission).count()
+        # Second run should not add any new roles, tags, or permissions.
         added = seed_builtin_team_roles(db_session, test_org.id)
         assert added == 0
         second_count = db_session.query(CustomRole).filter(
             CustomRole.org_id == test_org.id
         ).count()
         assert first_count == second_count
+        assert db_session.query(Tag).filter(Tag.category == "team").count() == first_tag_count
+        assert db_session.query(TagPermission).count() == first_perm_count
+
+    def test_seed_creates_team_tags(self, db_session, test_org):
+        seed_builtin_team_roles(db_session, test_org.id)
+        expected_teams = [r for r in OWNERSHIP_ROLES if r != "Custom"]
+        tags = db_session.query(Tag).filter(Tag.category == "team").all()
+        tag_values = {t.value for t in tags}
+        assert tag_values == set(expected_teams)
+
+    def test_seed_creates_tag_permissions(self, db_session, test_org):
+        seed_builtin_team_roles(db_session, test_org.id)
+        expected_teams = [r for r in OWNERSHIP_ROLES if r != "Custom"]
+        for team in expected_teams:
+            role = db_session.query(CustomRole).filter(
+                CustomRole.org_id == test_org.id,
+                CustomRole.scope_owner_role == team,
+            ).first()
+            tag = db_session.query(Tag).filter(
+                Tag.category == "team", Tag.value == team,
+            ).first()
+            perms = db_session.query(TagPermission).filter(
+                TagPermission.role_id == role.id,
+                TagPermission.target_id == tag.id,
+            ).all()
+            perm_set = {p.permission for p in perms}
+            assert perm_set == {"read", "write"}, f"Missing permissions for {team}"
 
 
 class TestUserOwnerScopes:

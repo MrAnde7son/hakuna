@@ -17,7 +17,7 @@ from typing import Iterable, Optional
 from sqlalchemy.orm import Session
 
 from core.ownership_teams import OWNERSHIP_ROLES
-from models.models import CustomRole
+from models.models import CustomRole, Tag, TagPermission
 
 
 # Permissions every built-in team role grants. Scoped by owner_role at query time.
@@ -72,9 +72,35 @@ _TEAM_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+# Tag colors per team — grouped by category for visual distinction in the UI.
+_TEAM_TAG_COLORS: dict[str, str] = {
+    # Infrastructure & Ops — blues/teals
+    "IT":          "#3b82f6",
+    "HelpDesk":    "#60a5fa",
+    "DevOps":      "#06b6d4",
+    "SRE":         "#0891b2",
+    "Platform":    "#0d9488",
+    "Networking":  "#14b8a6",
+    "CloudOps":    "#22d3ee",
+    "DBA":         "#2dd4bf",
+    # Security — reds/oranges/ambers
+    "VM":          "#f59e0b",
+    "SecOps":      "#ef4444",
+    "SOC":         "#dc2626",
+    "AppSec":      "#f97316",
+    "CloudSec":    "#fb923c",
+    "IAM":         "#eab308",
+    "GRC":         "#d97706",
+    # Engineering — purples/pinks
+    "Engineering": "#8b5cf6",
+    "Mobile":      "#a78bfa",
+    "Data":        "#7c3aed",
+}
+
+
 def _role_name(team: str) -> str:
     """Canonical display name for a built-in team role."""
-    return f"Team: {team}"
+    return team
 
 
 def builtin_team_role_specs() -> list[dict]:
@@ -99,8 +125,46 @@ def builtin_team_role_specs() -> list[dict]:
     return specs
 
 
+def _get_or_create_team_tag(db: Session, org_id: int, team: str) -> Tag:
+    """Return the ``team:<team>`` tag, creating it if it doesn't exist."""
+    tag = db.query(Tag).filter(Tag.category == "team", Tag.value == team).first()
+    if tag is None:
+        tag = Tag(
+            org_id=org_id,
+            category="team",
+            value=team,
+            color=_TEAM_TAG_COLORS.get(team, "#6366f1"),
+            description=f"Built-in team tag for {team}",
+        )
+        db.add(tag)
+        db.flush()
+    return tag
+
+
+def _ensure_tag_permission(db: Session, role_id: int, tag_id: int, permission: str) -> None:
+    """Add a tag permission if it doesn't already exist."""
+    exists = db.query(TagPermission).filter(
+        TagPermission.role_id == role_id,
+        TagPermission.target_type == "tag",
+        TagPermission.target_id == tag_id,
+        TagPermission.permission == permission,
+        TagPermission.effect == "allow",
+    ).first()
+    if not exists:
+        db.add(TagPermission(
+            role_id=role_id,
+            target_type="tag",
+            target_id=tag_id,
+            permission=permission,
+            effect="allow",
+        ))
+
+
 def seed_builtin_team_roles(db: Session, org_id: int) -> int:
     """Create any missing built-in team roles for a given org. Idempotent.
+
+    Also creates a ``team:<name>`` tag per team and grants read+write
+    tag permissions on it to the corresponding role.
 
     Returns the number of roles inserted.
     """
@@ -111,11 +175,25 @@ def seed_builtin_team_roles(db: Session, org_id: int) -> int:
     }
     created = 0
     for spec in builtin_team_role_specs():
+        team = spec["scope_owner_role"]
         if spec["name"] in existing_names:
-            continue
-        role = CustomRole(org_id=org_id, **spec)
-        db.add(role)
-        created += 1
+            # Role exists — still ensure tag + permissions are in place.
+            role = db.query(CustomRole).filter(
+                CustomRole.org_id == org_id,
+                CustomRole.name == spec["name"],
+                CustomRole.is_builtin == True,  # noqa: E712
+            ).first()
+        else:
+            role = CustomRole(org_id=org_id, **spec)
+            db.add(role)
+            db.flush()
+            created += 1
+
+        # Ensure the team tag exists and the role has read+write on it.
+        tag = _get_or_create_team_tag(db, org_id, team)
+        _ensure_tag_permission(db, role.id, tag.id, "read")
+        _ensure_tag_permission(db, role.id, tag.id, "write")
+
     if created:
         db.flush()
     return created
