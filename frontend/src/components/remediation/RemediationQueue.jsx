@@ -7,7 +7,8 @@ import { useScan } from '../../App.jsx'
 import { getRemediationQueue, createCampaign, runCampaign } from '../../api.js'
 import {
   Card, SeverityBadge, ScoreBar, buildFindingBreakdown, useRiskWeights, PageHeader, Select, Spinner,
-  EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, ErrorBanner, SkeletonCard
+  EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, ErrorBanner, SkeletonCard,
+  OWNERSHIP_ROLE_OPTIONS,
 } from '../shared/ui.jsx'
 import { getFindingAssetDisplay } from '../../utils/assetDisplay.js'
 
@@ -192,12 +193,12 @@ export default function RemediationQueue() {
           { value: 'medium', label: t('remediation.medium') },
           { value: 'complex', label: t('remediation.complex') },
         ]} />
-        <Select value={owner} onChange={v => setFilter('owner', v)} placeholder={t('remediation.allOwners')} options={[
-          { value: 'IT', label: t('roles.it') },
-          { value: 'DevOps', label: t('roles.devops') },
-          { value: 'SecOps', label: t('roles.secops') },
-          { value: 'AppSec', label: t('roles.appsec') },
-        ]} />
+        <Select value={owner} onChange={v => setFilter('owner', v)} placeholder={t('remediation.allOwners')} options={
+          OWNERSHIP_ROLE_OPTIONS.filter(r => r !== 'Custom').map(r => ({
+            value: r,
+            label: t(`roles.${r.toLowerCase()}`, r),
+          }))
+        } />
         <Select
           value={String(minSev)}
           onChange={v => setFilter('min_severity', v)}

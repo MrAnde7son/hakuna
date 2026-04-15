@@ -1157,7 +1157,7 @@ def get_owner_risk_summary(
       1. FindingOwnership.owner_name / owner_role
       2. AssetOwnership.owner_name / owner_role
       3. Asset.inferred_team
-      4. Finding.owner_suggestion (IT / DevOps / SecOps / AppSec)
+      4. Finding.owner_suggestion (see core.ownership_teams.OWNERSHIP_ROLES)
       5. 'Unassigned' fallback
     """
 

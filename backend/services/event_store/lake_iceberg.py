@@ -207,6 +207,8 @@ class LakeIcebergStore(EventStore):
 
     def __init__(self):
         self._catalog = None
+        self._table_checked = False
+        self._table_available = False
 
     @property
     def catalog(self):
@@ -216,11 +218,16 @@ class LakeIcebergStore(EventStore):
 
     @property
     def available(self) -> bool:
-        return self.catalog is not None
+        if self.catalog is None:
+            return False
+        if not self._table_checked:
+            self._table_checked = True
+            self._table_available = self._load_table() is not None
+        return self._table_available
 
     def _load_table(self):
         """Load the Iceberg table object. Returns None if unavailable."""
-        if not self.available:
+        if self.catalog is None:
             return None
         try:
             return self.catalog.load_table(ICEBERG_TABLE)

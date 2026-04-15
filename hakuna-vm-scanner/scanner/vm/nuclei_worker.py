@@ -313,9 +313,21 @@ async def fetch_alive_assets() -> list[dict]:
 # ── Ad-hoc scan (raw target, no asset record required) ──────────
 
 
+ASSET_LOOKUP_BY_TARGET = """
+    SELECT id, org_id FROM assets
+    WHERE org_id = $1
+    AND (hostname = $2 OR ip::text = $2 OR http_url = $2)
+    LIMIT 1
+"""
+
+
 @celery_app.task(queue="vm_queue", bind=True, max_retries=2)
 def run_nuclei_adhoc(self, target: str, org_id: str | None = None) -> dict:
-    """Run Nuclei scan against a raw target (IP, hostname, or URL)."""
+    """Run Nuclei scan against a raw target (IP, hostname, or URL).
+
+    When org_id is provided, findings are persisted to the findings table
+    if a matching asset can be resolved from the target.
+    """
     try:
         return _run_async(_run_nuclei_adhoc_async(self, target, org_id))
     except Exception as exc:
@@ -333,102 +345,165 @@ def run_nuclei_adhoc(self, target: str, org_id: str | None = None) -> dict:
 
 
 async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict:
-    """Execute Nuclei against a raw target with generic templates."""
+    """Execute Nuclei against a raw target with generic templates.
+
+    When org_id is provided, tries to resolve the target to a known asset and
+    persists findings to the findings table via _emit_finding().
+    """
     start = time.monotonic()
-
-    # Build nuclei command — broad template selection for ad-hoc scans
-    # Note: -silent is omitted so stderr contains execution stats
-    cmd = [
-        NUCLEI_BIN,
-        "-target", target,
-        "-t", NUCLEI_COMMUNITY_TEMPLATES,
-        "-jsonl",
-        "-timeout", str(NUCLEI_TIMEOUT),
-        "-rate-limit", str(NUCLEI_RATE_LIMIT),
-        "-no-color",
-        "-stats",
-        "-severity", "info,low,medium,high,critical",
-    ]
-
-    logger.info("nuclei adhoc cmd: %s", " ".join(cmd))
-
-    templates_run: set[str] = set()
-    findings: list[dict] = []
-    nuclei_stats: dict = {}
-    stderr_chunks: list[str] = []
-    status = "error"
+    dsn = _normalize_dsn(DATABASE_URL)
+    conn = await asyncpg.connect(dsn) if org_id else None
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.DEVNULL,
-            limit=1024 * 1024,
-        )
-
-        async def drain_stderr():
-            assert proc.stderr is not None
-            while True:
-                line = await proc.stderr.readline()
-                if not line:
+        # Resolve target → asset_id when we have an org context
+        asset_id: uuid.UUID | None = None
+        resolved_org_id = None
+        if conn and org_id:
+            # Strip protocol for hostname lookup
+            lookup_target = target
+            for prefix in ("https://", "http://"):
+                if lookup_target.startswith(prefix):
+                    lookup_target = lookup_target[len(prefix):].rstrip("/")
                     break
-                stderr_chunks.append(line.decode("utf-8", errors="replace").strip())
+            asset_row = await conn.fetchrow(
+                ASSET_LOOKUP_BY_TARGET, uuid.UUID(org_id), lookup_target,
+            )
+            if asset_row:
+                asset_id = asset_row["id"]
+                resolved_org_id = asset_row["org_id"]
+                logger.info("adhoc: resolved target %s → asset %s", target, asset_id)
+            else:
+                # Also try with the full URL in case http_url matches
+                asset_row = await conn.fetchrow(
+                    ASSET_LOOKUP_BY_TARGET, uuid.UUID(org_id), target,
+                )
+                if asset_row:
+                    asset_id = asset_row["id"]
+                    resolved_org_id = asset_row["org_id"]
 
-        stderr_task = asyncio.create_task(drain_stderr())
+        # Build nuclei command — broad template selection for ad-hoc scans
+        cmd = [
+            NUCLEI_BIN,
+            "-target", target,
+            "-t", NUCLEI_COMMUNITY_TEMPLATES,
+            "-jsonl",
+            "-timeout", str(NUCLEI_TIMEOUT),
+            "-rate-limit", str(NUCLEI_RATE_LIMIT),
+            "-no-color",
+            "-stats",
+            "-severity", "info,low,medium,high,critical",
+        ]
 
-        assert proc.stdout is not None
-        while True:
-            raw_line = await proc.stdout.readline()
-            if not raw_line:
-                break
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            try:
-                result = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        logger.info("nuclei adhoc cmd: %s", " ".join(cmd))
 
-            template_id = result.get("template-id", result.get("templateID", ""))
-            templates_run.add(template_id)
-            findings.append(_result_to_finding(result))
+        findings_emitted = 0
+        findings_persisted = 0
+        templates_run: set[str] = set()
+        findings: list[dict] = []
 
-        await asyncio.wait_for(proc.wait(), timeout=SCAN_TIMEOUT_SECONDS)
-        await stderr_task
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                limit=1024 * 1024,
+            )
 
-        exit_code = proc.returncode
-        nuclei_stats = _parse_nuclei_stats(stderr_chunks)
-        logger.info(
-            "nuclei adhoc finished for %s: exit=%d templates_loaded=%s requests=%s matched=%d",
-            target, exit_code,
-            nuclei_stats.get("templates_loaded", "?"),
-            nuclei_stats.get("requests_sent", "?"),
-            len(templates_run),
-        )
-        if exit_code != 0:
-            stderr_text = "\n".join(stderr_chunks)[:1000]
-            logger.warning("nuclei adhoc exited %d for %s: %s", exit_code, target, stderr_text)
+            stderr_chunks: list[str] = []
 
-        status = "complete" if exit_code == 0 else "partial"
+            async def drain_stderr():
+                assert proc.stderr is not None
+                while True:
+                    line = await proc.stderr.readline()
+                    if not line:
+                        break
+                    stderr_chunks.append(line.decode("utf-8", errors="replace").strip())
 
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        logger.error("nuclei adhoc timed out for target %s", target)
-        nuclei_stats = _parse_nuclei_stats(stderr_chunks)
-        status = "timeout"
+            stderr_task = asyncio.create_task(drain_stderr())
 
-        if task.request.retries < task.max_retries:
-            task.retry(countdown=60)
+            assert proc.stdout is not None
+            while True:
+                raw_line = await proc.stdout.readline()
+                if not raw_line:
+                    break
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    result = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
-    return {
-        "target": target,
-        "org_id": org_id,
-        "findings": findings,
-        "templates_matched": len(templates_run),
-        "templates_loaded": nuclei_stats.get("templates_loaded", 0),
-        "requests_sent": nuclei_stats.get("requests_sent", 0),
-        "duration_seconds": round(time.monotonic() - start, 2),
-        "status": status,
-    }
+                template_id = result.get("template-id", result.get("templateID", ""))
+                templates_run.add(template_id)
+                findings_emitted += 1
+
+                info = result.get("info", {})
+                findings.append({
+                    "template_id": template_id,
+                    "severity": (info.get("severity") or "info").lower(),
+                    "name": info.get("name", template_id),
+                    "description": info.get("description", ""),
+                    "matched_at": result.get("matched-at", ""),
+                    "host": result.get("host", ""),
+                    "port": result.get("port", ""),
+                    "type": result.get("type", ""),
+                    "tags": info.get("tags", []),
+                    "reference": info.get("reference", []),
+                    "classification": info.get("classification", {}),
+                    "curl_command": result.get("curl-command", ""),
+                    "matcher_name": result.get("matcher-name", ""),
+                })
+
+                # Persist to findings table when we have a resolved asset
+                if conn and asset_id and resolved_org_id:
+                    persisted = await _emit_finding(conn, resolved_org_id, asset_id, result)
+                    if persisted:
+                        findings_persisted += 1
+
+            await asyncio.wait_for(proc.wait(), timeout=SCAN_TIMEOUT_SECONDS)
+            await stderr_task
+
+            exit_code = proc.returncode
+            nuclei_stats = _parse_nuclei_stats(stderr_chunks)
+            logger.info(
+                "nuclei adhoc finished for %s: exit=%d templates_loaded=%s requests=%s matched=%d persisted=%d",
+                target, exit_code,
+                nuclei_stats.get("templates_loaded", "?"),
+                nuclei_stats.get("requests_sent", "?"),
+                len(templates_run),
+                findings_persisted,
+            )
+            if exit_code != 0:
+                stderr_text = "\n".join(stderr_chunks)[:1000]
+                logger.warning("nuclei adhoc exited %d for %s: %s", exit_code, target, stderr_text)
+
+            status = "complete" if exit_code == 0 else "partial"
+
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.error("nuclei adhoc timed out for target %s", target)
+            nuclei_stats = _parse_nuclei_stats(stderr_chunks)
+            status = "timeout"
+
+            if task.request.retries < task.max_retries:
+                task.retry(countdown=60)
+
+        return {
+            "target": target,
+            "findings_emitted": findings_emitted,
+            "findings_persisted": findings_persisted,
+            "templates_matched": len(templates_run),
+            "templates_loaded": nuclei_stats.get("templates_loaded", 0),
+            "requests_sent": nuclei_stats.get("requests_sent", 0),
+            "duration_seconds": round(time.monotonic() - start, 2),
+            "status": status,
+            "findings": findings,
+            "asset_id": str(asset_id) if asset_id else None,
+        }
+
+    finally:
+        if conn:
+            await conn.close()

@@ -340,11 +340,12 @@ class KatanaRunner(BaseRunner):
         path = self._write_hosts()
         return [
             "katana", "-list", path, "-json", "-silent",
-            "-depth", "2",
+            "-depth", str(settings.katana_depth),
             "-js-crawl",
+            "-automatic-form-fill",
             "-headless=false",
             "-timeout", "10",
-            "-rate-limit", "50",
+            "-rate-limit", str(settings.katana_rate_limit),
         ]
 
     async def run(self, org_id: str | None = None):

@@ -123,6 +123,12 @@ class CustomRole(Base):
     # Deny flags: same keys as base_permissions — deny always wins over allow
     deny_permissions = Column(JSON, default=dict)
     is_active = Column(Boolean, default=True)
+    # Built-in team roles are seeded per-org from core.builtin_team_roles. They
+    # are protected from deletion and regenerate if missing on org startup.
+    is_builtin = Column(Boolean, default=False, nullable=False)
+    # If set, this role restricts finding/asset visibility to resources whose
+    # resolved owner_role matches. One of core.ownership_teams.OWNERSHIP_ROLES.
+    scope_owner_role = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
@@ -380,14 +386,35 @@ class AssetRelationship(Base):
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
     source_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
     target_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
-    relationship_type = Column(String, nullable=False)   # resolves_to, alias_of
+    relationship_type = Column(String, nullable=False)   # resolves_to, alias_of, hosts_service, runs_technology, shares_certificate, same_jarm_cluster, same_ip, exposes_endpoint, authenticates_via
     confidence = Column(String, default="high")           # high / medium / low
     source_detail = Column(JSON, default=dict)            # provenance: {connector, dns_record_type}
+    weight = Column(Float, default=1.0)                  # edge weight for graph algorithms (0.0-1.0)
+    properties = Column(JSON, default=dict)              # edge-specific metadata (e.g. shared cert fingerprint, JARM hash)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     source_asset = relationship("Asset", foreign_keys=[source_asset_id], back_populates="outbound_relationships")
     target_asset = relationship("Asset", foreign_keys=[target_asset_id], back_populates="inbound_relationships")
+
+
+class AssetCluster(Base):
+    """Group of assets sharing infrastructure signals (cert, JARM, IP range, tech stack)."""
+    __tablename__ = "asset_clusters"
+    __table_args__ = (
+        Index("ix_asset_cluster_org", "org_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    cluster_type = Column(String, nullable=False)  # shared_certificate, same_jarm, shared_ip_range, shared_tech_stack
+    label = Column(String)                         # human-readable label (e.g. "*.example.com cert cluster")
+    pivot_value = Column(String)                   # the shared signal value (cert fingerprint, JARM hash, CIDR, etc.)
+    asset_ids = Column(JSON, default=list)          # list of asset IDs in this cluster
+    asset_count = Column(Integer, default=0)
+    cluster_metadata = Column("cluster_metadata", JSON, default=dict)  # cluster-specific data
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 @importable(
@@ -476,7 +503,7 @@ class Finding(Base):
     # Prioritization
     priority_score = Column(Float, default=0.0)
     effort_level = Column(String)  # quick_win / medium / complex
-    owner_suggestion = Column(String)  # IT / DevOps / SecOps / AppSec
+    owner_suggestion = Column(String)  # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
     remediation_steps = Column(Text)
 
     # Temporal tracking (cross-scan lifecycle)
@@ -1164,7 +1191,7 @@ class AssetOwnership(Base):
     asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, unique=True, index=True)
     owner_name = Column(String)
     owner_email = Column(String)
-    owner_role = Column(String)   # IT / DevOps / SecOps / AppSec / Custom
+    owner_role = Column(String)   # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
     team = Column(String)
     notes = Column(Text)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1180,7 +1207,7 @@ class FindingOwnership(Base):
     finding_id = Column(Integer, ForeignKey("findings.id"), nullable=False, unique=True, index=True)
     owner_name = Column(String)
     owner_email = Column(String)
-    owner_role = Column(String)   # IT / DevOps / SecOps / AppSec / Custom
+    owner_role = Column(String)   # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
     team = Column(String)
     notes = Column(Text)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1269,7 +1296,7 @@ class OwnershipRule(Base):
     # Action: ownership fields to set (None = leave untouched)
     owner_name = Column(String, nullable=True)
     owner_email = Column(String, nullable=True)
-    owner_role = Column(String, nullable=True)       # IT / DevOps / SecOps / AppSec / Custom
+    owner_role = Column(String, nullable=True)       # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
     team = Column(String, nullable=True)
     notes = Column(String, nullable=True)
     overwrite_existing = Column(Boolean, default=False)  # overwrite manually-set ownership

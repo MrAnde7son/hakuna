@@ -814,12 +814,15 @@ def apply_all_exceptions(
 # Aggregated Solutions
 # ─────────────────────────────────────────────
 
-def _agg_solution_to_dict(a: AggregatedSolution, db: Session) -> dict:
+def _agg_solution_to_dict(a: AggregatedSolution, db: Session, asset_cache: dict = None) -> dict:
     # Resolve hostnames for cross-asset recommendations
     asset_hostnames = []
     if a.asset_ids:
         for aid in (a.asset_ids or [])[:10]:
-            asset = db.query(Asset).filter(Asset.id == aid).first()
+            if asset_cache is not None and aid in asset_cache:
+                asset = asset_cache[aid]
+            else:
+                asset = db.query(Asset).filter(Asset.id == aid).first()
             if asset:
                 asset_hostnames.append(asset.hostname or asset.ip or str(aid))
 
@@ -928,8 +931,18 @@ def list_aggregated_solutions(
             if f.id in all_finding_ids
         }
 
+    # Batch-load assets referenced by solutions to avoid N+1 queries
+    all_asset_ids = set()
+    for a in results:
+        for aid in (a.asset_ids or [])[:10]:
+            all_asset_ids.add(aid)
+    asset_cache = {}
+    if all_asset_ids:
+        assets = db.query(Asset).filter(Asset.id.in_(all_asset_ids)).all()
+        asset_cache = {a.id: a for a in assets}
+
     return {
-        "solutions": [_agg_solution_to_dict(a, db) for a in results],
+        "solutions": [_agg_solution_to_dict(a, db, asset_cache) for a in results],
         "total_scan_risk": round(total_scan_risk, 4),
         "finding_priority_map": finding_priority_map,
     }
@@ -941,10 +954,16 @@ def get_aggregated_solution(agg_id: int, db: Session = Depends(get_db)):
     agg = db.query(AggregatedSolution).filter(AggregatedSolution.id == agg_id).first()
     if not agg:
         raise HTTPException(404, "Aggregated solution not found")
-    result = _agg_solution_to_dict(agg, db)
-    # Include full findings list
+    # Batch-fetch assets for both the solution dict and the findings list
     findings = db.query(Finding).filter(Finding.aggregated_solution_id == agg.id).all()
-    result["findings"] = [_finding_to_dict(f, db) for f in findings]
+    all_asset_ids = {f.asset_id for f in findings if f.asset_id}
+    if agg.asset_ids:
+        all_asset_ids.update(agg.asset_ids)
+    asset_cache = {}
+    if all_asset_ids:
+        asset_cache = {a.id: a for a in db.query(Asset).filter(Asset.id.in_(all_asset_ids)).all()}
+    result = _agg_solution_to_dict(agg, db, asset_cache)
+    result["findings"] = [_finding_to_dict(f, db, asset=asset_cache.get(f.asset_id)) for f in findings]
     return result
 
 

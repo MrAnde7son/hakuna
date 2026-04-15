@@ -4,6 +4,8 @@ so that catalog changes (adding new node types, templates) don't require
 modifying execution logic (OCP).
 """
 
+from core.ownership_teams import OWNERSHIP_ROLES
+
 NODE_CATALOG = {
     "triggers": [
         {
@@ -219,7 +221,7 @@ NODE_CATALOG = {
                 "owner_name": {"type": "string", "label": "Owner Name"},
                 "owner_email": {"type": "string", "label": "Owner Email"},
                 "owner_role": {"type": "enum", "label": "Role",
-                               "options": ["IT", "DevOps", "SecOps", "AppSec"]},
+                               "options": [r for r in OWNERSHIP_ROLES if r != "Custom"]},
                 "team": {"type": "string", "label": "Team"},
             },
         },

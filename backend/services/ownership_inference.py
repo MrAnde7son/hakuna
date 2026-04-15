@@ -23,19 +23,38 @@ log = logging.getLogger(__name__)
 # Keys are substrings matched against service_name (lowercased).
 # Order matters — first match wins.
 SERVICE_TEAM_RULES = [
-    # Database services → DBA / AppSec
-    (["mssql", "sqlserver", "mysql", "postgres", "oracle", "mongodb", "mariadb", "redis"], "DBA"),
-    # Web / app servers → DevOps
-    (["iis", "w3svc", "apache", "httpd", "nginx", "tomcat", "nodejs", "docker", "kestrel"], "DevOps"),
-    # Security tooling → SecOps
-    (["defender", "crowdstrike", "sentinel", "carbonblack", "cylance", "sophos",
-      "symantec", "mcafee", "trellix", "qualys", "nessus"], "SecOps"),
-    # CI/CD and automation → DevOps
-    (["jenkins", "gitlab", "bamboo", "teamcity", "ansible", "puppet", "chef", "salt"], "DevOps"),
+    # Database services → DBA
+    (["mssql", "sqlserver", "mysql", "postgres", "oracle", "mongodb", "mariadb", "redis",
+      "cassandra", "elasticsearch", "dynamodb"], "DBA"),
+    # Identity / directory services → IAM (catch before generic IT mail/directory bucket)
+    (["ntds", "kdc", "adws", "netlogon", "ldap", "kerberos", "okta", "pingfederate",
+      "adfs", "shibboleth", "keycloak", "radius", "tacacs"], "IAM"),
+    # Security monitoring / SIEM / EDR / IR tooling → SOC
+    (["splunk", "sentinel", "qradar", "sumologic", "datadog_security", "rapid7_insight",
+      "crowdstrike", "carbonblack", "defender", "cylance", "sophos", "symantec",
+      "mcafee", "trellix"], "SOC"),
+    # Vulnerability management scanners → VM team (they run the scanners and own their findings)
+    (["qualys", "nessus", "tenable", "openvas", "nuclei", "rapid7_insightvm",
+      "nexpose"], "VM"),
+    # Security configuration / log collection agents → SecOps
+    (["wazuh", "osquery", "ossec"], "SecOps"),
+    # Cloud security tooling / CSPM → CloudSec
+    (["prisma", "wiz", "lacework", "orca", "cloudguard", "aqua", "twistlock",
+      "scoutsuite", "cloudsploit"], "CloudSec"),
+    # Web / app servers → AppSec (application layer hardening)
+    (["iis", "w3svc", "apache", "httpd", "nginx", "tomcat", "nodejs", "kestrel",
+      "express", "gunicorn", "uwsgi", "weblogic", "websphere", "jboss", "glassfish"], "AppSec"),
+    # Containers / orchestration / runtime → Platform
+    (["docker", "containerd", "kubelet", "kube-proxy", "etcd", "consul", "nomad"], "Platform"),
+    # CI/CD and configuration management → DevOps
+    (["jenkins", "gitlab", "bamboo", "teamcity", "github_actions", "argo", "circleci",
+      "ansible", "puppet", "chef", "salt", "terraform"], "DevOps"),
     # Mail / messaging → IT
-    (["exchange", "smtp", "imap", "pop3"], "IT"),
-    # Directory services → IT
-    (["dns", "dhcp", "ntds", "kdc", "adws", "netlogon"], "IT"),
+    (["exchange", "smtp", "imap", "pop3", "postfix", "sendmail"], "IT"),
+    # Generic directory / name services → IT
+    (["dns", "dhcp", "bind", "unbound"], "IT"),
+    # Network infra services → Networking
+    (["snmp", "bgp", "ospf", "vrrp", "hsrp", "ipsec", "strongswan", "openvpn"], "Networking"),
 ]
 
 

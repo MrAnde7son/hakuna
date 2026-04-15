@@ -27,6 +27,7 @@ from app.ingest.liveness import (
     validate_and_update_assets,
 )
 from app.ingest.wildcard import detect_wildcard, filter_wildcard_results
+from app.ingest.crtsh import query_crtsh
 from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel
 from app.tasks.scoping import (
     build_stale_clause,
@@ -301,6 +302,25 @@ async def _do_uncover(sf, org_id: str, target_scope: str | None = None) -> dict:
     return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
 
 
+async def _do_crtsh(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Query certificate transparency logs (crt.sh) for subdomain discovery."""
+    domains = await _get_target_domains(sf, org_id, target_scope=target_scope)
+    all_hosts: list[dict] = []
+    for domain in domains:
+        hostnames = await query_crtsh(domain)
+        for h in hostnames:
+            all_hosts.append({"host": h})
+
+    if not all_hosts:
+        return {"hosts_found": 0, "upserted": 0, "new": 0}
+
+    async with sf() as db:
+        total, new_ids = await upsert_discovered_hosts(db, uuid.UUID(org_id), all_hosts, "crtsh")
+        await emit_new_asset_events(db, uuid.UUID(org_id), new_ids)
+
+    return {"hosts_found": len(all_hosts), "upserted": total, "new": len(new_ids)}
+
+
 async def _do_dnsx(sf, org_id: str, target_scope: str | None = None) -> dict:
     # Staleness filter: skip assets that were already enriched within the last
     # 24h. First-ever discovery still runs because last_enriched is NULL.
@@ -554,6 +574,7 @@ def run_discovery_chain(self, org_id: str, scan_run_id: str | None = None) -> di
                 ("subfinder", _do_subfinder),
                 ("wildcard_bruteforce", _do_wildcard_and_bruteforce),
                 ("uncover", _do_uncover),
+                ("crtsh", _do_crtsh),
             ],
             [
                 ("dnsx", _do_dnsx),

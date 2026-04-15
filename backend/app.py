@@ -107,6 +107,8 @@ from routes.siem_routes import router as siem_router
 from routes.siem_ingest_routes import router as siem_ingest_router
 from routes.detection_routes import router as detection_router
 from routes.siem_report_routes import router as siem_report_router
+from routes.graph_routes import router as graph_router
+from routes.scan_planner_routes import router as scan_planner_router
 from services.blast_radius import resolve_dc_asset_ids as _resolve_dc_asset_ids
 
 logging.basicConfig(level=logging.INFO)
@@ -329,6 +331,8 @@ app.include_router(siem_router)
 app.include_router(siem_ingest_router)
 app.include_router(detection_router)
 app.include_router(siem_report_router)
+app.include_router(graph_router)
+app.include_router(scan_planner_router)
 
 
 INTEL_PATH = Path(__file__).parent / "data" / "intel.json"
@@ -742,7 +746,11 @@ def _delete_scan_cascade(db: Session, scan: Scan):
     if sbom_comp_ids:
         db.query(SBOMVulnerability).filter(SBOMVulnerability.component_id.in_(sbom_comp_ids)).delete(synchronize_session=False)
     db.query(SBOMComponent).filter(SBOMComponent.scan_id == scan_id).delete(synchronize_session=False)
-    # Aggregated solutions
+    # Aggregated solutions — nullify FK references first to avoid constraint violation
+    db.query(Finding).filter(
+        Finding.scan_id == scan_id,
+        Finding.aggregated_solution_id.isnot(None),
+    ).update({"aggregated_solution_id": None}, synchronize_session=False)
     db.query(AggregatedSolution).filter(AggregatedSolution.scan_id == scan_id).delete(synchronize_session=False)
     # Inventory models
     for InvModel in [

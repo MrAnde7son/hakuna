@@ -516,8 +516,9 @@ def delete_auto_tag_rule(rule_id: int, db: Session = Depends(get_db)):
 def run_all_auto_tag_rules_endpoint(
     scan_id: Optional[int] = None,
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    results = tag_engine.run_all_auto_tag_rules(db, scan_id=scan_id)
+    results = tag_engine.run_all_auto_tag_rules(db, scan_id=scan_id, org_ids=org_ids)
     return {"results": results, "total_tagged": sum(results.values())}
 
 
@@ -526,12 +527,13 @@ def run_auto_tag_rule(
     rule_id: int,
     scan_id: Optional[int] = None,
     db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     rule = db.query(AutoTagRule).filter(AutoTagRule.id == rule_id).first()
     if not rule:
         raise HTTPException(404, "Rule not found")
-    count = tag_engine.run_auto_tag_rule(rule, db, scan_id=scan_id)
-    return {"tagged": count, "rule_id": rule_id}
+    matched = tag_engine.run_auto_tag_rule(rule, db, scan_id=scan_id, org_ids=org_ids)
+    return {"tagged": matched, "rule_id": rule_id}
 
 
 def _rule_to_dict(rule: AutoTagRule) -> dict:

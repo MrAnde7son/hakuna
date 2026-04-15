@@ -44,7 +44,7 @@ def _apply_sort(q, model, sort_by, order, default_col):
 
 @router.get("/components")
 def list_sbom_components(
-    scan_id: Optional[int] = None,
+    scan_id: Optional[str] = None,  # single ID or comma-separated list
     asset_id: Optional[int] = None,
     component_type: Optional[str] = None,
     has_cves: Optional[bool] = None,
@@ -63,7 +63,11 @@ def list_sbom_components(
     q = apply_scan_org_filter(q, org_ids)
 
     if scan_id:
-        q = q.filter(SBOMComponent.scan_id == scan_id)
+        scan_id_list = [int(s.strip()) for s in str(scan_id).split(",") if s.strip().isdigit()]
+        if len(scan_id_list) == 1:
+            q = q.filter(SBOMComponent.scan_id == scan_id_list[0])
+        elif scan_id_list:
+            q = q.filter(SBOMComponent.scan_id.in_(scan_id_list))
     if asset_id:
         q = q.filter(SBOMComponent.asset_id == asset_id)
     if component_type:
@@ -92,9 +96,8 @@ def list_sbom_components(
     total = q.count()
 
     if page_size == 0:
-        rows = q.all()
-    else:
-        rows = q.offset((page - 1) * page_size).limit(page_size).all()
+        page_size = 10000  # cap unbounded requests
+    rows = q.offset((page - 1) * page_size).limit(page_size).all()
 
     assets = _asset_lookup(db, {r.asset_id for r in rows})
 

@@ -19,6 +19,7 @@ import { getAssetDisplayName, getAssetTarget } from '../../utils/assetDisplay.js
 
 const SOURCE_TYPES = {
   nessus: { label: 'Nessus', icon: Shield, color: '#6366f1', bg: '#6366f122' },
+  file_import: { label: 'File Import', icon: Upload, color: '#6366f1', bg: '#6366f122' },
   easm: { label: 'EASM', icon: Globe, color: '#0ea5e9', bg: '#0ea5e922' },
   qualys: { label: 'Qualys', icon: Shield, color: '#8b5cf6', bg: '#8b5cf622' },
   rapid7: { label: 'Rapid7', icon: Shield, color: '#f97316', bg: '#f9731622' },
@@ -208,9 +209,9 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
 
         {!mode && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-            <SourceOption icon={Upload} label="Import File" description="Upload Nessus, Qualys, CSV" color="#6366f1" onClick={() => setMode('upload')} />
             <SourceOption icon={Globe} label="EASM Scan" description={easmEnabled ? 'Scan a domain' : 'Set up EASM scanning'} color="#0ea5e9" onClick={() => setMode(easmEnabled ? 'easm' : 'easm-setup')} />
             <SourceOption icon={MonitorSmartphone} label="VM Scanner" description="Vulnerability scan" color="#ec4899" onClick={() => setMode('vm')} />
+            <SourceOption icon={Upload} label="Import File" description="Nessus XML, HTML, CSV" color="#6366f1" onClick={() => setMode('upload')} />
           </div>
         )}
 
@@ -219,7 +220,7 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
             <BackButton onClick={() => setMode(null)} />
             <DropZone onFile={(file) => { onFile(file); onClose() }} disabled={uploading} />
             <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-muted)', padding: '8px 10px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
-              Supported: .nessus (XML), .html (Tenable export), .csv — all auto-detected
+              Supported: .nessus (XML), .html (Nessus export), .csv — auto-detected
             </div>
           </div>
         )}
@@ -1756,7 +1757,7 @@ export default function ScanManagement() {
 
   // ── Filter & search ──────────────────────────────────────────────
 
-  const sourceTypes = [...new Set(scans.map(s => s.source_type || 'nessus'))].sort()
+  const sourceTypes = [...new Set(scans.map(s => s.source_type || 'file_import'))].sort()
 
   // Normalize status across source types. File-imported scans (Nessus, Qualys,
   // Rapid7, OpenVAS, etc.) don't carry a runtime status, so treat them as
@@ -1782,7 +1783,7 @@ export default function ScanManagement() {
 
   const now = Date.now()
   const filteredScans = scans.filter(s => {
-    const st = s.source_type || 'nessus'
+    const st = s.source_type || 'file_import'
     if (sourceFilter && st !== sourceFilter) return false
     if (statusFilter && getNormalizedStatus(s) !== statusFilter) return false
     if (scheduleFilter === 'scheduled' && !s.schedule) return false

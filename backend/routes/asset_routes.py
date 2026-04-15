@@ -5,11 +5,12 @@ from typing import Optional, List
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Body
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import func, desc, or_, cast, Text
 
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids, apply_scan_org_filter
+from core.builtin_team_roles import user_owner_scopes, apply_owner_scope_to_assets
 import core.risk_config as risk_engine
 import services.dedup as dedup_engine
 import services.tags as tag_engine
@@ -17,7 +18,7 @@ from services.asset_classifier import _is_private_ip
 from models.models import (
     Asset, Finding, Scan, AssetRelationship, AssetObservation, FindingObservation,
     InventoryComputer, InventoryService, InventoryDatabaseInstance,
-    InventorySecurityControl, InventoryNetConn,
+    InventorySecurityControl, InventoryNetConn, User,
 )
 
 router = APIRouter()
@@ -51,6 +52,13 @@ def _apply_sort(q, model, sort_by: str, order: str, default_attr):
         col = getattr(model, sort_by, None)
     if col is None:
         col = default_attr
+
+    # Cascade severity counts: critical → high → medium → low → info
+    _SEV_COLS = ("critical_count", "high_count", "medium_count", "low_count", "info_count")
+    if sort_by in _SEV_COLS:
+        direction = desc if order == "desc" else lambda c: c
+        return q.order_by(*[direction(getattr(model, c)) for c in _SEV_COLS if hasattr(model, c)])
+
     return q.order_by(desc(col) if order == "desc" else col)
 
 
@@ -369,10 +377,14 @@ def list_assets(
     page: int = 1,
     page_size: int = 50,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
+    q = db.query(Asset).options(selectinload(Asset.ownership)).join(Scan, Asset.scan_id == Scan.id)
     q = apply_scan_org_filter(q, org_ids)
+    # Team-scoped RBAC: if the user's access comes entirely through built-in team
+    # roles, narrow results to the teams they're assigned to.
+    q = apply_owner_scope_to_assets(q, user_owner_scopes(db, current_user.id))
     if first_seen_after:
         try:
             q = q.filter(Asset.first_seen > datetime.fromisoformat(first_seen_after))
@@ -443,9 +455,8 @@ def list_assets(
 
     total = q.count()
     if page_size == 0:
-        assets = q.all()
-    else:
-        assets = q.offset((page - 1) * page_size).limit(page_size).all()
+        page_size = 10000  # cap unbounded requests
+    assets = q.offset((page - 1) * page_size).limit(page_size).all()
     asset_ids = [a.id for a in assets]
     tag_map = tag_engine.get_asset_tags(asset_ids, db)
     # Batch-fetch DC status: match by hostname/fqdn (not by source asset_id)
@@ -517,9 +528,17 @@ def get_asset_relationships(asset_id: int, db: Session = Depends(get_db), org_id
 
     outbound = db.query(AssetRelationship).filter(AssetRelationship.source_asset_id == asset_id).all()
     inbound = db.query(AssetRelationship).filter(AssetRelationship.target_asset_id == asset_id).all()
+
+    # Batch-fetch all related assets in one query
+    related_ids = {rel.target_asset_id for rel in outbound} | {rel.source_asset_id for rel in inbound}
+    related_ids.discard(asset_id)
+    asset_map = {}
+    if related_ids:
+        asset_map = {a.id: a for a in db.query(Asset).filter(Asset.id.in_(related_ids)).all()}
+
     results = []
     for rel in outbound:
-        target = db.query(Asset).filter(Asset.id == rel.target_asset_id).first()
+        target = asset_map.get(rel.target_asset_id)
         results.append({
             "id": rel.id, "direction": "outbound", "relationship_type": rel.relationship_type,
             "confidence": rel.confidence, "source_detail": rel.source_detail or {},
@@ -527,7 +546,7 @@ def get_asset_relationships(asset_id: int, db: Session = Depends(get_db), org_id
             "created_at": rel.created_at.isoformat() if rel.created_at else None,
         })
     for rel in inbound:
-        source = db.query(Asset).filter(Asset.id == rel.source_asset_id).first()
+        source = asset_map.get(rel.source_asset_id)
         results.append({
             "id": rel.id, "direction": "inbound", "relationship_type": rel.relationship_type,
             "confidence": rel.confidence, "source_detail": rel.source_detail or {},
@@ -667,15 +686,19 @@ def get_asset_graph(
         if not frontier:
             break
         new_frontier: set[int] = set()
+        # Separate IDs to expand vs just visit (collapsed nodes aren't expanded)
+        expand_ids = set()
         for aid in frontier:
             if aid in visited_ids:
                 continue
             visited_ids.add(aid)
-            # If this node is collapsed, include it but don't expand its children
             if aid in collapsed_ids and aid not in seed_ids:
                 continue
+            expand_ids.add(aid)
+        if expand_ids:
+            # Batch-fetch all relationships for this frontier level in one query
             rels = db.query(AssetRelationship).filter(
-                (AssetRelationship.source_asset_id == aid) | (AssetRelationship.target_asset_id == aid)
+                (AssetRelationship.source_asset_id.in_(expand_ids)) | (AssetRelationship.target_asset_id.in_(expand_ids))
             ).all()
             for rel in rels:
                 edge_ids.add(rel.id)
@@ -690,14 +713,28 @@ def get_asset_graph(
     if visited_ids:
         asset_query = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id.in_(visited_ids))
         asset_query = apply_scan_org_filter(asset_query, org_ids)
+        # Batch-fetch collapsed child counts in one query
+        collapsed_in_result = collapsed_ids & visited_ids
+        child_counts = {}
+        if collapsed_in_result:
+            from sqlalchemy import case, literal_column
+            count_rows = db.query(
+                literal_column("aid"),
+                func.count(),
+            ).select_from(
+                db.query(
+                    AssetRelationship.source_asset_id.label("aid")
+                ).filter(AssetRelationship.source_asset_id.in_(collapsed_in_result))
+                .union_all(
+                    db.query(
+                        AssetRelationship.target_asset_id.label("aid")
+                    ).filter(AssetRelationship.target_asset_id.in_(collapsed_in_result))
+                ).subquery()
+            ).group_by("aid").all()
+            child_counts = {row[0]: row[1] for row in count_rows}
         for a in asset_query.all():
             nid = f"asset-{a.id}"
-            # Count hidden children for collapsed nodes
-            child_count = 0
-            if a.id in collapsed_ids:
-                child_count = db.query(AssetRelationship).filter(
-                    (AssetRelationship.source_asset_id == a.id) | (AssetRelationship.target_asset_id == a.id)
-                ).count()
+            child_count = child_counts.get(a.id, 0) if a.id in collapsed_ids else 0
             nodes[nid] = {
                 "id": nid, "type": "asset",
                 "data": {

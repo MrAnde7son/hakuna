@@ -215,6 +215,20 @@ async def _do_tlsx(sf, org_id: str, target_scope: str | None = None) -> dict:
     async with sf() as db:
         await update_tls(db, uuid.UUID(org_id), all_results)
 
+    # Feed newly discovered SANs back as assets
+    san_upserted = 0
+    new_sans = per_port_result.get("new_sans", [])
+    if new_sans:
+        from app.ingest.assets import upsert_discovered_hosts
+        from app.ingest.delta import emit_new_asset_events
+        san_hosts = [{"host": h} for h in new_sans]
+        async with sf() as db:
+            san_upserted, new_ids = await upsert_discovered_hosts(
+                db, uuid.UUID(org_id), san_hosts, "tls_san",
+            )
+            await emit_new_asset_events(db, uuid.UUID(org_id), new_ids)
+        logger.info("org=%s tlsx SAN feedback: upserted=%d new=%d", org_id, san_upserted, len(new_ids))
+
     # Store JARM fingerprints and run JARM → CPE inference
     jarm_result = {"jarm_matched": 0, "c2_detected": 0}
     jarm_entries = [e for e in all_results if e.get("jarm_hash") or e.get("jarm")]
@@ -225,7 +239,8 @@ async def _do_tlsx(sf, org_id: str, target_scope: str | None = None) -> dict:
     return {
         "inspected": len(all_results),
         "per_port_updated": per_port_result["updated"],
-        "new_sans_discovered": per_port_result["new_sans"],
+        "new_sans_discovered": len(new_sans),
+        "san_upserted": san_upserted,
         "jarm_matched": jarm_result["jarm_matched"],
         "c2_detected": jarm_result["c2_detected"],
         "batches": len(batches),
