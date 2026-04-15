@@ -21,5 +21,6 @@
     { "source": "activityDisplayName", "target": "message" },
     { "source": "category", "target": "category" }
   ],
-  "dedup_key": ["source_system", "source_id"]
+  "dedup_key": ["source_system", "source_id"],
+  "sample_payload": "{\"id\":\"a1b2c3d4-5678-90ab-cdef-1234567890ab\",\"createdDateTime\":\"2024-03-15T14:23:45Z\",\"activityDisplayName\":\"Update user\",\"category\":\"UserManagement\",\"result\":\"success\",\"servicePrincipalId\":\"Microsoft 365\",\"initiatedBy\":{\"user\":{\"userPrincipalName\":\"admin@contoso.com\",\"ipAddress\":\"203.0.113.50\"}}}"
 }

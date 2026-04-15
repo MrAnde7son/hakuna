@@ -5,7 +5,7 @@ import { Card, Button, useToast } from '../shared/ui.jsx'
 import {
   getConnectors, getConnectorCategories, getConnector, getIntegrationSchema, getAcquisitionFlow,
   validateCredentials, createCredential, integrationConnect, pollExtraction,
-  integrationPreview, integrationAutoSuggest,
+  integrationPreview, integrationAutoSuggest, detectFromSample,
   ibCreateIntegration, ibUpdateIntegration, ibGetIntegration,
   discoverApi, parseDocs, uploadIntegrationFile, discoverMcpTools, mcpOAuthStart,
   getTargetModels, getTargetSchema, oauthClientCredentials, discoverOAuth,
@@ -513,6 +513,18 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       console.error('Auto-suggest failed:', e)
     } finally {
       setLoading(false)
+    }
+  }
+
+  // ── Detect fields from pasted sample (webhooks) ──
+  const handleDetectSample = async (payload) => {
+    const result = await detectFromSample({
+      payload,
+      parser_type: transportConfig.parser_type || 'json',
+    })
+    if (result.detected_paths) {
+      setDetectedPaths(result.detected_paths)
+      setSampleRecords(result.sample_records || [])
     }
   }
 
@@ -1787,6 +1799,9 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       suggestions={suggestions}
       loading={loading}
       onNext={handlePreview}
+      onDetectSample={transportType === 'webhook' ? handleDetectSample : undefined}
+      samplePayloadHint={connectorDetail?.sample_payload || ''}
+      parserType={transportConfig.parser_type || 'json'}
     />
   )
 

@@ -23,5 +23,6 @@
   "dedup_key": ["source_system", "source_id"],
   "static_fields": {
     "source_system": "google_workspace"
-  }
+  },
+  "sample_payload": "{\"id\":{\"time\":\"2024-03-15T14:23:45Z\",\"applicationName\":\"admin\",\"uniqueQualifier\":\"123456789\"},\"actor\":{\"email\":\"admin@example.com\"},\"ipAddress\":\"203.0.113.50\",\"events\":[{\"name\":\"CHANGE_PASSWORD\",\"parameters\":[{\"name\":\"USER_EMAIL\",\"value\":\"user@example.com\"}]}]}"
 }

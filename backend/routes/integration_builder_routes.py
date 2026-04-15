@@ -71,6 +71,31 @@ def get_target_fields(slug: str):
     return schema
 
 
+class DetectSampleRequest(BaseModel):
+    payload: str               # raw event payload (JSON, CEF, LEEF, etc.)
+    parser_type: str = "json"  # json | hec | cef | leef | syslog_rfc5424
+
+
+@router.post("/detect-sample")
+def detect_from_sample(body: DetectSampleRequest, user: User = Depends(require_auth)):
+    """Parse a pasted sample payload and return detected field paths."""
+    from services.event_parsers import parse_events
+
+    try:
+        parsed = parse_events(body.payload, body.parser_type)
+    except Exception as e:
+        raise HTTPException(400, f"Failed to parse sample: {e}")
+
+    if not parsed:
+        raise HTTPException(400, "No events could be parsed from the sample")
+
+    detected = detect_paths(parsed[0])
+    return {
+        "detected_paths": detected,
+        "sample_records": parsed[:5],
+    }
+
+
 class AutoSuggestRequest(BaseModel):
     source_paths: list[dict]   # [{path, sample_value, inferred_type}, ...]
     entity: str = "finding"    # target model slug

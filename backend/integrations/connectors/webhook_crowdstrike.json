@@ -25,5 +25,6 @@
   "dedup_key": ["source_system", "source_id"],
   "static_fields": {
     "source_system": "crowdstrike"
-  }
+  },
+  "sample_payload": "{\"metadata\":{\"eventType\":\"DetectionSummaryEvent\",\"eventCreationTime\":\"2024-03-15T14:23:45Z\"},\"event\":{\"DetectId\":\"ldt:abc123def456:789\",\"DetectDescription\":\"Suspicious PowerShell execution detected\",\"SeverityName\":\"High\",\"UserName\":\"jsmith\",\"LocalIP\":\"10.0.0.50\",\"ComputerName\":\"WORKSTATION-01\",\"Tactic\":\"Execution\",\"Technique\":\"PowerShell\"}}"
 }

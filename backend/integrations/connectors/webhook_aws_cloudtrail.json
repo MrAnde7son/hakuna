@@ -22,5 +22,6 @@
     { "source": "errorCode", "target": "severity", "transform": { "type": "map", "map": { "AccessDenied": "high", "UnauthorizedAccess": "critical" }, "default": "info" } },
     { "source": "requestParameters", "target": "raw_event", "transform": { "type": "json_stringify" } }
   ],
-  "dedup_key": ["source_system", "source_id"]
+  "dedup_key": ["source_system", "source_id"],
+  "sample_payload": "{\"Records\":[{\"eventVersion\":\"1.08\",\"eventTime\":\"2024-03-15T14:23:45Z\",\"eventSource\":\"signin.amazonaws.com\",\"eventName\":\"ConsoleLogin\",\"awsRegion\":\"us-east-1\",\"sourceIPAddress\":\"203.0.113.50\",\"userIdentity\":{\"type\":\"IAMUser\",\"arn\":\"arn:aws:iam::123456789012:user/admin\"},\"requestParameters\":null,\"responseElements\":{\"ConsoleLogin\":\"Success\"},\"eventID\":\"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\"errorCode\":null}]}"
 }

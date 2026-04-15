@@ -1193,6 +1193,9 @@ export const integrationPreview = (data) => request(`${IB}/preview`, {
 export const integrationAutoSuggest = (data) => request(`${IB}/auto-suggest`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
 })
+export const detectFromSample = (data) => request(`${IB}/detect-sample`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
 
 export const ibGetIntegrations = () => request(`${IB}/integrations`)
 export const ibCreateIntegration = (data) => request(`${IB}/integrations`, {

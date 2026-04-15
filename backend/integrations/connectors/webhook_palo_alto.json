@@ -25,5 +25,6 @@
   "dedup_key": ["source_system", "source_id"],
   "static_fields": {
     "source_system": "palo_alto"
-  }
+  },
+  "sample_payload": "{\"receive_time\":\"2024-03-15T14:23:45Z\",\"type\":\"THREAT\",\"seqno\":\"1234567\",\"threatid\":\"Suspicious DNS Query(12345)\",\"severity\":\"high\",\"src\":\"10.0.0.50\",\"dst\":\"198.51.100.1\",\"srcuser\":\"jsmith\",\"rule\":\"outbound-threat-block\",\"action\":\"block-url\"}"
 }

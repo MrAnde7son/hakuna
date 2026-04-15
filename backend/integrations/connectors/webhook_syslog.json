@@ -17,5 +17,6 @@
     { "source": "severity", "target": "severity" },
     { "source": "message", "target": "message" }
   ],
-  "dedup_key": ["source_system", "source_id"]
+  "dedup_key": ["source_system", "source_id"],
+  "sample_payload": "<134>1 2024-03-15T14:30:00Z firewall-01 sshd 12345 - - Failed password for user admin from 192.168.1.100 port 22 ssh2"
 }

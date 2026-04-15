@@ -18,5 +18,6 @@
     { "source": "src", "target": "source_ip" },
     { "source": "dst", "target": "destination_ip" }
   ],
-  "dedup_key": ["source_system", "source_id"]
+  "dedup_key": ["source_system", "source_id"],
+  "sample_payload": "LEEF:2.0|IBM|QRadar|1.0|EVT001|src=10.0.0.5\tdst=10.0.0.6\tsev=high\tcat=Authentication\tdevTime=2024-03-15T14:30:00Z\tusrName=admin\tmsg=Multiple failed login attempts detected"
 }

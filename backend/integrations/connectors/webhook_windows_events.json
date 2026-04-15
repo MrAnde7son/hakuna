@@ -21,5 +21,6 @@
     { "source": "Level", "target": "severity", "transform": { "type": "map", "map": { "1": "critical", "2": "high", "3": "medium", "4": "info" }, "default": "info" } },
     { "source": "Message", "target": "message" }
   ],
-  "dedup_key": ["source_system", "source_id"]
+  "dedup_key": ["source_system", "source_id"],
+  "sample_payload": "{\"TimeCreated\":\"2024-03-15T14:23:45Z\",\"Channel\":\"Security\",\"EventRecordID\":\"987654\",\"EventID\":4625,\"Computer\":\"DC-01.contoso.com\",\"IpAddress\":\"192.168.1.100\",\"TargetUserName\":\"administrator\",\"Level\":2,\"Message\":\"An account failed to log on\"}"
 }

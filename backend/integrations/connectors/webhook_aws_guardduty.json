@@ -21,5 +21,6 @@
     { "source": "detail.service.action.networkConnectionAction.remoteIpDetails.ipAddressV4", "target": "source_ip" },
     { "source": "detail.region", "target": "region" }
   ],
-  "dedup_key": ["source_system", "source_id"]
+  "dedup_key": ["source_system", "source_id"],
+  "sample_payload": "{\"version\":\"0\",\"source\":\"aws.guardduty\",\"detail-type\":\"GuardDuty Finding\",\"detail\":{\"id\":\"d2b4c5e6-1234-5678-abcd-ef9012345678\",\"type\":\"UnauthorizedAccess:IAMUser/MaliciousIPCaller\",\"severity\":8,\"title\":\"API GenerateDataKey was invoked from a known malicious IP address\",\"updatedAt\":\"2024-03-15T10:30:00Z\",\"region\":\"us-east-1\",\"resource\":{\"resourceType\":\"AccessKey\"},\"service\":{\"action\":{\"networkConnectionAction\":{\"remoteIpDetails\":{\"ipAddressV4\":\"198.51.100.42\"}}}}}}"
 }

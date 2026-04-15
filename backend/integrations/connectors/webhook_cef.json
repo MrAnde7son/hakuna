@@ -19,5 +19,6 @@
     { "source": "src", "target": "source_ip" },
     { "source": "dst", "target": "destination_ip" }
   ],
-  "dedup_key": ["source_system", "source_id"]
+  "dedup_key": ["source_system", "source_id"],
+  "sample_payload": "CEF:0|Security|Firewall|1.0|200|Connection Blocked|7|src=192.168.1.100 dst=10.0.0.1 act=deny suser=admin rt=Mar 15 2024 14:30:00 cat=network msg=Suspicious outbound connection blocked"
 }
