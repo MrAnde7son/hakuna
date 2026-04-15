@@ -124,6 +124,8 @@ OWNER_MAP = {
     "Malware": "SOC",
     # GRC — compliance framework findings
     "Policy Compliance": "GRC",
+    # VM — vulnerability management team owns findings from the VM scanners they operate
+    "Nuclei": "VM",
     # SecOps — residual hardening / misc security controls
     "RPC": "SecOps",
     "General": "SecOps",

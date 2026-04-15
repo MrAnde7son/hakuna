@@ -12,6 +12,7 @@ from sqlalchemy import desc, or_, cast, Text, func
 
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids, apply_scan_org_filter
+from core.builtin_team_roles import user_owner_scopes, apply_owner_scope_to_findings
 from core.audit import log_audit, diff as _diff
 from models.models import (
     User, Scan, Asset, Finding, FindingTicket, FindingException,
@@ -73,10 +74,14 @@ def list_findings(
     page: int = 1,
     page_size: int = 50,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
     q = apply_scan_org_filter(q, org_ids)
+    # Team-scoped RBAC: if the user's access comes entirely through built-in team
+    # roles, narrow results to the teams they're assigned to.
+    q = apply_owner_scope_to_findings(q, user_owner_scopes(db, current_user.id))
     if created_after:
         try:
             q = q.filter(Scan.created_at > datetime.fromisoformat(created_after))

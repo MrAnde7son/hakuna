@@ -651,6 +651,7 @@
     "networking": "Networking",
     "cloudops": "CloudOps",
     "dba": "DBA",
+    "vm": "VM",
     "secops": "SecOps",
     "soc": "SOC",
     "appsec": "AppSec",

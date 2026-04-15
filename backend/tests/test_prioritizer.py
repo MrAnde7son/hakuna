@@ -477,6 +477,11 @@ class TestOwnerSuggestion:
         result = compute_priority_score(finding)
         assert result["owner_suggestion"] == "GRC"
 
+    def test_nuclei_mapped_to_vm(self):
+        finding = _finding(plugin_family="Nuclei")
+        result = compute_priority_score(finding)
+        assert result["owner_suggestion"] == "VM"
+
 
 # ---------------------------------------------------------------------------
 # Class 11: compute_asset_risk_score

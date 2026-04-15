@@ -828,6 +828,7 @@ export const OWNERSHIP_ROLE_COLORS = {
   CloudOps:   '#3b82f6',
   DBA:        '#06b6d4',
   // Security
+  VM:         '#e11d48',
   SecOps:     '#dc2626',
   SOC:        '#ef4444',
   AppSec:     '#f59e0b',
@@ -891,7 +892,7 @@ export const OWNERSHIP_ROLE_OPTIONS = [
   // Infrastructure & Operations (fixers)
   'IT', 'HelpDesk', 'DevOps', 'SRE', 'Platform', 'Networking', 'CloudOps', 'DBA',
   // Security (finders & fixers)
-  'SecOps', 'SOC', 'AppSec', 'CloudSec', 'IAM', 'GRC',
+  'VM', 'SecOps', 'SOC', 'AppSec', 'CloudSec', 'IAM', 'GRC',
   // Engineering (fixers)
   'Engineering', 'Mobile', 'Data',
   // Escape hatch

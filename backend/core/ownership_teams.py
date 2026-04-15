@@ -22,6 +22,7 @@ OWNERSHIP_ROLES: list[str] = [
     "CloudOps",    # cloud infrastructure operations (AWS/Azure/GCP ops)
     "DBA",         # database administration
     # Security (finders & fixers)
+    "VM",          # vulnerability management — owns scanners (Nessus/Qualys/Nuclei) and scan findings
     "SecOps",      # operational security, hardening, configuration
     "SOC",         # security operations center — monitoring, alert triage, IR
     "AppSec",      # application security, code-level findings, SDLC

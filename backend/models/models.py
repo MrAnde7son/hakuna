@@ -123,6 +123,12 @@ class CustomRole(Base):
     # Deny flags: same keys as base_permissions — deny always wins over allow
     deny_permissions = Column(JSON, default=dict)
     is_active = Column(Boolean, default=True)
+    # Built-in team roles are seeded per-org from core.builtin_team_roles. They
+    # are protected from deletion and regenerate if missing on org startup.
+    is_builtin = Column(Boolean, default=False, nullable=False)
+    # If set, this role restricts finding/asset visibility to resources whose
+    # resolved owner_role matches. One of core.ownership_teams.OWNERSHIP_ROLES.
+    scope_owner_role = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 

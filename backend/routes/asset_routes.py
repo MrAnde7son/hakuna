@@ -10,6 +10,7 @@ from sqlalchemy import func, desc, or_, cast, Text
 
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids, apply_scan_org_filter
+from core.builtin_team_roles import user_owner_scopes, apply_owner_scope_to_assets
 import core.risk_config as risk_engine
 import services.dedup as dedup_engine
 import services.tags as tag_engine
@@ -17,7 +18,7 @@ from services.asset_classifier import _is_private_ip
 from models.models import (
     Asset, Finding, Scan, AssetRelationship, AssetObservation, FindingObservation,
     InventoryComputer, InventoryService, InventoryDatabaseInstance,
-    InventorySecurityControl, InventoryNetConn,
+    InventorySecurityControl, InventoryNetConn, User,
 )
 
 router = APIRouter()
@@ -368,10 +369,14 @@ def list_assets(
     page: int = 1,
     page_size: int = 50,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id)
     q = apply_scan_org_filter(q, org_ids)
+    # Team-scoped RBAC: if the user's access comes entirely through built-in team
+    # roles, narrow results to the teams they're assigned to.
+    q = apply_owner_scope_to_assets(q, user_owner_scopes(db, current_user.id))
     if first_seen_after:
         try:
             q = q.filter(Asset.first_seen > datetime.fromisoformat(first_seen_after))

@@ -33,8 +33,11 @@ SERVICE_TEAM_RULES = [
     (["splunk", "sentinel", "qradar", "sumologic", "datadog_security", "rapid7_insight",
       "crowdstrike", "carbonblack", "defender", "cylance", "sophos", "symantec",
       "mcafee", "trellix"], "SOC"),
-    # Vuln scanners / security configuration tooling → SecOps
-    (["qualys", "nessus", "tenable", "openvas", "wazuh"], "SecOps"),
+    # Vulnerability management scanners → VM team (they run the scanners and own their findings)
+    (["qualys", "nessus", "tenable", "openvas", "nuclei", "rapid7_insightvm",
+      "nexpose"], "VM"),
+    # Security configuration / log collection agents → SecOps
+    (["wazuh", "osquery", "ossec"], "SecOps"),
     # Cloud security tooling / CSPM → CloudSec
     (["prisma", "wiz", "lacework", "orca", "cloudguard", "aqua", "twistlock",
       "scoutsuite", "cloudsploit"], "CloudSec"),
