@@ -73,6 +73,14 @@ def init_db():
         CWEEntry, ExploitReference, SSVCDecision, MSRCPatch,
     )
     Base.metadata.create_all(bind=engine)
+    # Ensure stub tables exist for orphaned FK references (e.g. alerts.incident_id)
+    with engine.connect() as conn:
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS incidents ("
+            "  id INTEGER PRIMARY KEY"
+            ")"
+        ))
+        conn.commit()
     _migrate_add_columns()
     _run_migrations()
 

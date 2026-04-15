@@ -160,8 +160,11 @@ def _create_alert(db: Session, rule: DetectionRule, events: list, group_key: Opt
     db.add(alert)
     db.flush()
 
-    # Enrich with exposure context from asset graph
-    _enrich_with_exposure(db, alert, events)
+    # Enrich with exposure context from asset graph (best-effort)
+    try:
+        _enrich_with_exposure(db, alert, events)
+    except Exception as e:
+        logger.warning("Alert enrichment failed (alert %s): %s", alert.id, e)
 
     # Fire workflow trigger for non-suppressed alerts
     if not alert.suppressed:
