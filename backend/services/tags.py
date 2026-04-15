@@ -285,6 +285,7 @@ def _asset_dict(asset: Asset) -> dict:
         "medium_count": asset.medium_count or 0,
         "low_count": asset.low_count or 0,
         "info_count": asset.info_count or 0,
+        "inferred_team": asset.inferred_team,
     }
 
 

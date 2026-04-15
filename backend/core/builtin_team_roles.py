@@ -17,7 +17,7 @@ from typing import Iterable, Optional
 from sqlalchemy.orm import Session
 
 from core.ownership_teams import OWNERSHIP_ROLES
-from models.models import CustomRole, Tag, TagPermission
+from models.models import AutoTagRule, CustomRole, Tag, TagPermission
 
 
 # Permissions every built-in team role grants. Scoped by owner_role at query time.
@@ -160,11 +160,45 @@ def _ensure_tag_permission(db: Session, role_id: int, tag_id: int, permission: s
         ))
 
 
+_ASSET_AUTOTAG_RULE_NAME = "Auto-tag assets by team (ownership)"
+_FINDING_AUTOTAG_RULE_NAME = "Auto-tag findings by team (ownership)"
+
+
+def _ensure_team_autotag_rules(db: Session, org_id: int) -> None:
+    """Create passthrough auto-tag rules that map ownership → team tags.
+
+    Two rules per org (idempotent):
+      - Assets: ``inferred_team`` → ``team:<value>``
+      - Findings: ``owner_suggestion`` → ``team:<value>``
+    """
+    for rule_name, target_type, field in (
+        (_ASSET_AUTOTAG_RULE_NAME, "asset", "inferred_team"),
+        (_FINDING_AUTOTAG_RULE_NAME, "finding", "owner_suggestion"),
+    ):
+        exists = db.query(AutoTagRule).filter(
+            AutoTagRule.org_id == org_id,
+            AutoTagRule.name == rule_name,
+        ).first()
+        if not exists:
+            db.add(AutoTagRule(
+                org_id=org_id,
+                name=rule_name,
+                description=f"Automatically applies team:* tags to {target_type}s based on ownership attribution.",
+                tag_id=None,  # passthrough creates tags dynamically
+                target_type=target_type,
+                conditions=[{"field": field, "op": "passthrough", "value": "team"}],
+                condition_logic="AND",
+                is_enabled=True,
+            ))
+
+
 def seed_builtin_team_roles(db: Session, org_id: int) -> int:
     """Create any missing built-in team roles for a given org. Idempotent.
 
-    Also creates a ``team:<name>`` tag per team and grants read+write
-    tag permissions on it to the corresponding role.
+    Also creates a ``team:<name>`` tag per team, grants read+write
+    tag permissions on it to the corresponding role, and sets up
+    passthrough auto-tag rules that apply ``team:*`` tags to assets
+    and findings based on ownership attribution.
 
     Returns the number of roles inserted.
     """
@@ -193,6 +227,9 @@ def seed_builtin_team_roles(db: Session, org_id: int) -> int:
         tag = _get_or_create_team_tag(db, org_id, team)
         _ensure_tag_permission(db, role.id, tag.id, "read")
         _ensure_tag_permission(db, role.id, tag.id, "write")
+
+    # Ensure passthrough auto-tag rules that map ownership → team tags.
+    _ensure_team_autotag_rules(db, org_id)
 
     if created:
         db.flush()

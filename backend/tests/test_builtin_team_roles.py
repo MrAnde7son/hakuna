@@ -9,7 +9,7 @@ from core.builtin_team_roles import (
     apply_owner_scope_to_assets,
 )
 from core.ownership_teams import OWNERSHIP_ROLES
-from models.models import CustomRole, UserCustomRole, User, Asset, Finding, Scan, Tag, TagPermission
+from models.models import AutoTagRule, CustomRole, UserCustomRole, User, Asset, Finding, Scan, Tag, TagPermission
 from core.auth import hash_password
 
 
@@ -65,6 +65,27 @@ class TestSeeding:
         tags = db_session.query(Tag).filter(Tag.category == "team").all()
         tag_values = {t.value for t in tags}
         assert tag_values == set(expected_teams)
+
+    def test_seed_creates_autotag_rules(self, db_session, test_org):
+        seed_builtin_team_roles(db_session, test_org.id)
+        rules = db_session.query(AutoTagRule).filter(
+            AutoTagRule.org_id == test_org.id,
+        ).all()
+        rule_names = {r.name for r in rules}
+        assert "Auto-tag assets by team (ownership)" in rule_names
+        assert "Auto-tag findings by team (ownership)" in rule_names
+        # Both should be passthrough rules
+        for rule in rules:
+            assert rule.conditions[0]["op"] == "passthrough"
+            assert rule.conditions[0]["value"] == "team"
+            assert rule.is_enabled is True
+
+    def test_seed_autotag_rules_idempotent(self, db_session, test_org):
+        seed_builtin_team_roles(db_session, test_org.id)
+        count1 = db_session.query(AutoTagRule).filter(AutoTagRule.org_id == test_org.id).count()
+        seed_builtin_team_roles(db_session, test_org.id)
+        count2 = db_session.query(AutoTagRule).filter(AutoTagRule.org_id == test_org.id).count()
+        assert count1 == count2
 
     def test_seed_creates_tag_permissions(self, db_session, test_org):
         seed_builtin_team_roles(db_session, test_org.id)
