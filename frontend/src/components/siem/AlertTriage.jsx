@@ -18,6 +18,7 @@ export default function AlertTriage() {
   const [selectedIdx, setSelectedIdx] = useState(-1)
   const [page, setPage] = useState(1)
   const [showSuppressModal, setShowSuppressModal] = useState(false)
+  const [confirmAction, setConfirmAction] = useState(null) // { status, label }
   const listRef = useRef(null)
   const isMobile = useIsMobile()
 
@@ -37,10 +38,9 @@ export default function AlertTriage() {
 
   const handleTriage = async (alertId, status) => {
     await triageAlert(alertId, { status })
+    setSelectedAlert(null)
+    setSelectedIdx(-1)
     loadAlerts()
-    if (selectedAlert?.id === alertId) {
-      setSelectedAlert(prev => ({ ...prev, status }))
-    }
   }
 
   const handleSelect = async (alert, idx) => {
@@ -67,8 +67,8 @@ export default function AlertTriage() {
         handleSelect(alerts[prevIdx], prevIdx)
       }
       if (selectedAlert) {
-        if (e.key === 't') { e.preventDefault(); handleTriage(selectedAlert.id, 'triaged') }
-        if (e.key === 'f') { e.preventDefault(); handleTriage(selectedAlert.id, 'false_positive') }
+        if (e.key === 't') { e.preventDefault(); setConfirmAction({ status: 'triaged', label: t('siem.markTriaged', 'Triaged') }) }
+        if (e.key === 'f') { e.preventDefault(); setConfirmAction({ status: 'false_positive', label: t('siem.falsePositive', 'False Positive') }) }
         if (e.key === 's') { e.preventDefault(); setShowSuppressModal(true) }
       }
     }
@@ -218,15 +218,15 @@ export default function AlertTriage() {
 
               {/* Action buttons */}
               <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
-                <button onClick={() => handleTriage(selectedAlert.id, 'triaged')}
+                <button onClick={() => setConfirmAction({ status: 'triaged', label: t('siem.markTriaged', 'Triaged') })}
                         style={{ flex: 1, padding: '8px', borderRadius: 6, border: 'none', background: '#3b82f6', color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
                   {t('siem.markTriaged', 'Triaged')}
                 </button>
-                <button onClick={() => handleTriage(selectedAlert.id, 'closed')}
+                <button onClick={() => setConfirmAction({ status: 'closed', label: t('siem.close', 'Close') })}
                         style={{ flex: 1, padding: '8px', borderRadius: 6, border: 'none', background: '#22c55e', color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
                   {t('siem.close', 'Close')}
                 </button>
-                <button onClick={() => handleTriage(selectedAlert.id, 'false_positive')}
+                <button onClick={() => setConfirmAction({ status: 'false_positive', label: t('siem.falsePositive', 'False Positive') })}
                         style={{ flex: 1, padding: '8px', borderRadius: 6, border: 'none', background: '#6b7280', color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
                   {t('siem.falsePositive', 'FP')}
                 </button>
@@ -243,6 +243,35 @@ export default function AlertTriage() {
           </div>
         )}
       </div>
+
+      {/* Confirm triage modal */}
+      {confirmAction && selectedAlert && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center',
+                      justifyContent: 'center', zIndex: 1000 }}
+             onClick={() => setConfirmAction(null)}>
+          <div style={{ background: 'var(--bg-secondary)', borderRadius: 12, padding: 24, width: '90vw', maxWidth: 380,
+                        border: '1px solid var(--border)' }}
+               onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16 }}>{t('siem.confirmAction', 'Confirm Action')}</h3>
+            <p style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--text-muted)' }}>
+              {t('siem.confirmActionMsg', 'Mark "{{alert}}" as {{status}}?', { alert: selectedAlert.rule_name || `Alert #${selectedAlert.id}`, status: confirmAction.label })}
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={() => setConfirmAction(null)}
+                      style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)',
+                               background: 'transparent', color: 'var(--text)', cursor: 'pointer', fontSize: 13 }}>
+                {t('app.cancel', 'Cancel')}
+              </button>
+              <button onClick={() => { handleTriage(selectedAlert.id, confirmAction.status); setConfirmAction(null) }}
+                      style={{ padding: '8px 16px', borderRadius: 6, border: 'none',
+                               background: confirmAction.status === 'triaged' ? '#3b82f6' : confirmAction.status === 'closed' ? '#22c55e' : '#6b7280',
+                               color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+                {confirmAction.label}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Suppress modal */}
       {showSuppressModal && selectedAlert && (
