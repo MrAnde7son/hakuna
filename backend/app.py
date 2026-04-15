@@ -742,7 +742,11 @@ def _delete_scan_cascade(db: Session, scan: Scan):
     if sbom_comp_ids:
         db.query(SBOMVulnerability).filter(SBOMVulnerability.component_id.in_(sbom_comp_ids)).delete(synchronize_session=False)
     db.query(SBOMComponent).filter(SBOMComponent.scan_id == scan_id).delete(synchronize_session=False)
-    # Aggregated solutions
+    # Aggregated solutions — nullify FK references first to avoid constraint violation
+    db.query(Finding).filter(
+        Finding.scan_id == scan_id,
+        Finding.aggregated_solution_id.isnot(None),
+    ).update({"aggregated_solution_id": None}, synchronize_session=False)
     db.query(AggregatedSolution).filter(AggregatedSolution.scan_id == scan_id).delete(synchronize_session=False)
     # Inventory models
     for InvModel in [
