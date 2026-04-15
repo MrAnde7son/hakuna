@@ -926,6 +926,123 @@ def _asset_cdn_provider(asset) -> str | None:
     return None
 
 
+def run_cross_scan_finding_dedup(db, org_id, cfg: dict) -> dict:
+    """Cross-scan finding dedup scoped to a single org.
+
+    Groups all of the org's findings by the configured `findings.key_fields`
+    and applies the configured strategy (keep_first / keep_last / merge) to
+    every group with more than one row. The surviving row is keyed by
+    `last_seen` (fallback `created_at`, fallback id) so fresh data wins.
+
+    Returns ``{"removed": N, "merged": N}`` or ``{"skipped": True, ...}``.
+
+    This function is the single source of truth for finding dedup. Scanners
+    (Nessus parser, VM scanner, EASM) emit raw findings; post_ingest.
+    finalize_scan calls this after every ingest so the resolved per-org
+    rule is enforced uniformly.
+    """
+    from models.models import Finding, Scan
+
+    findings_cfg = cfg.get("findings", {}) or {}
+    if not findings_cfg.get("enabled", False):
+        return {"skipped": True, "reason": "findings dedup disabled for this org"}
+
+    key_fields: list[str] = findings_cfg.get("key_fields") or []
+    if not key_fields:
+        return {"skipped": True, "reason": "no key_fields configured"}
+
+    strategy: str = findings_cfg.get("strategy", "keep_last")
+
+    # Only fields that make sense on the Finding model. Silently drop unknowns.
+    supported = {"plugin_id", "asset_id", "port", "protocol", "cve",
+                 "source_type", "source_system", "normalized_id", "severity"}
+    effective_fields = [f for f in key_fields if f in supported]
+    # Always scope by asset_id as a safety floor so findings can't dedup
+    # across unrelated assets even if the config is sparse.
+    if "asset_id" not in effective_fields:
+        effective_fields = ["asset_id", *effective_fields]
+    if not effective_fields:
+        return {"skipped": True, "reason": "no supported key_fields for findings"}
+
+    q = db.query(Finding).join(Scan, Finding.scan_id == Scan.id)
+    if org_id is not None:
+        q = q.filter(Scan.org_id == org_id)
+    rows = q.all()
+
+    def _sort_key(f):
+        # Fresh > stale: later last_seen wins under keep_last / merge.
+        ls = getattr(f, "last_seen", None) or getattr(f, "created_at", None)
+        return (ls or datetime.min, f.id or 0)
+
+    groups: dict[tuple, list] = {}
+    for row in rows:
+        key_parts = []
+        skip = False
+        for field in effective_fields:
+            val = getattr(row, field, None)
+            # Special-case for cve since Finding stores a list in `cves`.
+            if field == "cve":
+                cves = getattr(row, "cves", None) or []
+                if not cves:
+                    skip = True
+                    break
+                val = str(cves[0])
+            if val is None or val == "":
+                skip = True
+                break
+            key_parts.append(str(val))
+        if skip:
+            continue
+        groups.setdefault(tuple(key_parts), []).append(row)
+
+    removed = 0
+    merged = 0
+    for group_rows in groups.values():
+        if len(group_rows) < 2:
+            continue
+
+        group_rows.sort(key=_sort_key)
+        # Under keep_first, the oldest survives; under keep_last / merge, the newest.
+        if strategy == "keep_first":
+            survivor = group_rows[0]
+            losers = group_rows[1:]
+        else:
+            survivor = group_rows[-1]
+            losers = group_rows[:-1]
+
+        if strategy == "merge":
+            for loser in losers:
+                _merge_finding_lists(survivor, loser)
+            merged += len(losers)
+
+        for loser in losers:
+            db.delete(loser)
+        removed += len(losers)
+
+    if removed or merged:
+        db.flush()
+
+    return {"removed": removed, "merged": merged, "strategy": strategy, "key_fields": effective_fields}
+
+
+def _merge_finding_lists(survivor, loser) -> None:
+    """For merge strategy — union list/JSON fields from loser into survivor."""
+    for field in ("cves", "references", "source_systems", "matched_ttps"):
+        s_val = getattr(survivor, field, None)
+        l_val = getattr(loser, field, None)
+        if isinstance(s_val, list) and isinstance(l_val, list):
+            seen = {json.dumps(x, sort_keys=True, default=str) for x in s_val}
+            for item in l_val:
+                k = json.dumps(item, sort_keys=True, default=str)
+                if k not in seen:
+                    s_val.append(item)
+                    seen.add(k)
+            setattr(survivor, field, s_val)
+    # times_seen aggregates across duplicates.
+    if hasattr(survivor, "times_seen") and hasattr(loser, "times_seen"):
+        survivor.times_seen = (survivor.times_seen or 1) + (loser.times_seen or 1)
+
+
 def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) -> dict:
     """
     Cross-scan asset dedup: within each org, find duplicate assets (same key_fields

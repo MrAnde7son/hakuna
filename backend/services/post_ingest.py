@@ -85,6 +85,14 @@ def finalize_scan(
             db, "Cross-scan dedup", lambda: _cross_scan_dedup(db, org_id)
         )
 
+    # 9b. Cross-scan finding dedup — applies the org's resolved findings rule
+    # so scanners (VM, EASM, Nessus parser, integrations) can emit raw rows
+    # while the engine remains the single dedup authority.
+    if org_id:
+        results["finding_dedup"] = _step(
+            db, "Cross-scan finding dedup", lambda: _cross_scan_finding_dedup(db, org_id)
+        )
+
     # 9.5. Asset relationship inference (DNS → cloud workload)
     if org_id and scan_id:
         results["asset_relationships"] = _step(
@@ -275,6 +283,28 @@ def _cross_scan_dedup(db, org_id):
     result = dedup_engine.run_cross_scan_asset_dedup(db, org_id, cfg, ENTITY_MODEL_MAP)
     if result.get("removed"):
         logger.info("Cross-scan dedup: merged %d duplicate asset(s)", result["removed"])
+    return result
+
+
+def _cross_scan_finding_dedup(db, org_id):
+    """Apply the org's resolved findings-dedup rule across all its findings.
+
+    Scanners (VM scanner, EASM, Nessus parser, integration pulls) emit
+    raw findings into the table. This step is the single place where the
+    configurable dedup engine decides which duplicates to keep/merge.
+    """
+    import services.dedup as dedup_engine
+
+    cfg = dedup_engine.load_config_for_org(db, org_id)
+    if not cfg.get("enabled") or not cfg.get("apply_on_upload"):
+        return None
+
+    result = dedup_engine.run_cross_scan_finding_dedup(db, org_id, cfg)
+    if result.get("removed") or result.get("merged"):
+        logger.info(
+            "Cross-scan finding dedup: removed=%d merged=%d (strategy=%s)",
+            result.get("removed", 0), result.get("merged", 0), result.get("strategy"),
+        )
     return result
 
 

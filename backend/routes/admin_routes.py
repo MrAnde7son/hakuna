@@ -122,50 +122,6 @@ def get_dedup_config_override_raw(
     return dedup_engine.load_org_override(db, org_id)
 
 
-# ─────────────────────────────────────────────
-# Internal endpoint: VM scanner fetches resolved findings rule
-# ─────────────────────────────────────────────
-
-def _require_internal_token(authorization: Optional[str] = Header(None)) -> None:
-    """Shared-secret bearer auth for service-to-service calls (VM scanner → backend).
-
-    Secret is HAKUNA_INTERNAL_TOKEN from env. If unset, the endpoint is
-    disabled (returns 503) — never falls open.
-    """
-    import os
-    expected = os.environ.get("HAKUNA_INTERNAL_TOKEN")
-    if not expected:
-        raise HTTPException(503, "Internal auth not configured")
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(401, "Missing bearer token")
-    presented = authorization.split(None, 1)[1].strip()
-    # constant-time compare
-    import hmac
-    if not hmac.compare_digest(presented, expected):
-        raise HTTPException(401, "Invalid bearer token")
-
-
-@router.get("/api/internal/dedup/findings-rule", dependencies=[Depends(_require_internal_token)])
-def get_internal_findings_rule(
-    org_id: int,
-    db: Session = Depends(get_db),
-):
-    """Resolve the findings-dedup rule for a given org (for VM scanner).
-
-    Returns only the `findings` block of the resolved config so the scanner
-    doesn't need to understand the full schema.
-    """
-    cfg = dedup_engine.load_config_for_org(db, org_id)
-    findings_rule = cfg.get("findings", {})
-    return {
-        "org_id": org_id,
-        "enabled": bool(findings_rule.get("enabled", False)),
-        "key_fields": list(findings_rule.get("key_fields", [])),
-        "strategy": findings_rule.get("strategy", "keep_last"),
-        "scope": findings_rule.get("scope", "cross_scan"),
-    }
-
-
 class RunDedupBody(BaseModel):
     entity_type: str
     scan_id: Optional[int] = None

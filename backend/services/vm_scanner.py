@@ -218,7 +218,7 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
 
             # Import findings from this job if not already imported
             if job_result and job_id not in imported_job_ids:
-                new_findings = _import_adhoc_findings(db, scan, job_result)
+                new_findings = _import_nuclei_job_findings(db, scan, job_result)
                 total_findings += new_findings
                 imported_job_ids.add(job_id)
 
@@ -278,60 +278,84 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
     return new_meta
 
 
-def _import_adhoc_findings(db: Session, scan: Scan, job_result: dict) -> int:
-    """Import findings from a completed adhoc nuclei job into the scan.
+def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> int:
+    """Import findings from a completed nuclei Celery job into the scan.
 
-    If the target was linked to an existing asset (via target_asset_map),
-    findings are attached to that asset. Otherwise creates a new asset.
+    Handles both adhoc results (keyed by `target`) and asset-based results
+    (keyed by `asset_id`). The raw findings list is identical between the
+    two — only asset resolution differs:
+
+      asset-based: asset_id is already known, look up directly
+      adhoc:       target → existing asset (via map/IP/hostname) or create new
+
+    Dedup of these findings is NOT performed here. Cross-scan dedup is
+    applied by services/post_ingest.finalize_scan, which is the single
+    authority for per-org dedup rules.
+
     Returns the number of findings created.
     """
-    target = job_result.get("target", "")
     findings_data = job_result.get("findings", [])
+    target = job_result.get("target", "")
+    asset_id_in = job_result.get("asset_id")
 
     meta = scan.raw_metadata or {}
-    target_asset_map = meta.get("target_asset_map", {})
+    asset: Asset | None = None
 
-    # Check if this target maps to an existing asset
-    existing_asset_id = target_asset_map.get(target)
-    asset = None
-    if existing_asset_id:
-        asset = db.query(Asset).filter(Asset.id == existing_asset_id).first()
-
-    if not asset:
-        # Try to find an existing asset in this org by IP or hostname (dedup)
-        if _is_ip(target):
-            asset = (
-                db.query(Asset)
-                .join(Scan, Asset.scan_id == Scan.id)
-                .filter(Scan.org_id == scan.org_id, Asset.ip == target)
-                .first()
+    # Asset-based job (from run_nuclei_scan) — asset_id is authoritative.
+    if asset_id_in:
+        try:
+            asset = db.query(Asset).filter(Asset.id == asset_id_in).first()
+        except Exception:
+            asset = None
+        if not asset:
+            logger.warning(
+                "VM scan job referenced asset_id %s which no longer exists — skipping",
+                asset_id_in,
             )
-        else:
-            asset = (
-                db.query(Asset)
-                .join(Scan, Asset.scan_id == Scan.id)
-                .filter(
-                    Scan.org_id == scan.org_id,
-                    or_(Asset.hostname == target, Asset.fqdn == target),
-                )
-                .first()
-            )
-
-    if not asset:
-        # No existing asset found — create one under this scan
-        asset = Asset(
-            scan_id=scan.id,
-            ip=target if _is_ip(target) else "",
-            hostname=target if not _is_ip(target) else "",
-            source_systems=["vm_scanner"],
-        )
-        db.add(asset)
-        db.flush()
-    else:
-        # Extend the existing asset's source_systems to include vm_scanner
+            return 0
         existing_sources = list(asset.source_systems or [])
         if "vm_scanner" not in existing_sources:
             asset.source_systems = existing_sources + ["vm_scanner"]
+    else:
+        # Adhoc job — resolve by target against this scan's prefilled map,
+        # then by IP/hostname in the same org, creating a new asset if none.
+        target_asset_map = meta.get("target_asset_map", {})
+        existing_asset_id = target_asset_map.get(target)
+        if existing_asset_id:
+            asset = db.query(Asset).filter(Asset.id == existing_asset_id).first()
+
+        if not asset:
+            if _is_ip(target):
+                asset = (
+                    db.query(Asset)
+                    .join(Scan, Asset.scan_id == Scan.id)
+                    .filter(Scan.org_id == scan.org_id, Asset.ip == target)
+                    .first()
+                )
+            else:
+                asset = (
+                    db.query(Asset)
+                    .join(Scan, Asset.scan_id == Scan.id)
+                    .filter(
+                        Scan.org_id == scan.org_id,
+                        or_(Asset.hostname == target, Asset.fqdn == target),
+                    )
+                    .first()
+                )
+
+        if not asset:
+            asset = Asset(
+                scan_id=scan.id,
+                ip=target if _is_ip(target) else "",
+                hostname=target if not _is_ip(target) else "",
+                source_systems=["vm_scanner"],
+            )
+            db.add(asset)
+            db.flush()
+        else:
+            existing_sources = list(asset.source_systems or [])
+            if "vm_scanner" not in existing_sources:
+                asset.source_systems = existing_sources + ["vm_scanner"]
 
     # Record per-source observation
     record_observation(
