@@ -1104,27 +1104,7 @@ function ConfigPanel({ editing, setEditing, toolCatalog, toggleTool, updateGuard
 
       {/* Tools */}
       <Section icon={Wrench} title={`Tools (${(editing.tools || []).length} selected)`}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {toolCatalog.map(tool => {
-            const active = (editing.tools || []).includes(tool.name)
-            return (
-              <button
-                key={tool.name}
-                onClick={() => toggleTool(tool.name)}
-                title={tool.description}
-                style={{
-                  padding: '5px 10px', borderRadius: 6, fontSize: 12, fontWeight: 500,
-                  cursor: 'pointer', transition: 'all 0.15s',
-                  border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-                  background: active ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'transparent',
-                  color: active ? 'var(--accent)' : 'var(--text-muted)',
-                }}
-              >
-                {tool.name}
-              </button>
-            )
-          })}
-        </div>
+        <ToolSelector tools={editing.tools || []} toolCatalog={toolCatalog} toggleTool={toggleTool} setEditing={setEditing} editing={editing} />
       </Section>
 
       {/* Guardrails */}
@@ -1752,6 +1732,161 @@ function TraceView({ trace }) {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+
+// ── Tool Categories ──────────────────────────────────────────────────
+const TOOL_CATEGORIES = [
+  { id: 'findings', label: 'Findings & Vulnerabilities', match: ['query_findings', 'get_finding_detail', 'get_exploit_findings', 'get_regression_findings', 'get_quick_wins', 'get_plugin_family_stats', 'update_finding_status', 'correlate_cves_with_findings', 'get_blast_radius'] },
+  { id: 'assets', label: 'Assets & Inventory', match: ['query_assets', 'get_asset_profile', 'get_top_risky_assets', 'tag_assets', 'get_inventory_users', 'get_inventory_services', 'get_network_connections', 'get_missing_patches', 'get_installed_software', 'get_certificates', 'get_writeable_shares', 'get_os_breakdown', 'get_internet_facing_risk', 'get_security_controls'] },
+  { id: 'scans', label: 'Scans & EASM', match: ['list_scans', 'get_scan_summary', 'compare_scans', 'delete_scan', 'rename_scan', 'trigger_easm_scan', 'check_easm_scan_status', 'list_easm_domains'] },
+  { id: 'tags', label: 'Tags & Auto-Tag Rules', match: ['list_tags', 'get_tag_stats', 'create_tag', 'manage_tag', 'bulk_tag_findings', 'create_auto_tag_rule', 'manage_auto_tag_rule', 'run_auto_tag_rules'] },
+  { id: 'campaigns', label: 'Campaigns & SLA', match: ['create_campaign', 'list_campaigns', 'get_campaign', 'get_remediation_grouping', 'get_sla_status', 'get_sla_config', 'update_sla_config', 'recalculate_sla', 'get_owner_workload'] },
+  { id: 'exceptions', label: 'Exceptions', match: ['create_exception', 'list_exceptions', 'manage_exception'] },
+  { id: 'risk', label: 'Risk & Prioritization', match: ['get_risk_config', 'update_risk_config', 'manage_criticality_rules', 'recalculate_risk_scores', 'analyze_attack_surface', 'get_dedup_config', 'update_dedup_config', 'run_dedup'] },
+  { id: 'threat', label: 'Threat Intelligence', match: ['get_threat_groups', 'get_threat_cves', 'get_threat_campaigns', 'get_ttps'] },
+  { id: 'integrations', label: 'Integrations', match: ['list_integrations', 'call_integration_fetch', 'call_integration_push', 'create_jira_ticket', 'create_servicenow_ticket', 'list_integration_builder_connectors', 'get_integration_builder_connector_detail', 'get_integration_builder_targets', 'list_integration_credentials', 'create_integration_credential', 'create_integration', 'update_integration', 'get_integration_detail', 'manage_integration', 'get_integration_runs', 'suggest_field_mapping'] },
+  { id: 'notifications', label: 'Notifications', match: ['send_slack_message', 'send_teams_message', 'send_email_alert', 'send_webhook'] },
+  { id: 'workflows', label: 'Workflows', match: ['list_workflows', 'get_workflow_detail', 'get_workflow_execution', 'create_campaign_workflow', 'create_workflow_from_template', 'list_workflow_templates', 'run_workflow', 'toggle_workflow', 'get_workflow_status_summary'] },
+  { id: 'agents', label: 'Agents', match: ['list_agents', 'get_agent_run', 'recommend_agents', 'create_agent', 'create_agent_schedule'] },
+  { id: 'ownership', label: 'Ownership & Roles', match: ['list_ownership_rules', 'manage_ownership_rule', 'run_ownership_rules', 'list_custom_roles', 'manage_custom_role'] },
+  { id: 'reports', label: 'Reports & Documents', match: ['build_report', 'search_documents', 'suggest_tagging_schema'] },
+  { id: 'siem', label: 'SIEM & Alerts', match: ['query_events', 'get_event_context', 'list_alerts', 'get_alert_with_events', 'update_alert_status', 'run_detection_rule_now', 'triage_alert', 'query_siem_events', 'get_exposure_context'] },
+  { id: 'utility', label: 'Utility', match: ['read_scratchpad', 'write_scratchpad', 'clear_scratchpad', 'request_clarification', 'search_web', 'fetch_url', 'run_sql_query'] },
+]
+
+function categorizeTools(toolCatalog) {
+  const assigned = new Set()
+  const categories = TOOL_CATEGORIES.map(cat => {
+    const tools = toolCatalog.filter(t => cat.match.includes(t.name))
+    tools.forEach(t => assigned.add(t.name))
+    return { ...cat, tools }
+  })
+  const uncategorized = toolCatalog.filter(t => !assigned.has(t.name))
+  if (uncategorized.length > 0) {
+    categories.push({ id: 'other', label: 'Other', tools: uncategorized, match: [] })
+  }
+  return categories.filter(c => c.tools.length > 0)
+}
+
+function ToolSelector({ tools, toolCatalog, toggleTool, setEditing, editing }) {
+  const [search, setSearch] = useState('')
+  const [collapsed, setCollapsed] = useState({})
+  const [showSelected, setShowSelected] = useState(false)
+
+  const categories = useMemo(() => categorizeTools(toolCatalog), [toolCatalog])
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase()
+    return categories.map(cat => {
+      let catTools = cat.tools
+      if (q) catTools = catTools.filter(t => t.name.includes(q) || t.description?.toLowerCase().includes(q))
+      if (showSelected) catTools = catTools.filter(t => tools.includes(t.name))
+      return { ...cat, tools: catTools }
+    }).filter(c => c.tools.length > 0)
+  }, [categories, search, showSelected, tools])
+
+  const toggleCategory = (catTools) => {
+    const catNames = catTools.map(t => t.name)
+    const allSelected = catNames.every(n => tools.includes(n))
+    const next = allSelected
+      ? tools.filter(n => !catNames.includes(n))
+      : [...new Set([...tools, ...catNames])]
+    setEditing({ ...editing, tools: next })
+  }
+
+  const selectAll = () => setEditing({ ...editing, tools: toolCatalog.map(t => t.name) })
+  const selectNone = () => setEditing({ ...editing, tools: [] })
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {/* Search + filters row */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: 180 }}>
+          <Search size={14} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search tools..."
+            style={{
+              width: '100%', padding: '6px 10px 6px 28px', borderRadius: 6, fontSize: 12,
+              border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text-primary)', outline: 'none',
+            }}
+          />
+        </div>
+        <button onClick={() => setShowSelected(!showSelected)} style={{
+          padding: '5px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+          border: `1px solid ${showSelected ? 'var(--accent)' : 'var(--border)'}`,
+          background: showSelected ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'transparent',
+          color: showSelected ? 'var(--accent)' : 'var(--text-muted)',
+        }}>
+          Selected ({tools.length})
+        </button>
+        <button onClick={selectAll} style={{ padding: '5px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)' }}>
+          All
+        </button>
+        <button onClick={selectNone} style={{ padding: '5px 8px', borderRadius: 6, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)' }}>
+          None
+        </button>
+      </div>
+
+      {/* Categories */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {filtered.map(cat => {
+          const isCollapsed = collapsed[cat.id]
+          const selectedCount = cat.tools.filter(t => tools.includes(t.name)).length
+          const allSelected = cat.tools.length > 0 && selectedCount === cat.tools.length
+          return (
+            <div key={cat.id}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 4px', cursor: 'pointer', userSelect: 'none' }}>
+                <div onClick={() => setCollapsed(p => ({ ...p, [cat.id]: !isCollapsed }))} style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1 }}>
+                  {isCollapsed ? <ChevronRight size={12} color="var(--text-muted)" /> : <ChevronDown size={12} color="var(--text-muted)" />}
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>{cat.label}</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    {selectedCount > 0 ? `${selectedCount}/${cat.tools.length}` : cat.tools.length}
+                  </span>
+                </div>
+                <button
+                  onClick={() => toggleCategory(cat.tools)}
+                  style={{
+                    padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: 'pointer',
+                    border: '1px solid var(--border)', background: allSelected ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'transparent',
+                    color: allSelected ? 'var(--accent)' : 'var(--text-muted)',
+                  }}
+                >
+                  {allSelected ? '✓ all' : 'select all'}
+                </button>
+              </div>
+              {!isCollapsed && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, padding: '2px 0 8px 20px' }}>
+                  {cat.tools.map(tool => {
+                    const active = tools.includes(tool.name)
+                    return (
+                      <button
+                        key={tool.name}
+                        onClick={() => toggleTool(tool.name)}
+                        title={tool.description}
+                        style={{
+                          padding: '4px 9px', borderRadius: 6, fontSize: 11, fontWeight: 500,
+                          cursor: 'pointer', transition: 'all 0.15s',
+                          border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                          background: active ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'transparent',
+                          color: active ? 'var(--accent)' : 'var(--text-muted)',
+                        }}
+                      >
+                        {tool.name}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

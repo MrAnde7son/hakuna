@@ -1082,6 +1082,38 @@ AGENT_TEMPLATES = [
         "guardrails": {"max_steps": 15, "read_only": False},
         "suggested_input": "Analyze the latest scans for duplicate findings and propose dedup rules.",
     },
+    {
+        "id": "soc_triage",
+        "name": "SOC Triage Analyst",
+        "description": "Investigate SIEM alerts — correlate events with vulnerability exposure, assess asset risk, and make triage decisions.",
+        "icon": "alert",
+        "system_prompt": ENHANCED_PROMPTS["soc_triage"],
+        "tools": [
+            "query_events", "get_event_context", "list_alerts", "get_alert_with_events",
+            "triage_alert", "update_alert_status", "get_exposure_context",
+            "query_findings", "get_finding_detail", "get_asset_profile",
+            "get_blast_radius", "get_internet_facing_risk",
+            "read_scratchpad", "write_scratchpad", "request_clarification",
+        ],
+        "guardrails": {"max_steps": 15, "read_only": False},
+        "suggested_input": "Triage all open SIEM alerts — investigate events, check asset exposure, and recommend actions.",
+    },
+    {
+        "id": "detection_engineer",
+        "name": "Detection Engineer",
+        "description": "Create and tune detection rules, analyze false positive rates, and build suppression rules to reduce alert fatigue.",
+        "icon": "settings",
+        "system_prompt": ENHANCED_PROMPTS["detection_engineer"],
+        "tools": [
+            "query_events", "list_alerts", "get_alert_with_events",
+            "run_detection_rule_now", "get_exposure_context",
+            "query_assets", "query_findings", "get_asset_profile",
+            "get_internet_facing_risk", "get_top_risky_assets",
+            "read_scratchpad", "write_scratchpad", "request_clarification",
+        ],
+        "guardrails": {"max_steps": 15, "read_only": True},
+        "suggested_input": "Analyze recent SIEM events and suggest new detection rules for suspicious patterns.",
+    },
 ]
 
 
