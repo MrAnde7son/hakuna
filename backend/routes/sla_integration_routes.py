@@ -954,10 +954,16 @@ def get_aggregated_solution(agg_id: int, db: Session = Depends(get_db)):
     agg = db.query(AggregatedSolution).filter(AggregatedSolution.id == agg_id).first()
     if not agg:
         raise HTTPException(404, "Aggregated solution not found")
-    result = _agg_solution_to_dict(agg, db)
-    # Include full findings list
+    # Batch-fetch assets for both the solution dict and the findings list
     findings = db.query(Finding).filter(Finding.aggregated_solution_id == agg.id).all()
-    result["findings"] = [_finding_to_dict(f, db) for f in findings]
+    all_asset_ids = {f.asset_id for f in findings if f.asset_id}
+    if agg.asset_ids:
+        all_asset_ids.update(agg.asset_ids)
+    asset_cache = {}
+    if all_asset_ids:
+        asset_cache = {a.id: a for a in db.query(Asset).filter(Asset.id.in_(all_asset_ids)).all()}
+    result = _agg_solution_to_dict(agg, db, asset_cache)
+    result["findings"] = [_finding_to_dict(f, db, asset=asset_cache.get(f.asset_id)) for f in findings]
     return result
 
 

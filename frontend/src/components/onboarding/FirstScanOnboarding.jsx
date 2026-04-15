@@ -1,252 +1,96 @@
-import React, { useState, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import React, { useState, useEffect } from 'react'
 import {
-  Upload, CheckCircle, AlertCircle, ShieldCheck, Target,
-  Globe, Radar, ArrowRight, FileText, Loader,
+  CheckCircle, Target, Globe, Radar, ArrowRight, Loader,
+  MonitorSmartphone, Activity,
 } from 'lucide-react'
-import { useScan } from '../../App.jsx'
 import { useAuth } from '../../contexts/AuthContext.jsx'
-import { uploadScan, getScanStatus } from '../../api.js'
+import { getEasmStatus } from '../../api.js'
 
-// ── Drop zone ──────────────────────────────────────────────────────
+// ── Discovery status card ──────────────────────────────────────────
 
-function DropZone({ onFile, disabled }) {
-  const [dragging, setDragging] = useState(false)
-  const inputRef = useRef()
+function DiscoveryStatusCard({ domain, phase, stats }) {
+  const phases = [
+    { key: 'starting', icon: Radar, label: 'Starting discovery…', color: 'var(--accent)' },
+    { key: 'discovering', icon: Globe, label: 'Discovering assets…', color: '#0ea5e9' },
+    { key: 'scanning', icon: MonitorSmartphone, label: 'Scanning for vulnerabilities…', color: '#ec4899' },
+    { key: 'complete', icon: CheckCircle, label: 'Discovery complete', color: '#16a34a' },
+  ]
 
-  const handleDrop = (e) => {
-    e.preventDefault()
-    setDragging(false)
-    const file = e.dataTransfer.files[0]
-    if (file) onFile(file)
-  }
+  const currentIdx = phases.findIndex(p => p.key === phase)
 
-  return (
-    <div
-      onClick={() => !disabled && inputRef.current.click()}
-      onDragOver={e => { e.preventDefault(); setDragging(true) }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={handleDrop}
-      style={{
-        border: `2px dashed ${dragging ? 'var(--accent)' : 'var(--border)'}`,
-        borderRadius: 12,
-        padding: '32px 20px',
-        textAlign: 'center',
-        cursor: disabled ? 'default' : 'pointer',
-        background: dragging ? 'rgba(99,102,241,0.05)' : 'transparent',
-        transition: 'all 0.2s',
-        opacity: disabled ? 0.6 : 1,
-      }}
-    >
-      <Upload size={28} color={dragging ? 'var(--accent)' : 'var(--text-muted)'} style={{ marginBottom: 10 }} />
-      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
-        {dragging ? 'Drop to upload' : 'Drop your scan file here'}
-      </div>
-      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-        or click to browse
-      </div>
-      <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap' }}>
-        {['.nessus XML', 'HTML export', 'CSV'].map(fmt => (
-          <span key={fmt} style={{
-            fontSize: 11, fontWeight: 600, padding: '2px 8px',
-            background: 'var(--bg-primary)', border: '1px solid var(--border)',
-            borderRadius: 5, color: 'var(--text-muted)',
-          }}>{fmt}</span>
-        ))}
-      </div>
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".html,.htm,.nessus,.csv"
-        style={{ display: 'none' }}
-        onChange={e => e.target.files[0] && onFile(e.target.files[0])}
-      />
-    </div>
-  )
-}
-
-// ── Upload progress row ────────────────────────────────────────────
-
-function UploadRow({ file, status, result, error }) {
   return (
     <div style={{
-      display: 'flex', gap: 12, padding: '12px 14px', borderRadius: 10,
-      background: 'var(--bg-secondary)',
-      border: `1px solid ${status === 'done' ? '#16a34a44' : status === 'error' ? '#dc262644' : 'var(--border)'}`,
-      alignItems: 'center',
+      padding: '20px', borderRadius: 14,
+      background: 'rgba(99,102,241,0.04)',
+      border: '1px solid rgba(99,102,241,0.15)',
     }}>
-      <div style={{ flexShrink: 0 }}>
-        {(status === 'uploading' || status === 'processing') && (
-          <><Loader size={18} color="var(--accent)" style={{ animation: 'spin 1s linear infinite' }} />
-            <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-          </>
-        )}
-        {status === 'done' && <CheckCircle size={18} color="#16a34a" />}
-        {status === 'error' && <AlertCircle size={18} color="#dc2626" />}
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>
+        Scanning <span style={{ color: 'var(--accent)' }}>{domain}</span>
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          {status === 'uploading' && 'Uploading…'}
-          {status === 'processing' && 'Processing scan data — this usually takes 30–60 seconds…'}
-          {status === 'done' && result && <span style={{ color: '#86efac' }}>✓ {result.assets} assets · {result.findings?.toLocaleString()} findings imported</span>}
-          {status === 'error' && <span style={{ color: '#fca5a5' }}>{error}</span>}
-        </div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16, lineHeight: 1.6 }}>
+        We're discovering your external attack surface and scanning for vulnerabilities.
+        Results appear in your dashboard as they come in.
       </div>
-    </div>
-  )
-}
 
-// ── EASM status card ───────────────────────────────────────────────
+      {/* Phase progress */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {phases.map((p, i) => {
+          const Icon = p.icon
+          const isActive = p.key === phase
+          const isDone = i < currentIdx || phase === 'complete'
+          const isPending = i > currentIdx && phase !== 'complete'
 
-function EasmStatusCard({ domain }) {
-  return (
-    <div style={{
-      padding: '14px 16px', borderRadius: 12,
-      background: 'rgba(99,102,241,0.06)',
-      border: '1px solid rgba(99,102,241,0.2)',
-      display: 'flex', gap: 12, alignItems: 'flex-start',
-    }}>
-      <div style={{
-        width: 36, height: 36, borderRadius: 10,
-        background: 'rgba(99,102,241,0.12)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        flexShrink: 0,
-      }}>
-        <Radar size={18} color="var(--accent)" />
-      </div>
-      <div>
-        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
-          Scanning <span style={{ color: 'var(--accent)' }}>{domain}</span> for internet-facing assets
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-          We automatically discovered your domain and started an external attack surface scan.
-          High-value assets will then be scanned for vulnerabilities.
-          This runs in the background — results appear in your dashboard as they come in.
-        </div>
-        <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {[
-            { icon: Globe, label: 'Domain discovery' },
-            { icon: ShieldCheck, label: 'Port & service scan' },
-            { icon: Target, label: 'Vulnerability scan' },
-          ].map(({ icon: Icon, label }) => (
-            <span key={label} style={{
-              display: 'inline-flex', alignItems: 'center', gap: 4,
-              fontSize: 11, fontWeight: 600, padding: '3px 8px',
-              background: 'var(--bg-secondary)', border: '1px solid var(--border)',
-              borderRadius: 6, color: 'var(--text-secondary)',
+          return (
+            <div key={p.key} style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              opacity: isPending ? 0.4 : 1,
+              transition: 'opacity 0.3s',
             }}>
-              <Icon size={11} />
-              {label}
+              <div style={{
+                width: 28, height: 28, borderRadius: 8,
+                background: isDone ? 'rgba(22,163,74,0.12)' : isActive ? 'rgba(99,102,241,0.12)' : 'var(--bg-secondary)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0,
+              }}>
+                {isDone && !isActive ? (
+                  <CheckCircle size={14} color="#16a34a" />
+                ) : isActive && phase !== 'complete' ? (
+                  <><Loader size={14} color={p.color} style={{ animation: 'spin 1s linear infinite' }} />
+                    <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+                  </>
+                ) : (
+                  <Icon size={14} color={isDone ? '#16a34a' : 'var(--text-muted)'} />
+                )}
+              </div>
+              <div style={{ fontSize: 13, fontWeight: isActive ? 700 : 500, color: isActive ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                {p.label}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Live stats */}
+      {stats && (stats.assets > 0 || stats.findings > 0) && (
+        <div style={{
+          marginTop: 14, padding: '10px 12px', borderRadius: 8,
+          background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+          display: 'flex', gap: 16, fontSize: 12,
+        }}>
+          {stats.assets > 0 && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Activity size={12} color="#0ea5e9" />
+              <strong>{stats.assets}</strong> assets found
             </span>
-          ))}
+          )}
+          {stats.findings > 0 && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Target size={12} color="#ec4899" />
+              <strong>{stats.findings}</strong> findings so far
+            </span>
+          )}
         </div>
-      </div>
-    </div>
-  )
-}
-
-// ── Success state with guided steps ───────────────────────────────
-
-const GUIDED_STEPS = [
-  {
-    num: 1,
-    title: 'Review your top findings',
-    description: 'See which vulnerabilities pose the highest real-world risk to your environment.',
-    cta: 'Go to Findings',
-    path: '/findings?sort_by=priority_score&order=desc',
-  },
-  {
-    num: 2,
-    title: 'Create your first campaign',
-    description: 'Use a template like "Quick Wins" to build a remediation plan in seconds.',
-    cta: 'Create Campaign',
-    path: '/campaigns',
-  },
-  {
-    num: 3,
-    title: 'Assign findings to owners',
-    description: 'Tag assets with owners so the right people get notified when new issues appear.',
-    cta: 'View Assets',
-    path: '/assets',
-  },
-  {
-    num: 4,
-    title: 'Connect your ticketing system',
-    description: 'Push findings to Jira or ServiceNow to fit your existing workflow.',
-    cta: 'Set up Integration',
-    path: '/settings?tab=integrations',
-  },
-]
-
-function SuccessState({ result, onComplete }) {
-  const navigate = useNavigate()
-
-  return (
-    <div style={{ width: '100%', maxWidth: 580 }}>
-      {/* Success banner */}
-      <div style={{
-        textAlign: 'center', padding: '24px 20px',
-        background: 'rgba(22,163,74,0.06)',
-        border: '1px solid rgba(22,163,74,0.2)',
-        borderRadius: 14, marginBottom: 28,
-      }}>
-        <CheckCircle size={36} color="#16a34a" style={{ marginBottom: 10 }} />
-        <div style={{ fontWeight: 700, fontSize: 18, marginBottom: 4 }}>Scan imported successfully</div>
-        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-          {result.assets} assets · {result.findings?.toLocaleString()} findings are ready for review
-        </div>
-      </div>
-
-      {/* Guided steps */}
-      <div style={{ marginBottom: 20, fontWeight: 700, fontSize: 15 }}>
-        Here's what to do next
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 28 }}>
-        {GUIDED_STEPS.map((step) => (
-          <div
-            key={step.num}
-            style={{
-              display: 'flex', gap: 14, padding: '14px 16px',
-              background: 'var(--bg-secondary)',
-              border: '1px solid var(--border)',
-              borderRadius: 12, alignItems: 'center',
-              cursor: 'pointer', transition: 'border-color 0.15s',
-            }}
-            onClick={() => { onComplete(); navigate(step.path) }}
-            onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent)'}
-            onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border)'}
-          >
-            <div style={{
-              width: 32, height: 32, borderRadius: 8,
-              background: 'rgba(99,102,241,0.12)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontWeight: 800, fontSize: 14, color: 'var(--accent)', flexShrink: 0,
-            }}>{step.num}</div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>{step.title}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>{step.description}</div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 600, color: 'var(--accent)', flexShrink: 0 }}>
-              {step.cta} <ArrowRight size={13} />
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ textAlign: 'center' }}>
-        <button
-          onClick={onComplete}
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 8,
-            padding: '10px 28px', borderRadius: 10, border: 'none',
-            background: 'var(--accent)', color: '#fff', fontWeight: 700,
-            fontSize: 14, cursor: 'pointer',
-          }}
-        >
-          Go to dashboard <ArrowRight size={15} />
-        </button>
-      </div>
+      )}
     </div>
   )
 }
@@ -270,58 +114,53 @@ function deriveCorporateDomain(email) {
 // ── Main component ─────────────────────────────────────────────────
 
 export default function FirstScanOnboarding({ onComplete }) {
-  const { refreshScans, setActiveScanId } = useScan()
   const { user } = useAuth()
-  const [upload, setUpload] = useState(null) // { file, status, result, error }
+  const [discoveryPhase, setDiscoveryPhase] = useState('starting')
+  const [discoveryStats, setDiscoveryStats] = useState({ assets: 0, findings: 0 })
+  const [discoveryStarted, setDiscoveryStarted] = useState(false)
 
-  // Use stored domain, or derive from email as fallback for accounts registered before the fix
+  // Use stored domain, or derive from email as fallback
   const easmDomain = user?.org?.easm_domain || deriveCorporateDomain(user?.email)
 
-  const handleFile = async (file) => {
-    setUpload({ file, status: 'uploading', result: null, error: null })
+  // Poll EASM status when domain exists
+  useEffect(() => {
+    if (!easmDomain) return
+    setDiscoveryStarted(true)
+    let cancelled = false
 
-    try {
-      const result = await uploadScan(file)
+    const poll = async () => {
+      try {
+        const status = await getEasmStatus()
+        if (cancelled) return
 
-      if (result.status === 'processing') {
-        setUpload(u => ({ ...u, status: 'processing' }))
-        await refreshScans()
-
-        let attempts = 0
-        while (attempts < 120) {
-          await new Promise(r => setTimeout(r, 3000))
-          const statusData = await getScanStatus(result.scan_id)
-          if (statusData.status !== 'processing') {
-            if (statusData.status === 'failed') {
-              setUpload(u => ({ ...u, status: 'error', error: 'Scan processing failed. Please try again.' }))
-            } else {
-              const finalResult = {
-                scan_id: result.scan_id,
-                assets: statusData.asset_count,
-                findings: statusData.finding_count,
-              }
-              await refreshScans()
-              setActiveScanId(result.scan_id)
-              setUpload(u => ({ ...u, status: 'done', result: finalResult }))
-            }
-            return
-          }
-          attempts++
-          if (attempts % 5 === 0) await refreshScans()
+        if (status?.last_scan?.status === 'completed' || status?.last_scan?.status === 'complete') {
+          setDiscoveryPhase('complete')
+          setDiscoveryStats({
+            assets: status.last_scan.asset_count || status.asset_count || 0,
+            findings: status.last_scan.finding_count || status.finding_count || 0,
+          })
+        } else if (status?.last_scan?.status === 'running' || status?.last_scan?.status === 'scanning') {
+          setDiscoveryPhase('scanning')
+          setDiscoveryStats({
+            assets: status.last_scan.asset_count || status.asset_count || 0,
+            findings: status.last_scan.finding_count || 0,
+          })
+        } else if (status?.last_scan) {
+          setDiscoveryPhase('discovering')
+          setDiscoveryStats({
+            assets: status.last_scan.asset_count || 0,
+            findings: 0,
+          })
         }
-        setUpload(u => ({ ...u, status: 'error', error: 'Processing timed out. Please refresh and try again.' }))
-      } else {
-        await refreshScans()
-        setActiveScanId(result.scan_id)
-        setUpload(u => ({ ...u, status: 'done', result }))
+      } catch {
+        // EASM not configured — that's fine, we'll just show the static card
       }
-    } catch (err) {
-      setUpload(u => ({ ...u, status: 'error', error: err.message }))
     }
-  }
 
-  const isUploading = upload?.status === 'uploading' || upload?.status === 'processing'
-  const isDone = upload?.status === 'done'
+    poll()
+    const interval = setInterval(poll, 5000)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [easmDomain])
 
   return (
     <div style={{
@@ -329,83 +168,41 @@ export default function FirstScanOnboarding({ onComplete }) {
       alignItems: 'center', justifyContent: 'center',
       padding: '40px 24px',
     }}>
-      {isDone ? (
-        <SuccessState result={upload.result} onComplete={onComplete} />
-      ) : (
-        <>
-          {/* Hero */}
-          <div style={{ textAlign: 'center', marginBottom: 36, maxWidth: 500 }}>
-            <h1 style={{ fontSize: 26, fontWeight: 800, marginBottom: 10, color: 'var(--text-primary)' }}>
-              Welcome to Hakuna
-            </h1>
-            <p style={{ fontSize: 15, color: 'var(--text-muted)', lineHeight: 1.6, margin: 0 }}>
-              {easmDomain
-                ? 'We\'ve already started scanning your environment. You can also upload a scan file to see results immediately.'
-                : 'Upload your first vulnerability scan to get started. We\'ll prioritize your findings and help you fix what matters most.'}
-            </p>
-          </div>
+      {/* Hero */}
+      <div style={{ textAlign: 'center', marginBottom: 36, maxWidth: 500 }}>
+        <h1 style={{ fontSize: 26, fontWeight: 800, marginBottom: 10, color: 'var(--text-primary)' }}>
+          Welcome to Hakuna
+        </h1>
+        <p style={{ fontSize: 15, color: 'var(--text-muted)', lineHeight: 1.6, margin: 0 }}>
+          {easmDomain
+            ? 'We\'re discovering your attack surface and scanning for vulnerabilities.'
+            : 'Set up continuous scanning from Settings to get started, or go straight to your dashboard.'}
+        </p>
+      </div>
 
-          <div style={{ width: '100%', maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {/* EASM auto-scan status */}
-            {easmDomain && <EasmStatusCard domain={easmDomain} />}
+      <div style={{ width: '100%', maxWidth: 520, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Native discovery — primary path when domain exists */}
+        {easmDomain && discoveryStarted && (
+          <DiscoveryStatusCard
+            domain={easmDomain}
+            phase={discoveryPhase}
+            stats={discoveryStats}
+          />
+        )}
 
-            {/* Divider when EASM is shown */}
-            {easmDomain && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-                <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 600 }}>OR UPLOAD A SCAN MANUALLY</span>
-                <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
-              </div>
-            )}
-
-            {/* Upload area */}
-            <div style={{
-              padding: 16, background: 'var(--bg-secondary)',
-              border: '1px solid var(--border)', borderRadius: 12,
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                <FileText size={16} color="var(--accent)" />
-                <div style={{ fontWeight: 700, fontSize: 13 }}>Upload a Nessus scan</div>
-              </div>
-              <DropZone onFile={handleFile} disabled={isUploading} />
-            </div>
-
-            {/* Upload progress */}
-            {upload && (
-              <UploadRow
-                file={upload.file}
-                status={upload.status}
-                result={upload.result}
-                error={upload.error}
-              />
-            )}
-
-            {/* Error retry */}
-            {upload?.status === 'error' && (
-              <div style={{ textAlign: 'center' }}>
-                <button
-                  onClick={() => setUpload(null)}
-                  style={{ fontSize: 13, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
-                >
-                  Try a different file
-                </button>
-              </div>
-            )}
-
-            {/* Skip link for EASM-only users */}
-            {easmDomain && !upload && (
-              <div style={{ textAlign: 'center' }}>
-                <button
-                  onClick={onComplete}
-                  style={{ fontSize: 13, color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}
-                >
-                  Skip — go to dashboard while EASM scan runs →
-                </button>
-              </div>
-            )}
-          </div>
-        </>
-      )}
+        {/* Primary CTA */}
+        <button
+          onClick={onComplete}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            width: '100%', padding: '12px 24px', borderRadius: 10, border: 'none',
+            background: 'var(--accent)', color: '#fff', fontWeight: 700,
+            fontSize: 14, cursor: 'pointer',
+          }}
+        >
+          {easmDomain && discoveryPhase === 'complete' ? 'View results' : 'Go to dashboard'} <ArrowRight size={15} />
+        </button>
+      </div>
     </div>
   )
 }

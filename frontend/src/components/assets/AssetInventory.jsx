@@ -460,18 +460,16 @@ export default function AssetInventory() {
           ? [activeScanId]
           : [...new Set(assetList.map(a => a.scan_id).filter(Boolean))]
         if (scanIds.length) {
-          // Fetch SBOM risk per asset
-          Promise.all(scanIds.map(sid => getSBOMComponents({ scan_id: sid, page_size: 5000 })))
-            .then(results => {
+          // Fetch SBOM risk per asset — single batched call with comma-separated scan IDs
+          getSBOMComponents({ scan_id: scanIds.join(','), page_size: 5000 })
+            .then(data => {
               const riskMap = {}
-              for (const data of results) {
-                for (const c of (data.components || [])) {
-                  if (!riskMap[c.asset_id]) riskMap[c.asset_id] = { p1: 0, p2: 0, cves: 0, eol: 0 }
-                  if (c.priority_tier === 'P1') riskMap[c.asset_id].p1++
-                  if (c.priority_tier === 'P2') riskMap[c.asset_id].p2++
-                  riskMap[c.asset_id].cves += (c.cve_count || 0)
-                  if (c.eol_status === 'eol' || c.eol_status === 'approaching_eol') riskMap[c.asset_id].eol++
-                }
+              for (const c of (data.components || [])) {
+                if (!riskMap[c.asset_id]) riskMap[c.asset_id] = { p1: 0, p2: 0, cves: 0, eol: 0 }
+                if (c.priority_tier === 'P1') riskMap[c.asset_id].p1++
+                if (c.priority_tier === 'P2') riskMap[c.asset_id].p2++
+                riskMap[c.asset_id].cves += (c.cve_count || 0)
+                if (c.eol_status === 'eol' || c.eol_status === 'approaching_eol') riskMap[c.asset_id].eol++
               }
               setSbomRiskMap(riskMap)
             })

@@ -866,14 +866,19 @@ def aggregate_solutions(db, scan_id):
     Returns: {"created": int, "findings_linked": int}
     """
     # Clear previous aggregations for this scan
-    # Nullify FK references first to avoid FOREIGN KEY constraint on delete
-    db.query(Finding).filter(
-        Finding.scan_id == scan_id,
-        Finding.aggregated_solution_id.isnot(None),
-    ).update({"aggregated_solution_id": None}, synchronize_session=False)
-    db.flush()
-    db.query(AggregatedSolution).filter(AggregatedSolution.scan_id == scan_id).delete()
-    db.flush()
+    # Nullify FK references — must cover ALL findings pointing at these solutions,
+    # not just same-scan findings, because dedup can link cross-scan findings.
+    old_solution_ids = [
+        r[0] for r in db.query(AggregatedSolution.id)
+        .filter(AggregatedSolution.scan_id == scan_id).all()
+    ]
+    if old_solution_ids:
+        db.query(Finding).filter(
+            Finding.aggregated_solution_id.in_(old_solution_ids),
+        ).update({"aggregated_solution_id": None}, synchronize_session=False)
+        db.flush()
+        db.query(AggregatedSolution).filter(AggregatedSolution.id.in_(old_solution_ids)).delete(synchronize_session=False)
+        db.flush()
 
     # Load all findings
     findings = db.query(Finding).filter(Finding.scan_id == scan_id).all()

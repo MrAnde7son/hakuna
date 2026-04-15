@@ -1,14 +1,19 @@
 """
-Prioritization engine for Nessus findings.
+Prioritization engine for vulnerability findings.
 
 Priority score (0-10) factoring:
-  - CVSS score (v3 preferred, v2 fallback)
-  - VPR score (Nessus's own risk rating)
+  - CVSS score (v4 > v3 > v2, configurable)
+  - VPR score (Tenable risk rating, when available)
+  - EPSS probability
   - Exploit availability & maturity
-  - Asset criticality (user-defined 1-5)
-  - Plugin family context signals
+  - Asset criticality (user-defined 1-10)
+  - Plugin family / finding-type context signals
   - Informational plugin signals (attack surface indicators)
   - Internet-facing exposure (maxes reachability for external/dmz/public-IP assets)
+
+Supports findings from any scanner source (Nessus, Nuclei, Qualys, etc.).
+Plugin family weights and attack surface plugin IDs are Nessus-originated but
+applied generically — findings without a matching family get a neutral weight.
 """
 
 PLUGIN_FAMILY_WEIGHTS = {
@@ -166,7 +171,7 @@ def compute_priority_score(
     Compute a priority score and remediation metadata for a finding.
 
     Args:
-        finding:           finding dict (plugin_id, severity, cvss*, vpr_score, …)
+        finding:           finding dict (plugin_id/source_vuln_id, severity, cvss*, vpr_score, …)
         asset_criticality: 1-10 asset criticality
         intel:             CVE enrichment dict from intel.json
         risk_cfg:          loaded risk config — when provided, uses finding_formula_weights
