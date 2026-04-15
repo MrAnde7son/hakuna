@@ -93,21 +93,43 @@ _SERVER_OS_KEYWORDS = {
 _WORKSTATION_OS_KEYWORDS = {"windows 10", "windows 11", "macos", "mac os x", "darwin"}
 
 OWNER_MAP = {
+    # IT — OS patching, endpoint/workstation hygiene
     "Windows": "IT",
     "Windows : Microsoft Bulletins": "IT",
     "Windows : User management": "IT",
     "Linux": "IT",
     "Patch Management": "IT",
+    "MacOS X Local Security Checks": "IT",
+    "Red Hat Local Security Checks": "IT",
+    "Ubuntu Local Security Checks": "IT",
+    "SuSE Local Security Checks": "IT",
+    "Debian Local Security Checks": "IT",
+    # AppSec — web application & code-level findings
     "CGI abuses": "AppSec",
     "CGI abuses : XSS": "AppSec",
-    "Databases": "AppSec",
-    "Web Servers": "DevOps",
-    "Firewalls": "SecOps",
-    "Gain a shell remotely": "SecOps",
-    "Backdoors": "SecOps",
-    "Credentials": "SecOps",
-    "Default Unix Accounts": "SecOps",
+    "Web Servers": "AppSec",
+    # DBA — database hardening owned by the database team
+    "Databases": "DBA",
+    # Networking — network devices & perimeter infra
+    "Firewalls": "Networking",
+    "CISCO": "Networking",
+    "Junos Local Security Checks": "Networking",
+    "Palo Alto Local Security Checks": "Networking",
+    # IAM — identity, credentials, stale accounts
+    "Credentials": "IAM",
+    "Default Unix Accounts": "IAM",
+    # SOC — active compromise indicators, IR-driven response
+    "Gain a shell remotely": "SOC",
+    "Backdoors": "SOC",
+    "Malware": "SOC",
+    # GRC — compliance framework findings
+    "Policy Compliance": "GRC",
+    # VM — vulnerability management team owns findings from the VM scanners they operate
+    "Nuclei": "VM",
+    # SecOps — residual hardening / misc security controls
     "RPC": "SecOps",
+    "General": "SecOps",
+    "Misc.": "SecOps",
 }
 
 # Informational plugins that indicate meaningful attack surface

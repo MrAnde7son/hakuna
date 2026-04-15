@@ -25,6 +25,7 @@ from core.auth import (
 from core.audit import log_audit, diff as _diff
 from core.i18n import get_locale_from_request, t as translate
 from core.subscription import check_user_invite_limit
+from core.builtin_team_roles import seed_builtin_team_roles
 from services.easm import trigger_easm_for_new_org
 from services.brevo import APP_URL
 
@@ -160,6 +161,10 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
     db.add(org)
     db.flush()
 
+    # Seed one built-in, team-scoped role per ownership team (IT, DevOps, SOC, VM, …)
+    # so org admins can immediately assign team-level access to users.
+    seed_builtin_team_roles(db, org.id)
+
     # First user in the entire system becomes superadmin
     user_count = db.query(func.count(User.id)).scalar()
     role = "superadmin" if user_count == 0 else "org_admin"
@@ -276,6 +281,10 @@ async def login(body: LoginRequest, request: Request, db: Session = Depends(get_
 
     # Update last login
     user.last_login_at = datetime.utcnow()
+
+    # Backfill any missing built-in team roles, tags, and auto-tag rules.
+    seed_builtin_team_roles(db, org.id)
+
     db.commit()
 
     token = create_access_token(user.id, org.id, user.role)
@@ -335,6 +344,10 @@ async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = D
         if not user.email_verified:
             user.email_verified = True
         user.last_login_at = datetime.utcnow()
+
+        # Backfill any missing built-in team roles, tags, and auto-tag rules.
+        seed_builtin_team_roles(db, org.id)
+
         db.commit()
 
         token = create_access_token(user.id, org.id, user.role)
@@ -360,6 +373,9 @@ async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = D
         org = Organization(name=org_name, slug=slug)
         db.add(org)
         db.flush()
+
+        # Seed one built-in, team-scoped role per ownership team (IT, DevOps, SOC, VM, …).
+        seed_builtin_team_roles(db, org.id)
 
         # First user in the system becomes superadmin
         user_count = db.query(func.count(User.id)).scalar()
@@ -707,6 +723,9 @@ async def create_org(
     )
     db.add(new_org)
     db.flush()
+
+    # Seed built-in team roles so the new org has team-scoped RBAC out of the box.
+    seed_builtin_team_roles(db, new_org.id)
 
     # If created by MSSP org_admin, auto-create access link
     if user.role != "superadmin" and body.parent_org_id:
@@ -1098,6 +1117,9 @@ async def accept_invite(body: AcceptInviteRequest, request: Request, db: Session
     )
     db.add(client_org)
     db.flush()
+
+    # Seed built-in team roles for the newly provisioned client org.
+    seed_builtin_team_roles(db, client_org.id)
 
     # Create admin user
     admin = User(

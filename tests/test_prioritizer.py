@@ -255,20 +255,35 @@ class TestOwnerSuggestions:
         result = compute_priority_score(finding)
         assert result["owner_suggestion"] == "IT"
 
-    def test_web_server_goes_to_devops(self):
+    def test_web_server_goes_to_appsec(self):
         finding = make_finding(plugin_family="Web Servers")
         result = compute_priority_score(finding)
-        assert result["owner_suggestion"] == "DevOps"
+        assert result["owner_suggestion"] == "AppSec"
 
     def test_cgi_goes_to_appsec(self):
         finding = make_finding(plugin_family="CGI abuses")
         result = compute_priority_score(finding)
         assert result["owner_suggestion"] == "AppSec"
 
-    def test_firewall_goes_to_secops(self):
+    def test_firewall_goes_to_networking(self):
         finding = make_finding(plugin_family="Firewalls")
         result = compute_priority_score(finding)
-        assert result["owner_suggestion"] == "SecOps"
+        assert result["owner_suggestion"] == "Networking"
+
+    def test_credentials_goes_to_iam(self):
+        finding = make_finding(plugin_family="Credentials")
+        result = compute_priority_score(finding)
+        assert result["owner_suggestion"] == "IAM"
+
+    def test_databases_goes_to_dba(self):
+        finding = make_finding(plugin_family="Databases")
+        result = compute_priority_score(finding)
+        assert result["owner_suggestion"] == "DBA"
+
+    def test_policy_compliance_goes_to_grc(self):
+        finding = make_finding(plugin_family="Policy Compliance")
+        result = compute_priority_score(finding)
+        assert result["owner_suggestion"] == "GRC"
 
     def test_unknown_family_defaults_to_secops(self):
         finding = make_finding(plugin_family="SomeUnknownFamily")

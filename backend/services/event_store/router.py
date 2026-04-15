@@ -69,8 +69,11 @@ class RoutedEventStore(EventStore):
         if _range_is_hot_only(filters):
             return self._hot.query(filters, limit, offset)
 
-        if _range_is_lake_only(filters) and self._lake.available:
-            return self._lake.query(filters, limit, offset)
+        if _range_is_lake_only(filters):
+            if self._lake.available:
+                return self._lake.query(filters, limit, offset)
+            # Lake unavailable — fall back to hot
+            return self._hot.query(filters, limit, offset)
 
         # Mixed range: query both and dedup by id
         if self._lake.available:
@@ -83,8 +86,10 @@ class RoutedEventStore(EventStore):
         if _range_is_hot_only(filters):
             return self._hot.count(filters)
 
-        if _range_is_lake_only(filters) and self._lake.available:
-            return self._lake.count(filters)
+        if _range_is_lake_only(filters):
+            if self._lake.available:
+                return self._lake.count(filters)
+            return self._hot.count(filters)
 
         if self._lake.available:
             return self._count_both(filters)

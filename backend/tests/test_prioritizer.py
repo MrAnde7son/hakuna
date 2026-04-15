@@ -442,25 +442,45 @@ class TestOwnerSuggestion:
         result = compute_priority_score(finding)
         assert result["owner_suggestion"] == "AppSec"
 
-    def test_web_servers_mapped_to_devops(self):
+    def test_web_servers_mapped_to_appsec(self):
         finding = _finding(plugin_family="Web Servers")
         result = compute_priority_score(finding)
-        assert result["owner_suggestion"] == "DevOps"
+        assert result["owner_suggestion"] == "AppSec"
 
-    def test_firewalls_mapped_to_secops(self):
+    def test_firewalls_mapped_to_networking(self):
         finding = _finding(plugin_family="Firewalls")
         result = compute_priority_score(finding)
-        assert result["owner_suggestion"] == "SecOps"
+        assert result["owner_suggestion"] == "Networking"
 
     def test_unknown_family_defaults_to_secops(self):
         finding = _finding(plugin_family="Unknown Exotic Family")
         result = compute_priority_score(finding)
         assert result["owner_suggestion"] == "SecOps"
 
-    def test_credentials_mapped_to_secops(self):
+    def test_credentials_mapped_to_iam(self):
         finding = _finding(plugin_family="Credentials")
         result = compute_priority_score(finding)
-        assert result["owner_suggestion"] == "SecOps"
+        assert result["owner_suggestion"] == "IAM"
+
+    def test_databases_mapped_to_dba(self):
+        finding = _finding(plugin_family="Databases")
+        result = compute_priority_score(finding)
+        assert result["owner_suggestion"] == "DBA"
+
+    def test_backdoors_mapped_to_soc(self):
+        finding = _finding(plugin_family="Backdoors")
+        result = compute_priority_score(finding)
+        assert result["owner_suggestion"] == "SOC"
+
+    def test_policy_compliance_mapped_to_grc(self):
+        finding = _finding(plugin_family="Policy Compliance")
+        result = compute_priority_score(finding)
+        assert result["owner_suggestion"] == "GRC"
+
+    def test_nuclei_mapped_to_vm(self):
+        finding = _finding(plugin_family="Nuclei")
+        result = compute_priority_score(finding)
+        assert result["owner_suggestion"] == "VM"
 
 
 # ---------------------------------------------------------------------------

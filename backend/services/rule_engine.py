@@ -49,6 +49,8 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
+from core.ownership_teams import OWNERSHIP_ROLE_ENUM_OPTIONS
+
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────
@@ -131,6 +133,12 @@ CONDITION_CATALOG = [
                 "value_type": "enum",
                 "options": "__dynamic:scans__",
             },
+            {
+                "field": "inferred_team", "label": "Ownership Team",
+                "ops": ["eq", "neq"],
+                "value_type": "enum",
+                "options": OWNERSHIP_ROLE_ENUM_OPTIONS,
+            },
         ],
     },
     {
@@ -198,12 +206,13 @@ CONDITION_CATALOG = [
                 "field": "finding.owner", "label": "Owner Suggestion",
                 "ops": ["eq", "neq"],
                 "value_type": "enum",
-                "options": [
-                    {"label": "IT",     "value": "IT"},
-                    {"label": "DevOps", "value": "DevOps"},
-                    {"label": "SecOps", "value": "SecOps"},
-                    {"label": "AppSec", "value": "AppSec"},
-                ],
+                "options": OWNERSHIP_ROLE_ENUM_OPTIONS,
+            },
+            {
+                "field": "owner_suggestion", "label": "Finding Ownership Team",
+                "ops": ["eq", "neq"],
+                "value_type": "enum",
+                "options": OWNERSHIP_ROLE_ENUM_OPTIONS,
             },
             {"field": "finding.cvss4",               "label": "CVSS4 Score",           "ops": ["gte", "lte", "gt", "lt", "eq"], "value_type": "float",   "placeholder": "7.0"},
             {"field": "finding.epss_score",           "label": "EPSS Score",            "ops": ["gte", "lte", "gt", "lt", "eq"], "value_type": "float",   "placeholder": "0.5"},

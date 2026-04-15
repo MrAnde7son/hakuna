@@ -123,6 +123,12 @@ class CustomRole(Base):
     # Deny flags: same keys as base_permissions — deny always wins over allow
     deny_permissions = Column(JSON, default=dict)
     is_active = Column(Boolean, default=True)
+    # Built-in team roles are seeded per-org from core.builtin_team_roles. They
+    # are protected from deletion and regenerate if missing on org startup.
+    is_builtin = Column(Boolean, default=False, nullable=False)
+    # If set, this role restricts finding/asset visibility to resources whose
+    # resolved owner_role matches. One of core.ownership_teams.OWNERSHIP_ROLES.
+    scope_owner_role = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
@@ -476,7 +482,7 @@ class Finding(Base):
     # Prioritization
     priority_score = Column(Float, default=0.0)
     effort_level = Column(String)  # quick_win / medium / complex
-    owner_suggestion = Column(String)  # IT / DevOps / SecOps / AppSec
+    owner_suggestion = Column(String)  # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
     remediation_steps = Column(Text)
 
     # Temporal tracking (cross-scan lifecycle)
@@ -1164,7 +1170,7 @@ class AssetOwnership(Base):
     asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, unique=True, index=True)
     owner_name = Column(String)
     owner_email = Column(String)
-    owner_role = Column(String)   # IT / DevOps / SecOps / AppSec / Custom
+    owner_role = Column(String)   # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
     team = Column(String)
     notes = Column(Text)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1180,7 +1186,7 @@ class FindingOwnership(Base):
     finding_id = Column(Integer, ForeignKey("findings.id"), nullable=False, unique=True, index=True)
     owner_name = Column(String)
     owner_email = Column(String)
-    owner_role = Column(String)   # IT / DevOps / SecOps / AppSec / Custom
+    owner_role = Column(String)   # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
     team = Column(String)
     notes = Column(Text)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1269,7 +1275,7 @@ class OwnershipRule(Base):
     # Action: ownership fields to set (None = leave untouched)
     owner_name = Column(String, nullable=True)
     owner_email = Column(String, nullable=True)
-    owner_role = Column(String, nullable=True)       # IT / DevOps / SecOps / AppSec / Custom
+    owner_role = Column(String, nullable=True)       # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
     team = Column(String, nullable=True)
     notes = Column(String, nullable=True)
     overwrite_existing = Column(Boolean, default=False)  # overwrite manually-set ownership

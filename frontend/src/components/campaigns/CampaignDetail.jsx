@@ -16,7 +16,7 @@ import {
   getCampaignTickets, syncFindingTickets, createCampaignSlackChannel,
   createException,
 } from '../../api.js'
-import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill, ErrorBanner, SkeletonDetail, Table, buildFindingBreakdown, useRiskWeights } from '../shared/ui.jsx'
+import { SeverityBadge, ScoreBar, Button, Spinner, EmptyState, Card, Pill, ErrorBanner, SkeletonDetail, Table, buildFindingBreakdown, useRiskWeights, OWNERSHIP_ROLE_OPTIONS, OWNERSHIP_ROLE_COLORS } from '../shared/ui.jsx'
 import RuleBuilder from './RuleBuilder.jsx'
 import NewSinceBanner from '../notifications/NewSinceBanner.jsx'
 
@@ -31,20 +31,19 @@ const GROUP_COLORS = {
 
 const SEV_COLORS = ['#0ea5e9', '#65a30d', '#d97706', '#ea580c', '#dc2626']
 
-const OWNER_ROLE_COLORS = {
-  IT:      { bg: '#1e3a5f22', border: '#1e3a5f55', text: '#60a5fa' },
-  DevOps:  { bg: '#14532d22', border: '#14532d55', text: '#4ade80' },
-  SecOps:  { bg: '#450a0a22', border: '#991b1b55', text: '#fca5a5' },
-  AppSec:  { bg: '#1a1a2e22', border: '#4f46e555', text: '#a5b4fc' },
-  Unassigned: { bg: '#27272a22', border: '#27272a55', text: '#a1a1aa' },
-}
+// Tri-color chip (bg/border/text) derived from the canonical OWNERSHIP_ROLE_COLORS hex map.
+// Keeps all role-specific styling in one place: add a new role to OWNERSHIP_ROLE_OPTIONS
+// with a color in OWNERSHIP_ROLE_COLORS and it automatically gets a chip here.
+const UNASSIGNED_COLORS = { bg: '#27272a22', border: '#27272a55', text: '#a1a1aa' }
 
 function getOwnerColors(role) {
-  return OWNER_ROLE_COLORS[role] || OWNER_ROLE_COLORS.Unassigned
+  const hex = OWNERSHIP_ROLE_COLORS[role]
+  if (!hex) return UNASSIGNED_COLORS
+  return { bg: `${hex}22`, border: `${hex}55`, text: hex }
 }
 
 // ─── Ownership Editor ─────────────────────────────────────
-const OWNER_ROLES = ['IT', 'DevOps', 'SecOps', 'AppSec', 'Custom']
+const OWNER_ROLES = OWNERSHIP_ROLE_OPTIONS
 
 function OwnershipEditor({ current, onSave, onCancel }) {
   const { t } = useTranslation()
