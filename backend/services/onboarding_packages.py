@@ -538,6 +538,27 @@ CAMPAIGN_TEMPLATES = {
         "query_logic": "AND",
         "status": "draft",
     },
+    "siem_alert_response": {
+        "name": "SIEM Alert Response",
+        "description": "Assets with active SIEM alerts that have critical or high vulnerability findings requiring immediate attention.",
+        "query": [
+            {"field": "siem.has_active_alerts", "op": "is_true"},
+            {"field": "finding.severity", "op": "gte", "value": 3},
+        ],
+        "query_logic": "AND",
+        "status": "draft",
+    },
+    "internet_facing_alerts": {
+        "name": "Internet-Facing Under Attack",
+        "description": "Internet-facing assets generating SIEM alerts — highest risk combination.",
+        "query": [
+            {"field": "siem.alert_count", "op": "gte", "value": 1},
+            {"field": "inventory.is_internet_facing", "op": "is_true"},
+            {"field": "finding.severity", "op": "gte", "value": 3},
+        ],
+        "query_logic": "AND",
+        "status": "draft",
+    },
 }
 
 
@@ -589,6 +610,32 @@ AGENT_TEMPLATES = {
         "tools": ["query_findings", "query_assets", "list_campaigns", "get_sla_status", "get_owner_workload"],
         "model": "claude-sonnet-4-6",
     },
+    "siem_analyst": {
+        "name": "SIEM Alert Analyst",
+        "description": "Investigates SIEM alerts, correlates events with vulnerability data, and recommends triage actions.",
+        "system_prompt": (
+            "You are a SIEM analyst. When given alerts or events, investigate the security context: "
+            "query related SIEM events, check the asset's vulnerability exposure, look for patterns "
+            "like brute force or lateral movement, and recommend triage actions (close, escalate, suppress). "
+            "Correlate alerts with known vulnerabilities on the affected asset to assess actual risk. "
+            "Always check exposure context: is the asset internet-facing? What critical vulns exist?"
+        ),
+        "tools": ["query_events", "list_alerts", "get_alert_with_events", "triage_alert", "get_exposure_context", "query_findings", "query_assets"],
+        "model": "claude-sonnet-4-6",
+    },
+    "detection_engineer": {
+        "name": "Detection Engineer",
+        "description": "Creates and tunes detection rules, analyzes false positive rates, and suggests suppression rules.",
+        "system_prompt": (
+            "You are a detection engineer. Help security teams create effective detection rules "
+            "and reduce alert fatigue. Analyze event patterns to suggest new rules, review existing "
+            "rules for false positive rates, recommend suppression rules for known-good activity, "
+            "and suggest asset context filters to focus rules on high-value targets. "
+            "When creating rules, consider threshold, window, group_by fields, and MITRE technique mapping."
+        ),
+        "tools": ["query_events", "list_alerts", "run_detection_rule_now", "query_assets", "get_exposure_context"],
+        "model": "claude-sonnet-4-6",
+    },
 }
 
 
@@ -625,6 +672,23 @@ REPORT_TEMPLATES = {
                 {"id": "ob-td7", "type": "bar_chart", "title": "Findings by Owner", "width": "half", "config": {"preset": "owner_finding_count"}},
                 {"id": "ob-td8", "type": "bar_chart", "title": "Findings by Family", "width": "half", "config": {"preset": "family_breakdown", "limit": 10}},
                 {"id": "ob-td9", "type": "table", "title": "Top Findings to Fix", "width": "full", "config": {"preset": "findings_list", "filters": {"order": "desc", "sort_by": "priority_score"}, "limit": 15}},
+            ]
+        },
+        "is_default": False,
+    },
+    "siem_operations": {
+        "name": "SIEM Operations",
+        "config": {
+            "widgets": [
+                {"id": "ob-so1", "type": "card", "title": "Events (24h)", "width": "quarter", "config": {"preset": "siem_events_24h"}},
+                {"id": "ob-so2", "type": "card", "title": "Open Alerts", "width": "quarter", "config": {"preset": "siem_alerts_open"}},
+                {"id": "ob-so3", "type": "card", "title": "Active Rules", "width": "quarter", "config": {"preset": "siem_rules_active"}},
+                {"id": "ob-so4", "type": "card", "title": "MTTR (min)", "width": "quarter", "config": {"preset": "siem_mttr", "label": "min"}},
+                {"id": "ob-so5", "type": "bar_chart", "title": "Event Volume by Source", "width": "half", "config": {"preset": "siem_event_volume"}},
+                {"id": "ob-so6", "type": "pie_chart", "title": "Alerts by Severity", "width": "half", "config": {"preset": "siem_alert_severity", "donut": True}},
+                {"id": "ob-so7", "type": "bar_chart", "title": "Noisy Rules (FP Rate)", "width": "half", "config": {"preset": "siem_noisy_rules", "limit": 10}},
+                {"id": "ob-so8", "type": "table", "title": "Top Assets by Alert Count", "width": "half", "config": {"preset": "siem_top_assets", "limit": 10}},
+                {"id": "ob-so9", "type": "table", "title": "Recent Open Alerts", "width": "full", "config": {"preset": "siem_recent_alerts", "limit": 15}},
             ]
         },
         "is_default": False,
@@ -949,6 +1013,16 @@ OBJECTIVE_PACKAGES: dict[str, dict[str, Any]] = {
             "agents": ["report_writer"],
             "sla_preset": "standard",
             "roles": ["executive_viewer"],
+        },
+    },
+    "siem_operations": {
+        "label": "SIEM & Detection",
+        "description": "SIEM event correlation, detection rules, alert triage, and exposure-aware campaigns",
+        "provisions": {
+            "reports": ["siem_operations", "executive_summary"],
+            "campaigns": ["siem_alert_response", "internet_facing_alerts"],
+            "agents": ["siem_analyst", "detection_engineer"],
+            "workflows": ["notify_critical"],
         },
     },
     "integrations": {

@@ -370,6 +370,14 @@ export const getAssets = (params = {}) => {
 export const getAsset = (id) => request(`/assets/${id}`)
 export const getAssetRiskBreakdown = (id) => request(`/assets/${id}/risk-breakdown`)
 export const getAssetSources = (id) => request(`/assets/${id}/sources`)
+export const getAssetSiemEvents = (id, params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/assets/${id}/siem-events?${q}`)
+}
+export const getAssetAlerts = (id, params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/assets/${id}/alerts?${q}`)
+}
 export const updateAsset = (id, data) => {
   const q = new URLSearchParams(Object.entries(data).filter(([, v]) => v != null && v !== ''))
   return request(`/assets/${id}?${q}`, { method: 'PATCH' })
@@ -1384,6 +1392,13 @@ export const getSiemEndpoints = () => request('/siem/endpoints')
 export const createSiemEndpoint = (data) => request('/siem/endpoints', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
 export const deleteSiemEndpoint = (id) => request(`/siem/endpoints/${id}`, { method: 'DELETE' })
 export const getVectorTemplates = () => request('/siem/vector-templates')
+
+// SIEM reports
+export const getSiemSummary = () => request('/reports/siem-summary')
+export const getSiemEventVolume = (hours) => request(`/reports/siem-event-volume?hours=${hours || 24}`)
+export const getSiemNoisySources = () => request('/reports/siem-noisy-sources')
+export const getSiemAlertSeverity = () => request('/reports/siem-alert-severity')
+export const getSiemRecentAlerts = (limit) => request(`/reports/siem-recent-alerts?limit=${limit || 15}`)
 export const generateVectorConfig = (data) => request('/siem/vector-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
 
 // ── Suppression Rules ─────────────────────────────────

@@ -5,14 +5,14 @@ import {
   ArrowLeft, Server, Bug, Database, Shield, Globe, Network, Users,
   ChevronDown, ChevronRight, AlertTriangle, Activity, Clock,
   ExternalLink, Package, Lock, Layers, Copy, Check,
-  Cloud, HardDrive, Router, Container
+  Cloud, HardDrive, Router, Container, Siren
 } from 'lucide-react'
 import {
   getAsset, getAssetRiskBreakdown, getAssetSources, getFindings, getBlastRadius,
   getInventoryUsers, getInventoryServices,
   getInventorySoftware, getInventoryNetconns, getInventoryPatches,
   getInventorySecurityControls, getInventoryCertificates,
-  getAssetPolicies,
+  getAssetPolicies, getAssetSiemEvents, getAssetAlerts,
 } from '../../api.js'
 import {
   Card, ScoreBar, Spinner, Button, Pill, SeverityBadge, Table,
@@ -176,6 +176,7 @@ const TABS = [
   { key: 'overview', icon: Server, labelKey: 'assetDetail.overview' },
   { key: 'findings', icon: Bug, labelKey: 'assetDetail.findings' },
   { key: 'inventory', icon: Database, labelKey: 'assetDetail.inventory' },
+  { key: 'events', icon: Siren, label: 'Events' },
   { key: 'policies', icon: Shield, label: 'Policies' },
   { key: 'sources', icon: Layers, label: 'Sources' },
 ]
@@ -482,6 +483,163 @@ function InventoryTab({ asset }) {
             )
           })}
         </div>
+      )}
+    </>
+  )
+}
+
+
+// ─── Events Tab (SIEM) ───────────────────────────────────
+function EventsTab({ asset }) {
+  const { t } = useTranslation()
+  const navigate = useNavigate()
+  const [events, setEvents] = useState([])
+  const [alerts, setAlerts] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
+  const [alertCount, setAlertCount] = useState(0)
+  const [sevFilter, setSevFilter] = useState(null)
+  const [view, setView] = useState('events') // 'events' | 'alerts'
+  const pageSize = 25
+
+  const SEV_BADGE = { critical: '#dc2626', high: '#f97316', medium: '#f59e0b', low: '#22c55e', info: '#64748b' }
+
+  const loadEvents = useCallback(() => {
+    setLoading(true)
+    getAssetSiemEvents(asset.id, { page, page_size: pageSize, severity: sevFilter })
+      .then(r => { setEvents(r.events || []); setTotal(r.total || 0); setAlertCount(r.alert_count || 0) })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [asset.id, page, sevFilter])
+
+  const loadAlerts = useCallback(() => {
+    setLoading(true)
+    getAssetAlerts(asset.id)
+      .then(r => setAlerts(r || []))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [asset.id])
+
+  useEffect(() => {
+    if (view === 'events') loadEvents()
+    else loadAlerts()
+  }, [view, loadEvents, loadAlerts])
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  if (loading) return <div style={{ padding: 32, textAlign: 'center' }}><Spinner /></div>
+
+  return (
+    <>
+      {/* Toggle + alert summary */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 0, borderRadius: 8, border: '1px solid var(--border)', overflow: 'hidden' }}>
+          {['events', 'alerts'].map(v => (
+            <button key={v} onClick={() => { setView(v); setPage(1) }} style={{
+              padding: '6px 16px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer',
+              background: view === v ? 'var(--accent)' : 'var(--card)',
+              color: view === v ? '#fff' : 'var(--text-muted)',
+              textTransform: 'capitalize',
+            }}>
+              {v}{v === 'alerts' && alertCount > 0 ? ` (${alertCount})` : ''}
+            </button>
+          ))}
+        </div>
+        {view === 'events' && (
+          <div style={{ display: 'flex', gap: 4 }}>
+            {[null, 'critical', 'high', 'medium', 'low'].map(sev => (
+              <button key={sev || 'all'} onClick={() => { setSevFilter(sev); setPage(1) }} style={{
+                padding: '4px 10px', fontSize: 11, fontWeight: 600, borderRadius: 6, cursor: 'pointer',
+                border: '1px solid var(--border)',
+                background: sevFilter === sev ? (sev ? SEV_BADGE[sev] + '22' : 'var(--accent-muted)') : 'transparent',
+                color: sevFilter === sev ? (sev ? SEV_BADGE[sev] : 'var(--accent)') : 'var(--text-muted)',
+              }}>
+                {sev ? sev.charAt(0).toUpperCase() + sev.slice(1) : 'All'}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Events view */}
+      {view === 'events' && (
+        events.length === 0 ? (
+          <EmptyState icon={Siren} title="No SIEM Events" sub="Events will appear here when this asset generates SIEM data." />
+        ) : (
+          <Card style={{ padding: 0 }}>
+            <Table
+              columns={[
+                { key: 'event_time', label: 'Time', width: '150px', render: v => v ? new Date(v).toLocaleString() : '—' },
+                {
+                  key: 'severity', label: 'Severity', width: '90px',
+                  render: v => (
+                    <span style={{
+                      fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                      color: SEV_BADGE[v] || 'var(--text-muted)',
+                    }}>{v}</span>
+                  )
+                },
+                { key: 'source_system', label: 'Source', width: '110px' },
+                { key: 'event_type', label: 'Type', width: '110px' },
+                {
+                  key: 'message', label: 'Message',
+                  render: v => <span style={{ fontSize: 12 }}>{(v || '').slice(0, 120)}{v?.length > 120 ? '...' : ''}</span>
+                },
+                { key: 'source_ip', label: 'Source IP', width: '120px' },
+                { key: 'user_name', label: 'User', width: '100px' },
+              ]}
+              rows={events}
+              onRowClick={row => navigate(`/siem/events?event_id=${row.id}`)}
+            />
+            {totalPages > 1 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 16px', borderTop: '1px solid var(--border)' }}>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{total.toLocaleString()} events</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Prev</Button>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{page} / {totalPages}</span>
+                  <Button variant="ghost" size="sm" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next</Button>
+                </div>
+              </div>
+            )}
+          </Card>
+        )
+      )}
+
+      {/* Alerts view */}
+      {view === 'alerts' && (
+        alerts.length === 0 ? (
+          <EmptyState icon={Siren} title="No SIEM Alerts" sub="Alerts are created when detection rules match events on this asset." />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {alerts.map(a => (
+              <Card key={a.id} onClick={() => navigate(`/siem/alerts?alert_id=${a.id}`)} style={{ padding: 14, cursor: 'pointer' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                      <span style={{
+                        fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                        color: SEV_BADGE[a.severity] || 'var(--text-muted)',
+                      }}>{a.severity}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{a.rule_name || 'Unknown Rule'}</span>
+                      {a.suppressed && <Pill label="Suppressed" color="#6b7280" />}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      {a.event_count} event{a.event_count !== 1 ? 's' : ''}
+                      {a.entity_value ? ` · ${a.entity_value}` : ''}
+                      {a.fired_at ? ` · ${new Date(a.fired_at).toLocaleString()}` : ''}
+                    </div>
+                  </div>
+                  <span style={{
+                    fontSize: 11, fontWeight: 600, textTransform: 'uppercase', padding: '3px 8px', borderRadius: 4,
+                    background: a.status === 'open' ? '#f59e0b18' : a.status === 'closed' ? '#22c55e18' : '#6b728018',
+                    color: a.status === 'open' ? '#f59e0b' : a.status === 'closed' ? '#22c55e' : '#6b7280',
+                  }}>{a.status}</span>
+                </div>
+              </Card>
+            ))}
+          </div>
+        )
       )}
     </>
   )
@@ -872,6 +1030,7 @@ export default function AssetDetail() {
       {activeTab === 'overview' && <OverviewTab asset={asset} blastRadius={blastRadius} onReload={load} riskComponents={riskComponents} assetRiskWeights={assetRiskWeights} />}
       {activeTab === 'findings' && <FindingsTab asset={asset} />}
       {activeTab === 'inventory' && <InventoryTab asset={asset} />}
+      {activeTab === 'events' && <EventsTab asset={asset} />}
       {activeTab === 'policies' && <PoliciesTab asset={asset} />}
       {activeTab === 'sources' && <SourcesTab asset={asset} />}
     </div>

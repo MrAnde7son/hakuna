@@ -166,9 +166,10 @@ def _create_alert(db: Session, rule: DetectionRule, events: list, group_key: Opt
     except Exception as e:
         logger.warning("Alert enrichment failed (alert %s): %s", alert.id, e)
 
-    # Fire workflow trigger for non-suppressed alerts
+    # Fire workflow trigger and notification for non-suppressed alerts
     if not alert.suppressed:
         _fire_alert_trigger(db, alert, rule)
+        _fire_alert_notification(db, alert, rule)
 
     return alert
 
@@ -188,6 +189,29 @@ def _fire_alert_trigger(db: Session, alert: Alert, rule: DetectionRule):
         })
     except Exception as e:
         logger.warning("Failed to fire on_alert_created workflow: %s", e)
+
+
+def _fire_alert_notification(db: Session, alert: Alert, rule: DetectionRule):
+    """Create an in-app notification for a new alert."""
+    try:
+        from services.notifications import create_notification
+        sev = (alert.severity or "medium").capitalize()
+        body = f"{sev} severity \u00b7 {alert.event_count} event{'s' if alert.event_count != 1 else ''}"
+        if alert.entity_value:
+            body += f" \u00b7 {alert.entity_value}"
+        create_notification(
+            db=db,
+            org_id=alert.org_id,
+            category="security_alert",
+            title=f"Alert: {rule.name}",
+            body=body,
+            link=f"/siem/alerts?alert_id={alert.id}",
+            entity_type="alert",
+            entity_id=alert.id,
+            metadata={"rule_id": rule.id, "severity": alert.severity, "event_count": alert.event_count},
+        )
+    except Exception as e:
+        logger.warning("Failed to create alert notification: %s", e)
 
 
 def _extract_primary_entity(events: list, group_key: Optional[str], group_by: list) -> tuple[Optional[str], Optional[str]]:

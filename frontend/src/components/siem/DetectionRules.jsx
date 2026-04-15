@@ -121,6 +121,11 @@ export default function DetectionRules() {
                 {rule.source === 'sigma' && <span style={{ marginRight: 8, padding: '1px 6px', borderRadius: 4, background: '#8b5cf620', color: '#8b5cf6', fontSize: 10 }}>Sigma</span>}
                 Threshold: {rule.threshold} in {rule.window_seconds}s
                 {rule.mitre_techniques?.length > 0 && <> · {rule.mitre_techniques.join(', ')}</>}
+                {rule.asset_filter && Object.keys(rule.asset_filter).length > 0 && (
+                  <span style={{ marginLeft: 8, padding: '1px 6px', borderRadius: 4, background: '#0ea5e920', color: '#0ea5e9', fontSize: 10, fontWeight: 600 }}>
+                    Asset Filter
+                  </span>
+                )}
               </div>
             </div>
             <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
@@ -205,7 +210,9 @@ function RuleModal({ rule, onClose, onSave, t }) {
     name: rule?.name || '', severity: rule?.severity || 'medium',
     threshold: rule?.threshold || 1, window_seconds: rule?.window_seconds || 300,
     query: rule?.query || {}, schedule_minutes: rule?.schedule_minutes || 5,
+    asset_filter: rule?.asset_filter || {},
   })
+  const [showAssetFilter, setShowAssetFilter] = useState(Object.keys(rule?.asset_filter || {}).length > 0)
   const [queryField, setQueryField] = useState('')
   const [queryValue, setQueryValue] = useState('')
 
@@ -257,12 +264,96 @@ function RuleModal({ rule, onClose, onSave, t }) {
                       style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 14, padding: 0, lineHeight: 1 }}>×</button>
             </div>
           ))}
+
+          {/* Asset Context Filter */}
+          <div style={{ marginTop: 8 }}>
+            <button onClick={() => setShowAssetFilter(!showAssetFilter)} style={{
+              background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600,
+              color: 'var(--accent)', padding: 0, display: 'flex', alignItems: 'center', gap: 4,
+            }}>
+              {showAssetFilter ? '▾' : '▸'} Asset Context Filter
+              {Object.keys(form.asset_filter).length > 0 && (
+                <span style={{ fontSize: 10, background: 'var(--accent)', color: '#fff', borderRadius: 10, padding: '1px 6px', fontWeight: 700 }}>
+                  {Object.keys(form.asset_filter).length}
+                </span>
+              )}
+            </button>
+            {showAssetFilter && (
+              <div style={{ marginTop: 8, padding: 12, background: 'var(--bg-hover)', borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Only fire alerts when the linked asset matches these criteria</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>Min Criticality</label>
+                    <select value={form.asset_filter.min_criticality || ''} onChange={e => {
+                      const v = e.target.value ? parseInt(e.target.value) : undefined
+                      setForm(f => {
+                        const af = { ...f.asset_filter }
+                        if (v) af.min_criticality = v; else delete af.min_criticality
+                        return { ...f, asset_filter: af }
+                      })
+                    }} style={{ width: '100%', padding: 6, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', fontSize: 12 }}>
+                      <option value="">Any</option>
+                      {[1,2,3,4,5,6,7,8,9,10].map(n => <option key={n} value={n}>{n}{n >= 8 ? ' (High)' : n >= 5 ? ' (Medium)' : ' (Low)'}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>Environment</label>
+                    <select value={form.asset_filter.environment || ''} onChange={e => {
+                      setForm(f => {
+                        const af = { ...f.asset_filter }
+                        if (e.target.value) af.environment = e.target.value; else delete af.environment
+                        return { ...f, asset_filter: af }
+                      })
+                    }} style={{ width: '100%', padding: 6, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', fontSize: 12 }}>
+                      <option value="">Any</option>
+                      {['production', 'staging', 'development', 'dmz', 'cloud', 'internal', 'external'].map(e => <option key={e} value={e}>{e}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  {[
+                    { key: 'internet_facing', label: 'Internet-facing only' },
+                    { key: 'has_critical_vulns', label: 'Has critical vulns' },
+                    { key: 'has_high_vulns', label: 'Has high+ vulns' },
+                  ].map(({ key, label }) => (
+                    <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={!!form.asset_filter[key]} onChange={e => {
+                        setForm(f => {
+                          const af = { ...f.asset_filter }
+                          if (e.target.checked) af[key] = true; else delete af[key]
+                          return { ...f, asset_filter: af }
+                        })
+                      }} />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block', marginBottom: 3 }}>Asset Type</label>
+                  <select value={form.asset_filter.asset_type || ''} onChange={e => {
+                    setForm(f => {
+                      const af = { ...f.asset_filter }
+                      if (e.target.value) af.asset_type = e.target.value; else delete af.asset_type
+                      return { ...f, asset_filter: af }
+                    })
+                  }} style={{ width: '100%', padding: 6, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', fontSize: 12 }}>
+                    <option value="">Any</option>
+                    {['server', 'workstation', 'network_device', 'iot', 'cloud_instance', 'container', 'database', 'web_application'].map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
           <button onClick={onClose} style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}>
             {t('common.cancel', 'Cancel')}
           </button>
-          <button onClick={() => onSave(form)} disabled={!form.name}
+          <button onClick={() => {
+            const payload = { ...form }
+            if (Object.keys(payload.asset_filter).length === 0) payload.asset_filter = null
+            onSave(payload)
+          }} disabled={!form.name}
                   style={{ padding: '8px 16px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
             {isEdit ? t('common.save', 'Save') : t('common.create', 'Create')}
           </button>

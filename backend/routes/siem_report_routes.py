@@ -129,3 +129,54 @@ async def noisy_sources(
             "fp_rate": round(fp / total * 100, 1) if total > 0 else 0,
         })
     return result
+
+
+@router.get("/api/reports/siem-alert-severity")
+async def alert_severity_breakdown(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Alert breakdown by severity for pie chart widget."""
+    q = db.query(
+        Alert.severity, func.count(Alert.id).label("count")
+    ).filter(Alert.status == "open")
+    if org_ids is not None:
+        q = q.filter(Alert.org_id.in_(org_ids))
+    rows = q.group_by(Alert.severity).all()
+    return [{"severity": r[0], "count": r[1]} for r in rows]
+
+
+@router.get("/api/reports/siem-recent-alerts")
+async def recent_alerts(
+    limit: int = Query(default=15, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Recent open alerts for table widget."""
+    from models.models import Asset
+
+    q = db.query(Alert).filter(Alert.status == "open", Alert.suppressed == False)
+    if org_ids is not None:
+        q = q.filter(Alert.org_id.in_(org_ids))
+    alerts = q.order_by(Alert.fired_at.desc()).limit(limit).all()
+
+    # Resolve rule names and asset names
+    rule_ids = {a.rule_id for a in alerts if a.rule_id}
+    rules = {r.id: r for r in db.query(DetectionRule).filter(DetectionRule.id.in_(rule_ids)).all()} if rule_ids else {}
+    asset_ids = {a.asset_id for a in alerts if a.asset_id}
+    assets = {a.id: a for a in db.query(Asset).filter(Asset.id.in_(asset_ids)).all()} if asset_ids else {}
+
+    return [
+        {
+            "id": a.id,
+            "rule_name": rules.get(a.rule_id, None) and rules[a.rule_id].name,
+            "severity": a.severity,
+            "event_count": a.event_count,
+            "entity_value": a.entity_value,
+            "asset_name": assets.get(a.asset_id, None) and (assets[a.asset_id].hostname or assets[a.asset_id].ip),
+            "fired_at": a.fired_at.isoformat() if a.fired_at else None,
+        }
+        for a in alerts
+    ]
