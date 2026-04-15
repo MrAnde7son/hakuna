@@ -28,10 +28,15 @@ def _hot_boundary() -> datetime:
     return datetime.utcnow() - timedelta(hours=HOT_RETENTION_HOURS)
 
 
+def _make_naive(dt: datetime) -> datetime:
+    """Strip timezone info for comparison with naive datetimes."""
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
 def _range_is_hot_only(filters: EventFilter) -> bool:
     """True if the query time range falls entirely within the hot window."""
     boundary = _hot_boundary()
-    if filters.time_from and filters.time_from >= boundary:
+    if filters.time_from and _make_naive(filters.time_from) >= boundary:
         return True
     if not filters.time_from and not filters.time_to:
         # No time range specified — could span both; default to hot-only
@@ -43,7 +48,7 @@ def _range_is_hot_only(filters: EventFilter) -> bool:
 def _range_is_lake_only(filters: EventFilter) -> bool:
     """True if the query time range falls entirely outside the hot window."""
     boundary = _hot_boundary()
-    if filters.time_to and filters.time_to < boundary:
+    if filters.time_to and _make_naive(filters.time_to) < boundary:
         return True
     return False
 

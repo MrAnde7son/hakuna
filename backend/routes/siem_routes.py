@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
 from core.audit import log_audit
-from models.models import SIEMEvent, IngestEndpoint, Integration
+from models.models import SIEMEvent, IngestEndpoint, Integration, Asset
 from services.event_store import get_event_store, EventFilter
 from services.vector_config import generate_config, generate_install_script, list_templates, AVAILABLE_TEMPLATES
 
@@ -71,6 +71,22 @@ VALID_SEVERITIES = {"info", "low", "medium", "high", "critical"}
 
 
 # ── Helpers ─────────────────────────────────────────────
+
+def _resolve_event_asset(db: Session, org_id: int, source_ip: str = None, host_name: str = None) -> Optional[int]:
+    """Resolve an asset_id from event source_ip or host_name at ingest time."""
+    if source_ip:
+        asset = db.query(Asset.id).filter(Asset.org_id == org_id, Asset.ip == source_ip).first()
+        if asset:
+            return asset[0]
+    if host_name:
+        asset = db.query(Asset.id).filter(
+            Asset.org_id == org_id,
+            (Asset.hostname == host_name) | (Asset.fqdn == host_name),
+        ).first()
+        if asset:
+            return asset[0]
+    return None
+
 
 def _compute_dedup_hash(org_id: int, event: EventCreate) -> str:
     """Deterministic hash for dedup: org + source_system + source_id + event_time + message."""
@@ -138,6 +154,11 @@ async def ingest_event(
     if existing:
         return {"id": existing.id, "status": "duplicate", "dedup_hash": dedup_hash}
 
+    # Resolve asset from IP/hostname if not explicitly provided
+    asset_id = body.asset_id
+    if not asset_id:
+        asset_id = _resolve_event_asset(db, org_id, body.source_ip, body.host_name)
+
     ev = SIEMEvent(
         org_id=org_id,
         event_time=body.event_time,
@@ -148,7 +169,7 @@ async def ingest_event(
         severity=body.severity,
         action=body.action,
         outcome=body.outcome,
-        asset_id=body.asset_id,
+        asset_id=asset_id,
         user_name=body.user_name,
         source_ip=body.source_ip,
         dest_ip=body.dest_ip,
@@ -206,6 +227,7 @@ async def ingest_events_batch(
         if h in existing_hashes:
             duplicates += 1
             continue
+        asset_id = event.asset_id or _resolve_event_asset(db, org_id, event.source_ip, event.host_name)
         new_events.append(SIEMEvent(
             org_id=org_id,
             event_time=event.event_time,
@@ -216,7 +238,7 @@ async def ingest_events_batch(
             severity=event.severity,
             action=event.action,
             outcome=event.outcome,
-            asset_id=event.asset_id,
+            asset_id=asset_id,
             user_name=event.user_name,
             source_ip=event.source_ip,
             dest_ip=event.dest_ip,
@@ -270,7 +292,7 @@ async def search_events(
     """
     store = get_event_store(db)
     filters = EventFilter(
-        org_ids=list(org_ids),
+        org_ids=list(org_ids) if org_ids is not None else [],
         time_from=time_from,
         time_to=time_to,
         source_system=source_system,
@@ -309,7 +331,7 @@ async def get_event(
 ):
     """Get a single SIEM event by ID (checks hot tier, then lake)."""
     store = get_event_store(db)
-    record = store.get_by_id(event_id, list(org_ids))
+    record = store.get_by_id(event_id, list(org_ids) if org_ids is not None else [])
     if not record:
         raise HTTPException(404, "Event not found")
     return record.to_dict()
@@ -329,10 +351,10 @@ async def cleanup_retention(
         raise HTTPException(403, "Admin access required")
 
     cutoff = datetime.utcnow() - timedelta(hours=hours)
-    deleted = db.query(SIEMEvent).filter(
-        SIEMEvent.org_id.in_(org_ids),
-        SIEMEvent.event_time < cutoff,
-    ).delete(synchronize_session=False)
+    q = db.query(SIEMEvent).filter(SIEMEvent.event_time < cutoff)
+    if org_ids is not None:
+        q = q.filter(SIEMEvent.org_id.in_(org_ids))
+    deleted = q.delete(synchronize_session=False)
     db.commit()
 
     log_audit(db, "delete", "siem_event", None,
@@ -410,9 +432,10 @@ async def list_ingest_endpoints(
     org_ids: list = Depends(get_accessible_org_ids),
 ):
     """List all ingest endpoints for the org."""
-    endpoints = db.query(IngestEndpoint).filter(
-        IngestEndpoint.org_id.in_(org_ids),
-    ).order_by(IngestEndpoint.created_at.desc()).all()
+    q = db.query(IngestEndpoint)
+    if org_ids is not None:
+        q = q.filter(IngestEndpoint.org_id.in_(org_ids))
+    endpoints = q.order_by(IngestEndpoint.created_at.desc()).all()
 
     return [
         {
@@ -440,10 +463,10 @@ async def delete_ingest_endpoint(
     if current_user.role not in ("org_admin", "super_admin"):
         raise HTTPException(403, "Admin access required")
 
-    ep = db.query(IngestEndpoint).filter(
-        IngestEndpoint.id == endpoint_id,
-        IngestEndpoint.org_id.in_(org_ids),
-    ).first()
+    q = db.query(IngestEndpoint).filter(IngestEndpoint.id == endpoint_id)
+    if org_ids is not None:
+        q = q.filter(IngestEndpoint.org_id.in_(org_ids))
+    ep = q.first()
     if not ep:
         raise HTTPException(404, "Endpoint not found")
 
@@ -485,10 +508,10 @@ async def generate_vector_config(
 ):
     """Generate a Vector config YAML for a given template + endpoint."""
     # Verify the endpoint belongs to this org
-    ep = db.query(IngestEndpoint).filter(
-        IngestEndpoint.id == body.endpoint_id,
-        IngestEndpoint.org_id.in_(org_ids),
-    ).first()
+    eq = db.query(IngestEndpoint).filter(IngestEndpoint.id == body.endpoint_id)
+    if org_ids is not None:
+        eq = eq.filter(IngestEndpoint.org_id.in_(org_ids))
+    ep = eq.first()
     if not ep:
         raise HTTPException(404, "Ingest endpoint not found")
 
@@ -512,10 +535,10 @@ async def generate_vector_install_script(
     db: Session = Depends(get_db),
 ):
     """Generate a bootstrap shell script for Vector installation."""
-    ep = db.query(IngestEndpoint).filter(
-        IngestEndpoint.id == body.endpoint_id,
-        IngestEndpoint.org_id.in_(org_ids),
-    ).first()
+    eq = db.query(IngestEndpoint).filter(IngestEndpoint.id == body.endpoint_id)
+    if org_ids is not None:
+        eq = eq.filter(IngestEndpoint.org_id.in_(org_ids))
+    ep = eq.first()
     if not ep:
         raise HTTPException(404, "Ingest endpoint not found")
 
@@ -537,10 +560,10 @@ async def get_integration_vector_config(
     org_ids: list = Depends(get_accessible_org_ids),
 ):
     """Get the Vector config for a stream-type integration."""
-    integration = db.query(Integration).filter(
-        Integration.id == integration_id,
-        Integration.org_id.in_(org_ids),
-    ).first()
+    iq = db.query(Integration).filter(Integration.id == integration_id)
+    if org_ids is not None:
+        iq = iq.filter(Integration.org_id.in_(org_ids))
+    integration = iq.first()
     if not integration:
         raise HTTPException(404, "Integration not found")
     if integration.transport_type != "stream":
@@ -550,10 +573,10 @@ async def get_integration_vector_config(
     template_id = stream_cfg.get("template_id", "linux_syslog")
 
     # Find linked ingest endpoint
-    ep = db.query(IngestEndpoint).filter(
-        IngestEndpoint.integration_id == integration_id,
-        IngestEndpoint.org_id.in_(org_ids),
-    ).first()
+    eq = db.query(IngestEndpoint).filter(IngestEndpoint.integration_id == integration_id)
+    if org_ids is not None:
+        eq = eq.filter(IngestEndpoint.org_id.in_(org_ids))
+    ep = eq.first()
     if not ep:
         raise HTTPException(400, "No ingest endpoint linked to this integration. Create one first.")
 

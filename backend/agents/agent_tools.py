@@ -5903,3 +5903,200 @@ def run_detection_rule_now(db: Session, params: dict):
         "alerts_created": len(alerts),
         "alerts": [{"id": a.id, "severity": a.severity, "event_count": a.event_count} for a in alerts],
     }
+
+
+# ── SIEM Investigation & Triage Tools ───────────────────
+
+@agent_tool(
+    name="triage_alert",
+    description="Analyze a SIEM alert with exposure context and provide a triage recommendation. Returns the alert details including asset criticality, vulnerability counts, and internet-facing status.",
+    parameters={
+        "alert_id": {"type": "integer", "description": "ID of the alert to triage"},
+    },
+)
+def triage_alert(db: Session, params: dict):
+    from models.models import Alert, Asset, Finding
+
+    alert_id = params.get("alert_id")
+    if not alert_id:
+        return {"error": "alert_id is required"}
+
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        return {"error": "Alert not found"}
+
+    result = {
+        "alert_id": alert.id,
+        "rule_name": alert.rule.name if alert.rule else None,
+        "severity": alert.severity,
+        "status": alert.status,
+        "event_count": alert.event_count,
+        "entity": {"type": alert.entity_type, "value": alert.entity_value},
+        "suppressed": alert.suppressed,
+        "incident_id": alert.incident_id,
+        "exposure_context": alert.exposure_context or {},
+        "events_sample": (alert.context or {}).get("events_sample", [])[:5],
+    }
+
+    # Enrich with asset details if linked
+    if alert.asset_id:
+        asset = db.query(Asset).filter(Asset.id == alert.asset_id).first()
+        if asset:
+            result["asset"] = {
+                "hostname": asset.hostname, "ip": asset.ip,
+                "criticality": asset.criticality, "risk_score": asset.risk_score,
+                "is_internet_facing": asset.is_internet_facing,
+                "environment": asset.environment_tag,
+            }
+            # Top critical findings
+            findings = db.query(Finding).filter(
+                Finding.asset_id == asset.id, Finding.severity >= 3
+            ).order_by(Finding.priority_score.desc()).limit(5).all()
+            result["critical_findings"] = [
+                {"plugin_name": f.plugin_name, "severity": f.severity,
+                 "cvss3": f.cvss3_score, "exploit_available": f.exploit_available, "is_kev": f.is_kev}
+                for f in findings
+            ]
+
+    # Triage recommendation logic
+    ctx = alert.exposure_context or {}
+    rec_priority = "medium"
+    rec_reasons = []
+
+    if ctx.get("is_internet_facing"):
+        rec_priority = "high"
+        rec_reasons.append("Asset is internet-facing")
+    if ctx.get("critical_vulns", 0) > 0:
+        rec_priority = "high"
+        rec_reasons.append(f"{ctx['critical_vulns']} critical vulnerabilities on this asset")
+    if (ctx.get("criticality") or 0) >= 8:
+        rec_priority = "critical"
+        rec_reasons.append(f"Asset criticality is {ctx['criticality']}/10")
+    if alert.severity == "critical":
+        rec_priority = "critical"
+        rec_reasons.append("Alert severity is critical")
+    if alert.suppressed:
+        rec_priority = "low"
+        rec_reasons = ["Alert was suppressed by a suppression rule"]
+
+    result["recommendation"] = {
+        "priority": rec_priority,
+        "reasons": rec_reasons,
+        "suggested_action": "investigate" if rec_priority in ("high", "critical") else "review",
+    }
+
+    return result
+
+
+@agent_tool(
+    name="query_siem_events",
+    description="Search SIEM events with filters. Returns matching events from the hot tier.",
+    parameters={
+        "source_ip": {"type": "string", "description": "Filter by source IP address"},
+        "dest_ip": {"type": "string", "description": "Filter by destination IP address"},
+        "host_name": {"type": "string", "description": "Filter by hostname"},
+        "user_name": {"type": "string", "description": "Filter by username"},
+        "severity": {"type": "string", "description": "Filter by severity (info, low, medium, high, critical)"},
+        "event_type": {"type": "string", "description": "Filter by event type"},
+        "time_hours": {"type": "integer", "description": "Look back N hours (default 24)"},
+        "limit": {"type": "integer", "description": "Max results (default 50)"},
+    },
+)
+def query_siem_events(db: Session, params: dict):
+    from models.models import SIEMEvent
+    from datetime import timedelta
+
+    org_id = params.get("_org_id")
+    hours = params.get("time_hours", 24)
+    limit = min(params.get("limit", 50), 200)
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+    q = db.query(SIEMEvent).filter(SIEMEvent.event_time >= cutoff)
+    if org_id:
+        q = q.filter(SIEMEvent.org_id == org_id)
+    if params.get("source_ip"):
+        q = q.filter(SIEMEvent.source_ip == params["source_ip"])
+    if params.get("dest_ip"):
+        q = q.filter(SIEMEvent.dest_ip == params["dest_ip"])
+    if params.get("host_name"):
+        q = q.filter(SIEMEvent.host_name == params["host_name"])
+    if params.get("user_name"):
+        q = q.filter(SIEMEvent.user_name.ilike(f"%{params['user_name']}%"))
+    if params.get("severity"):
+        q = q.filter(SIEMEvent.severity == params["severity"])
+    if params.get("event_type"):
+        q = q.filter(SIEMEvent.event_type == params["event_type"])
+
+    events = q.order_by(SIEMEvent.event_time.desc()).limit(limit).all()
+    return {
+        "count": len(events),
+        "events": [
+            {"id": e.id, "event_time": e.event_time.isoformat() if e.event_time else None,
+             "source_system": e.source_system, "severity": e.severity,
+             "event_type": e.event_type, "message": (e.message or "")[:300],
+             "source_ip": e.source_ip, "dest_ip": e.dest_ip,
+             "host_name": e.host_name, "user_name": e.user_name}
+            for e in events
+        ],
+    }
+
+
+@agent_tool(
+    name="get_exposure_context",
+    description="Get the exposure context for an asset — criticality, vulnerabilities, internet-facing status, and top CVEs.",
+    parameters={
+        "ip": {"type": "string", "description": "Asset IP address"},
+        "hostname": {"type": "string", "description": "Asset hostname"},
+        "asset_id": {"type": "integer", "description": "Asset ID (if known)"},
+    },
+)
+def get_exposure_context(db: Session, params: dict):
+    from models.models import Asset, Finding
+
+    org_id = params.get("_org_id")
+    asset = None
+
+    if params.get("asset_id"):
+        asset = db.query(Asset).filter(Asset.id == params["asset_id"]).first()
+    elif params.get("ip"):
+        q = db.query(Asset).filter(Asset.ip == params["ip"])
+        if org_id:
+            q = q.filter(Asset.org_id == org_id)
+        asset = q.order_by(Asset.last_seen.desc()).first()
+    elif params.get("hostname"):
+        q = db.query(Asset).filter((Asset.hostname == params["hostname"]) | (Asset.fqdn == params["hostname"]))
+        if org_id:
+            q = q.filter(Asset.org_id == org_id)
+        asset = q.order_by(Asset.last_seen.desc()).first()
+
+    if not asset:
+        return {"error": "Asset not found", "searched": {k: v for k, v in params.items() if k != "_org_id" and v}}
+
+    findings = db.query(Finding).filter(
+        Finding.asset_id == asset.id
+    ).order_by(Finding.priority_score.desc()).limit(10).all()
+
+    return {
+        "asset_id": asset.id,
+        "hostname": asset.hostname,
+        "ip": asset.ip,
+        "fqdn": asset.fqdn,
+        "criticality": asset.criticality,
+        "risk_score": asset.risk_score,
+        "is_internet_facing": asset.is_internet_facing,
+        "environment": asset.environment_tag,
+        "asset_type": asset.asset_type,
+        "vuln_summary": {
+            "critical": asset.critical_count or 0,
+            "high": asset.high_count or 0,
+            "medium": asset.medium_count or 0,
+            "low": asset.low_count or 0,
+        },
+        "top_findings": [
+            {"id": f.id, "plugin_name": f.plugin_name, "severity": f.severity,
+             "cvss3": f.cvss3_score, "priority_score": f.priority_score,
+             "exploit_available": f.exploit_available, "is_kev": f.is_kev,
+             "epss_score": f.epss_score}
+            for f in findings
+        ],
+    }

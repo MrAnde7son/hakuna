@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Shield, Plus, Trash2, Edit2, Play, Upload, ToggleLeft, ToggleRight } from 'lucide-react'
-import { getDetectionRules, createDetectionRule, updateDetectionRule, deleteDetectionRule, testDetectionRule } from '../../api'
+import { Shield, Plus, Trash2, Edit2, Play, Upload, ToggleLeft, ToggleRight, EyeOff } from 'lucide-react'
+import { getDetectionRules, createDetectionRule, updateDetectionRule, deleteDetectionRule, testDetectionRule, getSuppressionRules, updateSuppressionRule, deleteSuppressionRule } from '../../api'
 import { PageHeader, EmptyState, Button } from '../shared/ui'
 
 const SEVERITY_COLORS = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#3b82f6', info: '#6b7280' }
 
 export default function DetectionRules() {
   const { t } = useTranslation()
+  const [tab, setTab] = useState('rules') // rules | suppression
   const [rules, setRules] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -59,12 +60,32 @@ export default function DetectionRules() {
       <PageHeader
         title={t('siem.detectionRules', 'Detection Rules')}
         subtitle={`${total} ${t('siem.rules', 'rules')}`}
-        action={
+        action={tab === 'rules' ? (
           <Button onClick={() => setShowCreate(true)}>
             <Plus size={14} /> {t('siem.createRule', 'Create Rule')}
           </Button>
-        }
+        ) : null}
       />
+
+      {/* Tab toggle */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
+        <button onClick={() => setTab('rules')}
+                style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)',
+                         background: tab === 'rules' ? 'var(--accent)' : 'var(--bg-secondary)',
+                         color: tab === 'rules' ? '#fff' : 'var(--text)', cursor: 'pointer', fontSize: 13,
+                         display: 'flex', alignItems: 'center', gap: 4 }}>
+          <Shield size={13} /> Detection Rules
+        </button>
+        <button onClick={() => setTab('suppression')}
+                style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)',
+                         background: tab === 'suppression' ? 'var(--accent)' : 'var(--bg-secondary)',
+                         color: tab === 'suppression' ? '#fff' : 'var(--text)', cursor: 'pointer', fontSize: 13,
+                         display: 'flex', alignItems: 'center', gap: 4 }}>
+          <EyeOff size={13} /> Suppression Rules
+        </button>
+      </div>
+
+      {tab === 'suppression' ? <SuppressionTab /> : <>
 
       {/* Test result banner */}
       {testResult && (
@@ -106,6 +127,64 @@ export default function DetectionRules() {
 
       {/* Create modal */}
       {showCreate && <CreateRuleModal onClose={() => setShowCreate(false)} onCreate={handleCreate} t={t} />}
+
+      </>}
+    </div>
+  )
+}
+
+
+function SuppressionTab() {
+  const { t } = useTranslation()
+  const [rules, setRules] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await getSuppressionRules({ page_size: 100 })
+      setRules(data.items || [])
+    } catch (e) { console.error(e) }
+    finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const handleToggle = async (rule) => {
+    await updateSuppressionRule(rule.id, { enabled: !rule.enabled })
+    load()
+  }
+
+  const handleDelete = async (id) => {
+    if (!confirm('Delete this suppression rule?')) return
+    await deleteSuppressionRule(id)
+    load()
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {loading ? <EmptyState icon={EyeOff} title={t('app.loading')} />
+      : rules.length === 0 ? <EmptyState icon={EyeOff} title="No suppression rules" sub="Suppression rules prevent known-good activity from creating alerts. Create them from the Alert Triage page." />
+      : rules.map(rule => (
+        <div key={rule.id} style={{ padding: '14px 18px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+                                     display: 'flex', alignItems: 'center', gap: 12, opacity: rule.enabled ? 1 : 0.5 }}>
+          <button onClick={() => handleToggle(rule)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: rule.enabled ? 'var(--accent)' : 'var(--text-muted)' }}>
+            {rule.enabled ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
+          </button>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>{rule.name}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              {rule.reason && <span>{rule.reason} · </span>}
+              {(rule.conditions || []).length} conditions
+              {rule.expires_at && <> · expires {new Date(rule.expires_at).toLocaleDateString()}</>}
+              {rule.suppressed_count > 0 && <> · suppressed {rule.suppressed_count} alerts</>}
+            </div>
+          </div>
+          <button onClick={() => handleDelete(rule.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
+            <Trash2 size={16} />
+          </button>
+        </div>
+      ))}
     </div>
   )
 }

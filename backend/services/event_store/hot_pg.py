@@ -128,8 +128,8 @@ class HotPgStore(EventStore):
         return q.count()
 
     def get_by_id(self, event_id: str, org_ids: list[int]) -> Optional[EventRecord]:
-        ev = self._db.query(SIEMEvent).filter(
-            SIEMEvent.id == event_id,
-            SIEMEvent.org_id.in_(org_ids),
-        ).first()
+        q = self._db.query(SIEMEvent).filter(SIEMEvent.id == event_id)
+        if org_ids:
+            q = q.filter(SIEMEvent.org_id.in_(org_ids))
+        ev = q.first()
         return _model_to_record(ev) if ev else None

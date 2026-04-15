@@ -1358,10 +1358,10 @@ export const getDetectionRules = (params = {}) => {
   return request(`/detection-rules?${q}`)
 }
 export const getDetectionRule = (id) => request(`/detection-rules/${id}`)
-export const createDetectionRule = (data) => request('/detection-rules', { method: 'POST', body: JSON.stringify(data) })
-export const updateDetectionRule = (id, data) => request(`/detection-rules/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+export const createDetectionRule = (data) => request('/detection-rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+export const updateDetectionRule = (id, data) => request(`/detection-rules/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
 export const deleteDetectionRule = (id) => request(`/detection-rules/${id}`, { method: 'DELETE' })
-export const testDetectionRule = (data) => request('/detection-rules/test', { method: 'POST', body: JSON.stringify(data) })
+export const testDetectionRule = (data) => request('/detection-rules/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
 
 // ── SIEM Alerts ───────────────────────────────────────
 
@@ -1370,13 +1370,23 @@ export const getAlerts = (params = {}) => {
   return request(`/alerts?${q}`)
 }
 export const getAlert = (id) => request(`/alerts/${id}`)
-export const updateAlert = (id, data) => request(`/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(data) })
-export const triageAlert = (id, data) => request(`/alerts/${id}/triage`, { method: 'POST', body: JSON.stringify(data) })
+export const updateAlert = (id, data) => request(`/alerts/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+export const triageAlert = (id, data) => request(`/alerts/${id}/triage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
 
 // ── SIEM Ingest Endpoints ─────────────────────────────
 
 export const getSiemEndpoints = () => request('/siem/endpoints')
-export const createSiemEndpoint = (data) => request('/siem/endpoints', { method: 'POST', body: JSON.stringify(data) })
+export const createSiemEndpoint = (data) => request('/siem/endpoints', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
 export const deleteSiemEndpoint = (id) => request(`/siem/endpoints/${id}`, { method: 'DELETE' })
 export const getVectorTemplates = () => request('/siem/vector-templates')
-export const generateVectorConfig = (data) => request('/siem/vector-config', { method: 'POST', body: JSON.stringify(data) })
+export const generateVectorConfig = (data) => request('/siem/vector-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+
+// ── Suppression Rules ─────────────────────────────────
+
+export const getSuppressionRules = (params = {}) => {
+  const q = new URLSearchParams(params).toString()
+  return request(`/suppression-rules?${q}`)
+}
+export const createSuppressionRule = (data) => request('/suppression-rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+export const updateSuppressionRule = (id, data) => request(`/suppression-rules/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+export const deleteSuppressionRule = (id) => request(`/suppression-rules/${id}`, { method: 'DELETE' })

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
 from core.audit import log_audit
-from models.models import DetectionRule, Alert
+from models.models import DetectionRule, Alert, SuppressionRule
 
 router = APIRouter()
 
@@ -30,6 +30,7 @@ class RuleCreate(BaseModel):
     group_by: List[str] = []
     schedule_minutes: int = 5
     mitre_techniques: List[str] = []
+    asset_filter: Optional[dict] = None
     enabled: bool = True
 
 
@@ -43,6 +44,7 @@ class RuleUpdate(BaseModel):
     group_by: Optional[List[str]] = None
     schedule_minutes: Optional[int] = None
     mitre_techniques: Optional[List[str]] = None
+    asset_filter: Optional[dict] = None
     enabled: Optional[bool] = None
 
 
@@ -50,6 +52,8 @@ class AlertUpdate(BaseModel):
     status: Optional[str] = None
     assigned_to: Optional[int] = None
     campaign_id: Optional[int] = None
+    triage_reason: Optional[str] = None
+    notes: Optional[str] = None
 
 
 def _rule_to_dict(r: DetectionRule) -> dict:
@@ -58,7 +62,8 @@ def _rule_to_dict(r: DetectionRule) -> dict:
         "severity": r.severity, "enabled": r.enabled, "query": r.query,
         "window_seconds": r.window_seconds, "threshold": r.threshold,
         "group_by": r.group_by, "schedule_minutes": r.schedule_minutes,
-        "mitre_techniques": r.mitre_techniques, "source": r.source,
+        "mitre_techniques": r.mitre_techniques, "asset_filter": r.asset_filter,
+        "source": r.source,
         "sigma_rule_id": r.sigma_rule_id,
         "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
         "last_alert_at": r.last_alert_at.isoformat() if r.last_alert_at else None,
@@ -77,6 +82,20 @@ def _alert_to_dict(a: Alert) -> dict:
         "campaign_id": a.campaign_id,
         "rule_name": a.rule.name if a.rule else None,
         "created_at": a.created_at.isoformat() if a.created_at else None,
+        # Entity identification
+        "entity_type": a.entity_type,
+        "entity_value": a.entity_value,
+        # Exposure enrichment
+        "asset_criticality": a.asset_criticality,
+        "open_vulnerabilities": a.open_vulnerabilities,
+        "internet_facing": a.internet_facing,
+        "exposure_context": a.exposure_context,
+        # Suppression
+        "suppressed": a.suppressed,
+        "suppression_rule_id": a.suppression_rule_id,
+        # Investigation
+        "triage_reason": a.triage_reason,
+        "notes": a.notes,
     }
 
 
@@ -91,7 +110,9 @@ async def list_rules(
     current_user=Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),
 ):
-    q = db.query(DetectionRule).filter(DetectionRule.org_id.in_(org_ids))
+    q = db.query(DetectionRule)
+    if org_ids is not None:
+        q = q.filter(DetectionRule.org_id.in_(org_ids))
     if enabled is not None:
         q = q.filter(DetectionRule.enabled == enabled)
     if severity:
@@ -125,7 +146,10 @@ async def get_rule(
     current_user=Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),
 ):
-    rule = db.query(DetectionRule).filter(DetectionRule.id == rule_id, DetectionRule.org_id.in_(org_ids)).first()
+    q = db.query(DetectionRule).filter(DetectionRule.id == rule_id)
+    if org_ids is not None:
+        q = q.filter(DetectionRule.org_id.in_(org_ids))
+    rule = q.first()
     if not rule:
         raise HTTPException(404, "Rule not found")
     return _rule_to_dict(rule)
@@ -138,7 +162,10 @@ async def update_rule(
     current_user=Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),
 ):
-    rule = db.query(DetectionRule).filter(DetectionRule.id == rule_id, DetectionRule.org_id.in_(org_ids)).first()
+    q = db.query(DetectionRule).filter(DetectionRule.id == rule_id)
+    if org_ids is not None:
+        q = q.filter(DetectionRule.org_id.in_(org_ids))
+    rule = q.first()
     if not rule:
         raise HTTPException(404, "Rule not found")
     for field, val in body.dict(exclude_unset=True).items():
@@ -155,7 +182,10 @@ async def delete_rule(
     current_user=Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),
 ):
-    rule = db.query(DetectionRule).filter(DetectionRule.id == rule_id, DetectionRule.org_id.in_(org_ids)).first()
+    q = db.query(DetectionRule).filter(DetectionRule.id == rule_id)
+    if org_ids is not None:
+        q = q.filter(DetectionRule.org_id.in_(org_ids))
+    rule = q.first()
     if not rule:
         raise HTTPException(404, "Rule not found")
     db.delete(rule)
@@ -235,7 +265,9 @@ async def list_alerts(
     current_user=Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),
 ):
-    q = db.query(Alert).filter(Alert.org_id.in_(org_ids))
+    q = db.query(Alert)
+    if org_ids is not None:
+        q = q.filter(Alert.org_id.in_(org_ids))
     if status:
         q = q.filter(Alert.status == status)
     if severity:
@@ -258,7 +290,10 @@ async def get_alert(
     current_user=Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),
 ):
-    alert = db.query(Alert).filter(Alert.id == alert_id, Alert.org_id.in_(org_ids)).first()
+    q = db.query(Alert).filter(Alert.id == alert_id)
+    if org_ids is not None:
+        q = q.filter(Alert.org_id.in_(org_ids))
+    alert = q.first()
     if not alert:
         raise HTTPException(404, "Alert not found")
     return _alert_to_dict(alert)
@@ -271,7 +306,10 @@ async def update_alert(
     current_user=Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),
 ):
-    alert = db.query(Alert).filter(Alert.id == alert_id, Alert.org_id.in_(org_ids)).first()
+    q = db.query(Alert).filter(Alert.id == alert_id)
+    if org_ids is not None:
+        q = q.filter(Alert.org_id.in_(org_ids))
+    alert = q.first()
     if not alert:
         raise HTTPException(404, "Alert not found")
     for field, val in body.dict(exclude_unset=True).items():
@@ -292,7 +330,10 @@ async def triage_alert(
     org_ids: list = Depends(get_accessible_org_ids),
 ):
     """Assign, change status, or link to campaign."""
-    alert = db.query(Alert).filter(Alert.id == alert_id, Alert.org_id.in_(org_ids)).first()
+    q = db.query(Alert).filter(Alert.id == alert_id)
+    if org_ids is not None:
+        q = q.filter(Alert.org_id.in_(org_ids))
+    alert = q.first()
     if not alert:
         raise HTTPException(404, "Alert not found")
     if body.status:
@@ -301,7 +342,139 @@ async def triage_alert(
         alert.assigned_to = body.assigned_to
     if body.campaign_id is not None:
         alert.campaign_id = body.campaign_id
+    if body.triage_reason is not None:
+        alert.triage_reason = body.triage_reason
+    if body.notes is not None:
+        alert.notes = body.notes
     alert.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(alert)
     return _alert_to_dict(alert)
+
+
+# ── Suppression Rules ────────────────────────────────────
+
+class SuppressionCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    conditions: list = []
+    conditions_logic: str = "AND"
+    rule_id: Optional[int] = None
+    reason: Optional[str] = None
+    expires_at: Optional[str] = None
+    enabled: bool = True
+
+
+class SuppressionUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    conditions: Optional[list] = None
+    conditions_logic: Optional[str] = None
+    rule_id: Optional[int] = None
+    reason: Optional[str] = None
+    expires_at: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+def _suppression_to_dict(s: SuppressionRule) -> dict:
+    return {
+        "id": s.id, "org_id": s.org_id, "name": s.name, "description": s.description,
+        "conditions": s.conditions, "conditions_logic": s.conditions_logic,
+        "rule_id": s.rule_id, "reason": s.reason, "enabled": s.enabled,
+        "expires_at": s.expires_at.isoformat() if s.expires_at else None,
+        "created_by": s.created_by, "suppressed_count": s.suppressed_count,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+    }
+
+
+@router.get("/api/suppression-rules")
+async def list_suppression_rules(
+    enabled: Optional[bool] = None,
+    page: int = 1, page_size: int = Query(default=50, le=200),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    q = db.query(SuppressionRule)
+    if org_ids is not None:
+        q = q.filter(SuppressionRule.org_id.in_(org_ids))
+    if enabled is not None:
+        q = q.filter(SuppressionRule.enabled == enabled)
+    total = q.count()
+    rules = q.order_by(SuppressionRule.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {"items": [_suppression_to_dict(s) for s in rules], "total": total, "page": page, "page_size": page_size}
+
+
+@router.post("/api/suppression-rules")
+async def create_suppression_rule(
+    body: SuppressionCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    org_id = org_ids[0] if org_ids else current_user.org_id
+    expires_at = None
+    if body.expires_at:
+        try:
+            expires_at = datetime.fromisoformat(body.expires_at)
+        except ValueError:
+            raise HTTPException(400, "Invalid expires_at format")
+
+    rule = SuppressionRule(
+        org_id=org_id, name=body.name, description=body.description,
+        conditions=body.conditions, conditions_logic=body.conditions_logic,
+        rule_id=body.rule_id, reason=body.reason, enabled=body.enabled,
+        expires_at=expires_at,
+        created_by=current_user.id if hasattr(current_user, "id") else None,
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return _suppression_to_dict(rule)
+
+
+@router.put("/api/suppression-rules/{rule_id}")
+async def update_suppression_rule(
+    rule_id: int, body: SuppressionUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    q = db.query(SuppressionRule).filter(SuppressionRule.id == rule_id)
+    if org_ids is not None:
+        q = q.filter(SuppressionRule.org_id.in_(org_ids))
+    rule = q.first()
+    if not rule:
+        raise HTTPException(404, "Suppression rule not found")
+
+    updates = body.dict(exclude_unset=True)
+    if "expires_at" in updates and updates["expires_at"]:
+        try:
+            updates["expires_at"] = datetime.fromisoformat(updates["expires_at"])
+        except ValueError:
+            raise HTTPException(400, "Invalid expires_at format")
+
+    for field, val in updates.items():
+        setattr(rule, field, val)
+    rule.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(rule)
+    return _suppression_to_dict(rule)
+
+
+@router.delete("/api/suppression-rules/{rule_id}")
+async def delete_suppression_rule(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    q = db.query(SuppressionRule).filter(SuppressionRule.id == rule_id)
+    if org_ids is not None:
+        q = q.filter(SuppressionRule.org_id.in_(org_ids))
+    rule = q.first()
+    if not rule:
+        raise HTTPException(404, "Suppression rule not found")
+    db.delete(rule)
+    db.commit()
+    return {"deleted": True}

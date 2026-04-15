@@ -2282,6 +2282,7 @@ class DetectionRule(Base):
     group_by = Column(JSON, default=list)                            # group by fields (e.g. ["source_ip", "user_name"])
     schedule_minutes = Column(Integer, default=5)                    # run every N minutes
     mitre_techniques = Column(JSON, default=list)                    # e.g. ["T1110", "T1059.001"]
+    asset_filter = Column(JSON, default=dict)                        # asset context filter: {"min_criticality": 8, "internet_facing": true}
     source = Column(String, default="manual")                       # manual | sigma
     sigma_rule_id = Column(String, nullable=True)                   # original Sigma rule ID
     last_run_at = Column(DateTime, nullable=True)
@@ -2310,6 +2311,25 @@ class Alert(Base):
     asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True)
     assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True)
     campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=True)
+
+    # Entity identification (primary entity this alert is about)
+    entity_type = Column(String, nullable=True)                     # ip | hostname | user
+    entity_value = Column(String, nullable=True)
+
+    # Exposure enrichment (snapshot at alert time from linked asset)
+    asset_criticality = Column(Integer, nullable=True)              # 1-10 from asset
+    open_vulnerabilities = Column(Integer, nullable=True)           # critical + high count
+    internet_facing = Column(Boolean, nullable=True)
+    exposure_context = Column(JSON, default=dict)                   # full enrichment snapshot
+
+    # Suppression
+    suppressed = Column(Boolean, default=False, index=True)
+    suppression_rule_id = Column(Integer, ForeignKey("suppression_rules.id"), nullable=True)
+
+    # Investigation
+    triage_reason = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -2319,3 +2339,27 @@ class Alert(Base):
         Index("ix_alerts_org_status", "org_id", "status"),
         Index("ix_alerts_org_fired", "org_id", fired_at.desc()),
     )
+
+
+# ─────────────────────────────────────────────────────────
+# SIEM Suppression Rules
+# ─────────────────────────────────────────────────────────
+
+class SuppressionRule(Base):
+    """A rule to suppress known-good alerts (e.g. scanner traffic, maintenance windows)."""
+    __tablename__ = "suppression_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    conditions = Column(JSON, nullable=False, default=list)         # same filter format as DetectionRule.query
+    conditions_logic = Column(String, default="AND")                # AND | OR
+    rule_id = Column(Integer, ForeignKey("detection_rules.id"), nullable=True)  # scope to rule, or null=global
+    reason = Column(String, nullable=True)                          # "known scanner", "maintenance window", etc.
+    enabled = Column(Boolean, default=True)
+    expires_at = Column(DateTime, nullable=True)                    # null = never expires
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    suppressed_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -27,28 +27,30 @@ async def siem_summary(
     now = datetime.utcnow()
     day_ago = now - timedelta(hours=24)
 
-    events_24h = db.query(func.count(SIEMEvent.id)).filter(
-        SIEMEvent.org_id.in_(org_ids),
-        SIEMEvent.event_time >= day_ago,
-    ).scalar() or 0
+    eq = db.query(func.count(SIEMEvent.id)).filter(SIEMEvent.event_time >= day_ago)
+    if org_ids is not None:
+        eq = eq.filter(SIEMEvent.org_id.in_(org_ids))
+    events_24h = eq.scalar() or 0
 
-    alerts_open = db.query(func.count(Alert.id)).filter(
-        Alert.org_id.in_(org_ids),
-        Alert.status == "open",
-    ).scalar() or 0
+    aq = db.query(func.count(Alert.id)).filter(Alert.status == "open")
+    if org_ids is not None:
+        aq = aq.filter(Alert.org_id.in_(org_ids))
+    alerts_open = aq.scalar() or 0
 
-    rules_active = db.query(func.count(DetectionRule.id)).filter(
-        DetectionRule.org_id.in_(org_ids),
-        DetectionRule.enabled == True,
-    ).scalar() or 0
+    rq = db.query(func.count(DetectionRule.id)).filter(DetectionRule.enabled == True)
+    if org_ids is not None:
+        rq = rq.filter(DetectionRule.org_id.in_(org_ids))
+    rules_active = rq.scalar() or 0
 
     # MTTR: average time from alert creation to close (last 30 days)
-    closed_alerts = db.query(Alert).filter(
-        Alert.org_id.in_(org_ids),
+    cq = db.query(Alert).filter(
         Alert.status.in_(["closed", "false_positive"]),
         Alert.created_at >= now - timedelta(days=30),
         Alert.updated_at.isnot(None),
-    ).all()
+    )
+    if org_ids is not None:
+        cq = cq.filter(Alert.org_id.in_(org_ids))
+    closed_alerts = cq.all()
     mttr_minutes = 0
     if closed_alerts:
         total_minutes = sum(
@@ -58,12 +60,12 @@ async def siem_summary(
         mttr_minutes = round(total_minutes / len(closed_alerts), 1)
 
     # Top 5 assets by alert count
-    top_assets = db.query(
+    tq = db.query(
         Alert.asset_id, func.count(Alert.id).label("alert_count")
-    ).filter(
-        Alert.org_id.in_(org_ids),
-        Alert.asset_id.isnot(None),
-    ).group_by(Alert.asset_id).order_by(func.count(Alert.id).desc()).limit(5).all()
+    ).filter(Alert.asset_id.isnot(None))
+    if org_ids is not None:
+        tq = tq.filter(Alert.org_id.in_(org_ids))
+    top_assets = tq.group_by(Alert.asset_id).order_by(func.count(Alert.id).desc()).limit(5).all()
 
     return {
         "events_24h": events_24h,
@@ -86,13 +88,13 @@ async def event_volume(
     """Event volume over time, grouped by source_system (for stacked area chart)."""
     cutoff = datetime.utcnow() - timedelta(hours=hours)
 
-    rows = db.query(
+    vq = db.query(
         SIEMEvent.source_system,
         func.count(SIEMEvent.id).label("count"),
-    ).filter(
-        SIEMEvent.org_id.in_(org_ids),
-        SIEMEvent.event_time >= cutoff,
-    ).group_by(SIEMEvent.source_system).order_by(func.count(SIEMEvent.id).desc()).limit(10).all()
+    ).filter(SIEMEvent.event_time >= cutoff)
+    if org_ids is not None:
+        vq = vq.filter(SIEMEvent.org_id.in_(org_ids))
+    rows = vq.group_by(SIEMEvent.source_system).order_by(func.count(SIEMEvent.id).desc()).limit(10).all()
 
     return {
         "hours": hours,
@@ -111,9 +113,10 @@ async def noisy_sources(
         DetectionRule.name,
         func.count(Alert.id).label("total_alerts"),
         func.sum(func.cast(Alert.status == "false_positive", db.bind.dialect.type_descriptor(type(1)) if hasattr(db.bind, 'dialect') else type(1))).label("fp_count"),
-    ).join(Alert, Alert.rule_id == DetectionRule.id).filter(
-        Alert.org_id.in_(org_ids),
-    ).group_by(DetectionRule.name).order_by(func.count(Alert.id).desc()).limit(10).all()
+    ).join(Alert, Alert.rule_id == DetectionRule.id)
+    if org_ids is not None:
+        sources = sources.filter(Alert.org_id.in_(org_ids))
+    sources = sources.group_by(DetectionRule.name).order_by(func.count(Alert.id).desc()).limit(10).all()
 
     result = []
     for row in sources:
