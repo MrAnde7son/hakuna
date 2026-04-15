@@ -12,6 +12,8 @@ info:
     changing PLC programs without authentication.
   tags: ot,ics,scada,ethernet-ip,cip,rockwell,plc,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: plc
     finding_type: exposed_ot_service
 

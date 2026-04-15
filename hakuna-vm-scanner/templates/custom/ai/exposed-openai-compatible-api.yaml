@@ -11,6 +11,8 @@ info:
     inference access.
   tags: ai,llm,openai,vllm,localai,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: ai_inference
     finding_type: exposed_ai_service
 

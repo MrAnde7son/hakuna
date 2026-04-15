@@ -12,6 +12,8 @@ info:
     commands (e.g., opening circuit breakers), and disrupting utility operations.
   tags: ot,ics,scada,dnp3,utility,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: plc
     finding_type: exposed_ot_service
 

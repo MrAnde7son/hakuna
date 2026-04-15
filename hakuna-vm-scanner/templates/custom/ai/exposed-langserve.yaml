@@ -11,6 +11,8 @@ info:
     request forgery via tool use, or access to connected data sources.
   tags: ai,langchain,langserve,agent,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: ai_inference
     finding_type: exposed_ai_service
 

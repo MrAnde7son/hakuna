@@ -12,6 +12,8 @@ info:
     physical damage. Internet-exposed Modbus is a CISA-reportable condition.
   tags: ot,ics,scada,modbus,plc,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: plc
     finding_type: exposed_ot_service
   reference:

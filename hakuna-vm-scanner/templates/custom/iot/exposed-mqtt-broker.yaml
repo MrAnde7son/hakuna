@@ -12,6 +12,8 @@ info:
     messages to connected devices.
   tags: iot,mqtt,broker,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: iot_gateway
     finding_type: exposed_iot_service
 

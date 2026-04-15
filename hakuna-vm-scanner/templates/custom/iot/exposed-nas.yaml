@@ -12,6 +12,8 @@ info:
     persistent foothold in the network.
   tags: iot,nas,qnap,synology,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: nas
     finding_type: exposed_iot_service
   reference:

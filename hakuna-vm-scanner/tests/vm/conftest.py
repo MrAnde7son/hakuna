@@ -27,6 +27,11 @@ def templates_dir(tmp_path):
             "wordpress": ["wordpress", "cms", "php"],
             "node.js": ["nodejs", "http"],
         },
+        "port_map": {
+            "502": ["modbus", "plc", "ot"],
+            "11434": ["ollama", "llm", "ai"],
+            "6333": ["vectordb", "qdrant", "ai"],
+        },
         "port_gates": {
             "web": {"ports": [80, 443, 8080, 8443], "tags": ["http", "ssl"]},
             "smb": {"ports": [445], "tags": ["smb"]},

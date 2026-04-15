@@ -11,6 +11,8 @@ info:
     embedded data, and potential poisoning of retrieval-augmented generation.
   tags: ai,vectordb,qdrant,weaviate,chroma,milvus,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: vector_db
     finding_type: exposed_ai_service
 

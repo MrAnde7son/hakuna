@@ -11,6 +11,8 @@ info:
     S7-1500 PLCs. Exposure enables direct industrial process manipulation.
   tags: ot,ics,scada,siemens,s7,plc,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: plc
     finding_type: exposed_ot_service
 

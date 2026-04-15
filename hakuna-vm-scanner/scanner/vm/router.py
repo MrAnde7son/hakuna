@@ -19,7 +19,7 @@ def _load_routing_table() -> dict:
     path = os.path.join(TEMPLATES_DIR, "routing_table.json")
     if not os.path.exists(path):
         logger.warning("Routing table not found at %s — using empty defaults", path)
-        _routing_table = {"cpe_map": {}, "tech_map": {}, "port_gates": {}}
+        _routing_table = {"cpe_map": {}, "tech_map": {}, "port_map": {}, "port_gates": {}}
         return _routing_table
     with open(path) as f:
         _routing_table = json.load(f)
@@ -59,7 +59,9 @@ class TemplateRouter:
         else:
             tech_tags = self._route_from_tech(tech_stack, rt)
 
-        pre_gate_tags = cpe_tags | tech_tags
+        port_tags = self._route_from_ports(open_ports, rt)
+
+        pre_gate_tags = cpe_tags | tech_tags | port_tags
         final_tags = self._apply_port_gates(set(pre_gate_tags), open_ports, rt)
         gated_tags = pre_gate_tags - final_tags
 
@@ -67,12 +69,12 @@ class TemplateRouter:
         fallback = not final_tags and not custom_paths
 
         if fallback:
-            if not cpe_list and not tech_stack:
-                reason = "No CPE or tech stack data — fell back to generic,exposure tags"
+            if not cpe_list and not tech_stack and not port_tags:
+                reason = "No CPE, tech stack, or mapped ports — fell back to generic,exposure tags"
             elif gated_tags:
                 reason = f"All tags removed by port gating (missing ports) — fell back to generic,exposure. Gated: {', '.join(sorted(gated_tags))}"
             else:
-                reason = "No matching CPE/tech entries in routing table — fell back to generic,exposure tags"
+                reason = "No matching CPE/tech/port entries in routing table — fell back to generic,exposure tags"
         elif gated_tags:
             reason = f"Tags selected: {', '.join(sorted(final_tags))} (gated out: {', '.join(sorted(gated_tags))})"
         else:
@@ -84,6 +86,7 @@ class TemplateRouter:
             "open_ports": list(open_ports or []),
             "cpe_tags": sorted(cpe_tags),
             "tech_tags": sorted(tech_tags),
+            "port_tags": sorted(port_tags),
             "gated_tags": sorted(gated_tags),
             "final_tags": sorted(final_tags),
             "custom_templates": custom_paths,
@@ -102,8 +105,11 @@ class TemplateRouter:
         Priority:
         1. CPE routing (preferred) — map CPE vendor/product to Nuclei tags
         2. Tech stack fallback — map tech names to Nuclei tags
-        3. Port filter (always applied) — exclude gated tags if ports absent
-        4. Custom templates (always appended) — glob templates/custom/**/*.yaml
+        3. Port routing (always applied, additive) — map open ports to tags
+           (e.g. 502 → modbus, 11434 → ollama). Required for OT/IoT/AI
+           templates where CPE/tech fingerprinting often isn't available.
+        4. Port gating — remove tags whose required ports aren't open
+        5. Custom templates (always appended) — glob templates/custom/**/*.yaml
 
         Never returns empty — falls back to ["-tags", "generic,exposure"].
         """
@@ -118,7 +124,10 @@ class TemplateRouter:
         if not cpe_matched:
             tags.update(self._route_from_tech(tech_stack, rt))
 
-        # 3. Port gating — remove tags whose required ports aren't open
+        # 3. Port-based routing (additive — always applied)
+        tags.update(self._route_from_ports(open_ports, rt))
+
+        # 4. Port gating — remove tags whose required ports aren't open
         tags = self._apply_port_gates(tags, open_ports, rt)
 
         # 4. Custom templates
@@ -184,6 +193,24 @@ class TemplateRouter:
             if key in tech_map:
                 tags.update(tech_map[key])
 
+        return tags
+
+    def _route_from_ports(self, open_ports: list[int], rt: dict) -> set[str]:
+        """Map open ports to Nuclei tags via routing table port_map.
+
+        Unlike port_gates (which filters), port_map adds tags. This is how
+        port-only protocols (Modbus 502, OPC-UA 4840, Ollama 11434, etc.)
+        route to their templates when CPE/tech fingerprinting is absent.
+        """
+        if not open_ports:
+            return set()
+        tags: set[str] = set()
+        port_map = rt.get("port_map", {})
+        for port in open_ports:
+            for key in (str(port), port):
+                if key in port_map:
+                    tags.update(port_map[key])
+                    break
         return tags
 
     def _apply_port_gates(self, tags: set[str], open_ports: list[int], rt: dict) -> set[str]:
