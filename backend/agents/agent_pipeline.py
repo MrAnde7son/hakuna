@@ -880,6 +880,100 @@ def build_threat_driven_pipeline() -> AgentPipeline:
     ])
 
 
+def build_siem_investigation_pipeline() -> AgentPipeline:
+    """Pre-built pipeline: Alert Collection → Exposure Enrichment → Triage Decisions."""
+    return AgentPipeline("siem_investigation", [
+        PipelineStage(
+            name="alert_collection",
+            description="Collect and normalize open SIEM alerts with event samples",
+            system_prompt=(
+                "You are an alert collection agent. Your ONLY job is to:\n"
+                "1. Call list_alerts with status='open' to get all open alerts\n"
+                "2. For each critical/high alert, call get_alert_with_events for full context\n"
+                "3. Call query_siem_events for the last 24h to identify event volume and patterns\n"
+                "4. Output a structured JSON handoff with normalized alert data\n\n"
+                "Output format (JSON code block):\n"
+                "```json\n"
+                '{"total_open": N, "by_severity": {"critical": N, "high": N, ...},\n'
+                ' "alerts": [{"id": N, "rule_name": "...", "severity": "...",\n'
+                '   "event_count": N, "entity": {"type": "...", "value": "..."},\n'
+                '   "mitre_techniques": [...], "events_sample": [...]}],\n'
+                ' "event_volume_24h": N}\n'
+                "```\n"
+                "Do NOT triage or score — just collect and normalize."
+            ),
+            tools=[
+                "list_alerts", "get_alert_with_events", "query_siem_events",
+                "query_events",
+            ],
+            model_tier=ModelTier.DETERMINISTIC,
+            output_type="collected_alerts",
+            max_steps=8,
+        ),
+        PipelineStage(
+            name="exposure_enrichment",
+            description="Enrich each alert with asset vulnerability and exposure context",
+            system_prompt=(
+                "You are an exposure enrichment agent. You receive collected SIEM alerts.\n\n"
+                "For each alert, enrich with vulnerability and asset context:\n"
+                "1. Call triage_alert to get the exposure-enriched triage recommendation\n"
+                "2. Call get_exposure_context with the alert's IP/hostname to get vulnerability posture\n"
+                "3. Score each alert on a 1-10 exposure-adjusted severity:\n"
+                "   - 9-10: Critical alert + internet-facing + exploitable CVEs + high criticality\n"
+                "   - 7-8: High alert + known vulnerabilities OR critical alert + internal\n"
+                "   - 5-6: Medium alert + some exposure OR high alert + fully patched\n"
+                "   - 3-4: Low alert OR medium alert + compensating controls\n"
+                "   - 1-2: Info alert OR suppressed OR benign true positive\n\n"
+                "Output format (JSON code block):\n"
+                "```json\n"
+                '{"enriched_alerts": [{"alert_id": N, "rule_name": "...",\n'
+                '  "severity": "...", "exposure_score": N,\n'
+                '  "asset": {"ip": "...", "hostname": "...", "criticality": N,\n'
+                '    "internet_facing": true/false, "critical_vulns": N},\n'
+                '  "triage_recommendation": "...", "reasoning": "..."}],\n'
+                ' "critical_exposure_alerts": [...], "low_risk_alerts": [...]}\n'
+                "```"
+            ),
+            tools=[
+                "triage_alert", "get_exposure_context", "get_event_context",
+                "get_asset_profile", "get_finding_detail",
+            ],
+            model_tier=ModelTier.REASONING,
+            input_type="collected_alerts",
+            output_type="enriched_alerts",
+            max_steps=12,
+        ),
+        PipelineStage(
+            name="triage_decisions",
+            description="Produce triage decisions and SOC shift report",
+            system_prompt=(
+                "You are a SOC triage decision agent. You receive exposure-enriched alerts.\n\n"
+                "For each alert, make a triage decision:\n"
+                "- **Escalate**: True positive on high-exposure asset (score 8-10)\n"
+                "- **Investigate**: Likely true positive, needs further analysis (score 5-7)\n"
+                "- **Monitor**: Suspicious but inconclusive (score 3-4)\n"
+                "- **Close**: False positive or benign true positive (score 1-2)\n\n"
+                "Produce a SOC shift report in markdown:\n"
+                "1. Executive summary with counts by decision\n"
+                "2. Escalated alerts table with asset exposure context\n"
+                "3. Investigation queue with priority order\n"
+                "4. Closed alerts with reasoning\n"
+                "5. Detection tuning recommendations (rules with high false positive rates)\n"
+                "6. Coverage gaps identified during triage\n\n"
+                "The report should be actionable — the next shift can pick up immediately.\n"
+                "Include specific alert IDs, asset IPs, and MITRE techniques."
+            ),
+            tools=[
+                "update_alert_status", "triage_alert", "get_alert_with_events",
+                "run_detection_rule_now",
+            ],
+            model_tier=ModelTier.REASONING,
+            input_type="enriched_alerts",
+            max_steps=10,
+        ),
+    ])
+
+
 # ── Pipeline Registry ────────────────────────────────────────────────
 
 PIPELINE_REGISTRY = {
@@ -889,6 +983,7 @@ PIPELINE_REGISTRY = {
     "exception_review": build_exception_review_pipeline,
     "compliance_posture": build_compliance_posture_pipeline,
     "threat_driven_prioritization": build_threat_driven_pipeline,
+    "siem_investigation": build_siem_investigation_pipeline,
 }
 
 

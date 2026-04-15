@@ -313,6 +313,16 @@ CONDITION_CATALOG = [
         ],
     },
     {
+        "group": "SIEM Alerts",
+        "conditions": [
+            {"field": "siem.alert_count", "label": "Open Alert Count", "ops": ["gte", "lte", "gt", "lt", "eq"], "value_type": "integer", "placeholder": "1"},
+            {"field": "siem.critical_alert_count", "label": "Critical Alert Count", "ops": ["gte", "lte", "gt", "lt", "eq"], "value_type": "integer", "placeholder": "1"},
+            {"field": "siem.high_alert_count", "label": "High Alert Count", "ops": ["gte", "lte", "gt", "lt", "eq"], "value_type": "integer", "placeholder": "1"},
+            {"field": "siem.event_count_24h", "label": "Events (Last 24h)", "ops": ["gte", "lte", "gt", "lt", "eq"], "value_type": "integer", "placeholder": "10"},
+            {"field": "siem.has_active_alerts", "label": "Has Active Alerts", "ops": ["is_true", "is_false"], "value_type": "none"},
+        ],
+    },
+    {
         "group": "Tags",
         "conditions": [
             {"field": "tag", "label": "Tag", "ops": ["has_tag", "not_has_tag"], "value_type": "string", "placeholder": "network:dmz"},
@@ -1192,6 +1202,69 @@ _TAG_OPS: dict[str, callable] = {
 }
 
 
+def _eval_siem(cond: dict, db: Session, asset_id: int) -> bool:
+    """Evaluate a SIEM alert/event condition for an asset."""
+    from models.models import Alert, SIEMEvent
+    from datetime import datetime, timedelta
+
+    field = cond.get("field", "")
+    op = cond.get("op", "gte")
+    value = cond.get("value")
+    sub = field.split(".", 1)[-1]
+
+    if sub == "has_active_alerts":
+        count = db.query(Alert).filter(
+            Alert.asset_id == asset_id,
+            Alert.status == "open",
+            Alert.suppressed == False,
+        ).count()
+        return _result_for_bool(op, count > 0)
+
+    if sub == "alert_count":
+        count = db.query(Alert).filter(
+            Alert.asset_id == asset_id,
+            Alert.status == "open",
+            Alert.suppressed == False,
+        ).count()
+        return _num_op(count, op, value)
+
+    if sub == "critical_alert_count":
+        count = db.query(Alert).filter(
+            Alert.asset_id == asset_id,
+            Alert.status == "open",
+            Alert.suppressed == False,
+            Alert.severity == "critical",
+        ).count()
+        return _num_op(count, op, value)
+
+    if sub == "high_alert_count":
+        count = db.query(Alert).filter(
+            Alert.asset_id == asset_id,
+            Alert.status == "open",
+            Alert.suppressed == False,
+            Alert.severity == "high",
+        ).count()
+        return _num_op(count, op, value)
+
+    if sub == "event_count_24h":
+        cutoff = datetime.utcnow() - timedelta(hours=24)
+        count = db.query(SIEMEvent).filter(
+            SIEMEvent.asset_id == asset_id,
+            SIEMEvent.event_time >= cutoff,
+        ).count()
+        return _num_op(count, op, value)
+
+    return False
+
+
+def _result_for_bool(op: str, val: bool) -> bool:
+    if op == "is_true":
+        return val
+    if op == "is_false":
+        return not val
+    return val
+
+
 def register_tag_op(name: str, handler: callable) -> None:
     """Register a custom tag operator.
 
@@ -1226,6 +1299,11 @@ def evaluate_condition(
         if field == "tag":
             tags = asset_dict.get("tags") if asset_dict else None
             return _eval_tag(cond, db, asset_id, asset_tags or tags)
+
+        if field.startswith("siem."):
+            if db is None or asset_id is None:
+                return False
+            return _eval_siem(cond, db, asset_id)
 
         if field.startswith("inventory."):
             if db is None or asset_id is None:

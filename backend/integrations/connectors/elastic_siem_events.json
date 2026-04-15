@@ -1,0 +1,113 @@
+{
+  "id": "elastic_siem_events",
+  "name": "Elastic Security — SIEM Events",
+  "description": "Pull security alerts from Elastic Security into the SIEM event lake using PIT + search_after for reliable pagination",
+  "category": "SIEM",
+  "logo": "/logos/vendors/elastic.svg",
+  "direction": "pull",
+  "entity": "siem_event",
+  "transport_type": "api",
+  "incremental": {
+    "cursor_field": "last_event_time",
+    "default_lookback": "24h"
+  },
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "POST",
+    "path": "/.alerts-security.alerts-*/_search",
+    "headers": {
+      "Authorization": "ApiKey {{credentials.api_key}}",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "size": 1000,
+      "query": {
+        "bool": {
+          "filter": [
+            {"range": {"@timestamp": {"gte": "{{cursor.last_event_time|default(params.lookback_from)}}"}}}
+          ]
+        }
+      },
+      "sort": [
+        {"@timestamp": {"order": "asc"}},
+        {"_id": {"order": "asc"}}
+      ],
+      "search_after": "{{cursor.search_after|default('')}}"
+    },
+    "pagination": {
+      "strategy": "search_after",
+      "page_size": 1000,
+      "sort_fields": ["@timestamp", "_id"],
+      "has_more_field": "hits.hits",
+      "has_more_condition": "length > 0"
+    }
+  },
+  "records_path": "hits.hits",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Elasticsearch URL",
+      "placeholder": "https://elastic.yourcompany.com:9200"
+    },
+    "steps": [
+      {
+        "instruction": "Log into Kibana as an administrator"
+      },
+      {
+        "instruction": "Go to Stack Management → API Keys",
+        "deeplink_path": "/app/management/security/api_keys"
+      },
+      {
+        "instruction": "Click Create API key. Set a descriptive name and read-only permissions.",
+        "capture": {
+          "field": "api_key",
+          "label": "Paste the encoded API key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/_security/_authenticate",
+      "headers": {
+        "Authorization": "ApiKey {{api_key}}"
+      },
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "connected_user": "username"
+      },
+      "error_message": "Could not authenticate with Elasticsearch. Check the API key and URL."
+    }
+  },
+  "default_field_map": [
+    {"source": "_source.@timestamp", "target": "event_time", "transform": {"type": "datetime"}},
+    {"source": "_source.kibana.alert.rule.name", "target": "message"},
+    {"source": "_id", "target": "source_id"},
+    {"source": "_source.kibana.alert.rule.category", "target": "event_type"},
+    {"source": "_source.kibana.alert.severity", "target": "severity", "transform": {"type": "map", "mapping": {"critical": "critical", "high": "high", "medium": "medium", "low": "low"}}},
+    {"source": "_source.kibana.alert.workflow_status", "target": "outcome", "transform": {"type": "map", "mapping": {"open": "unknown", "acknowledged": "unknown", "closed": "success"}}},
+    {"source": "_source.source.ip", "target": "source_ip"},
+    {"source": "_source.destination.ip", "target": "dest_ip"},
+    {"source": "_source.host.name", "target": "host_name"},
+    {"source": "_source.user.name", "target": "user_name"},
+    {"source": "_source.event.action", "target": "action"},
+    {"source": "_source.event.category", "target": "event_category"}
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "cursor_update": {
+    "field": "last_event_time",
+    "from_record": "_source.@timestamp",
+    "strategy": "max",
+    "also_save": {
+      "search_after": "sort"
+    }
+  },
+  "params_schema": {
+    "lookback_from": {
+      "type": "string",
+      "default": "now-24h",
+      "description": "Initial lookback (Elasticsearch date math, used on first run only)"
+    }
+  }
+}

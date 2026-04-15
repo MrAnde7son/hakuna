@@ -1,0 +1,17 @@
+{
+  "name": "Auto-triage critical alerts",
+  "description": "On critical alert: run SOC Triage agent. If confidence > 0.8, close. Else create ticket.",
+  "trigger": {
+    "type": "on_alert_created",
+    "conditions": [{"field": "severity", "op": "eq", "value": "critical"}]
+  },
+  "nodes": [
+    {"id": "trigger", "type": "trigger", "data": {"event_type": "on_alert_created"}},
+    {"id": "run_agent", "type": "run_agent", "data": {"template": "soc_triage", "input": "Triage alert {{alert_id}}"}},
+    {"id": "notify", "type": "slack_notify", "data": {"message": "Critical alert #{{alert_id}} auto-triaged"}}
+  ],
+  "edges": [
+    {"from": "trigger", "to": "run_agent"},
+    {"from": "run_agent", "to": "notify"}
+  ]
+}

@@ -1,0 +1,40 @@
+# Vector source template: Windows Event Log (forwarded via syslog/NXLog/Winlogbeat)
+# Input: JSON-formatted Windows events forwarded via syslog or HTTP
+# Output: ECS-normalized JSON events
+source:
+  type: http_server
+  address: "0.0.0.0:{{listen_port|default('8088')}}"
+
+transform_vrl: |
+  .source_system = "windows_event_log"
+  .host_name = .Computer ?? .host ?? ""
+  .event_category = .Channel ?? ""
+
+  # Map Windows event level
+  level = to_int!(.Level ?? "4")
+  .severity = if level == 1 { "critical" }
+    else if level == 2 { "high" }
+    else if level == 3 { "medium" }
+    else { "info" }
+
+  # Detect event types
+  event_id = to_int!(.EventID ?? "0")
+  .event_type = if event_id == 4624 || event_id == 4625 || event_id == 4648 {
+    "authentication"
+  } else if event_id == 4688 || event_id == 4689 {
+    "process"
+  } else if event_id >= 5140 && event_id <= 5145 {
+    "file_access"
+  } else {
+    "system"
+  }
+
+  # Extract user
+  .user_name = .TargetUserName ?? .SubjectUserName ?? ""
+
+  # Determine outcome from logon events
+  if event_id == 4624 { .outcome = "success" }
+  if event_id == 4625 { .outcome = "failure" }
+
+sample_event: |
+  {"EventID": 4625, "Level": 2, "Channel": "Security", "Computer": "DC01.corp.local", "TargetUserName": "admin", "IpAddress": "10.0.0.5", "Message": "An account failed to log on."}

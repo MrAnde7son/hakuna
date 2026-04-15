@@ -13,6 +13,7 @@ from core.database import get_db
 from core.auth import get_current_user, require_auth
 from models.models import (
     User, Integration, IntegrationCredential, IntegrationRun, DiscoveredSpec,
+    IngestEndpoint,
 )
 from integrations.schema import get_schema
 from integrations.connector_loader import get_all_connectors, get_all_connectors_unpaginated, get_connector
@@ -68,6 +69,59 @@ def get_target_fields(slug: str):
     if schema is None:
         raise HTTPException(404, f"Target model '{slug}' not found")
     return schema
+
+
+class DetectSampleRequest(BaseModel):
+    payload: str               # raw event payload (JSON, CEF, LEEF, etc.)
+    parser_type: str = "json"  # json | hec | cef | leef | syslog_rfc5424
+
+
+@router.get("/integrations/{integration_id}/poll-events")
+def poll_integration_events(
+    integration_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Poll for events received on a webhook integration. Returns detected paths from the first event."""
+    from models.models import SIEMEvent
+
+    i = _get_integration_or_404(db, integration_id, user.org_id)
+
+    event = db.query(SIEMEvent).filter(
+        SIEMEvent.integration_id == integration_id,
+        SIEMEvent.org_id == user.org_id,
+    ).order_by(SIEMEvent.ingested_at.desc()).first()
+
+    if not event:
+        return {"found": False, "detected_paths": [], "sample_records": []}
+
+    raw = event.raw or {}
+    detected = detect_paths(raw)
+    return {
+        "found": True,
+        "detected_paths": detected,
+        "sample_records": [raw],
+    }
+
+
+@router.post("/detect-sample")
+def detect_from_sample(body: DetectSampleRequest, user: User = Depends(require_auth)):
+    """Parse a pasted sample payload and return detected field paths."""
+    from services.event_parsers import parse_events
+
+    try:
+        parsed = parse_events(body.payload, body.parser_type)
+    except Exception as e:
+        raise HTTPException(400, f"Failed to parse sample: {e}")
+
+    if not parsed:
+        raise HTTPException(400, "No events could be parsed from the sample")
+
+    detected = detect_paths(parsed[0])
+    return {
+        "detected_paths": detected,
+        "sample_records": parsed[:5],
+    }
 
 
 class AutoSuggestRequest(BaseModel):
@@ -540,8 +594,8 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
     valid_entities = set(get_registry().keys()) | {"action"}
     if body.entity not in valid_entities:
         raise HTTPException(400, f"entity must be one of: {sorted(valid_entities)}")
-    if body.transport_type not in ("api", "sql", "file", "mcp", "relay"):
-        raise HTTPException(400, "transport_type must be 'api', 'sql', 'file', 'mcp', or 'relay'")
+    if body.transport_type not in ("api", "sql", "file", "mcp", "relay", "webhook"):
+        raise HTTPException(400, "transport_type must be 'api', 'sql', 'file', 'mcp', 'relay', or 'webhook'")
 
     # Auto-resolve logo from connector template if not provided
     logo_url = body.logo_url
@@ -584,11 +638,46 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
     db.add(integration)
     db.commit()
     db.refresh(integration)
+
+    # For webhook transport, auto-create an ingest endpoint
+    ingest_creds = None
+    if body.transport_type == "webhook":
+        import secrets as _secrets
+        from passlib.hash import bcrypt
+
+        parser_type = (body.transport_config or {}).get("parser_type", "json")
+        token = f"hki_{_secrets.token_urlsafe(32)}"
+        hmac_secret = _secrets.token_urlsafe(32)
+
+        ep = IngestEndpoint(
+            org_id=user.org_id,
+            integration_id=integration.id,
+            name=integration.name,
+            token_hash=bcrypt.hash(token),
+            token_prefix=token[:12],
+            hmac_secret_hash=bcrypt.hash(hmac_secret),
+            parser_type=parser_type,
+        )
+        db.add(ep)
+        db.commit()
+        db.refresh(ep)
+        ingest_creds = {
+            "endpoint_id": ep.id,
+            "token": token,
+            "hmac_secret": hmac_secret,
+            "token_prefix": ep.token_prefix,
+            "parser_type": ep.parser_type,
+        }
+
     # Register schedule if enabled
     if integration.enabled and integration.schedule:
         from services.integration_scheduler import register_integration
         register_integration(integration.id, integration.schedule)
-    return _integration_summary(integration)
+
+    result = _integration_summary(integration)
+    if ingest_creds:
+        result["ingest_endpoint"] = ingest_creds
+    return result
 
 
 @router.get("/integrations/{integration_id}")
@@ -625,6 +714,8 @@ def delete_integration(integration_id: str, db: Session = Depends(get_db),
     i = _get_integration_or_404(db, integration_id, user.org_id)
     from services.integration_scheduler import deregister_integration
     deregister_integration(i.id)
+    # Clean up associated ingest endpoints (webhook transport)
+    db.query(IngestEndpoint).filter(IngestEndpoint.integration_id == i.id).delete()
     db.delete(i)
     db.commit()
     return {"deleted": True}

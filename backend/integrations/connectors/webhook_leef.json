@@ -1,0 +1,33 @@
+{
+  "id": "webhook_leef",
+  "name": "LEEF (QRadar)",
+  "description": "Receive events in Log Event Extended Format from QRadar and compatible tools",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/ibm.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "leef"
+  },
+  "default_field_map": [
+    { "source": "devTime", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "devName", "target": "source_system" },
+    { "source": "cat", "target": "event_type" },
+    { "source": "sev", "target": "severity" },
+    { "source": "src", "target": "source_ip" },
+    { "source": "dst", "target": "destination_ip" }
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "setup_guide": {
+    "title": "Forward LEEF events from QRadar",
+    "steps": [
+      "In QRadar, go to Admin → Log Sources → Add",
+      "Configure a forwarding destination using HTTP/HTTPS",
+      "Set the target URL to the Hakuna webhook URL below",
+      "Select LEEF as the output format and include the Bearer token"
+    ],
+    "doc_url": "https://www.ibm.com/docs/en/qradar-common?topic=formats-leef-event-format"
+  },
+  "sample_payload": "LEEF:2.0|IBM|QRadar|1.0|EVT001|src=10.0.0.5\tdst=10.0.0.6\tsev=high\tcat=Authentication\tdevTime=2024-03-15T14:30:00Z\tusrName=admin\tmsg=Multiple failed login attempts detected"
+}

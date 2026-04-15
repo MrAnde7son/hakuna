@@ -1,0 +1,19 @@
+{
+  "name": "Brute-force response",
+  "description": "On brute-force alert: tag affected asset, create remediation campaign, notify Slack.",
+  "trigger": {
+    "type": "on_alert_created",
+    "conditions": [{"field": "rule_name", "op": "contains", "value": "brute"}]
+  },
+  "nodes": [
+    {"id": "trigger", "type": "trigger", "data": {"event_type": "on_alert_created"}},
+    {"id": "tag_asset", "type": "add_tag", "data": {"tag": "brute-force-target"}},
+    {"id": "create_campaign", "type": "create_campaign", "data": {"name": "Brute Force Response - {{group_key}}"}},
+    {"id": "notify", "type": "slack_notify", "data": {"message": "Brute force detected from {{group_key}}"}}
+  ],
+  "edges": [
+    {"from": "trigger", "to": "tag_asset"},
+    {"from": "tag_asset", "to": "create_campaign"},
+    {"from": "create_campaign", "to": "notify"}
+  ]
+}

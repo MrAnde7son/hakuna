@@ -2001,8 +2001,10 @@ class Integration(Base):
     name = Column(String, nullable=False)
     direction = Column(String, nullable=False)  # pull | push
     entity = Column(String, nullable=False)  # asset | finding | action
-    transport_type = Column(String, nullable=False)  # api | sql | file | mcp | relay
+    transport_type = Column(String, nullable=False)  # api | sql | file | mcp | relay | stream
     transport_config = Column(JSON, nullable=False, default=dict)
+    stream_config = Column(JSON, nullable=True)  # parser, sample_event, vrl_transform (for transport_type=stream)
+    cursor_state = Column(JSON, nullable=True)   # incremental sync state: {last_event_time, offset, token, ...}
     credentials_id = Column(String, ForeignKey("integration_credentials.id"), nullable=True)
     records_path = Column(String, nullable=True)  # dot-path to records array in response
     field_map = Column(JSON, nullable=False, default=list)
@@ -2045,6 +2047,72 @@ class IntegrationRun(Base):
     step_log = Column(JSON, nullable=False, default=list)
 
     integration = relationship("Integration", back_populates="runs")
+
+
+# ─────────────────────────────────────────────────────────
+# SIEM Events (hot tier)
+# ─────────────────────────────────────────────────────────
+
+@importable(
+    slug="siem_event",
+    display_name="SIEM Event",
+    category="siem",
+    dedup_keys=["org_id", "dedup_hash"],
+    required_fields=["event_time", "source_system", "event_type"],
+    description="Security event from SIEM sources (logs, alerts, telemetry)",
+)
+class SIEMEvent(Base):
+    """Security event stored in the hot tier (Postgres, last 72h)."""
+    __tablename__ = "siem_events"
+
+    id = Column(String, primary_key=True, default=_gen_uuid)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    event_time = Column(DateTime, nullable=False, index=True)
+    ingested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    source_system = Column(String, nullable=False, index=True)       # e.g. palo_alto, crowdstrike, syslog
+    source_id = Column(String, nullable=True)                        # original event ID in source
+    event_type = Column(String, nullable=False, index=True)          # e.g. authentication, network, process
+    event_category = Column(String, nullable=True)                   # ECS category: threat, intrusion_detection, etc.
+    severity = Column(String, nullable=False, default="info")        # low | medium | high | critical | info
+    action = Column(String, nullable=True)                           # allowed, denied, dropped, etc.
+    outcome = Column(String, nullable=True)                          # success, failure, unknown
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True, index=True)
+    user_name = Column(String, nullable=True)
+    source_ip = Column(String, nullable=True)
+    dest_ip = Column(String, nullable=True)
+    host_name = Column(String, nullable=True)
+    message = Column(Text, nullable=True)
+    raw = Column(JSON, nullable=True)                                # original event payload
+    normalized = Column(JSON, nullable=True)                         # ECS-normalized fields
+    dedup_hash = Column(String, nullable=False, index=True)          # unique per org for dedup
+    integration_id = Column(String, ForeignKey("integrations.id"), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "dedup_hash", name="uq_siem_events_org_dedup"),
+        Index("ix_siem_events_org_time", "org_id", event_time.desc()),
+    )
+
+
+class IngestEndpoint(Base):
+    """Token-authenticated push endpoint for SIEM event ingestion."""
+    __tablename__ = "ingest_endpoints"
+
+    id = Column(String, primary_key=True, default=_gen_uuid)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    integration_id = Column(String, ForeignKey("integrations.id"), nullable=True)
+    name = Column(String, nullable=False)
+    token_hash = Column(String, nullable=False)           # bcrypt hash of bearer token
+    token_prefix = Column(String, nullable=True)          # first 8 chars for display
+    hmac_secret_hash = Column(String, nullable=False)     # bcrypt hash of HMAC secret
+    parser_type = Column(String, nullable=False, default="json")  # json | hec | cef | leef | syslog_rfc5424
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=True)
+    request_count = Column(Integer, default=0)
+
+    __table_args__ = (
+        Index("ix_ingest_endpoints_org", "org_id"),
+    )
 
 
 # ─────────────────────────────────────────────────────────
@@ -2198,3 +2266,106 @@ class FirewallPolicy(Base):
         Index("ix_fwp_org_vendor", "org_id", "vendor"),
         Index("ix_fwp_action", "org_id", "action"),
     )
+
+
+# ─────────────────────────────────────────────────────────
+# SIEM Detection Rules & Alerts
+# ─────────────────────────────────────────────────────────
+
+class DetectionRule(Base):
+    """A stateful, windowed detection rule that queries SIEM events."""
+    __tablename__ = "detection_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    severity = Column(String, nullable=False, default="medium")      # low | medium | high | critical
+    enabled = Column(Boolean, default=True)
+    query = Column(JSON, nullable=False, default=dict)               # filters in rule_engine format
+    window_seconds = Column(Integer, default=300)                    # time window for threshold
+    threshold = Column(Integer, default=1)                           # fire if event count >= threshold
+    group_by = Column(JSON, default=list)                            # group by fields (e.g. ["source_ip", "user_name"])
+    schedule_minutes = Column(Integer, default=5)                    # run every N minutes
+    mitre_techniques = Column(JSON, default=list)                    # e.g. ["T1110", "T1059.001"]
+    asset_filter = Column(JSON, default=dict)                        # asset context filter: {"min_criticality": 8, "internet_facing": true}
+    source = Column(String, default="manual")                       # manual | sigma
+    sigma_rule_id = Column(String, nullable=True)                   # original Sigma rule ID
+    last_run_at = Column(DateTime, nullable=True)
+    last_alert_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    alerts = relationship("Alert", back_populates="rule", cascade="all, delete-orphan")
+
+
+class Alert(Base):
+    """An alert fired by a detection rule when threshold is met."""
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    rule_id = Column(Integer, ForeignKey("detection_rules.id", ondelete="CASCADE"), nullable=False, index=True)
+    fired_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    severity = Column(String, nullable=False, default="medium")
+    status = Column(String, default="open")                         # open | triaged | closed | false_positive
+    event_count = Column(Integer, default=0)
+    group_key = Column(String, nullable=True)                       # serialized group-by values
+    first_event_id = Column(String, nullable=True)
+    last_event_id = Column(String, nullable=True)
+    context = Column(JSON, default=dict)                            # matching events sample, group values
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True)
+    assigned_to = Column(Integer, ForeignKey("users.id"), nullable=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=True)
+
+    # Entity identification (primary entity this alert is about)
+    entity_type = Column(String, nullable=True)                     # ip | hostname | user
+    entity_value = Column(String, nullable=True)
+
+    # Exposure enrichment (snapshot at alert time from linked asset)
+    asset_criticality = Column(Integer, nullable=True)              # 1-10 from asset
+    open_vulnerabilities = Column(Integer, nullable=True)           # critical + high count
+    internet_facing = Column(Boolean, nullable=True)
+    exposure_context = Column(JSON, default=dict)                   # full enrichment snapshot
+
+    # Suppression
+    suppressed = Column(Boolean, default=False, index=True)
+    suppression_rule_id = Column(Integer, ForeignKey("suppression_rules.id"), nullable=True)
+
+    # Investigation
+    triage_reason = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    rule = relationship("DetectionRule", back_populates="alerts")
+
+    __table_args__ = (
+        Index("ix_alerts_org_status", "org_id", "status"),
+        Index("ix_alerts_org_fired", "org_id", fired_at.desc()),
+    )
+
+
+# ─────────────────────────────────────────────────────────
+# SIEM Suppression Rules
+# ─────────────────────────────────────────────────────────
+
+class SuppressionRule(Base):
+    """A rule to suppress known-good alerts (e.g. scanner traffic, maintenance windows)."""
+    __tablename__ = "suppression_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    conditions = Column(JSON, nullable=False, default=list)         # same filter format as DetectionRule.query
+    conditions_logic = Column(String, default="AND")                # AND | OR
+    rule_id = Column(Integer, ForeignKey("detection_rules.id"), nullable=True)  # scope to rule, or null=global
+    reason = Column(String, nullable=True)                          # "known scanner", "maintenance window", etc.
+    enabled = Column(Boolean, default=True)
+    expires_at = Column(DateTime, nullable=True)                    # null = never expires
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    suppressed_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

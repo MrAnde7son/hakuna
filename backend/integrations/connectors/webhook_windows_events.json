@@ -1,0 +1,36 @@
+{
+  "id": "webhook_windows_events",
+  "name": "Windows Event Log",
+  "description": "Receive Windows Event Logs forwarded via NXLog, Winlogbeat, or WEF in JSON format",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/microsoft.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "json"
+  },
+  "default_field_map": [
+    { "source": "TimeCreated", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "Channel", "target": "source_system" },
+    { "source": "EventRecordID", "target": "source_id" },
+    { "source": "EventID", "target": "event_type" },
+    { "source": "Computer", "target": "hostname" },
+    { "source": "IpAddress", "target": "source_ip" },
+    { "source": "TargetUserName", "target": "actor" },
+    { "source": "Level", "target": "severity", "transform": { "type": "map", "map": { "1": "critical", "2": "high", "3": "medium", "4": "info" }, "default": "info" } },
+    { "source": "Message", "target": "message" }
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "setup_guide": {
+    "title": "Forward Windows Event Logs",
+    "steps": [
+      "Install NXLog, Winlogbeat, or configure Windows Event Forwarding (WEF)",
+      "Configure the output to HTTP/HTTPS with the Hakuna webhook URL",
+      "Set the output format to JSON and include the Bearer token",
+      "Select the event log channels to forward (Security, System, Application)"
+    ],
+    "doc_url": "https://nxlog.co/documentation/nxlog-user-guide/windows-eventlog.html"
+  },
+  "sample_payload": "{\"TimeCreated\":\"2024-03-15T14:23:45Z\",\"Channel\":\"Security\",\"EventRecordID\":\"987654\",\"EventID\":4625,\"Computer\":\"DC-01.contoso.com\",\"IpAddress\":\"192.168.1.100\",\"TargetUserName\":\"administrator\",\"Level\":2,\"Message\":\"An account failed to log on\"}"
+}

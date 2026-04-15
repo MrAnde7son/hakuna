@@ -50,6 +50,11 @@ import {
   getControlAssessmentStats,
   createCampaign,
   runCampaign,
+  getSiemSummary,
+  getSiemEventVolume,
+  getSiemNoisySources,
+  getSiemAlertSeverity,
+  getSiemRecentAlerts,
 } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast, useConfirm } from '../shared/ui.jsx'
 
@@ -149,6 +154,11 @@ const DATA_SOURCES = {
   easm_events:             (scanId, f) => getEasmEvents(null, f?.limit || 100),
   easm_breaches:           (scanId, f) => getEasmBreaches().catch(() => []),
   easm_subsidiaries:       (scanId, f) => getEasmSubsidiaries().catch(() => []),
+  siem_summary:            (scanId, f) => getSiemSummary(),
+  siem_event_volume:       (scanId, f) => getSiemEventVolume(f?.hours || 24),
+  siem_noisy_sources:      (scanId, f) => getSiemNoisySources(),
+  siem_alert_severity:     (scanId, f) => getSiemAlertSeverity(),
+  siem_recent_alerts:      (scanId, f) => getSiemRecentAlerts(f?.limit || 15),
 }
 
 // Filter definitions per source — drives ConfigPanel filter UI
@@ -434,6 +444,53 @@ const DATA_PRESETS = {
     ],
     extract: d => (Array.isArray(d) ? d : []).filter(b => b.is_verified !== false).slice(0, 20),
     rowDrillDown: row => row?.title ? `/inventory?tab=easm_breaches&search=${encodeURIComponent(row.title)}` : '/inventory?tab=easm_breaches',
+  },
+
+  // ── SIEM metrics ──
+  siem_events_24h:   { label: 'Events (24h)',      group: 'SIEM', source: 'siem_summary', type: 'metric', extract: d => d?.events_24h ?? 0, color: '#6366f1' },
+  siem_alerts_open:  { label: 'Open Alerts',       group: 'SIEM', source: 'siem_summary', type: 'metric', extract: d => d?.alerts_open ?? 0, color: '#ef4444' },
+  siem_rules_active: { label: 'Active Rules',      group: 'SIEM', source: 'siem_summary', type: 'metric', extract: d => d?.detection_rules_active ?? 0, color: '#0ea5e9' },
+  siem_mttr:         { label: 'MTTR (min)',         group: 'SIEM', source: 'siem_summary', type: 'metric', extract: d => d?.mttr_minutes ?? 0, color: '#f59e0b' },
+
+  // ── SIEM categories ──
+  siem_event_volume: {
+    label: 'Event Volume by Source', group: 'SIEM', source: 'siem_event_volume', type: 'categories',
+    extract: d => (d?.sources || []).map((s, i) => ({ name: s.source_system, value: s.count, color: PALETTE[i % PALETTE.length] })),
+  },
+  siem_alert_severity: {
+    label: 'Alerts by Severity', group: 'SIEM', source: 'siem_alert_severity', type: 'categories',
+    extract: d => {
+      const colors = { critical: '#dc2626', high: '#ea580c', medium: '#d97706', low: '#65a30d', info: '#0ea5e9' }
+      return (Array.isArray(d) ? d : []).map(r => ({ name: r.severity, value: r.count, color: colors[r.severity] || '#6366f1' }))
+    },
+  },
+  siem_noisy_rules: {
+    label: 'Noisy Rules (FP Rate)', group: 'SIEM', source: 'siem_noisy_sources', type: 'categories',
+    extract: d => (Array.isArray(d) ? d : []).map((r, i) => ({ name: r.rule_name, value: r.fp_rate, color: PALETTE[i % PALETTE.length] })),
+  },
+
+  // ── SIEM tables ──
+  siem_top_assets: {
+    label: 'Top Assets by Alerts', group: 'SIEM', source: 'siem_summary', type: 'table',
+    columns: [
+      { key: 'asset_id', label: 'Asset ID' },
+      { key: 'alert_count', label: 'Alerts' },
+    ],
+    extract: d => d?.top_5_assets_by_alerts || [],
+    rowDrillDown: row => row?.asset_id ? `/assets/${row.asset_id}?tab=events` : '/siem/alerts',
+  },
+  siem_recent_alerts: {
+    label: 'Recent Open Alerts', group: 'SIEM', source: 'siem_recent_alerts', type: 'table',
+    columns: [
+      { key: 'severity', label: 'Severity' },
+      { key: 'rule_name', label: 'Rule' },
+      { key: 'event_count', label: 'Events' },
+      { key: 'entity_value', label: 'Entity' },
+      { key: 'asset_name', label: 'Asset' },
+      { key: 'fired_at', label: 'Fired At', render: v => v ? new Date(v).toLocaleString() : '' },
+    ],
+    extract: d => Array.isArray(d) ? d : [],
+    rowDrillDown: row => row?.id ? `/siem/alerts?alert_id=${row.id}` : '/siem/alerts',
   },
 
   // ── Categories (pie/donut/bar) ──
@@ -1786,6 +1843,24 @@ const OWNER_ACCOUNTABILITY_DASHBOARD = {
   ],
 }
 
+const SIEM_OPERATIONS_DASHBOARD = {
+  id: 'default-siem-operations',
+  name: 'SIEM Operations',
+  createdAt: new Date(0).toISOString(),
+  widgets: [
+    { id: 'so0',  type: 'header',    title: 'SIEM Operations',                  width: 'full',    config: { title: 'SIEM Operations Dashboard', subtitle: 'Event ingestion, detection rules, alert triage, and mean time to respond' } },
+    { id: 'so1',  type: 'card',      title: 'Events (24h)',                     width: 'quarter', config: { preset: 'siem_events_24h' } },
+    { id: 'so2',  type: 'card',      title: 'Open Alerts',                     width: 'quarter', config: { preset: 'siem_alerts_open' } },
+    { id: 'so3',  type: 'card',      title: 'Active Rules',                    width: 'quarter', config: { preset: 'siem_rules_active' } },
+    { id: 'so4',  type: 'card',      title: 'MTTR (min)',                      width: 'quarter', config: { preset: 'siem_mttr' } },
+    { id: 'so5',  type: 'bar_chart', title: 'Event Volume by Source',          width: 'half',    config: { preset: 'siem_event_volume' } },
+    { id: 'so6',  type: 'pie_chart', title: 'Alerts by Severity',             width: 'half',    config: { preset: 'siem_alert_severity', donut: true } },
+    { id: 'so7',  type: 'bar_chart', title: 'Noisy Rules (FP Rate)',           width: 'half',    config: { preset: 'siem_noisy_rules' } },
+    { id: 'so8',  type: 'table',     title: 'Top Assets by Alert Count',      width: 'half',    config: { preset: 'siem_top_assets' } },
+    { id: 'so9',  type: 'table',     title: 'Recent Open Alerts',             width: 'full',    config: { preset: 'siem_recent_alerts', limit: 15 } },
+  ],
+}
+
 // ─── Live widget renderers ────────────────────────────────────────────────────
 
 // In-flight deduplication: multiple widgets requesting the same source+params share one fetch.
@@ -2388,7 +2463,7 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
                       </div>
                       {solutions.length > 0 && (
                         <div style={{ borderTop: '1px solid var(--border)', padding: '4px 8px 6px', background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                          {solutions.map((sol, si) => (
+                          {solutions.slice(0, 1).map((sol, si) => (
                             <div key={si} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
                               <Zap size={11} style={{ color: 'var(--accent)', flexShrink: 0 }} />
                               <span style={{ flex: 1, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -4293,7 +4368,7 @@ export default function ReportBuilder() {
       let needsReload = false
 
       // Ensure default dashboards exist and stay up-to-date
-      const ootb = [DEFAULT_DASHBOARD, EXECUTIVE_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD, EASM_DASHBOARD, OWNER_ACCOUNTABILITY_DASHBOARD]
+      const ootb = [DEFAULT_DASHBOARD, EXECUTIVE_DASHBOARD, IDENTITY_ACCESS_DASHBOARD, ATTACK_SURFACE_DASHBOARD, REMEDIATION_DASHBOARD, AI_ML_ATTACK_SURFACE_DASHBOARD, OS_DISTRIBUTION_DASHBOARD, SOFTWARE_INVENTORY_DASHBOARD, EASM_DASHBOARD, OWNER_ACCOUNTABILITY_DASHBOARD, SIEM_OPERATIONS_DASHBOARD]
       for (const dash of ootb) {
         const fingerprint = dash.widgets.map(w => `${w.id}:${w.type}:${w.config?.preset || ''}:${w.config?.show_benchmark ? 'bm' : ''}`).join('|')
         const existing = templates.find(t => t.name === dash.name)

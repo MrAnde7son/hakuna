@@ -111,9 +111,24 @@ TOOL_CATEGORIES = {
             "create_jira_ticket", "create_servicenow_ticket",
         ],
     },
+    "siem": {
+        "keywords": [
+            "siem", "soc", "event", "events", "alert", "alerts",
+            "detection", "detection rule", "triage", "hunt", "threat hunt",
+            "investigate", "investigation", "indicator", "ioc",
+            "log", "logs", "security event", "correlation",
+            "suppression", "incident",
+        ],
+        "tools": [
+            "query_events", "get_event_context", "list_alerts",
+            "get_alert_with_events", "update_alert_status",
+            "run_detection_rule_now", "triage_alert",
+            "query_siem_events", "get_exposure_context",
+        ],
+    },
     "notifications": {
         "keywords": [
-            "slack", "teams", "email", "notify", "alert", "webhook",
+            "slack", "teams", "email", "notify", "webhook",
             "send message",
         ],
         "tools": [
