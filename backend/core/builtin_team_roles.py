@@ -160,8 +160,14 @@ def _ensure_tag_permission(db: Session, role_id: int, tag_id: int, permission: s
         ))
 
 
-_ASSET_AUTOTAG_RULE_NAME = "Auto-tag assets by team (ownership)"
-_FINDING_AUTOTAG_RULE_NAME = "Auto-tag findings by team (ownership)"
+_ASSET_AUTOTAG_RULE_NAME = "map:inferred_team→tag:team*"
+_FINDING_AUTOTAG_RULE_NAME = "map:owner_suggestion→tag:team*"
+
+# Legacy names — used to detect and rename rules created before the naming change.
+_LEGACY_RULE_NAMES = {
+    "Auto-tag assets by team (ownership)": _ASSET_AUTOTAG_RULE_NAME,
+    "Auto-tag findings by team (ownership)": _FINDING_AUTOTAG_RULE_NAME,
+}
 
 
 def _ensure_team_autotag_rules(db: Session, org_id: int) -> None:
@@ -170,7 +176,19 @@ def _ensure_team_autotag_rules(db: Session, org_id: int) -> None:
     Two rules per org (idempotent):
       - Assets: ``inferred_team`` → ``team:<value>``
       - Findings: ``owner_suggestion`` → ``team:<value>``
+
+    Names follow the ``map:`` convention so the frontend Tag Mappings tab
+    picks them up automatically.
     """
+    # Rename any legacy-named rules so they appear in Tag Mappings.
+    for old_name, new_name in _LEGACY_RULE_NAMES.items():
+        legacy = db.query(AutoTagRule).filter(
+            AutoTagRule.org_id == org_id,
+            AutoTagRule.name == old_name,
+        ).first()
+        if legacy:
+            legacy.name = new_name
+
     for rule_name, target_type, field in (
         (_ASSET_AUTOTAG_RULE_NAME, "asset", "inferred_team"),
         (_FINDING_AUTOTAG_RULE_NAME, "finding", "owner_suggestion"),

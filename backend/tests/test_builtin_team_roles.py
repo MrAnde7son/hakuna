@@ -72,8 +72,8 @@ class TestSeeding:
             AutoTagRule.org_id == test_org.id,
         ).all()
         rule_names = {r.name for r in rules}
-        assert "Auto-tag assets by team (ownership)" in rule_names
-        assert "Auto-tag findings by team (ownership)" in rule_names
+        assert "map:inferred_team→tag:team*" in rule_names
+        assert "map:owner_suggestion→tag:team*" in rule_names
         # Both should be passthrough rules
         for rule in rules:
             assert rule.conditions[0]["op"] == "passthrough"

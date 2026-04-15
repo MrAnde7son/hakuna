@@ -12,7 +12,7 @@ import io
 import re
 import requests as _requests
 from typing import List, Dict, Any
-from models.models import Tag, TagAssignment, AutoTagRule, Asset, Finding, OwnershipRule, AssetOwnership, FindingOwnership, ExternalTagSource, ExternalTagMap
+from models.models import Tag, TagAssignment, AutoTagRule, Asset, Finding, Scan, OwnershipRule, AssetOwnership, FindingOwnership, ExternalTagSource, ExternalTagMap
 import services.rule_engine as engine
 
 
@@ -305,11 +305,30 @@ def _get_or_create_tag(label: str, org_id, db: Session) -> Optional[Tag]:
     return tag
 
 
-def run_auto_tag_rule(rule: AutoTagRule, db: Session, scan_id: Optional[int] = None) -> int:
-    """Execute one auto-tag rule. Returns number of new assignments created."""
+def run_auto_tag_rule(rule: AutoTagRule, db: Session, scan_id: Optional[int] = None, org_ids: Optional[list] = None) -> int:
+    """Execute one auto-tag rule. Returns total number of matching items."""
     conditions = engine.migrate_conditions(rule.conditions or [], mode="autotag")
     logic = rule.condition_logic or "AND"
     count = 0
+
+    # Tenant-scoped scan IDs for filtering assets/findings
+    _org_scan_ids = None
+    if org_ids:
+        _org_scan_ids = db.query(Scan.id).filter(Scan.org_id.in_(org_ids)).subquery()
+
+    def _scope_asset_query(q):
+        if _org_scan_ids is not None:
+            q = q.filter(Asset.scan_id.in_(db.query(_org_scan_ids)))
+        if scan_id:
+            q = q.filter(Asset.scan_id == scan_id)
+        return q
+
+    def _scope_finding_query(q):
+        if _org_scan_ids is not None:
+            q = q.filter(Finding.scan_id.in_(db.query(_org_scan_ids)))
+        if scan_id:
+            q = q.filter(Finding.scan_id == scan_id)
+        return q
 
     # ── Passthrough mode: read field value → auto-create tag from value ────────
     cond0 = (rule.conditions or [{}])[0]
@@ -336,9 +355,7 @@ def run_auto_tag_rule(rule: AutoTagRule, db: Session, scan_id: Optional[int] = N
         db.flush()
 
         if rule.target_type in ("asset", "both"):
-            aq = db.query(Asset)
-            if scan_id:
-                aq = aq.filter(Asset.scan_id == scan_id)
+            aq = _scope_asset_query(db.query(Asset))
             for asset in aq.all():
                 raw = _asset_dict(asset).get(field)
                 if raw is None:
@@ -351,9 +368,7 @@ def run_auto_tag_rule(rule: AutoTagRule, db: Session, scan_id: Optional[int] = N
                 count += 1
 
         if rule.target_type in ("finding", "both"):
-            fq = db.query(Finding)
-            if scan_id:
-                fq = fq.filter(Finding.scan_id == scan_id)
+            fq = _scope_finding_query(db.query(Finding))
             for finding in fq.all():
                 raw = getattr(finding, field, None)
                 if raw is None:
@@ -372,16 +387,17 @@ def run_auto_tag_rule(rule: AutoTagRule, db: Session, scan_id: Optional[int] = N
         return count
 
     # ── Standard condition matching ────────────────────────────────────────────
+    matched = 0  # total items matching conditions (existing + new)
+
     if rule.target_type in ("asset", "both"):
-        aq = db.query(Asset)
-        if scan_id:
-            aq = aq.filter(Asset.scan_id == scan_id)
+        aq = _scope_asset_query(db.query(Asset))
         for asset in aq.all():
             if engine.evaluate_conditions(
                 conditions, logic,
                 asset_dict=_asset_dict(asset),
                 db=db, asset_id=asset.id, scan_id=scan_id,
             ):
+                matched += 1
                 exists = db.query(TagAssignment).filter(
                     TagAssignment.tag_id == rule.tag_id,
                     TagAssignment.asset_id == asset.id,
@@ -395,13 +411,12 @@ def run_auto_tag_rule(rule: AutoTagRule, db: Session, scan_id: Optional[int] = N
                     count += 1
 
     if rule.target_type in ("finding", "both"):
-        fq = db.query(Finding)
-        if scan_id:
-            fq = fq.filter(Finding.scan_id == scan_id)
+        fq = _scope_finding_query(db.query(Finding))
         for finding in fq.all():
             parent_asset = db.query(Asset).filter(Asset.id == finding.asset_id).first()
             ad = _asset_dict(parent_asset) if parent_asset else {}
             if engine.evaluate_conditions_for_finding(conditions, logic, finding, asset_dict=ad):
+                matched += 1
                 exists = db.query(TagAssignment).filter(
                     TagAssignment.tag_id == rule.tag_id,
                     TagAssignment.finding_id == finding.id,
@@ -416,15 +431,15 @@ def run_auto_tag_rule(rule: AutoTagRule, db: Session, scan_id: Optional[int] = N
 
     db.commit()
     rule.last_run_at = datetime.utcnow()
-    rule.last_run_count = count
+    rule.last_run_count = matched
     db.commit()
-    return count
+    return matched
 
 
-def run_all_auto_tag_rules(db: Session, scan_id: Optional[int] = None) -> dict:
+def run_all_auto_tag_rules(db: Session, scan_id: Optional[int] = None, org_ids: Optional[list] = None) -> dict:
     """Run all enabled auto-tag rules. Returns {rule_id: tagged_count}."""
     rules = db.query(AutoTagRule).filter(AutoTagRule.is_enabled == True).all()
-    return {r.id: run_auto_tag_rule(r, db, scan_id=scan_id) for r in rules}
+    return {r.id: run_auto_tag_rule(r, db, scan_id=scan_id, org_ids=org_ids) for r in rules}
 
 
 # ─────────────────────────────────────────────────────────

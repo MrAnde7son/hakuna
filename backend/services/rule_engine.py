@@ -133,6 +133,12 @@ CONDITION_CATALOG = [
                 "value_type": "enum",
                 "options": "__dynamic:scans__",
             },
+            {
+                "field": "inferred_team", "label": "Ownership Team",
+                "ops": ["eq", "neq"],
+                "value_type": "enum",
+                "options": OWNERSHIP_ROLE_ENUM_OPTIONS,
+            },
         ],
     },
     {
@@ -198,6 +204,12 @@ CONDITION_CATALOG = [
             },
             {
                 "field": "finding.owner", "label": "Owner Suggestion",
+                "ops": ["eq", "neq"],
+                "value_type": "enum",
+                "options": OWNERSHIP_ROLE_ENUM_OPTIONS,
+            },
+            {
+                "field": "owner_suggestion", "label": "Finding Ownership Team",
                 "ops": ["eq", "neq"],
                 "value_type": "enum",
                 "options": OWNERSHIP_ROLE_ENUM_OPTIONS,

@@ -249,9 +249,9 @@ class TestConnectorFieldMapCompleteness:
         spec = _load_connector(connector_id)
         acq = spec.get("credential_acquisition")
         if acq is None:
-            # File-based connectors may not need credentials
-            assert spec.get("transport_type") == "file" or "file" in connector_id, (
-                f"{connector_id}: non-file connector must have credential_acquisition"
+            # File-based and webhook connectors may not need credentials
+            assert spec.get("transport_type") in ("file", "webhook") or "file" in connector_id, (
+                f"{connector_id}: non-file/non-webhook connector must have credential_acquisition"
             )
             return
         assert "pattern" in acq, f"{connector_id}: credential_acquisition missing pattern"

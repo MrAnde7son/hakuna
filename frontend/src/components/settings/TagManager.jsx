@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Tag, Plus, ChevronRight, ChevronDown, Trash2, Edit2, Play, ToggleLeft, ToggleRight, X, Save, Zap, Settings2, ExternalLink, Monitor, AlertTriangle } from 'lucide-react'
+import { Tag, Plus, ChevronRight, ChevronLeft, ChevronDown, Trash2, Edit2, Play, ToggleLeft, ToggleRight, X, Save, Zap, Settings2, ExternalLink, Monitor, AlertTriangle, Search } from 'lucide-react'
 import {
   getTags, createTag, updateTag, deleteTag,
   getAutoTagRules, createAutoTagRule, updateAutoTagRule, deleteAutoTagRule,
@@ -15,6 +15,29 @@ const PALETTE = [
   '#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f97316',
   '#eab308', '#22c55e', '#14b8a6', '#06b6d4', '#3b82f6',
 ]
+
+const TAGS_PER_PAGE = 20
+
+// Recursively filter tree nodes that match search/category
+function filterTree(nodes, search, category) {
+  if (!search && !category) return nodes
+  const lowerSearch = search?.toLowerCase() || ''
+  return nodes.reduce((acc, node) => {
+    const label = `${node.category}:${node.value}`.toLowerCase()
+    const matchesSelf = (!search || label.includes(lowerSearch) || (node.description || '').toLowerCase().includes(lowerSearch))
+      && (!category || node.category === category)
+    const filteredChildren = node.children ? filterTree(node.children, search, category) : []
+    if (matchesSelf || filteredChildren.length > 0) {
+      acc.push({ ...node, children: matchesSelf ? (node.children || []) : filteredChildren })
+    }
+    return acc
+  }, [])
+}
+
+// Count all visible nodes in a filtered tree
+function countTreeNodes(nodes) {
+  return nodes.reduce((sum, n) => sum + 1 + (n.children ? countTreeNodes(n.children) : 0), 0)
+}
 
 // ─── Tag tree node ─────────────────────────────────────────
 function TagNode({ node, depth = 0, selected, onSelect, onDelete, onEdit }) {
@@ -590,8 +613,23 @@ export default function TagManager() {
   const [editingRule, setEditingRule] = useState(null) // null | 'new' | ruleObj
   const [runStatus, setRunStatus] = useState({})
   const [runAllStatus, setRunAllStatus] = useState(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('')
+  const [currentPage, setCurrentPage] = useState(1)
   const toast = useToast()
   const confirm = useConfirm()
+
+  // Derived: unique categories for filter dropdown
+  const categories = [...new Set(tags.map(t => t.category))].sort()
+
+  // Derived: filtered tree + pagination
+  const filteredTree = filterTree(tree, searchQuery, categoryFilter)
+  const totalFiltered = countTreeNodes(filteredTree)
+  const totalPages = Math.max(1, Math.ceil(filteredTree.length / TAGS_PER_PAGE))
+  const paginatedTree = filteredTree.slice((currentPage - 1) * TAGS_PER_PAGE, currentPage * TAGS_PER_PAGE)
+
+  // Reset page when filters change
+  useEffect(() => { setCurrentPage(1) }, [searchQuery, categoryFilter])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -626,7 +664,9 @@ export default function TagManager() {
     try {
       const res = await runAutoTagRule(rule.id)
       setRunStatus(s => ({ ...s, [rule.id]: res.tagged }))
-      load()
+      // Silently refresh rules without full loading state
+      const ruleList = await getAutoTagRules()
+      setRules(ruleList)
     } catch (e) {
       setRunStatus(s => ({ ...s, [rule.id]: 'error' }))
     }
@@ -722,6 +762,42 @@ export default function TagManager() {
               </Button>
             </div>
 
+            {/* Search & Filters */}
+            {tags.length > 0 && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '10px 16px', borderBottom: '1px solid var(--border)',
+                background: 'var(--bg-secondary)',
+              }}>
+                <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                  <Search size={13} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+                  <input
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    placeholder="Search tags…"
+                    style={{ ...inputStyle, paddingLeft: 28, fontSize: 12, padding: '6px 10px 6px 28px' }}
+                  />
+                </div>
+                <select
+                  value={categoryFilter}
+                  onChange={e => setCategoryFilter(e.target.value)}
+                  style={{ ...inputStyle, width: 'auto', minWidth: 120, fontSize: 12, padding: '6px 10px' }}
+                >
+                  <option value="">All categories</option>
+                  {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                {(searchQuery || categoryFilter) && (
+                  <button
+                    onClick={() => { setSearchQuery(''); setCategoryFilter('') }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', padding: 4 }}
+                    title="Clear filters"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* Tree */}
             <div style={{ padding: '12px 10px', minHeight: 120 }}>
               {tree.length === 0 ? (
@@ -732,18 +808,92 @@ export default function TagManager() {
                     Create your first tag, e.g. category: "network", value: "dmz"
                   </div>
                 </div>
+              ) : filteredTree.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--text-muted)', fontSize: 12 }}>
+                  No tags match your search
+                </div>
               ) : (
-                tree.map(node => (
-                  <TagNode
-                    key={node.id} node={node}
-                    selected={selectedTag}
-                    onSelect={n => { setSelectedTag(n); setEditingTag(null); setDeletingTag(null) }}
-                    onDelete={n => { setDeletingTag(n); setEditingTag(null) }}
-                    onEdit={n => { setEditingTag(n); setDeletingTag(null) }}
-                  />
-                ))
+                <>
+                  {(searchQuery || categoryFilter) && (
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 6px 8px', borderBottom: '1px solid var(--border)', marginBottom: 8 }}>
+                      Showing {totalFiltered} tag{totalFiltered !== 1 ? 's' : ''} matching filters
+                    </div>
+                  )}
+                  {paginatedTree.map(node => (
+                    <TagNode
+                      key={node.id} node={node}
+                      selected={selectedTag}
+                      onSelect={n => { setSelectedTag(n); setEditingTag(null); setDeletingTag(null) }}
+                      onDelete={n => { setDeletingTag(n); setEditingTag(null) }}
+                      onEdit={n => { setEditingTag(n); setDeletingTag(null) }}
+                    />
+                  ))}
+                </>
               )}
             </div>
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '10px 16px', borderTop: '1px solid var(--border)',
+                fontSize: 12, color: 'var(--text-muted)',
+              }}>
+                <span>
+                  Page {currentPage} of {totalPages}
+                  <span style={{ marginLeft: 8, opacity: 0.7 }}>({filteredTree.length} root tag{filteredTree.length !== 1 ? 's' : ''})</span>
+                </span>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    disabled={currentPage <= 1}
+                    style={{
+                      ...iconBtnStyle, borderRadius: 6,
+                      opacity: currentPage <= 1 ? 0.3 : 1,
+                      cursor: currentPage <= 1 ? 'default' : 'pointer',
+                    }}
+                  >
+                    <ChevronLeft size={14} />
+                  </button>
+                  {Array.from({ length: totalPages }, (_, i) => i + 1)
+                    .filter(p => p === 1 || p === totalPages || Math.abs(p - currentPage) <= 1)
+                    .reduce((acc, p, i, arr) => {
+                      if (i > 0 && p - arr[i - 1] > 1) acc.push('...')
+                      acc.push(p)
+                      return acc
+                    }, [])
+                    .map((p, i) =>
+                      p === '...' ? (
+                        <span key={`dot-${i}`} style={{ padding: '2px 4px', color: 'var(--text-muted)' }}>…</span>
+                      ) : (
+                        <button
+                          key={p}
+                          onClick={() => setCurrentPage(p)}
+                          style={{
+                            ...iconBtnStyle, borderRadius: 6, minWidth: 28, justifyContent: 'center',
+                            fontWeight: currentPage === p ? 700 : 400, fontSize: 12,
+                            color: currentPage === p ? 'var(--accent)' : 'var(--text-muted)',
+                            background: currentPage === p ? 'var(--bg-hover)' : 'none',
+                          }}
+                        >
+                          {p}
+                        </button>
+                      )
+                    )}
+                  <button
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    disabled={currentPage >= totalPages}
+                    style={{
+                      ...iconBtnStyle, borderRadius: 6,
+                      opacity: currentPage >= totalPages ? 0.3 : 1,
+                      cursor: currentPage >= totalPages ? 'default' : 'pointer',
+                    }}
+                  >
+                    <ChevronRight size={14} />
+                  </button>
+                </div>
+              </div>
+            )}
           </Card>
 
           {/* Side panel */}
@@ -793,22 +943,31 @@ export default function TagManager() {
                 />
                 {rules.length > 0 && (
                   <Button size="sm" variant="ghost" onClick={handleRunAll} disabled={runAllStatus === 'running'}>
-                    <Play size={12} /> {runAllStatus === 'running' ? 'Running…' : 'Run All'}
+                    <Play size={12} /> {runAllStatus === 'running' ? 'Running...' : 'Run All'}
                   </Button>
                 )}
-                <Button size="sm" onClick={() => setEditingRule('new')} disabled={editingRule !== null}>
+                <Button size="sm" onClick={() => setEditingRule('new')}>
                   <Plus size={13} /> New Rule
                 </Button>
               </div>
-              {runAllStatus !== null && (
-                <div style={{ fontSize: 12, color: runAllStatus === 'error' ? 'var(--danger)' : 'var(--success)', padding: '6px 10px', background: 'var(--bg-hover)', borderRadius: 6, marginTop: 8 }}>
-                  {runAllStatus === 'running' ? 'Running all rules…' : runAllStatus === 'error' ? 'Run failed' : `✓ ${runAllStatus} asset/finding(s) tagged`}
-                </div>
-              )}
             </div>
 
+            {/* Run-all status banner — outside toolbar to avoid expanding the header */}
+            {runAllStatus !== null && runAllStatus !== 'running' && (
+              <div style={{
+                fontSize: 12, color: runAllStatus === 'error' ? 'var(--danger)' : 'var(--success)',
+                padding: '8px 12px', background: runAllStatus === 'error' ? 'var(--danger-subtle)' : 'var(--success-subtle, var(--bg-hover))',
+                borderRadius: 8, marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              }}>
+                <span>{runAllStatus === 'error' ? 'Run failed' : `${runAllStatus} asset/finding(s) tagged across all rules`}</span>
+                <button onClick={() => setRunAllStatus(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', padding: 2 }}>
+                  <X size={12} />
+                </button>
+              </div>
+            )}
+
             {/* Rule list */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {rules.length === 0 && editingRule === null && (
                 <Card style={{ textAlign: 'center', padding: '48px 24px' }}>
                   <Zap size={32} style={{ color: 'var(--text-muted)', opacity: 0.3, marginBottom: 12 }} />
@@ -824,16 +983,29 @@ export default function TagManager() {
 
               {rules.map(rule => {
                 const status = runStatus[rule.id]
+                const isPassthrough = rule.conditions?.some(c => c.op === 'passthrough')
                 const tagColor = rule.tag_color || '#6366f1'
-                const enabledCount = rules.filter(r => r.is_enabled).length
+                const isEditing = editingRule && editingRule !== 'new' && editingRule.id === rule.id
 
                 return (
-                  <Card key={rule.id} style={{ padding: '14px 16px' }}>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                  <div
+                    key={rule.id}
+                    onClick={() => { if (!isPassthrough) setEditingRule(rule) }}
+                    style={{
+                      background: 'var(--bg-card)', border: isEditing ? '1px solid var(--accent)' : '1px solid var(--border)',
+                      borderRadius: 10, padding: '12px 16px', cursor: isPassthrough ? 'default' : 'pointer',
+                      transition: 'border-color 0.15s, box-shadow 0.15s',
+                      boxShadow: isEditing ? '0 0 0 1px var(--accent)' : 'none',
+                      opacity: rule.is_enabled ? 1 : 0.7,
+                    }}
+                    onMouseEnter={e => { if (!isEditing && !isPassthrough) e.currentTarget.style.borderColor = 'var(--accent-muted, var(--text-muted))' }}
+                    onMouseLeave={e => { if (!isEditing) e.currentTarget.style.borderColor = isEditing ? 'var(--accent)' : 'var(--border)' }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                       {/* Enable toggle */}
                       <button
-                        onClick={() => handleToggleRule(rule)}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', color: rule.is_enabled ? 'var(--success)' : 'var(--text-muted)', paddingTop: 1, flexShrink: 0 }}
+                        onClick={e => { e.stopPropagation(); handleToggleRule(rule) }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', color: rule.is_enabled ? 'var(--success)' : 'var(--text-muted)', flexShrink: 0 }}
                         title={rule.is_enabled ? 'Disable rule' : 'Enable rule'}
                       >
                         {rule.is_enabled ? <ToggleRight size={20} /> : <ToggleLeft size={20} />}
@@ -841,15 +1013,15 @@ export default function TagManager() {
 
                       {/* Content */}
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                          <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--text-primary)' }}>{rule.name}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                          <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)' }}>{rule.name}</span>
+                          {isPassthrough && (
+                            <span title="This rule is auto-managed via team ownership. Edit it from Settings → Ownership." style={{ fontSize: 10, background: 'var(--accent-subtle, var(--bg-hover))', color: 'var(--accent)', borderRadius: 4, padding: '1px 6px', flexShrink: 0, cursor: 'help' }}>auto-managed</span>
+                          )}
                           {!rule.is_enabled && (
                             <span style={{ fontSize: 10, background: 'var(--bg-hover)', color: 'var(--text-muted)', borderRadius: 4, padding: '1px 6px', flexShrink: 0 }}>disabled</span>
                           )}
                         </div>
-                        {rule.description && (
-                          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>{rule.description}</div>
-                        )}
 
                         {/* Meta row */}
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -859,12 +1031,15 @@ export default function TagManager() {
                             borderRadius: 999, padding: '1px 8px', fontSize: 11, fontWeight: 600,
                           }}>
                             <span style={{ width: 6, height: 6, borderRadius: '50%', background: tagColor }} />
-                            {rule.tag_label}
+                            {rule.tag_label || (isPassthrough ? `${rule.conditions[0]?.value || ''}:*` : '—')}
                           </span>
-                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>→ {rule.target_type}</span>
-                          <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>
-                            {rule.conditions?.length || 0} condition{rule.conditions?.length !== 1 ? 's' : ''}
-                            {' '}({rule.condition_logic})
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                            → {rule.target_type === 'both' ? 'assets + findings' : rule.target_type === 'asset' ? 'assets' : 'findings'}
+                          </span>
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                            {isPassthrough
+                              ? `maps ${rule.conditions[0]?.field || 'field'} → ${rule.conditions[0]?.value || ''}:*`
+                              : `${rule.conditions?.length || 0} condition${rule.conditions?.length !== 1 ? 's' : ''} (${rule.condition_logic})`}
                           </span>
                           {rule.last_run_at && (
                             <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>
@@ -875,24 +1050,23 @@ export default function TagManager() {
                       </div>
 
                       {/* Actions */}
-                      <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }}>
+                      <div style={{ display: 'flex', gap: 2, alignItems: 'center', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
                         <Button size="sm" variant="ghost" onClick={() => handleRunRule(rule)} disabled={status === 'running'} title="Run now">
-                          <Play size={11} /> {status === 'running' ? 'Running…' : 'Run'}
+                          <Play size={11} /> {status === 'running' ? '...' : 'Run'}
                         </Button>
-                        <button onClick={() => setEditingRule(rule)} style={iconBtnStyle} title="Edit"><Edit2 size={13} /></button>
                         <button onClick={() => handleDeleteRule(rule)} style={{ ...iconBtnStyle, color: 'var(--danger)' }} title="Delete"><Trash2 size={13} /></button>
                       </div>
                     </div>
 
                     {(typeof status === 'number' || status === 'error') && (
-                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+                      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', marginLeft: 30 }}>
                         {typeof status === 'number' && (
-                          <span style={{ fontSize: 11, color: 'var(--success)' }}>✓ {status} new assignment{status !== 1 ? 's' : ''}</span>
+                          <span style={{ fontSize: 11, color: 'var(--success)' }}>{status} matched</span>
                         )}
                         {status === 'error' && <span style={{ fontSize: 11, color: 'var(--danger)' }}>Run failed</span>}
                       </div>
                     )}
-                  </Card>
+                  </div>
                 )
               })}
             </div>
@@ -900,8 +1074,9 @@ export default function TagManager() {
 
           {/* Rule form panel */}
           {editingRule !== null && (
-            <Card>
+            <Card style={{ position: 'sticky', top: 16 }}>
               <AutoTagRuleForm
+                key={editingRule === 'new' ? 'new' : editingRule.id}
                 rule={editingRule === 'new' ? null : editingRule}
                 allTags={tags}
                 onSave={() => { setEditingRule(null); load() }}

@@ -281,6 +281,10 @@ async def login(body: LoginRequest, request: Request, db: Session = Depends(get_
 
     # Update last login
     user.last_login_at = datetime.utcnow()
+
+    # Backfill any missing built-in team roles, tags, and auto-tag rules.
+    seed_builtin_team_roles(db, org.id)
+
     db.commit()
 
     token = create_access_token(user.id, org.id, user.role)
@@ -340,6 +344,10 @@ async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = D
         if not user.email_verified:
             user.email_verified = True
         user.last_login_at = datetime.utcnow()
+
+        # Backfill any missing built-in team roles, tags, and auto-tag rules.
+        seed_builtin_team_roles(db, org.id)
+
         db.commit()
 
         token = create_access_token(user.id, org.id, user.role)
