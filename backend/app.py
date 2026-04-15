@@ -103,6 +103,10 @@ from routes.rule_routes import router as rule_router
 from routes.scan_routes import router as scan_router
 from routes.admin_routes import router as admin_router
 from routes.inventory_routes import router as inventory_router
+from routes.siem_routes import router as siem_router
+from routes.siem_ingest_routes import router as siem_ingest_router
+from routes.detection_routes import router as detection_router
+from routes.siem_report_routes import router as siem_report_router
 from services.blast_radius import resolve_dc_asset_ids as _resolve_dc_asset_ids
 
 logging.basicConfig(level=logging.INFO)
@@ -321,6 +325,10 @@ app.include_router(rule_router)
 app.include_router(scan_router)
 app.include_router(admin_router)
 app.include_router(inventory_router)
+app.include_router(siem_router)
+app.include_router(siem_ingest_router)
+app.include_router(detection_router)
+app.include_router(siem_report_router)
 
 
 INTEL_PATH = Path(__file__).parent / "data" / "intel.json"
@@ -361,6 +369,24 @@ def _deferred_startup():
     from services.report_scheduler import start_scheduler as start_report_scheduler
     start_report_scheduler()
     logger.info("Report scheduler started")
+    # Start SIEM event drain scheduler (hot → lake, every 15 min)
+    try:
+        from services.event_drain import start_drain_scheduler
+        start_drain_scheduler()
+    except Exception as exc:
+        logger.error("Event drain scheduler failed to start: %s", exc)
+    # Start SIEM detection engine (rule evaluator, every 1 min)
+    try:
+        from services.detection_engine import start_detection_scheduler
+        start_detection_scheduler()
+    except Exception as exc:
+        logger.error("Detection engine scheduler failed to start: %s", exc)
+    # Start SIEM lake maintenance + hot retention scheduler
+    try:
+        from services.lake_maintenance import start_maintenance_scheduler
+        start_maintenance_scheduler()
+    except Exception as exc:
+        logger.error("Lake maintenance scheduler failed to start: %s", exc)
     # Schedule threat intel auto-update every 24 hours
     from threat_intel.intel_updater import update_intel
     from apscheduler.schedulers.background import BackgroundScheduler as _BGScheduler

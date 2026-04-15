@@ -1,0 +1,34 @@
+{
+  "id": "webhook_cef",
+  "name": "CEF (ArcSight)",
+  "description": "Receive events in Common Event Format from ArcSight and compatible tools",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/arcsight.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "cef"
+  },
+  "default_field_map": [
+    { "source": "rt", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "deviceVendor", "target": "source_system" },
+    { "source": "deviceEventClassId", "target": "event_type" },
+    { "source": "name", "target": "message" },
+    { "source": "severity", "target": "severity" },
+    { "source": "src", "target": "source_ip" },
+    { "source": "dst", "target": "destination_ip" }
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "setup_guide": {
+    "title": "Forward CEF events",
+    "steps": [
+      "Configure your SIEM or device to forward CEF-formatted events via HTTP",
+      "Set the destination URL to the Hakuna webhook URL below",
+      "Send one CEF line per HTTP POST body, or multiple lines separated by newlines",
+      "Include the Bearer token in the Authorization header"
+    ],
+    "doc_url": "https://www.microfocus.com/documentation/arcsight/arcsight-smartconnectors/AS_cef_guide/"
+  },
+  "sample_payload": "CEF:0|Security|Firewall|1.0|200|Connection Blocked|7|src=192.168.1.100 dst=10.0.0.1 act=deny suser=admin rt=Mar 15 2024 14:30:00 cat=network msg=Suspicious outbound connection blocked"
+}

@@ -1,0 +1,40 @@
+{
+  "id": "webhook_okta",
+  "name": "Okta System Log",
+  "description": "Receive Okta System Log events via webhook (Event Hooks)",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/okta.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "json",
+    "envelope_path": "data.events"
+  },
+  "default_field_map": [
+    { "source": "published", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "eventType", "target": "event_type" },
+    { "source": "uuid", "target": "source_id" },
+    { "source": "displayMessage", "target": "message" },
+    { "source": "actor.displayName", "target": "actor" },
+    { "source": "client.ipAddress", "target": "source_ip" },
+    { "source": "client.userAgent.rawUserAgent", "target": "user_agent" },
+    { "source": "severity", "target": "severity", "transform": { "type": "lowercase" } },
+    { "source": "outcome.result", "target": "outcome" }
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "static_fields": {
+    "source_system": "okta"
+  },
+  "setup_guide": {
+    "title": "Configure Okta Event Hook",
+    "steps": [
+      "In Okta Admin Console, go to Workflow → Event Hooks → Create Event Hook",
+      "Set the URL to the Hakuna webhook URL below",
+      "Add a custom header: Authorization: Bearer <your-token>",
+      "Select the event types to subscribe to (e.g., user.session.start)"
+    ],
+    "doc_url": "https://developer.okta.com/docs/concepts/event-hooks/"
+  },
+  "sample_payload": "{\"data\":{\"events\":[{\"uuid\":\"a1b2c3d4-5678-90ab-cdef-1234567890ab\",\"published\":\"2024-03-15T14:23:45Z\",\"eventType\":\"user.session.start\",\"displayMessage\":\"User login to Okta\",\"severity\":\"INFO\",\"actor\":{\"displayName\":\"John Smith\",\"alternateId\":\"jsmith@example.com\"},\"client\":{\"ipAddress\":\"203.0.113.50\",\"userAgent\":{\"rawUserAgent\":\"Mozilla/5.0\"}},\"outcome\":{\"result\":\"SUCCESS\"}}]}}"
+}

@@ -31,6 +31,9 @@ const ROUTES = [
   { path: '/profile', name: 'Profile' },
   { path: '/docs', name: 'Docs' },
   { path: '/onboarding', name: 'Onboarding Wizard' },
+  { path: '/siem/search', name: 'SIEM Event Search' },
+  { path: '/siem/rules', name: 'SIEM Detection Rules' },
+  { path: '/siem/alerts', name: 'SIEM Alert Triage' },
 ]
 
 // Public routes (no auth required).

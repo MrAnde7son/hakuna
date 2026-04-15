@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowRight, Wand2, X, ChevronDown, ChevronRight, Plus } from 'lucide-react'
+import { ArrowRight, Wand2, X, ChevronDown, ChevronRight, Plus, ClipboardPaste } from 'lucide-react'
 import { Button, Spinner, InlineSpinner } from '../../shared/ui.jsx'
 
 // Aliases: connector field_map targets → actual model column names.
@@ -29,6 +29,8 @@ export default function StepFieldMapper({
   onEntityChange, allSchema,
   fieldMap, onFieldMapChange,
   onAutoSuggest, suggestions, loading, onNext,
+  // Paste-sample support for webhooks
+  onDetectSample, samplePayloadHint, parserType, nextLabel,
 }) {
   const [sourceFilter, setSourceFilter] = useState('')
   const [selectedSource, setSelectedSource] = useState(null)
@@ -84,6 +86,23 @@ export default function StepFieldMapper({
       newMap.push({ source: sourcePath, target: targetName })
     }
     onFieldMapChange(newMap)
+  }
+
+  const [sampleText, setSampleText] = useState(samplePayloadHint || '')
+  const [detectingPaths, setDetectingPaths] = useState(false)
+  const [detectError, setDetectError] = useState(null)
+
+  const handleDetectFromSample = async () => {
+    if (!sampleText.trim() || !onDetectSample) return
+    setDetectingPaths(true)
+    setDetectError(null)
+    try {
+      await onDetectSample(sampleText.trim())
+    } catch (e) {
+      setDetectError(e.message || 'Failed to parse sample')
+    } finally {
+      setDetectingPaths(false)
+    }
   }
 
   const filteredPaths = detectedPaths.filter(p =>
@@ -206,40 +225,90 @@ export default function StepFieldMapper({
           <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8 }}>
             Source Fields ({detectedPaths.length} detected)
           </div>
-          <input
-            placeholder="Filter fields..."
-            value={sourceFilter}
-            onChange={e => setSourceFilter(e.target.value)}
-            style={{ ...inputStyle, marginBottom: 8 }}
-          />
-          <div style={{ maxHeight: 500, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
-            {filteredPaths.map((p, i) => {
-              const isMapped = mappedSources.has(p.path)
-              const isSelected = selectedSource === p.path
-              return (
-                <div
-                  key={i}
-                  onClick={() => handleClickSource(p.path)}
-                  style={{
-                    padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
-                    borderBottom: '1px solid var(--border)',
-                    background: isSelected ? 'var(--accent)20' : isMapped ? '#22c55e08' : 'transparent',
-                  }}
-                >
-                  {isMapped && <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }} />}
-                  <span style={{ fontSize: 12, fontFamily: 'var(--mono)', flex: 1 }}>{p.path}</span>
-                  <span style={{ fontSize: 10, color: 'var(--text-muted)', background: 'var(--border)', padding: '1px 4px', borderRadius: 3 }}>
-                    {p.inferred_type}
-                  </span>
-                  {p.sample_value !== null && p.sample_value !== undefined && typeof p.sample_value !== 'object' && (
-                    <span style={{ fontSize: 10, color: 'var(--text-muted)', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {String(p.sample_value).substring(0, 30)}
-                    </span>
-                  )}
+          {detectedPaths.length === 0 && onDetectSample ? (
+            <div style={{
+              border: '1px solid var(--border)', borderRadius: 8, padding: 16,
+              display: 'flex', flexDirection: 'column', gap: 12,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <ClipboardPaste size={16} color="var(--accent)" />
+                <span style={{ fontSize: 13, fontWeight: 600 }}>Paste a sample payload</span>
+              </div>
+              <p style={{ margin: 0, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                Paste an example {parserType === 'cef' ? 'CEF' : parserType === 'leef' ? 'LEEF' : parserType === 'hec' ? 'HEC' : parserType === 'syslog_rfc5424' ? 'Syslog' : 'JSON'} payload
+                to auto-detect source fields for mapping.
+              </p>
+              <textarea
+                placeholder={parserType === 'cef'
+                  ? 'CEF:0|Vendor|Product|1.0|100|Event Name|5|src=10.0.0.1 dst=10.0.0.2'
+                  : parserType === 'leef'
+                  ? 'LEEF:1.0|Vendor|Product|1.0|EventID|src=10.0.0.1\tdst=10.0.0.2'
+                  : parserType === 'hec'
+                  ? '{"time": 1700000000, "host": "web-01", "source": "app", "event": {"message": "..."}}'
+                  : '{\n  "timestamp": "2024-01-15T10:30:00Z",\n  "source": "firewall",\n  "type": "network",\n  "message": "Connection blocked"\n}'}
+                value={sampleText}
+                onChange={e => { setSampleText(e.target.value); setDetectError(null) }}
+                style={{
+                  ...inputStyle,
+                  fontFamily: 'var(--mono)',
+                  minHeight: 160,
+                  resize: 'vertical',
+                }}
+              />
+              {detectError && (
+                <div style={{ fontSize: 11, color: '#ef4444', padding: '6px 10px', background: '#ef444410', borderRadius: 6 }}>
+                  {detectError}
                 </div>
-              )
-            })}
-          </div>
+              )}
+              <Button
+                onClick={handleDetectFromSample}
+                disabled={!sampleText.trim() || detectingPaths}
+                style={{ alignSelf: 'flex-start' }}
+              >
+                {detectingPaths ? <><InlineSpinner /> Detecting...</> : <>Detect Fields <ArrowRight size={14} style={{ marginLeft: 4 }} /></>}
+              </Button>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+                Or skip this step and map fields later after the first event arrives.
+              </div>
+            </div>
+          ) : (
+            <>
+              <input
+                placeholder="Filter fields..."
+                value={sourceFilter}
+                onChange={e => setSourceFilter(e.target.value)}
+                style={{ ...inputStyle, marginBottom: 8 }}
+              />
+              <div style={{ maxHeight: 500, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8 }}>
+                {filteredPaths.map((p, i) => {
+                  const isMapped = mappedSources.has(p.path)
+                  const isSelected = selectedSource === p.path
+                  return (
+                    <div
+                      key={i}
+                      onClick={() => handleClickSource(p.path)}
+                      style={{
+                        padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
+                        borderBottom: '1px solid var(--border)',
+                        background: isSelected ? 'var(--accent)20' : isMapped ? '#22c55e08' : 'transparent',
+                      }}
+                    >
+                      {isMapped && <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }} />}
+                      <span style={{ fontSize: 12, fontFamily: 'var(--mono)', flex: 1 }}>{p.path}</span>
+                      <span style={{ fontSize: 10, color: 'var(--text-muted)', background: 'var(--border)', padding: '1px 4px', borderRadius: 3 }}>
+                        {p.inferred_type}
+                      </span>
+                      {p.sample_value !== null && p.sample_value !== undefined && typeof p.sample_value !== 'object' && (
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {String(p.sample_value).substring(0, 30)}
+                        </span>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Right: Hakuna fields */}
@@ -383,8 +452,8 @@ export default function StepFieldMapper({
         />
       )}
 
-      <Button onClick={onNext} disabled={loading || requiredUnmapped.length > 0}>
-        {loading ? <InlineSpinner /> : 'Preview Mapping'}
+      <Button onClick={onNext} disabled={loading || (requiredUnmapped.length > 0 && !onDetectSample)}>
+        {loading ? <InlineSpinner /> : (nextLabel || 'Preview Mapping')}
         <ArrowRight size={14} style={{ marginLeft: 4 }} />
       </Button>
     </div>

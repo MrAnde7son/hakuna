@@ -22,7 +22,7 @@ from typing import Optional, List, Set
 
 from sqlalchemy.orm import Session
 
-from models.models import Finding, Asset, AggregatedSolution
+from models.models import Finding, Asset, AggregatedSolution, InventoryPatch
 from services.downstream_impact import assess_downstream_impact, VERDICT_MULTIPLIERS
 
 logger = logging.getLogger(__name__)
@@ -296,6 +296,10 @@ def _determine_effort(root_cause_type, finding_count, asset_count):
         return "quick_win"
     if root_cause_type == "missing_patch" and finding_count > 20:
         return "complex"
+    if root_cause_type == "missing_patch" and asset_count <= 5:
+        return "quick_win"
+    if root_cause_type == "outdated_version" and asset_count <= 5:
+        return "quick_win"
     if asset_count > 10:
         return "complex"
     return "medium"
@@ -487,6 +491,371 @@ def _compute_risk_reduction(priority_sum, total_scan_risk):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Step 5: Patch Catalog Enrichment
+# ═══════════════════════════════════════════════════════════════════════
+
+# Extract KB IDs from finding plugin names
+_KB_EXTRACT_RE = re.compile(r"(KB\d{6,})", re.I)
+
+
+# Extract USN/DSA/RHSA advisory IDs from plugin names
+_ADVISORY_RE = re.compile(r"\((USN-[\w.-]+|DSA-[\w.-]+|RHSA-[\w:.-]+|ALAS-[\w.-]+)\)", re.I)
+
+
+def _build_finding_based_breakdown(fingerprints, cve_ids):
+    """
+    Build patch breakdown directly from finding metadata (Linux packages).
+    Each finding = one package update to apply, with its own CVE list.
+    """
+    patch_list = []
+    all_cves_covered = set()
+
+    for fp in fingerprints:
+        f = fp.finding
+        name = f.plugin_name or ""
+
+        # Try to extract advisory ID (USN-XXXX, DSA-XXXX, etc.)
+        adv_match = _ADVISORY_RE.search(name)
+        advisory_id = adv_match.group(1) if adv_match else None
+
+        # Extract CVEs from this finding
+        finding_cves = list(f.cves) if f.cves else []
+        all_cves_covered.update(finding_cves)
+
+        # Clean up the display title — strip the long Ubuntu version prefix
+        title = name
+        # "UBUNTU 14.04 ... 24.04 : Foo Vulnerability (USN-1234)" → "Foo Vulnerability"
+        colon_idx = name.find(" : ")
+        if colon_idx > 0:
+            title = name[colon_idx + 3:].strip()
+        # Strip redundant advisory ID from title if already captured
+        if advisory_id and title.endswith("(%s)" % advisory_id):
+            title = title[:-(len(advisory_id) + 3)].strip()
+
+        entry = {
+            "advisory_id": advisory_id or f"plugin-{f.plugin_id}" if f.plugin_id else name[:60],
+            "source": _guess_source_from_family(f.plugin_family),
+            "title": title,
+            "severity": {4: "Critical", 3: "High", 2: "Medium", 1: "Low"}.get(f.severity),
+            "release_date": None,
+            "url": None,
+            "cves_fixed": finding_cves[:20],
+            "cve_count": len(finding_cves),
+            "restart_required": None,
+        }
+        patch_list.append(entry)
+
+    uncovered = set(cve_ids or []) - all_cves_covered
+
+    return {
+        "patches": patch_list,
+        "patch_count": len(patch_list),
+        "original_finding_count": len(fingerprints),
+        "superseded_count": 0,
+        "effective_patch_count": len(patch_list),
+        "cves_covered": len(all_cves_covered),
+        "cves_uncovered": sorted(uncovered) if uncovered else [],
+        "warnings": [],
+        "has_recalled": False,
+        "has_known_issues": False,
+    }
+
+
+def _guess_source_from_family(family):
+    """Map plugin family to patch source."""
+    if not family:
+        return "linux"
+    fl = family.lower()
+    if "ubuntu" in fl: return "ubuntu"
+    if "debian" in fl: return "debian"
+    if "red hat" in fl or "rhel" in fl or "centos" in fl: return "rhel"
+    if "amazon" in fl: return "amazon"
+    if "suse" in fl: return "suse"
+    if "fedora" in fl: return "fedora"
+    return "linux"
+
+
+def _enrich_patch_group(db, fingerprints, asset_id, cve_ids):
+    """
+    Build an actionable patch breakdown from finding data + patch catalog.
+
+    Strategy: always start from finding data (CVEs, plugin names) as the
+    baseline, then layer catalog data (supersedence, reliability) on top.
+    This ensures CVE counts are always correct even when the catalog has
+    no data for a given KB or advisory.
+
+    Returns a dict with patch_breakdown, or None if no data.
+    """
+    # ── 1. Build baseline from findings (always works) ───────────────
+    # Each finding → one patch entry with its own CVEs.
+    kb_to_finding_cves = defaultdict(set)  # kb_or_id → CVEs from findings
+    kb_to_entry = {}                        # kb_or_id → patch entry dict
+    kb_order = []                           # preserve order
+
+    for fp in fingerprints:
+        f = fp.finding
+        name = f.plugin_name or ""
+        finding_cves = list(f.cves) if f.cves else []
+
+        # Try to extract KB ID
+        kb_match = _KB_EXTRACT_RE.search(name)
+        # Try to extract advisory (USN, DSA, RHSA, etc.)
+        adv_match = _ADVISORY_RE.search(name)
+
+        if kb_match:
+            patch_id = kb_match.group(1).upper()
+        elif adv_match:
+            patch_id = adv_match.group(1)
+        else:
+            patch_id = "plugin-%s" % (f.plugin_id or f.id)
+
+        kb_to_finding_cves[patch_id].update(finding_cves)
+
+        if patch_id not in kb_to_entry:
+            # Clean title
+            title = name
+            colon_idx = name.find(" : ")
+            if colon_idx > 0:
+                title = name[colon_idx + 3:].strip()
+            if adv_match and title.endswith("(%s)" % adv_match.group(1)):
+                title = title[:-(len(adv_match.group(1)) + 3)].strip()
+
+            kb_to_entry[patch_id] = {
+                "advisory_id": patch_id,
+                "source": "microsoft" if kb_match else _guess_source_from_family(f.plugin_family),
+                "title": title,
+                "severity": {4: "Critical", 3: "High", 2: "Medium", 1: "Low"}.get(f.severity),
+                "release_date": None,
+                "url": None,
+                "restart_required": None,
+            }
+            kb_order.append(patch_id)
+
+    all_patch_ids = set(kb_order)
+    all_kbs = {pid for pid in all_patch_ids if pid.startswith("KB")}
+
+    # ── 2. Enrich from patch catalog (when available) ────────────────
+    superseded_by = {}
+    warnings = []
+
+    try:
+        from threat_intel.patch_catalog import get_patches_for_cve
+        from models.threat_intel_models import MSRCPatch
+        has_catalog = True
+    except ImportError:
+        has_catalog = False
+
+    if has_catalog and all_kbs:
+        # Query MSRC for metadata + supersedence on KBs we have
+        msrc_records = (
+            db.query(MSRCPatch)
+            .filter(MSRCPatch.kb_id.in_(all_kbs))
+            .all()
+        )
+        for r in msrc_records:
+            kb = (r.kb_id or "").upper()
+            entry = kb_to_entry.get(kb)
+            if entry:
+                entry["title"] = f"{r.kb_id} — {r.product_name}" if r.product_name else entry["title"]
+                entry["severity"] = r.severity or entry["severity"]
+                entry["release_date"] = r.release_date
+                entry["url"] = r.article_url
+                entry["restart_required"] = r.restart_required
+                # Add catalog CVEs on top of finding CVEs
+                kb_to_finding_cves[kb].add(r.cve_id)
+
+        # Check supersedence: newer KBs that replace ours
+        superseding = (
+            db.query(MSRCPatch)
+            .filter(MSRCPatch.supercedence.in_(all_kbs))
+            .all()
+        )
+        for r in superseding:
+            old_kb = (r.supercedence or "").upper()
+            new_kb = (r.kb_id or "").upper()
+            if old_kb in all_kbs and new_kb != old_kb:
+                superseded_by[old_kb] = new_kb
+                # New KB inherits old KB's CVEs
+                kb_to_finding_cves[new_kb].update(kb_to_finding_cves.get(old_kb, set()))
+                if new_kb not in kb_to_entry:
+                    kb_to_entry[new_kb] = {
+                        "advisory_id": r.kb_id,
+                        "source": "microsoft",
+                        "title": f"{r.kb_id} — {r.product_name}" if r.product_name else r.kb_id,
+                        "severity": r.severity,
+                        "release_date": r.release_date,
+                        "url": r.article_url,
+                        "restart_required": r.restart_required,
+                    }
+
+        # Attach reliability data
+        try:
+            from services import patch_reliability as reliability_svc
+            pairs = [
+                ("msrc" if pid.startswith("KB") else kb_to_entry[pid].get("source", ""), pid)
+                for pid in all_patch_ids
+            ]
+            rel_map = reliability_svc.get_reliability_map(db, pairs)
+            for pid in all_patch_ids:
+                key = (
+                    ("msrc" if pid.startswith("KB") else kb_to_entry[pid].get("source", "")).strip().lower(),
+                    pid.strip(),
+                )
+                rel = rel_map.get(key)
+                if rel:
+                    rel_dict = reliability_svc.reliability_to_dict(rel)
+                    kb_to_entry[pid]["reliability"] = rel_dict
+                    status = rel_dict.get("status", "unknown")
+                    if status == "recalled":
+                        warnings.append({
+                            "advisory_id": pid,
+                            "warning": "recalled",
+                            "message": f"{pid} has been recalled by the vendor — skip or check for a replacement",
+                        })
+                    elif status == "known_issues":
+                        warnings.append({
+                            "advisory_id": pid,
+                            "warning": "known_issues",
+                            "message": f"{pid} has known issues — test in staging before deploying",
+                            "score": rel_dict.get("score"),
+                        })
+        except Exception:
+            pass  # reliability is best-effort
+
+    # ── 3. Build final patch list with supersedence applied ──────────
+    superseded_set = set(superseded_by.keys())
+    effective_ids = [pid for pid in kb_order if pid not in superseded_set]
+    # Add replacement KBs that aren't already in the list
+    for new_kb in superseded_by.values():
+        if new_kb not in effective_ids:
+            effective_ids.append(new_kb)
+
+    patch_list = []
+    all_cves_covered = set()
+
+    for pid in effective_ids:
+        entry = dict(kb_to_entry.get(pid, {"advisory_id": pid}))
+        cves = sorted(kb_to_finding_cves.get(pid, set()))
+        entry["cves_fixed"] = cves[:20]
+        entry["cve_count"] = len(cves)
+        all_cves_covered.update(cves)
+
+        replaces = [old for old, new in superseded_by.items() if new == pid]
+        if replaces:
+            entry["supersedes"] = sorted(replaces)
+            entry["supersedes_count"] = len(replaces)
+
+        patch_list.append(entry)
+
+    uncovered = set(cve_ids or []) - all_cves_covered
+
+    return {
+        "patches": patch_list,
+        "patch_count": len(patch_list),
+        "original_finding_count": len(fingerprints),
+        "superseded_count": len(superseded_set),
+        "effective_patch_count": len(effective_ids),
+        "cves_covered": len(all_cves_covered),
+        "cves_uncovered": sorted(uncovered) if uncovered else [],
+        "warnings": warnings,
+        "has_recalled": any(w["warning"] == "recalled" for w in warnings),
+        "has_known_issues": any(w["warning"] == "known_issues" for w in warnings),
+    }
+
+
+def _build_patch_title(patch_breakdown, hostname, finding_count):
+    """Build an actionable title using patch catalog data."""
+    pb = patch_breakdown
+    effective = pb["effective_patch_count"]
+    superseded = pb["superseded_count"]
+
+    if effective == 0:
+        return "Apply %d pending patches — %s" % (finding_count, hostname)
+
+    if superseded > 0:
+        return "Install %d update%s (%d findings, %d superseded) — %s" % (
+            effective, "s" if effective != 1 else "",
+            finding_count, superseded, hostname)
+
+    return "Install %d patch%s (%d CVEs) — %s" % (
+        effective, "es" if effective != 1 else "",
+        pb["cves_covered"], hostname)
+
+
+def _build_patch_description(patch_breakdown, hostname):
+    """Build an actionable description listing actual patches to install."""
+    pb = patch_breakdown
+    parts = []
+
+    # Summary line
+    if pb["superseded_count"] > 0:
+        parts.append(
+            "**%d findings** collapse into **%d effective patches** "
+            "(%d older patches are superseded by cumulative updates)." % (
+                pb["original_finding_count"], pb["effective_patch_count"],
+                pb["superseded_count"]))
+    else:
+        parts.append(
+            "**%d patches** to install, covering **%d CVEs**." % (
+                pb["effective_patch_count"], pb["cves_covered"]))
+
+    # Warnings
+    for w in pb.get("warnings", []):
+        if w["warning"] == "recalled":
+            parts.append("\n> **Warning:** %s" % w["message"])
+        elif w["warning"] == "known_issues":
+            parts.append("\n> **Caution:** %s" % w["message"])
+
+    # Patch table
+    patches = pb.get("patches", [])
+    if patches:
+        parts.append("\n**Patches to install:**")
+        for p in patches[:15]:  # cap display
+            line = "- **%s**" % p["advisory_id"]
+            if p.get("title") and p["title"] != p["advisory_id"]:
+                line += " — %s" % p["title"]
+            if p.get("cve_count"):
+                line += " (%d CVEs)" % p["cve_count"]
+            if p.get("severity"):
+                line += " [%s]" % p["severity"]
+            if p.get("restart_required") and p["restart_required"].lower() not in ("no", ""):
+                line += " ⟳ restart required"
+            if p.get("supersedes"):
+                line += " (supersedes %s)" % ", ".join(p["supersedes"][:3])
+                if len(p["supersedes"]) > 3:
+                    line += " +%d more" % (len(p["supersedes"]) - 3)
+            # Reliability status
+            rel = p.get("reliability") or {}
+            status = rel.get("status")
+            if status == "recalled":
+                line += " **RECALLED**"
+            elif status == "known_issues":
+                line += " ⚠ known issues (score: %.1f)" % (rel.get("score", 0))
+            parts.append(line)
+        if len(patches) > 15:
+            parts.append("- ... +%d more patches" % (len(patches) - 15))
+
+    # Uncovered CVEs
+    uncovered = pb.get("cves_uncovered", [])
+    if uncovered:
+        parts.append("\n**CVEs with no known patch:** %s" % ", ".join(uncovered[:10]))
+        if len(uncovered) > 10:
+            parts[-1] += " +%d more" % (len(uncovered) - 10)
+
+    parts.append("\n**Affected host:** %s" % hostname)
+
+    parts.append(
+        "\n**Recommended action:**\n"
+        "1. Deploy the patches listed above via WSUS/SCCM/Intune (Windows) "
+        "or package manager (Linux)\n"
+        "2. Test in staging before production\n"
+        "3. Schedule maintenance window with reboot if required\n"
+        "4. Verify with follow-up scan")
+
+    return "\n".join(parts)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Main Pipeline
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -497,11 +866,13 @@ def aggregate_solutions(db, scan_id):
     Returns: {"created": int, "findings_linked": int}
     """
     # Clear previous aggregations for this scan
-    db.query(AggregatedSolution).filter(AggregatedSolution.scan_id == scan_id).delete()
+    # Nullify FK references first to avoid FOREIGN KEY constraint on delete
     db.query(Finding).filter(
         Finding.scan_id == scan_id,
         Finding.aggregated_solution_id.isnot(None),
     ).update({"aggregated_solution_id": None}, synchronize_session=False)
+    db.flush()
+    db.query(AggregatedSolution).filter(AggregatedSolution.scan_id == scan_id).delete()
     db.flush()
 
     # Load all findings
@@ -651,6 +1022,46 @@ def aggregate_solutions(db, scan_id):
         # Clean component name
         clean_component = (component or "").replace("__patch__", "")
 
+        # ── Enrich with patch catalog data ────────────────
+        patch_breakdown = _enrich_patch_group(
+            db, fps, asset_id, sorted(all_cves) if all_cves else [])
+
+        if patch_breakdown and patch_breakdown["effective_patch_count"] > 0:
+            title = _build_patch_title(patch_breakdown, hostname, finding_count)
+            description = _build_patch_description(patch_breakdown, hostname)
+            action_details = {
+                "patch_count": finding_count,
+                "effective_patch_count": patch_breakdown["effective_patch_count"],
+                "superseded_count": patch_breakdown["superseded_count"],
+                "host": hostname,
+                "cve_count": len(all_cves),
+                "cves_covered": patch_breakdown["cves_covered"],
+                "cves_uncovered": patch_breakdown["cves_uncovered"],
+                "has_recalled": patch_breakdown["has_recalled"],
+                "has_known_issues": patch_breakdown["has_known_issues"],
+                "patch_breakdown": patch_breakdown["patches"],
+                "warnings": patch_breakdown["warnings"],
+            }
+            if patch_breakdown["superseded_count"] > 0:
+                vs_alt = (
+                    "Collapses %d individual patches into %d effective updates "
+                    "(%d superseded by cumulative patches)" % (
+                        finding_count, patch_breakdown["effective_patch_count"],
+                        patch_breakdown["superseded_count"]))
+            else:
+                vs_alt = "Collapses %d separate patch actions into 1 maintenance window" % finding_count
+        else:
+            title = "Apply %d pending patches — %s" % (finding_count, hostname)
+            description = _build_description(
+                root_cause, "apply_patch", clean_component,
+                fps, target_version, [hostname])
+            action_details = {
+                "patch_count": finding_count,
+                "host": hostname,
+                "cve_count": len(all_cves),
+            }
+            vs_alt = "Collapses %d separate patch actions into 1 maintenance window" % finding_count
+
         agg = AggregatedSolution(
             scan_id=scan_id,
             affected_component=clean_component,
@@ -658,15 +1069,10 @@ def aggregate_solutions(db, scan_id):
             target_version=target_version,
             root_cause_type=root_cause,
             action_type="apply_patch",
-            title="Apply %d pending patches — %s" % (finding_count, hostname),
-            description=_build_description(root_cause, "apply_patch", clean_component,
-                                           fps, target_version, [hostname]),
-            action_details={
-                "patch_count": finding_count,
-                "host": hostname,
-                "cve_count": len(all_cves),
-            },
-            vs_alternative="Collapses %d separate patch actions into 1 maintenance window" % finding_count,
+            title=title,
+            description=description,
+            action_details=action_details,
+            vs_alternative=vs_alt,
             asset_ids=[asset_id],
             asset_id=asset_id,
             asset_count=1,

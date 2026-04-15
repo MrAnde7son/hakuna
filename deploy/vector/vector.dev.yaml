@@ -1,0 +1,100 @@
+# Vector.dev development configuration for Hakuna SIEM
+#
+# Accepts syslog (TCP/UDP) and HEC (HTTP) events, normalizes them,
+# and forwards to the Hakuna backend ingest endpoint.
+#
+# Usage:
+#   docker compose up vector-dev
+#   # or standalone:
+#   vector --config deploy/vector/vector.dev.yaml
+#
+# Replace HAKUNA_INGEST_ENDPOINT_ID and HAKUNA_INGEST_TOKEN with
+# values from: POST /api/siem/endpoints
+
+sources:
+  syslog_tcp:
+    type: syslog
+    mode: tcp
+    address: "0.0.0.0:6514"
+
+  syslog_udp:
+    type: syslog
+    mode: udp
+    address: "0.0.0.0:9514"
+
+  hec_input:
+    type: splunk_hec
+    address: "0.0.0.0:8088"
+    # token: "optional-hec-token"
+
+transforms:
+  normalize_syslog:
+    type: remap
+    inputs:
+      - syslog_tcp
+      - syslog_udp
+    source: |
+      .source_system = "syslog"
+      .event_type = "system"
+      .host_name = to_string(.host) ?? ""
+      .event_time = to_string(.timestamp) ?? to_string(now())
+
+      # Map syslog severity (0=emergency..7=debug)
+      sev = to_int(.severity) ?? 6
+      if sev <= 2 {
+        .severity = "critical"
+      } else if sev == 3 {
+        .severity = "high"
+      } else if sev == 4 {
+        .severity = "medium"
+      } else if sev == 5 {
+        .severity = "low"
+      } else {
+        .severity = "info"
+      }
+
+      # Detect auth events
+      appname = to_string(.appname) ?? ""
+      if contains(appname, "sshd") || contains(appname, "sudo") {
+        .event_type = "authentication"
+      }
+
+  normalize_hec:
+    type: remap
+    inputs:
+      - hec_input
+    source: |
+      .source_system = to_string(.source) ?? "hec"
+      .event_type = to_string(.sourcetype) ?? "hec_event"
+      .host_name = to_string(.host) ?? ""
+      .event_time = to_string(.timestamp) ?? to_string(now())
+      .severity = "info"
+
+sinks:
+  # To activate: replace the endpoint ID and token below,
+  # then uncomment the sink.
+  #
+  # hakuna_ingest:
+  #   type: http
+  #   inputs:
+  #     - normalize_syslog
+  #     - normalize_hec
+  #   uri: "http://backend:8000/api/ingest/events/HAKUNA_INGEST_ENDPOINT_ID"
+  #   method: post
+  #   encoding:
+  #     codec: json
+  #   headers:
+  #     Authorization: "Bearer HAKUNA_INGEST_TOKEN"
+  #     Content-Type: "application/json"
+  #   batch:
+  #     max_events: 100
+  #     timeout_secs: 5
+
+  # Debug: print to console during development
+  console_debug:
+    type: console
+    inputs:
+      - normalize_syslog
+      - normalize_hec
+    encoding:
+      codec: json

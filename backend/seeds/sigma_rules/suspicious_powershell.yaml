@@ -1,0 +1,18 @@
+title: Suspicious PowerShell Execution
+id: hakuna-sigma-002
+status: stable
+level: high
+description: Detects PowerShell commands with common attack patterns
+tags:
+  - attack.t1059.001
+  - attack.execution
+detection:
+  selection:
+    message|contains:
+      - "Invoke-Expression"
+      - "IEX("
+      - "DownloadString"
+      - "-EncodedCommand"
+      - "FromBase64String"
+  condition: selection
+  timeframe: 1m

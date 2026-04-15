@@ -1,0 +1,38 @@
+{
+  "id": "webhook_google_workspace",
+  "name": "Google Workspace",
+  "description": "Receive Google Workspace admin audit and login events via webhook",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/gcp.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "json"
+  },
+  "default_field_map": [
+    { "source": "id.time", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "id.applicationName", "target": "source_system" },
+    { "source": "id.uniqueQualifier", "target": "source_id" },
+    { "source": "events[0].name", "target": "event_type" },
+    { "source": "actor.email", "target": "actor" },
+    { "source": "ipAddress", "target": "source_ip" },
+    { "source": "events[0].parameters", "target": "raw_event", "transform": { "type": "json_stringify" } },
+    { "source": "id.applicationName", "target": "category" }
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "static_fields": {
+    "source_system": "google_workspace"
+  },
+  "setup_guide": {
+    "title": "Forward Google Workspace events",
+    "steps": [
+      "In Google Admin Console, go to Reporting → Audit and investigation",
+      "Use the Push Notifications API or Google Workspace Alerts API",
+      "Configure a Cloud Function to forward events to the Hakuna webhook URL",
+      "Include the Bearer token in the Authorization header"
+    ],
+    "doc_url": "https://developers.google.com/admin-sdk/reports/v1/guides/push"
+  },
+  "sample_payload": "{\"id\":{\"time\":\"2024-03-15T14:23:45Z\",\"applicationName\":\"admin\",\"uniqueQualifier\":\"123456789\"},\"actor\":{\"email\":\"admin@example.com\"},\"ipAddress\":\"203.0.113.50\",\"events\":[{\"name\":\"CHANGE_PASSWORD\",\"parameters\":[{\"name\":\"USER_EMAIL\",\"value\":\"user@example.com\"}]}]}"
+}

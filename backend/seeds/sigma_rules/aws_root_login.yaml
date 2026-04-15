@@ -1,0 +1,14 @@
+title: AWS Root Account Login
+id: hakuna-sigma-003
+status: stable
+level: critical
+description: Detects usage of the AWS root account which should be avoided
+tags:
+  - attack.t1078
+  - attack.initial_access
+detection:
+  selection:
+    source_system: aws_cloudtrail
+    event_type: AwsConsoleSignIn
+    user_name: root
+  condition: selection

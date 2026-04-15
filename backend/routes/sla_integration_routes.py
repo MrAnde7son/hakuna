@@ -855,10 +855,34 @@ def _agg_solution_to_dict(a: AggregatedSolution, db: Session) -> dict:
         "efficiency_score": a.efficiency_score or 0,
         # Downstream impact assessment (upgrade/migrate actions only)
         "downstream_impact": a.downstream_impact,
+        # Patch catalog enrichment (apply_patch actions only)
+        "patch_breakdown": _extract_patch_breakdown(a),
         # Operational
         "effort_level": a.effort_level,
         "owner_suggestion": a.owner_suggestion,
         "created_at": a.created_at.isoformat() if a.created_at else None,
+    }
+
+
+def _extract_patch_breakdown(a: AggregatedSolution) -> dict | None:
+    """Extract patch breakdown from action_details for apply_patch actions."""
+    if a.action_type != "apply_patch":
+        return None
+    details = a.action_details
+    if not details or not isinstance(details, dict):
+        return None
+    breakdown = details.get("patch_breakdown")
+    if not breakdown:
+        return None
+    return {
+        "patches": breakdown,
+        "effective_patch_count": details.get("effective_patch_count", len(breakdown)),
+        "superseded_count": details.get("superseded_count", 0),
+        "cves_covered": details.get("cves_covered", 0),
+        "cves_uncovered": details.get("cves_uncovered", []),
+        "warnings": details.get("warnings", []),
+        "has_recalled": details.get("has_recalled", False),
+        "has_known_issues": details.get("has_known_issues", False),
     }
 
 

@@ -370,6 +370,14 @@ export const getAssets = (params = {}) => {
 export const getAsset = (id) => request(`/assets/${id}`)
 export const getAssetRiskBreakdown = (id) => request(`/assets/${id}/risk-breakdown`)
 export const getAssetSources = (id) => request(`/assets/${id}/sources`)
+export const getAssetSiemEvents = (id, params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/assets/${id}/siem-events?${q}`)
+}
+export const getAssetAlerts = (id, params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/assets/${id}/alerts?${q}`)
+}
 export const updateAsset = (id, data) => {
   const q = new URLSearchParams(Object.entries(data).filter(([, v]) => v != null && v !== ''))
   return request(`/assets/${id}?${q}`, { method: 'PATCH' })
@@ -1193,6 +1201,10 @@ export const integrationPreview = (data) => request(`${IB}/preview`, {
 export const integrationAutoSuggest = (data) => request(`${IB}/auto-suggest`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
 })
+export const detectFromSample = (data) => request(`${IB}/detect-sample`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+})
+export const pollIntegrationEvents = (integrationId) => request(`${IB}/integrations/${integrationId}/poll-events`)
 
 export const ibGetIntegrations = () => request(`${IB}/integrations`)
 export const ibCreateIntegration = (data) => request(`${IB}/integrations`, {
@@ -1340,3 +1352,61 @@ export const runControlAssessment = (params = {}) => {
   return request(`/control-assessments/run${qs ? '?' + qs : ''}`, { method: 'POST' })
 }
 export const getControlAssessmentStats = () => request('/control-assessments/stats')
+
+// ── SIEM Events ───────────────────────────────────────
+
+export const searchSiemEvents = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/siem/events/search?${q}`)
+}
+export const getSiemEvent = (id) => request(`/siem/events/${id}`)
+export const getSiemSourceSystems = () => request('/siem/events/source-systems')
+export const ingestSiemEvent = (data) => request('/siem/events', { method: 'POST', body: JSON.stringify(data) })
+export const ingestSiemEventsBatch = (events) => request('/siem/events/batch', { method: 'POST', body: JSON.stringify({ events }) })
+
+// ── SIEM Detection Rules ──────────────────────────────
+
+export const getDetectionRules = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/detection-rules?${q}`)
+}
+export const getDetectionRule = (id) => request(`/detection-rules/${id}`)
+export const createDetectionRule = (data) => request('/detection-rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+export const updateDetectionRule = (id, data) => request(`/detection-rules/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+export const deleteDetectionRule = (id) => request(`/detection-rules/${id}`, { method: 'DELETE' })
+export const testDetectionRule = (data) => request('/detection-rules/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+
+// ── SIEM Alerts ───────────────────────────────────────
+
+export const getAlerts = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/alerts?${q}`)
+}
+export const getAlert = (id) => request(`/alerts/${id}`)
+export const updateAlert = (id, data) => request(`/alerts/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+export const triageAlert = (id, data) => request(`/alerts/${id}/triage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+
+// ── SIEM Ingest Endpoints ─────────────────────────────
+
+export const getSiemEndpoints = () => request('/siem/endpoints')
+export const createSiemEndpoint = (data) => request('/siem/endpoints', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+export const deleteSiemEndpoint = (id) => request(`/siem/endpoints/${id}`, { method: 'DELETE' })
+export const getVectorTemplates = () => request('/siem/vector-templates')
+
+// SIEM reports
+export const getSiemSummary = () => request('/reports/siem-summary')
+export const getSiemEventVolume = (hours) => request(`/reports/siem-event-volume?hours=${hours || 24}`)
+export const getSiemNoisySources = () => request('/reports/siem-noisy-sources')
+export const getSiemAlertSeverity = () => request('/reports/siem-alert-severity')
+export const getSiemRecentAlerts = (limit) => request(`/reports/siem-recent-alerts?limit=${limit || 15}`)
+export const generateVectorConfig = (data) => request('/siem/vector-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+
+// ── Suppression Rules ─────────────────────────────────
+
+export const getSuppressionRules = (params = {}) => {
+  const q = new URLSearchParams(params).toString()
+  return request(`/suppression-rules?${q}`)
+}
+export const createSuppressionRule = (data) => request('/suppression-rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+export const updateSuppressionRule = (id, data) => request(`/suppression-rules/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+export const deleteSuppressionRule = (id) => request(`/suppression-rules/${id}`, { method: 'DELETE' })

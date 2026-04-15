@@ -1,0 +1,40 @@
+{
+  "id": "webhook_palo_alto",
+  "name": "Palo Alto Networks",
+  "description": "Receive Palo Alto PAN-OS threat and traffic logs via HTTP log forwarding",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/palo_alto.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "json"
+  },
+  "default_field_map": [
+    { "source": "receive_time", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "type", "target": "event_type" },
+    { "source": "seqno", "target": "source_id" },
+    { "source": "threatid", "target": "message" },
+    { "source": "severity", "target": "severity", "transform": { "type": "lowercase" } },
+    { "source": "src", "target": "source_ip" },
+    { "source": "dst", "target": "dest_ip" },
+    { "source": "srcuser", "target": "actor" },
+    { "source": "rule", "target": "rule_name" },
+    { "source": "action", "target": "outcome" }
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "static_fields": {
+    "source_system": "palo_alto"
+  },
+  "setup_guide": {
+    "title": "Configure PAN-OS HTTP log forwarding",
+    "steps": [
+      "In PAN-OS, go to Device → Server Profiles → HTTP",
+      "Create a new HTTP server profile with the Hakuna webhook URL",
+      "Set the Authorization header to 'Bearer <your-token>'",
+      "Go to Objects → Log Forwarding and assign the profile to a policy rule"
+    ],
+    "doc_url": "https://docs.paloaltonetworks.com/pan-os/11-0/pan-os-admin/monitoring/use-syslog-for-monitoring/configure-syslog-monitoring"
+  },
+  "sample_payload": "{\"receive_time\":\"2024-03-15T14:23:45Z\",\"type\":\"THREAT\",\"seqno\":\"1234567\",\"threatid\":\"Suspicious DNS Query(12345)\",\"severity\":\"high\",\"src\":\"10.0.0.50\",\"dst\":\"198.51.100.1\",\"srcuser\":\"jsmith\",\"rule\":\"outbound-threat-block\",\"action\":\"block-url\"}"
+}

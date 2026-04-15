@@ -46,6 +46,24 @@ NORMALIZED_SCHEMA = {
         {"name": "asset.environment", "type": "string", "required": False, "group": "action", "description": "Asset environment"},
         {"name": "custom_payload", "type": "json", "required": False, "group": "action", "description": "Free-form JSON template with {{variable}} syntax"},
     ],
+    "siem_event": [
+        {"name": "event_time", "type": "datetime", "required": True, "group": "siem_event", "description": "Timestamp when the event occurred"},
+        {"name": "source_system", "type": "string", "required": True, "group": "siem_event", "description": "Source system identifier (e.g. palo_alto, crowdstrike)"},
+        {"name": "source_id", "type": "string", "required": False, "group": "siem_event", "description": "Original event ID in the source system"},
+        {"name": "event_type", "type": "string", "required": True, "group": "siem_event", "description": "ECS event type (authentication, network, process, etc.)"},
+        {"name": "event_category", "type": "string", "required": False, "group": "siem_event", "description": "ECS event category (threat, intrusion_detection, etc.)"},
+        {"name": "severity", "type": "enum", "required": False, "group": "siem_event", "description": "Event severity level",
+         "enum_values": ["info", "low", "medium", "high", "critical"]},
+        {"name": "action", "type": "string", "required": False, "group": "siem_event", "description": "Action taken (allowed, denied, dropped)"},
+        {"name": "outcome", "type": "string", "required": False, "group": "siem_event", "description": "Outcome (success, failure, unknown)"},
+        {"name": "user_name", "type": "string", "required": False, "group": "siem_event", "description": "Username associated with the event"},
+        {"name": "source_ip", "type": "string", "required": False, "group": "siem_event", "description": "Source IP address"},
+        {"name": "dest_ip", "type": "string", "required": False, "group": "siem_event", "description": "Destination IP address"},
+        {"name": "host_name", "type": "string", "required": False, "group": "siem_event", "description": "Hostname where the event occurred"},
+        {"name": "message", "type": "string", "required": False, "group": "siem_event", "description": "Human-readable event message"},
+        {"name": "raw", "type": "json", "required": False, "group": "siem_event", "description": "Original event payload"},
+        {"name": "normalized", "type": "json", "required": False, "group": "siem_event", "description": "ECS-normalized fields"},
+    ],
 }
 
 

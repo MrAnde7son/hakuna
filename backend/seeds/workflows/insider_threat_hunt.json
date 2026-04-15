@@ -1,0 +1,15 @@
+{
+  "name": "Insider threat hunt",
+  "description": "Scheduled daily: agent runs hunt queries for anomalous user behavior, creates alerts on findings.",
+  "trigger": {
+    "type": "schedule",
+    "schedule": "0 6 * * *"
+  },
+  "nodes": [
+    {"id": "trigger", "type": "trigger", "data": {"event_type": "schedule"}},
+    {"id": "hunt", "type": "run_agent", "data": {"template": "soc_triage", "input": "Hunt for insider threats: look for unusual login times, excessive failed auths, and data exfiltration patterns in the last 24 hours."}}
+  ],
+  "edges": [
+    {"from": "trigger", "to": "hunt"}
+  ]
+}

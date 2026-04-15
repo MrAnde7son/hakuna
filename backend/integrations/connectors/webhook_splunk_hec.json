@@ -1,0 +1,32 @@
+{
+  "id": "webhook_splunk_hec",
+  "name": "Splunk HEC",
+  "description": "Receive events via Splunk HTTP Event Collector protocol",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/splunk.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "hec"
+  },
+  "default_field_map": [
+    { "source": "time", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "source", "target": "source_system" },
+    { "source": "sourcetype", "target": "event_type" },
+    { "source": "host", "target": "source_ip" },
+    { "source": "event", "target": "raw_event" }
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "setup_guide": {
+    "title": "Forward Splunk events via HEC",
+    "steps": [
+      "In Splunk, go to Settings → Data Inputs → HTTP Event Collector",
+      "Create a new HEC output pointing to the Hakuna webhook URL",
+      "Or configure a Splunk saved search alert to forward via HTTP POST",
+      "Use the Bearer token from below as the HEC token"
+    ],
+    "doc_url": "https://docs.splunk.com/Documentation/Splunk/latest/Data/UsetheHTTPEventCollector"
+  },
+  "sample_payload": "{\"time\":1710505425,\"host\":\"web-prod-01\",\"source\":\"syslog\",\"sourcetype\":\"linux:auth\",\"event\":{\"message\":\"Failed password for root from 192.168.1.100 port 22 ssh2\",\"severity\":\"high\",\"action\":\"blocked\",\"user\":\"root\",\"src_ip\":\"192.168.1.100\"}}"
+}

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Bell, X, Check, CheckCheck, ShieldAlert, Server, Scan, Target, AlertTriangle, Skull, Clock, XCircle } from 'lucide-react'
+import { Bell, X, Check, CheckCheck, ShieldAlert, Server, Scan, Target, AlertTriangle, Skull, Clock, XCircle, Siren } from 'lucide-react'
 import { getNotifications, getUnreadNotificationCount, markNotificationRead, markAllNotificationsRead } from '../../api'
 
 const POLL_INTERVAL = 60_000 // 60s
@@ -15,6 +15,7 @@ const CATEGORY_CONFIG = {
   sla_breach:        { icon: Clock,         color: '#d97706' },
   new_threat_groups: { icon: Skull,         color: '#be185d' },
   eol_update:        { icon: AlertTriangle, color: '#9333ea' },
+  security_alert:    { icon: Siren,         color: '#e11d48' },
 }
 
 function timeAgo(dateStr) {

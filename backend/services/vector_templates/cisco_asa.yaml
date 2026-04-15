@@ -1,0 +1,30 @@
+# Vector source template: Cisco ASA syslog
+# Input: Syslog from Cisco ASA/Firepower firewalls
+# Output: ECS-normalized JSON events
+source:
+  type: syslog
+  mode: tcp
+  address: "0.0.0.0:{{listen_port|default('6514')}}"
+
+transform_vrl: |
+  .source_system = "cisco_asa"
+  .event_type = "network"
+
+  # Extract ASA message ID (e.g., %ASA-4-106023)
+  asa_match = parse_regex!(.message, r'%ASA-(?P<level>\d)-(?P<msg_id>\d+):\s*(?P<body>.*)')
+  .event_category = get(asa_match, "msg_id") ?? ""
+
+  level = to_int!(get(asa_match, "level") ?? "6")
+  .severity = if level <= 2 { "critical" }
+    else if level == 3 { "high" }
+    else if level == 4 { "medium" }
+    else if level == 5 { "low" }
+    else { "info" }
+
+  # Try to extract IPs from common ASA patterns
+  ip_match = parse_regex(.message, r'(?P<src>\d+\.\d+\.\d+\.\d+)/\d+\s*->\s*(?P<dst>\d+\.\d+\.\d+\.\d+)/\d+') ?? {}
+  .source_ip = get(ip_match, "src") ?? ""
+  .dest_ip = get(ip_match, "dst") ?? ""
+
+sample_event: |
+  <166>%ASA-6-302013: Built outbound TCP connection 12345 for outside:203.0.113.50/443 (203.0.113.50/443) to inside:10.0.0.5/54321 (10.0.0.5/54321)

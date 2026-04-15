@@ -1,0 +1,32 @@
+# Vector source template: Fortinet FortiGate syslog
+# Input: Syslog (key=value format) from FortiGate firewalls
+# Output: ECS-normalized JSON events
+source:
+  type: syslog
+  mode: tcp
+  address: "0.0.0.0:{{listen_port|default('6514')}}"
+
+transform_vrl: |
+  .source_system = "fortinet_fortigate"
+  .event_type = "network"
+
+  # FortiGate uses key=value format
+  .source_ip = parse_key_value!(.message).srcip ?? ""
+  .dest_ip = parse_key_value!(.message).dstip ?? ""
+  .action = parse_key_value!(.message).action ?? ""
+  .user_name = parse_key_value!(.message).user ?? ""
+  .host_name = parse_key_value!(.message).devname ?? ""
+
+  level = parse_key_value!(.message).level ?? "notice"
+  .severity = if level == "emergency" || level == "alert" || level == "critical" {
+    "critical"
+  } else if level == "error" {
+    "high"
+  } else if level == "warning" {
+    "medium"
+  } else {
+    "low"
+  }
+
+sample_event: |
+  <13>date=2026-04-14 time=10:30:00 devname="FGT60F" devid="FGT60F0000000001" logid="0000000013" type="traffic" subtype="forward" level="notice" srcip=10.0.0.5 srcport=54321 dstip=203.0.113.50 dstport=443 action="accept" user="admin"

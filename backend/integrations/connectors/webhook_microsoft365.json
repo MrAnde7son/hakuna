@@ -1,0 +1,36 @@
+{
+  "id": "webhook_microsoft365",
+  "name": "Microsoft 365 / Entra ID",
+  "description": "Receive Microsoft 365 and Entra ID audit and sign-in events via webhook",
+  "category": "Event Ingest",
+  "logo": "/logos/vendors/microsoft.svg",
+  "direction": "push",
+  "entity": "siem_event",
+  "transport_type": "webhook",
+  "transport_config": {
+    "parser_type": "json"
+  },
+  "default_field_map": [
+    { "source": "createdDateTime", "target": "event_time", "transform": { "type": "datetime" } },
+    { "source": "servicePrincipalId", "target": "source_system" },
+    { "source": "id", "target": "source_id" },
+    { "source": "activityDisplayName", "target": "event_type" },
+    { "source": "initiatedBy.user.userPrincipalName", "target": "actor" },
+    { "source": "initiatedBy.user.ipAddress", "target": "source_ip" },
+    { "source": "result", "target": "severity", "transform": { "type": "map", "map": { "failure": "high", "success": "info" }, "default": "medium" } },
+    { "source": "activityDisplayName", "target": "message" },
+    { "source": "category", "target": "category" }
+  ],
+  "dedup_key": ["source_system", "source_id"],
+  "setup_guide": {
+    "title": "Forward Microsoft 365 / Entra ID events",
+    "steps": [
+      "In Azure Portal, go to Entra ID → Monitoring → Diagnostic settings",
+      "Create a diagnostic setting to stream audit logs",
+      "Use an Azure Logic App or Function App to forward events via HTTP POST",
+      "Set the destination to the Hakuna webhook URL with Bearer token auth"
+    ],
+    "doc_url": "https://learn.microsoft.com/en-us/entra/identity/monitoring-health/howto-configure-diagnostic-settings"
+  },
+  "sample_payload": "{\"id\":\"a1b2c3d4-5678-90ab-cdef-1234567890ab\",\"createdDateTime\":\"2024-03-15T14:23:45Z\",\"activityDisplayName\":\"Update user\",\"category\":\"UserManagement\",\"result\":\"success\",\"servicePrincipalId\":\"Microsoft 365\",\"initiatedBy\":{\"user\":{\"userPrincipalName\":\"admin@contoso.com\",\"ipAddress\":\"203.0.113.50\"}}}"
+}

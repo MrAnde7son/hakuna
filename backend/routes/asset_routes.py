@@ -536,6 +536,101 @@ def get_asset_relationships(asset_id: int, db: Session = Depends(get_db), org_id
     return results
 
 
+@router.get("/api/assets/{asset_id}/siem-events")
+def get_asset_siem_events(
+    asset_id: int,
+    page: int = 1,
+    page_size: int = 25,
+    severity: Optional[str] = None,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return SIEM events linked to this asset, plus open alert count."""
+    from models.models import SIEMEvent, Alert
+
+    query = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id == asset_id)
+    query = apply_scan_org_filter(query, org_ids)
+    if not query.first():
+        raise HTTPException(404, "Asset not found")
+
+    # Events
+    eq = db.query(SIEMEvent).filter(SIEMEvent.asset_id == asset_id)
+    if severity:
+        eq = eq.filter(SIEMEvent.severity == severity)
+    total = eq.count()
+    events = eq.order_by(SIEMEvent.event_time.desc()).offset((page - 1) * page_size).limit(page_size).all()
+
+    # Alert summary for this asset
+    alert_count = db.query(Alert).filter(
+        Alert.asset_id == asset_id,
+        Alert.status == "open",
+        Alert.suppressed == False,
+    ).count()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "alert_count": alert_count,
+        "events": [
+            {
+                "id": ev.id,
+                "event_time": ev.event_time.isoformat() if ev.event_time else None,
+                "source_system": ev.source_system,
+                "event_type": ev.event_type,
+                "severity": ev.severity,
+                "message": (ev.message or "")[:300],
+                "source_ip": ev.source_ip,
+                "dest_ip": ev.dest_ip,
+                "user_name": ev.user_name,
+                "host_name": ev.host_name,
+                "action": ev.action,
+                "outcome": ev.outcome,
+            }
+            for ev in events
+        ],
+    }
+
+
+@router.get("/api/assets/{asset_id}/alerts")
+def get_asset_alerts(
+    asset_id: int,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return SIEM alerts linked to this asset."""
+    from models.models import Alert, DetectionRule
+
+    query = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id == asset_id)
+    query = apply_scan_org_filter(query, org_ids)
+    if not query.first():
+        raise HTTPException(404, "Asset not found")
+
+    aq = db.query(Alert).filter(Alert.asset_id == asset_id)
+    if status:
+        aq = aq.filter(Alert.status == status)
+    alerts = aq.order_by(Alert.fired_at.desc()).limit(50).all()
+
+    rule_ids = {a.rule_id for a in alerts if a.rule_id}
+    rules = {r.id: r for r in db.query(DetectionRule).filter(DetectionRule.id.in_(rule_ids)).all()} if rule_ids else {}
+
+    return [
+        {
+            "id": a.id,
+            "rule_name": rules.get(a.rule_id, None) and rules[a.rule_id].name,
+            "severity": a.severity,
+            "status": a.status,
+            "event_count": a.event_count,
+            "fired_at": a.fired_at.isoformat() if a.fired_at else None,
+            "entity_type": a.entity_type,
+            "entity_value": a.entity_value,
+            "suppressed": a.suppressed,
+        }
+        for a in alerts
+    ]
+
+
 @router.get("/api/asset-graph")
 def get_asset_graph(
     asset_ids: str, depth: int = 1,
