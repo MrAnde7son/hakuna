@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect, useCallback } from 'react'
 import { UserCheck, Plus, Play, Edit2, Trash2, ToggleLeft, ToggleRight, X, Save, ArrowRight } from 'lucide-react'
-import { Card, Button, Spinner, useConfirm, useToast } from '../shared/ui.jsx'
+import { Card, Button, Spinner, useConfirm, useToast, OWNERSHIP_ROLE_OPTIONS } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import {
   getOwnershipRules, createOwnershipRule, updateOwnershipRule,
@@ -16,7 +16,7 @@ const labelStyle = { fontSize: 11, fontWeight: 600, color: 'var(--text-secondary
 const inputStyle = { width: '100%', padding: '6px 10px', fontSize: 13, background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-primary)', boxSizing: 'border-box' }
 const iconBtnStyle = { background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', padding: 4, borderRadius: 4 }
 
-const ROLE_OPTIONS = ['IT', 'DevOps', 'SecOps', 'AppSec', 'Custom']
+const ROLE_OPTIONS = OWNERSHIP_ROLE_OPTIONS
 const TARGET_OPTIONS = [
   { value: 'asset',   label: 'Assets only' },
   { value: 'finding', label: 'Findings only' },

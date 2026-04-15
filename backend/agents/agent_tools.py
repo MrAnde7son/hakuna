@@ -4327,7 +4327,7 @@ def list_ownership_rules(db: Session, params: dict):
         "priority": {"type": "integer", "description": "Priority (lower = evaluated first)"},
         "owner_name": {"type": "string", "description": "Owner name to assign"},
         "owner_email": {"type": "string", "description": "Owner email to assign"},
-        "owner_role": {"type": "string", "description": "Owner role: IT, DevOps, SecOps, AppSec, etc."},
+        "owner_role": {"type": "string", "description": "Owner role. Common values: IT, HelpDesk, DevOps, SRE, Platform, Networking, CloudOps, DBA, SecOps, SOC, AppSec, CloudSec, IAM, GRC, Engineering, Mobile, Data, Custom"},
         "team": {"type": "string", "description": "Team name to assign"},
         "is_enabled": {"type": "boolean", "description": "Whether the rule is active"},
         "confirmed": {"type": "boolean", "description": "REQUIRED: Set to true only after user approval"},

@@ -476,7 +476,7 @@ class Finding(Base):
     # Prioritization
     priority_score = Column(Float, default=0.0)
     effort_level = Column(String)  # quick_win / medium / complex
-    owner_suggestion = Column(String)  # IT / DevOps / SecOps / AppSec
+    owner_suggestion = Column(String)  # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
     remediation_steps = Column(Text)
 
     # Temporal tracking (cross-scan lifecycle)
@@ -1164,7 +1164,7 @@ class AssetOwnership(Base):
     asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False, unique=True, index=True)
     owner_name = Column(String)
     owner_email = Column(String)
-    owner_role = Column(String)   # IT / DevOps / SecOps / AppSec / Custom
+    owner_role = Column(String)   # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
     team = Column(String)
     notes = Column(Text)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1180,7 +1180,7 @@ class FindingOwnership(Base):
     finding_id = Column(Integer, ForeignKey("findings.id"), nullable=False, unique=True, index=True)
     owner_name = Column(String)
     owner_email = Column(String)
-    owner_role = Column(String)   # IT / DevOps / SecOps / AppSec / Custom
+    owner_role = Column(String)   # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
     team = Column(String)
     notes = Column(Text)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1269,7 +1269,7 @@ class OwnershipRule(Base):
     # Action: ownership fields to set (None = leave untouched)
     owner_name = Column(String, nullable=True)
     owner_email = Column(String, nullable=True)
-    owner_role = Column(String, nullable=True)       # IT / DevOps / SecOps / AppSec / Custom
+    owner_role = Column(String, nullable=True)       # canonical role, see core.ownership_teams.OWNERSHIP_ROLES
     team = Column(String, nullable=True)
     notes = Column(String, nullable=True)
     overwrite_existing = Column(Boolean, default=False)  # overwrite manually-set ownership

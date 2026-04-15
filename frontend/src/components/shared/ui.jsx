@@ -816,15 +816,32 @@ export function PatchReliabilityBadge({ reliability, size = 'md' }) {
   )
 }
 
+// Canonical ownership role → color map. Keep in sync with OWNERSHIP_ROLE_OPTIONS below.
+export const OWNERSHIP_ROLE_COLORS = {
+  // Infrastructure & Ops
+  IT:         '#0ea5e9',
+  HelpDesk:   '#38bdf8',
+  DevOps:     '#8b5cf6',
+  SRE:        '#a78bfa',
+  Platform:   '#7c3aed',
+  Networking: '#14b8a6',
+  CloudOps:   '#3b82f6',
+  DBA:        '#06b6d4',
+  // Security
+  SecOps:     '#dc2626',
+  SOC:        '#ef4444',
+  AppSec:     '#f59e0b',
+  CloudSec:   '#fb923c',
+  IAM:        '#d946ef',
+  GRC:        '#a855f7',
+  // Engineering
+  Engineering:'#22c55e',
+  Mobile:     '#10b981',
+  Data:       '#84cc16',
+}
+
 export function OwnerBadge({ owner }) {
-  const MAP = {
-    IT: '#0ea5e9',
-    DevOps: '#8b5cf6',
-    SecOps: '#dc2626',
-    AppSec: '#f59e0b',
-    DBA: '#06b6d4',
-  }
-  return <Pill label={owner || '—'} color={MAP[owner] || 'var(--text-muted)'} />
+  return <Pill label={owner || '—'} color={OWNERSHIP_ROLE_COLORS[owner] || 'var(--text-muted)'} />
 }
 
 const SOURCE_LABELS = {
@@ -850,8 +867,7 @@ export function ResolvedOwnerBadge({ resolved }) {
   const name = resolved.owner_name
   const src = SOURCE_LABELS[resolved.source] || 'Default'
   const srcColor = SOURCE_COLORS[resolved.source] || 'var(--text-muted)'
-  const MAP = { IT: '#0ea5e9', DevOps: '#8b5cf6', SecOps: '#dc2626', AppSec: '#f59e0b', DBA: '#06b6d4' }
-  const roleColor = MAP[role] || 'var(--text-muted)'
+  const roleColor = OWNERSHIP_ROLE_COLORS[role] || 'var(--text-muted)'
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -869,7 +885,20 @@ export function ResolvedOwnerBadge({ resolved }) {
   )
 }
 
-const ROLE_OPTIONS = ['', 'IT', 'DevOps', 'SecOps', 'AppSec', 'DBA', 'Networking', 'CloudOps']
+// Canonical ownership role / team-type list.
+// Grouped: Infrastructure & Ops → Security → Engineering. Exported for reuse across pages.
+export const OWNERSHIP_ROLE_OPTIONS = [
+  // Infrastructure & Operations (fixers)
+  'IT', 'HelpDesk', 'DevOps', 'SRE', 'Platform', 'Networking', 'CloudOps', 'DBA',
+  // Security (finders & fixers)
+  'SecOps', 'SOC', 'AppSec', 'CloudSec', 'IAM', 'GRC',
+  // Engineering (fixers)
+  'Engineering', 'Mobile', 'Data',
+  // Escape hatch
+  'Custom',
+]
+
+const ROLE_OPTIONS = ['', ...OWNERSHIP_ROLE_OPTIONS.filter(r => r !== 'Custom')]
 
 export function OwnershipEditPopover({ current, onSave, onClose }) {
   const [form, setForm] = useState(() => ({
