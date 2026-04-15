@@ -984,6 +984,10 @@ export const saveDedupConfig = (cfg) => request('/dedup/config', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(cfg),
 })
+/** Remove this org's dedup override, reverting to the global defaults. */
+export const deleteDedupOrgOverride = () => request('/dedup/config/org-override', {
+  method: 'DELETE',
+})
 export const runDedup = (entity_type, scan_id = null) => request('/dedup/run', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },

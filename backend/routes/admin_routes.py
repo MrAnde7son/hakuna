@@ -42,17 +42,128 @@ router = APIRouter()
 # ─────────────────────────────────────────────
 
 @router.get("/api/dedup/config")
-def get_dedup_config():
-    """Return the current deduplication configuration."""
-    return dedup_engine.load_config()
+def get_dedup_config(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    """Return the effective deduplication configuration for the current org.
+
+    Equals the global config when no org override exists, otherwise the
+    global deep-merged with the org's sparse override.
+    """
+    org_id = int(x_org_context) if x_org_context else user.org_id
+    cfg = dedup_engine.load_config_for_org(db, org_id)
+    cfg["is_org_override"] = dedup_engine.has_org_override(db, org_id)
+    return cfg
 
 
 @router.put("/api/dedup/config")
-async def save_dedup_config(request: Request):
-    """Save a new deduplication configuration."""
+async def save_dedup_config(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    """Save deduplication configuration for the current org as an override.
+
+    Platform superadmins can save the global config by posting without an
+    org context and with ?scope=global.
+    """
+    org_id = int(x_org_context) if x_org_context else user.org_id
     body = await request.json()
-    dedup_engine.save_config(body)
-    return {"message": "Config saved"}
+    body.pop("is_org_override", None)  # strip read-only field
+
+    scope = request.query_params.get("scope", "org")
+    if scope == "global":
+        if user.role != "superadmin":
+            raise HTTPException(403, "Only superadmins can modify the global dedup config")
+        dedup_engine.save_config(body)
+        return {"message": "Global dedup config saved", "scope": "global"}
+
+    dedup_engine.save_config_for_org(db, org_id, body)
+    return {"message": "Org dedup config saved", "scope": "org", "org_id": org_id}
+
+
+@router.delete("/api/dedup/config/org-override")
+def delete_dedup_config_override(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    """Remove the org-level dedup config override, reverting to global defaults."""
+    org_id = int(x_org_context) if x_org_context else user.org_id
+    removed = dedup_engine.delete_config_for_org(db, org_id)
+    if removed:
+        return {"message": "Org dedup config override removed. Global defaults will be used."}
+    return {"message": "No org-specific override existed. Already using global defaults."}
+
+
+@router.get("/api/dedup/config/global")
+def get_dedup_config_global(user: User = Depends(require_auth)):
+    """Return the raw global dedup config (superadmin only)."""
+    if user.role != "superadmin":
+        raise HTTPException(403, "Only superadmins can view the global dedup config")
+    return dedup_engine.load_config()
+
+
+@router.get("/api/dedup/config/override")
+def get_dedup_config_override_raw(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    """Return only this org's sparse override (empty dict if none).
+
+    Useful for the Settings UI to render which fields are overridden vs.
+    inherited from the global config.
+    """
+    org_id = int(x_org_context) if x_org_context else user.org_id
+    return dedup_engine.load_org_override(db, org_id)
+
+
+# ─────────────────────────────────────────────
+# Internal endpoint: VM scanner fetches resolved findings rule
+# ─────────────────────────────────────────────
+
+def _require_internal_token(authorization: Optional[str] = Header(None)) -> None:
+    """Shared-secret bearer auth for service-to-service calls (VM scanner → backend).
+
+    Secret is HAKUNA_INTERNAL_TOKEN from env. If unset, the endpoint is
+    disabled (returns 503) — never falls open.
+    """
+    import os
+    expected = os.environ.get("HAKUNA_INTERNAL_TOKEN")
+    if not expected:
+        raise HTTPException(503, "Internal auth not configured")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(401, "Missing bearer token")
+    presented = authorization.split(None, 1)[1].strip()
+    # constant-time compare
+    import hmac
+    if not hmac.compare_digest(presented, expected):
+        raise HTTPException(401, "Invalid bearer token")
+
+
+@router.get("/api/internal/dedup/findings-rule", dependencies=[Depends(_require_internal_token)])
+def get_internal_findings_rule(
+    org_id: int,
+    db: Session = Depends(get_db),
+):
+    """Resolve the findings-dedup rule for a given org (for VM scanner).
+
+    Returns only the `findings` block of the resolved config so the scanner
+    doesn't need to understand the full schema.
+    """
+    cfg = dedup_engine.load_config_for_org(db, org_id)
+    findings_rule = cfg.get("findings", {})
+    return {
+        "org_id": org_id,
+        "enabled": bool(findings_rule.get("enabled", False)),
+        "key_fields": list(findings_rule.get("key_fields", [])),
+        "strategy": findings_rule.get("strategy", "keep_last"),
+        "scope": findings_rule.get("scope", "cross_scan"),
+    }
 
 
 class RunDedupBody(BaseModel):
@@ -61,19 +172,24 @@ class RunDedupBody(BaseModel):
 
 
 @router.post("/api/dedup/run", status_code=202)
-def run_dedup(body: RunDedupBody):
-    """Dispatch dedup as a background job. Returns job_id immediately."""
+def run_dedup(
+    body: RunDedupBody,
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    """Dispatch dedup as a background job using this org's resolved config."""
     from services.job_manager import dispatch
     from core.database import SessionLocal
     from models.entity_registry import ENTITY_MODEL_MAP
 
     entity_type = body.entity_type
     scan_id = body.scan_id
+    org_id = int(x_org_context) if x_org_context else user.org_id
 
     def _run_dedup():
         db = SessionLocal()
         try:
-            cfg = dedup_engine.load_config()
+            cfg = dedup_engine.load_config_for_org(db, org_id)
             return dedup_engine.run_db_dedup(db, entity_type, scan_id, cfg, ENTITY_MODEL_MAP)
         finally:
             db.close()
@@ -115,18 +231,25 @@ def get_available_sources(
 
 
 @router.post("/api/dedup/rollup", status_code=202)
-def run_rollup(db: Session = Depends(get_db)):
-    """Re-rollup all assets from their observations using current source_priority config.
+def run_rollup(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+):
+    """Re-rollup all assets from their observations using this org's resolved
+    source_priority config.
 
     Called after the user saves source_priority changes in Settings.
     """
     from services.job_manager import dispatch
     from core.database import SessionLocal
 
+    org_id = int(x_org_context) if x_org_context else user.org_id
+
     def _run_rollup():
         _db = SessionLocal()
         try:
-            cfg = dedup_engine.load_config()
+            cfg = dedup_engine.load_config_for_org(_db, org_id)
             from services.asset_observations import rollup_all_assets
             # Collect all source_priority configs across asset types
             assets_cfg = cfg.get("assets", {})

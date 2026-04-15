@@ -253,6 +253,107 @@ def save_config(cfg: dict) -> None:
 
 
 # ─────────────────────────────────────────────
+# Org-aware Config I/O (per-tenant overrides)
+# ─────────────────────────────────────────────
+#
+# Mirrors the pattern in core/risk_config.py — global config lives in the
+# file system; per-org overrides live in Organization.settings["dedup_config"]
+# and are deep-merged on top of the global at read time.
+
+_ORG_SETTINGS_KEY = "dedup_config"
+
+
+def load_config_for_org(db, org_id):
+    """Load dedup config with per-org overrides deep-merged on top of the global.
+
+    Falls back to the global file-based config when no org override exists,
+    or when org_id is None.
+    """
+    global_cfg = load_config()
+    if org_id is None:
+        return global_cfg
+
+    from models.models import Organization
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        return global_cfg
+
+    settings = org.settings or {}
+    org_override = settings.get(_ORG_SETTINGS_KEY)
+    if not org_override:
+        return global_cfg
+
+    return _deep_merge(global_cfg, org_override)
+
+
+def load_org_override(db, org_id):
+    """Return the raw sparse override for this org (no merge), or {} if none."""
+    if org_id is None:
+        return {}
+    from models.models import Organization
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        return {}
+    return (org.settings or {}).get(_ORG_SETTINGS_KEY) or {}
+
+
+def save_config_for_org(db, org_id, cfg: dict) -> None:
+    """Save dedup config. If org_id is provided, stores as an org-level override
+    in Organization.settings. If org_id is None, saves to the global file.
+
+    The caller is responsible for passing a sparse override — whatever fields
+    are present will override the global at read time; absent fields fall
+    back to the global.
+    """
+    if org_id is None:
+        save_config(cfg)
+        return
+
+    import copy
+    from models.models import Organization
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        raise ValueError(f"Organization {org_id} not found")
+
+    settings = copy.deepcopy(org.settings or {})
+    settings[_ORG_SETTINGS_KEY] = cfg
+    org.settings = settings
+    db.commit()
+
+
+def delete_config_for_org(db, org_id) -> bool:
+    """Remove the org-level dedup config override, reverting to global.
+
+    Returns True if an override was removed, False if none existed.
+    """
+    if org_id is None:
+        return False
+    import copy
+    from models.models import Organization
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        return False
+    settings = copy.deepcopy(org.settings or {})
+    if _ORG_SETTINGS_KEY not in settings:
+        return False
+    del settings[_ORG_SETTINGS_KEY]
+    org.settings = settings
+    db.commit()
+    return True
+
+
+def has_org_override(db, org_id) -> bool:
+    """Check whether an org has a custom dedup config override."""
+    if org_id is None:
+        return False
+    from models.models import Organization
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        return False
+    return bool((org.settings or {}).get(_ORG_SETTINGS_KEY))
+
+
+# ─────────────────────────────────────────────
 # Per-asset-type config helpers
 # ─────────────────────────────────────────────
 

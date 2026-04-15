@@ -22,3 +22,9 @@ TEMPLATES_DIR = os.environ.get(
 )
 
 SCAN_TIMEOUT_SECONDS = int(os.environ.get("SCAN_TIMEOUT_SECONDS", "600"))
+
+# Backend URL + bearer token for fetching per-org dedup rules.
+# When unset, the VM scanner falls back to a bundled default findings rule.
+BACKEND_URL = os.environ.get("HAKUNA_BACKEND_URL", "")
+INTERNAL_TOKEN = os.environ.get("HAKUNA_INTERNAL_TOKEN", "")
+DEDUP_RULE_CACHE_TTL = int(os.environ.get("DEDUP_RULE_CACHE_TTL", "30"))

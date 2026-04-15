@@ -262,7 +262,7 @@ def _cross_scan_dedup(db, org_id):
     import services.dedup as dedup_engine
     from models.entity_registry import ENTITY_MODEL_MAP
 
-    cfg = dedup_engine.load_config()
+    cfg = dedup_engine.load_config_for_org(db, org_id)
     if not cfg.get("enabled") or not cfg.get("apply_on_upload"):
         return None
     asset_cfg = cfg.get("assets", {})

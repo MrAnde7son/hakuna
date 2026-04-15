@@ -950,9 +950,10 @@ def _run_scan_ingest(
         scan.raw_metadata = scan_data
         db.flush()
 
-        # Load configs once (used throughout the upload)
+        # Load configs once (used throughout the upload). Both honour per-org
+        # overrides; orgs without an override get the global config.
         risk_cfg = risk_engine.load_config_for_org(db, effective_org_id)
-        dedup_cfg = dedup_engine.load_config()
+        dedup_cfg = dedup_engine.load_config_for_org(db, effective_org_id)
 
         # Within-scan asset dedup: collapse duplicate hosts before creating DB records
         parsed_assets = parsed["assets"]

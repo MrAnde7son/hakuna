@@ -19,6 +19,7 @@ from scanner.vm.config import (
     SCAN_TIMEOUT_SECONDS,
 )
 from scanner.vm.db import _normalize_dsn
+from scanner.vm.dedup_config import get_findings_rule
 from scanner.vm.router import TemplateRouter
 
 logger = logging.getLogger(__name__)
@@ -44,22 +45,29 @@ HANDOFF_QUERY = """
 
 HANDOFF_QUERY_BY_ID = HANDOFF_QUERY + "\n    AND a.id = $1"
 
-FINDING_CHECK = """
-    SELECT id FROM findings
-    WHERE org_id = $1 AND asset_id = $2 AND finding_type = $3 AND title = $4
-    AND status = 'open'
-    LIMIT 1
-"""
-
 FINDING_INSERT = """
-    INSERT INTO findings (id, org_id, asset_id, finding_type, severity, title, description, metadata, status, created_at, updated_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'open', NOW(), NOW())
+    INSERT INTO findings (
+        id, org_id, asset_id, finding_type, severity, title, description,
+        plugin_id, port, protocol, metadata, status, created_at, updated_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open', NOW(), NOW())
 """
 
 FINDING_UPDATE = """
     UPDATE findings SET metadata = $2, updated_at = NOW()
     WHERE id = $1
 """
+
+# Columns the scanner can dedup on. Anything else in the configured
+# key_fields is silently ignored (logged once per scan).
+_DEDUP_SUPPORTED_FIELDS = {
+    "org_id", "asset_id", "plugin_id", "port", "protocol",
+    "finding_type", "title", "severity", "status",
+}
+
+# Safety floor — always scope dedup to the org + asset even if the rule
+# somehow omits them, so scanner B never merges findings across tenants.
+_DEDUP_SAFETY_FIELDS = ("org_id", "asset_id")
 
 _router = TemplateRouter()
 
@@ -283,8 +291,45 @@ def _extract_cpe_list(cpe_data) -> list[str] | None:
     return None
 
 
+def _coerce_port(raw) -> int | None:
+    """Normalize Nuclei's port field (sometimes string, sometimes empty)."""
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_dedup_lookup_sql(key_fields: list[str]) -> tuple[str, list[str]]:
+    """Build the parameterised SELECT used to find an existing finding to dedup against.
+
+    Returns (sql, ordered_column_names). Column names are the order of $N
+    placeholders the caller must bind in the same order.
+    """
+    # Start from the safety floor, add configured fields, de-dupe while preserving order.
+    cols: list[str] = []
+    seen: set[str] = set()
+    for f in (*_DEDUP_SAFETY_FIELDS, *key_fields):
+        if f in _DEDUP_SUPPORTED_FIELDS and f not in seen:
+            cols.append(f)
+            seen.add(f)
+
+    where_parts = [f"{col} = ${i+1}" for i, col in enumerate(cols)]
+    # Scope to this source — other scanners (Nessus import, etc.) manage their own dedup.
+    where_parts.append("finding_type = 'nuclei'")
+    where_parts.append("status = 'open'")
+    sql = f"SELECT id, metadata FROM findings WHERE {' AND '.join(where_parts)} LIMIT 1"
+    return sql, cols
+
+
 async def _emit_finding(conn: asyncpg.Connection, org_id, asset_id: uuid.UUID, result: dict) -> bool:
     """Parse a Nuclei JSONL result and INSERT/upsert into findings table.
+
+    Uses the per-org findings-dedup rule fetched from the backend:
+      - key_fields drive the dedup lookup (safety floor = org_id + asset_id)
+      - strategy = keep_first | keep_last | merge
+      - enabled = False disables dedup entirely (always insert)
 
     Returns True if a row was inserted/updated.
     """
@@ -301,6 +346,9 @@ async def _emit_finding(conn: asyncpg.Connection, org_id, asset_id: uuid.UUID, r
     title = info.get("name", template_id)
     description = info.get("description", "")
     finding_type = "nuclei"
+    port = _coerce_port(result.get("port"))
+    # Nuclei's "type" is the protocol family: http | network | dns | tcp | …
+    protocol = (result.get("type") or "").lower() or None
 
     metadata = {
         "scan_source": "nuclei",
@@ -318,29 +366,91 @@ async def _emit_finding(conn: asyncpg.Connection, org_id, asset_id: uuid.UUID, r
         "type": result.get("type", ""),
     }
 
+    # All columns the SELECT might bind to.
+    column_values = {
+        "org_id":       org_id,
+        "asset_id":     asset_id,
+        "plugin_id":    template_id,
+        "port":         port,
+        "protocol":     protocol,
+        "finding_type": finding_type,
+        "title":        title,
+        "severity":     severity,
+        "status":       "open",
+    }
+
     try:
-        # Check-then-insert dedup (avoids needing a unique constraint)
-        existing = await conn.fetchrow(
-            FINDING_CHECK, org_id, asset_id, finding_type, title,
-        )
+        rule = await get_findings_rule(org_id)
+        dedup_enabled = bool(rule.get("enabled", False))
+        strategy = rule.get("strategy", "keep_last")
+
+        existing = None
+        if dedup_enabled:
+            key_fields = rule.get("key_fields") or []
+            sql, cols = _build_dedup_lookup_sql(key_fields)
+            values = [column_values[c] for c in cols]
+            existing = await conn.fetchrow(sql, *values)
+
         if existing:
-            await conn.execute(FINDING_UPDATE, existing["id"], json.dumps(metadata))
+            if strategy == "keep_first":
+                # Drop the duplicate silently.
+                return False
+            if strategy == "merge":
+                merged = _merge_metadata(existing.get("metadata"), metadata)
+                await conn.execute(FINDING_UPDATE, existing["id"], json.dumps(merged))
+            else:  # keep_last (default)
+                await conn.execute(FINDING_UPDATE, existing["id"], json.dumps(metadata))
         else:
             await conn.execute(
                 FINDING_INSERT,
-                uuid.uuid4(),   # id
-                org_id,         # org_id
-                asset_id,       # asset_id
-                finding_type,   # finding_type
-                severity,       # severity
-                title,          # title
-                description,    # description
+                uuid.uuid4(),          # id
+                org_id,                # org_id
+                asset_id,              # asset_id
+                finding_type,          # finding_type
+                severity,              # severity
+                title,                 # title
+                description,           # description
+                template_id,           # plugin_id
+                port,                  # port
+                protocol,              # protocol
                 json.dumps(metadata),  # metadata
             )
         return True
     except Exception:
         logger.exception("Failed to emit finding for template %s on asset %s", template_id, asset_id)
         return False
+
+
+def _merge_metadata(existing_raw, new: dict) -> dict:
+    """Merge strategy — union list fields, keep last for scalars.
+
+    existing_raw may be dict (JSONB auto-decode) or str (textual JSONB). Be tolerant.
+    """
+    existing: dict = {}
+    if isinstance(existing_raw, dict):
+        existing = existing_raw
+    elif isinstance(existing_raw, str) and existing_raw:
+        try:
+            existing = json.loads(existing_raw)
+        except json.JSONDecodeError:
+            existing = {}
+
+    merged = dict(existing)
+    for k, v in new.items():
+        if isinstance(v, list) and isinstance(merged.get(k), list):
+            # Union preserving order, skipping duplicates by JSON form
+            seen_keys = {json.dumps(x, sort_keys=True, default=str) for x in merged[k]}
+            for item in v:
+                key = json.dumps(item, sort_keys=True, default=str)
+                if key not in seen_keys:
+                    merged[k].append(item)
+                    seen_keys.add(key)
+        elif isinstance(v, dict) and isinstance(merged.get(k), dict):
+            merged[k] = {**merged[k], **v}
+        else:
+            # keep_last semantics for scalars
+            merged[k] = v
+    return merged
 
 
 async def fetch_alive_assets() -> list[dict]:
