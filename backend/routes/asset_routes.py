@@ -52,6 +52,13 @@ def _apply_sort(q, model, sort_by: str, order: str, default_attr):
         col = getattr(model, sort_by, None)
     if col is None:
         col = default_attr
+
+    # Cascade severity counts: critical → high → medium → low → info
+    _SEV_COLS = ("critical_count", "high_count", "medium_count", "low_count", "info_count")
+    if sort_by in _SEV_COLS:
+        direction = desc if order == "desc" else lambda c: c
+        return q.order_by(*[direction(getattr(model, c)) for c in _SEV_COLS if hasattr(model, c)])
+
     return q.order_by(desc(col) if order == "desc" else col)
 
 
