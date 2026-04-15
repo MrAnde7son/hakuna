@@ -23,5 +23,15 @@
     { "source": "requestParameters", "target": "raw_event", "transform": { "type": "json_stringify" } }
   ],
   "dedup_key": ["source_system", "source_id"],
+  "setup_guide": {
+    "title": "Forward CloudTrail events",
+    "steps": [
+      "In AWS Console, go to CloudTrail → Trails → your trail",
+      "Under SNS notification, create or select an SNS topic",
+      "Create a Lambda function that forwards SNS messages to the Hakuna webhook URL",
+      "Or use Amazon EventBridge to route CloudTrail events to an API destination"
+    ],
+    "doc_url": "https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-examples.html"
+  },
   "sample_payload": "{\"Records\":[{\"eventVersion\":\"1.08\",\"eventTime\":\"2024-03-15T14:23:45Z\",\"eventSource\":\"signin.amazonaws.com\",\"eventName\":\"ConsoleLogin\",\"awsRegion\":\"us-east-1\",\"sourceIPAddress\":\"203.0.113.50\",\"userIdentity\":{\"type\":\"IAMUser\",\"arn\":\"arn:aws:iam::123456789012:user/admin\"},\"requestParameters\":null,\"responseElements\":{\"ConsoleLogin\":\"Success\"},\"eventID\":\"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\"errorCode\":null}]}"
 }

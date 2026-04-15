@@ -5,7 +5,7 @@ import { Card, Button, useToast } from '../shared/ui.jsx'
 import {
   getConnectors, getConnectorCategories, getConnector, getIntegrationSchema, getAcquisitionFlow,
   validateCredentials, createCredential, integrationConnect, pollExtraction,
-  integrationPreview, integrationAutoSuggest, detectFromSample,
+  integrationPreview, integrationAutoSuggest, detectFromSample, pollIntegrationEvents,
   ibCreateIntegration, ibUpdateIntegration, ibGetIntegration,
   discoverApi, parseDocs, uploadIntegrationFile, discoverMcpTools, mcpOAuthStart,
   getTargetModels, getTargetSchema, oauthClientCredentials, discoverOAuth,
@@ -39,9 +39,10 @@ const STEPS_WEBHOOK = [
   { key: 'source', label: 'Choose Source' },
   { key: 'records', label: 'Parser' },
   { key: 'target', label: 'Pick Target' },
+  { key: 'save', label: 'Create Endpoint' },
+  { key: 'setup', label: 'Setup & Test' },
   { key: 'map', label: 'Map Fields' },
-  { key: 'preview', label: 'Preview' },
-  { key: 'save', label: 'Save' },
+  { key: 'done', label: 'Done' },
 ]
 
 const TRANSPORT_ICONS = { api: Globe, sql: DbIcon, file: FileText, mcp: Zap, ldap: Server, webhook: Plug }
@@ -84,6 +85,7 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [schema, setSchema] = useState([])
   const [previewRecords, setPreviewRecords] = useState([])
   const [webhookCredentials, setWebhookCredentials] = useState(null)
+  const [savedIntegrationId, setSavedIntegrationId] = useState(null)
   const [suggestions, setSuggestions] = useState(null)
   const [integrationName, setIntegrationName] = useState('')
   const [direction, setDirection] = useState('pull')
@@ -188,7 +190,16 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
   const [selectedEndpoint, setSelectedEndpoint] = useState(null)
 
   const getPrevStep = () => {
-    if (transportType === 'webhook') return step - 1
+    if (transportType === 'webhook') {
+      const key = STEPS[step]?.key
+      // Can't go back past setup (endpoint already created)
+      if (key === 'setup') return step
+      // From map, go back to setup
+      if (key === 'map') return stepKeyIndex('setup')
+      // From done, go back to map
+      if (key === 'done') return stepKeyIndex('map')
+      return step - 1
+    }
     if (step === 2 && !connectorDetail?.credential_acquisition) return 0
     return step - 1
   }
@@ -310,10 +321,10 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         setSchema(s || {})
       }
 
-      // For webhook templates, skip auth/configure — go straight to target or map
+      // For webhook templates, skip auth/configure — go straight to target or save
       if (detail.transport_type === 'webhook') {
-        // If template has default field map, skip to map step; else go to target
-        const targetIdx = STEPS_WEBHOOK.findIndex(s => s.key === (detail.default_field_map?.length ? 'map' : 'target'))
+        // If template has default field map, skip to save (create endpoint); else go to target
+        const targetIdx = STEPS_WEBHOOK.findIndex(s => s.key === (detail.default_field_map?.length ? 'save' : 'target'))
         setStep(targetIdx)
       } else if (!detail.credential_acquisition) {
         setStep(2)
@@ -554,10 +565,12 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         result = await ibCreateIntegration(payload)
       }
 
-      // For webhook integrations, show credential reveal instead of navigating away
+      // For webhook integrations, save credentials and advance to Setup & Test step
       if (result.ingest_endpoint) {
         setWebhookCredentials(result.ingest_endpoint)
-        toast.success('Webhook integration created')
+        setSavedIntegrationId(result.id)
+        toast.success('Webhook endpoint created')
+        setStep(stepKeyIndex('setup'))
         return
       }
 
@@ -585,9 +598,11 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       case 'configure': return renderConfigure()
       case 'records': return transportType === 'webhook' ? renderWebhookParser() : renderRecordsPicker()
       case 'target': return renderPickTarget()
+      case 'setup': return renderWebhookSetup()
       case 'map': return renderFieldMapper()
       case 'preview': return renderPreview()
       case 'save': return renderSave()
+      case 'done': return renderWebhookDone()
       default: return null
     }
   }
@@ -1798,10 +1813,11 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
       onAutoSuggest={handleAutoSuggest}
       suggestions={suggestions}
       loading={loading}
-      onNext={handlePreview}
+      onNext={transportType === 'webhook' ? () => setStep(stepKeyIndex('done')) : handlePreview}
       onDetectSample={transportType === 'webhook' ? handleDetectSample : undefined}
       samplePayloadHint={connectorDetail?.sample_payload || ''}
       parserType={transportConfig.parser_type || 'json'}
+      nextLabel={transportType === 'webhook' ? 'Finish Mapping' : undefined}
     />
   )
 
@@ -1863,93 +1879,280 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
     setTimeout(() => setCopiedField(null), 2000)
   }
 
-  const renderWebhookCredentialReveal = () => (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 560 }}>
-      <div style={{ padding: 20, borderRadius: 10, background: '#22c55e08', border: '1px solid #22c55e40' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-          <Check size={18} color="#22c55e" />
-          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#22c55e' }}>Webhook Endpoint Created</h3>
+  // ── Webhook Setup & Test step ──
+  const [pollingForEvents, setPollingForEvents] = useState(false)
+  const [eventReceived, setEventReceived] = useState(false)
+  const pollTimerRef = useRef(null)
+  const [samplePasteText, setSamplePasteText] = useState(connectorDetail?.sample_payload || '')
+  const [pasteError, setPasteError] = useState(null)
+  const [detectingSample, setDetectingSample] = useState(false)
+
+  const startPolling = () => {
+    if (!savedIntegrationId || pollTimerRef.current) return
+    setPollingForEvents(true)
+    pollTimerRef.current = setInterval(async () => {
+      try {
+        const result = await pollIntegrationEvents(savedIntegrationId)
+        if (result.found) {
+          clearInterval(pollTimerRef.current)
+          pollTimerRef.current = null
+          setPollingForEvents(false)
+          setEventReceived(true)
+          setDetectedPaths(result.detected_paths || [])
+          setSampleRecords(result.sample_records || [])
+        }
+      } catch {
+        // Silently retry
+      }
+    }, 3000)
+  }
+
+  const stopPolling = () => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current)
+      pollTimerRef.current = null
+    }
+    setPollingForEvents(false)
+  }
+
+  // Clean up polling on unmount
+  useEffect(() => () => { if (pollTimerRef.current) clearInterval(pollTimerRef.current) }, [])
+
+  const handlePasteSample = async () => {
+    if (!samplePasteText.trim()) return
+    setDetectingSample(true)
+    setPasteError(null)
+    try {
+      await handleDetectSample(samplePasteText.trim())
+      stopPolling()
+      setEventReceived(true)
+    } catch (e) {
+      setPasteError(e.message || 'Failed to parse sample')
+    } finally {
+      setDetectingSample(false)
+    }
+  }
+
+  const renderWebhookSetup = () => {
+    if (!webhookCredentials) return null
+    const setupGuide = connectorDetail?.setup_guide
+    const endpointUrl = `${window.location.origin}/api/ingest/events/${webhookCredentials.endpoint_id}`
+    const parserLabel = (transportConfig.parser_type || 'json').toUpperCase()
+
+    // Auto-start polling when this step renders
+    if (!pollingForEvents && !eventReceived && savedIntegrationId && !pollTimerRef.current) {
+      setTimeout(startPolling, 500)
+    }
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 700 }}>
+        <div>
+          <h3 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 600 }}>Setup & Test Your Webhook</h3>
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>
+            Configure your source to send events to the endpoint below, then send a test event.
+          </p>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div>
-            <label style={{ ...labelStyle, fontSize: 11, color: 'var(--text-muted)' }}>Endpoint URL</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <code style={{ flex: 1, padding: '8px 12px', borderRadius: 6, background: 'var(--bg-secondary)', border: '1px solid var(--border)', fontSize: 12, fontFamily: 'var(--mono)', wordBreak: 'break-all', color: 'var(--text)' }}>
-                {window.location.origin}/api/ingest/events/{webhookCredentials.endpoint_id}
-              </code>
-              <button onClick={() => copyToClipboard(`${window.location.origin}/api/ingest/events/${webhookCredentials.endpoint_id}`, 'url')}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
-                {copiedField === 'url' ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
-              </button>
+        {/* Credentials panel */}
+        <div style={{ padding: 16, borderRadius: 10, background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div>
+              <label style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 4, display: 'block' }}>Endpoint URL</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <code style={{ flex: 1, padding: '8px 12px', borderRadius: 6, background: 'var(--bg)', border: '1px solid var(--border)', fontSize: 12, fontFamily: 'var(--mono)', wordBreak: 'break-all', color: 'var(--text)' }}>
+                  {endpointUrl}
+                </code>
+                <button onClick={() => copyToClipboard(endpointUrl, 'url')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+                  {copiedField === 'url' ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
+                </button>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 16 }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 4, display: 'block' }}>Bearer Token</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <code style={{ flex: 1, padding: '8px 12px', borderRadius: 6, background: 'var(--bg)', border: '1px solid var(--border)', fontSize: 11, fontFamily: 'var(--mono)', wordBreak: 'break-all', color: 'var(--text)' }}>
+                    {webhookCredentials.token}
+                  </code>
+                  <button onClick={() => copyToClipboard(webhookCredentials.token, 'token')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+                    {copiedField === 'token' ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
+                  </button>
+                </div>
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 4, display: 'block' }}>HMAC Secret</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <code style={{ flex: 1, padding: '8px 12px', borderRadius: 6, background: 'var(--bg)', border: '1px solid var(--border)', fontSize: 11, fontFamily: 'var(--mono)', wordBreak: 'break-all', color: 'var(--text)' }}>
+                    {webhookCredentials.hmac_secret}
+                  </code>
+                  <button onClick={() => copyToClipboard(webhookCredentials.hmac_secret, 'hmac')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+                    {copiedField === 'hmac' ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: '#eab308', padding: '6px 10px', background: '#eab30808', borderRadius: 6, border: '1px solid #eab30820' }}>
+              Save these credentials now — they will not be shown again.
             </div>
           </div>
-
-          <div>
-            <label style={{ ...labelStyle, fontSize: 11, color: 'var(--text-muted)' }}>Bearer Token</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <code style={{ flex: 1, padding: '8px 12px', borderRadius: 6, background: 'var(--bg-secondary)', border: '1px solid var(--border)', fontSize: 12, fontFamily: 'var(--mono)', wordBreak: 'break-all', color: 'var(--text)' }}>
-                {webhookCredentials.token}
-              </code>
-              <button onClick={() => copyToClipboard(webhookCredentials.token, 'token')}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
-                {copiedField === 'token' ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label style={{ ...labelStyle, fontSize: 11, color: 'var(--text-muted)' }}>HMAC Secret</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <code style={{ flex: 1, padding: '8px 12px', borderRadius: 6, background: 'var(--bg-secondary)', border: '1px solid var(--border)', fontSize: 12, fontFamily: 'var(--mono)', wordBreak: 'break-all', color: 'var(--text)' }}>
-                {webhookCredentials.hmac_secret}
-              </code>
-              <button onClick={() => copyToClipboard(webhookCredentials.hmac_secret, 'hmac')}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
-                {copiedField === 'hmac' ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
-              </button>
-            </div>
-          </div>
         </div>
 
-        <div style={{ marginTop: 16, padding: '10px 14px', borderRadius: 6, background: '#eab30810', border: '1px solid #eab30830', fontSize: 12, color: '#eab308' }}>
-          Save these credentials now — they will not be shown again.
-        </div>
-
-        <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-muted)' }}>
-          Parser: <strong>{webhookCredentials.parser_type?.toUpperCase()}</strong>
-        </div>
-      </div>
-
-      {/* cURL example */}
-      <div>
-        <label style={{ ...labelStyle, fontSize: 11, color: 'var(--text-muted)' }}>Example cURL</label>
-        <div style={{ position: 'relative' }}>
-          <pre style={{ margin: 0, padding: 14, borderRadius: 8, background: 'var(--bg-secondary)', border: '1px solid var(--border)', fontSize: 11, fontFamily: 'var(--mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--text)', lineHeight: 1.5 }}>
-{`curl -X POST ${window.location.origin}/api/ingest/events/${webhookCredentials.endpoint_id} \\
+        {/* cURL example */}
+        <div>
+          <label style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, marginBottom: 4, display: 'block' }}>Quick Test with cURL</label>
+          <div style={{ position: 'relative' }}>
+            <pre style={{ margin: 0, padding: 14, borderRadius: 8, background: 'var(--bg-card)', border: '1px solid var(--border)', fontSize: 11, fontFamily: 'var(--mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: 'var(--text)', lineHeight: 1.5 }}>
+{`curl -X POST ${endpointUrl} \\
   -H "Authorization: Bearer ${webhookCredentials.token}" \\
   -H "Content-Type: application/json" \\
-  -d '{"events": [{"source": "test", "message": "hello"}]}'`}
-          </pre>
-          <button onClick={() => copyToClipboard(
-            `curl -X POST ${window.location.origin}/api/ingest/events/${webhookCredentials.endpoint_id} -H "Authorization: Bearer ${webhookCredentials.token}" -H "Content-Type: application/json" -d '{"events": [{"source": "test", "message": "hello"}]}'`,
-            'curl'
-          )} style={{ position: 'absolute', top: 8, right: 8, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
-            {copiedField === 'curl' ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
-          </button>
+  -d '${connectorDetail?.sample_payload || '{"events": [{"source": "test", "message": "hello"}]}'}'`}
+            </pre>
+            <button onClick={() => copyToClipboard(
+              `curl -X POST ${endpointUrl} -H "Authorization: Bearer ${webhookCredentials.token}" -H "Content-Type: application/json" -d '${connectorDetail?.sample_payload || '{"events": [{"source": "test", "message": "hello"}]}'}'`,
+              'curl'
+            )} style={{ position: 'absolute', top: 8, right: 8, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
+              {copiedField === 'curl' ? <Check size={14} color="#22c55e" /> : <Copy size={14} />}
+            </button>
+          </div>
+        </div>
+
+        {/* Vendor-specific setup guide */}
+        {setupGuide && (
+          <div style={{ padding: 16, borderRadius: 10, background: 'var(--accent)06', border: '1px solid var(--accent)20' }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>{setupGuide.title}</div>
+            <ol style={{ margin: 0, paddingLeft: 20, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.8 }}>
+              {setupGuide.steps.map((s, i) => <li key={i}>{s}</li>)}
+            </ol>
+            {setupGuide.doc_url && (
+              <a href={setupGuide.doc_url} target="_blank" rel="noopener noreferrer"
+                style={{ display: 'inline-block', marginTop: 10, fontSize: 11, color: 'var(--accent)', textDecoration: 'underline' }}>
+                View vendor documentation
+              </a>
+            )}
+          </div>
+        )}
+
+        {/* Live event detection status */}
+        <div style={{
+          padding: 16, borderRadius: 10,
+          background: eventReceived ? '#22c55e08' : 'var(--bg-card)',
+          border: eventReceived ? '1px solid #22c55e40' : '1px solid var(--border)',
+        }}>
+          {eventReceived ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Check size={18} color="#22c55e" />
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13, color: '#22c55e' }}>Event received!</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  {detectedPaths.length} fields detected. Proceed to map them to Hakuna fields.
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                {pollingForEvents && (
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--accent)', animation: 'pulse 1.5s ease-in-out infinite' }} />
+                )}
+                <span style={{ fontWeight: 600, fontSize: 13 }}>
+                  {pollingForEvents ? 'Waiting for events...' : 'Send a test event to continue'}
+                </span>
+              </div>
+              <p style={{ margin: 0, fontSize: 11, color: 'var(--text-muted)' }}>
+                Use the cURL command above or configure your source to send an event. Fields will be detected automatically.
+              </p>
+              <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }`}</style>
+            </div>
+          )}
+        </div>
+
+        {/* Paste sample fallback */}
+        {!eventReceived && (
+          <details style={{ borderRadius: 10, border: '1px solid var(--border)' }}>
+            <summary style={{ padding: '10px 16px', cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)', fontWeight: 600 }}>
+              Or paste a sample payload instead
+            </summary>
+            <div style={{ padding: '0 16px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <textarea
+                placeholder={`Paste a sample ${parserLabel} payload...`}
+                value={samplePasteText}
+                onChange={e => { setSamplePasteText(e.target.value); setPasteError(null) }}
+                style={{
+                  width: '100%', padding: '8px 12px', background: 'var(--bg)', border: '1px solid var(--border)',
+                  borderRadius: 6, color: 'var(--text)', fontSize: 12, fontFamily: 'var(--mono)',
+                  minHeight: 120, resize: 'vertical', boxSizing: 'border-box',
+                }}
+              />
+              {pasteError && (
+                <div style={{ fontSize: 11, color: '#ef4444', padding: '6px 10px', background: '#ef444410', borderRadius: 6 }}>
+                  {pasteError}
+                </div>
+              )}
+              <Button onClick={handlePasteSample} disabled={!samplePasteText.trim() || detectingSample} style={{ alignSelf: 'flex-start', padding: '6px 16px', fontSize: 12 }}>
+                {detectingSample ? <><InlineSpinner /> Detecting...</> : 'Detect Fields'}
+              </Button>
+            </div>
+          </details>
+        )}
+
+        {/* Actions */}
+        <div style={{ display: 'flex', gap: 8 }}>
+          {eventReceived ? (
+            <Button onClick={() => { stopPolling(); setStep(stepKeyIndex('map')) }}>
+              Continue to Field Mapping <ArrowRight size={14} style={{ marginLeft: 4 }} />
+            </Button>
+          ) : (
+            <Button onClick={() => { stopPolling(); setStep(stepKeyIndex('map')) }}
+              style={{ background: 'transparent', color: 'var(--text)', border: '1px solid var(--border)' }}>
+              Skip — map fields later
+            </Button>
+          )}
         </div>
       </div>
+    )
+  }
 
-      <Button onClick={goDone} style={{ alignSelf: 'flex-start' }}>
-        Done
-      </Button>
+  // ── Webhook Done step — update field_map on existing integration ──
+  const handleWebhookFinalize = async () => {
+    if (!savedIntegrationId) { goDone(); return }
+    setLoading(true)
+    try {
+      await ibUpdateIntegration(savedIntegrationId, { field_map: fieldMap, enabled: true })
+      toast.success('Webhook integration configured')
+      goDone()
+    } catch (e) {
+      toast.error('Failed to save mapping: ' + e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const renderWebhookDone = () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 560 }}>
+      <div style={{ padding: 20, borderRadius: 10, background: '#22c55e08', border: '1px solid #22c55e40' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <Check size={18} color="#22c55e" />
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#22c55e' }}>Ready to receive events</h3>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          {fieldMap.length > 0
+            ? `${fieldMap.length} field mapping${fieldMap.length > 1 ? 's' : ''} configured. Events will be normalized as they arrive.`
+            : 'No field mappings configured. Events will be stored with raw data — you can map fields later.'
+          }
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button onClick={() => setStep(stepKeyIndex('map'))} style={{ background: 'transparent', color: 'var(--text)', border: '1px solid var(--border)' }}>
+          <ArrowLeft size={14} style={{ marginRight: 4 }} /> Edit Mappings
+        </Button>
+        <Button onClick={handleWebhookFinalize} disabled={loading}>
+          {loading ? <InlineSpinner /> : 'Finish Setup'}
+        </Button>
+      </div>
     </div>
   )
 
   const renderSave = () => {
-    // Show credential reveal panel after webhook save
-    if (webhookCredentials) return renderWebhookCredentialReveal()
-
     return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 500 }}>
       <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>

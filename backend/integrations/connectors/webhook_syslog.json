@@ -18,5 +18,15 @@
     { "source": "message", "target": "message" }
   ],
   "dedup_key": ["source_system", "source_id"],
+  "setup_guide": {
+    "title": "Forward syslog via HTTP relay",
+    "steps": [
+      "Install a syslog-to-HTTP forwarder (rsyslog omhttp, syslog-ng http(), or Vector)",
+      "Configure the output destination to the Hakuna webhook URL below",
+      "Set Content-Type to text/plain and include the Bearer token",
+      "Each POST body should contain one RFC 5424 syslog line"
+    ],
+    "doc_url": "https://datatracker.ietf.org/doc/html/rfc5424"
+  },
   "sample_payload": "<134>1 2024-03-15T14:30:00Z firewall-01 sshd 12345 - - Failed password for user admin from 192.168.1.100 port 22 ssh2"
 }

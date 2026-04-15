@@ -22,5 +22,15 @@
     { "source": "Message", "target": "message" }
   ],
   "dedup_key": ["source_system", "source_id"],
+  "setup_guide": {
+    "title": "Forward Windows Event Logs",
+    "steps": [
+      "Install NXLog, Winlogbeat, or configure Windows Event Forwarding (WEF)",
+      "Configure the output to HTTP/HTTPS with the Hakuna webhook URL",
+      "Set the output format to JSON and include the Bearer token",
+      "Select the event log channels to forward (Security, System, Application)"
+    ],
+    "doc_url": "https://nxlog.co/documentation/nxlog-user-guide/windows-eventlog.html"
+  },
   "sample_payload": "{\"TimeCreated\":\"2024-03-15T14:23:45Z\",\"Channel\":\"Security\",\"EventRecordID\":\"987654\",\"EventID\":4625,\"Computer\":\"DC-01.contoso.com\",\"IpAddress\":\"192.168.1.100\",\"TargetUserName\":\"administrator\",\"Level\":2,\"Message\":\"An account failed to log on\"}"
 }

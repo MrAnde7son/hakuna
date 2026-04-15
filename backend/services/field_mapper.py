@@ -470,6 +470,21 @@ ALIAS_TABLE = {
     "asset_attributes.cdn_provider": ["cdn_provider", "cdn", "cdnProvider"],
     "asset_attributes.cname_target": ["cname_target", "cname", "canonical_name", "alias_target"],
     "asset_attributes.service_name": ["service_name", "serviceName", "service", "app_name"],
+    # ── SIEM Event ──
+    "event_time": ["event_time", "eventTime", "timestamp", "ts", "time", "occurred_at", "event_timestamp", "occurred", "datetime", "time_stamp", "event_date", "log_time", "log_timestamp", "alert_time", "created_at", "generated_at"],
+    "ingested_at": ["ingested_at", "ingestedAt", "received_at", "receivedAt", "indexed_at", "indexedAt", "collected_at"],
+    "source_system": ["source_system", "sourceSystem", "log_source", "logSource", "data_source", "dataSource", "origin", "collector", "agent", "forwarder", "sensor", "appliance_name"],
+    "event_type": ["event_type", "eventType", "type", "event_name", "eventName", "alert_type", "alertType", "event_classification", "log_type", "logType", "category", "action_type"],
+    "event_category": ["event_category", "eventCategory", "category", "classification", "alert_category", "event_class", "eventClass", "log_category", "rule_category"],
+    "action": ["action", "action_taken", "actionTaken", "disposition", "direction", "verdict", "event_action", "eventAction", "response_action"],
+    "outcome": ["outcome", "result", "status", "event_outcome", "eventOutcome", "success", "event_result"],
+    "asset_id": ["asset_id", "assetId", "device_id", "deviceId", "endpoint_id", "endpointId", "agent_id", "agentId"],
+    "user_name": ["user_name", "userName", "user", "username", "account", "principal", "actor", "subject", "account_name", "accountName", "src_user", "srcUser", "initiator"],
+    "source_ip": ["source_ip", "sourceIp", "src_ip", "srcIp", "src", "source_address", "sourceAddress", "client_ip", "clientIp", "origin_ip", "originIp", "attacker_ip", "sender_ip"],
+    "dest_ip": ["dest_ip", "destIp", "dst_ip", "dstIp", "dst", "destination_ip", "destinationIp", "target_ip", "targetIp", "server_ip", "serverIp", "responder_ip"],
+    "host_name": ["host_name", "hostName", "hostname", "host", "computer_name", "computerName", "device_name", "deviceName", "endpoint", "machine_name", "machineName", "node"],
+    "message": ["message", "msg", "details", "event_message", "eventMessage", "alert_message", "log_message", "logMessage", "text", "body"],
+    "raw": ["raw", "raw_event", "rawEvent", "raw_data", "rawData", "original_event", "originalEvent", "raw_log", "rawLog", "full_log", "original"],
 }
 
 

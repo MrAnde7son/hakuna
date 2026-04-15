@@ -26,5 +26,15 @@
   "static_fields": {
     "source_system": "palo_alto"
   },
+  "setup_guide": {
+    "title": "Configure PAN-OS HTTP log forwarding",
+    "steps": [
+      "In PAN-OS, go to Device → Server Profiles → HTTP",
+      "Create a new HTTP server profile with the Hakuna webhook URL",
+      "Set the Authorization header to 'Bearer <your-token>'",
+      "Go to Objects → Log Forwarding and assign the profile to a policy rule"
+    ],
+    "doc_url": "https://docs.paloaltonetworks.com/pan-os/11-0/pan-os-admin/monitoring/use-syslog-for-monitoring/configure-syslog-monitoring"
+  },
   "sample_payload": "{\"receive_time\":\"2024-03-15T14:23:45Z\",\"type\":\"THREAT\",\"seqno\":\"1234567\",\"threatid\":\"Suspicious DNS Query(12345)\",\"severity\":\"high\",\"src\":\"10.0.0.50\",\"dst\":\"198.51.100.1\",\"srcuser\":\"jsmith\",\"rule\":\"outbound-threat-block\",\"action\":\"block-url\"}"
 }

@@ -26,5 +26,15 @@
   "static_fields": {
     "source_system": "crowdstrike"
   },
+  "setup_guide": {
+    "title": "Configure CrowdStrike Falcon webhook",
+    "steps": [
+      "In Falcon Console, go to Support → API Clients and Keys",
+      "Go to Marketplace → Webhook and set up a webhook notification",
+      "Set the destination URL to the Hakuna webhook URL below",
+      "Select the detection event types you want to forward"
+    ],
+    "doc_url": "https://falcon.crowdstrike.com/documentation/page/a2a7fc0e/streaming-api-event-dictionary"
+  },
   "sample_payload": "{\"metadata\":{\"eventType\":\"DetectionSummaryEvent\",\"eventCreationTime\":\"2024-03-15T14:23:45Z\"},\"event\":{\"DetectId\":\"ldt:abc123def456:789\",\"DetectDescription\":\"Suspicious PowerShell execution detected\",\"SeverityName\":\"High\",\"UserName\":\"jsmith\",\"LocalIP\":\"10.0.0.50\",\"ComputerName\":\"WORKSTATION-01\",\"Tactic\":\"Execution\",\"Technique\":\"PowerShell\"}}"
 }

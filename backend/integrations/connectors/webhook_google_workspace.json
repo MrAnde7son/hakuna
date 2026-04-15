@@ -24,5 +24,15 @@
   "static_fields": {
     "source_system": "google_workspace"
   },
+  "setup_guide": {
+    "title": "Forward Google Workspace events",
+    "steps": [
+      "In Google Admin Console, go to Reporting → Audit and investigation",
+      "Use the Push Notifications API or Google Workspace Alerts API",
+      "Configure a Cloud Function to forward events to the Hakuna webhook URL",
+      "Include the Bearer token in the Authorization header"
+    ],
+    "doc_url": "https://developers.google.com/admin-sdk/reports/v1/guides/push"
+  },
   "sample_payload": "{\"id\":{\"time\":\"2024-03-15T14:23:45Z\",\"applicationName\":\"admin\",\"uniqueQualifier\":\"123456789\"},\"actor\":{\"email\":\"admin@example.com\"},\"ipAddress\":\"203.0.113.50\",\"events\":[{\"name\":\"CHANGE_PASSWORD\",\"parameters\":[{\"name\":\"USER_EMAIL\",\"value\":\"user@example.com\"}]}]}"
 }

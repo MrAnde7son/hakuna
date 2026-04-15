@@ -30,7 +30,7 @@ export default function StepFieldMapper({
   fieldMap, onFieldMapChange,
   onAutoSuggest, suggestions, loading, onNext,
   // Paste-sample support for webhooks
-  onDetectSample, samplePayloadHint, parserType,
+  onDetectSample, samplePayloadHint, parserType, nextLabel,
 }) {
   const [sourceFilter, setSourceFilter] = useState('')
   const [selectedSource, setSelectedSource] = useState(null)
@@ -452,8 +452,8 @@ export default function StepFieldMapper({
         />
       )}
 
-      <Button onClick={onNext} disabled={loading || requiredUnmapped.length > 0}>
-        {loading ? <InlineSpinner /> : 'Preview Mapping'}
+      <Button onClick={onNext} disabled={loading || (requiredUnmapped.length > 0 && !onDetectSample)}>
+        {loading ? <InlineSpinner /> : (nextLabel || 'Preview Mapping')}
         <ArrowRight size={14} style={{ marginLeft: 4 }} />
       </Button>
     </div>

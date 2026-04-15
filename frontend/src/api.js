@@ -1196,6 +1196,7 @@ export const integrationAutoSuggest = (data) => request(`${IB}/auto-suggest`, {
 export const detectFromSample = (data) => request(`${IB}/detect-sample`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
 })
+export const pollIntegrationEvents = (integrationId) => request(`${IB}/integrations/${integrationId}/poll-events`)
 
 export const ibGetIntegrations = () => request(`${IB}/integrations`)
 export const ibCreateIntegration = (data) => request(`${IB}/integrations`, {

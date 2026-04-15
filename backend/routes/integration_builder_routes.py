@@ -76,6 +76,34 @@ class DetectSampleRequest(BaseModel):
     parser_type: str = "json"  # json | hec | cef | leef | syslog_rfc5424
 
 
+@router.get("/integrations/{integration_id}/poll-events")
+def poll_integration_events(
+    integration_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Poll for events received on a webhook integration. Returns detected paths from the first event."""
+    from models.models import SIEMEvent
+
+    i = _get_integration_or_404(db, integration_id, user.org_id)
+
+    event = db.query(SIEMEvent).filter(
+        SIEMEvent.integration_id == integration_id,
+        SIEMEvent.org_id == user.org_id,
+    ).order_by(SIEMEvent.ingested_at.desc()).first()
+
+    if not event:
+        return {"found": False, "detected_paths": [], "sample_records": []}
+
+    raw = event.raw or {}
+    detected = detect_paths(raw)
+    return {
+        "found": True,
+        "detected_paths": detected,
+        "sample_records": [raw],
+    }
+
+
 @router.post("/detect-sample")
 def detect_from_sample(body: DetectSampleRequest, user: User = Depends(require_auth)):
     """Parse a pasted sample payload and return detected field paths."""
