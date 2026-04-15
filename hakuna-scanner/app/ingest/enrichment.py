@@ -743,7 +743,7 @@ async def store_jarm_fingerprints(
         await db.execute(
             text("""
                 UPDATE asset_ports SET
-                    tls_cert = COALESCE(tls_cert, '{}'::jsonb) || jsonb_build_object('jarm_hash', :jarm),
+                    tls_cert = COALESCE(tls_cert, '{}'::jsonb) || jsonb_build_object('jarm_hash', :jarm::text),
                     updated_at = :now
                 WHERE asset_id = :aid AND port = :port AND protocol = 'tcp'
             """),

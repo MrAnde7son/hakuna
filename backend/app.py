@@ -107,6 +107,8 @@ from routes.siem_routes import router as siem_router
 from routes.siem_ingest_routes import router as siem_ingest_router
 from routes.detection_routes import router as detection_router
 from routes.siem_report_routes import router as siem_report_router
+from routes.graph_routes import router as graph_router
+from routes.scan_planner_routes import router as scan_planner_router
 from services.blast_radius import resolve_dc_asset_ids as _resolve_dc_asset_ids
 
 logging.basicConfig(level=logging.INFO)
@@ -329,6 +331,8 @@ app.include_router(siem_router)
 app.include_router(siem_ingest_router)
 app.include_router(detection_router)
 app.include_router(siem_report_router)
+app.include_router(graph_router)
+app.include_router(scan_planner_router)
 
 
 INTEL_PATH = Path(__file__).parent / "data" / "intel.json"

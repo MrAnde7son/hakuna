@@ -845,6 +845,249 @@
       "match_status": [200],
       "body_pattern": "DeltaV|Emerson|Fisher|Ovation",
       "asset_type": "scada"
+    },
+
+    {"_comment": "──────────── Sensitive File Exposure ────────────"},
+
+    {
+      "path": "/.git/config",
+      "name": "Exposed Git Repository",
+      "cpe_vendor": "_exposed_config",
+      "cpe_product": "git_repo",
+      "match_status": [200],
+      "body_pattern": "\\[core\\]|\\[remote|repositoryformatversion"
+    },
+    {
+      "path": "/.git/HEAD",
+      "name": "Exposed Git HEAD",
+      "cpe_vendor": "_exposed_config",
+      "cpe_product": "git_repo",
+      "match_status": [200],
+      "body_pattern": "ref:\\s*refs/heads/"
+    },
+    {
+      "path": "/.DS_Store",
+      "name": "Exposed .DS_Store",
+      "cpe_vendor": "_exposed_config",
+      "cpe_product": "ds_store",
+      "match_status": [200],
+      "body_pattern": "Bud1|\\x00Bud1"
+    },
+    {
+      "path": "/robots.txt",
+      "name": "Robots.txt",
+      "cpe_vendor": "_recon",
+      "cpe_product": "robots_txt",
+      "match_status": [200],
+      "body_pattern": "Disallow:|User-agent:|Sitemap:"
+    },
+    {
+      "path": "/sitemap.xml",
+      "name": "Sitemap XML",
+      "cpe_vendor": "_recon",
+      "cpe_product": "sitemap_xml",
+      "match_status": [200],
+      "body_pattern": "<urlset|<sitemapindex|xmlns"
+    },
+    {
+      "path": "/.well-known/security.txt",
+      "name": "Security.txt",
+      "cpe_vendor": "_recon",
+      "cpe_product": "security_txt",
+      "match_status": [200],
+      "body_pattern": "Contact:|Policy:|Encryption:|Acknowledgments:"
+    },
+    {
+      "path": "/backup.sql",
+      "name": "Exposed SQL Backup",
+      "cpe_vendor": "_exposed_config",
+      "cpe_product": "sql_backup",
+      "match_status": [200],
+      "body_pattern": "CREATE TABLE|INSERT INTO|DROP TABLE|mysqldump"
+    },
+    {
+      "path": "/web.config",
+      "name": "Exposed web.config",
+      "cpe_vendor": "_exposed_config",
+      "cpe_product": "web_config",
+      "match_status": [200],
+      "body_pattern": "<configuration|<system\\.web|connectionString"
+    },
+    {
+      "path": "/.svn/entries",
+      "name": "Exposed SVN Repository",
+      "cpe_vendor": "_exposed_config",
+      "cpe_product": "svn_repo",
+      "match_status": [200],
+      "body_pattern": "dir\\n|svn:wc:ra_dav"
+    },
+    {
+      "path": "/phpinfo.php",
+      "name": "PHP Info Page",
+      "cpe_vendor": "_exposed_config",
+      "cpe_product": "phpinfo",
+      "match_status": [200],
+      "body_pattern": "phpinfo\\(\\)|PHP Version|PHP License",
+      "version_pattern": "PHP Version\\s+(?P<version>[0-9][0-9.]*)"
+    },
+    {
+      "path": "/debug/vars",
+      "name": "Go Debug Vars",
+      "cpe_vendor": "_exposed_config",
+      "cpe_product": "debug_vars",
+      "match_status": [200],
+      "body_pattern": "\"cmdline\"|\"memstats\""
+    },
+    {
+      "path": "/debug/pprof/",
+      "name": "Go pprof Debug",
+      "cpe_vendor": "_exposed_config",
+      "cpe_product": "debug_pprof",
+      "match_status": [200],
+      "body_pattern": "Types of profiles|goroutine|heap"
+    },
+
+    {"_comment": "──────────── Admin Panels ────────────"},
+
+    {
+      "path": "/admin/",
+      "name": "Django Admin",
+      "cpe_vendor": "django",
+      "cpe_product": "django",
+      "match_status": [200, 302],
+      "body_pattern": "Django|django|csrfmiddlewaretoken|admin/login"
+    },
+    {
+      "path": "/adminer.php",
+      "name": "Adminer",
+      "cpe_vendor": "adminer",
+      "cpe_product": "adminer",
+      "match_status": [200],
+      "body_pattern": "Adminer|adminer",
+      "version_pattern": "Adminer\\s+(?P<version>[0-9][0-9.]*)"
+    },
+    {
+      "path": "/portainer/",
+      "name": "Portainer",
+      "cpe_vendor": "portainer",
+      "cpe_product": "portainer",
+      "match_status": [200, 302],
+      "body_pattern": "Portainer|portainer"
+    },
+    {
+      "path": "/argocd/",
+      "name": "Argo CD",
+      "cpe_vendor": "argoproj",
+      "cpe_product": "argo_cd",
+      "match_status": [200, 302],
+      "body_pattern": "Argo CD|argocd|argo-cd"
+    },
+    {
+      "path": "/api/v1/applications",
+      "name": "Argo CD API",
+      "cpe_vendor": "argoproj",
+      "cpe_product": "argo_cd",
+      "match_status": [200, 401, 403],
+      "body_pattern": "\"items\"|Unauthorized|argocd"
+    },
+    {
+      "path": "/-/healthy",
+      "name": "Prometheus Health",
+      "cpe_vendor": "prometheus",
+      "cpe_product": "prometheus",
+      "match_status": [200],
+      "body_pattern": "Prometheus Server is Healthy|Healthy"
+    },
+    {
+      "path": "/traefik",
+      "name": "Traefik Dashboard",
+      "cpe_vendor": "traefik",
+      "cpe_product": "traefik",
+      "match_status": [200],
+      "body_pattern": "Traefik|traefik"
+    },
+    {
+      "path": "/api/dashboard",
+      "name": "Traefik API",
+      "cpe_vendor": "traefik",
+      "cpe_product": "traefik",
+      "match_status": [200],
+      "body_pattern": "\"version\"|traefik"
+    },
+    {
+      "path": "/rancher/",
+      "name": "Rancher",
+      "cpe_vendor": "suse",
+      "cpe_product": "rancher",
+      "match_status": [200, 302],
+      "body_pattern": "Rancher|rancher"
+    },
+
+    {"_comment": "──────────── GraphQL / API Discovery ────────────"},
+
+    {
+      "path": "/graphql",
+      "name": "GraphQL Endpoint",
+      "cpe_vendor": "_api",
+      "cpe_product": "graphql",
+      "match_status": [200, 400, 405],
+      "body_pattern": "\"data\"|\"errors\"|Must provide query string|GET query missing"
+    },
+    {
+      "path": "/graphiql",
+      "name": "GraphiQL IDE",
+      "cpe_vendor": "_api",
+      "cpe_product": "graphiql",
+      "match_status": [200],
+      "body_pattern": "GraphiQL|graphiql"
+    },
+    {
+      "path": "/api/graphql",
+      "name": "GraphQL API",
+      "cpe_vendor": "_api",
+      "cpe_product": "graphql",
+      "match_status": [200, 400, 405],
+      "body_pattern": "\"data\"|\"errors\"|Must provide query string"
+    },
+    {
+      "path": "/swagger/",
+      "name": "Swagger UI",
+      "cpe_vendor": "_api",
+      "cpe_product": "swagger_ui",
+      "match_status": [200],
+      "body_pattern": "swagger-ui|Swagger UI|SwaggerUIBundle"
+    },
+    {
+      "path": "/swagger.json",
+      "name": "Swagger/OpenAPI Spec",
+      "cpe_vendor": "_api",
+      "cpe_product": "openapi_spec",
+      "match_status": [200],
+      "body_pattern": "\"swagger\"|\"openapi\"|\"info\""
+    },
+    {
+      "path": "/openapi.json",
+      "name": "OpenAPI Spec",
+      "cpe_vendor": "_api",
+      "cpe_product": "openapi_spec",
+      "match_status": [200],
+      "body_pattern": "\"openapi\"|\"info\"|\"paths\""
+    },
+    {
+      "path": "/api-docs",
+      "name": "API Documentation",
+      "cpe_vendor": "_api",
+      "cpe_product": "api_docs",
+      "match_status": [200],
+      "body_pattern": "swagger|openapi|api.doc|redoc"
+    },
+    {
+      "path": "/redoc",
+      "name": "ReDoc API Docs",
+      "cpe_vendor": "_api",
+      "cpe_product": "redoc",
+      "match_status": [200],
+      "body_pattern": "ReDoc|redoc"
     }
   ]
 }

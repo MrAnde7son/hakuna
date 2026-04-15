@@ -386,14 +386,35 @@ class AssetRelationship(Base):
     org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
     source_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
     target_asset_id = Column(Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False)
-    relationship_type = Column(String, nullable=False)   # resolves_to, alias_of
+    relationship_type = Column(String, nullable=False)   # resolves_to, alias_of, hosts_service, runs_technology, shares_certificate, same_jarm_cluster, same_ip, exposes_endpoint, authenticates_via
     confidence = Column(String, default="high")           # high / medium / low
     source_detail = Column(JSON, default=dict)            # provenance: {connector, dns_record_type}
+    weight = Column(Float, default=1.0)                  # edge weight for graph algorithms (0.0-1.0)
+    properties = Column(JSON, default=dict)              # edge-specific metadata (e.g. shared cert fingerprint, JARM hash)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     source_asset = relationship("Asset", foreign_keys=[source_asset_id], back_populates="outbound_relationships")
     target_asset = relationship("Asset", foreign_keys=[target_asset_id], back_populates="inbound_relationships")
+
+
+class AssetCluster(Base):
+    """Group of assets sharing infrastructure signals (cert, JARM, IP range, tech stack)."""
+    __tablename__ = "asset_clusters"
+    __table_args__ = (
+        Index("ix_asset_cluster_org", "org_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    cluster_type = Column(String, nullable=False)  # shared_certificate, same_jarm, shared_ip_range, shared_tech_stack
+    label = Column(String)                         # human-readable label (e.g. "*.example.com cert cluster")
+    pivot_value = Column(String)                   # the shared signal value (cert fingerprint, JARM hash, CIDR, etc.)
+    asset_ids = Column(JSON, default=list)          # list of asset IDs in this cluster
+    asset_count = Column(Integer, default=0)
+    cluster_metadata = Column("cluster_metadata", JSON, default=dict)  # cluster-specific data
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 @importable(
