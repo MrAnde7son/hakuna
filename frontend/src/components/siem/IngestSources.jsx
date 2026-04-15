@@ -73,7 +73,7 @@ export default function IngestSources() {
       {newEndpoint && (
         <div style={{ padding: 16, marginBottom: 16, borderRadius: 8, background: '#22c55e15', border: '1px solid #22c55e' }}>
           <div style={{ fontWeight: 700, marginBottom: 8 }}>{t('siem.endpointCreated', 'Endpoint Created')} — {t('siem.saveNow', 'Save these credentials now!')}</div>
-          <div style={{ fontFamily: 'monospace', fontSize: 12 }}>
+          <div style={{ fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all' }}>
             <div><strong>Token:</strong> {newEndpoint.token}
               <button onClick={() => handleCopy(newEndpoint.token)} style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
                 {copied ? <Check size={14} /> : <Copy size={14} />}
@@ -131,8 +131,8 @@ export default function IngestSources() {
 
       {/* Vector config viewer */}
       {vectorConfig && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: 600, maxHeight: '80vh', overflow: 'auto' }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: '100%', maxWidth: 600, maxHeight: '80vh', overflow: 'auto' }}>
             <h3 style={{ margin: '0 0 12px' }}>{t('siem.vectorConfig', 'Vector Configuration')}</h3>
             <pre style={{ fontSize: 11, background: 'var(--bg-secondary)', padding: 16, borderRadius: 8, overflow: 'auto', maxHeight: '60vh', color: 'var(--text)' }}>
               {vectorConfig}
@@ -160,8 +160,8 @@ function CreateEndpointModal({ onClose, onCreate, t }) {
   const [parser, setParser] = useState('json')
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: 400 }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div style={{ background: 'var(--bg)', borderRadius: 12, padding: 24, width: '100%', maxWidth: 400 }}>
         <h2 style={{ margin: '0 0 16px', fontSize: 18 }}>{t('siem.addSource', 'Add Ingest Source')}</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <input placeholder="Endpoint name" value={name} onChange={e => setName(e.target.value)}

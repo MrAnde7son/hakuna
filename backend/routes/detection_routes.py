@@ -34,6 +34,13 @@ class RuleCreate(BaseModel):
     enabled: bool = True
 
 
+class RuleTest(BaseModel):
+    query: dict = {}
+    window_seconds: int = 300
+    threshold: int = 1
+    group_by: List[str] = []
+
+
 class RuleUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
@@ -197,7 +204,7 @@ async def delete_rule(
 
 @router.post("/api/detection-rules/test")
 async def test_rule(
-    body: RuleCreate,
+    body: RuleTest,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     org_ids: list = Depends(get_accessible_org_ids),

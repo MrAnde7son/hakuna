@@ -370,14 +370,23 @@ def _deferred_startup():
     start_report_scheduler()
     logger.info("Report scheduler started")
     # Start SIEM event drain scheduler (hot → lake, every 15 min)
-    from services.event_drain import start_drain_scheduler
-    start_drain_scheduler()
+    try:
+        from services.event_drain import start_drain_scheduler
+        start_drain_scheduler()
+    except Exception as exc:
+        logger.error("Event drain scheduler failed to start: %s", exc)
     # Start SIEM detection engine (rule evaluator, every 1 min)
-    from services.detection_engine import start_detection_scheduler
-    start_detection_scheduler()
+    try:
+        from services.detection_engine import start_detection_scheduler
+        start_detection_scheduler()
+    except Exception as exc:
+        logger.error("Detection engine scheduler failed to start: %s", exc)
     # Start SIEM lake maintenance + hot retention scheduler
-    from services.lake_maintenance import start_maintenance_scheduler
-    start_maintenance_scheduler()
+    try:
+        from services.lake_maintenance import start_maintenance_scheduler
+        start_maintenance_scheduler()
+    except Exception as exc:
+        logger.error("Lake maintenance scheduler failed to start: %s", exc)
     # Schedule threat intel auto-update every 24 hours
     from threat_intel.intel_updater import update_intel
     from apscheduler.schedulers.background import BackgroundScheduler as _BGScheduler

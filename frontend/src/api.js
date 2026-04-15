@@ -1352,6 +1352,7 @@ export const searchSiemEvents = (params = {}) => {
   return request(`/siem/events/search?${q}`)
 }
 export const getSiemEvent = (id) => request(`/siem/events/${id}`)
+export const getSiemSourceSystems = () => request('/siem/events/source-systems')
 export const ingestSiemEvent = (data) => request('/siem/events', { method: 'POST', body: JSON.stringify(data) })
 export const ingestSiemEventsBatch = (events) => request('/siem/events/batch', { method: 'POST', body: JSON.stringify({ events }) })
 

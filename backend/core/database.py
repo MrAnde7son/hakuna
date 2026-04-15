@@ -63,6 +63,8 @@ def init_db():
         AuditLog,
         # Integration Builder
         IntegrationCredential, DiscoveredSpec, Integration, IntegrationRun,
+        # SIEM
+        SIEMEvent, IngestEndpoint, DetectionRule, Alert, SuppressionRule,
     )
     from models.threat_intel_models import (  # noqa: F401
         ThreatGroup, TTP, ThreatGroupTTP,
@@ -233,6 +235,21 @@ def _migrate_add_columns():
         ],
         "integrations": [
             ("logo_url", "VARCHAR"),
+        ],
+        "alerts": [
+            ("entity_type", "VARCHAR"),
+            ("entity_value", "VARCHAR"),
+            ("asset_criticality", "INTEGER"),
+            ("open_vulnerabilities", "INTEGER"),
+            ("internet_facing", "BOOLEAN"),
+            ("exposure_context", "JSON"),
+            ("suppressed", "BOOLEAN DEFAULT FALSE"),
+            ("suppression_rule_id", "INTEGER"),
+            ("triage_reason", "VARCHAR"),
+            ("notes", "TEXT"),
+        ],
+        "detection_rules": [
+            ("asset_filter", "JSON"),
         ],
         "integration_runs": [
             ("triggered_by", "VARCHAR DEFAULT 'manual'"),

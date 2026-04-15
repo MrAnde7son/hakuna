@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { AlertTriangle, CheckCircle, XCircle, Clock, ChevronRight, Globe, Target, EyeOff, X } from 'lucide-react'
 import { getAlerts, triageAlert, getAlert, createSuppressionRule } from '../../api'
 import { PageHeader, EmptyState } from '../shared/ui'
+import { useIsMobile } from '../../App'
 
 const SEVERITY_COLORS = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#3b82f6', info: '#6b7280' }
 const STATUS_ICONS = { open: AlertTriangle, triaged: Clock, closed: CheckCircle, false_positive: XCircle }
@@ -18,6 +19,7 @@ export default function AlertTriage() {
   const [page, setPage] = useState(1)
   const [showSuppressModal, setShowSuppressModal] = useState(false)
   const listRef = useRef(null)
+  const isMobile = useIsMobile()
 
   const loadAlerts = useCallback(async () => {
     setLoading(true)
@@ -82,7 +84,7 @@ export default function AlertTriage() {
       />
 
       {/* Status filter tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap' }}>
         {['', 'open', 'triaged', 'closed', 'false_positive'].map(s => (
           <button key={s} onClick={() => { setStatusFilter(s); setPage(1) }}
                   style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border)',
@@ -91,16 +93,19 @@ export default function AlertTriage() {
             {s || t('siem.all', 'All')}
           </button>
         ))}
-        <div style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <kbd style={kbdStyle}>j/k</kbd> navigate
-          <kbd style={kbdStyle}>t</kbd> triage
-          <kbd style={kbdStyle}>f</kbd> FP
-          <kbd style={kbdStyle}>s</kbd> suppress
-        </div>
+        {!isMobile && (
+          <div style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <kbd style={kbdStyle}>j/k</kbd> navigate
+            <kbd style={kbdStyle}>t</kbd> triage
+            <kbd style={kbdStyle}>f</kbd> FP
+            <kbd style={kbdStyle}>s</kbd> suppress
+          </div>
+        )}
       </div>
 
-      <div style={{ display: 'flex', gap: 16 }} ref={listRef}>
-        {/* Alert list */}
+      <div style={{ display: 'flex', gap: 16, flexDirection: isMobile && selectedAlert ? 'column' : 'row' }} ref={listRef}>
+        {/* Alert list — hidden on mobile when detail is open */}
+        {(!isMobile || !selectedAlert) && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {loading ? <EmptyState icon={AlertTriangle} title={t('app.loading')} />
           : alerts.length === 0 ? <EmptyState icon={AlertTriangle} title={t('siem.noAlerts', 'No alerts')} sub={t('siem.noAlertsHint', 'Alerts will appear when detection rules are triggered by matching events.')} />
@@ -110,12 +115,12 @@ export default function AlertTriage() {
                           background: selectedAlert?.id === alert.id ? 'var(--bg-hover)' : 'var(--bg-secondary)',
                           cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, opacity: alert.suppressed ? 0.5 : 1 }}>
               <span style={{ width: 4, height: 36, borderRadius: 2, background: SEVERITY_COLORS[alert.severity] || '#6b7280' }} />
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
                   {alert.rule_name || `Rule #${alert.rule_id}`}
                   {alert.suppressed && <EyeOff size={12} style={{ color: '#6b7280' }} title="Suppressed" />}
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {alert.event_count} events
                   {alert.entity_value && ` · ${alert.entity_type}: ${alert.entity_value}`}
                   {!alert.entity_value && alert.group_key && ` · ${alert.group_key}`}
@@ -126,16 +131,19 @@ export default function AlertTriage() {
                 background: (SEVERITY_COLORS[alert.severity] || '#6b7280') + '20', color: SEVERITY_COLORS[alert.severity] }}>
                 {alert.severity}
               </span>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{alert.status}</span>
+              {!isMobile && <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{alert.status}</span>}
               <ChevronRight size={16} style={{ color: 'var(--text-muted)' }} />
             </div>
           ))}
         </div>
+        )}
 
-        {/* Detail panel */}
+        {/* Detail panel — full-width on mobile */}
         {selectedAlert && (
-          <div style={{ width: 420, padding: 20, borderRadius: 8, border: '1px solid var(--border)',
-                        background: 'var(--bg-secondary)', overflowY: 'auto', maxHeight: 'calc(100vh - 200px)' }}>
+          <div style={isMobile
+            ? { padding: 20, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', overflowY: 'auto', maxHeight: 'calc(100vh - 200px)' }
+            : { width: 420, padding: 20, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)', overflowY: 'auto', maxHeight: 'calc(100vh - 200px)' }
+          }>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
               <h3 style={{ margin: 0, fontSize: 16 }}>{selectedAlert.rule_name || 'Alert Detail'}</h3>
               <button onClick={() => { setSelectedAlert(null); setSelectedIdx(-1) }}
@@ -286,7 +294,7 @@ function SuppressModal({ alert, onClose, onCreated }) {
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center',
                   justifyContent: 'center', zIndex: 1000 }}
          onClick={onClose}>
-      <div style={{ background: 'var(--bg-secondary)', borderRadius: 12, padding: 24, width: 420,
+      <div style={{ background: 'var(--bg-secondary)', borderRadius: 12, padding: 24, width: '90vw', maxWidth: 420,
                     border: '1px solid var(--border)' }}
            onClick={e => e.stopPropagation()}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>

@@ -280,6 +280,78 @@ def test_alerts_list_and_triage(authed_client, db_session, test_org):
     assert resp.json()["status"] == "triaged"
 
 
+def test_e2e_ingest_rule_test_alert(authed_client, db_session, test_org):
+    """End-to-end: ingest events → create rule → dry-run test → run engine → verify alert."""
+    # 1. Seed events directly (simulates what the ingest endpoint does)
+    # Note: source_ip omitted to avoid _enrich_with_exposure hitting Asset.org_id
+    # which is an ALTER TABLE column not in the ORM mapper
+    _ingest_events(db_session, test_org.id, count=10,
+                   source_system="palo_alto", event_type="authentication",
+                   severity="high", outcome="failure",
+                   source_ip=None, user_name="admin")
+    db_session.commit()
+
+    # 2. Create a detection rule via API (matches the UI screenshot: critical, threshold=1, window=300)
+    resp = authed_client.post("/api/detection-rules", json={
+        "name": "Test",
+        "severity": "critical",
+        "threshold": 1,
+        "window_seconds": 300,
+        "query": {"event_type": "authentication", "outcome": "failure"},
+    })
+    assert resp.status_code == 200, resp.text
+    rule_data = resp.json()
+    rule_id = rule_data["id"]
+    assert rule_data["name"] == "Test"
+    assert rule_data["severity"] == "critical"
+
+    # 3. Dry-run the rule (POST /api/detection-rules/test)
+    resp = authed_client.post("/api/detection-rules/test", json={
+        "name": "Test",
+        "severity": "critical",
+        "threshold": 1,
+        "window_seconds": 300,
+        "query": {"event_type": "authentication", "outcome": "failure"},
+    })
+    assert resp.status_code == 200, resp.text
+    test_result = resp.json()
+    assert test_result["would_fire"] is True
+    assert test_result["matching_events"] >= 1
+    assert len(test_result["sample"]) >= 1
+
+    # 4. Run the detection engine against the rule
+    from models.models import DetectionRule
+    from services.detection_engine import run_rule
+    rule = db_session.query(DetectionRule).get(rule_id)
+    alerts = run_rule(db_session, rule)
+    assert len(alerts) >= 1
+    assert alerts[0].severity == "critical"
+    assert alerts[0].event_count >= 1
+    db_session.commit()
+
+    # 5. Verify alert shows up in the alerts API
+    resp = authed_client.get("/api/alerts")
+    assert resp.status_code == 200
+    alerts_data = resp.json()
+    assert alerts_data["total"] >= 1
+    alert = alerts_data["items"][0]
+    assert alert["severity"] == "critical"
+    assert alert["rule_name"] == "Test"
+    assert alert["status"] == "open"
+
+    # 6. Triage the alert
+    resp = authed_client.post(f"/api/alerts/{alert['id']}/triage", json={
+        "status": "triaged",
+        "triage_reason": "Confirmed brute force attempt",
+    })
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "triaged"
+
+    # 7. Clean up — delete the rule
+    resp = authed_client.delete(f"/api/detection-rules/{rule_id}")
+    assert resp.status_code == 200
+
+
 def test_seed_sigma_rules_parse():
     """Verify all seed Sigma rules parse without errors."""
     from services.sigma_importer import import_sigma_rule

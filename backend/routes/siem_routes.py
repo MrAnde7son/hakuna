@@ -74,13 +74,14 @@ VALID_SEVERITIES = {"info", "low", "medium", "high", "critical"}
 
 def _resolve_event_asset(db: Session, org_id: int, source_ip: str = None, host_name: str = None) -> Optional[int]:
     """Resolve an asset_id from event source_ip or host_name at ingest time."""
+    from models.models import Scan
     if source_ip:
-        asset = db.query(Asset.id).filter(Asset.org_id == org_id, Asset.ip == source_ip).first()
+        asset = db.query(Asset.id).join(Scan, Asset.scan_id == Scan.id).filter(Scan.org_id == org_id, Asset.ip == source_ip).first()
         if asset:
             return asset[0]
     if host_name:
-        asset = db.query(Asset.id).filter(
-            Asset.org_id == org_id,
+        asset = db.query(Asset.id).join(Scan, Asset.scan_id == Scan.id).filter(
+            Scan.org_id == org_id,
             (Asset.hostname == host_name) | (Asset.fqdn == host_name),
         ).first()
         if asset:
@@ -261,6 +262,22 @@ async def ingest_events_batch(
         "errors": errors,
         "total": len(body.events),
     }
+
+
+# ── Facets ─────────────────────────────────────────────
+
+@router.get("/api/siem/events/source-systems")
+async def list_source_systems(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Return distinct source_system values for the tenant."""
+    q = db.query(SIEMEvent.source_system)
+    if org_ids is not None:
+        q = q.filter(SIEMEvent.org_id.in_(list(org_ids)))
+    rows = q.distinct().order_by(SIEMEvent.source_system).all()
+    return [r[0] for r in rows if r[0]]
 
 
 # ── Search ──────────────────────────────────────────────

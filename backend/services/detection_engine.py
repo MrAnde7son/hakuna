@@ -15,6 +15,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from models.models import DetectionRule, Alert, SIEMEvent, SuppressionRule, Asset
@@ -292,7 +293,8 @@ def _resolve_asset(db: Session, org_id: int, entity_type: str, entity_value: str
     """Resolve an asset from entity type/value."""
     if not entity_value:
         return None
-    q = db.query(Asset).filter(Asset.org_id == org_id)
+    # org_id is an ALTER TABLE column not in the ORM mapper — use text filter
+    q = db.query(Asset).filter(text("assets.org_id = :org_id")).params(org_id=org_id)
     if entity_type == "ip":
         q = q.filter(Asset.ip == entity_value)
     elif entity_type == "hostname":
@@ -400,13 +402,17 @@ def run_all_due_rules(db: Session = None) -> dict:
                 new_alerts = run_rule(db, rule)
                 result["alerts_created"] += len(new_alerts)
             except Exception as e:
+                db.rollback()
                 result["errors"].append({"rule_id": rule.id, "error": str(e)})
-                logger.error("Rule %s (%s) failed: %s", rule.id, rule.name, e)
+                logger.error("Rule %s (%s) failed: %s", rule.id, rule.name, e, exc_info=True)
 
         db.commit()
+        logger.info("Detection engine tick: %d rules checked, %d alerts created, %d errors",
+                     result["rules_checked"], result["alerts_created"], len(result["errors"]))
     except Exception as e:
+        db.rollback()
         result["errors"].append({"error": str(e)})
-        logger.error("Detection engine run failed: %s", e)
+        logger.error("Detection engine run failed: %s", e, exc_info=True)
     finally:
         if own_session:
             db.close()

@@ -20,12 +20,29 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from models.models import IngestEndpoint, SIEMEvent
+from models.models import Asset, IngestEndpoint, SIEMEvent
 from services.event_parsers import parse_events
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _resolve_asset_id(db: Session, org_id: int, source_ip: str = None, host_name: str = None) -> Optional[int]:
+    """Resolve an asset_id from source_ip or host_name."""
+    from models.models import Scan
+    if source_ip:
+        asset = db.query(Asset.id).join(Scan, Asset.scan_id == Scan.id).filter(Scan.org_id == org_id, Asset.ip == source_ip).first()
+        if asset:
+            return asset[0]
+    if host_name:
+        asset = db.query(Asset.id).join(Scan, Asset.scan_id == Scan.id).filter(
+            Scan.org_id == org_id,
+            (Asset.hostname == host_name) | (Asset.fqdn == host_name),
+        ).first()
+        if asset:
+            return asset[0]
+    return None
 
 
 # ── Rate Limiter (in-memory token bucket) ──────────────
@@ -145,21 +162,26 @@ def _ingest_parsed_events(parsed: list[dict], org_id: int, ep: IngestEndpoint, d
         if raw and not isinstance(raw, (dict, list)):
             raw = {"_raw": str(raw)}
 
+        src_ip = event.get("source_ip")
+        host = event.get("host_name")
+        asset_id = _resolve_asset_id(db, org_id, src_ip, host)
+
         new_events.append(SIEMEvent(
             id=str(uuid.uuid4()),
             org_id=org_id,
             event_time=event_time,
             source_system=event.get("source_system", "unknown"),
-            source_id=event.get("source_id"),
+            source_id=str(event["source_id"])[:500] if event.get("source_id") and not isinstance(event.get("source_id"), str) else event.get("source_id"),
             event_type=event.get("event_type", "generic"),
             event_category=event.get("event_category"),
             severity=event.get("severity", "info"),
             action=event.get("action"),
             outcome=event.get("outcome"),
+            asset_id=asset_id,
             user_name=event.get("user_name"),
-            source_ip=event.get("source_ip"),
+            source_ip=src_ip,
             dest_ip=event.get("dest_ip"),
-            host_name=event.get("host_name"),
+            host_name=host,
             message=str(event.get("message", ""))[:10000] if event.get("message") else None,
             raw=raw,
             dedup_hash=h,
@@ -175,6 +197,25 @@ def _ingest_parsed_events(parsed: list[dict], org_id: int, ep: IngestEndpoint, d
     ep.last_used_at = datetime.utcnow()
     ep.request_count = (ep.request_count or 0) + 1
     db.commit()
+
+    # Trigger detection engine inline so alerts appear immediately
+    if created:
+        try:
+            from services.detection_engine import run_rule
+            from models.models import DetectionRule
+            rules = db.query(DetectionRule).filter(
+                DetectionRule.org_id == org_id,
+                DetectionRule.enabled == True,
+            ).all()
+            alerts_created = 0
+            for rule in rules:
+                new_alerts = run_rule(db, rule)
+                alerts_created += len(new_alerts)
+            if alerts_created:
+                db.commit()
+                logger.info("Ingest triggered %d alert(s) from %d rule(s)", alerts_created, len(rules))
+        except Exception as exc:
+            logger.warning("Post-ingest detection failed: %s", exc)
 
     return {"created": created, "duplicates": duplicates, "errors": errors}
 
