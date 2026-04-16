@@ -497,6 +497,207 @@ async def delete_ingest_endpoint(
     return {"deleted": True}
 
 
+# ── LLM-inferred field mappings ────────────────────────
+#
+# Bridges the gap between unstructured payloads (e.g. a webhook that sends
+# `{"line": "Failed password for root from ..."}`) and the canonical schema
+# detection rules filter on. See services/mapping_inference.py.
+
+class SaveMappingsRequest(BaseModel):
+    field_extractors: dict
+
+
+def _get_endpoint_for_org(db: Session, endpoint_id: str, org_ids) -> IngestEndpoint:
+    q = db.query(IngestEndpoint).filter(IngestEndpoint.id == endpoint_id)
+    if org_ids is not None:
+        q = q.filter(IngestEndpoint.org_id.in_(org_ids))
+    ep = q.first()
+    if not ep:
+        raise HTTPException(404, "Ingest endpoint not found")
+    return ep
+
+
+def _load_samples_for_endpoint(db: Session, ep: IngestEndpoint, limit: int = 50) -> list[dict]:
+    """Pull recent real events as sample material for inference/preview.
+
+    Falls back to the connector's sample_payload if the endpoint hasn't
+    received any events yet (common at onboarding time).
+    """
+    query = db.query(SIEMEvent).filter(SIEMEvent.org_id == ep.org_id)
+    if ep.integration_id:
+        query = query.filter(SIEMEvent.integration_id == ep.integration_id)
+    events = query.order_by(SIEMEvent.ingested_at.desc()).limit(limit).all()
+    samples = [{
+        "event_type": ev.event_type,
+        "event_category": ev.event_category,
+        "severity": ev.severity,
+        "action": ev.action,
+        "outcome": ev.outcome,
+        "user_name": ev.user_name,
+        "source_ip": ev.source_ip,
+        "dest_ip": ev.dest_ip,
+        "host_name": ev.host_name,
+        "message": ev.message,
+        "raw": ev.raw,
+    } for ev in events]
+
+    if samples:
+        return samples
+
+    # Fallback: use the connector's sample_payload (common at first-time onboarding
+    # before any events have been received).
+    return _sample_from_connector(ep)
+
+
+def _sample_from_connector(ep: IngestEndpoint) -> list[dict]:
+    """Load `sample_payload` from the connector JSON as a seed sample."""
+    import os, json as _json
+    from services.event_parsers import parse_events
+
+    if not ep.integration_id:
+        return []
+    # Integration id usually matches the connector filename (webhook_splunk_hec, etc.)
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "integrations", "connectors",
+                     f"{ep.integration_id}.json"),
+    ]
+    for path in candidates:
+        try:
+            with open(path) as f:
+                meta = _json.load(f)
+        except (FileNotFoundError, _json.JSONDecodeError):
+            continue
+        sample_payload = meta.get("sample_payload")
+        if not sample_payload:
+            continue
+        try:
+            return parse_events(sample_payload.encode(), ep.parser_type)
+        except Exception:
+            continue
+    return []
+
+
+@router.post("/api/siem/endpoints/{endpoint_id}/infer-mappings")
+async def infer_endpoint_mappings(
+    endpoint_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Call the LLM once to produce a field-extractor spec for this endpoint.
+
+    Does NOT persist the result — the operator reviews it (via /preview-mappings)
+    and saves via PUT /mappings. This keeps every LLM-generated spec under
+    human review before it affects live detection.
+    """
+    if current_user.role not in ("org_admin", "super_admin"):
+        raise HTTPException(403, "Admin access required")
+
+    from services.mapping_inference import infer_extractors_from_samples
+
+    ep = _get_endpoint_for_org(db, endpoint_id, org_ids)
+    samples = _load_samples_for_endpoint(db, ep, limit=50)
+    if not samples:
+        raise HTTPException(400,
+            "No sample events available yet. Send some traffic to this endpoint "
+            "first, then retry.")
+
+    try:
+        spec = infer_extractors_from_samples(db, samples, current_extractors=ep.field_extractors)
+    except RuntimeError as e:
+        # No provider configured, or LLM returned junk
+        raise HTTPException(503, str(e))
+
+    return {
+        "spec": spec,
+        "sample_count": len(samples),
+    }
+
+
+class PreviewMappingsRequest(BaseModel):
+    field_extractors: dict
+
+
+@router.post("/api/siem/endpoints/{endpoint_id}/preview-mappings")
+async def preview_endpoint_mappings(
+    endpoint_id: str,
+    body: PreviewMappingsRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Apply an extractor spec to recent events and return a before/after diff.
+
+    Used by the onboarding UI so the operator can see exactly which canonical
+    fields the spec will populate before saving it live.
+    """
+    from services.mapping_inference import preview_spec
+
+    ep = _get_endpoint_for_org(db, endpoint_id, org_ids)
+    samples = _load_samples_for_endpoint(db, ep, limit=20)
+    if not samples:
+        raise HTTPException(400, "No sample events available to preview against.")
+
+    diff = preview_spec(samples, body.field_extractors)
+    return {"samples": diff, "count": len(diff)}
+
+
+@router.put("/api/siem/endpoints/{endpoint_id}/mappings")
+async def save_endpoint_mappings(
+    endpoint_id: str,
+    body: SaveMappingsRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Persist a field-extractor spec on the endpoint."""
+    if current_user.role not in ("org_admin", "super_admin"):
+        raise HTTPException(403, "Admin access required")
+
+    ep = _get_endpoint_for_org(db, endpoint_id, org_ids)
+    ep.field_extractors = body.field_extractors
+    db.commit()
+
+    log_audit(db, "update", "ingest_endpoint", endpoint_id,
+              entity_name=ep.name,
+              changes={"field_extractors_count": len((body.field_extractors or {}).get("extractors") or [])},
+              actor=current_user)
+    return {"saved": True, "endpoint_id": endpoint_id}
+
+
+@router.get("/api/siem/endpoints/{endpoint_id}/mappings")
+async def get_endpoint_mappings(
+    endpoint_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Return the current extractor spec for this endpoint (or null)."""
+    ep = _get_endpoint_for_org(db, endpoint_id, org_ids)
+    return {"field_extractors": ep.field_extractors}
+
+
+@router.delete("/api/siem/endpoints/{endpoint_id}/mappings")
+async def clear_endpoint_mappings(
+    endpoint_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    org_ids: list = Depends(get_accessible_org_ids),
+):
+    """Remove the extractor spec — reverts to raw format-parser output only."""
+    if current_user.role not in ("org_admin", "super_admin"):
+        raise HTTPException(403, "Admin access required")
+
+    ep = _get_endpoint_for_org(db, endpoint_id, org_ids)
+    ep.field_extractors = None
+    db.commit()
+    log_audit(db, "update", "ingest_endpoint", endpoint_id,
+              entity_name=ep.name,
+              changes={"action": "cleared_field_extractors"},
+              actor=current_user)
+    return {"cleared": True}
+
+
 # ── Vector Config Generation ───────────────────────────
 
 @router.get("/api/siem/vector-templates")

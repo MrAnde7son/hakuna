@@ -219,6 +219,18 @@ TOOL_CATEGORIES = {
         "keywords": ["search web", "fetch url", "advisory", "look up", "research"],
         "tools": ["search_web", "fetch_url"],
     },
+    "validation": {
+        "keywords": [
+            "validate", "validation", "exploitable", "exploitability", "reachable",
+            "reachability", "false positive", "true positive", "confirm vuln",
+            "probe", "verify finding",
+        ],
+        "tools": [
+            "probe_url_status", "probe_tcp_connect", "fetch_response_headers",
+            "check_response_body", "update_finding_validation",
+            "get_finding_detail", "get_asset_profile", "fetch_url", "search_web",
+        ],
+    },
 }
 
 

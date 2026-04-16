@@ -1178,38 +1178,51 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
         # opportunistic TLS-cert lookup (for CPE inference) may miss certs
         # that tlsx hasn't written yet — acceptable since most CPE hits
         # come from banner/body/header signals, not cert subject.
-        step_groups: list[list[tuple[str, object]]] = [
-            [
-                ("tlsx", _do_tlsx),
-                ("httpx", _do_httpx),
-                ("cdncheck", _do_cdncheck),
-            ],
-            [
-                ("js_fingerprint", _do_js_fingerprint),
-                ("favicon_fingerprint", _do_favicon_fingerprint),
-                ("endpoint_probe", _do_endpoint_probe),
-                ("protocol_probe", _do_protocol_probe),
-                ("katana", _do_katana),
-                ("kiterunner", _do_kiterunner),
-            ],
-            [
-                # Post-katana analysis: secrets scanning + LLM JS extraction
-                # depend on katana's discovered JS endpoints from Group 2.
-                ("trufflehog", _do_trufflehog),
-                ("llm_js_extraction", _do_llm_js_extraction),
-            ],
-            [
-                ("classify_assets", _do_classify_assets),
-            ],
-            [
-                # ai_exposure depends on asset_type set by classify_assets,
-                # so it must run in a later group. Emits Findings for
-                # unauthenticated Ollama / vLLM / Qdrant / MCP / LangServe
-                # / LiteLLM / Milvus / Chroma endpoints.
-                ("ai_exposure", _do_ai_exposure),
-            ],
-            [("nmap_dispatch", None)],  # handled separately; includes UDP
-        ]
+        # Build step_groups either from the scanner registry (when
+        # settings.use_scanner_registry is True) or from the hardcoded
+        # literal below (the safe default). The registry-driven output
+        # is expected to be identical to the literal — it's a pure
+        # refactor gated by the feature flag.
+        if settings.use_scanner_registry:
+            from app.runner.registry import build_step_groups
+            step_groups: list[list[tuple[str, object]]] = build_step_groups("enrichment")
+            logger.info(
+                "org=%s enrichment: using scanner registry (%d groups)",
+                org_id, len(step_groups),
+            )
+        else:
+            step_groups = [
+                [
+                    ("tlsx", _do_tlsx),
+                    ("httpx", _do_httpx),
+                    ("cdncheck", _do_cdncheck),
+                ],
+                [
+                    ("js_fingerprint", _do_js_fingerprint),
+                    ("favicon_fingerprint", _do_favicon_fingerprint),
+                    ("endpoint_probe", _do_endpoint_probe),
+                    ("protocol_probe", _do_protocol_probe),
+                    ("katana", _do_katana),
+                    ("kiterunner", _do_kiterunner),
+                ],
+                [
+                    # Post-katana analysis: secrets scanning + LLM JS extraction
+                    # depend on katana's discovered JS endpoints from Group 2.
+                    ("trufflehog", _do_trufflehog),
+                    ("llm_js_extraction", _do_llm_js_extraction),
+                ],
+                [
+                    ("classify_assets", _do_classify_assets),
+                ],
+                [
+                    # ai_exposure depends on asset_type set by classify_assets,
+                    # so it must run in a later group. Emits Findings for
+                    # unauthenticated Ollama / vLLM / Qdrant / MCP / LangServe
+                    # / LiteLLM / Milvus / Chroma endpoints.
+                    ("ai_exposure", _do_ai_exposure),
+                ],
+                [("nmap_dispatch", None)],  # handled separately; includes UDP
+            ]
         # Flat list preserved for step-count bookkeeping.
         steps = [s for group in step_groups for s in group]
 

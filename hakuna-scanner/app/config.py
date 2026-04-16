@@ -122,6 +122,20 @@ class Settings(BaseSettings):
     llm_js_extraction_min_file_size: int = 10000  # bytes
     llm_js_extraction_model: str = "claude-haiku-4-5-20251001"
 
+    # Scanner registry — feature flag for the registry-driven orchestration.
+    # When False, enrichment.py uses its hardcoded step_groups literal.
+    # When True, step_groups are built from the SCANNER_REGISTRY at runtime.
+    # Default False until parity is verified in production.
+    use_scanner_registry: bool = False
+
+    # Continuous CT monitoring (CertStream websocket consumer).
+    # When enabled, a long-lived worker streams certificate transparency
+    # events and upserts new hostnames matching any active target_domain.
+    # Opt-in — requires outbound websocket connection to CertStream.
+    certstream_enabled: bool = False
+    certstream_url: str = "wss://certstream.calidog.io/"
+    certstream_reconnect_delay: int = 30
+
     # Celery task safety limits (seconds)
     task_soft_time_limit: int = 1800   # 30 min soft limit
     task_time_limit: int = 2100        # 35 min hard kill

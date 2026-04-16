@@ -1342,12 +1342,96 @@ def _match_on_new_finding(node: WorkflowNode, event_data: dict) -> bool:
     return len(findings) > 0
 
 
+def _match_on_tech_changed(node: WorkflowNode, event_data: dict) -> bool:
+    """Fires when an asset's tech stack changes (e.g., version bump).
+
+    Config fields:
+      - tech_filter: list[str] — only fire if one of these tech names appears
+        in new_tech. Empty list = match any tech change.
+    """
+    config = node.config or {}
+    watched = {t.lower() for t in (config.get("tech_filter") or [])}
+    if not watched:
+        return True
+    new_tech = event_data.get("new_tech") or {}
+    # new_tech can be dict {name: version} or list[str]
+    if isinstance(new_tech, dict):
+        changed_names = {k.lower() for k in new_tech.keys()}
+    else:
+        changed_names = {str(t).lower() for t in new_tech}
+    return bool(watched & changed_names)
+
+
+def _match_on_port_changed(node: WorkflowNode, event_data: dict) -> bool:
+    """Fires when an asset's open port set changes.
+
+    Config fields:
+      - port_filter: list[int] — only fire if one of these ports appears in
+        new_ports. Empty list = match any port change.
+      - direction: 'added' | 'removed' | 'any' (default 'any')
+    """
+    config = node.config or {}
+    watched = {int(p) for p in (config.get("port_filter") or []) if str(p).isdigit()}
+    direction = config.get("direction", "any")
+
+    new_ports = [int(p) for p in (event_data.get("new_ports") or []) if str(p).isdigit()]
+    removed_ports = [int(p) for p in (event_data.get("removed_ports") or []) if str(p).isdigit()]
+
+    if direction == "added":
+        candidates = new_ports
+    elif direction == "removed":
+        candidates = removed_ports
+    else:
+        candidates = new_ports + removed_ports
+
+    if not candidates:
+        return False
+    if not watched:
+        return True
+    return bool(watched & set(candidates))
+
+
+def _match_on_ip_changed(node: WorkflowNode, event_data: dict) -> bool:
+    """Fires when an asset's IP changes. No config filter — always matches
+    if the event has old_ip and new_ip."""
+    return bool(event_data.get("old_ip") and event_data.get("new_ip"))
+
+
+def _match_on_cert_expiring(node: WorkflowNode, event_data: dict) -> bool:
+    """Fires when a TLS cert is approaching expiry.
+
+    Config fields:
+      - max_days_remaining: int — only fire if days_remaining <= this value.
+        Default: no filter (match all cert_expiring events).
+    """
+    config = node.config or {}
+    threshold = config.get("max_days_remaining")
+    if threshold is None:
+        return True
+    try:
+        days = int(event_data.get("days_remaining", 999))
+    except (TypeError, ValueError):
+        return True
+    return days <= int(threshold)
+
+
+def _match_on_asset_gone(node: WorkflowNode, event_data: dict) -> bool:
+    """Fires when an asset has not been seen in recent scans. No config."""
+    return True
+
+
 _TRIGGER_MATCHERS: dict[str, callable] = {
     "on_upload": _match_on_upload,
     "on_integration_execution": _match_on_integration_execution,
     "on_new_threat_intel": _match_on_new_threat_intel,
     "on_new_asset": _match_on_new_asset,
     "on_new_finding": _match_on_new_finding,
+    # ── Scanner-driven (via services.scanner_event_bridge) ──
+    "on_tech_changed": _match_on_tech_changed,
+    "on_port_changed": _match_on_port_changed,
+    "on_ip_changed": _match_on_ip_changed,
+    "on_cert_expiring": _match_on_cert_expiring,
+    "on_asset_gone": _match_on_asset_gone,
 }
 
 

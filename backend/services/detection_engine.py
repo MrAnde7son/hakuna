@@ -166,6 +166,15 @@ def _create_alert(db: Session, rule: DetectionRule, events: list, group_key: Opt
     except Exception as e:
         logger.warning("Alert enrichment failed (alert %s): %s", alert.id, e)
 
+    # LLM triage (best-effort, gated by ALERT_TRIAGE_ENABLED).
+    # Runs after exposure enrichment so the model sees asset context, and
+    # before trigger/notification so auto-suppressed FPs don't page a human.
+    try:
+        from services.alert_triage import triage_alert
+        triage_alert(db, alert, rule, events)
+    except Exception as e:
+        logger.warning("Alert triage failed (alert %s): %s", alert.id, e)
+
     # Fire workflow trigger and notification for non-suppressed alerts
     if not alert.suppressed:
         _fire_alert_trigger(db, alert, rule)

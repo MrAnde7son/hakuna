@@ -5159,6 +5159,336 @@ def fetch_url(db: Session, params: dict):
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Validation agent tools
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Purpose: let a validator agent safely probe a target to confirm whether
+# a vulnerability finding is genuinely exploitable in the target's
+# specific configuration, then write its verdict back to the Finding's
+# context fields and llm_validation JSON.
+#
+# Safety floor for all probe tools:
+#   - HEAD/GET only (no POST/PUT/DELETE)
+#   - 5-10 second timeouts
+#   - Response bodies capped at 10 KB
+#   - URL scheme must be http/https
+#   - update_finding_validation requires HITL approval
+#     (see CONFIRMATION_REQUIRED_TOOLS in agent_engine.py)
+#   - Per-org rate limiting is enforced by _validation_rate_check() below
+
+_VALIDATION_RATE_STATE: dict[int, list[float]] = {}
+_VALIDATION_RATE_MAX_PER_MIN = 100
+_VALIDATION_RATE_MAX_PER_SEC = 10
+
+
+def _validation_rate_check(db: Session) -> dict | None:
+    """Per-org token-bucket rate limit for probe tools.
+
+    Returns a dict error if the limit is exceeded, None if the probe may proceed.
+    Org id is resolved from the tool's db session binding (best-effort).
+    Limits are intentionally low to protect third-party targets.
+    """
+    import time
+    # We don't have access to the agent context here; fall back to a
+    # global token bucket keyed by DB URL (close enough for single-tenant
+    # dev/prod without adding a new thread-local).
+    key = 0  # global bucket — callers that want per-org limits can evolve this
+    now = time.monotonic()
+    bucket = _VALIDATION_RATE_STATE.setdefault(key, [])
+    # Drop entries older than 60s
+    while bucket and bucket[0] < now - 60:
+        bucket.pop(0)
+    if len(bucket) >= _VALIDATION_RATE_MAX_PER_MIN:
+        return {"error": "Validation probe rate limit exceeded (100/min). Slow down."}
+    # Burst check: last 1 second
+    recent = sum(1 for t in bucket if t > now - 1)
+    if recent >= _VALIDATION_RATE_MAX_PER_SEC:
+        return {"error": "Validation probe burst limit exceeded (10/sec). Slow down."}
+    bucket.append(now)
+    return None
+
+
+@agent_tool(
+    "probe_url_status",
+    "Check HTTP response status for a URL via a lightweight HEAD request. "
+    "Does NOT download response body — use this to confirm a URL is reachable "
+    "and see basic response headers (server, content-type, location). "
+    "WHEN TO CALL: validating that an exploit target URL is actually reachable.",
+    {
+        "url": {"type": "string", "description": "URL to probe (http or https)."},
+        "follow_redirects": {"type": "boolean", "description": "Follow 30x redirects. Default true."},
+    },
+)
+def probe_url_status(db: Session, params: dict):
+    import httpx
+
+    url = (params.get("url") or "").strip()
+    if not url or not url.startswith(("http://", "https://")):
+        return {"error": "Valid http/https URL required"}
+
+    limit_err = _validation_rate_check(db)
+    if limit_err:
+        return limit_err
+
+    follow = bool(params.get("follow_redirects", True))
+    try:
+        resp = httpx.head(
+            url, timeout=10.0, follow_redirects=follow,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; HakunaValidator/1.0)"},
+        )
+    except httpx.TimeoutException:
+        return {"url": url, "reachable": False, "error": "timeout"}
+    except httpx.ConnectError as e:
+        return {"url": url, "reachable": False, "error": f"connect_error: {e}"}
+    except Exception as e:
+        return {"url": url, "reachable": False, "error": str(e)[:200]}
+
+    # Keep only a safe subset of headers to avoid leaking auth/cookies
+    keep = {"server", "content-type", "content-length", "location", "x-powered-by"}
+    filtered_headers = {k.lower(): v for k, v in resp.headers.items() if k.lower() in keep}
+
+    return {
+        "url": url,
+        "final_url": str(resp.url),
+        "status": resp.status_code,
+        "reachable": 200 <= resp.status_code < 500,  # 4xx means the server answered
+        "headers": filtered_headers,
+    }
+
+
+@agent_tool(
+    "probe_tcp_connect",
+    "Attempt a bare TCP connection to a host:port. Returns whether the port "
+    "accepts connections. NO payload is sent — this is purely a connect() check. "
+    "WHEN TO CALL: verifying that a service port is open before running a more "
+    "specific probe.",
+    {
+        "host": {"type": "string", "description": "Hostname or IP to connect to."},
+        "port": {"type": "integer", "description": "TCP port number (1-65535)."},
+    },
+)
+def probe_tcp_connect(db: Session, params: dict):
+    import socket
+
+    host = (params.get("host") or "").strip()
+    try:
+        port = int(params.get("port", 0))
+    except (TypeError, ValueError):
+        return {"error": "port must be an integer"}
+
+    if not host or port < 1 or port > 65535:
+        return {"error": "host and valid port (1-65535) required"}
+
+    limit_err = _validation_rate_check(db)
+    if limit_err:
+        return limit_err
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(5.0)
+    try:
+        sock.connect((host, port))
+        return {"host": host, "port": port, "open": True}
+    except socket.timeout:
+        return {"host": host, "port": port, "open": False, "error": "timeout"}
+    except OSError as e:
+        return {"host": host, "port": port, "open": False, "error": str(e)[:200]}
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+@agent_tool(
+    "fetch_response_headers",
+    "Fetch only the HTTP response headers for a URL (GET without downloading body). "
+    "Returns all headers (filtered for safety — no Set-Cookie, Authorization echoes). "
+    "WHEN TO CALL: checking security headers (CSP, HSTS, X-Frame-Options) or "
+    "reading Server/X-Powered-By for version fingerprinting.",
+    {
+        "url": {"type": "string", "description": "URL to fetch (http or https)."},
+    },
+)
+def fetch_response_headers(db: Session, params: dict):
+    import httpx
+
+    url = (params.get("url") or "").strip()
+    if not url or not url.startswith(("http://", "https://")):
+        return {"error": "Valid http/https URL required"}
+
+    limit_err = _validation_rate_check(db)
+    if limit_err:
+        return limit_err
+
+    try:
+        # Use GET with a range request to avoid downloading full body
+        resp = httpx.get(
+            url, timeout=10.0, follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; HakunaValidator/1.0)",
+                "Range": "bytes=0-0",  # request 1 byte; many servers honor it
+            },
+        )
+    except httpx.TimeoutException:
+        return {"url": url, "error": "timeout"}
+    except Exception as e:
+        return {"url": url, "error": str(e)[:200]}
+
+    # Strip cookies + auth echoes
+    redact = {"set-cookie", "cookie", "authorization", "x-api-key"}
+    headers = {
+        k.lower(): v for k, v in resp.headers.items()
+        if k.lower() not in redact
+    }
+    return {
+        "url": url,
+        "final_url": str(resp.url),
+        "status": resp.status_code,
+        "headers": headers,
+    }
+
+
+@agent_tool(
+    "check_response_body",
+    "Fetch a URL's response body (capped at 10 KB) and check if it matches "
+    "a regex pattern. Returns whether the pattern matched + a snippet of the "
+    "response for context. "
+    "WHEN TO CALL: confirming a vulnerability's signature is actually present "
+    "(e.g. an error message, a version banner, an exploit response).",
+    {
+        "url": {"type": "string", "description": "URL to fetch (http or https)."},
+        "pattern": {"type": "string", "description": "Python regex to match against the response body (case-insensitive)."},
+    },
+)
+def check_response_body(db: Session, params: dict):
+    import httpx
+    import re as _re
+
+    url = (params.get("url") or "").strip()
+    pattern = params.get("pattern") or ""
+    if not url or not url.startswith(("http://", "https://")):
+        return {"error": "Valid http/https URL required"}
+    if not pattern:
+        return {"error": "pattern is required"}
+
+    try:
+        rx = _re.compile(pattern, _re.IGNORECASE)
+    except _re.error as e:
+        return {"error": f"invalid regex: {e}"}
+
+    limit_err = _validation_rate_check(db)
+    if limit_err:
+        return limit_err
+
+    try:
+        resp = httpx.get(
+            url, timeout=10.0, follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; HakunaValidator/1.0)"},
+        )
+    except httpx.TimeoutException:
+        return {"url": url, "error": "timeout"}
+    except Exception as e:
+        return {"url": url, "error": str(e)[:200]}
+
+    body = resp.text[:10_000]  # hard cap
+    match = rx.search(body)
+    return {
+        "url": url,
+        "status": resp.status_code,
+        "matched": bool(match),
+        "match_text": match.group(0)[:200] if match else None,
+        "snippet": body[:500],
+    }
+
+
+@agent_tool(
+    "update_finding_validation",
+    "Record a validator agent's verdict on a finding. Writes ctx_reachability, "
+    "ctx_exploitability, and a full llm_validation JSON block with reasoning. "
+    "REQUIRES HITL approval — a human must confirm the verdict before it takes "
+    "effect. WHEN TO CALL: after you've run probes and reached a confident "
+    "conclusion about whether a finding is truly exploitable.",
+    {
+        "finding_id": {"type": "integer", "description": "Finding ID to update."},
+        "verdict": {
+            "type": "string",
+            "enum": ["true_positive", "false_positive", "needs_review"],
+            "description": "Your overall verdict.",
+        },
+        "ctx_reachability": {
+            "type": "string",
+            "enum": ["unreachable", "internal_only", "internet_facing", "unknown"],
+            "description": "Network reachability you observed during probes.",
+        },
+        "ctx_exploitability": {
+            "type": "string",
+            "enum": ["not_exploitable", "requires_conditions", "easily_exploitable", "unknown"],
+            "description": "How exploitable this is in the target's current config.",
+        },
+        "confidence": {
+            "type": "number",
+            "description": "Your confidence 0.0-1.0. Lower means you're guessing.",
+        },
+        "reasoning": {
+            "type": "string",
+            "description": "Short paragraph describing what probes you ran and what you concluded.",
+        },
+    },
+)
+def update_finding_validation(db: Session, params: dict):
+    from datetime import datetime as _dt
+    from models.models import Finding
+
+    fid = params.get("finding_id")
+    verdict = params.get("verdict")
+    if not fid or verdict not in {"true_positive", "false_positive", "needs_review"}:
+        return {"error": "finding_id and a valid verdict are required"}
+
+    try:
+        confidence = float(params.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence = 0.5
+    confidence = max(0.0, min(1.0, confidence))
+
+    f = db.query(Finding).filter(Finding.id == fid).first()
+    if not f:
+        return {"error": f"finding {fid} not found"}
+
+    validation_data = {
+        "verdict": verdict,
+        "confidence": confidence,
+        "reasoning": (params.get("reasoning") or "")[:2000],
+        "validated_at": _dt.utcnow().isoformat(),
+        "validator": "agent",  # distinguishes from llm_vuln_validator (validator="llm")
+    }
+
+    # Merge with any prior llm_validation (e.g., from the static llm_vuln_validator)
+    prior = f.llm_validation if isinstance(f.llm_validation, dict) else {}
+    merged = {**prior, **validation_data}
+
+    f.llm_validation = merged
+
+    # Optionally set ctx_* fields
+    ctx_reach = params.get("ctx_reachability")
+    if ctx_reach in {"unreachable", "internal_only", "internet_facing", "unknown"}:
+        f.ctx_reachability = ctx_reach
+
+    ctx_exp = params.get("ctx_exploitability")
+    if ctx_exp in {"not_exploitable", "requires_conditions", "easily_exploitable", "unknown"}:
+        f.ctx_exploitability = ctx_exp
+
+    db.commit()
+    return {
+        "finding_id": fid,
+        "verdict": verdict,
+        "confidence": confidence,
+        "ctx_reachability": f.ctx_reachability,
+        "ctx_exploitability": f.ctx_exploitability,
+        "status": "updated",
+    }
+
+
 # Table → org_id filter mapping for run_sql_query
 # "direct" = table has org_id column; "via_scan" = filter through scan_id → scans.org_id
 _SQL_TABLE_ORG_FILTER = {

@@ -435,6 +435,27 @@ class AttackPath(Base):
     chain_length = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # LLM-generated attack narrative + prioritized mitigations
+    # (populated by services.attack_chain_narrator)
+    narrative = Column(Text, nullable=True)
+    recommended_mitigations = Column(JSON, nullable=True)
+    # [{finding_id, finding_name, severity, chains_broken, action}]
+
+
+class ScannerEventCursor(Base):
+    """Per-org cursor tracking the last-consumed scanner event.
+
+    Used by services.scanner_event_bridge to avoid reprocessing events.
+    One row per organization; cursor advances as events are consumed.
+    """
+    __tablename__ = "scanner_event_cursors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, unique=True, index=True)
+    last_event_at = Column(DateTime, nullable=True)   # UTC timestamp of the newest consumed event
+    last_event_id = Column(String, nullable=True)     # UUID of newest consumed event (tiebreaker)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 @importable(
     slug="finding",
@@ -2164,6 +2185,11 @@ class IngestEndpoint(Base):
     hmac_secret_hash = Column(String, nullable=False)     # bcrypt hash of HMAC secret
     parser_type = Column(String, nullable=False, default="json")  # json | hec | cef | leef | syslog_rfc5424
     is_active = Column(Boolean, default=True)
+    # LLM-inferred extractors applied after the format parser to fill empty
+    # canonical fields (event_type/outcome/action/user_name/source_ip/...) from
+    # unstructured payloads. Generated once at onboarding, applied deterministically
+    # at runtime. See services/mapping_inference.py for schema.
+    field_extractors = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_used_at = Column(DateTime, nullable=True)
     request_count = Column(Integer, default=0)
@@ -2393,6 +2419,13 @@ class Alert(Base):
     # Investigation
     triage_reason = Column(String, nullable=True)
     notes = Column(Text, nullable=True)
+
+    # LLM triage verdict (written by services/alert_triage before notification)
+    triage_verdict = Column(String, nullable=True)       # true_positive | false_positive | needs_review
+    triage_confidence = Column(Float, nullable=True)     # 0.0 - 1.0
+    triage_summary = Column(Text, nullable=True)         # 1-sentence rationale
+    triaged_at = Column(DateTime, nullable=True)
+    triage_model = Column(String, nullable=True)         # model id used (for audit)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
