@@ -94,18 +94,35 @@ async def _call_llm(
     user_prompt: str,
     max_tokens: int = 4096,
 ) -> str:
-    """Multi-provider LLM call — same pattern as scan_planner._call_llm.
+    """Multi-provider LLM call for the scanner container.
 
-    Tries providers in order based on available API keys:
-    1. Anthropic (ANTHROPIC_API_KEY)
-    2. OpenAI (OPENAI_API_KEY)
+    The scanner process doesn't have access to the backend's IntegrationConfig
+    table, so we resolve the provider via env vars only. Selection order
+    mirrors the backend priority:
+      1. Vertex AI  — if GOOGLE_CLOUD_PROJECT (uses ADC — no API key)
+      2. Anthropic  — if ANTHROPIC_API_KEY
+      3. OpenAI     — if OPENAI_API_KEY
+      4. Gemini direct — if GOOGLE_API_KEY
+
+    LLM_JS_MODEL env var pins a specific model. Otherwise we pick a
+    sensible Haiku/Flash-tier default per provider.
     """
     import httpx
 
-    # Try Anthropic first
+    model_override = os.environ.get("LLM_JS_MODEL")
+
+    # Try Vertex AI first — matches backend defaults (system uses Vertex today).
+    gcp_project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT")
+    if gcp_project:
+        try:
+            return _call_vertex(system_prompt, user_prompt, max_tokens, model_override, gcp_project)
+        except Exception as e:
+            logger.warning("LLM JS extraction via Vertex failed: %s", e)
+
+    # Anthropic
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if api_key:
-        model = os.environ.get("LLM_JS_MODEL", "claude-haiku-4-5-20251001")
+        model = model_override or "claude-haiku-4-5-20251001"
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 "https://api.anthropic.com/v1/messages",
@@ -126,10 +143,10 @@ async def _call_llm(
             data = resp.json()
             return data["content"][0]["text"]
 
-    # Fall back to OpenAI
+    # OpenAI
     api_key = os.environ.get("OPENAI_API_KEY")
     if api_key:
-        model = os.environ.get("LLM_JS_MODEL", "gpt-4o-mini")
+        model = model_override or "gpt-4o-mini"
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -151,8 +168,61 @@ async def _call_llm(
             data = resp.json()
             return data["choices"][0]["message"]["content"]
 
-    logger.debug("No LLM API key configured (ANTHROPIC_API_KEY or OPENAI_API_KEY)")
+    # Gemini direct (v1beta)
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if api_key:
+        model = model_override or "gemini-2.5-flash"
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "system_instruction": {"parts": [{"text": system_prompt}]},
+                    "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                    "generationConfig": {"maxOutputTokens": max_tokens},
+                },
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            return "".join(p.get("text", "") for p in parts)
+
+    logger.debug(
+        "No LLM provider configured (checked GOOGLE_CLOUD_PROJECT, "
+        "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY)"
+    )
     return ""
+
+
+def _call_vertex(
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    model_override: str | None,
+    project: str,
+) -> str:
+    """Call Vertex AI Gemini using ADC (Application Default Credentials).
+
+    Sync call — google-genai SDK handles credential refresh automatically.
+    Model defaults to gemini-2.5-flash; can be pinned via LLM_JS_MODEL.
+    """
+    model = (model_override or "gemini-2.5-flash").removeprefix("vertex/")
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION") or "us-central1"
+
+    from google import genai
+    from google.genai import types as genai_types
+
+    client = genai.Client(vertexai=True, project=project, location=location)
+    resp = client.models.generate_content(
+        model=model,
+        contents=user_prompt,
+        config=genai_types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            max_output_tokens=max_tokens,
+        ),
+    )
+    return (resp.text or "").strip()
 
 
 def extract_endpoints_regex(js_content: str) -> list[dict]:

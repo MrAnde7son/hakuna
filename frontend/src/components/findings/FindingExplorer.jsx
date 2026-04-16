@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import useURLFilters from '../../hooks/useURLFilters.js'
 import { useTranslation } from 'react-i18next'
-import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon, Zap, Filter } from 'lucide-react'
+import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon, Zap, Filter, ShieldCheck } from 'lucide-react'
 import { useScan, useIsMobile } from '../../App.jsx'
 import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign, listCustomFieldDefinitions } from '../../api.js'
 import useScanProgress from '../../hooks/useScanProgress.js'
@@ -379,6 +379,12 @@ export default function FindingExplorer() {
     product: { default: null },
     cpe: { default: null },
     source: { default: null },
+    // AI validation: true_positive | false_positive | needs_review | not_validated | validated
+    validation: { default: null },
+    // Show validated false positives (default false — they're noise)
+    hide_validated_fps: { default: null },
+    // Cross-scanner corroboration flag (≥2 scanners confirm same CVE)
+    corroborated: { default: null, type: 'boolean' },
   }), [])
   const { filters: urlFilters, setFilter, clearFilters } = useURLFilters(FILTER_SCHEMA)
   const [searchParams, setSearchParams] = useSearchParams()
@@ -411,6 +417,12 @@ export default function FindingExplorer() {
   const productFilter = urlFilters.product
   const cpeFilter2 = urlFilters.cpe
   const sourceFilter = urlFilters.source
+  const validationFilter = urlFilters.validation
+  const hideValidatedFpsRaw = urlFilters.hide_validated_fps
+  // Default: hide validated false positives (analysts don't want to see proven noise).
+  // User can toggle `hide_validated_fps=false` or explicitly pick `validation=false_positive` to see them.
+  const showValidatedFps = hideValidatedFpsRaw === 'false'
+  const corroboratedFilter = urlFilters.corroborated
 
   const [findings, setFindings] = useState([])
   const [total, setTotal] = useState(0)
@@ -557,6 +569,10 @@ export default function FindingExplorer() {
       source: sourceFilter || null,
       product: productFilter || null,
       cpe: cpeFilter2 || null,
+      validation: validationFilter || null,
+      // Default hide: backend hides FPs unless hide_validated_fps=false OR validation=false_positive
+      hide_validated_fps: showValidatedFps ? 'false' : null,
+      corroborated: corroboratedFilter === true ? 'true' : null,
       created_after: createdAfter || undefined,
       sort_by: sortBy,
       order: sortOrder,
@@ -711,10 +727,48 @@ export default function FindingExplorer() {
       render: (v) => <ScoreBar score={v} />
     },
     {
+      key: 'validated', label: t('findings.validated', 'Validated'), width: '110px',
+      render: (_, row) => {
+        const v = row.llm_validation
+        if (!v || !v.verdict) {
+          return <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>
+        }
+        const styles = {
+          true_positive: { bg: 'var(--critical)18', color: 'var(--critical)', border: 'var(--critical)40', label: t('findings.validationTrue', 'True positive'), icon: '✓' },
+          false_positive: { bg: 'var(--success)18', color: 'var(--success)', border: 'var(--success)40', label: t('findings.validationFalse', 'False positive'), icon: '✗' },
+          needs_review: { bg: 'var(--warning)18', color: 'var(--warning)', border: 'var(--warning)40', label: t('findings.validationNeedsReview', 'Needs review'), icon: '?' },
+        }
+        const s = styles[v.verdict]
+        if (!s) return <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>
+        const conf = typeof v.confidence === 'number' ? ` ${Math.round(v.confidence * 100)}%` : ''
+        return (
+          <span
+            title={v.reasoning || ''}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+              background: s.bg, color: s.color, border: `1px solid ${s.border}`,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span style={{ fontWeight: 700 }}>{s.icon}</span>
+            {s.label}{conf}
+          </span>
+        )
+      }
+    },
+    {
       key: 'plugin_name', label: t('findings.pluginFinding'), width: '30%', sortable: true,
-      render: (v, row) => (
-        <div>
-          <div style={{ fontWeight: 500, color: 'var(--text-primary)', fontSize: 13 }}>{v}</div>
+      render: (v, row) => {
+        const isFp = row.llm_validation?.verdict === 'false_positive'
+        return (
+        <div style={{ opacity: isFp ? 0.55 : 1 }}>
+          <div style={{
+            fontWeight: 500,
+            color: isFp ? 'var(--text-muted)' : 'var(--text-primary)',
+            fontSize: 13,
+            textDecoration: isFp ? 'line-through' : 'none',
+          }}>{v}</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('findings.plugin')} {row.plugin_id} · {row.plugin_family || '—'}</div>
           {row.cves && row.cves.length > 0 && (
             <div style={{ marginTop: 3, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -744,7 +798,8 @@ export default function FindingExplorer() {
             </div>
           )}
         </div>
-      )
+        )
+      }
     },
     {
       key: 'asset_hostname', label: t('findings.asset'), width: '15%', sortable: true,
@@ -1126,6 +1181,34 @@ export default function FindingExplorer() {
               value={sourceFilter}
               onChange={v => setFilter('source', v)}
             />
+
+            <Select
+              value={validationFilter}
+              onChange={v => setFilter('validation', v)}
+              placeholder={t('findings.anyValidation', 'Any validation')}
+              options={[
+                { value: 'validated', label: t('findings.validationAny', 'Any validated') },
+                { value: 'true_positive', label: t('findings.validationTrue', 'True positive') },
+                { value: 'false_positive', label: t('findings.validationFalse', 'False positive') },
+                { value: 'needs_review', label: t('findings.validationNeedsReview', 'Needs review') },
+                { value: 'not_validated', label: t('findings.validationNone', 'Not validated') },
+              ]}
+            />
+
+            <button
+              onClick={() => setFilter('corroborated', corroboratedFilter === true ? null : true)}
+              title={t('findings.corroboratedTooltip', 'Confirmed by ≥ 2 scanners')}
+              style={{
+                padding: '5px 10px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                background: corroboratedFilter === true ? 'var(--accent)' : 'var(--bg-secondary)',
+                color: corroboratedFilter === true ? 'var(--primary-foreground)' : 'var(--text-secondary)',
+                border: corroboratedFilter === true ? '1px solid var(--accent)' : '1px solid var(--border)',
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+              }}
+            >
+              <ShieldCheck size={12} />
+              {t('findings.corroborated', 'Corroborated')}
+            </button>
 
             <Select
               value={groupBy}

@@ -1423,4 +1423,26 @@ export const getSuppressionRules = (params = {}) => {
 }
 export const createSuppressionRule = (data) => request('/suppression-rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
 export const updateSuppressionRule = (id, data) => request(`/suppression-rules/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+
+// ── Attack Paths / Corroborated Findings ─────────────────
+
+export const runCorrelation = () => request('/correlations/run', { method: 'POST' })
+export const listAttackPaths = (params = {}) => {
+  const q = new URLSearchParams(params).toString()
+  return request(`/correlations/attack-paths${q ? '?' + q : ''}`)
+}
+export const getAttackPath = (pathId) => request(`/correlations/attack-paths/${pathId}`)
+export const listCorroboratedFindings = (params = {}) => {
+  const q = new URLSearchParams(params).toString()
+  return request(`/correlations/corroborated${q ? '?' + q : ''}`)
+}
+
+// ── Validation Agent ─────────────────────────────────────
+
+export const runValidation = (findingId) =>
+  request(`/validation/run/${findingId}`, { method: 'POST' })
+export const getValidationStatus = (findingId) =>
+  request(`/validation/status/${findingId}`)
+export const getValidationQueue = (limit = 50) =>
+  request(`/validation/queue?limit=${limit}`)
 export const deleteSuppressionRule = (id) => request(`/suppression-rules/${id}`, { method: 'DELETE' })

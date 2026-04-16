@@ -194,11 +194,35 @@ async def start_vm_scan(
     db.add(scan)
     db.flush()  # get scan.id
 
+    # Look up persisted scan plans for any assets we're targeting and key
+    # them by the target string the scanner will see (URL/hostname/IP). The
+    # scanner queues per-target tasks and doesn't know backend asset ids,
+    # so target-keyed plans let nuclei_worker pick the right plan for each
+    # task without a second round-trip. Assets without a plan flow through
+    # the legacy TemplateRouter path — backwards compatible.
+    scan_plans: dict[str, dict] = {}
+    if asset_ids and target_asset_map:
+        plan_rows = (
+            db.query(Asset.id, Asset.scan_plan, Asset.scan_plan_version)
+            .filter(Asset.id.in_(asset_ids))
+            .all()
+        )
+        plans_by_aid = {
+            row.id: {"plan": row.scan_plan, "version": row.scan_plan_version or 0}
+            for row in plan_rows if row.scan_plan
+        }
+        for tgt, aid in target_asset_map.items():
+            if aid in plans_by_aid:
+                scan_plans[tgt] = plans_by_aid[aid]
+
     # Dispatch to VM scanner container. The credentials block is in the POST
     # body only; VM_SCANNER_URL must be a trusted internal endpoint.
     scan_body: dict = {"targets": targets}
     if credentials_payload:
         scan_body["credentials"] = credentials_payload
+    if scan_plans:
+        scan_body["scan_plans"] = scan_plans
+        scan_metadata["scan_plan_count"] = len(scan_plans)
     result = await _vm_request("POST", "/vm/scans/", json=scan_body)
 
     if result and result.get("job_ids"):

@@ -47,6 +47,14 @@ class ScanRequest(BaseModel):
         description="Optional credential material for authenticated scans. "
                     "Never logged or persisted by the scanner.",
     )
+    scan_plans: dict[str, dict] | None = Field(
+        default=None,
+        description="Pre-computed adaptive scan plans keyed by target string "
+                    "(URL/hostname/IP). Each value: {plan: <ScanPlan dict>, "
+                    "version: <int>}. When present, the worker uses the plan "
+                    "instead of the static template router. Plans for targets "
+                    "not in this map fall through to the legacy router.",
+    )
 
 
 class ScanResponse(BaseModel):
@@ -93,6 +101,7 @@ async def create_scan(body: ScanRequest):
     # worker process can reconstruct the ScanCredentials without importing
     # Pydantic-typed args. Broker never sees them unless the caller provided.
     credentials_payload = body.credentials.model_dump() if body.credentials else None
+    scan_plans = body.scan_plans or {}
 
     # Queue asset-based scans
     if body.scan_all:
@@ -102,9 +111,11 @@ async def create_scan(body: ScanRequest):
         asset_ids = body.asset_ids or []
 
     for i, aid in enumerate(asset_ids):
+        # Asset-based plans key by asset_id when callers want to send them.
+        plan_payload = scan_plans.get(aid)
         result = run_nuclei_scan.apply_async(
             args=[aid],
-            kwargs={"credentials": credentials_payload},
+            kwargs={"credentials": credentials_payload, "scan_plan": plan_payload},
             countdown=i * 5,
         )
         job_ids.append(result.id)
@@ -116,9 +127,14 @@ async def create_scan(body: ScanRequest):
         target = target.strip()
         if not target:
             continue
+        # Adhoc plans key by target string (URL/hostname/IP). The backend's
+        # vm_scanner.start_vm_scan composes these from target_asset_map so
+        # adhoc-mode tasks can still benefit from per-asset plans even though
+        # the scanner doesn't see backend asset ids directly.
+        plan_payload = scan_plans.get(target)
         result = run_nuclei_adhoc.apply_async(
             args=[target, body.org_id],
-            kwargs={"credentials": credentials_payload},
+            kwargs={"credentials": credentials_payload, "scan_plan": plan_payload},
             countdown=(offset + i) * 5,
         )
         job_ids.append(result.id)

@@ -259,6 +259,102 @@ http:
             assert "wordpress" not in tags
 
 
+class TestDastTemplatesRouting:
+    """Tests for path-based DAST template inclusion (reewardius set).
+
+    DAST templates live in templates/custom/dast/ and are auto-included
+    when the asset has a web-serving port open — regardless of what tags
+    the individual templates carry. This avoids modifying upstream
+    templates (which would get clobbered on every scheduler sync) while
+    keeping DAST as part of regular VM scans rather than a separate profile.
+    """
+
+    def _write_dast_template(self, templates_dir, filename="xss-reflected.yaml"):
+        """Create a reewardius-style DAST template with a tag that wouldn't
+        naturally be derived from CPE/tech fingerprinting."""
+        dast_dir = templates_dir / "custom" / "dast"
+        dast_dir.mkdir(parents=True, exist_ok=True)
+        path = dast_dir / filename
+        path.write_text(
+            "id: xss-reflected\n"
+            "info:\n"
+            "  name: Reflected XSS\n"
+            "  author: reewardius\n"
+            "  severity: medium\n"
+            "  tags: xss,dast\n"
+            "http:\n"
+            "  - method: GET\n"
+            "    path:\n"
+            "      - '{{BaseURL}}/?q=<svg/onload=alert(1)>'\n"
+        )
+        return path
+
+    def test_dast_template_included_when_web_port_open(self, templates_dir):
+        """port 80 → DAST templates included even though 'xss' isn't a derived tag."""
+        self._write_dast_template(templates_dir)
+
+        with patch("scanner.vm.router.TEMPLATES_DIR", str(templates_dir)):
+            router = TemplateRouter()
+            args = router.get_templates_for_asset(
+                cpe_list=["cpe:2.3:a:apache:http_server:2.4.51:*:*:*:*:*:*:*"],
+                tech_stack=None,
+                open_ports=[80],
+            )
+
+        t_indices = [i for i, a in enumerate(args) if a == "-t"]
+        custom_paths = [args[i + 1] for i in t_indices]
+        assert any("dast/xss-reflected.yaml" in p for p in custom_paths)
+
+    def test_dast_template_included_on_https(self, templates_dir):
+        """port 443 alone is enough to trigger DAST inclusion."""
+        self._write_dast_template(templates_dir, "sqli.yaml")
+
+        with patch("scanner.vm.router.TEMPLATES_DIR", str(templates_dir)):
+            router = TemplateRouter()
+            args = router.get_templates_for_asset(
+                cpe_list=None,
+                tech_stack=None,
+                open_ports=[443],
+            )
+
+        t_indices = [i for i, a in enumerate(args) if a == "-t"]
+        custom_paths = [args[i + 1] for i in t_indices]
+        assert any("dast/sqli.yaml" in p for p in custom_paths)
+
+    def test_dast_template_excluded_without_web_port(self, templates_dir):
+        """No web port → DAST templates MUST NOT be included (don't fire
+        HTTP probes at modbus/ssh/etc. targets)."""
+        self._write_dast_template(templates_dir)
+
+        with patch("scanner.vm.router.TEMPLATES_DIR", str(templates_dir)):
+            router = TemplateRouter()
+            args = router.get_templates_for_asset(
+                cpe_list=None,
+                tech_stack=None,
+                open_ports=[502],  # Modbus-only asset
+            )
+
+        t_indices = [i for i, a in enumerate(args) if a == "-t"]
+        custom_paths = [args[i + 1] for i in t_indices]
+        assert not any("dast/" in p for p in custom_paths)
+
+    def test_dast_template_included_on_alt_web_port(self, templates_dir):
+        """Dev/framework ports like 3000, 5000, 8080 also count as web."""
+        self._write_dast_template(templates_dir, "ssrf.yaml")
+
+        with patch("scanner.vm.router.TEMPLATES_DIR", str(templates_dir)):
+            router = TemplateRouter()
+            args = router.get_templates_for_asset(
+                cpe_list=None,
+                tech_stack=None,
+                open_ports=[3000],
+            )
+
+        t_indices = [i for i, a in enumerate(args) if a == "-t"]
+        custom_paths = [args[i + 1] for i in t_indices]
+        assert any("dast/ssrf.yaml" in p for p in custom_paths)
+
+
 class TestExtractTagsFromYaml:
     """Tests for _extract_tags_from_yaml helper."""
 

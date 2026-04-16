@@ -1,5 +1,7 @@
 """API routes for cross-finding correlation and attack paths."""
 
+from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -11,18 +13,35 @@ from services.finding_correlator import correlate_findings
 router = APIRouter(prefix="/api/correlations", tags=["Correlations"])
 
 
+def _org_scope(org_ids: Optional[List[int]]) -> tuple[str, dict]:
+    """Build a SQL WHERE fragment scoped to accessible orgs.
+
+    Returns (where_clause, params). `org_ids is None` means superadmin
+    (no filter). An empty list is treated as "no access" by the caller.
+    """
+    if org_ids is None:
+        return "WHERE 1=1", {}
+    return "WHERE ap.org_id IN :org_ids", {"org_ids": tuple(org_ids)}
+
+
 @router.post("/run")
 async def run_correlation(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    org_ids: list = Depends(get_accessible_org_ids),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """Trigger cross-finding correlation for the current org."""
-    org_id = org_ids[0] if org_ids else None
-    if not org_id:
-        raise HTTPException(status_code=400, detail="No org context")
+    """Trigger cross-finding correlation for the current org.
 
-    result = correlate_findings(db, org_id)
+    Runs against the caller's active org context. Superadmins without
+    X-Org-Context must set the header to pick a target org.
+    """
+    if org_ids is None or len(org_ids) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Correlation requires a single org context (set X-Org-Context).",
+        )
+
+    result = correlate_findings(db, org_ids[0])
     return result
 
 
@@ -33,15 +52,13 @@ async def list_attack_paths(
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    org_ids: list = Depends(get_accessible_org_ids),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """List attack paths for the current org."""
-    org_id = org_ids[0] if org_ids else None
-    if not org_id:
-        raise HTTPException(status_code=400, detail="No org context")
+    """List attack paths visible to the caller (MSSP parents see linked orgs)."""
+    if org_ids is not None and not org_ids:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
-    where = "WHERE ap.org_id = :org_id"
-    params = {"org_id": org_id}
+    where, params = _org_scope(org_ids)
 
     if severity:
         where += " AND ap.severity = :severity"

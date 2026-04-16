@@ -319,6 +319,15 @@ class Asset(Base):
     last_enriched = Column(DateTime, nullable=True)            # Set by scanner after enrichment pass; NULL → needs re-enrichment
     last_js_fingerprinted = Column(DateTime, nullable=True)    # Set by scanner after JS fingerprinting pass
 
+    # Adaptive Scan Plan (services/scan_planner) — JSON ScanPlan dict.
+    # Computed at end of enrichment, refreshed when scan_plan_signature changes,
+    # consumed by VM scanner via the /vm/scans/ POST body. NULL → scanner falls
+    # back to legacy TemplateRouter behavior.
+    scan_plan = Column(JSON, nullable=True)
+    scan_plan_computed_at = Column(DateTime, nullable=True)
+    scan_plan_version = Column(Integer, default=0)             # bumped on each replan; scanner reports back what version it executed
+    scan_plan_signature = Column(String(64), nullable=True)    # sha256 over plan inputs — short-circuits recomputation
+
     # Lifecycle tracking (cross-scan)
     first_seen = Column(DateTime, nullable=True)       # Earliest scan date this IP appeared
     last_seen = Column(DateTime, nullable=True)        # Latest scan date this IP appeared

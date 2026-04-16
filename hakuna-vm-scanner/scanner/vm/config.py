@@ -21,4 +21,14 @@ TEMPLATES_DIR = os.environ.get(
     os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "templates"),
 )
 
+# DAST template sync — cloned into custom/dast/ by scanner.vm.scheduler.
+# The router auto-includes everything under custom/dast/ when the asset has
+# a web-serving port open, so these participate in regular VM scans without
+# needing a separate scan profile.
+DAST_TEMPLATES_REPO = os.environ.get(
+    "DAST_TEMPLATES_REPO",
+    "https://github.com/reewardius/nuclei-dast-templates.git",
+)
+DAST_TEMPLATES_DIR = os.path.join(TEMPLATES_DIR, "custom", "dast")
+
 SCAN_TIMEOUT_SECONDS = int(os.environ.get("SCAN_TIMEOUT_SECONDS", "600"))

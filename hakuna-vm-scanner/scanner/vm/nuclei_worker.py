@@ -17,6 +17,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -137,6 +138,18 @@ def _credentials_to_header_args(credentials: dict | None) -> list[str]:
     return args
 
 
+def _has_dast_template(template_args: list[str]) -> bool:
+    """True if any ``-t <path>`` in ``template_args`` points inside custom/dast/.
+
+    The router emits DAST template paths via ``-t`` pairs (see
+    scanner.vm.router._get_custom_templates). Checking the assembled args
+    keeps this logic colocated with the command build — rather than
+    re-deriving inclusion rules from open_ports here.
+    """
+    needles = (f"{os.sep}custom{os.sep}dast{os.sep}", "/custom/dast/")
+    return any(any(n in arg for n in needles) for arg in template_args)
+
+
 def _redacted_cmd_for_log(cmd: list[str]) -> str:
     """Join a command for logging, redacting the value of every -H flag.
 
@@ -188,16 +201,27 @@ def _result_to_finding(result: dict) -> dict:
 
 
 @celery_app.task(queue="vm_queue", bind=True, max_retries=2)
-def run_nuclei_scan(self, asset_id: str, credentials: dict | None = None) -> dict:
+def run_nuclei_scan(
+    self,
+    asset_id: str,
+    credentials: dict | None = None,
+    scan_plan: dict | None = None,
+) -> dict:
     """Run Nuclei scan against a single asset. Returns findings in the result
     payload — the backend imports them through the normal ingest pipeline.
 
     ``credentials`` is an optional dict shaped by scanner.vm.api.ScanCredentials
     and is translated into `-H` header args before invoking Nuclei. The raw
     values are never logged; see ``_redacted_cmd_for_log``.
+
+    ``scan_plan`` is an optional precomputed adaptive plan from the backend
+    (services/scan_planner). Shape: ``{"plan": <ScanPlan dict>, "version": int}``.
+    PR 1 plumbs it through and echoes the version back in the result; the
+    actual plan-driven command builder lands in PR 2 (until then the legacy
+    TemplateRouter remains the sole authority on template selection).
     """
     try:
-        return _run_async(_run_nuclei_scan_async(self, asset_id, credentials))
+        return _run_async(_run_nuclei_scan_async(self, asset_id, credentials, scan_plan))
     except Exception as exc:
         logger.exception("run_nuclei_scan failed for asset %s", asset_id)
         return {
@@ -212,7 +236,12 @@ def run_nuclei_scan(self, asset_id: str, credentials: dict | None = None) -> dic
         }
 
 
-async def _run_nuclei_scan_async(task, asset_id: str, credentials: dict | None = None) -> dict:
+async def _run_nuclei_scan_async(
+    task,
+    asset_id: str,
+    credentials: dict | None = None,
+    scan_plan: dict | None = None,
+) -> dict:
     start = time.monotonic()
     dsn = _normalize_dsn(DATABASE_URL)
     conn = await asyncpg.connect(dsn)
@@ -249,10 +278,18 @@ async def _run_nuclei_scan_async(task, asset_id: str, credentials: dict | None =
     # 3. Build nuclei command — credentials (if any) become -H flags;
     # never log their decrypted values (see _redacted_cmd_for_log).
     cred_args = _credentials_to_header_args(credentials)
+    # -dast unlocks nuclei's fuzzing engine so DAST templates (those with
+    # `fuzzing:` blocks, e.g. the reewardius set under custom/dast/)
+    # actually execute instead of being silently skipped. We only pass it
+    # when such templates were actually selected by the router — for
+    # OT/IoT/SSH-only assets there's nothing to fuzz and the flag is a no-op
+    # anyway, but keeping it conditional also keeps scan profiles honest.
+    dast_args = ["-dast"] if _has_dast_template(template_args) else []
     cmd = [
         NUCLEI_BIN,
         "-target", target,
         *template_args,
+        *dast_args,
         *cred_args,
         "-jsonl",
         "-timeout", str(NUCLEI_TIMEOUT),
@@ -348,6 +385,13 @@ async def _run_nuclei_scan_async(task, asset_id: str, credentials: dict | None =
         "status": status,
         "routing_info": routing_info,
     }
+    # Echo back the plan version we executed against (None when no plan was
+    # supplied). Backend uses this to detect drift between the plan that was
+    # current when this scan was dispatched and the plan that's current now,
+    # so a stale plan can trigger a fresh recompute on next scan.
+    if scan_plan:
+        result_payload["plan_version_executed"] = scan_plan.get("version")
+        result_payload["plan_consumed"] = False  # PR 2 flips this to True
     # Include nuclei stderr when templates didn't load — helps diagnose 0/0 template issues
     if nuclei_stats.get("templates_loaded", 0) == 0:
         result_payload["nuclei_stderr"] = stderr_text[:3000]
@@ -400,7 +444,13 @@ ASSET_LOOKUP_BY_TARGET = """
 
 
 @celery_app.task(queue="vm_queue", bind=True, max_retries=2)
-def run_nuclei_adhoc(self, target: str, org_id: str | None = None, credentials: dict | None = None) -> dict:
+def run_nuclei_adhoc(
+    self,
+    target: str,
+    org_id: str | None = None,
+    credentials: dict | None = None,
+    scan_plan: dict | None = None,
+) -> dict:
     """Run Nuclei scan against a raw target (IP, hostname, or URL).
 
     When org_id is provided, findings are persisted to the findings table
@@ -408,9 +458,12 @@ def run_nuclei_adhoc(self, target: str, org_id: str | None = None, credentials: 
 
     ``credentials`` is an optional dict shaped by scanner.vm.api.ScanCredentials
     and is translated into `-H` header args. Raw values are never logged.
+
+    ``scan_plan`` carries the optional precomputed plan from the backend.
+    PR 1 plumbs it through; the adhoc path doesn't yet branch on it (PR 2).
     """
     try:
-        return _run_async(_run_nuclei_adhoc_async(self, target, org_id, credentials))
+        return _run_async(_run_nuclei_adhoc_async(self, target, org_id, credentials, scan_plan))
     except Exception as exc:
         logger.exception("run_nuclei_adhoc failed for target %s", target)
         return {
@@ -425,7 +478,13 @@ def run_nuclei_adhoc(self, target: str, org_id: str | None = None, credentials: 
         }
 
 
-async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None, credentials: dict | None = None) -> dict:
+async def _run_nuclei_adhoc_async(
+    task,
+    target: str,
+    org_id: str | None,
+    credentials: dict | None = None,
+    scan_plan: dict | None = None,
+) -> dict:
     """Execute Nuclei against a raw target with generic templates.
 
     When org_id is provided, tries to resolve the target to a known asset and
@@ -464,11 +523,15 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None, credent
 
         # Build nuclei command — broad template selection for ad-hoc scans.
         # Credentials (if any) become -H flags; values are never logged.
+        # -dast is always on for adhoc: targets are raw URLs/hostnames (always
+        # web-ish) and we're loading the whole community tree, which includes
+        # dast/ and fuzzing/ templates that require the flag to execute.
         cred_args = _credentials_to_header_args(credentials)
         cmd = [
             NUCLEI_BIN,
             "-target", target,
             "-t", NUCLEI_COMMUNITY_TEMPLATES,
+            "-dast",
             *cred_args,
             "-jsonl",
             "-timeout", str(NUCLEI_TIMEOUT),
@@ -576,7 +639,7 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None, credent
             if task.request.retries < task.max_retries:
                 task.retry(countdown=60)
 
-        return {
+        adhoc_payload = {
             "target": target,
             "findings_emitted": findings_emitted,
             "findings_persisted": findings_persisted,
@@ -588,6 +651,10 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None, credent
             "findings": findings,
             "asset_id": str(asset_id) if asset_id else None,
         }
+        if scan_plan:
+            adhoc_payload["plan_version_executed"] = scan_plan.get("version")
+            adhoc_payload["plan_consumed"] = False  # PR 2 flips this to True
+        return adhoc_payload
 
     finally:
         if conn:
