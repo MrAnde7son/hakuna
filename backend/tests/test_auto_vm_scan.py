@@ -274,3 +274,136 @@ class TestPostIngestAutoVmStep:
             results = finalize_scan(session, scan_id=scan.id, org_id=org.id)
 
         assert "auto_vm_scan" in results
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Orphan / stale scan reaper
+# ─────────────────────────────────────────────────────────────────────
+
+def _make_vm_scan(session, org, scan_date_iso, job_statuses):
+    """Build a running VM scan with a custom scan_date and job_statuses map."""
+    from models.models import Scan
+
+    scan = Scan(
+        org_id=org.id,
+        filename="vm-scan-test",
+        scan_name="VM Scan — test",
+        scan_date=scan_date_iso,
+        scan_type="vm_scan",
+        source_type="vm_scanner",
+        raw_metadata={
+            "targets": list(job_statuses.keys()),
+            "status": "running",
+            "job_ids": list(job_statuses.keys()),
+            "total_jobs": len(job_statuses),
+            "completed_jobs": 0,
+            "findings_emitted": 0,
+            "imported_job_ids": [],
+            "job_statuses": job_statuses,
+        },
+    )
+    session.add(scan)
+    session.flush()
+    return scan
+
+
+class TestReapStaleVmScans:
+    """Tests for reap_stale_vm_scans — both hard timeout and PENDING-orphan paths."""
+
+    def test_reaps_scan_older_than_hard_cap(self, db_session):
+        """Scans running >3h are always reaped regardless of job_statuses."""
+        from datetime import datetime, timedelta
+        session, org = db_session
+
+        # 4h old, every job has already been seen STARTED — still reap on hard cap
+        old = datetime.utcnow() - timedelta(hours=4)
+        scan = _make_vm_scan(
+            session, org, old.isoformat(),
+            {"job-a": {"status": "STARTED"}},
+        )
+        session.commit()
+
+        from services.vm_scanner import reap_stale_vm_scans
+        result = reap_stale_vm_scans(session)
+
+        assert result["reaped"] == 1
+        session.refresh(scan)
+        assert scan.raw_metadata["status"] == "failed"
+
+    def test_reaps_pending_orphan_after_short_threshold(self, db_session):
+        """All-PENDING scans older than 20min are reaped as broker orphans."""
+        from datetime import datetime, timedelta
+        session, org = db_session
+
+        old = datetime.utcnow() - timedelta(minutes=30)
+        scan = _make_vm_scan(
+            session, org, old.isoformat(),
+            {"job-a": {"status": "PENDING"}, "job-b": {"status": "PENDING"}},
+        )
+        session.commit()
+
+        from services.vm_scanner import reap_stale_vm_scans
+        result = reap_stale_vm_scans(session)
+
+        assert result["reaped"] == 1
+        session.refresh(scan)
+        assert scan.raw_metadata["status"] == "failed"
+        assert "broker" in scan.raw_metadata["error"].lower()
+
+    def test_preserves_scan_with_observed_progress(self, db_session):
+        """A 30min-old scan with at least one STARTED job is still considered live."""
+        from datetime import datetime, timedelta
+        session, org = db_session
+
+        old = datetime.utcnow() - timedelta(minutes=30)
+        scan = _make_vm_scan(
+            session, org, old.isoformat(),
+            {"job-a": {"status": "PENDING"}, "job-b": {"status": "STARTED"}},
+        )
+        session.commit()
+
+        from services.vm_scanner import reap_stale_vm_scans
+        result = reap_stale_vm_scans(session)
+
+        assert result["reaped"] == 0
+        session.refresh(scan)
+        assert scan.raw_metadata["status"] == "running"
+
+    def test_preserves_fresh_pending_scan(self, db_session):
+        """A 5min-old all-PENDING scan is still within the orphan window."""
+        from datetime import datetime, timedelta
+        session, org = db_session
+
+        fresh = datetime.utcnow() - timedelta(minutes=5)
+        scan = _make_vm_scan(
+            session, org, fresh.isoformat(),
+            {"job-a": {"status": "PENDING"}},
+        )
+        session.commit()
+
+        from services.vm_scanner import reap_stale_vm_scans
+        result = reap_stale_vm_scans(session)
+
+        assert result["reaped"] == 0
+        session.refresh(scan)
+        assert scan.raw_metadata["status"] == "running"
+
+    def test_skips_scan_without_populated_job_statuses(self, db_session):
+        """Scan nobody has ever polled (empty job_statuses) falls through to 3h cap."""
+        from datetime import datetime, timedelta
+        session, org = db_session
+
+        # 30min old but no job_statuses populated — orphan path can't decide,
+        # so reaper leaves it alone until the 3h hard cap.
+        old = datetime.utcnow() - timedelta(minutes=30)
+        scan = _make_vm_scan(session, org, old.isoformat(), {})
+        # Clear job_statuses explicitly to simulate "never polled"
+        scan.raw_metadata = {**scan.raw_metadata, "job_statuses": {}}
+        session.commit()
+
+        from services.vm_scanner import reap_stale_vm_scans
+        result = reap_stale_vm_scans(session)
+
+        assert result["reaped"] == 0
+        session.refresh(scan)
+        assert scan.raw_metadata["status"] == "running"

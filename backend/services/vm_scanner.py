@@ -26,6 +26,30 @@ VM_SCANNER_URL = os.getenv("VM_SCANNER_URL", "http://localhost:8002")
 # than this is almost certainly orphaned (worker/broker restart, lost job ids).
 VM_SCAN_STALE_THRESHOLD_SECONDS = 3 * 3600
 
+# Tighter cap for the "broker-restart orphan" case: when every job id we submitted
+# still comes back PENDING (not STARTED/SUCCESS/FAILURE), the worker has never
+# picked up any of our tasks. Celery returns PENDING for both "queued, waiting"
+# AND "unknown task id", so after this threshold we treat it as the latter —
+# the Redis broker was restarted and our job ids point to nothing. Reasonable
+# scans start producing STARTED/SUCCESS statuses within a few minutes even for
+# slow targets, so 20 min is well outside the normal ramp-up window.
+VM_SCAN_PENDING_ORPHAN_SECONDS = 20 * 60
+
+
+def _has_observed_progress(job_statuses: dict) -> bool:
+    """True if any job has ever transitioned out of PENDING.
+
+    Used to distinguish "tasks are sitting in a live queue" (at least one
+    STARTED/SUCCESS/FAILURE) from "broker has no record of our tasks" (every
+    job perpetually PENDING). Called by both the refresh path and the reaper
+    so they agree on what "orphan" means.
+    """
+    for info in (job_statuses or {}).values():
+        status = (info or {}).get("status")
+        if status and status != "PENDING":
+            return True
+    return False
+
 
 async def _vm_request(method: str, path: str, **kwargs) -> Optional[dict]:
     """Make a request to the VM scanner API."""
@@ -210,13 +234,31 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
     # Per-job status log: {job_id: {target, status, findings_count, error}}
     job_statuses = dict(meta.get("job_statuses", {}))
 
+    # Track whether the VM scanner API answered at all during this refresh.
+    # Used below to disambiguate "API unreachable (transient)" from "API up
+    # but broker has no record of our tasks (orphan)" — only the latter
+    # should trip the 20-min PENDING orphan timeout.
+    any_api_response = False
+
+    # Accumulate per-job-imported IDs so finalize_batch can run after this
+    # refresh commits. Running it inline per-job would risk holding an
+    # in-flight transaction open across multiple steps; running it once
+    # after the whole refresh commits keeps savepoint semantics clean while
+    # still being strictly incremental (scan is still running).
+    batch_new_asset_ids: list[int] = []
+    batch_new_finding_ids: list[int] = []
+
     for job_id in job_ids:
         result = await _vm_request("GET", f"/vm/scans/{job_id}")
         if not result:
+            # Transient API failure — leave the prior status as-is so the
+            # orphan detector doesn't mistake API downtime for broker loss.
             all_done = False
-            job_statuses[job_id] = {**job_statuses.get(job_id, {}), "status": "PENDING"}
+            if job_id not in job_statuses:
+                job_statuses[job_id] = {"status": "PENDING"}
             continue
 
+        any_api_response = True
         status = result.get("status", "PENDING")
         job_result = result.get("result") or {}
         target = job_result.get("target", "")
@@ -227,8 +269,10 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
 
             # Import findings from this job if not already imported
             if job_result and job_id not in imported_job_ids:
-                new_findings = _import_nuclei_job_findings(db, scan, job_result)
-                total_findings += new_findings
+                import_result = _import_nuclei_job_findings(db, scan, job_result)
+                total_findings += import_result["count"]
+                batch_new_asset_ids.extend(import_result["new_asset_ids"])
+                batch_new_finding_ids.extend(import_result["new_finding_ids"])
                 imported_job_ids.add(job_id)
 
             job_status = {
@@ -259,8 +303,15 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 "error": error_msg,
             }
         else:
+            # Preserve the actual Celery state (PENDING/STARTED/RETRY/…) so
+            # the orphan detector can see when the worker has picked a task
+            # up. Flattening everything to PENDING here used to mask that.
             all_done = False
-            job_statuses[job_id] = {**job_statuses.get(job_id, {}), "status": "PENDING"}
+            job_statuses[job_id] = {
+                **job_statuses.get(job_id, {}),
+                "status": status,
+                "target": target or job_statuses.get(job_id, {}).get("target", ""),
+            }
 
     # Update metadata
     new_meta = {
@@ -271,6 +322,35 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
         "job_statuses": job_statuses,
     }
 
+    # Broker-restart orphan detection: if the VM scanner answered our polls
+    # (so we know it's up) but *no* job has ever advanced past PENDING after
+    # VM_SCAN_PENDING_ORPHAN_SECONDS, the Celery broker has lost our task ids
+    # — the jobs will sit at PENDING forever. Fail fast so the UI doesn't
+    # spin and the user can rescan.
+    if (
+        not all_done
+        and any_api_response
+        and not _has_observed_progress(job_statuses)
+    ):
+        try:
+            scan_started = datetime.fromisoformat(scan.scan_date)
+            age_seconds = (datetime.utcnow() - scan_started).total_seconds()
+        except Exception:
+            age_seconds = 0
+        if age_seconds > VM_SCAN_PENDING_ORPHAN_SECONDS:
+            logger.warning(
+                "VM scan %d orphaned — all %d jobs PENDING after %.0fs; broker likely restarted",
+                scan_id, len(job_ids), age_seconds,
+            )
+            new_meta["status"] = "failed"
+            new_meta["error"] = (
+                "Orphaned — scanner broker lost the job queue (likely restart). "
+                "Rescan to dispatch fresh jobs."
+            )
+            scan.raw_metadata = new_meta
+            db.commit()
+            return new_meta
+
     if all_done:
         new_meta["status"] = "completed" if not any_failed else "completed_with_errors"
     else:
@@ -278,6 +358,26 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
 
     scan.raw_metadata = new_meta
     db.commit()
+
+    # Incremental post-ingest: tag, prioritize, and fire triggers for rows
+    # imported during THIS refresh so partial results look triaged in the UI
+    # immediately. Skipped when the scan is terminal (finalize_scan covers it).
+    if not all_done and (batch_new_asset_ids or batch_new_finding_ids):
+        try:
+            from services.post_ingest import finalize_batch
+            finalize_batch(
+                db,
+                scan_id=scan.id,
+                org_id=scan.org_id,
+                new_asset_ids=batch_new_asset_ids,
+                new_finding_ids=batch_new_finding_ids,
+            )
+            db.commit()
+        except Exception:
+            logger.exception(
+                "finalize_batch failed for scan %d (non-fatal; finalize_scan will reprocess)",
+                scan.id,
+            )
 
     # Run full post-ingest pipeline when scan completes
     if all_done:
@@ -326,19 +426,48 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
                 scan_started = datetime.fromisoformat(scan.scan_date)
             except Exception:
                 continue
-            if (now - scan_started).total_seconds() <= VM_SCAN_STALE_THRESHOLD_SECONDS:
+            age_seconds = (now - scan_started).total_seconds()
+
+            # Hard cap: anything running for 3h+ is definitely orphaned
+            # (Celery result TTL, broker lifetime, etc.).
+            if age_seconds > VM_SCAN_STALE_THRESHOLD_SECONDS:
+                logger.warning(
+                    "Reaper: VM scan %d (org=%s) running >%dh — marking failed",
+                    scan.id, scan.org_id, VM_SCAN_STALE_THRESHOLD_SECONDS // 3600,
+                )
+                scan.raw_metadata = {
+                    **meta,
+                    "status": "failed",
+                    "error": "Scan timed out — job results may have expired (reaped by background job)",
+                }
+                reaped += 1
                 continue
 
-            logger.warning(
-                "Reaper: VM scan %d (org=%s) running >%dh — marking failed",
-                scan.id, scan.org_id, VM_SCAN_STALE_THRESHOLD_SECONDS // 3600,
-            )
-            scan.raw_metadata = {
-                **meta,
-                "status": "failed",
-                "error": "Scan timed out — job results may have expired (reaped by background job)",
-            }
-            reaped += 1
+            # Tighter cap: if a prior refresh populated job_statuses and every
+            # observed job is still PENDING after VM_SCAN_PENDING_ORPHAN_SECONDS,
+            # the broker dropped the queue. job_statuses is only populated by
+            # refresh_vm_scan, so a scan that nobody has ever polled won't get
+            # caught here — the 3h cap above covers that case.
+            job_statuses = meta.get("job_statuses") or {}
+            if (
+                job_statuses
+                and age_seconds > VM_SCAN_PENDING_ORPHAN_SECONDS
+                and not _has_observed_progress(job_statuses)
+            ):
+                logger.warning(
+                    "Reaper: VM scan %d (org=%s) all jobs PENDING after %.0fs — marking failed (broker orphan)",
+                    scan.id, scan.org_id, age_seconds,
+                )
+                scan.raw_metadata = {
+                    **meta,
+                    "status": "failed",
+                    "error": (
+                        "Orphaned — scanner broker lost the job queue (likely restart). "
+                        "Rescan to dispatch fresh jobs."
+                    ),
+                }
+                reaped += 1
+                continue
 
         if reaped:
             db.commit()
@@ -381,7 +510,7 @@ def _build_nuclei_plugin_output(f: dict) -> str:
     return "\n".join(lines)
 
 
-def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> int:
+def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> dict:
     """Import findings from a completed nuclei Celery job into the scan.
 
     Handles both adhoc results (keyed by `target`) and asset-based results
@@ -395,7 +524,8 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> in
     applied by services/post_ingest.finalize_scan, which is the single
     authority for per-org dedup rules.
 
-    Returns the number of findings created.
+    Returns a dict ``{count, new_asset_ids, new_finding_ids}`` so the caller
+    can drive per-batch finalize_batch without rescanning the DB.
     """
     findings_data = job_result.get("findings", [])
     target = job_result.get("target", "")
@@ -403,6 +533,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> in
 
     meta = scan.raw_metadata or {}
     asset: Asset | None = None
+    new_asset_ids: list[int] = []
 
     # Asset-based job (from run_nuclei_scan) — asset_id is authoritative.
     if asset_id_in:
@@ -415,7 +546,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> in
                 "VM scan job referenced asset_id %s which no longer exists — skipping",
                 asset_id_in,
             )
-            return 0
+            return {"count": 0, "new_asset_ids": [], "new_finding_ids": []}
         existing_sources = list(asset.source_systems or [])
         if "vm_scanner" not in existing_sources:
             asset.source_systems = existing_sources + ["vm_scanner"]
@@ -455,6 +586,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> in
             )
             db.add(asset)
             db.flush()
+            new_asset_ids.append(asset.id)
         else:
             existing_sources = list(asset.source_systems or [])
             if "vm_scanner" not in existing_sources:
@@ -468,10 +600,11 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> in
     )
 
     if not findings_data:
-        return 0
+        return {"count": 0, "new_asset_ids": new_asset_ids, "new_finding_ids": []}
 
     # Insert findings
     created = 0
+    new_finding_ids: list[int] = []
     now = datetime.utcnow()
     severity_map = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
@@ -507,6 +640,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> in
         )
         db.add(finding)
         db.flush()
+        new_finding_ids.append(finding.id)
 
         record_finding_observation(
             db, finding_id=finding.id, source_system="vm_scanner",
@@ -514,7 +648,11 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> in
         )
         created += 1
 
-    return created
+    return {
+        "count": created,
+        "new_asset_ids": new_asset_ids,
+        "new_finding_ids": new_finding_ids,
+    }
 
 
 def _is_ip(s: str) -> bool:

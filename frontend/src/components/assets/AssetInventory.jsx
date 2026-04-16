@@ -5,6 +5,7 @@ import useURLFilters from '../../hooks/useURLFilters.js'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight, Zap, Radar, Filter, ChevronDown, ChevronUp } from 'lucide-react'
 import { useScan, useIsMobile } from '../../App.jsx'
 import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags, createCampaign, startVmScan, listCustomFieldDefinitions } from '../../api.js'
+import useScanProgress from '../../hooks/useScanProgress.js'
 import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
@@ -334,6 +335,53 @@ const ASSET_FILTER_SCHEMA = {
   page: { default: 1, type: 'number' },
 }
 
+// Thin blue banner shown while the active scan is still streaming assets.
+// Mirrors the one in FindingExplorer — kept local per-component rather than
+// extracted because they may diverge (e.g. asset-count vs finding-count
+// framing) and the component is small.
+function LiveScanBanner({ status, progress, total }) {
+  if (!progress) return null
+  const totalJobs = progress.total_jobs || 0
+  const completedJobs = progress.completed_jobs || 0
+  const currentStage = progress.current_stage
+  const stageIndex = progress.stage_index || 0
+  const totalStages = progress.total_stages || 0
+  const incrementalAssets = progress.incremental_asset_count || 0
+
+  let summary
+  if (totalJobs > 0) {
+    summary = `${completedJobs} / ${totalJobs} targets scanned`
+  } else if (totalStages > 0) {
+    const stageLabel = currentStage ? ` · ${currentStage}` : ''
+    const assetsSummary = incrementalAssets > 0 ? ` · ${incrementalAssets} new assets` : ''
+    summary = `stage ${stageIndex} / ${totalStages}${stageLabel}${assetsSummary}`
+  } else {
+    summary = 'scan in progress'
+  }
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10,
+      padding: '8px 14px', marginBottom: 12,
+      borderRadius: 8, background: 'rgba(14, 165, 233, 0.08)',
+      border: '1px solid rgba(14, 165, 233, 0.35)', color: 'var(--text-primary)',
+      fontSize: 12,
+    }}>
+      <span style={{
+        display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+        background: '#0ea5e9',
+        animation: 'pulse 1.5s ease-in-out infinite',
+      }} />
+      <span style={{ fontWeight: 600 }}>Live scan</span>
+      <span style={{ color: 'var(--text-muted)' }}>
+        {summary} · {total.toLocaleString()} asset{total === 1 ? '' : 's'} in view
+        {status === 'completed_with_errors' ? ' · some jobs failed' : ''}
+      </span>
+      <style>{`@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }`}</style>
+    </div>
+  )
+}
+
 export default function AssetInventory() {
   const { t } = useTranslation()
   const ASSET_PAGE_SIZE = 25
@@ -489,6 +537,23 @@ export default function AssetInventory() {
     debounceRef.current = setTimeout(load, filters.search ? 300 : 0)
     return () => clearTimeout(debounceRef.current)
   }, [activeScanId, sortBy, sortOrder, tagFilter, tagLogic, filters, advancedMode, page, firstSeenAfter])
+
+  // Live progress for the active scan. Both VM and EASM stream assets in
+  // during execution — VM creates new Asset rows per completed nuclei job,
+  // EASM pulls incrementally once hakuna-scanner finishes each enrichment
+  // stage. Poll GET /api/scans/{id} and refresh the table whenever something
+  // moved (new target done, new stage complete, new assets imported).
+  const { progress: scanProgress, status: scanStatus, isRunning: scanIsRunning, refreshTick: scanRefreshTick } = useScanProgress(activeScanId)
+  useEffect(() => {
+    if (!scanIsRunning) return
+    if (advancedMode) return
+    if (scanRefreshTick === 0) return
+    load()
+    // load is stable-ish (defined inline in this component) — listing it in
+    // deps causes a refresh storm on every render. Leaving it out is a
+    // deliberate lint exception (same as the existing debounce effect above).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanRefreshTick, scanIsRunning, advancedMode])
 
   // Auto-run advanced search if restored from URL params
   const advancedRestoredRef = useRef(false)
@@ -899,6 +964,9 @@ export default function AssetInventory() {
   return (
     <div>
       <NewSinceBanner pageKey="assets" labelKey="notifications.newAssets" filtering={!!firstSeenAfter} onFilter={(since) => { setFirstSeenAfter(since) }} />
+      {scanIsRunning && activeScanId && (
+        <LiveScanBanner status={scanStatus} progress={scanProgress} total={totalAssets} />
+      )}
       <PageHeader
         title={t('assets.title')}
         subtitle={advancedMode ? t('assets.assetsMatched', { count: assets.length }) : t('assets.assetsDiscovered', { count: totalAssets })}

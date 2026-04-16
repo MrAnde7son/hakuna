@@ -201,21 +201,21 @@ Uses 6 weighted signals: severity (0.35), exploitability (0.25), intel (0.15), c
 
 ## Remaining Roadmap — Phased
 
-### Phase 1: Scanner Integrations (2-4 weeks)
+### Phase 1: Scanner Integrations (Done)
 
-| # | Item | Priority | Effort | Dependencies |
-|---|------|----------|--------|-------------|
-| 8 | Integrate trufflehog for secrets scanning on katana-discovered JS bundles | High | 1 week | Katana endpoints |
-| 9 | Integrate kiterunner for API endpoint brute-forcing | High | 1 week | endpoint_probe results |
-| 14 | Add UDP port scanning (top 50 UDP ports via nmap -sU) | Medium | 3 days | nmap infrastructure |
+| # | Item | Status | Files |
+|---|------|--------|-------|
+| 8 | **Trufflehog secrets scanning** — scans katana-discovered JS bundles for leaked secrets | **Done** | `hakuna-scanner/app/ingest/secrets.py` (new), `app/runner/tools.py`, `app/tasks/enrichment.py` |
+| 9 | **Kiterunner API brute-forcing** — API endpoint discovery on HTTP assets | **Done** | `hakuna-scanner/app/ingest/kiterunner.py` (new), `app/runner/tools.py`, `app/tasks/enrichment.py` |
+| 14 | **UDP port scanning** — top 50 UDP ports via nmap -sU | **Done** | `hakuna-scanner/app/tasks/nmap.py`, `app/tasks/enrichment.py`, `app/config.py` |
 
-### Phase 2: LLM-Powered Analysis (3-6 weeks)
+### Phase 2: LLM-Powered Analysis (Done)
 
-| # | Item | Priority | Effort | Dependencies |
-|---|------|----------|--------|-------------|
-| 10 | LLM JS endpoint extraction — analyze JS bundles for hidden API endpoints | High | 1 week | Katana, agent system |
-| 11 | LLM vulnerability validation — post-Nuclei FP detection for critical/high findings | High | 2 weeks | Agent system, Nuclei results |
-| 15 | Cross-finding correlation — link Nessus + Nuclei findings for same CVE, generate attack paths | Medium | 2 weeks | Knowledge graph |
+| # | Item | Status | Files |
+|---|------|--------|-------|
+| 10 | **LLM JS endpoint extraction** — Haiku + regex fallback for hidden API endpoints in JS bundles | **Done** | `hakuna-scanner/app/ingest/llm_js_endpoints.py` (new), `app/tasks/enrichment.py` |
+| 11 | **LLM vulnerability validation** — post-Nuclei FP detection for critical/high findings | **Done** | `backend/services/llm_vuln_validator.py` (new), `backend/services/post_ingest.py`, `backend/migrations/035_llm_validation.py` |
+| 15 | **Cross-finding correlation** — CVE-based cross-scanner linking + attack path generation | **Done** | `backend/services/finding_correlator.py` (new), `backend/routes/correlation_routes.py` (new), `backend/migrations/036_attack_paths.py`, `backend/models/models.py` |
 
 ### Phase 3: Event-Driven Architecture (4-6 weeks)
 

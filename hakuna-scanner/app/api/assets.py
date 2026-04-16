@@ -122,6 +122,11 @@ async def list_assets(
     tag: str | None = Query(None, description="Filter by tag"),
     tech: str | None = Query(None, description="Filter by tech stack keyword"),
     has_ports: bool | None = Query(None, description="Only assets with open ports"),
+    updated_since: datetime | None = Query(
+        None,
+        description="Only assets with last_seen >= this timestamp (ISO-8601). "
+                    "Used by the backend to pull incremental changes mid-scan.",
+    ),
     limit: int = Query(100, le=1000),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -139,6 +144,8 @@ async def list_assets(
         q = q.where(Asset.tech_stack.cast(str).ilike(f"%{tech}%"))
     if has_ports is True:
         q = q.where(Asset.open_ports != None, func.array_length(Asset.open_ports, 1) > 0)  # noqa: E711
+    if updated_since is not None:
+        q = q.where(Asset.last_seen >= updated_since)
 
     q = q.order_by(Asset.last_seen.desc()).limit(limit).offset(offset)
     result = await db.execute(q)
