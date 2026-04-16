@@ -14,6 +14,7 @@ place deduplication, tagging, SLA, threat intel, and risk scoring live.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -89,6 +90,75 @@ def _run_async(coro):
         loop.close()
 
 
+def _credentials_to_header_args(credentials: dict | None) -> list[str]:
+    """Translate a credentials payload into a sequence of Nuclei `-H` args.
+
+    Supported `type` values:
+      - basic:   username + password → "Authorization: Basic <base64>"
+      - bearer:  token → "Authorization: Bearer <token>"
+      - cookie:  cookie → "Cookie: <value>"
+      - header:  headers dict → one `-H` per key
+
+    Unknown types and missing required fields are silently skipped — the
+    caller remains responsible for validating input. Never logs the values.
+    """
+    if not credentials:
+        return []
+
+    args: list[str] = []
+    ctype = (credentials.get("type") or "").lower()
+
+    if ctype == "basic":
+        user = credentials.get("username") or ""
+        pw = credentials.get("password") or ""
+        if user or pw:
+            token = base64.b64encode(f"{user}:{pw}".encode("utf-8")).decode("ascii")
+            args.extend(["-H", f"Authorization: Basic {token}"])
+    elif ctype == "bearer":
+        token = credentials.get("token") or ""
+        if token:
+            args.extend(["-H", f"Authorization: Bearer {token}"])
+    elif ctype == "cookie":
+        cookie = credentials.get("cookie") or credentials.get("token") or ""
+        if cookie:
+            args.extend(["-H", f"Cookie: {cookie}"])
+    elif ctype == "header":
+        # nothing to add beyond the arbitrary-headers block below
+        pass
+
+    # `headers` dict is always additive — works alongside any of the schemes.
+    extra_headers = credentials.get("headers") or {}
+    if isinstance(extra_headers, dict):
+        for name, value in extra_headers.items():
+            if not name or value is None:
+                continue
+            args.extend(["-H", f"{name}: {value}"])
+
+    return args
+
+
+def _redacted_cmd_for_log(cmd: list[str]) -> str:
+    """Join a command for logging, redacting the value of every -H flag.
+
+    Nuclei takes `-H "Header: value"` as two args; the value follows the flag.
+    We don't care which headers are sensitive — redact all of them so a leaked
+    log line never contains decrypted vault material.
+    """
+    redacted: list[str] = []
+    i = 0
+    while i < len(cmd):
+        part = cmd[i]
+        if part == "-H" and i + 1 < len(cmd):
+            header_value = cmd[i + 1]
+            header_name = header_value.split(":", 1)[0] if ":" in header_value else header_value
+            redacted.extend(["-H", f"{header_name}: ***"])
+            i += 2
+            continue
+        redacted.append(part)
+        i += 1
+    return " ".join(redacted)
+
+
 def _result_to_finding(result: dict) -> dict:
     """Normalize a Nuclei JSONL result into the payload shape the backend's
     import function expects. Intentionally the same shape for both
@@ -118,11 +188,16 @@ def _result_to_finding(result: dict) -> dict:
 
 
 @celery_app.task(queue="vm_queue", bind=True, max_retries=2)
-def run_nuclei_scan(self, asset_id: str) -> dict:
+def run_nuclei_scan(self, asset_id: str, credentials: dict | None = None) -> dict:
     """Run Nuclei scan against a single asset. Returns findings in the result
-    payload — the backend imports them through the normal ingest pipeline."""
+    payload — the backend imports them through the normal ingest pipeline.
+
+    ``credentials`` is an optional dict shaped by scanner.vm.api.ScanCredentials
+    and is translated into `-H` header args before invoking Nuclei. The raw
+    values are never logged; see ``_redacted_cmd_for_log``.
+    """
     try:
-        return _run_async(_run_nuclei_scan_async(self, asset_id))
+        return _run_async(_run_nuclei_scan_async(self, asset_id, credentials))
     except Exception as exc:
         logger.exception("run_nuclei_scan failed for asset %s", asset_id)
         return {
@@ -137,7 +212,7 @@ def run_nuclei_scan(self, asset_id: str) -> dict:
         }
 
 
-async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
+async def _run_nuclei_scan_async(task, asset_id: str, credentials: dict | None = None) -> dict:
     start = time.monotonic()
     dsn = _normalize_dsn(DATABASE_URL)
     conn = await asyncpg.connect(dsn)
@@ -171,18 +246,21 @@ async def _run_nuclei_scan_async(task, asset_id: str) -> dict:
         # Connection is only needed for the asset context lookup.
         await conn.close()
 
-    # 3. Build nuclei command
+    # 3. Build nuclei command — credentials (if any) become -H flags;
+    # never log their decrypted values (see _redacted_cmd_for_log).
+    cred_args = _credentials_to_header_args(credentials)
     cmd = [
         NUCLEI_BIN,
         "-target", target,
         *template_args,
+        *cred_args,
         "-jsonl",
         "-timeout", str(NUCLEI_TIMEOUT),
         "-rate-limit", str(NUCLEI_RATE_LIMIT),
         "-no-color",
         "-stats",
     ]
-    logger.info("nuclei cmd: %s", " ".join(cmd))
+    logger.info("nuclei cmd: %s", _redacted_cmd_for_log(cmd))
 
     findings: list[dict] = []
     templates_run: set[str] = set()
@@ -322,14 +400,17 @@ ASSET_LOOKUP_BY_TARGET = """
 
 
 @celery_app.task(queue="vm_queue", bind=True, max_retries=2)
-def run_nuclei_adhoc(self, target: str, org_id: str | None = None) -> dict:
+def run_nuclei_adhoc(self, target: str, org_id: str | None = None, credentials: dict | None = None) -> dict:
     """Run Nuclei scan against a raw target (IP, hostname, or URL).
 
     When org_id is provided, findings are persisted to the findings table
     if a matching asset can be resolved from the target.
+
+    ``credentials`` is an optional dict shaped by scanner.vm.api.ScanCredentials
+    and is translated into `-H` header args. Raw values are never logged.
     """
     try:
-        return _run_async(_run_nuclei_adhoc_async(self, target, org_id))
+        return _run_async(_run_nuclei_adhoc_async(self, target, org_id, credentials))
     except Exception as exc:
         logger.exception("run_nuclei_adhoc failed for target %s", target)
         return {
@@ -344,7 +425,7 @@ def run_nuclei_adhoc(self, target: str, org_id: str | None = None) -> dict:
         }
 
 
-async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict:
+async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None, credentials: dict | None = None) -> dict:
     """Execute Nuclei against a raw target with generic templates.
 
     When org_id is provided, tries to resolve the target to a known asset and
@@ -381,11 +462,14 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict
                     asset_id = asset_row["id"]
                     resolved_org_id = asset_row["org_id"]
 
-        # Build nuclei command — broad template selection for ad-hoc scans
+        # Build nuclei command — broad template selection for ad-hoc scans.
+        # Credentials (if any) become -H flags; values are never logged.
+        cred_args = _credentials_to_header_args(credentials)
         cmd = [
             NUCLEI_BIN,
             "-target", target,
             "-t", NUCLEI_COMMUNITY_TEMPLATES,
+            *cred_args,
             "-jsonl",
             "-timeout", str(NUCLEI_TIMEOUT),
             "-rate-limit", str(NUCLEI_RATE_LIMIT),
@@ -394,7 +478,7 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict
             "-severity", "info,low,medium,high,critical",
         ]
 
-        logger.info("nuclei adhoc cmd: %s", " ".join(cmd))
+        logger.info("nuclei adhoc cmd: %s", _redacted_cmd_for_log(cmd))
 
         findings_emitted = 0
         findings_persisted = 0

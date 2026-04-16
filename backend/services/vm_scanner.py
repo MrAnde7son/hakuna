@@ -63,15 +63,94 @@ async def _vm_request(method: str, path: str, **kwargs) -> Optional[dict]:
         return None
 
 
+async def _resolve_scan_credentials(
+    db: Session, org_id: int, credential_id: str,
+) -> dict:
+    """Resolve an IntegrationCredential into the scanner's ScanCredentials shape.
+
+    Decrypts the credential via credential_manager.load_credentials and maps
+    the stored values onto the type=basic|bearer|cookie|header payload the
+    scanner expects. Raises HTTPException(404) if the credential does not
+    exist or does not belong to ``org_id``.
+
+    The decrypted values are never logged. Only the credential id and auth
+    type are echoed to the logger so an operator can verify routing.
+    """
+    from fastapi import HTTPException
+    from models.models import IntegrationCredential
+    from services import credential_manager
+
+    cred_row = db.query(IntegrationCredential).filter(
+        IntegrationCredential.id == credential_id,
+        IntegrationCredential.org_id == org_id,
+    ).first()
+    if not cred_row:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    values = await credential_manager.load_credentials(db, credential_id, org_id)
+    if not values:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    auth_type = (cred_row.auth_type or "").lower()
+    payload: dict = {"type": "header", "headers": {}}
+
+    if auth_type == "basic":
+        payload = {
+            "type": "basic",
+            "username": values.get("username") or values.get("user") or "",
+            "password": values.get("password") or values.get("pass") or "",
+        }
+    elif auth_type in ("bearer", "oauth2", "pat"):
+        token = (
+            values.get("access_token")
+            or values.get("token")
+            or values.get("api_token")
+            or values.get("pat")
+            or ""
+        )
+        payload = {"type": "bearer", "token": token}
+    elif auth_type == "api_key":
+        # API keys are typically sent as a header. Use an explicit header
+        # name from the credential blob when provided; otherwise fall back
+        # to Authorization: Bearer so the common case works out of the box.
+        header_name = values.get("_header_name") or values.get("header_name")
+        api_key = values.get("api_key") or values.get("token") or ""
+        if header_name and api_key:
+            payload = {"type": "header", "headers": {header_name: api_key}}
+        elif api_key:
+            payload = {"type": "bearer", "token": api_key}
+    else:
+        # Unknown / custom: try to be useful if a cookie or arbitrary headers
+        # were stored, otherwise leave an empty header map — the scanner
+        # will run unauthenticated rather than shelling bad args.
+        cookie = values.get("cookie") or values.get("session")
+        extra_headers = values.get("headers") if isinstance(values.get("headers"), dict) else None
+        if cookie:
+            payload = {"type": "cookie", "cookie": cookie}
+        elif extra_headers:
+            payload = {"type": "header", "headers": extra_headers}
+
+    logger.info(
+        "VM scan using credential id=%s org=%s auth_type=%s (values not logged)",
+        credential_id, org_id, auth_type,
+    )
+    return payload
+
+
 async def start_vm_scan(
     db: Session,
     org: Organization,
     targets: list[str],
     asset_ids: list[int] | None = None,
+    credential_id: str | None = None,
 ) -> Optional[dict]:
     """
     Create a Scan record and dispatch targets to the VM scanner container.
     asset_ids: optional list of existing asset IDs (parallel to targets) to link findings to.
+    credential_id: optional IntegrationCredential.id whose decrypted secrets are
+      passed to the scanner as HTTP headers. The credential must belong to
+      ``org``; HTTPException(404) is raised if not. Decrypted values are
+      never logged or persisted on the scan record.
     Returns dict with scan_id, job_ids, status.
     """
     now = datetime.utcnow()
@@ -83,6 +162,26 @@ async def start_vm_scan(
         for t, aid in zip(targets, asset_ids):
             target_asset_map[t] = aid
 
+    # Resolve credentials (if requested) before creating the Scan record so
+    # a bad credential_id fails fast with no side effects on the DB.
+    credentials_payload: dict | None = None
+    if credential_id:
+        credentials_payload = await _resolve_scan_credentials(db, org.id, credential_id)
+
+    scan_metadata = {
+        "targets": targets,
+        "target_asset_map": target_asset_map,
+        "status": "running",
+        "job_ids": [],
+        "completed_jobs": 0,
+        "total_jobs": len(targets),
+        "findings_emitted": 0,
+        "imported_job_ids": [],
+    }
+    # Store only the credential id reference — NEVER the decrypted values.
+    if credential_id:
+        scan_metadata["credential_id"] = credential_id
+
     scan = Scan(
         org_id=org.id,
         filename=f"vm-scan-{now.strftime('%Y%m%d-%H%M%S')}",
@@ -90,24 +189,17 @@ async def start_vm_scan(
         scan_date=now.isoformat(),
         scan_type="vm_scan",
         source_type="vm_scanner",
-        raw_metadata={
-            "targets": targets,
-            "target_asset_map": target_asset_map,
-            "status": "running",
-            "job_ids": [],
-            "completed_jobs": 0,
-            "total_jobs": len(targets),
-            "findings_emitted": 0,
-            "imported_job_ids": [],
-        },
+        raw_metadata=scan_metadata,
     )
     db.add(scan)
     db.flush()  # get scan.id
 
-    # Dispatch to VM scanner container
-    result = await _vm_request("POST", "/vm/scans/", json={
-        "targets": targets,
-    })
+    # Dispatch to VM scanner container. The credentials block is in the POST
+    # body only; VM_SCANNER_URL must be a trusted internal endpoint.
+    scan_body: dict = {"targets": targets}
+    if credentials_payload:
+        scan_body["credentials"] = credentials_payload
+    result = await _vm_request("POST", "/vm/scans/", json=scan_body)
 
     if result and result.get("job_ids"):
         scan.raw_metadata = {

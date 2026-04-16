@@ -480,11 +480,13 @@ async def _do_liveness_gate(sf, org_id: str, target_scope: str | None = None) ->
             port_check_results, http_check_results,
         )
 
-    # Create findings for dangling DNS assets
+    # Create findings for dangling DNS assets. We look up the CNAME from
+    # dns_records so the takeover fingerprint check can short-circuit on
+    # known-vulnerable CNAME targets (S3, GitHub Pages, etc.).
     async with get_task_session()() as db:
         rows = await db.execute(
             text("""
-                SELECT id, hostname FROM assets
+                SELECT id, hostname, dns_records FROM assets
                 WHERE org_id = :org_id AND 'dangling_dns' = ANY(tags)
             """),
             {"org_id": org_id},
@@ -496,8 +498,20 @@ async def _do_liveness_gate(sf, org_id: str, target_scope: str | None = None) ->
                 cloud_provider = identify_cloud_provider(ip)
                 if cloud_provider:
                     break
+
+            cname_targets: list[str] = []
+            dns_records = row.dns_records
+            if isinstance(dns_records, dict):
+                raw_cnames = dns_records.get("CNAME") or dns_records.get("cname") or []
+                if isinstance(raw_cnames, str):
+                    cname_targets = [raw_cnames]
+                elif isinstance(raw_cnames, list):
+                    cname_targets = [str(c) for c in raw_cnames if c]
+
             await create_dangling_dns_finding(
-                db, uuid.UUID(org_id), row.id, row.hostname, resolved_ips, cloud_provider,
+                db, uuid.UUID(org_id), row.id, row.hostname,
+                resolved_ips, cloud_provider,
+                cname_targets=cname_targets,
             )
         await db.commit()
 

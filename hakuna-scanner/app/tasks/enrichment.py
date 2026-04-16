@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-ENRICHMENT_STEP_COUNT = 13  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, kiterunner, trufflehog, llm_js_extraction, classify_assets, nmap_dispatch
+ENRICHMENT_STEP_COUNT = 14  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, kiterunner, trufflehog, llm_js_extraction, classify_assets, ai_exposure, nmap_dispatch
 
 from app.celery_app import celery
 from app.config import settings
@@ -655,6 +655,80 @@ async def _do_classify_assets(sf, org_id: str, target_scope: str | None = None) 
     return {"total_assets": len(assets), "classified": classified}
 
 
+async def _do_ai_exposure(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Probe AI/LLM/vector-DB assets for unauthenticated exposure.
+
+    Runs after classify_assets so ``assets.asset_type`` has been set. Each
+    probe defined in ``ai_exposure_probes.json`` sends a read-only request
+    and, when the response matches the probe's success_when criteria, emits
+    a Finding via the existing Finding write path.
+    """
+    from app.ingest.ai_exposure_probe import (
+        AI_ASSET_TYPES,
+        probe_assets as ai_probe_assets,
+        store_ai_exposure_findings,
+    )
+
+    scope_sql, scope_params = build_target_scope(target_scope)
+    extra = compose_where(scope_sql)
+    params = {"org_id": org_id, **scope_params}
+
+    # Only pull assets already classified as AI/LLM/vector-db to keep the
+    # probe surface minimal. asset_type is set by _do_classify_assets which
+    # runs in the preceding step group.
+    ai_types = list(AI_ASSET_TYPES)
+    async with sf() as db:
+        result = await db.execute(
+            text(f"""
+                SELECT id, hostname, host(ip) as ip, open_ports, asset_type, tags
+                FROM assets
+                WHERE org_id = :org_id
+                  AND asset_type = ANY(:ai_types)
+                  AND (liveness_state = 'confirmed_alive'
+                       OR (liveness_state = 'unconfirmed' AND http_status IS NOT NULL))
+                  {extra}
+            """),
+            {**params, "ai_types": ai_types},
+        )
+        assets = [
+            {
+                "id": row.id,
+                "hostname": row.hostname,
+                "ip": row.ip,
+                "open_ports": row.open_ports or [],
+                "asset_type": row.asset_type,
+                "tags": row.tags or [],
+            }
+            for row in result.fetchall()
+        ]
+
+    if not assets:
+        return {"probed": 0, "no_ai_assets": True}
+
+    logger.info("org=%s ai_exposure: probing %d AI assets", org_id, len(assets))
+
+    try:
+        probe_results = await ai_probe_assets(
+            assets,
+            concurrency=settings.endpoint_probe_concurrency,
+        )
+    except Exception as exc:
+        # Probe orchestration failures must never break the enrichment chain.
+        logger.error("org=%s ai_exposure: probe_assets failed: %s", org_id, exc)
+        return {"probed": len(assets), "error": str(exc)}
+
+    async with sf() as db:
+        store_result = await store_ai_exposure_findings(
+            db, uuid.UUID(org_id), probe_results,
+        )
+
+    return {
+        "probed": len(assets),
+        "assets_exposed": store_result["hosts_affected"],
+        "findings_created": store_result["findings_created"],
+    }
+
+
 async def _do_cdncheck(sf, org_id: str, target_scope: str | None = None) -> dict:
     hostnames = await _get_confirmed_alive_hostnames(
         sf, org_id, target_scope=target_scope, apply_stale=True,
@@ -1079,6 +1153,11 @@ def run_llm_js_extraction(self, org_id: str, target_scope: str | None = None) ->
     return _run_async(_do_llm_js_extraction(get_task_session(), org_id, target_scope=target_scope))
 
 
+@celery.task(bind=True, name="enrichment.run_ai_exposure")
+def run_ai_exposure(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_ai_exposure(get_task_session(), org_id, target_scope=target_scope))
+
+
 @celery.task(bind=True, name="enrichment.run_enrichment_chain",
              soft_time_limit=14400, time_limit=14700)  # 4h / 4h5min — large scans (10k+ assets)
 def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> dict:
@@ -1121,6 +1200,13 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
             ],
             [
                 ("classify_assets", _do_classify_assets),
+            ],
+            [
+                # ai_exposure depends on asset_type set by classify_assets,
+                # so it must run in a later group. Emits Findings for
+                # unauthenticated Ollama / vLLM / Qdrant / MCP / LangServe
+                # / LiteLLM / Milvus / Chroma endpoints.
+                ("ai_exposure", _do_ai_exposure),
             ],
             [("nmap_dispatch", None)],  # handled separately; includes UDP
         ]

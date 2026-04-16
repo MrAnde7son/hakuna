@@ -4,10 +4,11 @@ import glob
 import os
 import tempfile
 import uuid
+from typing import Literal
 
 import yaml
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from scanner.vm.config import TEMPLATES_DIR
 from scanner.vm.nuclei_worker import fetch_alive_assets, run_nuclei_adhoc, run_nuclei_scan
@@ -18,11 +19,34 @@ router = APIRouter(prefix="/vm", tags=["vm-scanner"])
 
 # ---------- Request / Response models ----------
 
+class ScanCredentials(BaseModel):
+    """Authentication material to be injected into Nuclei HTTP requests.
+
+    Raw secrets MUST NOT be logged or echoed back in responses. The scanner
+    worker redacts the values when emitting the command line for debugging.
+    Only one logical scheme is used at a time (basic | bearer | cookie |
+    header) — extra fields are ignored. For `header`, `headers` is a dict of
+    arbitrary header name → value pairs and is mutually compatible with any
+    of the other schemes (they all collapse to `-H` flags).
+    """
+    type: Literal["basic", "bearer", "cookie", "header"]
+    username: str | None = None
+    password: str | None = None
+    token: str | None = None
+    cookie: str | None = None
+    headers: dict[str, str] | None = None
+
+
 class ScanRequest(BaseModel):
     asset_ids: list[str] | None = None
     targets: list[str] | None = None  # Raw IPs/hostnames/URLs for ad-hoc scans
     scan_all: bool = False
     org_id: str | None = None
+    credentials: ScanCredentials | None = Field(
+        default=None,
+        description="Optional credential material for authenticated scans. "
+                    "Never logged or persisted by the scanner.",
+    )
 
 
 class ScanResponse(BaseModel):
@@ -65,6 +89,11 @@ async def create_scan(body: ScanRequest):
     job_ids: list[str] = []
     offset = 0
 
+    # Serialize credentials once — passed to Celery as a plain dict so the
+    # worker process can reconstruct the ScanCredentials without importing
+    # Pydantic-typed args. Broker never sees them unless the caller provided.
+    credentials_payload = body.credentials.model_dump() if body.credentials else None
+
     # Queue asset-based scans
     if body.scan_all:
         assets = await fetch_alive_assets()
@@ -75,6 +104,7 @@ async def create_scan(body: ScanRequest):
     for i, aid in enumerate(asset_ids):
         result = run_nuclei_scan.apply_async(
             args=[aid],
+            kwargs={"credentials": credentials_payload},
             countdown=i * 5,
         )
         job_ids.append(result.id)
@@ -88,6 +118,7 @@ async def create_scan(body: ScanRequest):
             continue
         result = run_nuclei_adhoc.apply_async(
             args=[target, body.org_id],
+            kwargs={"credentials": credentials_payload},
             countdown=(offset + i) * 5,
         )
         job_ids.append(result.id)
