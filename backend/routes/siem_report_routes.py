@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from core.database import get_db
@@ -112,7 +112,7 @@ async def noisy_sources(
     sources = db.query(
         DetectionRule.name,
         func.count(Alert.id).label("total_alerts"),
-        func.sum(func.cast(Alert.status == "false_positive", db.bind.dialect.type_descriptor(type(1)) if hasattr(db.bind, 'dialect') else type(1))).label("fp_count"),
+        func.sum(case((Alert.status == "false_positive", 1), else_=0)).label("fp_count"),
     ).join(Alert, Alert.rule_id == DetectionRule.id)
     if org_ids is not None:
         sources = sources.filter(Alert.org_id.in_(org_ids))
