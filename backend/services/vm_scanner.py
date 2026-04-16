@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 
 VM_SCANNER_URL = os.getenv("VM_SCANNER_URL", "http://localhost:8002")
 
+# A running VM scan older than this is considered stale. Celery result TTL in
+# the VM scanner is effectively bounded by Redis lifetime, and anything older
+# than this is almost certainly orphaned (worker/broker restart, lost job ids).
+VM_SCAN_STALE_THRESHOLD_SECONDS = 3 * 3600
+
 
 async def _vm_request(method: str, path: str, **kwargs) -> Optional[dict]:
     """Make a request to the VM scanner API."""
@@ -180,11 +185,15 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
     if not job_ids:
         return meta
 
-    # Auto-fail scans that have been running for more than 3 hours (Celery results expire)
+    # Auto-fail scans that have been running longer than the stale threshold
+    # (Celery results expire, broker may have restarted, etc.)
     try:
         scan_started = datetime.fromisoformat(scan.scan_date)
-        if (datetime.utcnow() - scan_started).total_seconds() > 3 * 3600:
-            logger.warning("VM scan %d has been running >3h — marking as failed (stale)", scan_id)
+        if (datetime.utcnow() - scan_started).total_seconds() > VM_SCAN_STALE_THRESHOLD_SECONDS:
+            logger.warning(
+                "VM scan %d has been running >%dh — marking as failed (stale)",
+                scan_id, VM_SCAN_STALE_THRESHOLD_SECONDS // 3600,
+            )
             stale_meta = {**meta, "status": "failed", "error": "Scan timed out — job results may have expired"}
             scan.raw_metadata = stale_meta
             db.commit()
@@ -218,7 +227,7 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
 
             # Import findings from this job if not already imported
             if job_result and job_id not in imported_job_ids:
-                new_findings = _import_adhoc_findings(db, scan, job_result)
+                new_findings = _import_nuclei_job_findings(db, scan, job_result)
                 total_findings += new_findings
                 imported_job_ids.add(job_id)
 
@@ -278,60 +287,178 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
     return new_meta
 
 
-def _import_adhoc_findings(db: Session, scan: Scan, job_result: dict) -> int:
-    """Import findings from a completed adhoc nuclei job into the scan.
+def reap_stale_vm_scans(db: Session | None = None) -> dict:
+    """Mark orphaned VM scans as failed.
 
-    If the target was linked to an existing asset (via target_asset_map),
-    findings are attached to that asset. Otherwise creates a new asset.
+    The staleness check inside ``refresh_vm_scan`` only fires when someone
+    polls the scan (e.g. the Scan Management page). If no user is watching,
+    a scan can sit in ``status=running`` forever after a VM scanner / Redis
+    restart wipes the job ids. This reaper runs as a periodic background job
+    to close that gap.
+
+    Returns ``{"checked": n, "reaped": m}``.
+    """
+    from core.database import SessionLocal
+
+    own_session = db is None
+    if own_session:
+        db = SessionLocal()
+
+    reaped = 0
+    checked = 0
+    try:
+        # All VM scans that may still be running. The set is small (running
+        # scans, per org), so filter status in Python to stay dialect-agnostic
+        # across SQLite/Postgres JSON access.
+        candidates = (
+            db.query(Scan)
+            .filter(Scan.source_type == "vm_scanner")
+            .all()
+        )
+
+        now = datetime.utcnow()
+        for scan in candidates:
+            meta = scan.raw_metadata or {}
+            if meta.get("status") != "running":
+                continue
+            checked += 1
+            try:
+                scan_started = datetime.fromisoformat(scan.scan_date)
+            except Exception:
+                continue
+            if (now - scan_started).total_seconds() <= VM_SCAN_STALE_THRESHOLD_SECONDS:
+                continue
+
+            logger.warning(
+                "Reaper: VM scan %d (org=%s) running >%dh — marking failed",
+                scan.id, scan.org_id, VM_SCAN_STALE_THRESHOLD_SECONDS // 3600,
+            )
+            scan.raw_metadata = {
+                **meta,
+                "status": "failed",
+                "error": "Scan timed out — job results may have expired (reaped by background job)",
+            }
+            reaped += 1
+
+        if reaped:
+            db.commit()
+    except Exception:
+        logger.exception("VM scan reaper failed")
+        db.rollback()
+    finally:
+        if own_session:
+            db.close()
+
+    return {"checked": checked, "reaped": reaped}
+
+
+def _build_nuclei_plugin_output(f: dict) -> str:
+    """Compose a human-readable plugin_output for a Nuclei finding.
+
+    Nuclei templates often use `extractors` to pull the concrete evidence
+    (e.g. the specific weak SSH algorithms, exposed headers, leaked values).
+    Surface those extracted values in plugin_output so they show up on the
+    finding's Overview tab instead of being buried in Sources raw fields.
+    """
+    lines: list[str] = []
+    matched_at = f.get("matched_at") or ""
+    if matched_at:
+        lines.append(f"Matched at: {matched_at}")
+
+    extracted = f.get("extracted_results") or []
+    if isinstance(extracted, list) and extracted:
+        lines.append("Extracted values:")
+        for val in extracted:
+            lines.append(f"  - {val}")
+    elif isinstance(extracted, str) and extracted.strip():
+        lines.append("Extracted values:")
+        lines.append(f"  - {extracted}")
+
+    matcher_name = f.get("matcher_name") or ""
+    if matcher_name and not extracted:
+        lines.append(f"Matcher: {matcher_name}")
+
+    return "\n".join(lines)
+
+
+def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> int:
+    """Import findings from a completed nuclei Celery job into the scan.
+
+    Handles both adhoc results (keyed by `target`) and asset-based results
+    (keyed by `asset_id`). The raw findings list is identical between the
+    two — only asset resolution differs:
+
+      asset-based: asset_id is already known, look up directly
+      adhoc:       target → existing asset (via map/IP/hostname) or create new
+
+    Dedup of these findings is NOT performed here. Cross-scan dedup is
+    applied by services/post_ingest.finalize_scan, which is the single
+    authority for per-org dedup rules.
+
     Returns the number of findings created.
     """
-    target = job_result.get("target", "")
     findings_data = job_result.get("findings", [])
+    target = job_result.get("target", "")
+    asset_id_in = job_result.get("asset_id")
 
     meta = scan.raw_metadata or {}
-    target_asset_map = meta.get("target_asset_map", {})
+    asset: Asset | None = None
 
-    # Check if this target maps to an existing asset
-    existing_asset_id = target_asset_map.get(target)
-    asset = None
-    if existing_asset_id:
-        asset = db.query(Asset).filter(Asset.id == existing_asset_id).first()
-
-    if not asset:
-        # Try to find an existing asset in this org by IP or hostname (dedup)
-        if _is_ip(target):
-            asset = (
-                db.query(Asset)
-                .join(Scan, Asset.scan_id == Scan.id)
-                .filter(Scan.org_id == scan.org_id, Asset.ip == target)
-                .first()
+    # Asset-based job (from run_nuclei_scan) — asset_id is authoritative.
+    if asset_id_in:
+        try:
+            asset = db.query(Asset).filter(Asset.id == asset_id_in).first()
+        except Exception:
+            asset = None
+        if not asset:
+            logger.warning(
+                "VM scan job referenced asset_id %s which no longer exists — skipping",
+                asset_id_in,
             )
-        else:
-            asset = (
-                db.query(Asset)
-                .join(Scan, Asset.scan_id == Scan.id)
-                .filter(
-                    Scan.org_id == scan.org_id,
-                    or_(Asset.hostname == target, Asset.fqdn == target),
-                )
-                .first()
-            )
-
-    if not asset:
-        # No existing asset found — create one under this scan
-        asset = Asset(
-            scan_id=scan.id,
-            ip=target if _is_ip(target) else "",
-            hostname=target if not _is_ip(target) else "",
-            source_systems=["vm_scanner"],
-        )
-        db.add(asset)
-        db.flush()
-    else:
-        # Extend the existing asset's source_systems to include vm_scanner
+            return 0
         existing_sources = list(asset.source_systems or [])
         if "vm_scanner" not in existing_sources:
             asset.source_systems = existing_sources + ["vm_scanner"]
+    else:
+        # Adhoc job — resolve by target against this scan's prefilled map,
+        # then by IP/hostname in the same org, creating a new asset if none.
+        target_asset_map = meta.get("target_asset_map", {})
+        existing_asset_id = target_asset_map.get(target)
+        if existing_asset_id:
+            asset = db.query(Asset).filter(Asset.id == existing_asset_id).first()
+
+        if not asset:
+            if _is_ip(target):
+                asset = (
+                    db.query(Asset)
+                    .join(Scan, Asset.scan_id == Scan.id)
+                    .filter(Scan.org_id == scan.org_id, Asset.ip == target)
+                    .first()
+                )
+            else:
+                asset = (
+                    db.query(Asset)
+                    .join(Scan, Asset.scan_id == Scan.id)
+                    .filter(
+                        Scan.org_id == scan.org_id,
+                        or_(Asset.hostname == target, Asset.fqdn == target),
+                    )
+                    .first()
+                )
+
+        if not asset:
+            asset = Asset(
+                scan_id=scan.id,
+                ip=target if _is_ip(target) else "",
+                hostname=target if not _is_ip(target) else "",
+                source_systems=["vm_scanner"],
+            )
+            db.add(asset)
+            db.flush()
+        else:
+            existing_sources = list(asset.source_systems or [])
+            if "vm_scanner" not in existing_sources:
+                asset.source_systems = existing_sources + ["vm_scanner"]
 
     # Record per-source observation
     record_observation(
@@ -373,7 +500,7 @@ def _import_adhoc_findings(db: Session, scan: Scan, job_result: dict) -> int:
             description=f.get("description", ""),
             solution="",
             plugin_family="Nuclei",
-            plugin_output=f.get("matched_at", ""),
+            plugin_output=_build_nuclei_plugin_output(f),
             port=str(f.get("port", "")) if f.get("port") else None,
             first_seen=now,
             last_seen=now,

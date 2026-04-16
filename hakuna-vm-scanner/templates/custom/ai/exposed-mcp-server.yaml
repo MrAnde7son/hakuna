@@ -12,6 +12,8 @@ info:
     the tools configured.
   tags: ai,mcp,agent,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: ai_agent
     finding_type: exposed_ai_service
 

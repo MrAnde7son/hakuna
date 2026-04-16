@@ -109,6 +109,7 @@ from routes.detection_routes import router as detection_router
 from routes.siem_report_routes import router as siem_report_router
 from routes.graph_routes import router as graph_router
 from routes.scan_planner_routes import router as scan_planner_router
+from routes.correlation_routes import router as correlation_router
 from services.blast_radius import resolve_dc_asset_ids as _resolve_dc_asset_ids
 
 logging.basicConfig(level=logging.INFO)
@@ -333,6 +334,7 @@ app.include_router(detection_router)
 app.include_router(siem_report_router)
 app.include_router(graph_router)
 app.include_router(scan_planner_router)
+app.include_router(correlation_router)
 
 
 INTEL_PATH = Path(__file__).parent / "data" / "intel.json"
@@ -379,6 +381,28 @@ def _deferred_startup():
         start_drain_scheduler()
     except Exception as exc:
         logger.error("Event drain scheduler failed to start: %s", exc)
+    # Reap VM scans orphaned by vm-scanner / Redis restarts (every 5 min).
+    # refresh_vm_scan's staleness check only fires on user-triggered polls,
+    # so without this a restarted container can leave scans stuck in
+    # status=running indefinitely.
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler as _VMReaperBG
+        from apscheduler.triggers.interval import IntervalTrigger as _VMReaperInterval
+        from services.vm_scanner import reap_stale_vm_scans
+        _vm_reaper_scheduler = _VMReaperBG()
+        _vm_reaper_scheduler.add_job(
+            reap_stale_vm_scans,
+            _VMReaperInterval(minutes=5),
+            id="vm_scan_reaper",
+            replace_existing=True,
+            misfire_grace_time=300,
+            coalesce=True,
+        )
+        _vm_reaper_scheduler.start()
+        reap_stale_vm_scans()  # run once at startup to clear any existing orphans
+        logger.info("VM scan reaper scheduled (every 5 minutes)")
+    except Exception as exc:
+        logger.error("VM scan reaper failed to start: %s", exc)
     # Start SIEM detection engine (rule evaluator, every 1 min)
     try:
         from services.detection_engine import start_detection_scheduler
@@ -958,9 +982,10 @@ def _run_scan_ingest(
         scan.raw_metadata = scan_data
         db.flush()
 
-        # Load configs once (used throughout the upload)
+        # Load configs once (used throughout the upload). Both honour per-org
+        # overrides; orgs without an override get the global config.
         risk_cfg = risk_engine.load_config_for_org(db, effective_org_id)
-        dedup_cfg = dedup_engine.load_config()
+        dedup_cfg = dedup_engine.load_config_for_org(db, effective_org_id)
 
         # Within-scan asset dedup: collapse duplicate hosts before creating DB records
         parsed_assets = parsed["assets"]

@@ -51,8 +51,14 @@ class Settings(BaseSettings):
         "18245,"  # GE SRTP
         "2222"    # EtherNet/IP alt
     )
-    # UDP ports for specialized protocols (requires nmap -sU)
-    nmap_udp_ports: str = "161,47808,1900,5683,5353,1194,4500"
+    # UDP ports for specialized protocols (requires nmap -sU) — top 50
+    nmap_udp_ports: str = (
+        "53,67,68,69,111,123,137,138,161,162,389,500,514,520,523,554,"
+        "623,1194,1434,1604,1645,1646,1812,1813,1883,1900,2049,2123,"
+        "3283,3478,4500,4789,5060,5353,5683,6343,6481,10161,11211,"
+        "17185,27015,30718,33434,34555,47808,49152"
+    )
+    nmap_udp_timeout_seconds: int = 600
     subfinder_sources: str = "all"
     uncover_sources: str = "shodan,censys,fofa"
     org_scan_stagger_seconds: int = 120
@@ -99,6 +105,22 @@ class Settings(BaseSettings):
     # Lower concurrency than JS/favicon since each host gets ~30 probes.
     endpoint_probe_concurrency: int = 10
     endpoint_probe_connect_timeout: int = 8
+
+    # Kiterunner: API endpoint brute-forcing
+    kiterunner_concurrency: int = 10
+    kiterunner_timeout: int = 600
+    kiterunner_wordlist: str = "/opt/hakuna/wordlists/kiterunner-routes.kite"
+
+    # Trufflehog: secrets scanning on JS bundles
+    trufflehog_concurrency: int = 5
+    trufflehog_timeout: int = 300
+    trufflehog_only_verified: bool = False
+
+    # LLM JS endpoint extraction
+    llm_js_extraction_enabled: bool = True
+    llm_js_extraction_max_files_per_asset: int = 5
+    llm_js_extraction_min_file_size: int = 10000  # bytes
+    llm_js_extraction_model: str = "claude-haiku-4-5-20251001"
 
     # Celery task safety limits (seconds)
     task_soft_time_limit: int = 1800   # 30 min soft limit

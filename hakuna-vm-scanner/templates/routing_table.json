@@ -18,7 +18,28 @@
     "grafana:grafana":        ["grafana", "http"],
     "docker:docker":          ["docker"],
     "hashicorp:consul":       ["consul"],
-    "hashicorp:vault":        ["vault"]
+    "hashicorp:vault":        ["vault"],
+
+    "hikvision:ip_camera":    ["hikvision", "camera", "iot"],
+    "hikvision:nvr":          ["hikvision", "camera", "iot"],
+    "qnap:qts":               ["qnap", "nas", "iot"],
+    "synology:dsm":           ["synology", "nas", "iot"],
+    "siemens:simatic_s7-1200_cpu_firmware": ["s7", "siemens", "plc", "ot"],
+    "siemens:simatic_s7-1500_cpu_firmware": ["s7", "siemens", "plc", "ot"],
+    "siemens:simatic_s7-300":               ["s7", "siemens", "plc", "ot"],
+    "siemens:simatic_s7-400":               ["s7", "siemens", "plc", "ot"],
+    "rockwellautomation:controllogix":      ["ethernet-ip", "cip", "rockwell", "plc", "ot"],
+    "rockwellautomation:compactlogix":      ["ethernet-ip", "cip", "rockwell", "plc", "ot"],
+    "schneider-electric:modicon":           ["modbus", "plc", "ot"],
+
+    "ollama:ollama":          ["ollama", "llm", "ai"],
+    "qdrant:qdrant":          ["vectordb", "qdrant", "ai"],
+    "milvus:milvus":          ["vectordb", "milvus", "ai"],
+    "weaviate:weaviate":      ["vectordb", "weaviate", "ai"],
+    "chroma:chroma":          ["vectordb", "chroma", "ai"],
+    "mlflow:mlflow":          ["mlflow", "ml", "ai"],
+    "langchain:langserve":    ["langserve", "langchain", "ai"],
+    "gradio:gradio":          ["gradio", "ai", "ml"]
   },
   "tech_map": {
     "apache":     ["apache", "http"],
@@ -38,7 +59,33 @@
     "mysql":      ["mysql", "db"],
     "postgresql": ["postgres", "db"],
     "redis":      ["redis", "db"],
-    "mongodb":    ["mongodb", "db"]
+    "mongodb":    ["mongodb", "db"],
+
+    "hikvision":  ["hikvision", "camera", "iot"],
+    "qnap":       ["qnap", "nas", "iot"],
+    "synology":   ["synology", "nas", "iot"],
+
+    "ollama":     ["ollama", "llm", "ai"],
+    "gradio":     ["gradio", "ai", "ml"],
+    "langserve":  ["langserve", "langchain", "ai"],
+    "vllm":       ["vllm", "openai", "llm", "ai"],
+    "localai":    ["localai", "openai", "llm", "ai"],
+    "mlflow":     ["mlflow", "ml", "ai"]
+  },
+  "port_map": {
+    "102":   ["s7", "siemens", "plc", "ot", "ics"],
+    "502":   ["modbus", "plc", "ot", "ics"],
+    "554":   ["rtsp", "camera", "iot"],
+    "1883":  ["mqtt", "broker", "iot"],
+    "4840":  ["opcua", "scada", "ot", "ics"],
+    "8883":  ["mqtt", "broker", "iot"],
+    "11434": ["ollama", "llm", "ai"],
+    "6333":  ["vectordb", "qdrant", "ai"],
+    "6334":  ["vectordb", "qdrant", "ai"],
+    "19530": ["vectordb", "milvus", "ai"],
+    "20000": ["dnp3", "scada", "utility", "ot", "ics"],
+    "44818": ["ethernet-ip", "cip", "rockwell", "plc", "ot", "ics"],
+    "47808": ["bacnet", "building-automation", "ot", "ics"]
   },
   "port_gates": {
     "web": { "ports": [80, 443, 8080, 8443], "tags": ["http", "ssl"] },

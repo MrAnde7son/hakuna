@@ -85,11 +85,27 @@ def finalize_scan(
             db, "Cross-scan dedup", lambda: _cross_scan_dedup(db, org_id)
         )
 
+    # 9b. Cross-scan finding dedup — applies the org's resolved findings rule
+    # so scanners (VM, EASM, Nessus parser, integrations) can emit raw rows
+    # while the engine remains the single dedup authority.
+    if org_id:
+        results["finding_dedup"] = _step(
+            db, "Cross-scan finding dedup", lambda: _cross_scan_finding_dedup(db, org_id)
+        )
+
     # 9.5. Asset relationship inference (DNS → cloud workload)
     if org_id and scan_id:
         results["asset_relationships"] = _step(
             db, "Asset relationship inference",
             lambda: _infer_asset_relationships(db, org_id, scan_id),
+        )
+
+    # 9.6. Cross-finding correlation — link findings across scanners (Nessus + Nuclei)
+    # for same CVEs, generate attack paths through the knowledge graph.
+    if org_id:
+        results["finding_correlation"] = _step(
+            db, "Cross-finding correlation",
+            lambda: _correlate_findings(db, org_id),
         )
 
     # 10. EASM enrichment
@@ -110,6 +126,13 @@ def finalize_scan(
         results["control_assessment"] = _step(
             db, "Control assessment",
             lambda: _run_control_assessment(db, org_id, scan_id),
+        )
+
+    # 12.5. LLM vulnerability validation — detect false positives in critical/high Nuclei findings
+    if org_id:
+        results["llm_validation"] = _step(
+            db, "LLM vulnerability validation",
+            lambda: _llm_validate_findings(db, org_id, scan_id),
         )
 
     # 13. Asset risk score recomputation
@@ -262,7 +285,7 @@ def _cross_scan_dedup(db, org_id):
     import services.dedup as dedup_engine
     from models.entity_registry import ENTITY_MODEL_MAP
 
-    cfg = dedup_engine.load_config()
+    cfg = dedup_engine.load_config_for_org(db, org_id)
     if not cfg.get("enabled") or not cfg.get("apply_on_upload"):
         return None
     asset_cfg = cfg.get("assets", {})
@@ -275,6 +298,28 @@ def _cross_scan_dedup(db, org_id):
     result = dedup_engine.run_cross_scan_asset_dedup(db, org_id, cfg, ENTITY_MODEL_MAP)
     if result.get("removed"):
         logger.info("Cross-scan dedup: merged %d duplicate asset(s)", result["removed"])
+    return result
+
+
+def _cross_scan_finding_dedup(db, org_id):
+    """Apply the org's resolved findings-dedup rule across all its findings.
+
+    Scanners (VM scanner, EASM, Nessus parser, integration pulls) emit
+    raw findings into the table. This step is the single place where the
+    configurable dedup engine decides which duplicates to keep/merge.
+    """
+    import services.dedup as dedup_engine
+
+    cfg = dedup_engine.load_config_for_org(db, org_id)
+    if not cfg.get("enabled") or not cfg.get("apply_on_upload"):
+        return None
+
+    result = dedup_engine.run_cross_scan_finding_dedup(db, org_id, cfg)
+    if result.get("removed") or result.get("merged"):
+        logger.info(
+            "Cross-scan finding dedup: removed=%d merged=%d (strategy=%s)",
+            result.get("removed", 0), result.get("merged", 0), result.get("strategy"),
+        )
     return result
 
 
@@ -482,3 +527,15 @@ def _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids):
         )
 
     return {"workflows_fired": fired}
+
+
+def _correlate_findings(db, org_id):
+    """Cross-finding correlation: CVE-based linking + attack path generation."""
+    from services.finding_correlator import correlate_findings
+    return correlate_findings(db, org_id)
+
+
+def _llm_validate_findings(db, org_id, scan_id):
+    """LLM vulnerability validation: detect false positives in critical/high Nuclei findings."""
+    from services.llm_vuln_validator import validate_findings
+    return validate_findings(db, org_id, scan_id=scan_id)

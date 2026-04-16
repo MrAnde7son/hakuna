@@ -36,23 +36,21 @@ class TestLocalTemplateVersion:
 
 
 class TestBeatSchedule:
-    def test_beat_schedule_registered(self):
-        """Beat schedule contains the two required jobs."""
+    """Beat now runs container-local maintenance only. Per-asset scans
+    are scheduled by the backend via the /vm/scans/ HTTP API so findings
+    flow through the backend's ingest pipeline (services/post_ingest.
+    finalize_scan) rather than going straight into the database from
+    inside this container.
+    """
+
+    def test_only_template_sync_scheduled(self):
         from scanner.vm.celery_app import celery_app
 
         schedule = celery_app.conf.beat_schedule
-        assert "weekly-vm-scan-monday-2am" in schedule
         assert "template-sync-every-6h" in schedule
-
-    def test_weekly_scan_is_monday_2am(self):
-        from scanner.vm.celery_app import celery_app
-
-        job = celery_app.conf.beat_schedule["weekly-vm-scan-monday-2am"]
-        assert job["task"] == "vm.weekly_scan"
-        # Monday is day_of_week=1
-        assert job["schedule"].day_of_week == {1}
-        assert job["schedule"].hour == {2}
-        assert job["schedule"].minute == {0}
+        # Explicit: the old weekly scan job must not come back — scheduling
+        # belongs to the backend now, not Celery Beat in this container.
+        assert "weekly-vm-scan-monday-2am" not in schedule
 
     def test_template_sync_every_6h(self):
         from scanner.vm.celery_app import celery_app

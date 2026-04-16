@@ -11,6 +11,8 @@ info:
     compute resources.
   tags: ai,ml,gradio,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: ai_inference
     finding_type: exposed_ai_service
 

@@ -1,17 +1,21 @@
-"""Tests for the Nuclei worker — finding parsing, target resolution, CPE extraction."""
+"""Tests for the Nuclei worker.
 
-import json
-import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+The worker is pure compute — it looks up asset context read-only, runs
+Nuclei, and returns findings in the Celery result payload. The backend
+imports results and runs them through the ingest pipeline (dedup, tagging,
+SLA, risk). None of that is the scanner's concern, so there's nothing to
+unit-test here about deduplication.
+"""
 
-import pytest
-
-from scanner.vm.nuclei_worker import _emit_finding, _extract_cpe_list, _resolve_target
+from scanner.vm.nuclei_worker import (
+    _extract_cpe_list,
+    _parse_nuclei_stats,
+    _resolve_target,
+    _result_to_finding,
+)
 
 
 class TestResolveTarget:
-    """Tests for _resolve_target helper."""
-
     def test_prefers_http_url(self):
         asset = {"http_url": "https://example.com", "hostname": "example.com", "ip": "1.2.3.4"}
         assert _resolve_target(asset) == "https://example.com"
@@ -30,11 +34,9 @@ class TestResolveTarget:
 
 
 class TestExtractCpeList:
-    """Tests for _extract_cpe_list helper."""
-
     def test_list_of_strings(self):
-        result = _extract_cpe_list(["cpe:2.3:a:apache:http_server:2.4:*", "cpe:2.3:a:php:php:8.0:*"])
-        assert result == ["cpe:2.3:a:apache:http_server:2.4:*", "cpe:2.3:a:php:php:8.0:*"]
+        cpes = ["cpe:2.3:a:apache:http_server:2.4:*", "cpe:2.3:a:php:php:8.0:*"]
+        assert _extract_cpe_list(cpes) == cpes
 
     def test_none_returns_none(self):
         assert _extract_cpe_list(None) is None
@@ -43,34 +45,46 @@ class TestExtractCpeList:
         assert _extract_cpe_list([]) is None
 
     def test_dict_returns_values(self):
-        result = _extract_cpe_list({"0": "cpe:2.3:a:apache:http_server:2.4:*"})
-        assert result == ["cpe:2.3:a:apache:http_server:2.4:*"]
+        assert _extract_cpe_list({"0": "cpe:2.3:a:apache:http_server:2.4:*"}) == [
+            "cpe:2.3:a:apache:http_server:2.4:*"
+        ]
 
     def test_empty_dict_returns_none(self):
         assert _extract_cpe_list({}) is None
 
 
-class TestEmitFinding:
-    """Tests for _emit_finding — finding parsing and DB insert."""
+class TestParseNucleiStats:
+    def test_extracts_known_lines(self):
+        stderr = [
+            "[INF] Templates: 12352 |",
+            "[INF] Total requests: 45210 |",
+            "[INF] Results found: 3 |",
+        ]
+        stats = _parse_nuclei_stats(stderr)
+        assert stats == {
+            "templates_loaded": 12352,
+            "requests_sent": 45210,
+            "results_found": 3,
+        }
 
-    @pytest.fixture
-    def nuclei_result(self):
-        """A sample Nuclei JSONL output line."""
-        return {
+    def test_missing_stats_return_empty(self):
+        assert _parse_nuclei_stats(["[INF] random noise"]) == {}
+
+
+class TestResultToFinding:
+    """The payload shape run_nuclei_scan and run_nuclei_adhoc return must be
+    identical — the backend's importer handles both with one code path."""
+
+    def test_happy_path(self):
+        raw = {
             "template-id": "apache-detect",
             "info": {
                 "name": "Apache HTTP Server Detection",
                 "severity": "info",
-                "description": "Detects Apache HTTP Server.",
-                "tags": ["apache", "http", "detect"],
+                "description": "Detects Apache.",
+                "tags": ["apache", "http"],
                 "reference": ["https://httpd.apache.org/"],
-                "classification": {
-                    "cve-id": None,
-                    "cwe-id": None,
-                },
-                "metadata": {
-                    "verified": True,
-                },
+                "classification": {"cve-id": None},
             },
             "matched-at": "https://example.com/",
             "matcher-name": "version",
@@ -78,77 +92,33 @@ class TestEmitFinding:
             "port": "80",
             "type": "http",
             "extracted-results": ["Apache/2.4.51"],
+            "curl-command": "curl https://example.com/",
         }
+        f = _result_to_finding(raw)
+        assert f["template_id"] == "apache-detect"
+        assert f["severity"] == "info"
+        assert f["name"] == "Apache HTTP Server Detection"
+        assert f["port"] == "80"
+        assert f["type"] == "http"
+        assert f["tags"] == ["apache", "http"]
+        assert f["matcher_name"] == "version"
+        assert f["extracted_results"] == ["Apache/2.4.51"]
 
-    @pytest.mark.asyncio
-    async def test_emit_finding_parses_correctly(self, nuclei_result):
-        """Verify finding metadata is correctly extracted from Nuclei output."""
-        conn = AsyncMock()
-        conn.fetchrow = AsyncMock(return_value=None)  # No existing finding
-        conn.execute = AsyncMock()
+    def test_severity_normalized(self):
+        raw = {"template-id": "x", "info": {"name": "x", "severity": "UNKNOWN"}}
+        assert _result_to_finding(raw)["severity"] == "info"
 
-        org_id = uuid.uuid4()
-        asset_id = uuid.uuid4()
+    def test_missing_info_defaults(self):
+        raw = {"template-id": "x"}
+        f = _result_to_finding(raw)
+        assert f["template_id"] == "x"
+        assert f["name"] == "x"   # falls back to template_id when info.name missing
+        assert f["severity"] == "info"
+        assert f["tags"] == []
+        assert f["classification"] == {}
 
-        result = await _emit_finding(conn, org_id, asset_id, nuclei_result)
-        assert result is True
-
-        # Verify dedup check was called
-        conn.fetchrow.assert_called_once()
-
-        # Verify INSERT was called (not UPDATE, since no existing finding)
-        conn.execute.assert_called_once()
-        call_args = conn.execute.call_args
-        args = call_args[0]
-
-        # args: (query, id, org_id, asset_id, finding_type, severity, title, description, metadata_json)
-        assert args[3] == asset_id        # asset_id
-        assert args[4] == "nuclei"        # finding_type
-        assert args[5] == "info"          # severity
-        assert args[6] == "Apache HTTP Server Detection"  # title
-
-        metadata = json.loads(args[8])
-        assert metadata["scan_source"] == "nuclei"
-        assert metadata["template_id"] == "apache-detect"
-        assert metadata["matched_at"] == "https://example.com/"
-
-    @pytest.mark.asyncio
-    async def test_emit_finding_normalizes_severity(self):
-        """Invalid severity values are normalized to 'info'."""
-        conn = AsyncMock()
-        conn.fetchrow = AsyncMock(return_value=None)
-        conn.execute = AsyncMock()
-
-        result_data = {
-            "template-id": "test",
-            "info": {"name": "Test", "severity": "UNKNOWN"},
-        }
-
-        await _emit_finding(conn, uuid.uuid4(), uuid.uuid4(), result_data)
-        call_args = conn.execute.call_args[0]
-        assert call_args[5] == "info"  # severity normalized
-
-    @pytest.mark.asyncio
-    async def test_emit_finding_handles_db_error(self):
-        """DB errors are caught and False is returned."""
-        conn = AsyncMock()
-        conn.fetchrow = AsyncMock(side_effect=Exception("DB error"))
-
-        result = await _emit_finding(conn, uuid.uuid4(), uuid.uuid4(), {
-            "template-id": "test",
-            "info": {"name": "Test", "severity": "high"},
-        })
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_emit_finding_high_severity(self, nuclei_result):
-        """High severity findings are correctly classified."""
-        conn = AsyncMock()
-        conn.fetchrow = AsyncMock(return_value=None)
-        conn.execute = AsyncMock()
-
-        nuclei_result["info"]["severity"] = "high"
-        await _emit_finding(conn, uuid.uuid4(), uuid.uuid4(), nuclei_result)
-
-        call_args = conn.execute.call_args[0]
-        assert call_args[5] == "high"
+    def test_accepts_camelcase_templateID(self):
+        raw = {"templateID": "x", "info": {"name": "X", "severity": "high"}}
+        f = _result_to_finding(raw)
+        assert f["template_id"] == "x"
+        assert f["severity"] == "high"

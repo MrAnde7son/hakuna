@@ -12,6 +12,8 @@ info:
     force, and exploitation of known CVEs.
   tags: iot,camera,hikvision,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: camera
     finding_type: exposed_iot_service
   reference:

@@ -145,17 +145,61 @@ async def import_risk_config(
 # ─────────────────────────────────────────────
 
 @router.get("/config/export/dedup_config")
-def export_dedup_config():
-    cfg = dedup_engine.load_config()
+def export_dedup_config(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+    scope: str = Query("resolved", regex="^(resolved|override|global)$"),
+):
+    """Export dedup config as a JSON envelope.
+
+    scope:
+      resolved  — this org's effective config (global + override merged). Default.
+      override  — only this org's sparse override (empty if none).
+      global    — the platform-wide global (superadmin only).
+    """
+    org_id = int(x_org_context) if x_org_context else user.org_id
+
+    if scope == "global":
+        if user.role != "superadmin":
+            raise HTTPException(403, "Only superadmins can export the global dedup config")
+        cfg = dedup_engine.load_config()
+    elif scope == "override":
+        cfg = dedup_engine.load_org_override(db, org_id)
+    else:
+        cfg = dedup_engine.load_config_for_org(db, org_id)
+        cfg.pop("is_org_override", None)
+
     return _envelope("dedup_config", cfg)
 
 
 @router.post("/config/import/dedup_config")
-async def import_dedup_config(file: UploadFile = File(...)):
+async def import_dedup_config(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+    x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
+    scope: str = Query("org", regex="^(org|global)$"),
+):
+    """Import dedup config from a JSON envelope.
+
+    scope:
+      org    — installs as this org's override (default).
+      global — replaces the platform-wide global (superadmin only).
+    """
+    org_id = int(x_org_context) if x_org_context else user.org_id
     payload = await _read_json_upload(file)
     data = _validate_envelope(payload, "dedup_config")
-    dedup_engine.save_config(data)
-    return {"status": "ok", "message": "Dedup config imported successfully"}
+    data.pop("is_org_override", None)
+
+    if scope == "global":
+        if user.role != "superadmin":
+            raise HTTPException(403, "Only superadmins can import the global dedup config")
+        dedup_engine.save_config(data)
+        return {"status": "ok", "message": "Global dedup config imported", "scope": "global"}
+
+    dedup_engine.save_config_for_org(db, org_id, data)
+    return {"status": "ok", "message": "Org dedup config imported", "scope": "org", "org_id": org_id}
 
 
 # ─────────────────────────────────────────────

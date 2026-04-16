@@ -12,6 +12,8 @@ info:
     depending on the security policy configuration.
   tags: ot,ics,scada,opcua,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: scada
     finding_type: exposed_ot_service
 

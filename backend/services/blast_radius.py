@@ -28,14 +28,17 @@ _COMPUTER_TO_ASSET_FIELD_MAP = {
 }
 
 
-def resolve_dc_asset_ids(db: Session, scan_id=None, restrict_to_asset_ids=None) -> set:
+def resolve_dc_asset_ids(db: Session, scan_id=None, restrict_to_asset_ids=None, org_id=None) -> set:
     """Return IDs of Asset records that ARE Domain Controllers.
 
     InventoryComputer.asset_id is the SOURCE asset that ran the AD enumeration plugin,
     not the DC itself.  We resolve the actual DC asset by matching computer name/fqdn
     against Asset fields using the same key fields as the asset dedup config.
+
+    The asset dedup key_fields are resolved per-org (org_id) so tenants that
+    override their dedup rules get the matching behaviour they configured.
     """
-    dedup_cfg = dedup_engine.load_config()
+    dedup_cfg = dedup_engine.load_config_for_org(db, org_id) if org_id else dedup_engine.load_config()
     key_fields = dedup_cfg.get("assets", {}).get("key_fields", ["ip", "fqdn"])
     match_pairs = [
         _COMPUTER_TO_ASSET_FIELD_MAP[f]

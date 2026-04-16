@@ -11,6 +11,8 @@ info:
     point into internal networks via print protocol vulnerabilities.
   tags: iot,printer,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: printer
     finding_type: exposed_iot_service
 

@@ -12,6 +12,8 @@ info:
     model weights or training data.
   tags: ai,llm,ollama,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: ai_inference
     finding_type: exposed_ai_service
 

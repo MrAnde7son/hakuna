@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Settings as SettingsIcon, Play, Save, RotateCcw, ChevronDown, ChevronRight, ShieldAlert, Upload, Tag, Clock, Plug, Blocks, ShieldOff, ClipboardList, UserCheck, Users, ShieldCheck, Building2, KeyRound, Plus, X, GripVertical, Layers } from 'lucide-react'
-import { getDedupConfig, saveDedupConfig, runDedup, exportConfig, getAvailableSources, runRollup } from '../../api.js'
+import { getDedupConfig, saveDedupConfig, deleteDedupOrgOverride, runDedup, exportConfig, getAvailableSources, runRollup } from '../../api.js'
 import { Card, ExportImportButtons } from '../shared/ui.jsx'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import RiskSettings from './RiskSettings.jsx'
@@ -476,7 +476,9 @@ export default function Settings() {
     setSaving(true)
     setSaved(false)
     try {
-      await saveDedupConfig(cfg)
+      // Strip read-only fields before sending.
+      const { is_org_override: _ignored, ...toSave } = cfg
+      await saveDedupConfig(toSave)
       // If any asset type has source_priority configured, trigger rollup
       const hasSourcePriority = Object.values(cfg.assets || {}).some(
         tc => tc?.source_priority && Object.values(tc.source_priority).some(v => v?.length > 0)
@@ -484,6 +486,9 @@ export default function Settings() {
       if (hasSourcePriority) {
         runRollup().catch(() => {})  // fire-and-forget background job
       }
+      // Reload so `is_org_override` flips to true and the banner updates.
+      const fresh = await getDedupConfig()
+      setCfg(fresh)
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     } catch (e) {
@@ -495,6 +500,31 @@ export default function Settings() {
 
   const handleReset = () => {
     getDedupConfig().then(setCfg)
+  }
+
+  /**
+   * Revert this org's dedup config to the global defaults by removing the
+   * per-org override. Kept separate from handleReset (which only discards
+   * unsaved UI changes).
+   */
+  const handleRevertToGlobal = async () => {
+    if (!window.confirm(
+      'Revert your organization\'s dedup config to the global defaults?\n\n'
+      + 'Your customisations will be lost. Other organizations are unaffected.'
+    )) return
+    setSaving(true)
+    setError(null)
+    try {
+      await deleteDedupOrgOverride()
+      const fresh = await getDedupConfig()
+      setCfg(fresh)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 3000)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
   }
 
   if (!cfg) {
@@ -642,6 +672,29 @@ export default function Settings() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <SettingsIcon size={16} color="var(--accent)" />
           <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>Deduplication</span>
+          {cfg.is_org_override ? (
+            <span
+              title="This organization has customized the dedup rules. Global defaults still apply for any fields left unchanged."
+              style={{
+                fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+                background: 'rgba(99,102,241,0.14)', color: 'var(--accent)',
+                border: '1px solid rgba(99,102,241,0.3)',
+              }}
+            >
+              Org override
+            </span>
+          ) : (
+            <span
+              title="This organization is using the global dedup defaults. Saving will create an override."
+              style={{
+                fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 10,
+                background: 'transparent', color: 'var(--text-muted)',
+                border: '1px solid var(--border)',
+              }}
+            >
+              Inherited from global
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <ExportImportButtons
@@ -651,6 +704,20 @@ export default function Settings() {
             label="Dedup Config"
             showConflict={false}
           />
+          {cfg.is_org_override && (
+            <button
+              onClick={handleRevertToGlobal}
+              disabled={saving}
+              title="Remove this org's override and use the platform-wide global defaults"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px',
+                borderRadius: 6, fontSize: 13, cursor: saving ? 'not-allowed' : 'pointer',
+                border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)',
+              }}
+            >
+              <RotateCcw size={13} /> Revert to global
+            </button>
+          )}
           <button
             onClick={handleReset}
             style={{
@@ -659,7 +726,7 @@ export default function Settings() {
               border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)',
             }}
           >
-            <RotateCcw size={13} /> Reset
+            <RotateCcw size={13} /> Discard changes
           </button>
           <button
             onClick={handleSave}
@@ -672,10 +739,20 @@ export default function Settings() {
             }}
           >
             <Save size={13} />
-            {saving ? 'Saving…' : saved ? 'Saved!' : 'Save Config'}
+            {saving ? 'Saving…' : saved ? 'Saved!' : 'Save for this org'}
           </button>
         </div>
       </div>
+
+      {!cfg.is_org_override && (
+        <div style={{
+          marginBottom: 16, padding: '10px 14px',
+          background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.25)',
+          borderRadius: 6, fontSize: 12, color: 'var(--text-muted)',
+        }}>
+          You are viewing the global dedup defaults. Any changes you save will apply only to this organization as an override — other organizations are unaffected.
+        </div>
+      )}
 
       {error && (
         <div style={{ marginBottom: 16, padding: '10px 14px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6, fontSize: 13, color: '#fca5a5' }}>

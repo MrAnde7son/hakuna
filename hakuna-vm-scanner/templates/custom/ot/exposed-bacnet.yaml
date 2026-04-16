@@ -11,6 +11,8 @@ info:
     setpoints, and controlling building systems without authentication.
   tags: ot,ics,bacnet,building-automation,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: smart_building
     finding_type: exposed_ot_service
 

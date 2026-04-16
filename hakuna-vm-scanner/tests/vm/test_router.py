@@ -186,6 +186,62 @@ http:
             args = router.get_templates_for_asset(None, None, [])
             assert len(args) > 0
 
+    def test_port_routing_modbus(self, templates_dir):
+        """Open port 502 routes to modbus/ot tags even without CPE/tech."""
+        with patch("scanner.vm.router.TEMPLATES_DIR", str(templates_dir)):
+            router = TemplateRouter()
+            args = router.get_templates_for_asset(
+                cpe_list=None,
+                tech_stack=None,
+                open_ports=[502],
+            )
+            assert "-tags" in args
+            tag_str = args[args.index("-tags") + 1]
+            tags = set(tag_str.split(","))
+            assert "modbus" in tags
+            assert "ot" in tags
+
+    def test_port_routing_ollama(self, templates_dir):
+        """Open port 11434 routes to ollama/llm/ai tags."""
+        with patch("scanner.vm.router.TEMPLATES_DIR", str(templates_dir)):
+            router = TemplateRouter()
+            args = router.get_templates_for_asset(
+                cpe_list=None,
+                tech_stack=None,
+                open_ports=[11434],
+            )
+            tag_str = args[args.index("-tags") + 1]
+            tags = set(tag_str.split(","))
+            assert "ollama" in tags
+            assert "ai" in tags
+
+    def test_port_routing_additive_with_cpe(self, templates_dir):
+        """Port-derived tags are added on top of CPE tags."""
+        with patch("scanner.vm.router.TEMPLATES_DIR", str(templates_dir)):
+            router = TemplateRouter()
+            args = router.get_templates_for_asset(
+                cpe_list=["cpe:2.3:a:apache:http_server:2.4.51:*:*:*:*:*:*:*"],
+                tech_stack=None,
+                open_ports=[80, 502],
+            )
+            tag_str = args[args.index("-tags") + 1]
+            tags = set(tag_str.split(","))
+            assert "apache" in tags  # from CPE
+            assert "http" in tags    # from CPE
+            assert "modbus" in tags  # from port_map
+
+    def test_port_routing_debug_includes_port_tags(self, templates_dir):
+        """get_routing_debug reports port_tags separately."""
+        with patch("scanner.vm.router.TEMPLATES_DIR", str(templates_dir)):
+            router = TemplateRouter()
+            info = router.get_routing_debug(
+                cpe_list=None,
+                tech_stack=None,
+                open_ports=[6333],
+            )
+            assert "qdrant" in info["port_tags"]
+            assert "qdrant" in info["final_tags"]
+
     def test_cpe_routing_takes_priority_over_tech(self, templates_dir):
         """When CPE matches, tech_stack is NOT used (CPE preferred)."""
         with patch("scanner.vm.router.TEMPLATES_DIR", str(templates_dir)):

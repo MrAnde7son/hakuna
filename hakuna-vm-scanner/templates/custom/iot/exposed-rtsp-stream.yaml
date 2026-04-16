@@ -12,6 +12,8 @@ info:
     physical security reconnaissance.
   tags: iot,camera,rtsp,surveillance,exposure
   metadata:
+    source: custom
+    verified: true
     asset_type: camera
     finding_type: exposed_iot_service
 
