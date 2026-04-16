@@ -100,6 +100,14 @@ def finalize_scan(
             lambda: _infer_asset_relationships(db, org_id, scan_id),
         )
 
+    # 9.6. Cross-finding correlation — link findings across scanners (Nessus + Nuclei)
+    # for same CVEs, generate attack paths through the knowledge graph.
+    if org_id:
+        results["finding_correlation"] = _step(
+            db, "Cross-finding correlation",
+            lambda: _correlate_findings(db, org_id),
+        )
+
     # 10. EASM enrichment
     if org_id:
         results["easm"] = _step(
@@ -118,6 +126,13 @@ def finalize_scan(
         results["control_assessment"] = _step(
             db, "Control assessment",
             lambda: _run_control_assessment(db, org_id, scan_id),
+        )
+
+    # 12.5. LLM vulnerability validation — detect false positives in critical/high Nuclei findings
+    if org_id:
+        results["llm_validation"] = _step(
+            db, "LLM vulnerability validation",
+            lambda: _llm_validate_findings(db, org_id, scan_id),
         )
 
     # 13. Asset risk score recomputation
@@ -512,3 +527,15 @@ def _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids):
         )
 
     return {"workflows_fired": fired}
+
+
+def _correlate_findings(db, org_id):
+    """Cross-finding correlation: CVE-based linking + attack path generation."""
+    from services.finding_correlator import correlate_findings
+    return correlate_findings(db, org_id)
+
+
+def _llm_validate_findings(db, org_id, scan_id):
+    """LLM vulnerability validation: detect false positives in critical/high Nuclei findings."""
+    from services.llm_vuln_validator import validate_findings
+    return validate_findings(db, org_id, scan_id=scan_id)

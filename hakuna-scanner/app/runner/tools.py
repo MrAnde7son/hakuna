@@ -354,3 +354,61 @@ class KatanaRunner(BaseRunner):
         finally:
             if self._tmpfile and os.path.exists(self._tmpfile):
                 os.unlink(self._tmpfile)
+
+
+class KiterunnerRunner(BaseRunner):
+    """Run kiterunner (kr) API endpoint brute-forcing on HTTP targets."""
+    tool_name = "kiterunner"
+    timeout = 600
+    max_retries = 0  # brute-forcing failures are not transient
+
+    def __init__(self, hosts: list[str], timeout: int | None = None):
+        self.hosts = hosts
+        if timeout is not None:
+            self.timeout = timeout
+        self._tmpfile: str | None = None
+
+    def _write_hosts(self) -> str:
+        fd, path = tempfile.mkstemp(suffix=".txt", prefix="kr_")
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(self.hosts))
+        self._tmpfile = path
+        return path
+
+    def build_command(self) -> list[str]:
+        path = self._write_hosts()
+        return [
+            "kr", "brute", path,
+            "-w", settings.kiterunner_wordlist,
+            "-oJ",
+            "--fail-status-codes", "404,501,502,503",
+            "-x", str(settings.kiterunner_concurrency),
+        ]
+
+    async def run(self, org_id: str | None = None):
+        try:
+            return await super().run(org_id)
+        finally:
+            if self._tmpfile and os.path.exists(self._tmpfile):
+                os.unlink(self._tmpfile)
+
+
+class TrufflehogRunner(BaseRunner):
+    """Run trufflehog secrets scanner on a directory of JS files."""
+    tool_name = "trufflehog"
+    timeout = 300
+    max_retries = 0
+
+    def __init__(self, scan_dir: str, only_verified: bool = False):
+        self.scan_dir = scan_dir
+        self.only_verified = only_verified
+
+    def build_command(self) -> list[str]:
+        cmd = [
+            "trufflehog", "filesystem", self.scan_dir,
+            "--json", "--no-update",
+            "--concurrency", str(settings.trufflehog_concurrency),
+        ]
+        if self.only_verified:
+            cmd.append("--only-verified")
+        return cmd

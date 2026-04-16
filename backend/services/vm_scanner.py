@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 
 VM_SCANNER_URL = os.getenv("VM_SCANNER_URL", "http://localhost:8002")
 
+# A running VM scan older than this is considered stale. Celery result TTL in
+# the VM scanner is effectively bounded by Redis lifetime, and anything older
+# than this is almost certainly orphaned (worker/broker restart, lost job ids).
+VM_SCAN_STALE_THRESHOLD_SECONDS = 3 * 3600
+
 
 async def _vm_request(method: str, path: str, **kwargs) -> Optional[dict]:
     """Make a request to the VM scanner API."""
@@ -180,11 +185,15 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
     if not job_ids:
         return meta
 
-    # Auto-fail scans that have been running for more than 3 hours (Celery results expire)
+    # Auto-fail scans that have been running longer than the stale threshold
+    # (Celery results expire, broker may have restarted, etc.)
     try:
         scan_started = datetime.fromisoformat(scan.scan_date)
-        if (datetime.utcnow() - scan_started).total_seconds() > 3 * 3600:
-            logger.warning("VM scan %d has been running >3h — marking as failed (stale)", scan_id)
+        if (datetime.utcnow() - scan_started).total_seconds() > VM_SCAN_STALE_THRESHOLD_SECONDS:
+            logger.warning(
+                "VM scan %d has been running >%dh — marking as failed (stale)",
+                scan_id, VM_SCAN_STALE_THRESHOLD_SECONDS // 3600,
+            )
             stale_meta = {**meta, "status": "failed", "error": "Scan timed out — job results may have expired"}
             scan.raw_metadata = stale_meta
             db.commit()
@@ -276,6 +285,100 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
         finalize_scan(db, scan_id=scan.id, org_id=scan.org_id)
 
     return new_meta
+
+
+def reap_stale_vm_scans(db: Session | None = None) -> dict:
+    """Mark orphaned VM scans as failed.
+
+    The staleness check inside ``refresh_vm_scan`` only fires when someone
+    polls the scan (e.g. the Scan Management page). If no user is watching,
+    a scan can sit in ``status=running`` forever after a VM scanner / Redis
+    restart wipes the job ids. This reaper runs as a periodic background job
+    to close that gap.
+
+    Returns ``{"checked": n, "reaped": m}``.
+    """
+    from core.database import SessionLocal
+
+    own_session = db is None
+    if own_session:
+        db = SessionLocal()
+
+    reaped = 0
+    checked = 0
+    try:
+        # All VM scans that may still be running. The set is small (running
+        # scans, per org), so filter status in Python to stay dialect-agnostic
+        # across SQLite/Postgres JSON access.
+        candidates = (
+            db.query(Scan)
+            .filter(Scan.source_type == "vm_scanner")
+            .all()
+        )
+
+        now = datetime.utcnow()
+        for scan in candidates:
+            meta = scan.raw_metadata or {}
+            if meta.get("status") != "running":
+                continue
+            checked += 1
+            try:
+                scan_started = datetime.fromisoformat(scan.scan_date)
+            except Exception:
+                continue
+            if (now - scan_started).total_seconds() <= VM_SCAN_STALE_THRESHOLD_SECONDS:
+                continue
+
+            logger.warning(
+                "Reaper: VM scan %d (org=%s) running >%dh — marking failed",
+                scan.id, scan.org_id, VM_SCAN_STALE_THRESHOLD_SECONDS // 3600,
+            )
+            scan.raw_metadata = {
+                **meta,
+                "status": "failed",
+                "error": "Scan timed out — job results may have expired (reaped by background job)",
+            }
+            reaped += 1
+
+        if reaped:
+            db.commit()
+    except Exception:
+        logger.exception("VM scan reaper failed")
+        db.rollback()
+    finally:
+        if own_session:
+            db.close()
+
+    return {"checked": checked, "reaped": reaped}
+
+
+def _build_nuclei_plugin_output(f: dict) -> str:
+    """Compose a human-readable plugin_output for a Nuclei finding.
+
+    Nuclei templates often use `extractors` to pull the concrete evidence
+    (e.g. the specific weak SSH algorithms, exposed headers, leaked values).
+    Surface those extracted values in plugin_output so they show up on the
+    finding's Overview tab instead of being buried in Sources raw fields.
+    """
+    lines: list[str] = []
+    matched_at = f.get("matched_at") or ""
+    if matched_at:
+        lines.append(f"Matched at: {matched_at}")
+
+    extracted = f.get("extracted_results") or []
+    if isinstance(extracted, list) and extracted:
+        lines.append("Extracted values:")
+        for val in extracted:
+            lines.append(f"  - {val}")
+    elif isinstance(extracted, str) and extracted.strip():
+        lines.append("Extracted values:")
+        lines.append(f"  - {extracted}")
+
+    matcher_name = f.get("matcher_name") or ""
+    if matcher_name and not extracted:
+        lines.append(f"Matcher: {matcher_name}")
+
+    return "\n".join(lines)
 
 
 def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> int:
@@ -397,7 +500,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> in
             description=f.get("description", ""),
             solution="",
             plugin_family="Nuclei",
-            plugin_output=f.get("matched_at", ""),
+            plugin_output=_build_nuclei_plugin_output(f),
             port=str(f.get("port", "")) if f.get("port") else None,
             first_seen=now,
             last_seen=now,

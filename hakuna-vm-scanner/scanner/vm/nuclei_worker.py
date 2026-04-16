@@ -454,6 +454,7 @@ async def _run_nuclei_adhoc_async(task, target: str, org_id: str | None) -> dict
                     "classification": info.get("classification", {}),
                     "curl_command": result.get("curl-command", ""),
                     "matcher_name": result.get("matcher-name", ""),
+                    "extracted_results": result.get("extracted-results", []),
                 })
 
                 # Persist to findings table when we have a resolved asset

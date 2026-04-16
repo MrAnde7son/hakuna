@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-ENRICHMENT_STEP_COUNT = 10  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, classify_assets, nmap_dispatch
+ENRICHMENT_STEP_COUNT = 13  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, kiterunner, trufflehog, llm_js_extraction, classify_assets, nmap_dispatch
 
 from app.celery_app import celery
 from app.config import settings
@@ -39,7 +39,7 @@ from app.ingest.favicon_fingerprint import fingerprint_assets as favicon_fingerp
 from app.ingest.js_fingerprint import fingerprint_assets
 from app.ingest.protocol_probe import probe_batch as protocol_probe_batch
 from app.runner.base import BaseRunner, batch_hosts, run_batches_parallel
-from app.runner.tools import CdncheckRunner, HttpxRunner, KatanaRunner, TlsxRunner
+from app.runner.tools import CdncheckRunner, HttpxRunner, KatanaRunner, KiterunnerRunner, TlsxRunner, TrufflehogRunner
 from app.tasks.scoping import (
     build_stale_clause,
     build_target_scope,
@@ -54,6 +54,7 @@ TLSX_BATCH_SIZE = 500
 HTTPX_BATCH_SIZE = 500
 KATANA_BATCH_SIZE = 200
 CDNCHECK_BATCH_SIZE = 2000
+KITERUNNER_BATCH_SIZE = 50  # heavier per-host than katana
 
 logger = logging.getLogger(__name__)
 
@@ -778,6 +779,218 @@ async def _do_katana(sf, org_id: str, target_scope: str | None = None) -> dict:
     }
 
 
+async def _do_kiterunner(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Run kiterunner API endpoint brute-forcing on confirmed_alive HTTP assets (skip CDN)."""
+    assets = await _get_confirmed_alive_assets(
+        sf, org_id, target_scope=target_scope, apply_stale=True,
+    )
+    if not assets:
+        logger.info("org=%s kiterunner: no fresh assets", org_id)
+        return {"bruted": 0, "skipped_fresh": True}
+
+    HTTP_PORTS = {80, 443, 8080, 8443}
+    targets: list[str] = []
+    target_asset_map: dict[str, uuid.UUID] = {}
+
+    for asset in assets:
+        if asset.get("cdn_provider") or "cdn" in (asset.get("tags") or []):
+            continue
+        ports = set(asset.get("open_ports") or [])
+        if ports & HTTP_PORTS:
+            hostname = asset["hostname"]
+            url = f"https://{hostname}" if 443 in ports else f"http://{hostname}"
+            targets.append(url)
+            target_asset_map[hostname] = asset["id"]
+
+    if not targets:
+        return {"bruted": 0}
+
+    batches = batch_hosts(targets, KITERUNNER_BATCH_SIZE)
+    per_batch_timeout = BaseRunner.timeout_for_host_count(KITERUNNER_BATCH_SIZE, per_host_seconds=10.0)
+    logger.info("org=%s kiterunner targets=%d batches=%d", org_id, len(targets), len(batches))
+
+    all_results = await run_batches_parallel(
+        build_runner=lambda batch: KiterunnerRunner(batch, timeout=per_batch_timeout),
+        batches=batches,
+        org_id=org_id,
+        concurrency=settings.enrichment_batch_concurrency,
+        stage_name="kiterunner",
+    )
+
+    from app.ingest.kiterunner import store_kiterunner_results
+    async with sf() as db:
+        store_result = await store_kiterunner_results(
+            db, uuid.UUID(org_id), all_results, target_asset_map,
+        )
+
+    return {"bruted": len(targets), **store_result}
+
+
+async def _do_trufflehog(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Scan katana-discovered JS bundles for leaked secrets using trufflehog."""
+    import aiohttp
+    import tempfile
+    import shutil
+
+    # Query JS endpoints discovered by katana
+    async with sf() as db:
+        result = await db.execute(
+            text("""
+                SELECT ae.asset_id, ae.url
+                FROM asset_endpoints ae
+                JOIN assets a ON a.id = ae.asset_id
+                WHERE a.org_id = :org_id
+                  AND (ae.url LIKE '%%.js' OR ae.url LIKE '%%.js.map' OR ae.url LIKE '%%.bundle.js')
+                ORDER BY ae.discovered_at DESC
+                LIMIT 500
+            """),
+            {"org_id": org_id},
+        )
+        js_endpoints = result.fetchall()
+
+    if not js_endpoints:
+        return {"scanned": 0, "no_js_files": True}
+
+    # Group by asset, limit per asset
+    from collections import defaultdict
+    asset_urls: dict[uuid.UUID, list[str]] = defaultdict(list)
+    for row in js_endpoints:
+        if len(asset_urls[row.asset_id]) < 10:
+            asset_urls[row.asset_id].append(row.url)
+
+    logger.info("org=%s trufflehog: %d JS files across %d assets", org_id, len(js_endpoints), len(asset_urls))
+
+    total_secrets = 0
+    total_verified = 0
+    assets_scanned = 0
+
+    for asset_id, urls in asset_urls.items():
+        tmpdir = tempfile.mkdtemp(prefix="trufflehog_")
+        try:
+            # Download JS files
+            downloaded = 0
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=30),
+                connector=aiohttp.TCPConnector(ssl=False),
+            ) as session:
+                for url in urls:
+                    try:
+                        async with session.get(url) as resp:
+                            if resp.status == 200:
+                                content = await resp.read()
+                                safe_name = url.split("/")[-1][:64].replace("..", "_")
+                                filepath = os.path.join(tmpdir, f"{downloaded}_{safe_name}")
+                                with open(filepath, "wb") as f:
+                                    f.write(content)
+                                downloaded += 1
+                    except Exception:
+                        continue
+
+            if downloaded == 0:
+                continue
+
+            # Run trufflehog on the directory
+            runner = TrufflehogRunner(
+                tmpdir, only_verified=settings.trufflehog_only_verified,
+            )
+            result = await runner.run(org_id=org_id)
+
+            if result.results:
+                from app.ingest.secrets import store_trufflehog_results
+                async with sf() as db:
+                    store_result = await store_trufflehog_results(
+                        db, uuid.UUID(org_id), asset_id, result.results,
+                    )
+                    total_secrets += store_result["secrets_found"]
+                    total_verified += store_result["verified"]
+
+            assets_scanned += 1
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return {
+        "assets_scanned": assets_scanned,
+        "secrets_found": total_secrets,
+        "verified": total_verified,
+    }
+
+
+async def _do_llm_js_extraction(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Extract hidden API endpoints from JS bundles using LLM + regex fallback."""
+    import aiohttp
+
+    if not settings.llm_js_extraction_enabled:
+        return {"extracted": 0, "disabled": True}
+
+    # Query JS endpoints discovered by katana
+    async with sf() as db:
+        result = await db.execute(
+            text("""
+                SELECT ae.asset_id, ae.url
+                FROM asset_endpoints ae
+                JOIN assets a ON a.id = ae.asset_id
+                WHERE a.org_id = :org_id
+                  AND ae.url LIKE '%%.js'
+                  AND ae.url NOT LIKE '%%.min.js.map'
+                ORDER BY ae.discovered_at DESC
+                LIMIT 200
+            """),
+            {"org_id": org_id},
+        )
+        js_endpoints = result.fetchall()
+
+    if not js_endpoints:
+        return {"extracted": 0, "no_js_files": True}
+
+    from collections import defaultdict
+    asset_urls: dict[uuid.UUID, list[str]] = defaultdict(list)
+    for row in js_endpoints:
+        if len(asset_urls[row.asset_id]) < settings.llm_js_extraction_max_files_per_asset:
+            asset_urls[row.asset_id].append(row.url)
+
+    logger.info("org=%s llm_js_extraction: %d JS files across %d assets", org_id, sum(len(v) for v in asset_urls.values()), len(asset_urls))
+
+    from app.ingest.llm_js_endpoints import extract_endpoints_llm, extract_endpoints_regex, store_llm_js_endpoints
+
+    total_endpoints = 0
+    assets_processed = 0
+
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=30),
+        connector=aiohttp.TCPConnector(ssl=False),
+    ) as session:
+        for asset_id, urls in asset_urls.items():
+            for url in urls:
+                try:
+                    async with session.get(url) as resp:
+                        if resp.status != 200:
+                            continue
+                        content = await resp.text(errors="replace")
+
+                    if len(content) < settings.llm_js_extraction_min_file_size:
+                        continue
+
+                    # Try LLM first, fall back to regex
+                    endpoints = await extract_endpoints_llm(content)
+                    if not endpoints:
+                        endpoints = extract_endpoints_regex(content)
+
+                    if endpoints:
+                        async with sf() as db:
+                            stored = await store_llm_js_endpoints(
+                                db, uuid.UUID(org_id), asset_id, endpoints,
+                            )
+                            total_endpoints += stored
+
+                except Exception as e:
+                    logger.debug("llm_js_extraction failed for %s: %s", url, e)
+                    continue
+
+            assets_processed += 1
+
+    return {"assets_processed": assets_processed, "endpoints_extracted": total_endpoints}
+
+
 async def _dispatch_nmap(sf, org_id: str, target_scope: str | None = None) -> dict:
     """Extension 4: Dispatch nmap_enrich_asset tasks for confirmed_alive assets.
 
@@ -786,12 +999,13 @@ async def _dispatch_nmap(sf, org_id: str, target_scope: str | None = None) -> di
     sub-task). We scope to the target domain but let the sub-task decide
     whether to actually re-scan.
     """
-    from app.tasks.nmap import nmap_enrich_asset
+    from app.tasks.nmap import nmap_enrich_asset, nmap_udp_enrich_asset
 
     assets = await _get_confirmed_alive_assets(
         sf, org_id, target_scope=target_scope, apply_stale=True,
     )
-    dispatched = 0
+    tcp_dispatched = 0
+    udp_dispatched = 0
 
     for asset in assets:
         if asset.get("open_ports"):
@@ -799,10 +1013,17 @@ async def _dispatch_nmap(sf, org_id: str, target_scope: str | None = None) -> di
                 args=[str(asset["id"])],
                 queue="nmap_queue",
             )
-            dispatched += 1
+            tcp_dispatched += 1
 
-    logger.info("org=%s nmap dispatched=%d assets to nmap_queue", org_id, dispatched)
-    return {"nmap_dispatched": dispatched}
+        # Dispatch UDP scan for all confirmed_alive assets
+        nmap_udp_enrich_asset.apply_async(
+            args=[str(asset["id"])],
+            queue="nmap_queue",
+        )
+        udp_dispatched += 1
+
+    logger.info("org=%s nmap dispatched: tcp=%d udp=%d to nmap_queue", org_id, tcp_dispatched, udp_dispatched)
+    return {"nmap_tcp_dispatched": tcp_dispatched, "nmap_udp_dispatched": udp_dispatched}
 
 
 # --- Individual tasks ---
@@ -843,6 +1064,21 @@ def run_katana(self, org_id: str, target_scope: str | None = None) -> dict:
     return _run_async(_do_katana(get_task_session(), org_id, target_scope=target_scope))
 
 
+@celery.task(bind=True, name="enrichment.run_kiterunner")
+def run_kiterunner(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_kiterunner(get_task_session(), org_id, target_scope=target_scope))
+
+
+@celery.task(bind=True, name="enrichment.run_trufflehog")
+def run_trufflehog(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_trufflehog(get_task_session(), org_id, target_scope=target_scope))
+
+
+@celery.task(bind=True, name="enrichment.run_llm_js_extraction")
+def run_llm_js_extraction(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_llm_js_extraction(get_task_session(), org_id, target_scope=target_scope))
+
+
 @celery.task(bind=True, name="enrichment.run_enrichment_chain",
              soft_time_limit=14400, time_limit=14700)  # 4h / 4h5min — large scans (10k+ assets)
 def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> dict:
@@ -875,11 +1111,18 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                 ("endpoint_probe", _do_endpoint_probe),
                 ("protocol_probe", _do_protocol_probe),
                 ("katana", _do_katana),
+                ("kiterunner", _do_kiterunner),
+            ],
+            [
+                # Post-katana analysis: secrets scanning + LLM JS extraction
+                # depend on katana's discovered JS endpoints from Group 2.
+                ("trufflehog", _do_trufflehog),
+                ("llm_js_extraction", _do_llm_js_extraction),
             ],
             [
                 ("classify_assets", _do_classify_assets),
             ],
-            [("nmap_dispatch", None)],  # handled separately
+            [("nmap_dispatch", None)],  # handled separately; includes UDP
         ]
         # Flat list preserved for step-count bookkeeping.
         steps = [s for group in step_groups for s in group]

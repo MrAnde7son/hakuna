@@ -400,17 +400,23 @@ function BlastRadiusFlow({ data }) {
     const busy = displayEdges.length > 20
 
     return displayEdges.map(e => {
-      const cfg = EDGE_CFG[e.type] || {}
+      // Strip React Flow's `type` field — the backend's semantic type (e.g.
+      // `internet_access`, `network_connection`) is not a registered edge
+      // renderer, so React Flow warns once per edge and falls back to default.
+      // We preserve the semantic type on `data.attackType` for filter logic.
+      const { type: attackType, ...rest } = e
+      const cfg = EDGE_CFG[attackType] || {}
       const color = cfg.color || '#475569'
-      const shortLabel = cfg.label || e.type.replace(/_/g, ' ')
+      const shortLabel = cfg.label || attackType.replace(/_/g, ' ')
       const detailLabel = e.data?.label || shortLabel
       const pk = `${e.source}→${e.target}`
       // If multiple edges between same pair, always show detail to distinguish them
       // On busy graphs, use short type name; otherwise full detail
       const displayLabel = pairCounts[pk] > 1 ? detailLabel : (busy ? shortLabel : detailLabel)
       return {
-        ...e,
-        animated: e.type === 'credential_exposure',
+        ...rest,
+        data: { ...(rest.data || {}), attackType },
+        animated: attackType === 'credential_exposure',
         style: {
           stroke: color, strokeWidth: 1.5,
           ...(cfg.dash ? { strokeDasharray: cfg.dash } : {}),
@@ -457,8 +463,8 @@ function BlastRadiusFlow({ data }) {
           ...e,
           style: {
             ...e.style,
-            opacity: e.type === legendFilter.value ? 1 : 0.06,
-            strokeWidth: e.type === legendFilter.value ? 2.5 : 1.5,
+            opacity: e.data?.attackType === legendFilter.value ? 1 : 0.06,
+            strokeWidth: e.data?.attackType === legendFilter.value ? 2.5 : 1.5,
           },
         })))
       } else {
