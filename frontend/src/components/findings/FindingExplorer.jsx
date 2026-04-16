@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon, Zap, Filter } from 'lucide-react'
 import { useScan, useIsMobile } from '../../App.jsx'
 import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign, listCustomFieldDefinitions } from '../../api.js'
+import useScanProgress from '../../hooks/useScanProgress.js'
 import {
   Card, SeverityBadge, ScoreBar, Table, PageHeader, Select, MultiSelect,
   Spinner, EmptyState, Button, EffortBadge, ResolvedOwnerBadge, Pill, TagPill, TagFilterBar, TagPicker, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable, useToast
@@ -298,6 +299,54 @@ function BulkFindingCampaignModal({ selectedFindings, scanId, onClose, onCreated
   )
 }
 
+// Slim banner shown at the top of FindingExplorer while the active scan is
+// still running. VM scans report completed_jobs/total_jobs; EASM reports
+// current_stage/stage_index/total_stages + incremental asset counts.
+// The banner tells the user "what you see below is live and still growing"
+// and disappears silently as soon as the scan flips terminal.
+function LiveScanBanner({ status, progress, total }) {
+  if (!progress) return null
+  const totalJobs = progress.total_jobs || 0
+  const completedJobs = progress.completed_jobs || 0
+  const currentStage = progress.current_stage
+  const stageIndex = progress.stage_index || 0
+  const totalStages = progress.total_stages || 0
+  const incrementalAssets = progress.incremental_asset_count || 0
+
+  let summary
+  if (totalJobs > 0) {
+    summary = `${completedJobs} / ${totalJobs} targets scanned`
+  } else if (totalStages > 0) {
+    const stageLabel = currentStage ? ` · ${currentStage}` : ''
+    const assetsSummary = incrementalAssets > 0 ? ` · ${incrementalAssets} assets discovered` : ''
+    summary = `stage ${stageIndex} / ${totalStages}${stageLabel}${assetsSummary}`
+  } else {
+    summary = 'scan in progress'
+  }
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10,
+      padding: '8px 14px', marginBottom: 12,
+      borderRadius: 8, background: 'rgba(14, 165, 233, 0.08)',
+      border: '1px solid rgba(14, 165, 233, 0.35)', color: 'var(--text-primary)',
+      fontSize: 12,
+    }}>
+      <span style={{
+        display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+        background: '#0ea5e9',
+        animation: 'pulse 1.5s ease-in-out infinite',
+      }} />
+      <span style={{ fontWeight: 600 }}>Live scan</span>
+      <span style={{ color: 'var(--text-muted)' }}>
+        {summary} · {total.toLocaleString()} finding{total === 1 ? '' : 's'} so far
+        {status === 'completed_with_errors' ? ' · some jobs failed' : ''}
+      </span>
+      <style>{`@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }`}</style>
+    </div>
+  )
+}
+
 export default function FindingExplorer() {
   const { t } = useTranslation()
   const { activeScanId } = useScan()
@@ -529,6 +578,21 @@ export default function FindingExplorer() {
   }, [activeScanId, assetId, severity, family, hasExploit, isKev, ransomwareLinked, trendingInNews, hasTtps, tacticFilter, techniqueFilter, threatGroupId, slaStatus, effortLevel, cveFilter, search, sourceFilter, productFilter, cpeFilter2, sortBy, sortOrder, page, pageSize, tagFilter, tagLogic, workflowStatus, hasException, hasTicket, ticketStatus, urlFilters.control_status, createdAfter])
 
   useEffect(() => { if (!advancedMode) load() }, [load, advancedMode])
+
+  // Live progress for the currently-selected scan. While the scan is running,
+  // this hook polls GET /api/scans/{id} every few seconds. Whenever the
+  // backend reports forward progress (a new target completes, a new batch of
+  // assets/findings arrives from EASM), refreshTick advances and we reload
+  // the visible findings — so the explorer populates in real time instead
+  // of waiting for the whole scan to finish.
+  const { progress: scanProgress, status: scanStatus, isRunning: scanIsRunning, refreshTick: scanRefreshTick } = useScanProgress(activeScanId)
+
+  useEffect(() => {
+    if (!scanIsRunning) return
+    if (advancedMode) return
+    if (scanRefreshTick === 0) return
+    load()
+  }, [scanRefreshTick, scanIsRunning, advancedMode, load])
 
   // Auto-run advanced search if restored from URL params
   const advancedRestoredRef = useRef(false)
@@ -937,6 +1001,9 @@ export default function FindingExplorer() {
   return (
     <div>
       <NewSinceBanner pageKey="findings" labelKey="notifications.newFindings" filtering={!!createdAfter} onFilter={(since) => { setCreatedAfter(since) }} />
+      {scanIsRunning && activeScanId && (
+        <LiveScanBanner status={scanStatus} progress={scanProgress} total={total} />
+      )}
       <PageHeader
         title={t('findings.title')}
         subtitle={advancedMode ? t('findings.matchedFindings', { count: total.toLocaleString() }) : t('findings.totalFindings', { count: total.toLocaleString() })}

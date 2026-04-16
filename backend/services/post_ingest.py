@@ -17,6 +17,77 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
+def finalize_batch(
+    db: Session,
+    scan_id: int,
+    org_id: Optional[int] = None,
+    new_asset_ids: Optional[list] = None,
+    new_finding_ids: Optional[list] = None,
+):
+    """Run the *incremental* subset of post-ingest for a partial batch of
+    newly-imported assets/findings inside a still-running scan.
+
+    Called from streaming ingestion paths (VM per-job import, EASM per-poll
+    import) so that partial results shown mid-scan are already tagged,
+    owned, exception-filtered, prioritized, and trigger workflows — i.e.,
+    they behave the same in the UI as rows that arrive in a completed scan.
+
+    Each step is non-fatal. Scoped to the provided IDs where the underlying
+    engine supports scoping; otherwise scoped to scan_id (still incremental
+    because newly-imported rows are the only un-processed rows in the scan).
+
+    Scan-level steps (SLA rollup, cross-scan dedup, corporate-tree sync,
+    auto VM scan trigger, scan-complete notifications) are deliberately
+    *not* run here — they belong in finalize_scan at the terminal transition.
+    """
+    results = {}
+
+    # OS & Software auto-tags (scan-scoped, idempotent on existing rows)
+    results["os_software_tags"] = _step(
+        db, "OS/Software auto-tags (batch)", lambda: _run_os_software_tags(db, scan_id)
+    )
+
+    # Auto-tag rules (user-defined, scan-scoped, idempotent)
+    results["auto_tag"] = _step(
+        db, "Auto-tag rules (batch)", lambda: _run_auto_tag_rules(db, scan_id)
+    )
+
+    # Ownership rules + inference (scan-scoped, idempotent)
+    results["ownership_rules"] = _step(
+        db, "Ownership rules (batch)", lambda: _run_ownership_rules(db, scan_id)
+    )
+    results["ownership_inference"] = _step(
+        db, "Ownership inference (batch)", lambda: _run_ownership_inference(db, scan_id)
+    )
+
+    # Global exceptions — apply to any new findings in scope
+    results["exceptions"] = _step(
+        db, "Global exceptions (batch)", lambda: _apply_global_exceptions(db, scan_id)
+    )
+
+    # Threat intel + TTP enrichment — local to findings in this scan
+    results["threat_intel"] = _step(
+        db, "Threat intel enrichment (batch)", lambda: _enrich_threat_intel(db, scan_id)
+    )
+    results["ttp"] = _step(
+        db, "TTP matching (batch)", lambda: _match_ttps(db, scan_id)
+    )
+
+    # Risk score recomputation — only affects assets in this scan
+    results["risk_scores"] = _step(
+        db, "Risk score recomputation (batch)",
+        lambda: _recompute_risk_scores(db, scan_id),
+    )
+
+    # Fire workflow triggers for the newly-imported rows
+    results["workflows"] = _step(
+        db, "Workflow triggers (batch)",
+        lambda: _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids),
+    )
+
+    return results
+
+
 def finalize_scan(
     db: Session,
     scan_id: int,
@@ -31,6 +102,11 @@ def finalize_scan(
 
     new_asset_ids / new_finding_ids: IDs of newly *inserted* records (not updates).
     When provided, event-driven workflow triggers fire at the end of the pipeline.
+
+    This runs the full set — the per-row steps (safe to re-run idempotently
+    over the whole scan) plus the scan-level rollups that only make sense
+    once all data has arrived (SLA, cross-scan dedup, auto-VM-scan trigger,
+    corporate-tree sync, etc.).
     """
     results = {}
 

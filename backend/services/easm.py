@@ -561,9 +561,23 @@ async def get_easm_scan_status(hakuna_org_id: str, scan_id: str) -> Optional[dic
     return await _hakuna_request("GET", f"/orgs/{hakuna_org_id}/scans/{scan_id}")
 
 
-async def get_easm_assets(hakuna_org_id: str, limit: int = 1000, offset: int = 0) -> Optional[list]:
-    """Fetch discovered assets from hakuna-scanner."""
-    data = await _hakuna_request("GET", f"/orgs/{hakuna_org_id}/assets", params={"limit": limit, "offset": offset})
+async def get_easm_assets(
+    hakuna_org_id: str,
+    limit: int = 1000,
+    offset: int = 0,
+    updated_since: Optional[str] = None,
+) -> Optional[list]:
+    """Fetch discovered assets from hakuna-scanner.
+
+    updated_since: ISO-8601 timestamp. When provided, only assets whose
+    last_seen is at or after this point are returned — used to drive
+    incremental mid-scan imports without re-upserting the full asset set
+    on every poll.
+    """
+    params: dict = {"limit": limit, "offset": offset}
+    if updated_since:
+        params["updated_since"] = updated_since
+    data = await _hakuna_request("GET", f"/orgs/{hakuna_org_id}/assets", params=params)
     return data if isinstance(data, list) else None
 
 
@@ -683,8 +697,12 @@ def _build_easm_data(ea: dict) -> dict:
 SEVERITY_LABELS = {0: "Info", 1: "Low", 2: "Medium", 3: "High", 4: "Critical"}
 
 
-def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -> int:
-    """Generate one finding per EASM observation. Idempotent: skips existing plugin_id+asset combos."""
+def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -> Tuple[int, list]:
+    """Generate one finding per EASM observation. Idempotent: skips existing plugin_id+asset combos.
+
+    Returns ``(count, new_finding_ids)`` so callers can drive finalize_batch
+    over the exact rows that were inserted this call.
+    """
     now = datetime.utcnow()
     hostname = ea.get("hostname", "")
 
@@ -1226,7 +1244,8 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
             scan_id=scan_id, org_id=_org_id,
         )
 
-    return len(findings_to_add)
+    new_finding_ids = [f.id for f in findings_to_add if f.id is not None]
+    return len(findings_to_add), new_finding_ids
 
 
 def _build_tls_output(hostname: str, cert: dict, days_left: Optional[int]) -> str:
@@ -1286,8 +1305,12 @@ def _create_easm_scan(db: Session, org: Organization, domain: str, scan_type: st
 
 def _import_assets_for_domain(
     db: Session, scan: Scan, easm_assets: list, domain: str,
-) -> Tuple[int, int]:
-    """Upsert assets belonging to a specific domain into a scan. Returns (upserted_count, findings_created).
+) -> Tuple[int, int, list, list]:
+    """Upsert assets belonging to a specific domain into a scan.
+
+    Returns ``(upserted_count, findings_created, new_asset_ids, new_finding_ids)``.
+    The ID lists cover only rows that were newly inserted (not updated in place)
+    so callers can feed them into finalize_batch for streaming post-ingest.
 
     Uses upsert logic (update existing asset by IP/hostname if it already exists in this scan)
     to preserve stable asset IDs. This is critical for cross-source dedup: VM scan findings
@@ -1295,6 +1318,8 @@ def _import_assets_for_domain(
     """
     created = 0
     findings_created = 0
+    new_asset_ids: list[int] = []
+    new_finding_ids: list[int] = []
     now = datetime.utcnow()
 
     # Build lookup of existing assets in this scan by IP and by hostname
@@ -1406,6 +1431,7 @@ def _import_assets_for_domain(
             )
             db.add(asset)
             db.flush()
+            new_asset_ids.append(asset.id)
         created += 1
 
         # Record per-source observation for EASM
@@ -1416,9 +1442,11 @@ def _import_assets_for_domain(
             scan_id=scan.id, org_id=scan.org_id,
         )
 
-        findings_created += _generate_easm_findings(db, scan.id, asset, ea)
+        fcount, fids = _generate_easm_findings(db, scan.id, asset, ea)
+        findings_created += fcount
+        new_finding_ids.extend(fids)
 
-    return created, findings_created
+    return created, findings_created, new_asset_ids, new_finding_ids
 
 
 async def import_easm_assets_for_domain(
@@ -1441,7 +1469,9 @@ async def import_easm_assets_for_domain(
     else:
         scan = _create_easm_scan(db, org, domain, scan_type)
 
-    created, findings_created = _import_assets_for_domain(db, scan, easm_assets, domain)
+    created, findings_created, _new_asset_ids, _new_finding_ids = _import_assets_for_domain(
+        db, scan, easm_assets, domain,
+    )
 
     # Update scan metadata
     now = datetime.utcnow()
@@ -1655,7 +1685,16 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 for a in db.query(Asset).filter(Asset.scan_id == scan.id).all()
             }
 
-            _clear_scan_data(db, scan.id)
+            # If we've been doing incremental imports mid-scan, assets are
+            # already present with stable IDs (possibly linked to VM findings
+            # or other integrations). Wiping them here would orphan those
+            # linkages and throw away finalize_batch work. The final
+            # _import_assets_for_domain pass is an upsert, so skipping the
+            # clear is safe — stale rows get their last_seen bumped; rows
+            # the scanner no longer reports simply retain their prior state.
+            did_incremental = bool(meta.get("incremental_since"))
+            if not did_incremental:
+                _clear_scan_data(db, scan.id)
 
             # Import assets now that scan is done
             easm_assets = await get_easm_assets(org.easm_org_id) or []
@@ -1674,7 +1713,9 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             except Exception:
                 logger.exception(f"CPE→CVE sync failed for '{domain}' (non-fatal)")
 
-            created, findings_created = _import_assets_for_domain(db, scan, easm_assets, domain)
+            created, findings_created, _new_asset_ids, _new_finding_ids = _import_assets_for_domain(
+                db, scan, easm_assets, domain,
+            )
 
             now = datetime.utcnow()
             scan.raw_metadata = {
@@ -1832,7 +1873,11 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
         return {"scan_id": scan.id, "status": "failed", "domain": domain, "error": error_msg}
 
     else:
-        # Still running/queued — relay progress info
+        # Still running/queued — relay progress info AND stream any assets
+        # the scanner has discovered since the last incremental import.
+        # Watermarked by ``incremental_since`` in raw_metadata so we only pull
+        # rows whose last_seen moved forward; re-upsert of unchanged rows
+        # would be wasteful on large scans.
         status = "running" if hakuna_status == "running" else hakuna_status
         progress = {}
         if run_status:
@@ -1843,10 +1888,79 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 "stage_started_at": run_status.get("stage_started_at"),
                 "stage_log": run_status.get("stage_log"),
             }
-        scan.raw_metadata = {**meta, "status": status, **progress}
+
+        # Incremental import — only when the scan is actively running. Queued
+        # scans have nothing yet; polling them is wasted work.
+        incremental_created = 0
+        incremental_findings = 0
+        new_watermark: Optional[str] = meta.get("incremental_since")
+        batch_new_asset_ids: list = []
+        batch_new_finding_ids: list = []
+        if status == "running":
+            try:
+                # Pull the watermark *before* the fetch so any assets whose
+                # last_seen lands exactly on the next tick aren't missed.
+                fetch_started = datetime.utcnow()
+                since = meta.get("incremental_since")
+                easm_assets = await get_easm_assets(
+                    org.easm_org_id, updated_since=since,
+                )
+                if easm_assets:
+                    (
+                        incremental_created,
+                        incremental_findings,
+                        batch_new_asset_ids,
+                        batch_new_finding_ids,
+                    ) = _import_assets_for_domain(db, scan, easm_assets, domain)
+                # Advance watermark to the fetch time regardless of whether
+                # rows came back — if nothing changed, we still don't want
+                # to re-scan the same range next poll.
+                new_watermark = fetch_started.isoformat()
+            except Exception:
+                logger.exception(
+                    "EASM incremental import failed for scan %d (non-fatal; "
+                    "finalize_scan will reconcile at completion)",
+                    scan.id,
+                )
+
+        scan.raw_metadata = {
+            **meta,
+            "status": status,
+            **progress,
+            "incremental_since": new_watermark,
+            "incremental_asset_count": (meta.get("incremental_asset_count", 0) or 0) + incremental_created,
+            "incremental_finding_count": (meta.get("incremental_finding_count", 0) or 0) + incremental_findings,
+        }
         scan.status = status
         db.commit()
-        return {"scan_id": scan.id, "status": status, "domain": domain, **progress}
+
+        # Run the incremental post-ingest for *only the newly inserted rows*
+        # so they're tagged, prioritized and triggered immediately.
+        if batch_new_asset_ids or batch_new_finding_ids:
+            try:
+                from services.post_ingest import finalize_batch
+                finalize_batch(
+                    db,
+                    scan_id=scan.id,
+                    org_id=scan.org_id,
+                    new_asset_ids=batch_new_asset_ids,
+                    new_finding_ids=batch_new_finding_ids,
+                )
+                db.commit()
+            except Exception:
+                logger.exception(
+                    "finalize_batch failed for EASM scan %d (non-fatal)",
+                    scan.id,
+                )
+
+        return {
+            "scan_id": scan.id,
+            "status": status,
+            "domain": domain,
+            **progress,
+            "incremental_asset_count": scan.raw_metadata.get("incremental_asset_count", 0),
+            "incremental_finding_count": scan.raw_metadata.get("incremental_finding_count", 0),
+        }
 
 
 # ── EASM enrichment for Nessus assets ──────────────────────────────

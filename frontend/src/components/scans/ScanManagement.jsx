@@ -357,7 +357,6 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
   const [assetSearch, setAssetSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [scanning, setScanning] = useState(false)
-  const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [manualTarget, setManualTarget] = useState('')
 
@@ -444,7 +443,8 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
         }
       }
       const res = await startVmScan(payload)
-      setResult(res)
+      // No confirmation UI — parent navigates to the live findings view and
+      // the panel unmounts. See handleNewVmScan in ScanManagement.
       if (onVmScan) onVmScan(res)
     } catch (err) {
       setError(err.message)
@@ -463,23 +463,10 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
     color: active ? '#ec4899' : 'var(--text-muted)',
   })
 
-  if (result) {
-    const queued = (result.assets_queued || 0) + (result.targets_queued || 0)
-    return (
-      <div>
-        <BackButton onClick={onBack} />
-        <div style={{ textAlign: 'center', padding: 20 }}>
-          <CheckCircle size={32} color="#22c55e" style={{ marginBottom: 10 }} />
-          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Scan Queued</div>
-          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
-            {queued} target{queued !== 1 ? 's' : ''} queued for VM scanning.
-            Results will appear in findings as they complete.
-          </div>
-          <Button onClick={onClose} style={{ background: '#ec4899' }}>Done</Button>
-        </div>
-      </div>
-    )
-  }
+  // Once the scan is queued, the parent handler navigates to the live
+  // findings view and closes this panel — we don't block the user on a
+  // confirmation modal. Findings stream in per-target, so showing the
+  // explorer filtered by scan_id is where they want to be anyway.
 
   return (
     <div>
@@ -993,6 +980,25 @@ function VmScanProgress({ metadata }) {
   const pct = total_jobs > 0 ? Math.round((completed_jobs / total_jobs) * 100) : 0
   const remaining = total_jobs - completed_jobs
 
+  // Aggregate per-target states so the compact progress strip shows where the
+  // scan actually is without requiring the user to expand the detail table.
+  // The backend writes job_statuses[job_id] = { status: SUCCESS/FAILURE/PENDING }
+  // so we just bucket them. Counts surface as coloured chips; a scanner that
+  // has 2 targets done, 1 failed, 1 still running tells a very different UX
+  // story than just "1/4 done".
+  const jobStatuses = metadata.job_statuses || {}
+  const buckets = { ok: 0, failed: 0, pending: 0 }
+  for (const info of Object.values(jobStatuses)) {
+    if (!info) continue
+    if (info.status === 'SUCCESS') buckets.ok += 1
+    else if (info.status === 'FAILURE') buckets.failed += 1
+    else buckets.pending += 1
+  }
+  // Targets the scanner hasn't even acked yet don't show in job_statuses —
+  // derive pending from (total - known) so the totals always add up.
+  const unknown = Math.max(0, total_jobs - (buckets.ok + buckets.failed + buckets.pending))
+  buckets.pending += unknown
+
   return (
     <div style={{ padding: '0 16px 12px' }}>
       <div style={{
@@ -1003,9 +1009,19 @@ function VmScanProgress({ metadata }) {
           width: `${pct}%`, transition: 'width 0.5s ease',
         }} />
       </div>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between' }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
         <span>{completed_jobs}/{total_jobs} targets scanned{findings_emitted > 0 ? ` — ${findings_emitted} findings` : ''}</span>
-        <span>{remaining > 0 ? 'Scanning...' : 'Finishing...'}</span>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {buckets.ok > 0 && (
+            <span style={{ color: '#22c55e', fontWeight: 600 }}>{buckets.ok} ok</span>
+          )}
+          {buckets.failed > 0 && (
+            <span style={{ color: '#dc2626', fontWeight: 600 }}>{buckets.failed} failed</span>
+          )}
+          {buckets.pending > 0 && (
+            <span>{buckets.pending} {remaining > 0 ? 'pending' : 'finishing'}</span>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -1634,7 +1650,18 @@ export default function ScanManagement() {
       .catch(() => setEasmStatus(null))
   }, [])
 
-  // Poll running EASM / VM scans — refresh their status
+  // Poll running EASM / VM scans — refresh their status.
+  //
+  // Cadence:
+  //   - Running scan(s) → 3s. Both pipelines now import incrementally (VM
+  //     per Celery job, EASM via the incremental_since watermark), so at 3s
+  //     a new target / new enrichment stage surfaces quickly without
+  //     flooding the scanner services.
+  //   - Queued scan(s) with no running scan → 10s. Queued scans don't
+  //     produce data yet, so fast polling buys nothing.
+  //   - Scan running > 10 min → 8s. Long-running scans are usually
+  //     bottlenecked on external scanning, not on our backend; avoids
+  //     pointless load for a user leaving the tab open overnight.
   useEffect(() => {
     const runningEasm = scans.filter(s =>
       s.source_type === 'easm' &&
@@ -1646,6 +1673,26 @@ export default function ScanManagement() {
       s.raw_metadata?.status === 'running'
     )
     if (runningEasm.length === 0 && runningVm.length === 0) return
+
+    const anyActivelyRunning = scans.some(s =>
+      (s.source_type === 'easm' || s.source_type === 'vm_scanner') &&
+      s.raw_metadata?.status === 'running'
+    )
+    // Age of the oldest running scan — used to back off on long jobs.
+    const now = Date.now()
+    const oldestRunningAgeMs = scans.reduce((max, s) => {
+      const isRunning = s.raw_metadata?.status === 'running'
+      if (!isRunning || !s.scan_date) return max
+      // Backend stores UTC without 'Z' — align with formatAge() below.
+      const d = new Date(s.scan_date.endsWith('Z') ? s.scan_date : s.scan_date + 'Z')
+      return Math.max(max, now - d.getTime())
+    }, 0)
+
+    const pollMs = !anyActivelyRunning
+      ? 10000
+      : oldestRunningAgeMs > 10 * 60 * 1000
+        ? 8000
+        : 3000
 
     let polling = false
     const interval = setInterval(async () => {
@@ -1662,7 +1709,7 @@ export default function ScanManagement() {
       } finally {
         polling = false
       }
-    }, 10000)
+    }, pollMs)
     return () => clearInterval(interval)
   }, [scans, refreshScans])
 
@@ -1734,9 +1781,25 @@ export default function ScanManagement() {
     await refreshScans()
     if (result?.scan_id) {
       setActiveScanId(result.scan_id)
+      // Jump to the live findings view so users watch results stream in
+      // instead of staring at the scan-management list.
+      navigate(`/findings?scan_id=${result.scan_id}`)
     }
+    setShowNewScan(false)
     // Refresh EASM status in case it changed
     getEasmStatus().then(setEasmStatus).catch(() => {})
+  }
+
+  // After a VM scan is queued, drop straight into the live findings view
+  // filtered by the new scan_id. Findings arrive per completed job (see
+  // refresh_vm_scan), so the explorer populates incrementally as they land.
+  const handleNewVmScan = async (res) => {
+    await refreshScans()
+    if (res?.scan_id) {
+      setActiveScanId(res.scan_id)
+      navigate(`/findings?scan_id=${res.scan_id}`)
+    }
+    setShowNewScan(false)
   }
 
   const handleRescanDomain = async (scanId) => {
@@ -1992,7 +2055,7 @@ export default function ScanManagement() {
           easmEnabled={easmStatus?.enabled}
           onScanDomain={handleScanDomain}
           onSetupEasm={handleSetupEasm}
-          onVmScan={() => refreshScans()}
+          onVmScan={handleNewVmScan}
         />
       )}
     </div>

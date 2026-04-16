@@ -158,15 +158,62 @@ def get_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[List
         raise HTTPException(404, "Scan not found")
     finding_count = db.query(func.count(Finding.id)).filter(Finding.scan_id == scan_id).scalar()
     asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == scan_id).scalar()
+
+    # Surface streaming-progress state so the UI can render per-target / per-stage
+    # detail while the scan is still running, instead of just a spinner on the
+    # aggregate count. Shape varies by source_type:
+    #   vm_scanner: job_statuses keyed by job_id → {target, status, findings_count, ...}
+    #   easm: current_stage / stage_index / total_stages / stage_log from the scanner
+    # Everything lives in raw_metadata already; we just project a stable envelope.
+    meta = scan.raw_metadata or {}
+    progress: dict = {}
+    if scan.source_type == "vm_scanner":
+        job_statuses = meta.get("job_statuses") or {}
+        # List form is friendlier to render, and the scanner doesn't rely on
+        # job_id as a stable key beyond the raw_metadata bookkeeping.
+        targets = [
+            {
+                "job_id": job_id,
+                "target": (info or {}).get("target"),
+                "status": (info or {}).get("status"),
+                "findings_count": (info or {}).get("findings_count"),
+                "duration_seconds": (info or {}).get("duration_seconds"),
+                "error": (info or {}).get("error"),
+            }
+            for job_id, info in job_statuses.items()
+        ]
+        progress = {
+            "completed_jobs": meta.get("completed_jobs", 0),
+            "total_jobs": meta.get("total_jobs", 0),
+            "targets": targets,
+        }
+    elif scan.source_type == "easm":
+        progress = {
+            "current_stage": meta.get("current_stage"),
+            "stage_index": meta.get("stage_index", 0),
+            "total_stages": meta.get("total_stages", 0),
+            "stage_started_at": meta.get("stage_started_at"),
+            "stage_log": meta.get("stage_log") or [],
+            "incremental_asset_count": meta.get("incremental_asset_count", 0),
+            "incremental_finding_count": meta.get("incremental_finding_count", 0),
+        }
+
+    # Prefer the scanner-owned status (raw_metadata.status) when present — it
+    # tracks the live streaming lifecycle ("running"/"completed_with_errors"/…)
+    # more granularly than the terminal Scan.status column.
+    status = meta.get("status") or scan.status or "completed"
+
     return {
         "id": scan.id,
-        "status": scan.status or "completed",
+        "status": status,
         "scan_name": scan.scan_name,
         "filename": scan.filename,
         "scan_date": scan.scan_date,
         "source_type": scan.source_type or "nessus",
         "asset_count": asset_count,
         "finding_count": finding_count,
+        "progress": progress,
+        "error": meta.get("error"),
     }
 
 
