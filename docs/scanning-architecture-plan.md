@@ -221,7 +221,7 @@ Uses 6 weighted signals: severity (0.35), exploitability (0.25), intel (0.15), c
 
 | # | Item | Status | Files |
 |---|------|--------|-------|
-| 12 | **Event-driven enrichment triggers** — scanner event bridge polls `/events` every 60s; new workflow triggers (`on_tech_changed`, `on_port_changed`, `on_ip_changed`, `on_cert_expiring`, `on_asset_gone`) and actions (`rerun_nuclei_for_asset`, `rerun_enrichment_for_asset`) | **Done** | `backend/services/scanner_event_bridge.py` (new), `scanner_event_actions.py` (new), `workflow_engine.py`, `workflow_catalog.py`, `migrations/037_scanner_event_cursor.py` |
+| 12 | **Event-driven enrichment triggers** — scanner event bridge polls `/events` every 60s; new workflow triggers (`on_tech_changed`, `on_port_changed`, `on_ip_changed`, `on_cert_expiring`, `on_asset_gone`) and action `rerun_nuclei_for_asset` (per-asset enrichment rerun deferred until the scanner exposes a targeted endpoint) | **Done** | `backend/services/scanner_event_bridge.py` (new), `scanner_event_actions.py` (new), `workflow_engine.py`, `workflow_catalog.py`, `migrations/037_scanner_event_cursor.py` |
 | 13 | **Scanner registry abstraction** — `ScannerSpec` declarative registry; DAG built from registry when `settings.use_scanner_registry=True`, hardcoded literal remains the safe default | **Done** | `hakuna-scanner/app/runner/registry.py` (new), `adapters.py` (new), `app/tasks/enrichment.py`, `app/config.py` |
 
 ### Phase 4: Advanced Graph & Validation (Done, minus #19)
