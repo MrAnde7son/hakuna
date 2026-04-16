@@ -748,6 +748,105 @@ function CopilotButton({ onClick }) {
 }
 
 // ─────────────────────────────────────────────────────────
+// Mobile bottom tab bar — Copilot as the primary action
+// ─────────────────────────────────────────────────────────
+
+export const MOBILE_TAB_BAR_HEIGHT = 60
+
+function MobileBottomTabs({ onOpenCopilot, copilotOpen }) {
+  const { t } = useTranslation()
+  const { hasPermission } = useAuth()
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  const tabs = [
+    { path: '/', label: t('nav.reports'), icon: BarChart3, permission: 'page_reports', exact: true },
+    { path: '/findings', label: t('nav.findings'), icon: Bug, permission: 'page_findings' },
+    { key: 'copilot', label: 'Copilot', icon: Bot, primary: true },
+    { path: '/assets', label: t('nav.assets'), icon: Server, permission: 'page_assets' },
+    { path: '/campaigns', label: t('nav.campaigns'), icon: Target, permission: 'page_campaigns' },
+  ].filter(tab => !tab.permission || hasPermission(tab.permission) || tab.key === 'copilot')
+
+  const isActive = (tab) => {
+    if (tab.key === 'copilot') return copilotOpen
+    if (tab.exact) return location.pathname === tab.path
+    return location.pathname === tab.path || location.pathname.startsWith(`${tab.path}/`)
+  }
+
+  return (
+    <nav
+      aria-label="Primary"
+      style={{
+        position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 95,
+        background: 'var(--bg)',
+        borderTop: '1px solid var(--border)',
+        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+        boxShadow: '0 -1px 8px rgba(0,0,0,0.04)',
+      }}
+    >
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: `repeat(${tabs.length}, 1fr)`,
+        height: MOBILE_TAB_BAR_HEIGHT,
+      }}>
+        {tabs.map(tab => {
+          const Icon = tab.icon
+          const active = isActive(tab)
+          const primary = tab.primary
+          return (
+            <button
+              key={tab.key || tab.path}
+              type="button"
+              onClick={() => {
+                if (tab.key === 'copilot') onOpenCopilot()
+                else navigate(tab.path)
+              }}
+              aria-label={tab.label}
+              aria-current={active ? 'page' : undefined}
+              style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center',
+                justifyContent: 'center', gap: 2,
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                color: active ? 'var(--accent)' : 'var(--text-muted)',
+                padding: 0, minWidth: 0,
+                position: 'relative',
+              }}
+            >
+              {primary ? (
+                <span style={{
+                  width: 44, height: 44, borderRadius: 14,
+                  background: 'var(--accent)', color: '#fff',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  marginTop: -16,
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.18)',
+                  border: '3px solid var(--bg)',
+                }}>
+                  <Icon size={22} />
+                </span>
+              ) : (
+                <Icon size={20} strokeWidth={active ? 2.4 : 2} />
+              )}
+              <span style={{
+                fontSize: 10,
+                fontWeight: active ? 700 : 500,
+                letterSpacing: 0.1,
+                lineHeight: 1,
+                maxWidth: '100%',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}>
+                {tab.label}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    </nav>
+  )
+}
+
+// ─────────────────────────────────────────────────────────
 // Command Palette (Cmd+K)
 // ─────────────────────────────────────────────────────────
 
@@ -1101,6 +1200,7 @@ function AppShell() {
             style={{
               flex: 1,
               padding: isMobile ? 12 : 18,
+              paddingBottom: isMobile ? `calc(${MOBILE_TAB_BAR_HEIGHT}px + env(safe-area-inset-bottom, 0px) + 12px)` : 18,
               background: 'var(--bg-muted)',
               overflowY: 'auto',
               overflowX: 'hidden',
@@ -1142,13 +1242,28 @@ function AppShell() {
             </ErrorBoundary>
           </main>
         </div>
-        <NotificationBell />
-        <HelpButton />
+        <NotificationBell
+          bottomOffset={isMobile ? MOBILE_TAB_BAR_HEIGHT + 16 : 20}
+          rightOffset={isMobile ? 16 : 120}
+        />
+        {!isMobile && <HelpButton />}
         <CommandPalette open={cmdkOpen} onClose={() => setCmdkOpen(false)} />
-        <CopilotButton onClick={() => setCopilotOpen(true)} />
+        {!isMobile && <CopilotButton onClick={() => setCopilotOpen(true)} />}
+        {isMobile && (
+          <MobileBottomTabs
+            onOpenCopilot={() => setCopilotOpen(true)}
+            copilotOpen={copilotOpen}
+          />
+        )}
         {(
           <Suspense fallback={null}>
-            <CopilotPanel open={copilotOpen} onClose={() => setCopilotOpen(false)} currentPath={location.pathname} currentSearch={location.search} />
+            <CopilotPanel
+              open={copilotOpen}
+              onClose={() => setCopilotOpen(false)}
+              currentPath={location.pathname}
+              currentSearch={location.search}
+              fullScreen={isMobile}
+            />
           </Suspense>
         )}
       </div>
