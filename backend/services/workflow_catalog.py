@@ -127,6 +127,64 @@ NODE_CATALOG = {
                                      "default": False},
             },
         },
+        # ── Scanner-driven triggers (fired by services.scanner_event_bridge) ──
+        {
+            "subtype": "on_tech_changed",
+            "label": "On Tech Stack Change",
+            "description": "Triggers when an asset's detected tech stack changes (e.g., Apache 2.4.41 → 2.4.62). Useful for auto-rescanning on version bumps.",
+            "icon": "Layers",
+            "config_schema": {
+                "tech_filter": {"type": "tags",
+                                "label": "Watched Tech (empty = any change)",
+                                "description": "List of technology names to watch for (e.g. 'apache', 'nginx', 'wordpress'). Matches case-insensitively.",
+                                "default": []},
+            },
+        },
+        {
+            "subtype": "on_port_changed",
+            "label": "On Port Change",
+            "description": "Triggers when an asset's open port set changes (new port opens or a port closes).",
+            "icon": "Network",
+            "config_schema": {
+                "port_filter": {"type": "tags",
+                                "label": "Watched Ports (empty = any change)",
+                                "description": "List of port numbers to watch. e.g. '22,3389,5432'.",
+                                "default": []},
+                "direction": {"type": "enum", "label": "Direction",
+                              "options": [
+                                  {"value": "any", "label": "Added or removed"},
+                                  {"value": "added", "label": "Only newly opened"},
+                                  {"value": "removed", "label": "Only newly closed"},
+                              ],
+                              "default": "any"},
+            },
+        },
+        {
+            "subtype": "on_ip_changed",
+            "label": "On IP Change",
+            "description": "Triggers when an asset's IP address changes (possible infra migration or takeover).",
+            "icon": "Globe",
+            "config_schema": {},
+        },
+        {
+            "subtype": "on_cert_expiring",
+            "label": "On Cert Expiring",
+            "description": "Triggers when a TLS certificate is approaching expiry.",
+            "icon": "ShieldAlert",
+            "config_schema": {
+                "max_days_remaining": {"type": "number",
+                                       "label": "Max Days Remaining",
+                                       "description": "Fire only if days-until-expiry is at or below this value. Leave empty to fire on all expiring-cert events.",
+                                       "default": 30},
+            },
+        },
+        {
+            "subtype": "on_asset_gone",
+            "label": "On Asset Gone",
+            "description": "Triggers when an asset is no longer seen after N recent scan cycles.",
+            "icon": "EyeOff",
+            "config_schema": {},
+        },
     ],
     "filters": [
         {
@@ -400,6 +458,26 @@ NODE_CATALOG = {
                 "target_scope": {"type": "enum", "label": "Target",
                                  "options": ["all_matched_assets", "per_asset"]},
                 "credentials": {"type": "string", "label": "Credential Reference"},
+            },
+        },
+        # ── Event-driven scanner actions (paired with on_tech_changed / on_port_changed) ──
+        {
+            "subtype": "rerun_nuclei_for_asset",
+            "label": "Rerun VM Scan",
+            "description": "Trigger a VM scan on the assets from the incoming workflow items. Typically chained after on_tech_changed.",
+            "icon": "ScanLine",
+            "config_schema": {
+                "max_targets": {"type": "number", "label": "Max Targets Per Run", "default": 10},
+                "use_hostname": {"type": "boolean", "label": "Prefer Hostname (vs IP)", "default": True},
+            },
+        },
+        {
+            "subtype": "rerun_enrichment_for_asset",
+            "label": "Rerun Enrichment (Placeholder)",
+            "description": "Request targeted re-enrichment for the assets in workflow items. Scanner-side endpoint not yet wired — currently logs intent only.",
+            "icon": "RefreshCw",
+            "config_schema": {
+                "stages": {"type": "tags", "label": "Stages (empty = all)", "default": []},
             },
         },
     ],

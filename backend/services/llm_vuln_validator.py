@@ -215,62 +215,14 @@ def _call_llm(
     user_prompt: str,
     max_tokens: int = 2048,
 ) -> str:
-    """Multi-provider LLM call — same pattern as scan_planner._call_llm.
+    """Multi-provider LLM call — delegates to the shared services.llm_provider.
 
-    Tries providers in order based on available API keys:
-    1. Anthropic (ANTHROPIC_API_KEY)
-    2. OpenAI (OPENAI_API_KEY)
+    Reads LLM_VALIDATION_MODEL env var to override the default per provider.
     """
-    import httpx
-
-    # Try Anthropic first
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if api_key:
-        model = os.environ.get("LLM_VALIDATION_MODEL", "claude-haiku-4-5-20251001")
-        with httpx.Client() as client:
-            resp = client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "max_tokens": max_tokens,
-                    "system": system_prompt,
-                    "messages": [{"role": "user", "content": user_prompt}],
-                },
-                timeout=60.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["content"][0]["text"]
-
-    # Fall back to OpenAI
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if api_key:
-        model = os.environ.get("LLM_VALIDATION_MODEL", "gpt-4o-mini")
-        with httpx.Client() as client:
-            resp = client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "max_tokens": max_tokens,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                },
-                timeout=60.0,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
-
-    logger.debug("No LLM API key configured (ANTHROPIC_API_KEY or OPENAI_API_KEY)")
-    return ""
+    from services.llm_provider import call_llm
+    return call_llm(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        max_tokens=max_tokens,
+        model_env="LLM_VALIDATION_MODEL",
+    )

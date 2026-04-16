@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from models.models import Asset, IngestEndpoint, SIEMEvent
 from services.event_parsers import parse_events
+from services.mapping_inference import apply_extractors
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,14 @@ def _ingest_parsed_events(parsed: list[dict], org_id: int, ep: IngestEndpoint, d
     created = 0
     duplicates = 0
     errors = []
+
+    # Apply LLM-inferred field extractors (if the endpoint has them) before
+    # hashing/persisting. Only fills canonical fields left empty by the format
+    # parser, so rules that filter on event_type/outcome/user_name/… match
+    # events from sources whose native format doesn't carry those fields.
+    if ep.field_extractors:
+        for event in parsed:
+            apply_extractors(event, ep.field_extractors)
 
     # Compute hashes
     hash_map = {}

@@ -217,21 +217,21 @@ Uses 6 weighted signals: severity (0.35), exploitability (0.25), intel (0.15), c
 | 11 | **LLM vulnerability validation** — post-Nuclei FP detection for critical/high findings | **Done** | `backend/services/llm_vuln_validator.py` (new), `backend/services/post_ingest.py`, `backend/migrations/035_llm_validation.py` |
 | 15 | **Cross-finding correlation** — CVE-based cross-scanner linking + attack path generation | **Done** | `backend/services/finding_correlator.py` (new), `backend/routes/correlation_routes.py` (new), `backend/migrations/036_attack_paths.py`, `backend/models/models.py` |
 
-### Phase 3: Event-Driven Architecture (4-6 weeks)
+### Phase 3: Event-Driven Architecture (Done)
 
-| # | Item | Priority | Effort | Dependencies |
-|---|------|----------|--------|-------------|
-| 12 | Event-driven enrichment triggers — tech_changed → re-route Nuclei, new_asset → immediate scan | High | 2 weeks | Workflow engine |
-| 13 | Scanner registry abstraction — pluggable scanner interface with capability declaration | Medium | 2 weeks | Existing runners |
+| # | Item | Status | Files |
+|---|------|--------|-------|
+| 12 | **Event-driven enrichment triggers** — scanner event bridge polls `/events` every 60s; new workflow triggers (`on_tech_changed`, `on_port_changed`, `on_ip_changed`, `on_cert_expiring`, `on_asset_gone`) and actions (`rerun_nuclei_for_asset`, `rerun_enrichment_for_asset`) | **Done** | `backend/services/scanner_event_bridge.py` (new), `scanner_event_actions.py` (new), `workflow_engine.py`, `workflow_catalog.py`, `migrations/037_scanner_event_cursor.py` |
+| 13 | **Scanner registry abstraction** — `ScannerSpec` declarative registry; DAG built from registry when `settings.use_scanner_registry=True`, hardcoded literal remains the safe default | **Done** | `hakuna-scanner/app/runner/registry.py` (new), `adapters.py` (new), `app/tasks/enrichment.py`, `app/config.py` |
 
-### Phase 4: Advanced Graph & Validation (6-10 weeks)
+### Phase 4: Advanced Graph & Validation (Done, minus #19)
 
-| # | Item | Priority | Effort | Dependencies |
-|---|------|----------|--------|-------------|
-| 18 | Validation agent framework — autonomous agents that safely validate exploitability | High | 6-8 weeks | Agent system, graph |
-| 19 | Cloud posture integration (CloudFox/ScoutSuite) | Medium | 4-6 weeks | Cloud asset types |
-| 20 | Continuous CT monitoring — real-time cert transparency stream processing | Medium | 3-4 weeks | crtsh integration |
-| 21 | Attack chain construction — LLM analysis combining findings + graph into exploit paths | High | 6-8 weeks | Knowledge graph, agent system |
+| # | Item | Status | Files |
+|---|------|--------|-------|
+| 18 | **Validation agent framework** — 4 safe probe tools (`probe_url_status`, `probe_tcp_connect`, `fetch_response_headers`, `check_response_body`) + HITL-gated `update_finding_validation`. Scheduler auto-dispatches runs for #11's `needs_review` findings | **Done** | `backend/agents/agent_tools.py`, `agent_prompts.py`, `tool_categories.py`, `backend/services/validation_agent_scheduler.py` (new), `backend/routes/validation_routes.py` (new) |
+| 19 | Cloud posture integration (CloudFox/ScoutSuite) | **Deferred** | — |
+| 20 | **Continuous CT monitoring** — CertStream websocket consumer; matches against active target_domains and upserts new hostnames as `new_asset` events (feeds #12) | **Done** | `hakuna-scanner/app/ingest/certstream.py` (new), `app/tasks/certstream_worker.py` (new), `app/tasks/scheduler.py`, `app/config.py` |
+| 21 | **Attack chain narrative + mitigation ranking** — extends finding correlator with LLM-generated attack narratives and mitigations ranked by chains-broken | **Done** | `backend/services/attack_chain_narrator.py` (new), `llm_provider.py` (new shared helper), `finding_correlator.py`, `routes/correlation_routes.py`, `migrations/038_attack_path_narrative.py` |
 
 ---
 

@@ -599,6 +599,9 @@ CONFIRMATION_REQUIRED_TOOLS = {
     "update_finding_status", "create_exception",
     "call_integration_fetch", "call_integration_push",
     "build_report", "create_agent", "create_agent_schedule",
+    # Validation-agent verdict writes — safe-probed context flows into the
+    # finding's ctx_* fields and llm_validation JSON; requires human sign-off.
+    "update_finding_validation",
 }
 
 # Tools gated by HITL approval (superset of confirmation-required tools)
