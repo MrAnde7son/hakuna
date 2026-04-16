@@ -82,4 +82,13 @@ celery.conf.beat_schedule = {
         "task": "recovery.recover_orphaned_scans",
         "schedule": 300.0,  # every 5 minutes
     },
+    # Keep the CertStream consumer alive. The task runs forever internally;
+    # this re-enqueue is a belt-and-suspenders recovery if the worker process
+    # crashes and the consumer task dies with it. Celery dedup ensures only
+    # one instance is enqueued at a time (`certstream_queue` concurrency=1).
+    "certstream-keepalive-5min": {
+        "task": "certstream.run_consumer",
+        "schedule": 300.0,
+        "options": {"queue": "certstream_queue"},
+    },
 }

@@ -110,6 +110,7 @@ from routes.siem_report_routes import router as siem_report_router
 from routes.graph_routes import router as graph_router
 from routes.scan_planner_routes import router as scan_planner_router
 from routes.correlation_routes import router as correlation_router
+from routes.validation_routes import router as validation_router
 from services.blast_radius import resolve_dc_asset_ids as _resolve_dc_asset_ids
 
 logging.basicConfig(level=logging.INFO)
@@ -335,6 +336,7 @@ app.include_router(siem_report_router)
 app.include_router(graph_router)
 app.include_router(scan_planner_router)
 app.include_router(correlation_router)
+app.include_router(validation_router)
 
 
 INTEL_PATH = Path(__file__).parent / "data" / "intel.json"
@@ -409,6 +411,24 @@ def _deferred_startup():
         start_detection_scheduler()
     except Exception as exc:
         logger.error("Detection engine scheduler failed to start: %s", exc)
+    # Register scanner-event workflow actions and start the event bridge.
+    # The bridge polls hakuna-scanner /events every 60s, maps scanner events
+    # (tech_change, port_change, cert_expiring, etc.) to workflow triggers.
+    try:
+        from services.scanner_event_actions import register as register_scanner_actions
+        from services.scanner_event_bridge import start_event_bridge_scheduler
+        register_scanner_actions()
+        start_event_bridge_scheduler()
+    except Exception as exc:
+        logger.error("Scanner event bridge failed to start: %s", exc)
+    # Start validation agent scheduler (every 10 min). Picks up findings
+    # marked `needs_review` by the static LLM validator (#11) and dispatches
+    # validator-agent runs to safely probe and confirm exploitability.
+    try:
+        from services.validation_agent_scheduler import start_validation_scheduler
+        start_validation_scheduler()
+    except Exception as exc:
+        logger.error("Validation agent scheduler failed to start: %s", exc)
     # Start SIEM lake maintenance + hot retention scheduler
     try:
         from services.lake_maintenance import start_maintenance_scheduler

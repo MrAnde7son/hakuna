@@ -25,10 +25,11 @@ def correlate_findings(db: Session, org_id: int, scan_id: int | None = None) -> 
 
     1. Groups findings by CVE across sources → updates source_systems, adds corroboration
     2. Generates attack paths through the knowledge graph
+    3. Narrates high/critical attack paths via LLM + ranks mitigations
 
     Returns stats dict.
     """
-    stats = {"corroborated": 0, "attack_paths_created": 0}
+    stats = {"corroborated": 0, "attack_paths_created": 0, "narrated": 0}
 
     # ── Step 1: CVE-based cross-source correlation ──
     corr = _correlate_by_cve(db, org_id)
@@ -37,6 +38,14 @@ def correlate_findings(db: Session, org_id: int, scan_id: int | None = None) -> 
     # ── Step 2: Attack path generation ──
     paths = _generate_attack_paths(db, org_id)
     stats["attack_paths_created"] = paths
+
+    # ── Step 3: LLM narration of high/critical chains (best-effort) ──
+    try:
+        from services.attack_chain_narrator import narrate_attack_paths
+        narration = narrate_attack_paths(db, org_id, min_severity="High", max_paths=20)
+        stats["narrated"] = narration.get("processed", 0)
+    except Exception as e:
+        logger.warning("Attack chain narration failed for org %d: %s", org_id, e)
 
     return stats
 

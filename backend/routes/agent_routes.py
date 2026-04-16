@@ -1114,6 +1114,31 @@ AGENT_TEMPLATES = [
         "guardrails": {"max_steps": 15, "read_only": True},
         "suggested_input": "Analyze recent SIEM events and suggest new detection rules for suspicious patterns.",
     },
+    {
+        "id": "validator_agent",
+        "name": "Vulnerability Validator",
+        "description": "Autonomous validator for high/critical Nuclei findings. Runs safe probes to confirm or refute exploitability, then requests a human approval before writing the verdict.",
+        "icon": "shield-check",
+        "system_prompt": ENHANCED_PROMPTS["validator_agent"],
+        "tools": [
+            # Probes
+            "probe_url_status", "probe_tcp_connect",
+            "fetch_response_headers", "check_response_body",
+            # Verdict writer (HITL-gated)
+            "update_finding_validation",
+            # Read-only context
+            "get_finding_detail", "get_asset_profile",
+            "fetch_url", "search_web",
+            # Memory + clarification
+            "read_scratchpad", "write_scratchpad", "request_clarification",
+        ],
+        "guardrails": {
+            "max_steps": 10,
+            "read_only": False,  # must write the verdict
+            "autonomy_level": "conservative",  # HITL required on update_finding_validation
+        },
+        "suggested_input": "Validate finding {finding_id} — determine whether it's truly exploitable and record your verdict.",
+    },
 ]
 
 

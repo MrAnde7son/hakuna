@@ -59,6 +59,7 @@ async def list_attack_paths(
     result = db.execute(
         text(f"""
             SELECT ap.id, ap.title, ap.severity, ap.steps, ap.chain_length, ap.created_at,
+                   ap.narrative, ap.recommended_mitigations,
                    entry_a.hostname as entry_hostname, target_a.hostname as target_hostname
             FROM attack_paths ap
             LEFT JOIN assets entry_a ON entry_a.id = ap.entry_asset_id
@@ -81,6 +82,8 @@ async def list_attack_paths(
             "chain_length": row.chain_length,
             "entry_hostname": row.entry_hostname,
             "target_hostname": row.target_hostname,
+            "narrative": row.narrative,
+            "recommended_mitigations": row.recommended_mitigations,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         }
         for row in result.fetchall()
@@ -125,6 +128,8 @@ async def get_attack_path(
         "target_asset_id": row.target_asset_id,
         "entry_hostname": row.entry_hostname,
         "target_hostname": row.target_hostname,
+        "narrative": row.narrative,
+        "recommended_mitigations": row.recommended_mitigations,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
