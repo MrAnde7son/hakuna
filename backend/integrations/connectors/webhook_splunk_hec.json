@@ -28,5 +28,5 @@
     ],
     "doc_url": "https://docs.splunk.com/Documentation/Splunk/latest/Data/UsetheHTTPEventCollector"
   },
-  "sample_payload": "{\"time\":1710505425,\"host\":\"web-prod-01\",\"source\":\"syslog\",\"sourcetype\":\"linux:auth\",\"event\":{\"message\":\"Failed password for root from 192.168.1.100 port 22 ssh2\",\"severity\":\"high\",\"action\":\"blocked\",\"user\":\"root\",\"src_ip\":\"192.168.1.100\"}}"
+  "sample_payload": "{\"host\":\"web-prod-01\",\"source\":\"syslog\",\"sourcetype\":\"linux:auth\",\"event\":{\"message\":\"Failed password for root from 192.168.1.100 port 22 ssh2\",\"severity\":\"high\",\"action\":\"blocked\",\"user\":\"root\",\"src_ip\":\"192.168.1.100\"}}"
 }

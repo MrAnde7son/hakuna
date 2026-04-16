@@ -314,18 +314,20 @@ function IntegrationCard({ integration, onRun, onDelete, onToggle, onDetail, onE
         )}
 
         <div style={{ marginTop: 'auto', display: 'flex', gap: 6, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
-          <button
-            onClick={handleRun}
-            disabled={running}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 4,
-              background: 'var(--accent)', color: '#fff', border: 'none',
-              borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 600,
-              cursor: running ? 'wait' : 'pointer', opacity: running ? 0.6 : 1,
-            }}
-          >
-            <Play size={12} /> {running ? 'Running...' : 'Run Now'}
-          </button>
+          {integration.transport_type !== 'webhook' && (
+            <button
+              onClick={handleRun}
+              disabled={running}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4,
+                background: 'var(--accent)', color: '#fff', border: 'none',
+                borderRadius: 6, padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                cursor: running ? 'wait' : 'pointer', opacity: running ? 0.6 : 1,
+              }}
+            >
+              <Play size={12} /> {running ? 'Running...' : 'Run Now'}
+            </button>
+          )}
           <button
             onClick={(e) => { e.stopPropagation(); onEdit(integration.id) }}
             style={{

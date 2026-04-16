@@ -159,9 +159,11 @@ export default function IntegrationDetail({ embedded, integrationId: embeddedId,
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Button onClick={handleRun} disabled={running} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <Play size={14} /> {running ? 'Running...' : 'Run Now'}
-          </Button>
+          {integration.transport_type !== 'webhook' && (
+            <Button onClick={handleRun} disabled={running} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Play size={14} /> {running ? 'Running...' : 'Run Now'}
+            </Button>
+          )}
           <Button onClick={() => goEdit(id)}
             style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 4 }}>
             <Pencil size={14} /> Edit
@@ -258,7 +260,9 @@ export default function IntegrationDetail({ embedded, integrationId: embeddedId,
       </div>
       {runs.length === 0 ? (
         <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-          No runs yet. Click "Run Now" to execute this integration.
+          {integration.transport_type === 'webhook'
+            ? 'No events received yet. This integration will show runs when external systems push data to the webhook endpoint.'
+            : 'No runs yet. Click "Run Now" to execute this integration.'}
         </div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
