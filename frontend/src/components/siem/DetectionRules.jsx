@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Shield, Plus, Trash2, Edit2, Play, Upload, ToggleLeft, ToggleRight, EyeOff } from 'lucide-react'
+import { Shield, Plus, Trash2, Edit2, Play, Upload, ToggleLeft, ToggleRight, EyeOff, BookOpen, Search, Check } from 'lucide-react'
 import { getDetectionRules, createDetectionRule, updateDetectionRule, deleteDetectionRule, testDetectionRule, getSuppressionRules, updateSuppressionRule, deleteSuppressionRule } from '../../api'
 import { PageHeader, EmptyState, Button } from '../shared/ui'
 import { useIsMobile } from '../../App'
+import { DETECTION_RULE_TEMPLATES, MITRE_TACTICS, templateToRulePayload } from '../../data/detectionRuleLibrary'
 
 const SEVERITY_COLORS = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#3b82f6', info: '#6b7280' }
 
@@ -14,6 +15,7 @@ export default function DetectionRules() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
+  const [showLibrary, setShowLibrary] = useState(false)
   const [editRule, setEditRule] = useState(null)
   const [testResult, setTestResult] = useState(null)
   const isMobile = useIsMobile()
@@ -57,6 +59,16 @@ export default function DetectionRules() {
     loadRules()
   }
 
+  const handleInstallTemplates = async (templates) => {
+    const results = await Promise.allSettled(
+      templates.map(tpl => createDetectionRule(templateToRulePayload(tpl)))
+    )
+    const failed = results.filter(r => r.status === 'rejected').length
+    if (failed) console.error(`${failed} template(s) failed to install`)
+    setShowLibrary(false)
+    loadRules()
+  }
+
   const handleUpdate = async (data) => {
     await updateDetectionRule(editRule.id, data)
     setEditRule(null)
@@ -69,9 +81,14 @@ export default function DetectionRules() {
         title={t('siem.detectionRules', 'Detection Rules')}
         subtitle={`${total} ${t('siem.rules', 'rules')}`}
         action={tab === 'rules' ? (
-          <Button onClick={() => setShowCreate(true)}>
-            <Plus size={14} /> {t('siem.createRule', 'Create Rule')}
-          </Button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button onClick={() => setShowLibrary(true)} variant="ghost">
+              <BookOpen size={14} /> {t('siem.browseLibrary', 'Browse Library')}
+            </Button>
+            <Button onClick={() => setShowCreate(true)}>
+              <Plus size={14} /> {t('siem.createRule', 'Create Rule')}
+            </Button>
+          </div>
         ) : null}
       />
 
@@ -142,6 +159,14 @@ export default function DetectionRules() {
       {/* Create / Edit modal */}
       {showCreate && <RuleModal onClose={() => setShowCreate(false)} onSave={handleCreate} t={t} />}
       {editRule && <RuleModal rule={editRule} onClose={() => setEditRule(null)} onSave={handleUpdate} t={t} />}
+      {showLibrary && (
+        <RuleLibraryModal
+          existingRules={rules}
+          onClose={() => setShowLibrary(false)}
+          onInstall={handleInstallTemplates}
+          t={t}
+        />
+      )}
 
       </>}
     </div>
@@ -357,6 +382,231 @@ function RuleModal({ rule, onClose, onSave, t }) {
                   style={{ padding: '8px 16px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
             {isEdit ? t('common.save', 'Save') : t('common.create', 'Create')}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+const SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, info: 4 }
+
+function RuleLibraryModal({ existingRules, onClose, onInstall, t }) {
+  const [search, setSearch] = useState('')
+  const [activeCategory, setActiveCategory] = useState('all')
+  const [selected, setSelected] = useState(() => new Set())
+  const [installing, setInstalling] = useState(false)
+
+  // Mark any template whose name matches an existing rule so we don't re-install duplicates
+  const existingNames = useMemo(() => new Set((existingRules || []).map(r => r.name)), [existingRules])
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return DETECTION_RULE_TEMPLATES
+      .filter(tpl => activeCategory === 'all' || tpl.category === activeCategory)
+      .filter(tpl => !q || (
+        tpl.name.toLowerCase().includes(q) ||
+        tpl.description.toLowerCase().includes(q) ||
+        (tpl.mitre_techniques || []).some(m => m.toLowerCase().includes(q)) ||
+        (tpl.attribution || '').toLowerCase().includes(q)
+      ))
+      .sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9))
+  }, [search, activeCategory])
+
+  const counts = useMemo(() => {
+    const c = { all: DETECTION_RULE_TEMPLATES.length }
+    for (const tpl of DETECTION_RULE_TEMPLATES) c[tpl.category] = (c[tpl.category] || 0) + 1
+    return c
+  }, [])
+
+  const toggle = (id) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  const selectAllVisible = () => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      for (const tpl of filtered) if (!existingNames.has(tpl.name)) next.add(tpl.id)
+      return next
+    })
+  }
+
+  const handleInstall = async (ids) => {
+    const templates = DETECTION_RULE_TEMPLATES.filter(tpl => ids.includes(tpl.id))
+    if (!templates.length) return
+    setInstalling(true)
+    try { await onInstall(templates) } finally { setInstalling(false) }
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div style={{ background: 'var(--bg)', borderRadius: 12, width: '100%', maxWidth: 960, maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {/* Header */}
+        <div style={{ padding: '20px 24px 12px', borderBottom: '1px solid var(--border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+            <h2 style={{ margin: 0, fontSize: 18, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <BookOpen size={18} /> {t('siem.ruleLibrary', 'Detection Rule Library')}
+            </h2>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 22, lineHeight: 1 }}>×</button>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            {t('siem.ruleLibrarySub', 'Curated detections for common attacks, mapped to MITRE ATT&CK tactics and recent CVEs. Pick templates to install — each becomes an editable detection rule.')}
+          </div>
+          {/* Search */}
+          <div style={{ marginTop: 12, position: 'relative' }}>
+            <Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <input
+              autoFocus
+              placeholder={t('siem.searchLibrary', 'Search by name, MITRE ID (e.g. T1110), CVE, or actor…')}
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{ width: '100%', padding: '8px 10px 8px 32px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', fontSize: 13, boxSizing: 'border-box' }}
+            />
+          </div>
+        </div>
+
+        {/* Body: sidebar + list */}
+        <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+          {/* Category sidebar */}
+          <div style={{ width: 200, borderRight: '1px solid var(--border)', padding: '12px 8px', overflowY: 'auto', background: 'var(--bg-secondary)' }}>
+            {[{ id: 'all', name: 'All Templates', tacticId: null }, ...MITRE_TACTICS].map(cat => {
+              const active = activeCategory === cat.id
+              return (
+                <button
+                  key={cat.id}
+                  onClick={() => setActiveCategory(cat.id)}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%',
+                    padding: '7px 10px', marginBottom: 2, borderRadius: 6, border: 'none',
+                    background: active ? 'var(--accent)' : 'transparent',
+                    color: active ? '#fff' : 'var(--text)', cursor: 'pointer', fontSize: 12, textAlign: 'left',
+                  }}
+                >
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {cat.name}
+                    {cat.tacticId && <span style={{ marginLeft: 4, opacity: 0.6, fontSize: 10 }}>{cat.tacticId}</span>}
+                  </span>
+                  <span style={{ opacity: 0.7, fontSize: 10 }}>{counts[cat.id] || 0}</span>
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Templates list */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                {t('siem.noTemplatesFound', 'No templates match your search.')}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {filtered.map(tpl => {
+                  const alreadyInstalled = existingNames.has(tpl.name)
+                  const isSelected = selected.has(tpl.id)
+                  return (
+                    <div
+                      key={tpl.id}
+                      onClick={() => !alreadyInstalled && toggle(tpl.id)}
+                      style={{
+                        padding: '12px 14px', borderRadius: 8,
+                        border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
+                        background: isSelected ? 'var(--accent)10' : 'var(--bg-secondary)',
+                        cursor: alreadyInstalled ? 'not-allowed' : 'pointer',
+                        opacity: alreadyInstalled ? 0.5 : 1,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                        <div style={{
+                          width: 18, height: 18, marginTop: 2, flexShrink: 0,
+                          borderRadius: 4, border: `1.5px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
+                          background: isSelected ? 'var(--accent)' : 'transparent',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        }}>
+                          {isSelected && <Check size={12} color="#fff" strokeWidth={3} />}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <span style={{ fontWeight: 600, fontSize: 14 }}>{tpl.name}</span>
+                            <span style={{
+                              padding: '1px 7px', borderRadius: 4, fontSize: 10, fontWeight: 700,
+                              background: (SEVERITY_COLORS[tpl.severity] || '#6b7280') + '20',
+                              color: SEVERITY_COLORS[tpl.severity],
+                            }}>{tpl.severity}</span>
+                            {alreadyInstalled && (
+                              <span style={{ padding: '1px 7px', borderRadius: 4, fontSize: 10, fontWeight: 600, background: '#22c55e20', color: '#22c55e' }}>
+                                installed
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.4 }}>
+                            {tpl.description}
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                            {(tpl.mitre_techniques || []).map(tid => (
+                              <span key={tid} style={{ padding: '1px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600, background: '#8b5cf620', color: '#8b5cf6' }}>
+                                {tid}
+                              </span>
+                            ))}
+                            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                              threshold {tpl.threshold} in {tpl.window_seconds}s
+                              {tpl.group_by?.length ? ` · by ${tpl.group_by.join(', ')}` : ''}
+                            </span>
+                          </div>
+                          {tpl.attribution && (
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, fontStyle: 'italic' }}>
+                              Seen in: {tpl.attribution}
+                            </div>
+                          )}
+                          {tpl.note && (
+                            <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 4 }}>
+                              Tuning note: {tpl.note}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 12, fontSize: 12, color: 'var(--text-muted)', alignItems: 'center' }}>
+            <span>{selected.size} {t('siem.selected', 'selected')}</span>
+            <button onClick={selectAllVisible} style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 12, padding: 0 }}>
+              {t('siem.selectAllVisible', 'Select all visible')}
+            </button>
+            {selected.size > 0 && (
+              <button onClick={() => setSelected(new Set())} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12, padding: 0 }}>
+                {t('common.clear', 'Clear')}
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={onClose} style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}>
+              {t('common.cancel', 'Cancel')}
+            </button>
+            <button
+              onClick={() => handleInstall(Array.from(selected))}
+              disabled={selected.size === 0 || installing}
+              style={{
+                padding: '8px 16px', borderRadius: 6, border: 'none',
+                background: selected.size === 0 || installing ? 'var(--bg-hover)' : 'var(--accent)',
+                color: '#fff', fontWeight: 600, cursor: selected.size === 0 || installing ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {installing
+                ? t('siem.installing', 'Installing…')
+                : t('siem.installSelected', `Install ${selected.size || ''} selected`.trim())}
+            </button>
+          </div>
         </div>
       </div>
     </div>
