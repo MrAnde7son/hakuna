@@ -29,7 +29,7 @@ function timeAgo(dateStr) {
   return `${days}d ago`
 }
 
-export default function NotificationBell() {
+export default function NotificationBell({ bottomOffset = 20, rightOffset = 120 }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
@@ -97,7 +97,7 @@ export default function NotificationBell() {
   }
 
   return (
-    <div ref={panelRef} style={{ position: 'fixed', bottom: 20, right: 120, zIndex: 91 }}>
+    <div ref={panelRef} style={{ position: 'fixed', bottom: bottomOffset, right: rightOffset, zIndex: 91 }}>
       {/* Bell button */}
       <button
         onClick={() => setOpen(!open)}

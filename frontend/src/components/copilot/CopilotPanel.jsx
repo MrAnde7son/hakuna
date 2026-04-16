@@ -636,7 +636,7 @@ function TokenUsageBar({ usage }) {
 
 // ── Main Panel ──────────────────────────────────────────────────────
 
-export default function CopilotPanel({ open, onClose, currentPath, currentSearch }) {
+export default function CopilotPanel({ open, onClose, currentPath, currentSearch, fullScreen = false }) {
   const { t } = useTranslation()
   const [conversations, setConversations] = useState([])
   const [activeConv, setActiveConv] = useState(null)
@@ -979,21 +979,16 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
 
   if (!open) return null
 
-  return (
-    <>
-      {/* Backdrop */}
-      <div
-        onClick={onClose}
-        style={{
-          position: 'fixed', inset: 0, zIndex: 199,
-          background: 'rgba(0,0,0,0.3)',
-          opacity: open ? 1 : 0,
-          transition: 'opacity 0.2s ease',
-        }}
-      />
-
-      {/* Panel */}
-      <div style={{
+  const panelStyle = fullScreen
+    ? {
+        position: 'fixed', top: 0, right: 0, bottom: 0, left: 0,
+        width: '100vw',
+        height: '100dvh',
+        zIndex: 200,
+        background: 'var(--bg)',
+        display: 'flex', flexDirection: 'column',
+      }
+    : {
         position: 'fixed', top: 0, right: 0, bottom: 0,
         width: clampedWidth,
         zIndex: 200,
@@ -1003,22 +998,42 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
         boxShadow: '-4px 0 24px rgba(0,0,0,0.15)',
         transform: open ? 'translateX(0)' : 'translateX(100%)',
         transition: dragging ? 'none' : 'transform 0.25s ease, width 0.2s ease',
-      }}>
-        {/* Drag handle — left edge */}
+      }
+
+  return (
+    <>
+      {/* Backdrop — desktop panel only */}
+      {!fullScreen && (
         <div
-          ref={dragRef}
-          onMouseDown={handleDragStart}
-          onDoubleClick={handleDragDoubleClick}
-          title="Drag to resize, double-click to reset"
+          onClick={onClose}
           style={{
-            position: 'absolute', top: 0, left: -3, bottom: 0, width: 6,
-            cursor: 'col-resize', zIndex: 210,
-            background: dragging ? 'var(--accent)' : 'transparent',
-            transition: 'background 0.15s',
+            position: 'fixed', inset: 0, zIndex: 199,
+            background: 'rgba(0,0,0,0.3)',
+            opacity: open ? 1 : 0,
+            transition: 'opacity 0.2s ease',
           }}
-          onMouseEnter={e => { if (!dragging) e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.opacity = '0.4' }}
-          onMouseLeave={e => { if (!dragging) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.opacity = '1' } }}
         />
+      )}
+
+      {/* Panel */}
+      <div style={panelStyle}>
+        {/* Drag handle — desktop only */}
+        {!fullScreen && (
+          <div
+            ref={dragRef}
+            onMouseDown={handleDragStart}
+            onDoubleClick={handleDragDoubleClick}
+            title="Drag to resize, double-click to reset"
+            style={{
+              position: 'absolute', top: 0, left: -3, bottom: 0, width: 6,
+              cursor: 'col-resize', zIndex: 210,
+              background: dragging ? 'var(--accent)' : 'transparent',
+              transition: 'background 0.15s',
+            }}
+            onMouseEnter={e => { if (!dragging) e.currentTarget.style.background = 'var(--accent)'; e.currentTarget.style.opacity = '0.4' }}
+            onMouseLeave={e => { if (!dragging) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.opacity = '1' } }}
+          />
+        )}
 
         {/* Header */}
         <div style={{
@@ -1468,6 +1483,7 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
         </div>
         <div style={{
           padding: '12px 16px',
+          paddingBottom: fullScreen ? 'calc(12px + env(safe-area-inset-bottom, 0px))' : 12,
           background: 'var(--bg-secondary)',
         }}>
           <div style={{
