@@ -416,6 +416,16 @@ export const getRiskGrade = (scanId, tags, tagLogic) => {
   const qs = p.toString()
   return request(`/reports/risk-grade${qs ? `?${qs}` : ''}`)
 }
+export const getHeatmap = ({ rows = 'family', cols = 'severity', scanId = null, tags = null, tagLogic = 'AND', limit = 15 } = {}) => {
+  const p = new URLSearchParams()
+  p.set('rows', rows)
+  p.set('cols', cols)
+  if (scanId) p.set('scan_id', scanId)
+  if (tags) p.set('tags', tags)
+  if (tagLogic && tagLogic !== 'AND') p.set('tag_logic', tagLogic)
+  if (limit) p.set('limit', String(limit))
+  return request(`/reports/heatmap?${p.toString()}`)
+}
 export const getPluginFamilies = (scanId, tags, tagLogic) => {
   const p = new URLSearchParams()
   if (scanId) p.set('scan_id', scanId)

@@ -111,6 +111,28 @@ def get_summary(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_l
         .all()
     )
 
+    # Severity breakdown per family — for heatmap widgets
+    top_family_names = [row[0] for row in family_counts]
+    family_severity_rows = []
+    if top_family_names:
+        family_severity_rows = (
+            db.query(
+                Finding.plugin_family,
+                Finding.severity,
+                func.count(Finding.id).label("count"),
+            )
+            .filter(Finding.id.in_(filtered_ids_subq))
+            .filter(Finding.plugin_family.in_(top_family_names))
+            .group_by(Finding.plugin_family, Finding.severity)
+            .all()
+        )
+    severity_by_family: dict[str, dict[str, int]] = defaultdict(lambda: {"critical": 0, "high": 0, "medium": 0, "low": 0})
+    _sev_label = {4: "critical", 3: "high", 2: "medium", 1: "low"}
+    for fam, sev, cnt in family_severity_rows:
+        key = _sev_label.get(sev)
+        if key:
+            severity_by_family[fam or "Unknown"][key] = cnt
+
     # Top risky assets
     top_assets = asset_q.order_by(desc(Asset.risk_score)).limit(5).all()
 
@@ -127,6 +149,27 @@ def get_summary(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_l
         .order_by(desc("count"))
         .all()
     )
+
+    # Severity breakdown per owner — for heatmap widgets
+    top_owner_names = [row[0] for row in owner_counts[:10]]
+    owner_severity_rows = []
+    if top_owner_names:
+        owner_severity_rows = (
+            db.query(
+                Finding.owner_suggestion,
+                Finding.severity,
+                func.count(Finding.id).label("count"),
+            )
+            .filter(Finding.id.in_(filtered_ids_subq))
+            .filter(Finding.owner_suggestion.in_(top_owner_names))
+            .group_by(Finding.owner_suggestion, Finding.severity)
+            .all()
+        )
+    severity_by_owner: dict[str, dict[str, int]] = defaultdict(lambda: {"critical": 0, "high": 0, "medium": 0, "low": 0})
+    for own, sev, cnt in owner_severity_rows:
+        key = _sev_label.get(sev)
+        if key:
+            severity_by_owner[own or "Unknown"][key] = cnt
 
     # Exploit availability
     exploit_count = report_q.filter(Finding.exploit_available == True).count()
@@ -187,16 +230,249 @@ def get_summary(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_l
             "info": severity_counts.get(0, 0),
         },
         "top_plugin_families": [
-            {"family": row[0] or "Unknown", "count": row[1]} for row in family_counts
+            {
+                "family": row[0] or "Unknown",
+                "count": row[1],
+                **severity_by_family.get(row[0] or "Unknown", {"critical": 0, "high": 0, "medium": 0, "low": 0}),
+            }
+            for row in family_counts
         ],
         "top_risky_assets": [_asset_to_dict(a) for a in top_assets],
         "effort_breakdown": effort_counts,
         "owner_breakdown": [
-            {"owner": row[0] or "Unknown", "count": row[1]} for row in owner_counts
+            {
+                "owner": row[0] or "Unknown",
+                "count": row[1],
+                **severity_by_owner.get(row[0] or "Unknown", {"critical": 0, "high": 0, "medium": 0, "low": 0}),
+            }
+            for row in owner_counts
         ],
         "exploit_count": exploit_count,
         "high_priority_count": high_priority_count,
         "quick_wins": quick_wins,
+    }
+    _cache_set(_ck, result)
+    return result
+
+
+# ─────────────────────────────────────────────
+# Dynamic heatmap pivot
+# ─────────────────────────────────────────────
+
+_SEV_LABEL = {4: "Critical", 3: "High", 2: "Medium", 1: "Low", 0: "Info"}
+_SEV_KEYS_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
+
+
+def _age_bucket(first_seen, now):
+    if not first_seen:
+        return "Unknown"
+    days = (now - first_seen).days
+    if days < 30:
+        return "0-30d"
+    if days < 90:
+        return "30-90d"
+    if days < 180:
+        return "90-180d"
+    return "180d+"
+
+
+_AGE_BUCKET_ORDER = ["0-30d", "30-90d", "90-180d", "180d+", "Unknown"]
+
+
+def _priority_bucket(p):
+    if p is None:
+        return "Unknown"
+    if p >= 7:
+        return "Critical (7-10)"
+    if p >= 5:
+        return "High (5-7)"
+    if p >= 3:
+        return "Medium (3-5)"
+    return "Low (0-3)"
+
+
+_PRIORITY_BUCKET_ORDER = ["Critical (7-10)", "High (5-7)", "Medium (3-5)", "Low (0-3)", "Unknown"]
+
+
+_CRITICALITY_LABEL = {
+    1: "Very Low", 2: "Low", 3: "Low-Med", 4: "Medium", 5: "Medium",
+    6: "Med-High", 7: "High", 8: "High", 9: "Very High", 10: "Critical",
+}
+
+
+HEATMAP_ROW_DIMS = {
+    "family":       {"label": "Family"},
+    "owner":        {"label": "Owner"},
+    "asset":        {"label": "Asset"},
+    "os":           {"label": "OS"},
+    "environment":  {"label": "Environment"},
+    "criticality":  {"label": "Asset Criticality"},
+    "effort":       {"label": "Effort"},
+}
+
+HEATMAP_COL_DIMS = {
+    "severity":      {"label": "Severity"},
+    "effort":        {"label": "Effort"},
+    "exploit":       {"label": "Exploit Available"},
+    "kev":           {"label": "CISA KEV"},
+    "sla_status":    {"label": "SLA Status"},
+    "age_bucket":    {"label": "Age"},
+    "priority_bucket": {"label": "Priority"},
+}
+
+
+@router.get("/api/reports/heatmap")
+def get_heatmap(
+    rows: str = "family",
+    cols: str = "severity",
+    scan_id: Optional[int] = None,
+    tags: Optional[str] = None,
+    tag_logic: str = "AND",
+    limit: int = 15,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return a dynamic row × column matrix of finding counts.
+
+    `rows` picks the row dimension (family, owner, asset, os, environment,
+    criticality, effort) and `cols` picks the column dimension (severity,
+    effort, exploit, kev, sla_status, age_bucket, priority_bucket).
+    """
+    if rows not in HEATMAP_ROW_DIMS:
+        raise HTTPException(status_code=400, detail=f"unknown row dim: {rows}")
+    if cols not in HEATMAP_COL_DIMS:
+        raise HTTPException(status_code=400, detail=f"unknown col dim: {cols}")
+
+    _ck = f"heatmap:{rows}:{cols}:{scan_id}:{tags}:{tag_logic}:{limit}:{sorted(org_ids or [])}"
+    cached = _cache_get(_ck)
+    if cached is not None:
+        return cached
+    set_statement_timeout(db)
+
+    # Join findings -> assets so asset-level row dims work; exclude info severity (0)
+    q = (
+        db.query(Finding, Asset)
+        .join(Scan, Finding.scan_id == Scan.id)
+        .outerjoin(Asset, Finding.asset_id == Asset.id)
+    )
+    q = apply_scan_org_filter(q, org_ids)
+    q = q.filter(Finding.severity >= 1)
+
+    if scan_id:
+        q = q.filter(Finding.scan_id == scan_id)
+    if tags:
+        pairs = tag_engine.parse_tag_filter(tags)
+        id_sets = tag_engine.resolve_tag_ids(pairs, False, db)
+        q = tag_engine.apply_finding_tag_filter(q, id_sets, tag_logic, db)
+
+    # Exclude report-excluded exceptions
+    excluded_exception_ids = [
+        e.id for e in db.query(FindingException.id).filter(
+            FindingException.is_active == True,
+            FindingException.exclude_from_reports == True,
+        ).all()
+    ]
+    if excluded_exception_ids:
+        q = q.filter(
+            or_(Finding.exception_id.is_(None), ~Finding.exception_id.in_(excluded_exception_ids))
+        )
+
+    now = datetime.utcnow()
+
+    def row_key(finding: Finding, asset: Optional[Asset]) -> str:
+        if rows == "family":
+            return finding.plugin_family or "Unknown"
+        if rows == "owner":
+            return finding.owner_suggestion or "Unassigned"
+        if rows == "asset":
+            if not asset:
+                return "Unknown"
+            return asset.hostname or asset.ip or f"asset#{asset.id}"
+        if rows == "os":
+            return (asset.os if asset else None) or "Unknown"
+        if rows == "environment":
+            return (asset.environment_tag if asset else None) or "Unknown"
+        if rows == "criticality":
+            c = asset.criticality if asset else None
+            return _CRITICALITY_LABEL.get(c, "Unknown")
+        if rows == "effort":
+            return (finding.effort_level or "unknown").replace("_", " ").title()
+        return "Unknown"
+
+    def col_key(finding: Finding) -> Optional[str]:
+        if cols == "severity":
+            lbl = _SEV_LABEL.get(finding.severity)
+            return lbl if lbl and lbl != "Info" else None
+        if cols == "effort":
+            return (finding.effort_level or "unknown").replace("_", " ").title()
+        if cols == "exploit":
+            return "Exploit Available" if finding.exploit_available else "No Exploit"
+        if cols == "kev":
+            return "In KEV" if finding.is_kev else "Not in KEV"
+        if cols == "sla_status":
+            return (finding.sla_status or "n/a").replace("_", " ").title()
+        if cols == "age_bucket":
+            return _age_bucket(finding.first_seen, now)
+        if cols == "priority_bucket":
+            return _priority_bucket(finding.priority_score)
+        return None
+
+    # Aggregate in Python — the per-row result counts are already bounded by `limit`
+    # and heatmaps are capped at low hundreds of cells; a full scan of the filtered
+    # query is fine and keeps the SQL simple across dim combinations.
+    row_totals: dict[str, int] = defaultdict(int)
+    matrix: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    col_order: list[str] = []
+    col_seen: set[str] = set()
+
+    for finding, asset in q.all():
+        rk = row_key(finding, asset)
+        ck = col_key(finding)
+        if ck is None:
+            continue
+        matrix[rk][ck] += 1
+        row_totals[rk] += 1
+        if ck not in col_seen:
+            col_seen.add(ck)
+            col_order.append(ck)
+
+    # Order columns with a stable preferred order for known dims
+    if cols == "severity":
+        col_order = [c for c in _SEV_KEYS_ORDER if c in col_seen]
+    elif cols == "age_bucket":
+        col_order = [c for c in _AGE_BUCKET_ORDER if c in col_seen]
+    elif cols == "priority_bucket":
+        col_order = [c for c in _PRIORITY_BUCKET_ORDER if c in col_seen]
+    elif cols == "effort":
+        preferred = ["Quick Win", "Medium", "Complex", "Unknown"]
+        col_order = [c for c in preferred if c in col_seen] + [c for c in col_order if c not in preferred]
+    elif cols == "sla_status":
+        preferred = ["Breached", "At Risk", "On Track", "Resolved", "N/A"]
+        col_order = [c for c in preferred if c in col_seen] + [c for c in col_order if c not in preferred]
+    elif cols == "exploit":
+        col_order = [c for c in ["Exploit Available", "No Exploit"] if c in col_seen]
+    elif cols == "kev":
+        col_order = [c for c in ["In KEV", "Not in KEV"] if c in col_seen]
+
+    # Top N rows by total count
+    top_rows = sorted(row_totals.items(), key=lambda kv: kv[1], reverse=True)[: max(1, limit)]
+    rows_out = [
+        {
+            "key": rk,
+            "label": rk,
+            "total": total,
+            "cells": {ck: matrix[rk].get(ck, 0) for ck in col_order},
+        }
+        for rk, total in top_rows
+    ]
+
+    result = {
+        "row_dim": rows,
+        "col_dim": cols,
+        "row_label": HEATMAP_ROW_DIMS[rows]["label"],
+        "col_label": HEATMAP_COL_DIMS[cols]["label"],
+        "cols": [{"key": c, "label": c} for c in col_order],
+        "rows": rows_out,
     }
     _cache_set(_ck, result)
     return result

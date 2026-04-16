@@ -28,7 +28,7 @@ import {
 } from 'recharts'
 import { useScan } from '../../App.jsx'
 import {
-  getSummary, getAssets, getFindings, getRemediationQueue, getPluginFamilies,
+  getSummary, getAssets, getFindings, getRemediationQueue, getPluginFamilies, getHeatmap,
   getTrending, getSLASummary, getAutomateClicks, getScanDeltaTimeline, getMetricsTimeline,
   getTemporalSummary, getRemediationVelocity,
   getReportTemplates, createReportTemplate, updateReportTemplate, deleteReportTemplate as apiDeleteTemplate,
@@ -115,6 +115,7 @@ const PALETTE = ['#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#0ea5e9', '#22c55e
 
 const DATA_SOURCES = {
   summary:            (scanId, f) => getSummary(scanId, f?.tags, f?.tag_logic),
+  heatmap:            (scanId, f) => getHeatmap({ rows: f?.heatmap_rows || 'family', cols: f?.heatmap_cols || 'severity', scanId, tags: f?.tags, tagLogic: f?.tag_logic, limit: f?.limit || 15 }),
   sla:                (scanId, f) => getSLASummary(scanId),
   trending:           (scanId, f) => getTrending(f?.trending_mode),
   metrics_timeline:   (scanId, f) => getMetricsTimeline(),
@@ -302,11 +303,62 @@ const DATA_PRESETS = {
   easm_with_open_ports: { label: 'With Open Ports',      group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_open_ports ?? 0, color: '#ea580c' },
   easm_with_http:       { label: 'HTTP Services',        group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_http ?? 0, color: '#0ea5e9' },
   easm_with_cdn:        { label: 'Behind CDN',           group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_cdn ?? 0, color: '#16a34a' },
-  easm_expired_certs:   { label: 'Expired Certificates', group: 'EASM', source: 'easm_status', type: 'metric', extract: d => d?.stats?.with_expired_cert ?? 0, color: '#dc2626' },
+  // Expired certs — derive directly from EASM asset tls_cert data, which is
+  // the same source the Certificates inventory tab uses for its "from EASM
+  // discovery" badge. Keeps the EASM dashboard and the certs inventory view
+  // consistent. EASM-TLS-CERT findings are only emitted when the scanner saw
+  // the cert as expired at scan time, which misses certs that have since
+  // expired; the scanner's stats.with_expired_cert tag is similarly unreliable.
+  easm_expired_certs: {
+    label: 'Expired Certificates', group: 'EASM', source: 'easm_assets', type: 'metric', color: '#dc2626',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      const now = Date.now()
+      return arr.filter(a => {
+        const exp = a.tls_cert && (a.tls_cert.expiry || a.tls_cert.not_after)
+        if (!exp) return 0
+        const t = Date.parse(exp)
+        return !isNaN(t) && t < now
+      }).length
+    },
+  },
   easm_breach_count:    { label: 'Known Breaches',       group: 'EASM', source: 'easm_breaches', type: 'metric', extract: d => (Array.isArray(d) ? d : []).length, color: '#7c3aed' },
   easm_exposed_dbs:     { label: 'Exposed Databases',    group: 'EASM', source: 'findings', type: 'metric', extract: d => ((d?.findings || []).filter(f => (f.plugin_id || '').startsWith('EASM-EXPOSED-DB-')).length), color: '#dc2626' },
-  easm_weak_tls:        { label: 'Weak TLS Configs',     group: 'EASM', source: 'findings', type: 'metric', extract: d => ((d?.findings || []).filter(f => f.plugin_id === 'EASM-TLS-WEAK').length), color: '#f97316' },
-  easm_dangling_dns:    { label: 'Dangling DNS',         group: 'EASM', source: 'findings', type: 'metric', extract: d => ((d?.findings || []).filter(f => f.plugin_id === 'EASM-DANGLING-DNS').length), color: '#ef4444' },
+  // TLS issues — count all serious TLS/SSL findings, not just weak protocols.
+  // Catches EASM-TLS-WEAK (deprecated protocols + weak ciphers) AND
+  // high/critical EASM-TLS-CERT (cert expired or expiring within 30d).
+  easm_weak_tls:        { label: 'TLS Issues',           group: 'EASM', source: 'findings', type: 'metric', extract: d => ((d?.findings || []).filter(f => f.plugin_id === 'EASM-TLS-WEAK' || (f.plugin_id === 'EASM-TLS-CERT' && (f.severity ?? 0) >= 3)).length), color: '#f97316' },
+  // DNS findings — count any finding in the EASM: DNS family. The codebase
+  // currently emits EASM-DNS-RECORDS; 'EASM-DANGLING-DNS' was never
+  // implemented, so the original filter always returned 0.
+  easm_dangling_dns:    { label: 'DNS Findings',         group: 'EASM', source: 'findings', type: 'metric', extract: d => ((d?.findings || []).filter(f => (f.plugin_family || '') === 'EASM: DNS').length), color: '#ef4444' },
+  // WAF/CDN coverage — any edge protection counts (Cloudflare, Akamai, Imperva, etc.)
+  easm_waf_coverage: {
+    label: 'Edge Protection Coverage', group: 'EASM', source: 'easm_assets', type: 'metric', format: 'pct', color: '#16a34a',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      if (!arr.length) return 0
+      const protected_ = arr.filter(a => a.cdn_provider || a.waf).length
+      return Math.round((protected_ / arr.length) * 100)
+    },
+  },
+  easm_unprotected_assets: {
+    label: 'Unprotected Assets', group: 'EASM', source: 'easm_assets', type: 'metric', color: '#ef4444',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      return arr.filter(a => !a.cdn_provider && !a.waf).length
+    },
+  },
+  // CPE coverage — % of EASM assets with at least one inferred CPE (CVE-matchable surface)
+  easm_cpe_coverage: {
+    label: 'CVE-Matchable Assets', group: 'EASM', source: 'easm_assets', type: 'metric', format: 'pct', color: '#6366f1',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      if (!arr.length) return 0
+      const matchable = arr.filter(a => Array.isArray(a.cpe_list) && a.cpe_list.length > 0).length
+      return Math.round((matchable / arr.length) * 100)
+    },
+  },
 
   // ── Control Assessment metrics ──
   ctrl_assessed:        { label: 'Assessed Findings',    group: 'Control Validation', source: 'control_assessment_stats', type: 'metric', extract: d => d?.assessed ?? 0, color: '#6366f1' },
@@ -407,6 +459,152 @@ const DATA_PRESETS = {
         .sort((a, b) => a[0].localeCompare(b[0]))
         .slice(-30)  // last 30 days with activity
         .map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  // HTTP response code distribution — grouped into status families so one
+  // anomalous 418 doesn't crowd out 200/404. Useful for spotting broken
+  // virtual hosts (lots of 404) or firewalls (lots of 403).
+  easm_http_status_breakdown: {
+    label: 'HTTP Status Codes', group: 'EASM', source: 'easm_assets', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      const buckets = { '2xx Success': 0, '3xx Redirect': 0, '4xx Client Error': 0, '5xx Server Error': 0, 'No HTTP': 0 }
+      const colors = { '2xx Success': '#16a34a', '3xx Redirect': '#0ea5e9', '4xx Client Error': '#f59e0b', '5xx Server Error': '#dc2626', 'No HTTP': '#94a3b8' }
+      arr.forEach(a => {
+        const s = a.http_status
+        if (!s) buckets['No HTTP']++
+        else if (s >= 200 && s < 300) buckets['2xx Success']++
+        else if (s >= 300 && s < 400) buckets['3xx Redirect']++
+        else if (s >= 400 && s < 500) buckets['4xx Client Error']++
+        else if (s >= 500 && s < 600) buckets['5xx Server Error']++
+      })
+      return Object.entries(buckets).filter(([, v]) => v > 0).map(([name, value]) => ({ name, value, color: colors[name] }))
+    },
+  },
+  // Cert expiry timeline — buckets days-until-expiry so you can see churn
+  // pressure across the fleet. Already-expired certs surface as their own
+  // bucket since they're actionable now, not scheduled.
+  easm_cert_expiry_timeline: {
+    label: 'Certificate Expiry Timeline', group: 'EASM', source: 'easm_assets', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      const buckets = { 'Expired': 0, '< 30 days': 0, '30–90 days': 0, '90–180 days': 0, '180–365 days': 0, '> 365 days': 0 }
+      const colors = { 'Expired': '#dc2626', '< 30 days': '#ef4444', '30–90 days': '#f59e0b', '90–180 days': '#eab308', '180–365 days': '#22c55e', '> 365 days': '#16a34a' }
+      const now = Date.now()
+      arr.forEach(a => {
+        const exp = a.tls_cert?.expiry
+        if (!exp) return
+        const t = Date.parse(exp)
+        if (isNaN(t)) return
+        const days = Math.floor((t - now) / 86400000)
+        if (days < 0) buckets['Expired']++
+        else if (days < 30) buckets['< 30 days']++
+        else if (days < 90) buckets['30–90 days']++
+        else if (days < 180) buckets['90–180 days']++
+        else if (days < 365) buckets['180–365 days']++
+        else buckets['> 365 days']++
+      })
+      return Object.entries(buckets).filter(([, v]) => v > 0).map(([name, value]) => ({ name, value, color: colors[name] }))
+    },
+  },
+  // Cert issuer distribution — shows CA mix. Self-signed is a red flag for
+  // public surface; Let's Encrypt dominance hints at automated renewal; a
+  // long tail of unusual CAs can indicate shadow IT.
+  easm_cert_issuers: {
+    label: 'Certificate Issuers', group: 'EASM', source: 'easm_assets', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      const counts = {}
+      arr.forEach(a => {
+        const raw = a.tls_cert?.issuer
+        if (!raw) return
+        // Issuer strings often look like "CN=R3,O=Let's Encrypt,C=US" — pull the O= if present, else CN=.
+        const o = /O=([^,]+)/i.exec(raw)
+        const cn = /CN=([^,]+)/i.exec(raw)
+        const name = (o?.[1] || cn?.[1] || raw).trim()
+        counts[name] = (counts[name] || 0) + 1
+      })
+      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1])
+      const top = sorted.slice(0, 9)
+      const other = sorted.slice(9).reduce((sum, [, v]) => sum + v, 0)
+      const out = top.map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+      if (other > 0) out.push({ name: 'Other', value: other, color: '#94a3b8' })
+      return out
+    },
+  },
+  // TLS version distribution — compliance-relevant. TLS 1.0/1.1 flag PCI-DSS
+  // violations; SSL 3 / 2 are broken and must not exist. Normalizes various
+  // formats ("TLSv1.2", "TLS 1.2") into a single bucket per version.
+  easm_tls_versions: {
+    label: 'TLS Versions', group: 'EASM', source: 'easm_assets', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      const counts = {}
+      const colors = { 'TLS 1.3': '#16a34a', 'TLS 1.2': '#22c55e', 'TLS 1.1': '#f59e0b', 'TLS 1.0': '#dc2626', 'SSL 3.0': '#991b1b', 'SSL 2.0': '#7f1d1d' }
+      arr.forEach(a => {
+        const raw = (a.tls_cert?.version || '').toString().trim()
+        if (!raw) return
+        const norm = raw.toUpperCase().replace(/^TLSV/, 'TLS ').replace(/^SSLV/, 'SSL ').replace(/\s+/g, ' ')
+        counts[norm] = (counts[norm] || 0) + 1
+      })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name, value, color: colors[name] || PALETTE[i % PALETTE.length] }))
+    },
+  },
+  // DNS record type mix — which record types the scanner actually saw. Lots
+  // of CNAMEs hint at SaaS-heavy infra (dangling-DNS risk); MX presence
+  // means inboxes on the domain (phishing / breach surface).
+  easm_dns_record_types: {
+    label: 'DNS Record Types', group: 'EASM', source: 'easm_assets', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      const counts = {}
+      arr.forEach(a => {
+        const rec = a.dns_records
+        if (!rec || typeof rec !== 'object') return
+        Object.entries(rec).forEach(([type, values]) => {
+          const n = Array.isArray(values) ? values.length : (values ? 1 : 0)
+          if (n > 0) counts[type.toUpperCase()] = (counts[type.toUpperCase()] || 0) + n
+        })
+      })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  // Services breakdown — aggregates the per-port service metadata scanner
+  // captures (http, https, ssh, rdp, smtp, …). Complements easm_open_ports
+  // which only shows port numbers.
+  easm_services_breakdown: {
+    label: 'Exposed Services', group: 'EASM', source: 'easm_assets', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      const counts = {}
+      arr.forEach(a => {
+        const svcs = a.services
+        if (!svcs || typeof svcs !== 'object') return
+        Object.values(svcs).forEach(v => {
+          // services can be a string ("http") or dict ({ name: "http", ... })
+          const name = (typeof v === 'string' ? v : (v?.name || v?.service || v?.protocol || '')).toString().trim().toLowerCase()
+          if (name) counts[name] = (counts[name] || 0) + 1
+        })
+      })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
+    },
+  },
+  // JS framework / client-side library breakdown — filters tech_stack for
+  // known browser-side libraries picked up by the JS fingerprinter. Helps
+  // gauge which apps have outdated front-ends (e.g. jQuery 1.x, AngularJS).
+  easm_js_frameworks: {
+    label: 'JS Frameworks & Libraries', group: 'EASM', source: 'easm_assets', type: 'categories',
+    extract: d => {
+      const arr = Array.isArray(d) ? d : (d?.assets ?? [])
+      const JS_LIBS = /^(react|vue|angular|angularjs|next\.?js|nuxt|svelte|ember|backbone|jquery|moment|momentjs|lodash|underscore|d3|three|bootstrap|tailwind|materialize|bulma|foundation|rxjs|redux|mobx|alpine|alpinejs|stimulus|htmx|preact|solid|solidjs|qwik|astro|remix|gatsby|polymer|knockout|requirejs|webpack|vite|parcel|rollup|babel|typescript|chart\.?js|chartjs|recharts|gsap|anime|greensock|handlebars|mustache|lit|litelement)$/i
+      const counts = {}
+      arr.forEach(a => {
+        (a.tech_stack || []).forEach(t => {
+          const name = (typeof t === 'string' ? t : (t?.name || '')).trim()
+          if (name && JS_LIBS.test(name)) counts[name] = (counts[name] || 0) + 1
+        })
+      })
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([name, value], i) => ({ name, value, color: PALETTE[i % PALETTE.length] }))
     },
   },
 
@@ -1468,9 +1666,126 @@ const DATA_PRESETS = {
       size: o.count || 0,
     })).filter(r => r.size > 0),
   },
+
+  // ── Heatmap (dynamic row × col matrix) ──
+  // All heatmap presets pull from the dynamic /api/reports/heatmap endpoint.
+  // The extract just normalises the payload into { cols, rows } that the renderer consumes.
+  heatmap_family_severity: {
+    label: 'Family × Severity', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'family', heatmapCols: 'severity',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_owner_severity: {
+    label: 'Owner × Severity', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'owner', heatmapCols: 'severity',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_asset_severity: {
+    label: 'Asset × Severity', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'asset', heatmapCols: 'severity',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_os_severity: {
+    label: 'OS × Severity', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'os', heatmapCols: 'severity',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_env_severity: {
+    label: 'Environment × Severity', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'environment', heatmapCols: 'severity',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_criticality_severity: {
+    label: 'Asset Criticality × Severity', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'criticality', heatmapCols: 'severity',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_family_kev: {
+    label: 'Family × CISA KEV', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'family', heatmapCols: 'kev',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_asset_kev: {
+    label: 'Asset × CISA KEV', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'asset', heatmapCols: 'kev',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_owner_effort: {
+    label: 'Owner × Effort', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'owner', heatmapCols: 'effort',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_family_effort: {
+    label: 'Family × Effort', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'family', heatmapCols: 'effort',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_owner_sla: {
+    label: 'Owner × SLA Status', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'owner', heatmapCols: 'sla_status',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_family_exploit: {
+    label: 'Family × Exploit Availability', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'family', heatmapCols: 'exploit',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_asset_age: {
+    label: 'Asset × Age', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'asset', heatmapCols: 'age_bucket',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_family_age: {
+    label: 'Family × Age', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'family', heatmapCols: 'age_bucket',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_env_priority: {
+    label: 'Environment × Priority', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    heatmapRows: 'environment', heatmapCols: 'priority_bucket',
+    extract: d => _heatmapFromPayload(d),
+  },
+  heatmap_custom: {
+    label: 'Custom (pick dimensions)', group: 'Heatmaps', source: 'heatmap', type: 'heatmap',
+    extract: d => _heatmapFromPayload(d),
+  },
 }
 
-const PRESET_GROUPS = ['Severity', 'Risk', 'Temporal', 'SLA & Ops', 'Tags', 'Assets & Findings', 'Inventory', 'Filtered']
+// Normalises the /api/reports/heatmap response into the shape the renderer consumes.
+function _heatmapFromPayload(d) {
+  if (!d) return { cols: [], rows: [], rowLabel: '', colLabel: '' }
+  const cols = (d.cols || []).map(c => ({ key: c.key, label: c.label }))
+  const rows = (d.rows || []).map(r => ({
+    key: r.key,
+    label: r.label ?? r.key,
+    total: r.total || 0,
+    cells: r.cells || {},
+  }))
+  return { cols, rows, rowLabel: d.row_label || '', colLabel: d.col_label || '' }
+}
+
+// Heatmap dimension option lists — kept in sync with backend HEATMAP_*_DIMS
+const HEATMAP_ROW_OPTIONS = [
+  { value: 'family',      label: 'Plugin Family' },
+  { value: 'owner',       label: 'Owner' },
+  { value: 'asset',       label: 'Asset (host)' },
+  { value: 'os',          label: 'Operating System' },
+  { value: 'environment', label: 'Environment' },
+  { value: 'criticality', label: 'Asset Criticality' },
+  { value: 'effort',      label: 'Effort Level' },
+]
+
+const HEATMAP_COL_OPTIONS = [
+  { value: 'severity',        label: 'Severity' },
+  { value: 'effort',          label: 'Effort' },
+  { value: 'exploit',         label: 'Exploit Available' },
+  { value: 'kev',             label: 'CISA KEV' },
+  { value: 'sla_status',      label: 'SLA Status' },
+  { value: 'age_bucket',      label: 'Age' },
+  { value: 'priority_bucket', label: 'Priority' },
+]
+
+const PRESET_GROUPS = ['Severity', 'Risk', 'Temporal', 'SLA & Ops', 'Tags', 'Assets & Findings', 'Heatmaps', 'Inventory', 'Filtered']
 
 // ── Composable time-series metric catalogue ──────────────────────────────────
 // Each metric maps to a field returned by metrics_timeline (or trending/velocity)
@@ -1573,7 +1888,7 @@ const WIDGET_CATALOGUE = [
       { type: 'card',    label: 'Metric Card', icon: Hash,     desc: 'Single number highlight', defaultWidth: 'quarter', defaultConfig: { preset: 'critical_count' } },
       { type: 'risk_grade', label: 'Risk Grade', icon: Shield, desc: 'Composite A-F risk grade', defaultWidth: 'half', defaultConfig: { preset: 'risk_grade' } },
       { type: 'table',   label: 'Data Table',  icon: Table2,   desc: 'Tabular data view',       defaultWidth: 'full',    defaultConfig: { preset: 'top_assets', limit: 10 } },
-      { type: 'heatmap', label: 'Heatmap',     icon: LayoutGrid, desc: 'Severity by family matrix', defaultWidth: 'full', defaultConfig: {} },
+      { type: 'heatmap', label: 'Heatmap',     icon: LayoutGrid, desc: 'Severity by family matrix', defaultWidth: 'full', defaultConfig: { preset: 'heatmap_family_severity' } },
     ],
   },
   {
@@ -1797,9 +2112,9 @@ const EASM_DASHBOARD = {
     { id: 'ea1', type: 'header', title: 'External Attack Surface', width: 'full', config: { title: 'External Attack Surface', subtitle: 'Discovered assets, services, certificates, and change events from EASM scanning' } },
     // Risk summary — Tenable-style "Categories of Security Risk" row
     { id: 'ea_r1', type: 'card',      title: 'Exposed Databases',    width: 'quarter', config: { preset: 'easm_exposed_dbs',   filters: { plugin_family: 'EASM: Exposed Service', page_size: 500 } } },
-    { id: 'ea_r2', type: 'card',      title: 'Weak TLS Configs',     width: 'quarter', config: { preset: 'easm_weak_tls',      filters: { plugin_family: 'EASM: TLS/SSL',         page_size: 500 } } },
+    { id: 'ea_r2', type: 'card',      title: 'TLS Issues',           width: 'quarter', config: { preset: 'easm_weak_tls',      filters: { plugin_family: 'EASM: TLS/SSL',         page_size: 500 } } },
     { id: 'ea_r3', type: 'card',      title: 'Expired Certificates', width: 'quarter', config: { preset: 'easm_expired_certs' } },
-    { id: 'ea_r4', type: 'card',      title: 'Dangling DNS',         width: 'quarter', config: { preset: 'easm_dangling_dns',  filters: { plugin_family: 'EASM: DNS',             page_size: 500 } } },
+    { id: 'ea_r4', type: 'card',      title: 'DNS Findings',         width: 'quarter', config: { preset: 'easm_dangling_dns',  filters: { plugin_family: 'EASM: DNS',             page_size: 500 } } },
     // Categories breakdown + surface trend
     { id: 'ea_c1', type: 'bar_chart', title: 'Categories of Security Risk', width: 'half', config: { preset: 'easm_risk_categories', filters: { search: 'EASM', page_size: 500 } } },
     { id: 'ea_c2', type: 'bar_chart', title: 'Attack Surface Over Time',    width: 'half', config: { preset: 'easm_surface_over_time' } },
@@ -1808,15 +2123,28 @@ const EASM_DASHBOARD = {
     { id: 'ea3', type: 'card',      title: 'With Open Ports',      width: 'quarter', config: { preset: 'easm_with_open_ports' } },
     { id: 'ea4', type: 'card',      title: 'HTTP Services',        width: 'quarter', config: { preset: 'easm_with_http' } },
     { id: 'ea12',type: 'card',      title: 'Known Breaches',       width: 'quarter', config: { preset: 'easm_breach_count' } },
+    // Protection & CVE-matchability metrics (added after EASM enrichment additions)
+    { id: 'ea11',type: 'card',      title: 'Behind CDN',           width: 'quarter', config: { preset: 'easm_with_cdn' } },
+    { id: 'ea16',type: 'card',      title: 'Edge Protection',      width: 'quarter', config: { preset: 'easm_waf_coverage' } },
+    { id: 'ea17',type: 'card',      title: 'Unprotected Assets',   width: 'quarter', config: { preset: 'easm_unprotected_assets' } },
+    { id: 'ea18',type: 'card',      title: 'CVE-Matchable Assets', width: 'quarter', config: { preset: 'easm_cpe_coverage' } },
     // Asset overview
     { id: 'ea6', type: 'pie_chart', title: 'Asset Liveness',       width: 'half',    config: { preset: 'easm_asset_liveness', donut: true } },
+    { id: 'ea19',type: 'pie_chart', title: 'HTTP Status Codes',    width: 'half',    config: { preset: 'easm_http_status_breakdown', donut: true } },
+    // Change activity & DNS
     { id: 'ea7', type: 'pie_chart', title: 'Change Events',        width: 'half',    config: { preset: 'easm_event_types', donut: true } },
-    // Technology & ports
+    { id: 'ea20',type: 'pie_chart', title: 'DNS Record Types',     width: 'half',    config: { preset: 'easm_dns_record_types', donut: true } },
+    // Technology & services
     { id: 'ea8', type: 'bar_chart', title: 'Technology Stack',     width: 'half',    config: { preset: 'easm_tech_stack' } },
+    { id: 'ea21',type: 'bar_chart', title: 'JS Frameworks & Libraries', width: 'half', config: { preset: 'easm_js_frameworks' } },
     { id: 'ea9', type: 'bar_chart', title: 'Top Open Ports',       width: 'half',    config: { preset: 'easm_open_ports' } },
-    // CDN
+    { id: 'ea22',type: 'bar_chart', title: 'Exposed Services',     width: 'half',    config: { preset: 'easm_services_breakdown' } },
+    // CDN / edge providers
     { id: 'ea10',type: 'pie_chart', title: 'CDN / WAF Providers',  width: 'half',    config: { preset: 'easm_cdn_providers', donut: true } },
-    { id: 'ea11',type: 'card',      title: 'Behind CDN',           width: 'quarter', config: { preset: 'easm_with_cdn' } },
+    { id: 'ea23',type: 'pie_chart', title: 'TLS Versions',         width: 'half',    config: { preset: 'easm_tls_versions', donut: true } },
+    // TLS certificate posture
+    { id: 'ea24',type: 'bar_chart', title: 'Certificate Expiry Timeline', width: 'half', config: { preset: 'easm_cert_expiry_timeline' } },
+    { id: 'ea25',type: 'pie_chart', title: 'Certificate Issuers',  width: 'half',    config: { preset: 'easm_cert_issuers', donut: true } },
     // Tables
     { id: 'ea13',type: 'table',     title: 'Discovered Assets',    width: 'full',    config: { preset: 'easm_assets_table', limit: 50 } },
     { id: 'ea14',type: 'table',     title: 'Recent Changes',       width: 'full',    config: { preset: 'easm_events_table', limit: 30 } },
@@ -1961,19 +2289,32 @@ const DRILL_DOWN = {
   inv_expiring_certs:  '/inventory?tab=certs',
   inv_self_signed_certs: '/inventory?tab=certs',
   inv_sensitive_env_vars: '/inventory?tab=env-vars',
-  // EASM cards
-  easm_total_assets:   '/inventory?tab=easm_assets',
-  easm_with_open_ports:'/inventory?tab=easm_assets',
-  easm_with_http:      '/inventory?tab=easm_assets',
-  easm_with_cdn:       '/inventory?tab=easm_assets',
-  easm_expired_certs:  '/inventory?tab=certs&source=easm',
-  easm_breach_count:   '/inventory?tab=easm_breaches',
-  // EASM categories
+  // EASM cards — filter values consumed by EasmAssetsTab (InventoryExplorer.jsx)
+  easm_total_assets:       '/inventory?tab=easm_assets',
+  easm_with_open_ports:    '/inventory?tab=easm_assets&filter=http',
+  easm_with_http:          '/inventory?tab=easm_assets&filter=http',
+  easm_with_cdn:           '/inventory?tab=easm_assets&filter=cdn',
+  easm_expired_certs:      '/inventory?tab=easm_assets&filter=expired_tls',
+  easm_breach_count:       '/inventory?tab=easm_breaches',
+  easm_waf_coverage:       '/inventory?tab=easm_assets&filter=protected',
+  easm_unprotected_assets: '/inventory?tab=easm_assets&filter=unprotected',
+  easm_cpe_coverage:       '/inventory?tab=easm_assets&filter=with_cpe',
+  // EASM categories — free-text search against hostname/ip/title/cdn/waf/tech_stack
   easm_asset_liveness: name => `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}`,
   easm_tech_stack:     name => `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}`,
   easm_open_ports:     name => `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}`,
   easm_cdn_providers:  name => `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}`,
   easm_event_types:    name => `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}`,
+  // New EASM categoricals — bucket names ("2xx Success", "Expired") aren't
+  // meaningful free-text queries, so those drill to the assets/certs tab
+  // unfiltered; issuer/service/framework names do map to text search.
+  easm_http_status_breakdown: () => '/inventory?tab=easm_assets&filter=http',
+  easm_cert_expiry_timeline:  name => name === 'Expired' ? '/inventory?tab=easm_assets&filter=expired_tls' : '/inventory?tab=certs&source=easm',
+  easm_cert_issuers:          name => `/inventory?tab=certs&source=easm&search=${encodeURIComponent(name)}`,
+  easm_tls_versions:          () => '/inventory?tab=certs&source=easm',
+  easm_dns_record_types:      () => '/inventory?tab=easm_assets',
+  easm_services_breakdown:    name => `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}`,
+  easm_js_frameworks:         name => `/inventory?tab=easm_assets&search=${encodeURIComponent(name)}`,
   // AI / ML
   inv_total_ai_tools:  '/inventory?tab=ai-tools',
   // OS & Software risk
@@ -2174,7 +2515,18 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
   const cfg = widget.config || {}
   const preset = DATA_PRESETS[cfg.preset]
   const sourceId = preset?.source || null
-  const filters = { ...(cfg.filters || {}), category: cfg.category, period: cfg.period, trending_mode: cfg.trending_mode }
+  // Heatmap widgets: resolve the row/col dimensions from the preset (fixed) or from cfg (custom).
+  const heatmapRows = preset?.heatmapRows || cfg.heatmap_rows
+  const heatmapCols = preset?.heatmapCols || cfg.heatmap_cols
+  const filters = {
+    ...(cfg.filters || {}),
+    category: cfg.category,
+    period: cfg.period,
+    trending_mode: cfg.trending_mode,
+    heatmap_rows: heatmapRows,
+    heatmap_cols: heatmapCols,
+    limit: cfg.limit,
+  }
   const { data, loading } = useWidgetData(sourceId, scanId, filters, globalTags, globalTagLogic)
 
   // Benchmark overlay — fetches benchmark data when show_benchmark is toggled on
@@ -2669,33 +3021,54 @@ function WidgetRenderer({ widget, scanId, preview, globalTags, globalTagLogic })
     }
 
     case 'heatmap': {
-      // Simple severity x family matrix
-      const families = data?.top_plugin_families || []
-      const sevLabels = ['Critical', 'High', 'Medium', 'Low']
-      const sevKeys = ['critical', 'high', 'medium', 'low']
-      const heatColors = ['#dc2626', '#ea580c', '#d97706', '#65a30d']
-      if (families.length === 0) return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.noFamilyData')}</div>
+      // Dynamic row × col matrix from /api/reports/heatmap
+      const hm = extracted && typeof extracted === 'object' && Array.isArray(extracted.rows)
+        ? extracted
+        : { cols: [], rows: [], rowLabel: '', colLabel: '' }
+      const cols = hm.cols || []
+      const rows = hm.rows || []
+      if (rows.length === 0 || cols.length === 0) {
+        return <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0' }}>{t('reports.noFamilyData')}</div>
+      }
+      // Severity-tinted for sev columns, neutral (accent) palette elsewhere.
+      const sevColorMap = { 'Critical': '#dc2626', 'High': '#ea580c', 'Medium': '#d97706', 'Low': '#65a30d', 'Info': '#0ea5e9' }
+      const neutralColor = '#6366f1'
+      const colColor = cols.map(c => sevColorMap[c.label] || neutralColor)
+      const maxPerCol = cols.map(c => Math.max(1, ...rows.map(r => r.cells?.[c.key] || 0)))
+      const rowHeader = hm.rowLabel || 'Row'
       return (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
             <thead>
               <tr>
-                <th style={{ padding: '6px 8px', textAlign: 'left', color: 'var(--text-muted)' }}>Family</th>
-                {sevLabels.map(s => <th key={s} style={{ padding: '6px 8px', textAlign: 'center', color: 'var(--text-muted)' }}>{s}</th>)}
+                <th style={{ padding: '6px 8px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600 }}>{rowHeader}</th>
+                {cols.map(c => (
+                  <th key={c.key} style={{ padding: '6px 8px', textAlign: 'center', color: 'var(--text-muted)', fontWeight: 600 }}>{c.label}</th>
+                ))}
+                <th style={{ padding: '6px 8px', textAlign: 'right', color: 'var(--text-muted)', fontWeight: 600 }}>Total</th>
               </tr>
             </thead>
             <tbody>
-              {families.slice(0, 10).map((f, i) => (
+              {rows.map((r, i) => (
                 <tr key={i}>
-                  <td style={{ padding: '6px 8px', fontWeight: 500, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.family}</td>
-                  {sevKeys.map((s, si) => {
-                    const v = f[s] || 0
+                  <td style={{ padding: '6px 8px', fontWeight: 500, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.label}</td>
+                  {cols.map((c, ci) => {
+                    const v = r.cells?.[c.key] || 0
+                    const intensity = v > 0 ? 0.15 + 0.7 * (v / maxPerCol[ci]) : 0
+                    const bgAlpha = Math.round(intensity * 255).toString(16).padStart(2, '0')
                     return (
-                      <td key={s} style={{ padding: '6px 8px', textAlign: 'center' }}>
-                        {v > 0 && <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 4, background: `${heatColors[si]}20`, color: heatColors[si], fontWeight: 600, fontSize: 11 }}>{v}</span>}
+                      <td key={c.key} style={{ padding: 3, textAlign: 'center' }}>
+                        <div style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          height: 30, borderRadius: 4,
+                          background: v > 0 ? `${colColor[ci]}${bgAlpha}` : 'transparent',
+                          color: v > 0 ? (intensity > 0.5 ? '#fff' : colColor[ci]) : 'var(--text-muted)',
+                          fontWeight: 600, fontSize: 11,
+                        }}>{v || ''}</div>
                       </td>
                     )
                   })}
+                  <td style={{ padding: '6px 8px', textAlign: 'right', color: 'var(--text-secondary)', fontWeight: 600 }}>{r.total}</td>
                 </tr>
               ))}
             </tbody>
@@ -3109,6 +3482,7 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
     : widget.type === 'radar' ? 'radar'
     : widget.type === 'gauge' ? 'gauge'
     : widget.type === 'treemap' ? 'treemap'
+    : widget.type === 'heatmap' ? 'heatmap'
     : null
 
   const compatiblePresets = presetType
@@ -3134,7 +3508,7 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
     return result
   })()
 
-  const isDataWidget = ['card', 'pie_chart', 'bar_chart', 'line_chart', 'table', 'risk_grade', 'radar', 'gauge', 'treemap'].includes(widget.type)
+  const isDataWidget = ['card', 'pie_chart', 'bar_chart', 'line_chart', 'table', 'risk_grade', 'radar', 'gauge', 'treemap', 'heatmap'].includes(widget.type)
 
   // For line/bar charts: determine if user wants custom time-series or a fixed preset
   const showSeriesBuilder = (widget.type === 'line_chart' || widget.type === 'bar_chart') && isCustomSeries
@@ -3295,6 +3669,24 @@ function ConfigPanel({ widget, onUpdate, onClose }) {
         <Field label={t('reports.rowLimit')}>
           <Select value={String(cfg.limit || 10)} onChange={v => set('limit', v)}
             options={[{ value: '5', label: `5 ${t('reports.rows')}` }, { value: '10', label: `10 ${t('reports.rows')}` }, { value: '20', label: `20 ${t('reports.rows')}` }, { value: '50', label: `50 ${t('reports.rows')}` }]} />
+        </Field>
+      )}
+
+      {widget.type === 'heatmap' && cfg.preset === 'heatmap_custom' && (
+        <>
+          <Field label="Rows">
+            <Select value={cfg.heatmap_rows || 'family'} onChange={v => set('heatmap_rows', v)} options={HEATMAP_ROW_OPTIONS} />
+          </Field>
+          <Field label="Columns">
+            <Select value={cfg.heatmap_cols || 'severity'} onChange={v => set('heatmap_cols', v)} options={HEATMAP_COL_OPTIONS} />
+          </Field>
+        </>
+      )}
+
+      {widget.type === 'heatmap' && (
+        <Field label={t('reports.rowLimit')}>
+          <Select value={String(cfg.limit || 15)} onChange={v => set('limit', v)}
+            options={[{ value: '5', label: `5 ${t('reports.rows')}` }, { value: '10', label: `10 ${t('reports.rows')}` }, { value: '15', label: `15 ${t('reports.rows')}` }, { value: '25', label: `25 ${t('reports.rows')}` }, { value: '50', label: `50 ${t('reports.rows')}` }]} />
         </Field>
       )}
 

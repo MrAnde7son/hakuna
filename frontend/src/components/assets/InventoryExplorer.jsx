@@ -3109,16 +3109,20 @@ function ProcessesTab({ scanId, assetId }) {
 // ─── EASM Assets tab ──────────────────────────────────────
 function EasmAssetsTab({ scanId, assetId }) {
   const { t } = useTranslation()
+  // Seed search + filter from URL query params so report-builder drill-downs
+  // (e.g. ?tab=easm_assets&filter=unprotected) land on the right slice.
+  const [urlParams] = useSearchParams()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = useState(urlParams.get('search') || '')
   const [expanded, setExpanded] = useState(null) // asset id for screenshot modal
   const [screenshotUrl, setScreenshotUrl] = useState(null) // blob URL for modal image
   const [screenshotState, setScreenshotState] = useState('idle') // idle | loading | ready | missing
   const [sortBy, setSortBy] = useState('last_seen')
   const [sortOrder, setSortOrder] = useState('desc')
-  const [activeFilter, setActiveFilter] = useState(null) // 'http', 'cdn', 'expired_tls', 'tech'
+  // Filter values: 'http', 'cdn', 'expired_tls', 'tech', 'unprotected', 'with_cpe'
+  const [activeFilter, setActiveFilter] = useState(urlParams.get('filter') || null)
 
   // Fetch the screenshot blob whenever the modal opens on a new asset.
   // Tear down the old object URL to avoid leaking blobs.
@@ -3175,6 +3179,15 @@ function EasmAssetsTab({ scanId, assetId }) {
       })
     } else if (activeFilter === 'tech') {
       list = list.filter(r => r.tech_stack && (Array.isArray(r.tech_stack) ? r.tech_stack.length > 0 : Object.keys(r.tech_stack).length > 0))
+    } else if (activeFilter === 'protected') {
+      // Matches easm_waf_coverage card — any edge protection (CDN or WAF)
+      list = list.filter(r => r.cdn_provider || r.waf)
+    } else if (activeFilter === 'unprotected') {
+      // Matches easm_unprotected_assets card — no CDN and no WAF
+      list = list.filter(r => !r.cdn_provider && !r.waf)
+    } else if (activeFilter === 'with_cpe') {
+      // Matches easm_cpe_coverage card — assets with at least one inferred CPE
+      list = list.filter(r => Array.isArray(r.cpe_list) && r.cpe_list.length > 0)
     }
     if (search) {
       const q = search.toLowerCase()

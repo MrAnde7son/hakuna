@@ -364,6 +364,12 @@ def run_auto_tag_rule(rule: AutoTagRule, db: Session, scan_id: Optional[int] = N
                 tag = _get_or_create_tag(label, rule.org_id, db)
                 if not tag:
                     continue
+                exists = db.query(TagAssignment).filter(
+                    TagAssignment.tag_id == tag.id,
+                    TagAssignment.asset_id == asset.id,
+                ).first()
+                if exists:
+                    continue
                 db.add(TagAssignment(tag_id=tag.id, asset_id=asset.id, assigned_by=f"rule:{rule.id}"))
                 count += 1
 
@@ -376,6 +382,12 @@ def run_auto_tag_rule(rule: AutoTagRule, db: Session, scan_id: Optional[int] = N
                 label = f"{prefix}:{raw}" if prefix else str(raw)
                 tag = _get_or_create_tag(label, rule.org_id, db)
                 if not tag:
+                    continue
+                exists = db.query(TagAssignment).filter(
+                    TagAssignment.tag_id == tag.id,
+                    TagAssignment.finding_id == finding.id,
+                ).first()
+                if exists:
                     continue
                 db.add(TagAssignment(tag_id=tag.id, finding_id=finding.id, assigned_by=f"rule:{rule.id}"))
                 count += 1

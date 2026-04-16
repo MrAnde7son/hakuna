@@ -306,6 +306,7 @@ def list_easm_assets(
             "last_seen": a.last_seen.isoformat() if a.last_seen else None,
             "tech_stack": d.get("tech_stack"),
             "open_ports": d.get("open_ports"),
+            "services": d.get("services"),
             "tls_cert": d.get("tls_cert"),
             "cdn_provider": d.get("cdn_provider"),
             "waf": d.get("waf"),
@@ -315,6 +316,8 @@ def list_easm_assets(
             "dns_records": d.get("dns_records"),
             "liveness_state": d.get("liveness_state"),
             "tags": d.get("easm_tags"),
+            "cpe_list": d.get("cpe_list"),
+            "detected_technologies": d.get("detected_technologies"),
         })
     return result
 

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, Text, DateTime, ForeignKey, JSON, UniqueConstraint, Index
+from sqlalchemy import Column, Integer, String, Float, Boolean, Text, DateTime, ForeignKey, JSON, UniqueConstraint, Index, text
 from sqlalchemy.orm import relationship
 from core.database import Base
 from integrations.model_registry import importable
@@ -1280,6 +1280,20 @@ class TagAssignment(Base):
         Index("ix_tag_assignment_tag", "tag_id"),
         Index("ix_tag_assignment_asset", "asset_id"),
         Index("ix_tag_assignment_finding", "finding_id"),
+        # Partial unique indexes — a row always has exactly one of
+        # asset_id / finding_id set, so enforce uniqueness per side.
+        Index(
+            "uq_tag_assignment_tag_asset", "tag_id", "asset_id",
+            unique=True,
+            sqlite_where=text("asset_id IS NOT NULL"),
+            postgresql_where=text("asset_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_tag_assignment_tag_finding", "tag_id", "finding_id",
+            unique=True,
+            sqlite_where=text("finding_id IS NOT NULL"),
+            postgresql_where=text("finding_id IS NOT NULL"),
+        ),
     )
 
 
