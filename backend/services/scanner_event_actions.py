@@ -5,10 +5,8 @@ action nodes in workflows. Exposed actions:
 
   - rerun_nuclei_for_asset: kick off a VM scan for an asset that had
     a tech/port change detected by the scanner.
-  - rerun_enrichment_for_asset: request a targeted enrichment pass on
-    the scanner side (via the scanner's REST API).
 
-Both actions receive `items` from the workflow pipeline (typically the
+Actions receive `items` from the workflow pipeline (typically the
 payload from the scanner event, containing asset_id).
 """
 
@@ -16,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Iterable
 
 from sqlalchemy.orm import Session
 
@@ -118,34 +115,7 @@ def _action_rerun_nuclei_for_asset(db: Session, config: dict, items: list):
     return affected, items
 
 
-def _action_rerun_enrichment_for_asset(db: Session, config: dict, items: list):
-    """Request a targeted re-enrichment for the assets in items.
-
-    For now this is a best-effort no-op if the scanner doesn't expose a
-    per-asset enrichment endpoint — we log the intent so an operator can
-    manually trigger a rescan. When the scanner adds a targeted endpoint,
-    this action can call it via services.easm.
-
-    Config fields:
-      - stages: list[str] — optional subset of enrichment stages to run.
-    """
-    asset_ids = _resolve_asset_ids(items)
-    if not asset_ids:
-        return 0, items
-
-    stages = config.get("stages") or []
-    logger.info(
-        "rerun_enrichment_for_asset: requested re-enrichment for %d assets (stages=%s). "
-        "Not yet implemented in the scanner; action is a no-op placeholder.",
-        len(asset_ids), stages or "all",
-    )
-    # Return 0 affected until the scanner-side endpoint lands, so workflows
-    # can still chain without appearing successful prematurely.
-    return 0, items
-
-
 def register() -> None:
     """Register event-driven actions with the workflow engine. Idempotent."""
     workflow_engine.register_action("rerun_nuclei_for_asset", _action_rerun_nuclei_for_asset)
-    workflow_engine.register_action("rerun_enrichment_for_asset", _action_rerun_enrichment_for_asset)
     logger.info("Scanner event actions registered")

@@ -471,15 +471,6 @@ NODE_CATALOG = {
                 "use_hostname": {"type": "boolean", "label": "Prefer Hostname (vs IP)", "default": True},
             },
         },
-        {
-            "subtype": "rerun_enrichment_for_asset",
-            "label": "Rerun Enrichment (Placeholder)",
-            "description": "Request targeted re-enrichment for the assets in workflow items. Scanner-side endpoint not yet wired — currently logs intent only.",
-            "icon": "RefreshCw",
-            "config_schema": {
-                "stages": {"type": "tags", "label": "Stages (empty = all)", "default": []},
-            },
-        },
     ],
 }
 
