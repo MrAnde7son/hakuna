@@ -1,0 +1,58 @@
+id: mcp-tools-list-enumeration
+
+info:
+  name: MCP Server — Unauthenticated tools/list Enumeration
+  author: hakuna
+  severity: critical
+  description: |
+    Issues a JSON-RPC tools/list call against common Model Context Protocol
+    transport paths. A successful response without authentication reveals the
+    full tool inventory exposed by the MCP server to any AI agent that can
+    reach the endpoint. Tool names and schemas frequently include access to
+    internal databases, file systems, shells, and third-party APIs — enumeration
+    is a direct precursor to tool invocation abuse.
+  reference:
+    - https://modelcontextprotocol.io/specification/
+    - https://owasp.org/www-project-top-10-for-large-language-model-applications/
+  tags: ai,mcp,mcp-security,agent,llm-security,exposure
+  metadata:
+    source: custom
+    verified: true
+    max-request: 4
+    asset_type: ai_agent
+    finding_type: mcp_tools_enumeration
+
+http:
+  - method: POST
+    path:
+      - "{{BaseURL}}/mcp"
+      - "{{BaseURL}}/sse"
+      - "{{BaseURL}}/rpc"
+      - "{{BaseURL}}/"
+
+    headers:
+      Content-Type: application/json
+
+    body: '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+
+    stop-at-first-match: true
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        part: body
+        condition: and
+        words:
+          - '"jsonrpc":"2.0"'
+          - '"tools":'
+          - '"name"'
+
+    extractors:
+      - type: regex
+        part: body
+        regex:
+          - '"name"\s*:\s*"([^"]+)"'

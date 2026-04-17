@@ -103,11 +103,21 @@ async def _store_endpoint(
     url = f"{scheme}://{hostname}{path}"
 
     endpoint_id = uuid.uuid4()
+    # status_code is the most useful ranking signal kiterunner gives us
+    # (200 OK is a higher-value scan target than 401 / 302). source is set
+    # explicitly so the planner can rank kiterunner-discovered endpoints
+    # against other sources (openapi/graphql/katana/llm_js).
     await db.execute(
         text("""
-            INSERT INTO asset_endpoints (id, asset_id, url, path, method, discovered_at, is_auth_page)
-            VALUES (:id, :asset_id, :url, :path, :method, :now, false)
-            ON CONFLICT DO NOTHING
+            INSERT INTO asset_endpoints (
+                id, asset_id, url, path, method,
+                source, status_code, discovered_at, is_auth_page
+            )
+            VALUES (
+                :id, :asset_id, :url, :path, :method,
+                'kiterunner', :status_code, :now, false
+            )
+            ON CONFLICT (asset_id, url, method, source) DO NOTHING
         """),
         {
             "id": endpoint_id,
@@ -115,6 +125,7 @@ async def _store_endpoint(
             "url": url,
             "path": path,
             "method": method,
+            "status_code": int(status) if status else None,
             "now": now,
         },
     )

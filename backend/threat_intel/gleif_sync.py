@@ -299,6 +299,7 @@ def get_subsidiaries_for_org(db, org_id: int) -> list[dict]:
             "status": c.entity_status,
             "jurisdiction": c.legal_jurisdiction,
             "associated_domains": c.associated_domains or [],
+            "domain_sources": c.domain_sources or {},
             "parent_name": c.direct_parent_name,
             "parent_domain": parent_domains.get(c.direct_parent_lei, ""),
         }

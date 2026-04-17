@@ -22,3 +22,10 @@ terraform/.terraform/
 terraform/*.tfstate
 terraform/*.tfstate.backup
 terraform/terraform.tfvars
+
+# DAST templates — synced at runtime by scanner.vm.scheduler.dast_template_sync
+# from reewardius/nuclei-dast-templates; never commit the clone.
+hakuna-vm-scanner/templates/custom/dast/
+
+
+**/celerybeat-schedule

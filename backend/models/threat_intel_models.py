@@ -557,6 +557,11 @@ class CorporateEntity(Base):
     # Domains (extracted from entity data or manually associated)
     associated_domains = Column(JSON, default=list)  # ["acme.com", "acme.co.uk"]
 
+    # Per-domain provenance: {"acme.com": "wikidata_official", "foo.com": "dns_probe"}.
+    # Values in HIGH_CONFIDENCE_SOURCES (services/easm.py) are eligible for auto
+    # subsidiary fan-out scans; others require operator confirmation.
+    domain_sources = Column(JSON, default=dict)
+
     # Org linkage
     org_id = Column(Integer, index=True, nullable=True)  # Link to Hakuna organization
 

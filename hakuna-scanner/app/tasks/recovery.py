@@ -28,8 +28,12 @@ from app.tasks.enrichment import run_enrichment_chain
 
 logger = logging.getLogger(__name__)
 
-# A scan stuck for longer than this is considered orphaned.
+# A scan stuck in 'running' for longer than this is considered orphaned.
 ORPHAN_THRESHOLD_MINUTES = 15
+
+# A scan stuck in 'queued' (never picked up by Celery) for longer than this
+# is considered lost and will be re-dispatched.
+QUEUED_THRESHOLD_MINUTES = 10
 
 # Maximum times a single scan run will be re-dispatched before being marked
 # failed. Prevents infinite recovery loops if a scan is genuinely broken.
@@ -51,13 +55,19 @@ def _run_async(coro):
 async def _find_and_recover_orphans() -> dict:
     """Core logic: find orphaned scan runs and re-dispatch them.
 
+    Recovers two categories:
+      1. 'running' scans whose stage_started_at is stale (worker crashed mid-scan)
+      2. 'queued' scans that were never picked up (Celery message lost on restart)
+
     Returns a summary dict for logging/monitoring.
     """
     sf = get_task_session()
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(minutes=ORPHAN_THRESHOLD_MINUTES)
+    queued_cutoff = now - timedelta(minutes=QUEUED_THRESHOLD_MINUTES)
 
     async with sf() as db:
+        # Category 1: running scans stuck on a stage
         result = await db.execute(
             text("""
                 SELECT id, org_id, scan_type, stage_index, recovery_attempts
@@ -68,7 +78,21 @@ async def _find_and_recover_orphans() -> dict:
             """),
             {"cutoff": cutoff, "max_attempts": MAX_RECOVERY_ATTEMPTS},
         )
-        orphans = result.fetchall()
+        orphans = list(result.fetchall())
+
+        # Category 2: queued scans never picked up by Celery
+        result2 = await db.execute(
+            text("""
+                SELECT id, org_id, scan_type, 0 AS stage_index, recovery_attempts
+                FROM scan_runs
+                WHERE status = 'queued'
+                  AND created_at < :cutoff
+                  AND recovery_attempts < :max_attempts
+            """),
+            {"cutoff": queued_cutoff, "max_attempts": MAX_RECOVERY_ATTEMPTS},
+        )
+        queued_orphans = result2.fetchall()
+        orphans.extend(queued_orphans)
 
     if not orphans:
         return {"orphans_found": 0}
@@ -130,11 +154,13 @@ async def _find_and_recover_orphans() -> dict:
         result = await db.execute(
             text("""
                 SELECT id FROM scan_runs
-                WHERE status = 'running'
-                  AND stage_started_at < :cutoff
-                  AND recovery_attempts >= :max_attempts
+                WHERE (
+                    (status = 'running' AND stage_started_at < :cutoff)
+                    OR (status = 'queued' AND created_at < :queued_cutoff)
+                )
+                AND recovery_attempts >= :max_attempts
             """),
-            {"cutoff": cutoff, "max_attempts": MAX_RECOVERY_ATTEMPTS},
+            {"cutoff": cutoff, "queued_cutoff": queued_cutoff, "max_attempts": MAX_RECOVERY_ATTEMPTS},
         )
         exhausted_rows = result.fetchall()
 

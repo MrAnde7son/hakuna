@@ -146,11 +146,35 @@ def _extract_core_name(name: str) -> list[str]:
     return candidates
 
 
+# Sources eligible for automatic subsidiary fan-out scans. Anything outside
+# this set (e.g. "dns_probe") is low-confidence — surfaced in the UI but
+# never auto-scanned, since DNS probes of {name}.com frequently hit squatters
+# or unrelated companies we're not authorized to scan.
+HIGH_CONFIDENCE_DOMAIN_SOURCES = frozenset({
+    "wikidata_official",
+    "edgar_official",
+    "gleif_official",
+    "easm_name_match",
+})
+
+
+def _record_domain_source(entity, domain: str, source: str) -> None:
+    """Set the provenance for `domain` on `entity` without clobbering prior values.
+
+    First writer wins — a later DNS probe must not downgrade a Wikidata claim.
+    """
+    sources = dict(entity.domain_sources or {})
+    sources.setdefault(domain, source)
+    entity.domain_sources = sources
+
+
 def _associate_subsidiary_domains(db: Session, org_id: int):
     """Match subsidiary names to domains via DNS probing.
 
     For each subsidiary without domains, tries {name}.com and {name}.io
     via DNS resolution. Also matches against EASM-discovered hostnames.
+    Tracks per-domain provenance in `domain_sources` so the fan-out only
+    auto-scans high-confidence matches.
     """
     import socket
     from models.threat_intel_models import CorporateEntity
@@ -185,28 +209,30 @@ def _associate_subsidiary_domains(db: Session, org_id: int):
         if not candidates:
             continue
 
-        matched = []
+        matched: list[tuple[str, str]] = []  # (domain, source)
 
-        # 1. Match against EASM-discovered domains/hostnames
+        # 1. Match against EASM-discovered domains/hostnames (high confidence —
+        #    the match anchors to a domain the org already scans).
         for core in candidates:
             for d in easm_domains:
                 if core in d.split(".")[0] or d.split(".")[0] in core:
-                    if d not in matched:
-                        matched.append(d)
+                    if d not in [m[0] for m in matched]:
+                        matched.append((d, "easm_name_match"))
             for h in all_hostnames:
                 root = ".".join(h.split(".")[-2:])
                 if core in root.split(".")[0]:
-                    if root not in matched:
-                        matched.append(root)
+                    if root not in [m[0] for m in matched]:
+                        matched.append((root, "easm_name_match"))
 
-        # 2. DNS probe: try {name}.com and {name}.io for each candidate
+        # 2. DNS probe: try {name}.com and {name}.io for each candidate (low
+        #    confidence — may hit squatters / unrelated companies).
         if not matched:
             for core in candidates:
                 for tld in (".com", ".io"):
                     candidate = core + tld
                     try:
                         socket.getaddrinfo(candidate, None, socket.AF_INET, socket.SOCK_STREAM, 0, socket.AI_ADDRCONFIG)
-                        matched.append(candidate)
+                        matched.append((candidate, "dns_probe"))
                         break  # one hit per candidate is enough
                     except socket.gaierror:
                         continue
@@ -214,7 +240,9 @@ def _associate_subsidiary_domains(db: Session, org_id: int):
                     break
 
         if matched:
-            sub.associated_domains = list(set(matched))
+            sub.associated_domains = list({m[0] for m in matched})
+            for d, src in matched:
+                _record_domain_source(sub, d, src)
             updated += 1
 
     # Also associate EASM domains with root (parent) entities
@@ -230,6 +258,7 @@ def _associate_subsidiary_domains(db: Session, org_id: int):
             for d in easm_domains:
                 if core in d.split(".")[0] or d.split(".")[0] in core:
                     root.associated_domains = [d]
+                    _record_domain_source(root, d, "easm_name_match")
                     updated += 1
                     break
             if root.associated_domains:
@@ -238,6 +267,116 @@ def _associate_subsidiary_domains(db: Session, org_id: int):
     if updated:
         db.commit()
         logger.info("Associated domains for %d entities", updated)
+
+
+# Hard cap on how many subsidiary domains we'll auto-scan per parent scan
+# completion. Prevents a parent with hundreds of subsidiaries from flooding
+# the scanner queue and inflating the org's EASM footprint unexpectedly.
+DEFAULT_SUBSIDIARY_FANOUT_CAP = 20
+
+
+async def fan_out_subsidiary_scans(
+    db: Session,
+    org: Organization,
+    scan_type: str = "discovery",
+    include_low_confidence: bool = False,
+    max_subsidiaries: int = DEFAULT_SUBSIDIARY_FANOUT_CAP,
+    parent_scan_id: Optional[int] = None,
+) -> dict:
+    """Trigger EASM scans for subsidiary domains discovered by the corporate sync.
+
+    Only auto-scans domains whose provenance is in
+    ``HIGH_CONFIDENCE_DOMAIN_SOURCES`` unless ``include_low_confidence`` is set.
+    Idempotent: domains that already have an EASM scan for this org are skipped
+    via ``_find_existing_easm_scan``.
+
+    Returns a summary: {"triggered": [...], "skipped_existing": [...],
+    "skipped_low_confidence": [...], "skipped_cap": N}.
+    """
+    from models.threat_intel_models import CorporateEntity
+
+    if not org.easm_org_id:
+        return {"triggered": [], "skipped_existing": [], "skipped_low_confidence": [], "skipped_cap": 0}
+
+    subs = db.query(CorporateEntity).filter(
+        CorporateEntity.org_id == org.id,
+        CorporateEntity.direct_parent_lei.isnot(None),
+    ).all()
+
+    triggered: list[dict] = []
+    skipped_existing: list[str] = []
+    skipped_low_conf: list[dict] = []
+    skipped_cap = 0
+    seen_domains: set[str] = set()
+
+    for sub in subs:
+        # Skip inactive / merged entities — scanning their legacy domains is
+        # rarely authorized and usually produces noise.
+        if sub.entity_status and sub.entity_status.upper() not in ("ACTIVE", ""):
+            continue
+
+        sources = sub.domain_sources or {}
+        for domain in (sub.associated_domains or []):
+            if not domain or domain in seen_domains:
+                continue
+            seen_domains.add(domain)
+
+            source = sources.get(domain, "unknown")
+            is_high_conf = source in HIGH_CONFIDENCE_DOMAIN_SOURCES
+            if not is_high_conf and not include_low_confidence:
+                skipped_low_conf.append({"domain": domain, "source": source, "lei": sub.lei})
+                continue
+
+            # Dedup: reuse existing scan record instead of re-triggering.
+            if _find_existing_easm_scan(db, org, domain) is not None:
+                skipped_existing.append(domain)
+                continue
+
+            if len(triggered) >= max_subsidiaries:
+                skipped_cap += 1
+                continue
+
+            try:
+                result = await scan_domain(db, org, domain, scan_type=scan_type)
+            except Exception:
+                logger.exception(
+                    "Subsidiary fan-out scan failed for domain=%s (lei=%s)",
+                    domain, sub.lei,
+                )
+                continue
+
+            if result and result.get("scan_id"):
+                scan = db.query(Scan).filter(Scan.id == result["scan_id"]).first()
+                if scan is not None:
+                    meta = dict(scan.raw_metadata or {})
+                    meta["discovery_source"] = "subsidiary_fanout"
+                    meta["parent_lei"] = sub.lei
+                    meta["parent_legal_name"] = sub.legal_name
+                    meta["domain_source"] = source
+                    if parent_scan_id is not None:
+                        meta["parent_scan_id"] = parent_scan_id
+                    scan.raw_metadata = meta
+                    db.commit()
+                triggered.append({
+                    "domain": domain,
+                    "lei": sub.lei,
+                    "legal_name": sub.legal_name,
+                    "scan_id": result.get("scan_id"),
+                    "source": source,
+                })
+
+    if triggered or skipped_existing or skipped_low_conf:
+        logger.info(
+            "Subsidiary fan-out for org_id=%s: triggered=%d existing=%d low_conf=%d cap=%d",
+            org.id, len(triggered), len(skipped_existing), len(skipped_low_conf), skipped_cap,
+        )
+
+    return {
+        "triggered": triggered,
+        "skipped_existing": skipped_existing,
+        "skipped_low_confidence": skipped_low_conf,
+        "skipped_cap": skipped_cap,
+    }
 
 
 def _emit_easm_scan_failed_notification(
@@ -468,6 +607,7 @@ _RETRYABLE_HTTPX_ERRORS: tuple[type[Exception], ...] = (
     httpx.RemoteProtocolError,
     httpx.ConnectError,
     httpx.PoolTimeout,
+    RuntimeError,  # uvloop "handler is closed" on stale TCP transport
 )
 
 
@@ -593,6 +733,42 @@ async def get_easm_events(hakuna_org_id: str, since: Optional[str] = None, limit
         params["since"] = since
     data = await _hakuna_request("GET", f"/orgs/{hakuna_org_id}/events", params=params)
     return data if isinstance(data, list) else None
+
+
+async def get_easm_endpoints(
+    hakuna_org_id: str,
+    easm_asset_id: Optional[str] = None,
+    source: Optional[str] = None,
+    method: Optional[str] = None,
+    auth_required: Optional[bool] = None,
+    search: Optional[str] = None,
+    sort_by: str = "discovered_at",
+    order: str = "desc",
+    limit: int = 100,
+    offset: int = 0,
+) -> Optional[dict]:
+    """Fetch discovered endpoints (katana / kiterunner / openapi / graphql / llm_js)
+    from hakuna-scanner.
+
+    Returns the raw {total, limit, offset, endpoints: [...]} envelope on success,
+    None on network error. Caller is responsible for translating scanner asset
+    UUIDs back to backend asset IDs when needed.
+    """
+    params: dict = {"limit": limit, "offset": offset, "sort_by": sort_by, "order": order}
+    if easm_asset_id:
+        params["asset_id"] = easm_asset_id
+    if source:
+        params["source"] = source
+    if method:
+        params["method"] = method
+    if auth_required is not None:
+        params["auth_required"] = str(auth_required).lower()
+    if search:
+        params["search"] = search
+    data = await _hakuna_request(
+        "GET", f"/orgs/{hakuna_org_id}/assets/endpoints", params=params,
+    )
+    return data if isinstance(data, dict) else None
 
 
 async def get_easm_domains(hakuna_org_id: str) -> Optional[list]:
@@ -1767,6 +1943,26 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
                 _associate_subsidiary_domains(db, org.id)
             except Exception:
                 logger.exception(f"Corporate structure sync failed for domain '{domain}' (non-fatal)")
+
+            # Fan out EASM scans to high-confidence subsidiary domains. Only
+            # domains tagged from official registries (Wikidata/EDGAR/GLEIF) or
+            # name-matched against this org's existing EASM scope get
+            # auto-scanned; DNS-probe guesses require operator confirmation
+            # via POST /easm/corporate/scan-subsidiaries.
+            try:
+                fanout = await fan_out_subsidiary_scans(
+                    db, org,
+                    scan_type="discovery",
+                    include_low_confidence=False,
+                    parent_scan_id=scan.id,
+                )
+                if fanout.get("triggered"):
+                    logger.info(
+                        f"EASM subsidiary fan-out from scan_id={scan.id}: "
+                        f"triggered {len(fanout['triggered'])} domain(s)"
+                    )
+            except Exception:
+                logger.exception(f"Subsidiary fan-out failed for scan_id={scan.id} (non-fatal)")
 
             # ── Notifications ──
             # Mirror the Nessus ingest pattern in app.py:_run_scan_ingest so

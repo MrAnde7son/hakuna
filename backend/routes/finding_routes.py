@@ -151,6 +151,39 @@ def list_findings(
         )
     if source:
         q = q.filter(cast(Finding.source_systems, Text).ilike(f'%"{source}"%'))
+    # ── AI validation filter ──
+    # validation={true_positive|false_positive|needs_review|not_validated|validated}
+    # Also controls FP auto-hide via `hide_validated_fps` (default true — FPs are noise).
+    _validation = request.query_params.get("validation")
+    if _validation:
+        from sqlalchemy import func as _sql_func
+        _verdict_expr = _json_text_at(Finding.llm_validation, "verdict")
+        if _validation == "not_validated":
+            q = q.filter(or_(Finding.llm_validation.is_(None), _verdict_expr.is_(None)))
+        elif _validation == "validated":
+            q = q.filter(Finding.llm_validation.isnot(None), _verdict_expr.isnot(None))
+        else:
+            q = q.filter(_verdict_expr == _validation)
+
+    # Default hide validated false_positives unless the user opts in or explicitly
+    # selected `validation=false_positive`. This matches the existing behavior for
+    # manually-marked false_positive workflow_status (analysts want noise reduction).
+    _hide_fps_raw = request.query_params.get("hide_validated_fps")
+    _hide_fps = _hide_fps_raw is None or _hide_fps_raw.lower() not in ("false", "0", "no")
+    if _hide_fps and _validation != "false_positive":
+        _verdict_expr = _json_text_at(Finding.llm_validation, "verdict")
+        q = q.filter(or_(_verdict_expr.is_(None), _verdict_expr != "false_positive"))
+
+    # ── Corroboration filter ── findings confirmed by ≥ 2 scanners
+    # (custom_fields.corroboration.corroborated=true set by finding_correlator)
+    if request.query_params.get("corroborated") == "true":
+        _corr_expr = _json_text_at(Finding.custom_fields, "corroboration")
+        q = q.filter(
+            Finding.custom_fields.isnot(None),
+            _corr_expr.isnot(None),
+            _corr_expr != "null",
+        )
+
     # Custom field filters: ?cf_<key>=<value>
     for _cf_param, _cf_value in request.query_params.multi_items():
         if _cf_param.startswith("cf_") and _cf_value:
@@ -539,6 +572,15 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset:
         # User-defined custom fields
         "custom_fields": f.custom_fields or {},
         "user_edited_fields": f.user_edited_fields or [],
+        # AI validation (from services.llm_vuln_validator and the validator agent).
+        # Shape: {verdict, confidence, reasoning, validated_at, validator}
+        "llm_validation": f.llm_validation or None,
+        # Validated context (analyst- or agent-confirmed assessment).
+        "ctx_reachability": f.ctx_reachability,
+        "ctx_exploitability": f.ctx_exploitability,
+        # Cross-scanner corroboration flag derived from custom_fields.corroboration
+        # (set by services.finding_correlator when ≥ 2 scanners report the same CVE).
+        "corroborated": bool((f.custom_fields or {}).get("corroboration", {}).get("corroborated")),
     }
     if include_full:
         base.update({

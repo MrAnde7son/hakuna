@@ -547,6 +547,11 @@ def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optiona
 
     Injects _agent_id for scratchpad tools and compresses output for LLM context.
     """
+    import time as _time
+    from services import llm_feedback
+
+    started = _time.perf_counter()
+    ok = True
     try:
         _check_guardrails(agent, tool_name, step)
 
@@ -561,6 +566,7 @@ def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optiona
                 "available_tools": list(TOOL_REGISTRY.keys())[:20],
                 "hint": "Call 'request_clarification' if you're unsure which tool to use.",
             }
+            ok = False
         else:
             # Coerce params to match schema types (fixes LLMs sending "50" instead of 50)
             coerced_input = _coerce_params(tool_input, tool_def["parameters"])
@@ -569,9 +575,11 @@ def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optiona
             result = tool_def["fn"](db, enriched_input)
     except ValueError as e:
         result = {"error": str(e)}
+        ok = False
     except Exception as e:
         logger.exception(f"Tool '{tool_name}' raised an unexpected error")
         result = {"error": f"Tool execution failed: {str(e)}"}
+        ok = False
 
     # Guard against None results from tools
     if result is None:
@@ -587,6 +595,15 @@ def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optiona
         "output": compressed if isinstance(compressed, (str, int, float, bool)) else json.dumps(compressed, default=str)[:5000],
         "step": step,
     })
+
+    # Feedback-loop: attach tool call to the active agent span (if any).
+    llm_feedback.record_tool_call(
+        name=tool_name,
+        args={k: v for k, v in tool_input.items() if not k.startswith("_")},
+        result=compressed,
+        ok=ok,
+        duration_ms=int((_time.perf_counter() - started) * 1000),
+    )
 
     return json.dumps(compressed, default=str)
 
@@ -749,6 +766,8 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
             call_metadata={"function": "_run_anthropic", "step": step, "run_id": run.id},
         )
         increment_token_usage(agent.org_id, response.usage.input_tokens + response.usage.output_tokens, db)
+        from services import llm_feedback as _lf
+        _lf.record_response(None, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens)
 
         # Log assistant response to trace
         assistant_content = []
@@ -875,6 +894,8 @@ def _run_openai_compat(agent: Agent, user_input: str, db: Session, run: AgentRun
                 call_metadata={"function": "_run_openai_compat", "step": step, "run_id": run.id},
             )
             increment_token_usage(agent.org_id, _in + _out, db)
+            from services import llm_feedback as _lf
+            _lf.record_response(None, input_tokens=_in, output_tokens=_out)
 
         # Log assistant response
         assistant_content = []
@@ -1028,6 +1049,8 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
                 call_metadata={"function": "_run_gemini", "step": step, "run_id": run.id},
             )
             increment_token_usage(agent.org_id, _in + _out, db)
+            from services import llm_feedback as _lf
+            _lf.record_response(None, input_tokens=_in, output_tokens=_out)
 
         # Parse response
         assistant_content = []
@@ -1061,8 +1084,19 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
             run.status = "done"
             break
 
-        # Add assistant response to contents
-        contents.append(response.candidates[0].content)
+        # Add assistant response to contents — rebuild from parts to avoid
+        # passing native Content objects back into generate_content (which
+        # triggers Pydantic serialization warnings in the Gemini SDK).
+        assistant_parts = []
+        for part in response.candidates[0].content.parts:
+            if part.text:
+                assistant_parts.append(genai_types.Part.from_text(text=part.text))
+            if part.function_call:
+                assistant_parts.append(genai_types.Part.from_function_call(
+                    name=part.function_call.name,
+                    args=dict(part.function_call.args) if part.function_call.args else {},
+                ))
+        contents.append(genai_types.Content(role="model", parts=assistant_parts))
 
         # Execute tool calls and build function responses
         function_responses = []
@@ -1087,6 +1121,8 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
 
 def run_agent(agent: Agent, user_input: str, db: Session) -> AgentRun:
     """Execute an agent synchronously and return the completed AgentRun."""
+    from services import llm_feedback
+
     check_token_quota(agent.org_id, db)
     run = AgentRun(
         agent_id=agent.id,
@@ -1119,31 +1155,48 @@ def run_agent(agent: Agent, user_input: str, db: Session) -> AgentRun:
         else:
             raise RuntimeError(f"Unsupported provider: {p}")
 
-    try:
-        _dispatch(model, provider)
-    except ApprovalRequired:
-        # HITL pause — run already set to awaiting_approval and committed
-        db.refresh(run)
-        return run
-    except Exception as e:
-        # Runtime failure (e.g. permission denied) — try a different provider
-        fallback = _find_fallback_model(db, exclude_providers={provider}, tool_count=len(agent.tools or []))
-        if fallback:
-            fb_model, fb_provider = fallback
-            logger.warning("Provider %s failed (%s), falling back to %s/%s", provider, e, fb_provider, fb_model)
-            try:
-                _dispatch(fb_model, fb_provider)
-            except ApprovalRequired:
-                db.refresh(run)
-                return run
-            except Exception as e2:
-                logger.exception("Fallback provider %s also failed", fb_provider)
+    with llm_feedback.span(
+        surface="agent",
+        org_id=agent.org_id,
+        agent_id=agent.id,
+        agent_run_id=run.id,
+        provider=provider,
+        model=model,
+        system_prompt=agent.system_prompt,
+        messages=[{"role": "user", "content": user_input}],
+    ):
+        try:
+            _dispatch(model, provider)
+        except ApprovalRequired:
+            # HITL pause — run already set to awaiting_approval and committed.
+            # Skip flush: the resumed run will re-open its own span.
+            db.refresh(run)
+            return run
+        except Exception as e:
+            # Runtime failure (e.g. permission denied) — try a different provider
+            fallback = _find_fallback_model(db, exclude_providers={provider}, tool_count=len(agent.tools or []))
+            if fallback:
+                fb_model, fb_provider = fallback
+                logger.warning("Provider %s failed (%s), falling back to %s/%s", provider, e, fb_provider, fb_model)
+                llm_feedback.record_provider(fb_provider, fb_model)
+                try:
+                    _dispatch(fb_model, fb_provider)
+                except ApprovalRequired:
+                    db.refresh(run)
+                    return run
+                except Exception as e2:
+                    logger.exception("Fallback provider %s also failed", fb_provider)
+                    run.status = "failed"
+                    run.error = str(e2)
+                    llm_feedback.record_error(e2)
+            else:
+                logger.exception("Agent run failed (no fallback available)")
                 run.status = "failed"
-                run.error = str(e2)
-        else:
-            logger.exception("Agent run failed (no fallback available)")
-            run.status = "failed"
-            run.error = str(e)
+                run.error = str(e)
+                llm_feedback.record_error(e)
+
+        # Carry final agent output into the feedback-loop row.
+        llm_feedback.record_response(run.output or "")
 
     run.finished_at = datetime.utcnow()
     db.commit()
@@ -1169,6 +1222,8 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session,
             (user/assistant dicts) to prepend as native multi-turn context.
             Enables provider-level prompt caching for repeated prefixes.
     """
+    from services import llm_feedback
+
     check_token_quota(agent.org_id, db)
     run = AgentRun(agent_id=agent.id, input=user_input, status="running")
     db.add(run)
@@ -1199,46 +1254,61 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session,
         else:
             raise RuntimeError(f"Unsupported provider: {p}")
 
-    try:
-        yield from _dispatch_stream(model, provider)
-    except ApprovalRequired as e:
-        # HITL pause — emit event so frontend can show approval UI
-        db.refresh(run)
-        yield {
-            "type": "approval_required",
-            "run_id": run.id,
-            "approval_id": e.approval_id,
-            "tool_name": e.tool_name,
-        }
-        return
-    except Exception as e:
-        # Runtime failure (e.g. permission denied) — try a different provider
-        fallback = _find_fallback_model(db, exclude_providers={provider}, tool_count=len(agent.tools or []))
-        if fallback:
-            fb_model, fb_provider = fallback
-            logger.warning("Provider %s failed (%s), falling back to %s/%s", provider, e, fb_provider, fb_model)
-            yield {"type": "thinking", "step": 0, "fallback": True, "detail": f"Retrying with {fb_provider}"}
-            try:
-                yield from _dispatch_stream(fb_model, fb_provider)
-            except ApprovalRequired as e2:
-                db.refresh(run)
-                yield {
-                    "type": "approval_required",
-                    "run_id": run.id,
-                    "approval_id": e2.approval_id,
-                    "tool_name": e2.tool_name,
-                }
-                return
-            except Exception as e2:
-                logger.exception("Fallback provider %s also failed", fb_provider)
+    with llm_feedback.span(
+        surface="agent",
+        org_id=agent.org_id,
+        agent_id=agent.id,
+        agent_run_id=run.id,
+        provider=provider,
+        model=model,
+        system_prompt=agent.system_prompt,
+        messages=[{"role": "user", "content": user_input}],
+    ):
+        try:
+            yield from _dispatch_stream(model, provider)
+        except ApprovalRequired as e:
+            # HITL pause — emit event so frontend can show approval UI
+            db.refresh(run)
+            yield {
+                "type": "approval_required",
+                "run_id": run.id,
+                "approval_id": e.approval_id,
+                "tool_name": e.tool_name,
+            }
+            return
+        except Exception as e:
+            # Runtime failure (e.g. permission denied) — try a different provider
+            fallback = _find_fallback_model(db, exclude_providers={provider}, tool_count=len(agent.tools or []))
+            if fallback:
+                fb_model, fb_provider = fallback
+                logger.warning("Provider %s failed (%s), falling back to %s/%s", provider, e, fb_provider, fb_model)
+                llm_feedback.record_provider(fb_provider, fb_model)
+                yield {"type": "thinking", "step": 0, "fallback": True, "detail": f"Retrying with {fb_provider}"}
+                try:
+                    yield from _dispatch_stream(fb_model, fb_provider)
+                except ApprovalRequired as e2:
+                    db.refresh(run)
+                    yield {
+                        "type": "approval_required",
+                        "run_id": run.id,
+                        "approval_id": e2.approval_id,
+                        "tool_name": e2.tool_name,
+                    }
+                    return
+                except Exception as e2:
+                    logger.exception("Fallback provider %s also failed", fb_provider)
+                    run.status = "failed"
+                    run.error = str(e2)
+                    llm_feedback.record_error(e2)
+                    yield {"type": "error", "error": str(e2)}
+            else:
+                logger.exception("Agent run failed (no fallback available)")
                 run.status = "failed"
-                run.error = str(e2)
-                yield {"type": "error", "error": str(e2)}
-        else:
-            logger.exception("Agent run failed (no fallback available)")
-            run.status = "failed"
-            run.error = str(e)
-            yield {"type": "error", "error": str(e)}
+                run.error = str(e)
+                llm_feedback.record_error(e)
+                yield {"type": "error", "error": str(e)}
+
+        llm_feedback.record_response(run.output or "")
 
     run.finished_at = datetime.utcnow()
     try:
@@ -1300,6 +1370,8 @@ def _stream_anthropic(agent, user_input, db, run, model, *, conversation_message
             call_metadata={"function": "_stream_anthropic", "step": step, "run_id": run.id},
         )
         increment_token_usage(agent.org_id, response.usage.input_tokens + response.usage.output_tokens, db)
+        from services import llm_feedback as _lf
+        _lf.record_response(None, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens)
 
         assistant_content = []
         for block in response.content:
@@ -1515,7 +1587,18 @@ def _stream_gemini(agent, user_input, db, run, model, *, conversation_messages=N
             run.status = "done"
             break
 
-        contents.append(response.candidates[0].content)
+        # Rebuild from parts to avoid Pydantic serialization warnings
+        assistant_parts = []
+        for part in response.candidates[0].content.parts:
+            if part.text:
+                assistant_parts.append(genai_types.Part.from_text(text=part.text))
+            if part.function_call:
+                assistant_parts.append(genai_types.Part.from_function_call(
+                    name=part.function_call.name,
+                    args=dict(part.function_call.args) if part.function_call.args else {},
+                ))
+        contents.append(genai_types.Content(role="model", parts=assistant_parts))
+
         function_responses = []
         for fc in function_calls:
             tool_input = dict(fc.args) if fc.args else {}
@@ -1676,6 +1759,8 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
             call_metadata={"function": "_resume_anthropic", "step": step, "run_id": run.id},
         )
         increment_token_usage(agent.org_id, response.usage.input_tokens + response.usage.output_tokens, db)
+        from services import llm_feedback as _lf
+        _lf.record_response(None, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens)
 
         assistant_content = []
         for block in response.content:

@@ -268,6 +268,23 @@ CONDITION_CATALOG = [
                     {"label": "None",     "value": "None"},
                 ],
             },
+            {
+                "field": "finding.validation", "label": "AI Validation Verdict",
+                "ops": ["eq", "neq"],
+                "value_type": "enum",
+                "options": [
+                    {"label": "Any validated",  "value": "validated"},
+                    {"label": "True positive",  "value": "true_positive"},
+                    {"label": "False positive", "value": "false_positive"},
+                    {"label": "Needs review",   "value": "needs_review"},
+                    {"label": "Not validated",  "value": "not_validated"},
+                ],
+            },
+            {
+                "field": "finding.corroborated", "label": "Corroborated (≥2 scanners)",
+                "ops": ["is_true", "is_false"],
+                "value_type": "none",
+            },
         ],
     },
     {
@@ -941,6 +958,21 @@ def _eval_finding_row(cond: dict, finding) -> bool:
         return result if op == "is_true" else not result
     if sub == "risk_factor":
         return _str_op(finding.risk_factor or "", op, str(value or ""))
+    if sub == "validation":
+        verdict = (getattr(finding, "llm_validation", None) or {}).get("verdict")
+        target = str(value or "")
+        if target == "validated":
+            present = verdict in ("true_positive", "false_positive", "needs_review")
+            return present if op == "eq" else not present
+        if target == "not_validated":
+            present = verdict is None
+            return present if op == "eq" else not present
+        matched = verdict == target
+        return matched if op == "eq" else not matched
+    if sub == "corroborated":
+        custom = getattr(finding, "custom_fields", None) or {}
+        result = bool((custom.get("corroboration") or {}).get("corroborated"))
+        return result if op == "is_true" else not result
     if sub in ("product", "cpe"):
         # Product/CPE are resolved via SBOM join at asset level, not per-finding row
         return False

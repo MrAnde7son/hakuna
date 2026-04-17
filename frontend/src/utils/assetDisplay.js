@@ -98,6 +98,18 @@ const TYPE_LABELS = {
   container_image: 'Container Image',
   code_repo: 'Code Repo',
   k8s_workload: 'K8s Workload',
+  ai_inference: 'AI Inference',
+  ai_service: 'AI Service',
+  ai_agent: 'AI Agent',
+  ai_notebook: 'AI Notebook',
+  vector_db: 'Vector DB',
+  iot_gateway: 'IoT Gateway',
+  camera: 'Camera',
+  nas: 'NAS',
+  printer: 'Printer',
+  plc: 'PLC',
+  scada: 'SCADA',
+  smart_building: 'Smart Building',
 };
 
 export function getAssetTypeLabel(assetType) {

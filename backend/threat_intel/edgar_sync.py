@@ -136,78 +136,272 @@ def get_latest_exhibit21(cik_padded: str) -> list[dict]:
     return _parse_exhibit21(ex21_html)
 
 
-def _parse_exhibit21(raw_html: str) -> list[dict]:
-    """Parse Exhibit 21 HTML to extract subsidiary name + jurisdiction pairs.
+# Headers that appear as column labels in Exhibit 21 tables. If a cell's
+# normalized text matches one of these, it is never an entity name.
+_EX21_HEADER_TOKENS = frozenset({
+    "name", "entity", "subsidiary", "subsidiaries", "subsidiary name",
+    "name of subsidiary", "name of entity", "legal entity",
+    "jurisdiction", "jurisdiction of incorporation", "jurisdiction of organization",
+    "jurisdiction of formation", "state of incorporation", "state of organization",
+    "state or country", "state/country", "state or country of incorporation",
+    "place of incorporation", "country", "country of incorporation", "state",
+    "percent", "percent owned", "percent ownership", "percent of voting power",
+    "ownership", "ownership percent", "% ownership", "% owned", "% ",
+    "doing business as", "d/b/a", "dba", "parent", "organization",
+    "list of subsidiaries", "exhibit", "ex-21", "ex-21.1",
+    "incorporation", "formation", "of",
+})
 
-    Exhibit 21 is typically a simple table or list of:
-      "Subsidiary Name" | "Jurisdiction of Incorporation"
+# Jurisdictions (states, provinces, countries) that, on their own, are never
+# entity names. We use membership here only to filter out bare-jurisdiction
+# cells that slipped into the name column; we still accept names that contain
+# these words (e.g. "Delaware Holdings LLC").
+_EX21_BARE_JURISDICTIONS = frozenset({
+    # US states
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+    "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
+    "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine",
+    "maryland", "massachusetts", "michigan", "minnesota", "mississippi",
+    "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey",
+    "new mexico", "new york", "north carolina", "north dakota", "ohio",
+    "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina",
+    "south dakota", "tennessee", "texas", "utah", "vermont", "virginia",
+    "washington", "west virginia", "wisconsin", "wyoming",
+    "district of columbia", "puerto rico",
+    # Countries / regions commonly seen
+    "united states", "usa", "u.s.", "u.s.a.", "uk", "u.k.",
+    "united kingdom", "england", "scotland", "ireland", "israel", "france",
+    "germany", "canada", "australia", "japan", "singapore", "india",
+    "netherlands", "the netherlands", "brazil", "china", "hong kong",
+    "south korea", "switzerland", "spain", "italy", "sweden", "norway",
+    "denmark", "finland", "austria", "belgium", "luxembourg", "portugal",
+    "mexico", "argentina", "chile", "colombia", "peru", "new zealand",
+    "south africa", "uae", "united arab emirates", "saudi arabia", "turkey",
+    "russia", "poland", "czech republic", "hungary", "romania", "greece",
+    "thailand", "vietnam", "indonesia", "malaysia", "philippines", "taiwan",
+    "cayman islands", "bermuda", "british virgin islands", "bvi",
+    "isle of man", "jersey", "guernsey", "gibraltar", "mauritius",
+    # Canadian provinces + other sub-national regions occasionally listed bare
+    "ontario", "quebec", "british columbia", "alberta",
+    # Generic
+    "various", "n/a",
+})
+
+_PERCENT_RE = re.compile(r"^\s*\d{1,3}(\.\d+)?\s*%\s*$")
+_NUMERIC_ONLY_RE = re.compile(r"^[\d\s/.,\-]+$")
+
+
+def _normalize_cell(text: str) -> str:
+    """Collapse whitespace and trim a cell value."""
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def _is_header_cell(text: str) -> bool:
+    return text.lower().strip(" .:*") in _EX21_HEADER_TOKENS
+
+
+def _is_percentage(text: str) -> bool:
+    return bool(_PERCENT_RE.match(text))
+
+
+def _is_bare_jurisdiction(text: str) -> bool:
+    low = text.lower().strip(" .,*")
+    # Strip a leading "State of " / "Commonwealth of " prefix
+    low = re.sub(r"^(state of|commonwealth of|republic of|kingdom of)\s+", "", low)
+    return low in _EX21_BARE_JURISDICTIONS
+
+
+def _is_date_or_footnote(text: str) -> bool:
+    low = text.lower()
+    if "as of " in low:
+        return True
+    if re.search(r"\b(december|january|february|march|april|may|june|july|august|september|october|november)\b\s*\d", low):
+        return True
+    if low.startswith("*") or low.startswith("(") and low.endswith(")"):
+        return True
+    return False
+
+
+def _looks_like_entity_name(text: str) -> bool:
+    """A string that could plausibly be a subsidiary name.
+
+    Must have letters, not be a bare header / jurisdiction / percentage / date.
     """
-    # Strip HTML tags
+    if not text or len(text) < 3:
+        return False
+    if not any(c.isalpha() for c in text):
+        return False
+    if _is_percentage(text) or _NUMERIC_ONLY_RE.match(text):
+        return False
+    if _is_header_cell(text):
+        return False
+    if _is_bare_jurisdiction(text):
+        return False
+    if _is_date_or_footnote(text):
+        return False
+    return True
+
+
+def _extract_table_rows(raw_html: str) -> list[list[str]]:
+    """Extract rows of non-empty cell values from any tables in the HTML.
+
+    Returns a flat list of row-cell lists across all tables. Empty cells and
+    cells that are only whitespace/formatting are dropped.
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return []
+
+    soup = BeautifulSoup(raw_html, "lxml")
+    rows: list[list[str]] = []
+    for tr in soup.find_all("tr"):
+        cells: list[str] = []
+        for td in tr.find_all(["td", "th"]):
+            txt = _normalize_cell(td.get_text(" ", strip=True))
+            if txt:
+                cells.append(txt)
+        if cells:
+            rows.append(cells)
+    return rows
+
+
+def _parse_table_rows(rows: list[list[str]]) -> list[dict]:
+    """Extract (name, jurisdiction) pairs from parsed table rows.
+
+    Uses the header row (if present) to locate the name and jurisdiction
+    columns. Falls back to heuristics row-by-row when no header is found
+    or a row's layout drifts.
+    """
+    # Locate header row and infer column indices.
+    name_col: Optional[int] = None
+    juris_col: Optional[int] = None
+    data_start = 0
+    for i, row in enumerate(rows[:10]):  # header is always near the top
+        header_hits = sum(1 for c in row if _is_header_cell(c))
+        if header_hits >= 2 or (len(row) >= 2 and all(_is_header_cell(c) for c in row)):
+            for j, c in enumerate(row):
+                low = c.lower().strip(" .:*")
+                if name_col is None and low in {
+                    "name", "entity", "subsidiary", "subsidiaries",
+                    "subsidiary name", "name of subsidiary", "name of entity",
+                    "legal entity",
+                }:
+                    name_col = j
+                elif juris_col is None and (
+                    "jurisdiction" in low
+                    or low in {"state", "country", "state/country",
+                               "state or country", "place of incorporation"}
+                ):
+                    juris_col = j
+            data_start = i + 1
+            break
+
+    subsidiaries: list[dict] = []
+    for row in rows[data_start:]:
+        if not row:
+            continue
+        # Drop rows that are entirely non-entity content (all-% or all-header).
+        if all(
+            _is_percentage(c) or _is_header_cell(c) or _is_date_or_footnote(c)
+            for c in row
+        ):
+            continue
+
+        # Prefer the mapped column, but fall back to the first plausible cell.
+        name = row[name_col] if (name_col is not None and name_col < len(row)) else ""
+        if not _looks_like_entity_name(name):
+            name = ""
+            for c in row:
+                if _looks_like_entity_name(c):
+                    name = c
+                    break
+
+        if not name:
+            continue
+
+        jurisdiction: Optional[str] = None
+        if juris_col is not None and juris_col < len(row):
+            candidate = row[juris_col]
+            if candidate and candidate != name and not _is_percentage(candidate):
+                jurisdiction = candidate
+        if not jurisdiction:
+            # Fall back to the last cell that looks like a jurisdiction.
+            for c in reversed(row):
+                if c == name or _is_percentage(c) or _is_header_cell(c):
+                    continue
+                if _is_bare_jurisdiction(c) or (len(c) < 40 and any(ch.isalpha() for ch in c)):
+                    jurisdiction = c
+                    break
+
+        subsidiaries.append({"name": name, "jurisdiction": jurisdiction})
+
+    return subsidiaries
+
+
+def _parse_text_lines(raw_html: str) -> list[dict]:
+    """Fallback parser for plain-text / non-tabular Exhibit 21 filings."""
     text = re.sub(r"<[^>]+>", "\n", raw_html)
     text = html.unescape(text)
+    lines = [_normalize_cell(line) for line in text.split("\n") if line.strip()]
 
-    # Split into lines and clean
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-
-    subsidiaries = []
-    skip_words = {
-        "exhibit", "subsidiaries", "name", "jurisdiction", "incorporation",
-        "organization", "document", "ex-21", "formation", "of", "ex-21.1",
-    }
-
+    subsidiaries: list[dict] = []
     i = 0
     while i < len(lines):
         line = lines[i]
 
-        # Skip header lines
-        if any(w in line.lower() for w in ("exhibit 21", "subsidiaries of", "name of subsidiary", "jurisdiction")):
+        if any(w in line.lower() for w in (
+            "exhibit 21", "subsidiaries of", "name of subsidiary",
+            "jurisdiction of", "list of subsidiaries",
+        )):
             i += 1
             continue
 
-        # A subsidiary entry: company name followed by jurisdiction
-        # Common pattern: "Company Name    State/Country"
-        # Or on separate lines: "Company Name" then "State/Country"
-        name = line.strip()
-        jurisdiction = None
+        if not _looks_like_entity_name(line):
+            i += 1
+            continue
 
-        # Check if jurisdiction is on the same line (tab/space separated)
-        # Common jurisdictions
-        known_jurisdictions = {
-            "delaware", "california", "texas", "new york", "maryland", "virginia",
-            "nevada", "washington", "georgia", "florida", "colorado", "massachusetts",
-            "illinois", "pennsylvania", "ohio", "oregon", "minnesota", "michigan",
-            "israel", "ireland", "france", "germany", "united kingdom", "uk",
-            "canada", "australia", "japan", "singapore", "india", "netherlands",
-            "brazil", "china", "hong kong", "south korea", "switzerland", "spain",
-            "italy", "sweden", "norway", "denmark", "finland", "austria", "belgium",
-        }
-
-        # Check next line for jurisdiction
+        jurisdiction: Optional[str] = None
         if i + 1 < len(lines):
-            next_line = lines[i + 1].strip()
-            if next_line.lower() in known_jurisdictions or len(next_line) < 30:
-                # Likely jurisdiction on next line
-                if next_line.lower() not in skip_words and len(next_line) > 1:
-                    jurisdiction = next_line
-                    i += 1
+            nxt = lines[i + 1]
+            if _is_bare_jurisdiction(nxt) or (
+                len(nxt) < 40 and any(ch.isalpha() for ch in nxt)
+                and not _is_header_cell(nxt)
+                and not _is_percentage(nxt)
+                and not _looks_like_entity_name(nxt)  # not another entity name
+            ):
+                jurisdiction = nxt
+                i += 1
 
-        # Skip if name looks like a header or is too short
-        if len(name) < 3 or name.lower() in skip_words:
-            i += 1
-            continue
-
-        # Skip lines that are just numbers or dates
-        if re.match(r"^[\d\s/.-]+$", name):
-            i += 1
-            continue
-
-        subsidiaries.append({
-            "name": name,
-            "jurisdiction": jurisdiction,
-        })
+        subsidiaries.append({"name": line, "jurisdiction": jurisdiction})
         i += 1
 
-    logger.info("Parsed %d subsidiaries from Exhibit 21", len(subsidiaries))
+    return subsidiaries
+
+
+def _parse_exhibit21(raw_html: str) -> list[dict]:
+    """Parse Exhibit 21 HTML to extract subsidiary name + jurisdiction pairs.
+
+    Exhibit 21 filings vary: modern 10-Ks use HTML tables with 2 or 3
+    columns (Name | [% Owned] | Jurisdiction); older or hand-formatted
+    filings are plain text with tab/whitespace alignment.
+
+    We first try the table parser (BeautifulSoup over <tr>/<td>) because
+    stripping tags and splitting on newlines loses the row boundary and
+    causes cells like "100%" or "Delaware" to be read as entity names.
+    If no <tr> rows are found we fall back to the line-based heuristic.
+    """
+    rows = _extract_table_rows(raw_html)
+    if rows:
+        subsidiaries = _parse_table_rows(rows)
+        if subsidiaries:
+            logger.info(
+                "Parsed %d subsidiaries from Exhibit 21 (table)", len(subsidiaries)
+            )
+            return subsidiaries
+
+    subsidiaries = _parse_text_lines(raw_html)
+    logger.info("Parsed %d subsidiaries from Exhibit 21 (text)", len(subsidiaries))
     return subsidiaries
 
 
