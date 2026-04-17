@@ -482,6 +482,7 @@ export const getInventoryAITools = (params) => _inv('ai-tools', params)
 export const getInventoryProcesses = (params) => _inv('processes', params)
 export const getInventoryDatabases = (params) => _inv('databases', params)
 export const getInventoryCredentials = (params) => _inv('credentials', params)
+export const getInventoryAPIEndpoints = (params) => _inv('api-endpoints', params)
 
 // SBOM
 const _sbom = (path, params = {}) => {

@@ -596,6 +596,42 @@ async def get_easm_events(hakuna_org_id: str, since: Optional[str] = None, limit
     return data if isinstance(data, list) else None
 
 
+async def get_easm_endpoints(
+    hakuna_org_id: str,
+    easm_asset_id: Optional[str] = None,
+    source: Optional[str] = None,
+    method: Optional[str] = None,
+    auth_required: Optional[bool] = None,
+    search: Optional[str] = None,
+    sort_by: str = "discovered_at",
+    order: str = "desc",
+    limit: int = 100,
+    offset: int = 0,
+) -> Optional[dict]:
+    """Fetch discovered endpoints (katana / kiterunner / openapi / graphql / llm_js)
+    from hakuna-scanner.
+
+    Returns the raw {total, limit, offset, endpoints: [...]} envelope on success,
+    None on network error. Caller is responsible for translating scanner asset
+    UUIDs back to backend asset IDs when needed.
+    """
+    params: dict = {"limit": limit, "offset": offset, "sort_by": sort_by, "order": order}
+    if easm_asset_id:
+        params["asset_id"] = easm_asset_id
+    if source:
+        params["source"] = source
+    if method:
+        params["method"] = method
+    if auth_required is not None:
+        params["auth_required"] = str(auth_required).lower()
+    if search:
+        params["search"] = search
+    data = await _hakuna_request(
+        "GET", f"/orgs/{hakuna_org_id}/assets/endpoints", params=params,
+    )
+    return data if isinstance(data, dict) else None
+
+
 async def get_easm_domains(hakuna_org_id: str) -> Optional[list]:
     """List target domains for a hakuna org."""
     data = await _hakuna_request("GET", f"/orgs/{hakuna_org_id}/domains")

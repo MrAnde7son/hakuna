@@ -846,6 +846,7 @@
     "services": "Services",
     "software": "Software",
     "processes": "Processes",
+    "apiEndpoints": "API Endpoints",
     "connections": "Connections",
     "shares": "Shares",
     "controls": "Controls",

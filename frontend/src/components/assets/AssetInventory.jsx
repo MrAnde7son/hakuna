@@ -1120,15 +1120,12 @@ export default function AssetInventory() {
             onChange={v => setFilter('assetType', v)}
             placeholder={t('assets.anyType', 'Any type')}
             options={[
-              { value: 'host', label: getAssetTypeLabel('host') },
-              { value: 'web_app', label: getAssetTypeLabel('web_app') },
-              { value: 'cloud_instance', label: getAssetTypeLabel('cloud_instance') },
-              { value: 'api_endpoint', label: getAssetTypeLabel('api_endpoint') },
-              { value: 'identity', label: getAssetTypeLabel('identity') },
-              { value: 'container_image', label: getAssetTypeLabel('container_image') },
-              { value: 'code_repo', label: getAssetTypeLabel('code_repo') },
-              { value: 'k8s_workload', label: getAssetTypeLabel('k8s_workload') },
-            ]}
+              'host', 'web_app', 'cloud_instance', 'api_endpoint',
+              'identity', 'container_image', 'code_repo', 'k8s_workload',
+              'ai_inference', 'ai_service', 'ai_agent', 'ai_notebook', 'vector_db',
+              'iot_gateway', 'camera', 'nas', 'printer',
+              'plc', 'scada', 'smart_building',
+            ].map(v => ({ value: v, label: getAssetTypeLabel(v) }))}
           />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

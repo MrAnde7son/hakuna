@@ -19,7 +19,7 @@ import {
   getInventoryShares, getInventorySoftware, getInventorySecurityControls,
   getInventoryComputers, getInventoryPasswordPolicies, getInventoryEnvVars,
   getInventoryCertificates, getInventoryAITools, getInventoryProcesses,
-  getInventoryDatabases, getInventoryCredentials,
+  getInventoryDatabases, getInventoryCredentials, getInventoryAPIEndpoints,
   getSecurityCoverage,
   getSBOMComponents, getSBOMComponentVulns, getSBOMAssetSummary,
   exportDownload,
@@ -71,6 +71,7 @@ function getTabGroups(t) {
       { key: 'services',  label: t('inventory.services'),  icon: Server },
       { key: 'software',  label: t('inventory.software'),  icon: Package },
       { key: 'processes', label: t('inventory.processes'),  icon: Activity },
+      { key: 'apiEndpoints', label: t('inventory.apiEndpoints'), icon: GitBranch },
     ]},
     { label: t('inventory.network'), icon: Network, children: [
       { key: 'netconns',  label: t('inventory.connections'), icon: Network },
@@ -97,7 +98,7 @@ function getTabGroups(t) {
 }
 
 // Flat list of all valid tab keys (for URL validation) — keys are static, no translation needed
-const ALL_TABS = ['surface', 'users', 'groups', 'loggedon', 'computers', 'databases', 'services', 'software', 'processes', 'netconns', 'shares', 'security', 'patches', 'policy', 'certs', 'credentials', 'tasks', 'envvars', 'aitools', 'easm_assets', 'easm_breaches', 'easm_corporate']
+const ALL_TABS = ['surface', 'users', 'groups', 'loggedon', 'computers', 'databases', 'services', 'software', 'processes', 'apiEndpoints', 'netconns', 'shares', 'security', 'patches', 'policy', 'certs', 'credentials', 'tasks', 'envvars', 'aitools', 'easm_assets', 'easm_breaches', 'easm_corporate']
 
 // Find which group a tab key belongs to
 function groupForTab(tabKey, tabGroups) {
@@ -3761,6 +3762,148 @@ function EasmCorporateTab({ scanId, assetId }) {
 }
 
 
+// ─── API Endpoints tab ─────────────────────────────────────
+// Discovered web/API endpoints (katana, kiterunner, openapi, graphql, llm_js).
+// Backed by `asset_endpoints` in the scanner DB, proxied through
+// /api/inventory/api-endpoints. Rows are sub-objects of an asset, not standalone assets.
+const API_EP_SOURCE_COLORS = {
+  katana:     '#0ea5e9',
+  kiterunner: '#ec4899',
+  openapi:    '#10b981',
+  graphql:    '#8b5cf6',
+  llm_js:     '#f59e0b',
+  sourcemap:  '#64748b',
+  wordlist:   '#78716c',
+}
+const API_EP_METHOD_COLORS = {
+  GET:    '#0ea5e9',
+  POST:   '#10b981',
+  PUT:    '#f59e0b',
+  PATCH:  '#f59e0b',
+  DELETE: '#dc2626',
+  HEAD:   '#64748b',
+  OPTIONS:'#64748b',
+}
+function statusColor(code) {
+  if (!code) return '#64748b'
+  if (code >= 500) return '#dc2626'
+  if (code >= 400) return '#f59e0b'
+  if (code >= 300) return '#a855f7'
+  if (code >= 200) return '#10b981'
+  return '#64748b'
+}
+
+function APIEndpointsTab({ scanId, assetId }) {
+  const [rows, setRows]           = useState([])
+  const [total, setTotal]         = useState(0)
+  const [page, setPage]           = useState(1)
+  const [loading, setLoading]     = useState(true)
+  const [search, setSearch]       = useState('')
+  const [sourceFilter, setSource] = useState('')
+  const [methodFilter, setMethod] = useState('')
+  const [authOnly, setAuthOnly]   = useState(false)
+  const [groupByAsset, setGroupByAsset] = useState(false)
+  const [sortBy, setSortBy]       = useState('discovered_at')
+  const [sortOrder, setSortOrder] = useState('desc')
+
+  const handleSort = (key) => {
+    if (sortBy === key) setSortOrder(o => o === 'asc' ? 'desc' : 'asc')
+    else { setSortBy(key); setSortOrder('asc') }
+  }
+
+  useEffect(() => { setPage(1) }, [scanId, assetId, search, sourceFilter, methodFilter, authOnly])
+
+  const load = useCallback(() => {
+    setLoading(true)
+    getInventoryAPIEndpoints({
+      scan_id: scanId, asset_id: assetId || null,
+      search: search || null,
+      source: sourceFilter || null,
+      method: methodFilter || null,
+      auth_required: authOnly ? true : null,
+      sort_by: sortBy, order: sortOrder,
+      page, page_size: INV_PAGE_SIZE,
+    })
+      .then(data => { setRows(data.api_endpoints || []); setTotal(data.total || 0) })
+      .catch(() => { setRows([]); setTotal(0) })
+      .finally(() => setLoading(false))
+  }, [scanId, assetId, search, sourceFilter, methodFilter, authOnly, sortBy, sortOrder, page])
+
+  useEffect(() => { load() }, [load])
+
+  const columns = [
+    { key: 'method', label: 'Method', width: '8%', sortable: true,
+      render: v => <Pill label={v || 'GET'} color={API_EP_METHOD_COLORS[(v || 'GET').toUpperCase()] || '#64748b'} />
+    },
+    { key: 'path', label: 'Path', width: '30%', sortable: true,
+      render: (v, r) => (
+        <code style={{ fontSize: 12, fontWeight: 600, wordBreak: 'break-all' }}>
+          {v || r.url}
+        </code>
+      )
+    },
+    { key: 'source', label: 'Source', width: '10%', sortable: true,
+      render: v => <Pill label={v || '—'} color={API_EP_SOURCE_COLORS[v] || '#64748b'} />
+    },
+    { key: 'status_code', label: 'Status', width: '7%', sortable: true,
+      render: v => v ? <Pill label={String(v)} color={statusColor(v)} /> : <Count n="—" />
+    },
+    { key: 'auth_required', label: 'Auth', width: '7%',
+      render: v => v === true ? <Pill label="Auth" color="#dc2626" /> : v === false ? <Count n="public" /> : <Count n="—" />
+    },
+    { key: 'content_type', label: 'Content-Type', width: '13%',
+      render: v => v ? <code style={{ fontSize: 11, background: 'var(--bg-muted)', padding: '1px 5px', borderRadius: 3 }}>{v}</code> : <Count n="—" />
+    },
+    { key: 'asset_label', label: 'Asset', width: '25%',
+      render: (v, r) => <>{v || '—'}<EnvPill env={r.asset_env} /></>
+    },
+  ]
+
+  return (
+    <Card>
+      <FilterBar>
+        <Input value={search} onChange={setSearch} placeholder="Search path or URL…" style={{ width: 260 }} />
+        <Select
+          value={sourceFilter}
+          onChange={setSource}
+          options={[
+            { value: '', label: 'All sources' },
+            { value: 'katana',     label: 'Katana (crawl)' },
+            { value: 'kiterunner', label: 'Kiterunner (API brute)' },
+            { value: 'openapi',    label: 'OpenAPI / Swagger' },
+            { value: 'graphql',    label: 'GraphQL' },
+            { value: 'llm_js',     label: 'LLM JS extraction' },
+            { value: 'sourcemap',  label: 'Source map' },
+            { value: 'wordlist',   label: 'Wordlist' },
+          ]}
+        />
+        <Select
+          value={methodFilter}
+          onChange={setMethod}
+          options={[
+            { value: '', label: 'All methods' },
+            { value: 'GET', label: 'GET' },
+            { value: 'POST', label: 'POST' },
+            { value: 'PUT', label: 'PUT' },
+            { value: 'PATCH', label: 'PATCH' },
+            { value: 'DELETE', label: 'DELETE' },
+          ]}
+        />
+        <Button variant={authOnly ? 'primary' : 'ghost'} size="sm" onClick={() => setAuthOnly(p => !p)}>
+          {authOnly ? '✕ Auth-required only' : 'Auth-required only'}
+        </Button>
+        <GroupByToggle value={groupByAsset} onChange={setGroupByAsset} />
+      </FilterBar>
+      {loading ? <Spinner /> : groupByAsset
+        ? <GroupedTable columns={columns} rows={rows} emptyMessage="No API endpoints discovered yet." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+        : <Table columns={columns} rows={rows} emptyMessage="No API endpoints discovered yet." onSort={handleSort} sortBy={sortBy} sortOrder={sortOrder} />
+      }
+      <Pagination page={page} total={total} pageSize={INV_PAGE_SIZE} onPageChange={setPage} noun="endpoints" />
+    </Card>
+  )
+}
+
+
 export default function InventoryExplorer() {
   const { t } = useTranslation()
   const { activeScanId } = useScan()
@@ -3803,6 +3946,7 @@ export default function InventoryExplorer() {
     certs:     <CertificatesTab      scanId={activeScanId} assetId={assetId} />,
     aitools:   <AIToolsTab           scanId={activeScanId} assetId={assetId} />,
     processes: <ProcessesTab         scanId={activeScanId} assetId={assetId} />,
+    apiEndpoints: <APIEndpointsTab   scanId={activeScanId} assetId={assetId} />,
     credentials: <CredentialsTab    scanId={activeScanId} assetId={assetId} />,
     easm_assets:    <EasmAssetsTab scanId={activeScanId} assetId={assetId} />,
     easm_breaches:  <EasmBreachesTab scanId={activeScanId} assetId={assetId} />,
