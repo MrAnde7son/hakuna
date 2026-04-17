@@ -25,7 +25,9 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func, desc, distinct, or_, cast, Text
 
 from core.database import get_db, init_db
-from core.query_guards import set_statement_timeout, check_row_count, MAX_PAGE_SIZE
+from core.query_guards import (
+    set_statement_timeout, disable_statement_timeout, check_row_count, MAX_PAGE_SIZE,
+)
 from core.limiter import limiter
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -113,7 +115,8 @@ from routes.correlation_routes import router as correlation_router
 from routes.validation_routes import router as validation_router
 from services.blast_radius import resolve_dc_asset_ids as _resolve_dc_asset_ids
 
-logging.basicConfig(level=logging.INFO)
+from core.logging_setup import configure_logging
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -935,6 +938,11 @@ def _run_scan_ingest(
     """Synchronous scan processing — runs in a thread pool with its own DB session."""
     from core.database import SessionLocal
     db = SessionLocal()
+    # Large scans can take several minutes to ingest; opt out of the
+    # per-session 30s statement timeout for the duration of this worker.
+    # The engine checkout hook restores the default when the connection
+    # is returned to the pool.
+    disable_statement_timeout(db)
 
     class _AuditUser:
         def __init__(self):
@@ -1501,6 +1509,11 @@ async def _background_process_scan(
     )
 
 
+# 200 MB cap — big enough for real Nessus files, small enough to keep
+# 5 concurrent uploads under the 2 GB Cloud Run memory budget.
+MAX_SCAN_UPLOAD_BYTES = int(os.getenv("MAX_SCAN_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+
+
 @app.post("/api/upload", dependencies=[Depends(check_scan_limit)])
 async def upload_scan(
     file: UploadFile = File(...),
@@ -1509,9 +1522,30 @@ async def upload_scan(
     user: User = Depends(require_auth),
     x_org_context: Optional[str] = Header(None, alias="X-Org-Context"),
 ):
-    """Upload and parse a vulnerability scan file (Nessus, Qualys, etc.)."""
-    content = await file.read()
+    """Upload and parse a vulnerability scan file (Nessus, Qualys, etc.).
+
+    Streams to memory in 1 MB chunks with a hard size cap to avoid OOM
+    under concurrent uploads on Cloud Run.
+    """
     effective_org_id = int(x_org_context) if x_org_context else user.org_id
+
+    # Stream the upload into a bounded buffer so a hostile client can't
+    # allocate unbounded memory inside a request handler.
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_SCAN_UPLOAD_BYTES:
+            raise HTTPException(
+                413,
+                f"Scan file too large (max {MAX_SCAN_UPLOAD_BYTES // (1024 * 1024)} MB)",
+            )
+        chunks.append(chunk)
+    content = b"".join(chunks)
+    del chunks
 
     # Quick format validation (fast — just checks extension/header bytes)
     source_parser = detect_parser(content, file.filename or "")

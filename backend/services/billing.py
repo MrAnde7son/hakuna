@@ -58,8 +58,18 @@ def create_portal_session(org: Organization, return_url: str) -> str:
 
 
 def handle_webhook_event(payload: bytes, sig_header: str) -> dict:
-    """Verify webhook signature and return the parsed event."""
+    """Verify webhook signature and return the parsed event.
+
+    Fails fast if STRIPE_WEBHOOK_SECRET is missing — an empty secret would
+    cause construct_event to accept any signature silently in some SDK
+    versions, enabling subscription forgery.
+    """
     webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    if not webhook_secret:
+        logger.error("STRIPE_WEBHOOK_SECRET is not configured; rejecting webhook")
+        raise ValueError("Billing webhook is not configured")
+    if not sig_header:
+        raise ValueError("Missing Stripe signature header")
     event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
     return event
 

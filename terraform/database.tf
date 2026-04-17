@@ -20,9 +20,11 @@ resource "google_sql_database_instance" "primary" {
     tier    = var.db_tier
     edition = "ENTERPRISE"
 
-    # Phase 1: ZONAL (single zone, no HA, ~$95/mo)
-    # Phase 3: change to "REGIONAL" for HA auto-failover (~$195/mo)
-    availability_type = "ZONAL"
+    # HA auto-failover across zones. Regional was marked as a "Phase 3"
+    # upgrade, but a closed beta with real customer data needs it from
+    # day one — a zonal outage with no HA is a multi-hour RTO with data loss
+    # risk. Override with `db_availability_type = "ZONAL"` for dev stacks.
+    availability_type = var.db_availability_type
 
     disk_size       = 20 # GB, auto-grows
     disk_type       = "PD_SSD"

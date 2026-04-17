@@ -64,6 +64,9 @@ class User(Base):
     email_verify_token = Column(String, nullable=True, index=True)
     email_verify_expires = Column(DateTime, nullable=True)
     saml_subject_id = Column(String, nullable=True, index=True)  # SAML NameID from IdP
+    # Brute-force protection: incremented on failed login, reset on success.
+    failed_login_count = Column(Integer, default=0, nullable=False)
+    locked_until = Column(DateTime, nullable=True)
 
     organization = relationship("Organization", back_populates="users")
 
@@ -598,6 +601,15 @@ class Finding(Base):
     automate_clicks = relationship("AutomateClick", back_populates="finding", cascade="all, delete-orphan")
     tickets = relationship("FindingTicket", back_populates="finding", cascade="all, delete-orphan")
     observations = relationship("FindingObservation", back_populates="finding", cascade="all, delete-orphan")
+
+    # Finding has no direct org_id — tenant scoping goes through
+    # scan.org_id or asset.org_id. Keep indexes on (scan_id, …) combos
+    # so the join planner stays on the indexed path.
+    __table_args__ = (
+        Index("ix_finding_scan_asset", "scan_id", "asset_id"),
+        Index("ix_finding_scan_severity_status", "scan_id", "severity", "workflow_status"),
+        Index("ix_finding_priority", "priority_score"),
+    )
 
 
 class FindingObservation(Base):

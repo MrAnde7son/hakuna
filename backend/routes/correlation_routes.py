@@ -1,11 +1,12 @@
 """API routes for cross-finding correlation and attack paths."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy import case, text
+from sqlalchemy.orm import Session, aliased
 
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
+from models.models import AttackPath, Asset
 from services.finding_correlator import correlate_findings
 
 router = APIRouter(prefix="/api/correlations", tags=["Correlations"])
@@ -40,53 +41,48 @@ async def list_attack_paths(
     if not org_id:
         raise HTTPException(status_code=400, detail="No org context")
 
-    where = "WHERE ap.org_id = :org_id"
-    params = {"org_id": org_id}
+    entry_a = aliased(Asset)
+    target_a = aliased(Asset)
 
-    if severity:
-        where += " AND ap.severity = :severity"
-        params["severity"] = severity
-
-    # Count
-    count_result = db.execute(
-        text(f"SELECT COUNT(*) FROM attack_paths ap {where}"),
-        params,
+    base_q = (
+        db.query(AttackPath, entry_a.hostname, target_a.hostname)
+        .outerjoin(entry_a, entry_a.id == AttackPath.entry_asset_id)
+        .outerjoin(target_a, target_a.id == AttackPath.target_asset_id)
+        .filter(AttackPath.org_id == org_id)
     )
-    total = count_result.scalar()
+    if severity:
+        base_q = base_q.filter(AttackPath.severity == severity)
 
-    # Fetch page
-    offset = (page - 1) * page_size
-    result = db.execute(
-        text(f"""
-            SELECT ap.id, ap.title, ap.severity, ap.steps, ap.chain_length, ap.created_at,
-                   ap.narrative, ap.recommended_mitigations,
-                   entry_a.hostname as entry_hostname, target_a.hostname as target_hostname
-            FROM attack_paths ap
-            LEFT JOIN assets entry_a ON entry_a.id = ap.entry_asset_id
-            LEFT JOIN assets target_a ON target_a.id = ap.target_asset_id
-            {where}
-            ORDER BY
-                CASE ap.severity WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3 ELSE 4 END,
-                ap.chain_length DESC
-            LIMIT :limit OFFSET :offset
-        """),
-        {**params, "limit": page_size, "offset": offset},
+    total = base_q.count()
+
+    severity_order = case(
+        (AttackPath.severity == "Critical", 1),
+        (AttackPath.severity == "High", 2),
+        (AttackPath.severity == "Medium", 3),
+        else_=4,
+    )
+
+    rows = (
+        base_q.order_by(severity_order, AttackPath.chain_length.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
+        .all()
     )
 
     paths = [
         {
-            "id": row.id,
-            "title": row.title,
-            "severity": row.severity,
-            "steps": row.steps,
-            "chain_length": row.chain_length,
-            "entry_hostname": row.entry_hostname,
-            "target_hostname": row.target_hostname,
-            "narrative": row.narrative,
-            "recommended_mitigations": row.recommended_mitigations,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "id": ap.id,
+            "title": ap.title,
+            "severity": ap.severity,
+            "steps": ap.steps,
+            "chain_length": ap.chain_length,
+            "entry_hostname": entry_hostname,
+            "target_hostname": target_hostname,
+            "narrative": ap.narrative,
+            "recommended_mitigations": ap.recommended_mitigations,
+            "created_at": ap.created_at.isoformat() if ap.created_at else None,
         }
-        for row in result.fetchall()
+        for ap, entry_hostname, target_hostname in rows
     ]
 
     return {"items": paths, "total": total, "page": page, "page_size": page_size}

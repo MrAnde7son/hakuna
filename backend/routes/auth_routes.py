@@ -20,7 +20,8 @@ from core.auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
     require_auth, require_role, get_current_user, get_accessible_org_ids,
     get_user_custom_roles, resolve_effective_permissions, ALL_PERMISSION_KEYS,
-    ACCESS_TOKEN_EXPIRE_MINUTES,
+    ACCESS_TOKEN_EXPIRE_MINUTES, validate_password_strength,
+    LOGIN_FAILURE_THRESHOLD, LOGIN_LOCKOUT_MINUTES,
 )
 from core.audit import log_audit, diff as _diff
 from core.i18n import get_locale_from_request, t as translate
@@ -145,8 +146,9 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(400, translate("email_exists", locale))
 
-    if len(body.password) < 8:
-        raise HTTPException(400, translate("password_too_short", locale))
+    pw_error = validate_password_strength(body.password)
+    if pw_error:
+        raise HTTPException(400, pw_error)
 
     # Create org
     slug = _slugify(body.org_name)
@@ -270,7 +272,22 @@ async def login(body: LoginRequest, request: Request, db: Session = Depends(get_
     """Authenticate with email + password, returns JWT."""
     locale = get_locale_from_request(request)
     user = db.query(User).filter(User.email == body.email).first()
+
+    # Per-account lockout — returns the same 401 as invalid creds while active
+    # to avoid account-enumeration via differential responses.
+    now = datetime.utcnow()
+    if user and user.locked_until and user.locked_until > now:
+        raise HTTPException(401, translate("invalid_credentials", locale))
+
     if not user or not user.hashed_password or not verify_password(body.password, user.hashed_password):
+        if user:
+            user.failed_login_count = (user.failed_login_count or 0) + 1
+            if user.failed_login_count >= LOGIN_FAILURE_THRESHOLD:
+                user.locked_until = now + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+                logger.warning(
+                    f"Account locked due to repeated failures: {user.email}"
+                )
+            db.commit()
         raise HTTPException(401, translate("invalid_credentials", locale))
     if not user.is_active:
         raise HTTPException(403, translate("account_deactivated", locale))
@@ -279,8 +296,10 @@ async def login(body: LoginRequest, request: Request, db: Session = Depends(get_
     if not org or not org.is_active:
         raise HTTPException(403, translate("org_deactivated", locale))
 
-    # Update last login
-    user.last_login_at = datetime.utcnow()
+    # Successful login — clear counters and update last_login_at.
+    user.failed_login_count = 0
+    user.locked_until = None
+    user.last_login_at = now
 
     # Backfill any missing built-in team roles, tags, and auto-tag rules.
     seed_builtin_team_roles(db, org.id)
@@ -435,8 +454,9 @@ async def forgot_password(body: ForgotPasswordRequest, request: Request, db: Ses
 @limiter.limit("5/minute")
 async def reset_password(body: ResetPasswordRequest, request: Request, db: Session = Depends(get_db)):
     """Reset password using a valid token from a reset email."""
-    if len(body.new_password) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
+    pw_error = validate_password_strength(body.new_password)
+    if pw_error:
+        raise HTTPException(400, pw_error)
 
     user = db.query(User).filter(User.password_reset_token == body.token).first()
     if not user or not user.password_reset_expires or user.password_reset_expires < datetime.utcnow():
@@ -445,6 +465,9 @@ async def reset_password(body: ResetPasswordRequest, request: Request, db: Sessi
     user.hashed_password = hash_password(body.new_password)
     user.password_reset_token = None
     user.password_reset_expires = None
+    # Reset lockout on successful password change.
+    user.failed_login_count = 0
+    user.locked_until = None
     log_audit(db, "update", "user", user.id, entity_name=user.email,
               changes={"password": "reset via email"})
     db.commit()
@@ -498,8 +521,9 @@ async def refresh_token(user: User = Depends(require_auth), db: Session = Depend
 async def change_password(body: ChangePasswordRequest, user: User = Depends(require_auth), db: Session = Depends(get_db)):
     if not verify_password(body.current_password, user.hashed_password):
         raise HTTPException(400, "Current password is incorrect")
-    if len(body.new_password) < 8:
-        raise HTTPException(400, "Password must be at least 8 characters")
+    pw_error = validate_password_strength(body.new_password)
+    if pw_error:
+        raise HTTPException(400, pw_error)
     user.hashed_password = hash_password(body.new_password)
     log_audit(db, "update", "user", user.id, entity_name=user.email,
               changes={"password": "changed"}, actor=user)

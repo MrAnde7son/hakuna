@@ -72,16 +72,57 @@ BUILTIN_ROLE_DEFAULTS = {
 
 _DEFAULT_JWT_SECRET = "change-me-in-production-use-a-real-secret"
 JWT_SECRET = os.environ.get("JWT_SECRET", _DEFAULT_JWT_SECRET)
-if JWT_SECRET == _DEFAULT_JWT_SECRET and not os.environ.get("DATABASE_URL", "sqlite://").startswith("sqlite"):
+_env = os.environ.get("ENVIRONMENT", "production").lower()
+_is_non_prod = _env in ("development", "dev", "test", "testing", "local")
+if JWT_SECRET == _DEFAULT_JWT_SECRET and not _is_non_prod:
     raise RuntimeError(
-        "JWT_SECRET must be set to a strong random value in production. "
-        "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        "JWT_SECRET must be set to a strong random value outside development. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\" "
+        "and store it in Secret Manager. Set ENVIRONMENT=development to bypass for local dev."
+    )
+if JWT_SECRET != _DEFAULT_JWT_SECRET and len(JWT_SECRET) < 32:
+    raise RuntimeError(
+        "JWT_SECRET is too short (<32 chars). Use a strong random value."
     )
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))  # 8 hours
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer(auto_error=False)
+
+# ── Password policy ───────────────────────────────────────
+
+PASSWORD_MIN_LENGTH = 12
+# Brute-force lockout settings — used by login endpoints.
+LOGIN_FAILURE_THRESHOLD = 5
+LOGIN_LOCKOUT_MINUTES = 15
+
+
+def validate_password_strength(password: str) -> Optional[str]:
+    """Return an error message if password is weak, or None if acceptable.
+
+    Policy: >=12 chars, and contains at least three of four classes
+    (lower, upper, digit, symbol). Rejects obvious weak passwords.
+    """
+    if not password or len(password) < PASSWORD_MIN_LENGTH:
+        return f"Password must be at least {PASSWORD_MIN_LENGTH} characters."
+    classes = 0
+    if any(c.islower() for c in password):
+        classes += 1
+    if any(c.isupper() for c in password):
+        classes += 1
+    if any(c.isdigit() for c in password):
+        classes += 1
+    if any(not c.isalnum() for c in password):
+        classes += 1
+    if classes < 3:
+        return (
+            "Password must include at least three of: lowercase, uppercase, "
+            "digit, symbol."
+        )
+    if password.lower() in {"password1234", "passw0rd1234", "hakuna12345!", "administrator"}:
+        return "Password is too common."
+    return None
 
 
 # ── Password helpers ──────────────────────────────────────

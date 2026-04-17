@@ -54,14 +54,25 @@ variable "cloud_run_min_instances" {
 
 variable "cloud_run_max_instances" {
   type        = number
-  description = "Maximum Cloud Run instances"
-  default     = 5
+  description = "Maximum Cloud Run instances. Bumped from 5 → 12 so concurrent scan uploads (200 MB each × 2 Gi per instance) don't OOM the service under beta load."
+  default     = 12
 }
 
 variable "db_tier" {
   type        = string
   description = "Cloud SQL machine type. Phase 1: db-custom-2-4096. Phase 2+: db-custom-2-7680 or larger."
   default     = "db-custom-2-4096"
+}
+
+variable "db_availability_type" {
+  type        = string
+  description = "Cloud SQL availability type. REGIONAL enables HA auto-failover (~2x cost). Use ZONAL only for dev/staging."
+  default     = "REGIONAL"
+
+  validation {
+    condition     = contains(["REGIONAL", "ZONAL"], var.db_availability_type)
+    error_message = "db_availability_type must be REGIONAL or ZONAL."
+  }
 }
 
 variable "scanner_machine_type" {

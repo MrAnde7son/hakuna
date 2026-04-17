@@ -35,6 +35,18 @@ def set_statement_timeout(db: Session, seconds: int = STATEMENT_TIMEOUT_SECONDS)
         db.execute(text(f"SET LOCAL statement_timeout = '{seconds}s'"))
 
 
+def disable_statement_timeout(db: Session) -> None:
+    """Lift the per-session statement timeout for long-running jobs.
+
+    Scan ingest, report exports, and bulk migrations can exceed the default
+    30s budget. The checkout hook in core.database resets the session
+    timeout when the connection returns to the pool, so this override is
+    contained to the current session.
+    """
+    if DATABASE_URL.startswith("postgresql"):
+        db.execute(text("SET statement_timeout = 0"))
+
+
 # ── Row count guard for aggregation endpoints ────────────────────────────
 
 def check_row_count(db: Session, query, limit: int = MAX_AGGREGATION_ROWS) -> int:

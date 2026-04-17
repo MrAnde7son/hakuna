@@ -12,7 +12,7 @@ resource "google_cloud_run_v2_service" "api" {
 
     scaling {
       min_instance_count = var.cloud_run_min_instances # 1 = no cold starts
-      max_instance_count = var.cloud_run_max_instances # 5 for Phase 1
+      max_instance_count = var.cloud_run_max_instances
     }
 
     # Faster startup for the first request when an instance spins up
@@ -58,6 +58,13 @@ resource "google_cloud_run_v2_service" "api" {
 
       env {
         name  = "ENV"
+        value = "production"
+      }
+
+      # Read by core.auth / services.credential_vault to fail-fast when
+      # JWT_SECRET or INTEGRATION_SECRET_KEY is missing.
+      env {
+        name  = "ENVIRONMENT"
         value = "production"
       }
 
