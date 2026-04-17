@@ -91,7 +91,10 @@ def dispatch_validation_for_finding(db: Session, finding_id: int) -> dict:
     if not asset:
         return {"error": f"finding {finding_id} has no linked asset"}
 
-    org_id = asset.org_id
+    # Assets have no org_id column; it lives on the parent scan row.
+    org_id = asset.scan.org_id if asset.scan else None
+    if org_id is None:
+        return {"error": f"finding {finding_id}'s asset has no owning scan/org"}
     agent = get_or_create_validator_agent(db, org_id)
 
     user_input = (
@@ -147,11 +150,12 @@ def run_scheduler_cycle(max_per_cycle: int = 5, min_severity: int = 3) -> dict:
     """
     db: Session = SessionLocal()
     try:
-        # Fetch candidates: need SQLite-safe JSON access
+        # Fetch candidates: need SQLite-safe JSON access.
+        # Note: assets has no org_id column — org is scoped through scans.
         rows = db.execute(text("""
-            SELECT f.id, a.org_id
+            SELECT f.id, s.org_id
             FROM findings f
-            JOIN assets a ON a.id = f.asset_id
+            JOIN scans s ON s.id = f.scan_id
             WHERE f.severity >= :min_sev
               AND f.source_type = 'vm_scanner'
               AND f.llm_validation IS NOT NULL
