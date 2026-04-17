@@ -38,7 +38,8 @@
     "documentation": "Documentation",
     "help": "Help & Documentation",
     "blastRadius": "Blast Radius",
-    "scans": "Scans"
+    "scans": "Scans",
+    "attackPaths": "Attack Paths"
   },
   "auth": {
     "signIn": "Sign in",
@@ -140,8 +141,8 @@
     "showingFirst": "Showing first {{shown}} of {{total}} findings. Use filters to narrow results.",
     "prev": "Prev",
     "pageOf": "Page {{page}} of {{totalPages}} ({{total}} findings)",
-    "sev": "Sev",
-    "priority": "Priority",
+    "sev": "Base Severity",
+    "priority": "Risk Score",
     "pluginFinding": "Plugin / Finding",
     "cvss3": "CVSS3",
     "cvss2": "CVSS2",
@@ -845,6 +846,7 @@
     "services": "Services",
     "software": "Software",
     "processes": "Processes",
+    "apiEndpoints": "API Endpoints",
     "connections": "Connections",
     "shares": "Shares",
     "controls": "Controls",

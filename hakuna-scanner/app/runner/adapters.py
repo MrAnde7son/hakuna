@@ -30,7 +30,8 @@ def register_enrichment_scanners() -> None:
                protocol_probe, katana, kiterunner
       Group 2: trufflehog, llm_js_extraction
       Group 3: classify_assets
-      Group 4: nmap_dispatch (special-cased — handled by _dispatch_nmap)
+      Group 4: ai_exposure (depends on classify_assets setting asset_type)
+      Group 5: nmap_dispatch (special-cased — handled by _dispatch_nmap)
     """
     # Lazy imports to avoid circular deps
     from app.runner.tools import (
@@ -42,6 +43,7 @@ def register_enrichment_scanners() -> None:
         TrufflehogRunner,
     )
     from app.tasks.enrichment import (
+        _do_ai_exposure,
         _do_cdncheck,
         _do_classify_assets,
         _do_endpoint_probe,
@@ -216,13 +218,26 @@ def register_enrichment_scanners() -> None:
         estimated_cost="low",
     ))
 
-    # ── Group 4: Nmap dispatch (special-cased — stage_fn=None) ──
+    # ── Group 4: AI exposure probes (needs asset_type from classify_assets) ──
+    register_scanner(ScannerSpec(
+        name="ai_exposure",
+        stage="enrichment",
+        group=4,
+        stage_fn=_do_ai_exposure,
+        inputs=["asset_type", "hostname", "open_ports"],
+        outputs=["findings"],
+        depends_on=["classify_assets"],
+        cdn_safe=False,  # probes hit AI service endpoints directly
+        estimated_cost="low",
+    ))
+
+    # ── Group 5: Nmap dispatch (special-cased — stage_fn=None) ──
     # The orchestrator handles 'nmap_dispatch' specifically via _dispatch_nmap.
     # We still register it so it appears in the registry inventory.
     register_scanner(ScannerSpec(
         name="nmap_dispatch",
         stage="enrichment",
-        group=4,
+        group=5,
         stage_fn=None,  # handled by _dispatch_nmap in enrichment.py
         inputs=["hostname", "open_ports"],
         outputs=["os_fingerprint", "service_versions"],

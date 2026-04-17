@@ -127,6 +127,7 @@ def narrate_attack_paths(
             user_prompt=json.dumps(context, indent=2),
             max_tokens=1024,
             model_env="LLM_NARRATIVE_MODEL",
+            db=db,
         )
 
         if not narrative:

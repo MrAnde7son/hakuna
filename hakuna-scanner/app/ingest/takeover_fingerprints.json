@@ -1,0 +1,181 @@
+{
+  "_comment": "Subdomain takeover fingerprint database. Each service entry describes how to confirm that a dangling CNAME (or A record pointing at a cloud provider's IP range) can be claimed by an attacker. Matching is done on the CNAME target (cname_patterns) AND/OR the HTTP response body + status code returned when fetching the dangling hostname. References: can-i-take-over-xyz, nuclei-templates/http/takeovers, Project Discovery and EdOverflow community fingerprints.",
+
+  "services": [
+    {
+      "name": "aws-s3",
+      "cname_patterns": [
+        "s3.amazonaws.com",
+        ".s3-website",
+        ".s3-website-",
+        ".s3.dualstack.",
+        ".s3-accelerate.",
+        ".s3-external-"
+      ],
+      "http_fingerprints": [
+        "NoSuchBucket",
+        "The specified bucket does not exist"
+      ],
+      "status_codes": [404],
+      "severity": "high",
+      "description": "The CNAME points at an S3 bucket endpoint that does not exist. An attacker can register the bucket name in their own AWS account and serve content on this hostname."
+    },
+    {
+      "name": "github-pages",
+      "cname_patterns": [
+        ".github.io",
+        ".github.map.fastly.net"
+      ],
+      "http_fingerprints": [
+        "There isn't a GitHub Pages site here.",
+        "For root URLs (like http://example.com/) you must provide an index.html file"
+      ],
+      "status_codes": [404],
+      "severity": "high",
+      "description": "The CNAME points at a GitHub Pages site that no longer exists. An attacker can create a repository with the matching username.github.io/project mapping and serve content on this hostname."
+    },
+    {
+      "name": "heroku",
+      "cname_patterns": [
+        ".herokuapp.com",
+        ".herokudns.com",
+        ".herokussl.com"
+      ],
+      "http_fingerprints": [
+        "No such app",
+        "herokucdn.com/error-pages/no-such-app.html"
+      ],
+      "status_codes": [404],
+      "severity": "high",
+      "description": "The CNAME points at a Heroku app that no longer exists. An attacker can create a new Heroku app with the same slug and serve content on this hostname."
+    },
+    {
+      "name": "azure-webapps",
+      "cname_patterns": [
+        ".azurewebsites.net",
+        ".cloudapp.net",
+        ".cloudapp.azure.com",
+        ".trafficmanager.net",
+        ".azureedge.net",
+        ".azurefd.net",
+        ".blob.core.windows.net",
+        ".cloudapp.azure.com"
+      ],
+      "http_fingerprints": [
+        "404 Web Site not found",
+        "Error 404 - Web app not found",
+        "The resource you are looking for has been removed"
+      ],
+      "status_codes": [404],
+      "severity": "high",
+      "description": "The CNAME points at an Azure resource (Web App, CDN, Traffic Manager, Blob Storage) that has been released. An attacker can re-register the resource name and serve content on this hostname."
+    },
+    {
+      "name": "netlify",
+      "cname_patterns": [
+        ".netlify.app",
+        ".netlify.com"
+      ],
+      "http_fingerprints": [
+        "Not Found - Request ID",
+        "Not found - Request ID:"
+      ],
+      "status_codes": [404],
+      "severity": "high",
+      "description": "The CNAME points at a Netlify site that no longer exists. An attacker can claim the site slug on Netlify and serve content on this hostname."
+    },
+    {
+      "name": "fastly",
+      "cname_patterns": [
+        ".fastly.net",
+        ".global.prod.fastly.net"
+      ],
+      "http_fingerprints": [
+        "Fastly error: unknown domain",
+        "Please check that this domain has been added to a service"
+      ],
+      "status_codes": [500, 404],
+      "severity": "high",
+      "description": "The CNAME points at Fastly but no service is configured for this hostname. An attacker who controls a Fastly account can add this hostname to their service and serve content on it."
+    },
+    {
+      "name": "shopify",
+      "cname_patterns": [
+        ".myshopify.com"
+      ],
+      "http_fingerprints": [
+        "Sorry, this shop is currently unavailable.",
+        "Only one step left!"
+      ],
+      "status_codes": [404, 200],
+      "severity": "high",
+      "description": "The CNAME points at a Shopify store that is no longer available. An attacker can register the store slug and serve content on this hostname."
+    },
+    {
+      "name": "tumblr",
+      "cname_patterns": [
+        ".tumblr.com",
+        ".domains.tumblr.com"
+      ],
+      "http_fingerprints": [
+        "Whatever you were looking for doesn't currently exist at this address.",
+        "There's nothing here."
+      ],
+      "status_codes": [404],
+      "severity": "medium",
+      "description": "The CNAME points at a Tumblr blog that is not claimed. An attacker can register the Tumblr username and serve content on this hostname."
+    },
+    {
+      "name": "unbounce",
+      "cname_patterns": [
+        ".unbouncepages.com"
+      ],
+      "http_fingerprints": [
+        "The requested URL was not found on this server",
+        "404 Page Not Found"
+      ],
+      "status_codes": [404],
+      "severity": "medium",
+      "description": "The CNAME points at an Unbounce landing page that does not exist. An attacker with an Unbounce account can claim the page slug and serve content on this hostname."
+    },
+    {
+      "name": "cargo-collective",
+      "cname_patterns": [
+        ".cargocollective.com",
+        ".cargo.site"
+      ],
+      "http_fingerprints": [
+        "404 Not Found",
+        "If you're moving your domain away from Cargo you must make this configuration through your registrar's DNS control panel."
+      ],
+      "status_codes": [404],
+      "severity": "medium",
+      "description": "The CNAME points at a Cargo Collective site that is no longer active. An attacker can claim the site on Cargo and serve content on this hostname."
+    },
+    {
+      "name": "ghost",
+      "cname_patterns": [
+        ".ghost.io"
+      ],
+      "http_fingerprints": [
+        "The thing you were looking for is no longer here, or never was",
+        "Domain error"
+      ],
+      "status_codes": [404],
+      "severity": "high",
+      "description": "The CNAME points at a Ghost.io blog that no longer exists. An attacker can register the blog slug and serve content on this hostname."
+    },
+    {
+      "name": "surge",
+      "cname_patterns": [
+        ".surge.sh"
+      ],
+      "http_fingerprints": [
+        "project not found"
+      ],
+      "status_codes": [404],
+      "severity": "high",
+      "description": "The CNAME points at a Surge.sh project that does not exist. An attacker can publish a new Surge.sh project with the matching slug and serve content on this hostname."
+    }
+  ]
+}

@@ -1,0 +1,175 @@
+{
+  "_comment": "AI/LLM/vector-DB exposure probes. Each probe verifies that a previously-classified AI service accepts requests WITHOUT authentication. A success match means the endpoint is publicly queryable — this is emitted as a Finding with the specified severity. Probes are intentionally read-only and use empty/minimal bodies; they must never trigger inference, write data, or cost money. Success criteria live under `success_when`: status_in (HTTP status whitelist) plus at least one of body_contains (substring whitelist) or body_contains_any (substring whitelist — any one wins). Probes should match the *unauthenticated-and-responsive* shape, NOT the *exploited* shape.",
+
+  "probes": [
+    {
+      "name": "ollama-unauth-tags",
+      "service": "ollama",
+      "asset_types": ["ai_inference"],
+      "method": "GET",
+      "path": "/api/tags",
+      "success_when": {
+        "status_in": [200],
+        "body_contains_any": ["\"models\"", "\"name\":", "\"modified_at\""]
+      },
+      "severity": "critical",
+      "title": "Ollama API accessible without authentication",
+      "description": "The Ollama inference server exposes /api/tags without any authentication. An attacker can list loaded models, pull new ones, execute arbitrary inference (incurring GPU cost), or exfiltrate model data. Ollama has no built-in auth and should never be exposed to the public internet."
+    },
+    {
+      "name": "ollama-unauth-generate",
+      "service": "ollama",
+      "asset_types": ["ai_inference"],
+      "method": "POST",
+      "path": "/api/generate",
+      "body": {},
+      "success_when": {
+        "status_in": [200, 400],
+        "body_contains_any": ["\"model\"", "\"prompt\"", "model is required", "missing required"]
+      },
+      "severity": "critical",
+      "title": "Ollama /api/generate accepts unauthenticated requests",
+      "description": "POST /api/generate on the Ollama server responds to unauthenticated callers (empty body returns a 400 complaining about missing fields rather than 401/403). An attacker can submit inference jobs, consume GPU resources, and potentially trigger prompt-injection against any loaded model."
+    },
+    {
+      "name": "qdrant-unauth-collections",
+      "service": "qdrant",
+      "asset_types": ["vector_db"],
+      "method": "GET",
+      "path": "/collections",
+      "success_when": {
+        "status_in": [200],
+        "body_contains_any": ["\"collections\"", "\"result\":", "\"status\":\"ok\""]
+      },
+      "severity": "high",
+      "title": "Qdrant vector DB accessible without API key",
+      "description": "The Qdrant /collections endpoint returns a 200 without an API key header. An attacker can enumerate collections, read embeddings (potentially leaking training data or PII), and write/delete vectors. Qdrant's API key is opt-in and is clearly not configured here."
+    },
+    {
+      "name": "milvus-unauth-describe",
+      "service": "milvus",
+      "asset_types": ["vector_db"],
+      "method": "POST",
+      "path": "/v1/vector/collections/describe",
+      "body": {"collectionName": "default"},
+      "success_when": {
+        "status_in": [200, 400, 404],
+        "body_contains_any": ["\"code\":", "collectionName", "collection not found", "\"data\":"]
+      },
+      "severity": "high",
+      "title": "Milvus HTTP API accessible without authentication",
+      "description": "The Milvus HTTP proxy responds to /v1/vector/collections/describe without authentication. An attacker can enumerate vector collections, describe their schemas, and issue queries against stored embeddings."
+    },
+    {
+      "name": "chroma-unauth-collections",
+      "service": "chroma",
+      "asset_types": ["vector_db"],
+      "method": "GET",
+      "path": "/api/v1/collections",
+      "success_when": {
+        "status_in": [200],
+        "body_contains_any": ["[", "\"id\"", "\"name\":", "\"metadata\":"]
+      },
+      "severity": "high",
+      "title": "Chroma vector DB accessible without authentication",
+      "description": "The Chroma /api/v1/collections endpoint returns a 200 without any auth token. Chroma by default has no authentication; an attacker can list collections, read embeddings, and insert or delete vectors."
+    },
+    {
+      "name": "vllm-unauth-models",
+      "service": "vllm",
+      "asset_types": ["ai_inference"],
+      "method": "GET",
+      "path": "/v1/models",
+      "success_when": {
+        "status_in": [200],
+        "body_contains_any": ["\"object\":\"list\"", "\"data\"", "\"owned_by\""]
+      },
+      "severity": "high",
+      "title": "vLLM / OpenAI-compatible API accessible without authentication",
+      "description": "The /v1/models endpoint returns a 200 without requiring an Authorization header. An attacker can enumerate loaded models and submit inference requests to /v1/chat/completions, consuming GPU resources. If --api-key was intended on vLLM, it is not enforced on this deployment."
+    },
+    {
+      "name": "vllm-unauth-chat-completions",
+      "service": "vllm",
+      "asset_types": ["ai_inference"],
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "body": {},
+      "success_when": {
+        "status_in": [200, 400, 422],
+        "body_contains_any": ["\"messages\"", "\"model\"", "field required", "value_error", "missing"]
+      },
+      "fail_when": {
+        "status_in": [401, 403]
+      },
+      "severity": "critical",
+      "title": "vLLM / OpenAI-compatible /v1/chat/completions accepts unauthenticated requests",
+      "description": "POST /v1/chat/completions with an empty body returns 400/422 (missing field) rather than 401/403, confirming the endpoint does not require authentication. An attacker can submit arbitrary prompts, consume GPU resources, and attempt prompt-injection attacks."
+    },
+    {
+      "name": "mcp-unauth-tools-list-streamable",
+      "service": "mcp",
+      "asset_types": ["ai_agent"],
+      "method": "POST",
+      "path": "/mcp",
+      "headers": {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+      "body": {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+      "success_when": {
+        "status_in": [200],
+        "body_contains_any": ["\"tools\"", "\"jsonrpc\"", "\"result\"", "\"name\":"]
+      },
+      "severity": "critical",
+      "title": "MCP server exposes tools/list without authentication",
+      "description": "The Model Context Protocol server at /mcp responds to a JSON-RPC tools/list call without any auth. MCP servers often wrap filesystem, shell, database, or API tools — exposing them unauthenticated gives an attacker a remote tool-use harness. This is typically an internal development server that was never meant to be reachable from the internet."
+    },
+    {
+      "name": "mcp-unauth-tools-list-sse",
+      "service": "mcp",
+      "asset_types": ["ai_agent"],
+      "method": "GET",
+      "path": "/sse",
+      "success_when": {
+        "status_in": [200],
+        "body_contains_any": ["event: endpoint", "event:endpoint", "messages/", "\"jsonrpc\""]
+      },
+      "severity": "critical",
+      "title": "MCP SSE transport exposed without authentication",
+      "description": "The MCP server's legacy /sse transport responds to a GET without any auth, advertising a messages endpoint for subsequent JSON-RPC calls. An attacker can open a session and invoke tools/list + tools/call against whatever tools the server exposes."
+    },
+    {
+      "name": "litellm-unauth-key-info",
+      "service": "litellm",
+      "asset_types": ["ai_gateway"],
+      "method": "GET",
+      "path": "/key/info",
+      "success_when": {
+        "status_in": [200],
+        "body_contains_any": ["\"key\"", "\"info\"", "\"spend\"", "\"user_id\"", "\"team_id\""]
+      },
+      "fail_when": {
+        "status_in": [401, 403]
+      },
+      "severity": "high",
+      "title": "LiteLLM /key/info accessible without authentication",
+      "description": "LiteLLM's /key/info endpoint returns a 200 without a master key. An attacker can enumerate virtual keys, inspect spend/usage, and — if the same weakness extends to admin endpoints — rotate keys or drain credits. The master key is almost certainly misconfigured on this deployment."
+    },
+    {
+      "name": "langserve-unauth-invoke",
+      "service": "langserve",
+      "asset_types": ["ai_inference", "ai_agent"],
+      "method": "POST",
+      "path": "/invoke",
+      "body": {"input": ""},
+      "success_when": {
+        "status_in": [200, 400, 422],
+        "body_contains_any": ["\"output\"", "\"detail\"", "validation error", "input_type", "\"run_id\""]
+      },
+      "fail_when": {
+        "status_in": [401, 403, 404]
+      },
+      "severity": "high",
+      "title": "LangServe /invoke accessible without authentication",
+      "description": "POST /invoke on this LangServe deployment responds to unauthenticated calls (empty input returns validation error rather than 401/403). An attacker can submit arbitrary inputs to the chain, consume LLM tokens, and attempt prompt-injection against any tools wired into the chain."
+    }
+  ]
+}

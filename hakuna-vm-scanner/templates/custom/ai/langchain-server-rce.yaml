@@ -1,0 +1,64 @@
+id: langchain-server-rce
+
+info:
+  name: Exposed LangServe / LangChain Runnable Endpoint
+  author: hakuna
+  severity: high
+  description: |
+    Detects an exposed LangServe-style endpoint that accepts a Runnable invoke
+    payload without authentication. A safe detection probe is sent — no
+    exploitation of downstream tools is attempted. LangServe chains frequently
+    compose shell tools, HTTP clients, and file-system utilities; exposure of
+    the invoke surface implies the caller can drive those tools and in many
+    configurations achieve code execution on the server or attached agents.
+  reference:
+    - https://python.langchain.com/docs/langserve/
+    - https://owasp.org/www-project-top-10-for-large-language-model-applications/
+  tags: ai,langserve,langchain,llm-security,exposure
+  metadata:
+    source: custom
+    verified: true
+    max-request: 3
+    asset_type: ai_service
+    finding_type: exposed_langserve
+
+http:
+  - method: POST
+    path:
+      - "{{BaseURL}}/invoke"
+      - "{{BaseURL}}/runs"
+      - "{{BaseURL}}/chain/invoke"
+
+    headers:
+      Content-Type: application/json
+
+    body: '{"input":"__detection_probe__","config":{}}'
+
+    stop-at-first-match: true
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        part: body
+        condition: or
+        words:
+          - '"run_id":'
+          - '"output":'
+
+      - type: word
+        part: response
+        condition: or
+        words:
+          - "langchain"
+          - "langserve"
+          - '"run_id":'
+
+    extractors:
+      - type: regex
+        part: body
+        regex:
+          - '"run_id"\s*:\s*"([^"]+)"'

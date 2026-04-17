@@ -1061,8 +1061,19 @@ def _run_gemini(agent: Agent, user_input: str, db: Session, run: AgentRun, model
             run.status = "done"
             break
 
-        # Add assistant response to contents
-        contents.append(response.candidates[0].content)
+        # Add assistant response to contents — rebuild from parts to avoid
+        # passing native Content objects back into generate_content (which
+        # triggers Pydantic serialization warnings in the Gemini SDK).
+        assistant_parts = []
+        for part in response.candidates[0].content.parts:
+            if part.text:
+                assistant_parts.append(genai_types.Part.from_text(text=part.text))
+            if part.function_call:
+                assistant_parts.append(genai_types.Part.from_function_call(
+                    name=part.function_call.name,
+                    args=dict(part.function_call.args) if part.function_call.args else {},
+                ))
+        contents.append(genai_types.Content(role="model", parts=assistant_parts))
 
         # Execute tool calls and build function responses
         function_responses = []
@@ -1515,7 +1526,18 @@ def _stream_gemini(agent, user_input, db, run, model, *, conversation_messages=N
             run.status = "done"
             break
 
-        contents.append(response.candidates[0].content)
+        # Rebuild from parts to avoid Pydantic serialization warnings
+        assistant_parts = []
+        for part in response.candidates[0].content.parts:
+            if part.text:
+                assistant_parts.append(genai_types.Part.from_text(text=part.text))
+            if part.function_call:
+                assistant_parts.append(genai_types.Part.from_function_call(
+                    name=part.function_call.name,
+                    args=dict(part.function_call.args) if part.function_call.args else {},
+                ))
+        contents.append(genai_types.Content(role="model", parts=assistant_parts))
+
         function_responses = []
         for fc in function_calls:
             tool_input = dict(fc.args) if fc.args else {}

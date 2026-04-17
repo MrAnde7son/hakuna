@@ -7,11 +7,16 @@ SLA, risk). None of that is the scanner's concern, so there's nothing to
 unit-test here about deduplication.
 """
 
+import inspect
+
 from scanner.vm.nuclei_worker import (
     _extract_cpe_list,
+    _has_dast_template,
     _parse_nuclei_stats,
     _resolve_target,
     _result_to_finding,
+    run_nuclei_adhoc,
+    run_nuclei_scan,
 )
 
 
@@ -122,3 +127,53 @@ class TestResultToFinding:
         f = _result_to_finding(raw)
         assert f["template_id"] == "x"
         assert f["severity"] == "high"
+
+
+class TestHasDastTemplate:
+    """Controls whether nuclei is invoked with -dast.
+
+    Must be True whenever the router included a custom/dast/ path so that
+    fuzzing-mode templates actually execute; must be False on scans with
+    no DAST templates so we don't change the semantics of unrelated scans.
+    """
+
+    def test_true_when_dast_path_present(self):
+        args = ["-tags", "apache,http", "-t", "/app/templates/custom/dast/xss.yaml"]
+        assert _has_dast_template(args) is True
+
+    def test_false_when_only_non_dast_customs(self):
+        args = ["-tags", "ollama", "-t", "/app/templates/custom/ai/exposed-ollama.yaml"]
+        assert _has_dast_template(args) is False
+
+    def test_false_on_tag_only_args(self):
+        """Fallback path (only -tags, no -t) must not enable -dast."""
+        assert _has_dast_template(["-tags", "generic,exposure"]) is False
+
+    def test_false_on_empty_args(self):
+        assert _has_dast_template([]) is False
+
+    def test_does_not_false_positive_on_similar_path(self):
+        """'dastardly' in a path shouldn't trip the check — we require the
+        exact custom/dast/ segment."""
+        args = ["-t", "/app/templates/custom/ot/dastardly-probe.yaml"]
+        assert _has_dast_template(args) is False
+
+
+class TestScanPlanPlumbing:
+    """PR 1 only plumbs the scan_plan arg through; PR 2 will consume it.
+
+    These tests pin the wire contract — both Celery tasks accept an optional
+    ``scan_plan`` kwarg with the expected default. Without these, a backend
+    upgrade that starts sending plans against an old worker would 500 on
+    Celery's argument validation rather than fall through gracefully.
+    """
+
+    def test_run_nuclei_scan_accepts_scan_plan_kwarg(self):
+        sig = inspect.signature(run_nuclei_scan.__wrapped__)
+        assert "scan_plan" in sig.parameters
+        assert sig.parameters["scan_plan"].default is None
+
+    def test_run_nuclei_adhoc_accepts_scan_plan_kwarg(self):
+        sig = inspect.signature(run_nuclei_adhoc.__wrapped__)
+        assert "scan_plan" in sig.parameters
+        assert sig.parameters["scan_plan"].default is None

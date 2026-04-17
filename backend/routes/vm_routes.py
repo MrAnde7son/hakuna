@@ -23,6 +23,7 @@ router = APIRouter(prefix="/api/vm", tags=["vm-scanner"])
 class VmScanRequest(BaseModel):
     targets: List[str]
     asset_ids: List[int] | None = None  # existing asset IDs to link findings to
+    credential_id: str | None = None  # IntegrationCredential.id for authenticated scans
 
 
 def _get_org(db: Session, user: User) -> Organization:
@@ -45,7 +46,11 @@ async def create_vm_scan(
     if not targets:
         raise HTTPException(400, "No valid targets provided")
 
-    result = await start_vm_scan(db, org, targets, asset_ids=body.asset_ids)
+    result = await start_vm_scan(
+        db, org, targets,
+        asset_ids=body.asset_ids,
+        credential_id=body.credential_id,
+    )
     if not result:
         raise HTTPException(502, "Failed to start VM scan — scanner may be unavailable")
     return result

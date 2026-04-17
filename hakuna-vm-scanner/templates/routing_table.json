@@ -32,13 +32,13 @@
     "rockwellautomation:compactlogix":      ["ethernet-ip", "cip", "rockwell", "plc", "ot"],
     "schneider-electric:modicon":           ["modbus", "plc", "ot"],
 
-    "ollama:ollama":          ["ollama", "llm", "ai"],
+    "ollama:ollama":          ["ollama", "llm", "ai", "llm-security", "ai-dos"],
     "qdrant:qdrant":          ["vectordb", "qdrant", "ai"],
     "milvus:milvus":          ["vectordb", "milvus", "ai"],
     "weaviate:weaviate":      ["vectordb", "weaviate", "ai"],
     "chroma:chroma":          ["vectordb", "chroma", "ai"],
     "mlflow:mlflow":          ["mlflow", "ml", "ai"],
-    "langchain:langserve":    ["langserve", "langchain", "ai"],
+    "langchain:langserve":    ["langserve", "langchain", "ai", "llm-security", "ai-dos"],
     "gradio:gradio":          ["gradio", "ai", "ml"]
   },
   "tech_map": {
@@ -49,7 +49,10 @@
     "php":        ["php", "http"],
     "node.js":    ["nodejs", "http"],
     "express":    ["nodejs", "http"],
-    "react":      ["http"],
+    "react":      ["http", "ai-secret"],
+    "nextjs":     ["http", "ai-secret"],
+    "vue":        ["http", "ai-secret"],
+    "nuxt":       ["http", "ai-secret"],
     "django":     ["python", "http"],
     "flask":      ["python", "http"],
     "spring":     ["java", "http"],
@@ -65,12 +68,15 @@
     "qnap":       ["qnap", "nas", "iot"],
     "synology":   ["synology", "nas", "iot"],
 
-    "ollama":     ["ollama", "llm", "ai"],
+    "ollama":     ["ollama", "llm", "ai", "llm-security", "ai-dos"],
     "gradio":     ["gradio", "ai", "ml"],
-    "langserve":  ["langserve", "langchain", "ai"],
-    "vllm":       ["vllm", "openai", "llm", "ai"],
+    "langserve":  ["langserve", "langchain", "ai", "llm-security", "ai-dos"],
+    "langchain":  ["langchain", "langserve", "ai", "llm-security", "ai-dos"],
+    "vllm":       ["vllm", "openai", "llm", "ai", "llm-security", "ai-dos"],
     "localai":    ["localai", "openai", "llm", "ai"],
-    "mlflow":     ["mlflow", "ml", "ai"]
+    "mlflow":     ["mlflow", "ml", "ai"],
+    "mcp":        ["mcp", "ai", "mcp-security"],
+    "jupyter":    ["jupyter", "llm-security"]
   },
   "port_map": {
     "102":   ["s7", "siemens", "plc", "ot", "ics"],
@@ -79,7 +85,8 @@
     "1883":  ["mqtt", "broker", "iot"],
     "4840":  ["opcua", "scada", "ot", "ics"],
     "8883":  ["mqtt", "broker", "iot"],
-    "11434": ["ollama", "llm", "ai"],
+    "8888":  ["jupyter", "llm-security"],
+    "11434": ["ollama", "llm", "ai", "llm-security", "ai-dos"],
     "6333":  ["vectordb", "qdrant", "ai"],
     "6334":  ["vectordb", "qdrant", "ai"],
     "19530": ["vectordb", "milvus", "ai"],

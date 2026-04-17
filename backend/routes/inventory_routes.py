@@ -14,7 +14,7 @@ from sqlalchemy import desc, or_
 from core.database import get_db
 from core.auth import require_role, get_accessible_org_ids, apply_scan_org_filter
 from models.models import (
-    Scan, Asset,
+    Scan, Asset, Organization,
     InventoryUser, InventoryGroup, InventoryDomainTrust, InventoryService,
     InventoryNetConn, InventoryScheduledTask, InventoryPatch, InventoryLoggedOn,
     InventoryShare, InventorySoftware, InventorySecurityControl,
@@ -1354,3 +1354,163 @@ def list_inventory_processes(
         "session_id": r.session_id, "parent_name": r.parent_name,
         "depth": r.depth, "source_plugin": r.source_plugin,
     } for r in rows]}
+
+
+# ─────────────────────────────────────────────
+# API Endpoints (discovered via EASM katana / kiterunner / openapi / graphql / llm_js)
+# ─────────────────────────────────────────────
+#
+# These rows live in the EASM scanner DB (`asset_endpoints` table), not in the
+# backend DB. The backend acts as a proxy: resolve org_id → scanner org UUID
+# and (optionally) backend asset_id → scanner asset UUID, then forward the
+# query. Scanner responses are re-keyed with backend asset_ids so the UI can
+# link back to /assets/:id pages without knowing about scanner UUIDs.
+
+@router.get("/api/inventory/api-endpoints")
+async def list_inventory_api_endpoints(
+    scan_id: Optional[int] = None,
+    asset_id: Optional[int] = None,
+    source: Optional[str] = None,
+    method: Optional[str] = None,
+    auth_required: Optional[bool] = None,
+    search: Optional[str] = None,
+    sort_by: str = "discovered_at",
+    order: str = "desc",
+    page: int = 1,
+    page_size: int = 100,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    from services.easm import get_easm_endpoints
+
+    # ── Resolve scope: a single asset, a single scan, or all accessible orgs.
+    # The scanner is keyed by scanner-side UUIDs; we keep a map so the response
+    # can be rekeyed back to backend asset IDs / hostnames for the UI.
+    easm_asset_filter: Optional[str] = None
+    scan_filter_asset_ids: Optional[set] = None  # scanner-side UUIDs we accept
+    target_org_ids: List[int]
+    easm_id_to_backend: dict[str, Asset] = {}
+
+    def _collect_assets_for_query(query) -> None:
+        for a in query.all():
+            easm_uuid = (a.easm_data or {}).get("easm_asset_id") if a.easm_data else None
+            if easm_uuid:
+                easm_id_to_backend[str(easm_uuid)] = a
+
+    if asset_id is not None:
+        asset = db.query(Asset).filter(Asset.id == asset_id).first()
+        if not asset:
+            return {"total": 0, "page": 1, "page_size": page_size, "api_endpoints": []}
+        scan = db.query(Scan).filter(Scan.id == asset.scan_id).first()
+        if not scan or (org_ids is not None and scan.org_id not in org_ids):
+            raise HTTPException(404, "Asset not found")
+        easm_uuid = (asset.easm_data or {}).get("easm_asset_id") if asset.easm_data else None
+        if not easm_uuid:
+            # Not an EASM-backed asset — no API endpoint data to show.
+            return {"total": 0, "page": 1, "page_size": page_size, "api_endpoints": []}
+        easm_asset_filter = str(easm_uuid)
+        easm_id_to_backend[easm_asset_filter] = asset
+        target_org_ids = [scan.org_id]
+    elif scan_id is not None:
+        scan = db.query(Scan).filter(Scan.id == scan_id).first()
+        if not scan or (org_ids is not None and scan.org_id not in org_ids):
+            raise HTTPException(404, "Scan not found")
+        q = db.query(Asset).filter(Asset.scan_id == scan_id, Asset.easm_data.isnot(None))
+        _collect_assets_for_query(q)
+        if not easm_id_to_backend:
+            return {"total": 0, "page": 1, "page_size": page_size, "api_endpoints": []}
+        scan_filter_asset_ids = set(easm_id_to_backend.keys())
+        target_org_ids = [scan.org_id]
+    else:
+        target_org_ids = list(org_ids) if org_ids is not None else [
+            o.id for o in db.query(Organization.id).all()
+        ]
+        if target_org_ids:
+            q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(
+                Scan.org_id.in_(target_org_ids), Asset.easm_data.isnot(None),
+            )
+            _collect_assets_for_query(q)
+
+    # ── Fetch from each scanner org and merge.
+    orgs = db.query(Organization).filter(
+        Organization.id.in_(target_org_ids),
+        Organization.easm_org_id.isnot(None),
+    ).all()
+
+    # Over-fetch when we need backend-side filtering (scan_filter_asset_ids or
+    # cross-org aggregation), otherwise request the exact page.
+    needs_postfilter = scan_filter_asset_ids is not None or len(orgs) > 1
+    fetch_limit = 1000 if needs_postfilter else page_size
+    fetch_offset = 0 if needs_postfilter else (page - 1) * page_size
+
+    merged: list[dict] = []
+    scanner_total = 0
+    for org in orgs:
+        data = await get_easm_endpoints(
+            hakuna_org_id=org.easm_org_id,
+            easm_asset_id=easm_asset_filter,
+            source=source,
+            method=method,
+            auth_required=auth_required,
+            search=search,
+            sort_by=sort_by,
+            order=order,
+            limit=fetch_limit,
+            offset=fetch_offset,
+        )
+        if not data:
+            continue
+        scanner_total += int(data.get("total") or 0)
+        merged.extend(data.get("endpoints") or [])
+
+    if scan_filter_asset_ids is not None:
+        merged = [e for e in merged if str(e.get("asset_id")) in scan_filter_asset_ids]
+
+    # Re-key to backend IDs + hostnames for the UI.
+    enriched: list[dict] = []
+    for e in merged:
+        scanner_asset_uuid = str(e.get("asset_id") or "")
+        backend_asset = easm_id_to_backend.get(scanner_asset_uuid)
+        enriched.append({
+            "id": e.get("id"),
+            "asset_id": backend_asset.id if backend_asset else None,
+            "asset_label": (
+                (backend_asset.fqdn or backend_asset.hostname or backend_asset.ip)
+                if backend_asset else e.get("asset_hostname")
+            ),
+            "asset_ip": backend_asset.ip if backend_asset else None,
+            "asset_env": backend_asset.environment_tag if backend_asset else None,
+            "url": e.get("url"),
+            "path": e.get("path"),
+            "method": e.get("method"),
+            "source": e.get("source"),
+            "status_code": e.get("status_code"),
+            "auth_required": e.get("auth_required"),
+            "content_type": e.get("content_type"),
+            "is_auth_page": e.get("is_auth_page"),
+            "parameters": e.get("parameters"),
+            "discovered_at": e.get("discovered_at"),
+        })
+
+    # When we post-filtered or merged across orgs, pagination happens here.
+    # Otherwise the scanner already paginated for us and scanner_total is authoritative.
+    if needs_postfilter:
+        total = len(enriched)
+        if page_size == 0:
+            paged = enriched
+            reported_page = 1
+        else:
+            start = (page - 1) * page_size
+            paged = enriched[start:start + page_size]
+            reported_page = page
+    else:
+        total = scanner_total
+        paged = enriched
+        reported_page = page
+
+    return {
+        "total": total,
+        "page": reported_page,
+        "page_size": page_size,
+        "api_endpoints": paged,
+    }
