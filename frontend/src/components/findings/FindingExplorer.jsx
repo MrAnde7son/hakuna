@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import useURLFilters from '../../hooks/useURLFilters.js'
 import { useTranslation } from 'react-i18next'
-import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon, Zap, Filter, ShieldCheck } from 'lucide-react'
+import { Bug, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Tag, Clock, Download, Bookmark, SlidersHorizontal, X as XIcon, Zap, Filter } from 'lucide-react'
 import { useScan, useIsMobile } from '../../App.jsx'
 import { getFindings, getPluginFamilies, getAssets, getTags, assignTags, unassignTags, exportDownload, advancedSearch, setFindingOwnership, createCampaign, listCustomFieldDefinitions } from '../../api.js'
 import useScanProgress from '../../hooks/useScanProgress.js'
@@ -1181,34 +1181,6 @@ export default function FindingExplorer() {
               value={sourceFilter}
               onChange={v => setFilter('source', v)}
             />
-
-            <Select
-              value={validationFilter}
-              onChange={v => setFilter('validation', v)}
-              placeholder={t('findings.anyValidation', 'Any validation')}
-              options={[
-                { value: 'validated', label: t('findings.validationAny', 'Any validated') },
-                { value: 'true_positive', label: t('findings.validationTrue', 'True positive') },
-                { value: 'false_positive', label: t('findings.validationFalse', 'False positive') },
-                { value: 'needs_review', label: t('findings.validationNeedsReview', 'Needs review') },
-                { value: 'not_validated', label: t('findings.validationNone', 'Not validated') },
-              ]}
-            />
-
-            <button
-              onClick={() => setFilter('corroborated', corroboratedFilter === true ? null : true)}
-              title={t('findings.corroboratedTooltip', 'Confirmed by ≥ 2 scanners')}
-              style={{
-                padding: '5px 10px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                background: corroboratedFilter === true ? 'var(--accent)' : 'var(--bg-secondary)',
-                color: corroboratedFilter === true ? 'var(--primary-foreground)' : 'var(--text-secondary)',
-                border: corroboratedFilter === true ? '1px solid var(--accent)' : '1px solid var(--border)',
-                display: 'inline-flex', alignItems: 'center', gap: 4,
-              }}
-            >
-              <ShieldCheck size={12} />
-              {t('findings.corroborated', 'Corroborated')}
-            </button>
 
             <Select
               value={groupBy}

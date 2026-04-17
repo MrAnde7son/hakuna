@@ -3133,6 +3133,13 @@ function EasmAssetsTab({ scanId, assetId }) {
       setScreenshotState('idle')
       return
     }
+    // Skip fetch for assets without HTTP — they won't have screenshots
+    const expandedAsset = rows.find(a => a.id === expanded)
+    if (expandedAsset && !expandedAsset.http_status) {
+      setScreenshotUrl(null)
+      setScreenshotState('missing')
+      return
+    }
     let cancelled = false
     setScreenshotState('loading')
     getEasmScreenshotUrl(expanded).then(url => {

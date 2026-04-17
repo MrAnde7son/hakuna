@@ -1,8 +1,11 @@
 """LLM-powered vulnerability validation — detects false positives in Nuclei findings.
 
-After Nuclei scanning, critical/high findings are batched and analyzed by an LLM
+After Nuclei scanning, Critical findings are batched and analyzed by an LLM
 to determine if they are true positives, false positives, or need manual review.
 Results are stored in the finding's llm_validation JSON column.
+
+Severity cutoff is controlled by LLM_VALIDATION_MIN_SEVERITY (default 4 =
+Critical). Set to 3 to include High as well.
 """
 
 from __future__ import annotations
@@ -63,7 +66,7 @@ def validate_findings(
         # If agent_engine can't resolve a provider, skip this cycle.
         return {"validated": 0, "skipped": "no_llm_provider_configured"}
 
-    min_severity = int(os.environ.get("LLM_VALIDATION_MIN_SEVERITY", "3"))
+    min_severity = int(os.environ.get("LLM_VALIDATION_MIN_SEVERITY", "4"))
 
     # Fetch candidate findings: critical/high from vm_scanner (Nuclei)
     params = {"org_id": org_id, "min_sev": min_severity, "limit": max_findings}

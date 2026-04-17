@@ -135,11 +135,11 @@ def dispatch_validation_for_finding(db: Session, finding_id: int) -> dict:
     }
 
 
-def run_scheduler_cycle(max_per_cycle: int = 5, min_severity: int = 3) -> dict:
+def run_scheduler_cycle(max_per_cycle: int = 5, min_severity: int = 4) -> dict:
     """Find candidate findings and kick off validator runs.
 
     Candidates:
-      - severity >= min_severity (default High/3)
+      - severity >= min_severity (default Critical/4, matches llm_vuln_validator)
       - source_type == 'vm_scanner' (Nuclei)
       - llm_validation.verdict == 'needs_review' (set by #11)
       - ctx_exploitability IS NULL (not yet validated by the agent)
