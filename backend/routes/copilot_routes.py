@@ -371,21 +371,20 @@ async def send_message(
                     c.updated_at = datetime.utcnow()
                     stream_db.commit()
 
-                    # Generate follow-up recommendations.
-                    # Skip the LLM call for the first exchange (<=2 messages: 1 user + 1 assistant)
-                    # — the conversation is too short for context-aware suggestions.
-                    # Use lightweight static suggestions instead.
-                    if len(msgs) <= 2:
+                    # Generate context-aware follow-up recommendations.
+                    # Run on every exchange so the assistant's own posed questions
+                    # ("Would you like me to …?") get surfaced as buttons.
+                    try:
+                        recs = _generate_recommendations(stream_db, ag.model, msgs)
+                    except Exception as e:
+                        logger.warning(f"Recommendation generation failed: {e}")
+                        recs = []
+                    # Fall back to static prompts only if generation failed entirely.
+                    if not recs and len(msgs) <= 2:
                         recs = [
                             {"text": p["text"][:80], "icon": p["icon"]}
                             for p in SUGGESTED_PROMPTS[:3]
                         ]
-                    else:
-                        try:
-                            recs = _generate_recommendations(stream_db, ag.model, msgs)
-                        except Exception as e:
-                            logger.warning(f"Recommendation generation failed: {e}")
-                            recs = []
                     if recs:
                         yield f"data: {json.dumps({'type': 'recommendations', 'recommendations': recs})}\n\n"
                         await asyncio.sleep(0)
@@ -399,12 +398,19 @@ async def send_message(
 
 # ── Context-aware follow-up recommendations ─────────────────────────
 
-_RECOMMENDATION_PROMPT = """Based on the conversation below, suggest exactly 3 short follow-up questions the user might want to ask next. The questions should be:
+_RECOMMENDATION_PROMPT = """Based on the conversation below, suggest exactly 3 short follow-up questions the user might want to ask next.
+
+PRIORITY RULE — align with the assistant's last message:
+If the assistant's most recent message ends with its own suggestions, offers, or questions (e.g. "Would you like me to …?", a bulleted list of next steps, "I can also …"), your 3 suggestions MUST be the user-facing reply to those offers. Rewrite each offer as a first-person user request ("Yes, create the campaign", "Open the Jira tickets", "Show more detail on asset X"). Do NOT invent unrelated new topics when the assistant already proposed concrete next steps.
+
+Otherwise, the questions should be:
 - Directly relevant to what was just discussed
 - Actionable (lead to a useful next step)
 - Diverse (cover different angles — e.g. drill down, take action, explore related)
+
+All suggestions must be:
 - Short (under 60 characters each)
-- ONLY suggest questions the agent can actually answer using the capabilities listed below
+- ONLY questions the agent can actually answer using the capabilities listed below
 
 Agent capabilities (only suggest questions that use these):
 - Query/filter findings by severity, status, port, plugin, asset, CVE, tags, SLA, exploit status, campaign membership

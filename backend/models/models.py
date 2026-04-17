@@ -1874,6 +1874,81 @@ class CopilotConversation(Base):
 
 
 # ─────────────────────────────────────────────────────────
+# LLM Feedback Loop — every LLM call is logged with optional
+# outcome linkage so future turns can retrieve tenant-scoped
+# few-shot exemplars (see services/llm_feedback.py).
+# ─────────────────────────────────────────────────────────
+
+class LLMInteraction(Base):
+    """One row per LLM call — agent runs and one-shot services.
+
+    Embeddings are populated asynchronously on Postgres only (pgvector).
+    On SQLite (dev) the column is omitted by the migration.
+    """
+    __tablename__ = "llm_interactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # Source — 'agent' | 'vuln_validator' | 'alert_triage' | 'scan_planner' | ...
+    surface = Column(String, nullable=False, index=True)
+    surface_ref_type = Column(String)   # 'finding' | 'alert' | 'scan' | 'conversation' | ...
+    surface_ref_id = Column(String)
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
+    agent_run_id = Column(Integer, ForeignKey("agent_runs.id"), nullable=True, index=True)
+
+    provider = Column(String)
+    model = Column(String)
+    system_prompt_hash = Column(String, index=True)
+    system_prompt = Column(Text)
+    messages = Column(JSON, default=list)       # input turn(s)
+    response_text = Column(Text)
+    tool_calls = Column(JSON, default=list)     # [{name, args, result_summary, ok, ms}]
+    input_tokens = Column(Integer)
+    output_tokens = Column(Integer)
+    latency_ms = Column(Integer)
+    error = Column(Text)
+    status = Column(String, default="ok")       # 'ok' | 'error'
+    redacted = Column(Boolean, default=False)
+
+    # pgvector column is added only on Postgres by the migration — the
+    # ORM attribute stays optional; retrieval code handles absence.
+    embedding_model = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index("ix_llm_int_org_surface_created", "org_id", "surface", "created_at"),
+    )
+
+
+class LLMInteractionOutcome(Base):
+    """Outcome signal linked to an interaction.
+
+    Populated asynchronously by services.llm_outcome_linker. A composite
+    outcome_score in [-1, +1] drives the RAG ranking for exemplar retrieval.
+    """
+    __tablename__ = "llm_interaction_outcomes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    interaction_id = Column(Integer, ForeignKey("llm_interactions.id"), nullable=False, unique=True, index=True)
+    org_id = Column(Integer, nullable=False, index=True)
+
+    user_rating = Column(Integer)             # -1, 0, +1
+    user_edit_distance = Column(Float)        # normalized distance between AI output and accepted output
+    accepted = Column(Boolean)
+
+    finding_outcome = Column(String)          # 'remediated' | 'false_positive' | 'still_open_30d'
+    ticket_outcome = Column(String)           # 'closed_resolved' | 'closed_wontfix' | 'still_open'
+    approval_outcome = Column(String)         # 'approved' | 'rejected' | 'expired'
+    workflow_outcome = Column(String)         # 'completed' | 'failed'
+
+    outcome_score = Column(Float, index=True)
+    computed_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────
 # Aggregated Solutions (root-cause grouping)
 # ─────────────────────────────────────────────────────────
 

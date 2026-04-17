@@ -365,6 +365,13 @@ def _deferred_startup():
     from agents.agent_scheduler import start_scheduler as start_agent_scheduler
     start_agent_scheduler()
     logger.info("Agent scheduler started")
+    # Start LLM feedback-loop outcome linker (joins interactions → outcomes
+    # from AgentRun/AgentApproval/Finding tables) + retention cleanup.
+    try:
+        from services.llm_outcome_linker import start_scheduler as start_llm_feedback_scheduler
+        start_llm_feedback_scheduler()
+    except Exception as exc:
+        logger.error("LLM outcome linker scheduler failed to start: %s", exc)
     # Start integration scheduler for cron-based integration runs
     from services.integration_scheduler import start_scheduler as start_integration_scheduler
     start_integration_scheduler()

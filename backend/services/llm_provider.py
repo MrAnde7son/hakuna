@@ -34,6 +34,12 @@ def call_llm(
     max_tokens: int = 2048,
     model_env: str | None = None,
     db=None,
+    *,
+    surface: str = "llm_provider",
+    org_id: int | None = None,
+    user_id: int | None = None,
+    surface_ref_type: str | None = None,
+    surface_ref_id: str | None = None,
 ) -> str:
     """Provider-agnostic LLM call.
 
@@ -49,32 +55,58 @@ def call_llm(
             rows are consulted for model defaults and API keys (this is
             how the agent engine discovers Vertex AI / Gemini / Ollama).
             When None, we fall back to env-var-only resolution.
+        surface: Caller identifier for the feedback-loop log (e.g.
+            "vuln_validator", "alert_triage"). Defaults to "llm_provider".
+        org_id: Tenant scope — when set, the call is logged to
+            llm_interactions so future prompts can retrieve tenant-scoped
+            exemplars. When None, logging is skipped (defensive: never
+            cross-tenant).
+        user_id: Optional user ID for attribution.
+        surface_ref_type / surface_ref_id: Optional pointer to the entity
+            this call was made about (finding id, alert id, scan id, …)
+            so the outcome linker can resolve it later.
 
     Returns empty string if no provider is configured or on failure.
     """
+    from services import llm_feedback
+
     # Resolve model (feature override → system default → hardcoded fallback)
     model = _resolve_model(model_env, db)
     provider = _detect_provider(model)
 
     logger.debug("LLM call: provider=%s model=%s max_tokens=%d", provider, model, max_tokens)
 
-    try:
-        if provider == "anthropic":
-            return _call_anthropic(system_prompt, user_prompt, max_tokens, model, db)
-        if provider == "openai":
-            return _call_openai(system_prompt, user_prompt, max_tokens, model, db)
-        if provider in ("vertex_ai", "google_gemini"):
-            return _call_gemini(system_prompt, user_prompt, max_tokens, model, provider, db)
-        if provider == "groq":
-            return _call_groq(system_prompt, user_prompt, max_tokens, model, db)
-        if provider == "ollama":
-            return _call_ollama(system_prompt, user_prompt, max_tokens, model, db)
-    except Exception as e:
-        logger.warning("LLM call via %s failed: %s", provider, e)
-        return ""
-
-    logger.debug("No LLM provider matched for model=%s", model)
-    return ""
+    with llm_feedback.span(
+        surface=surface,
+        org_id=org_id,
+        user_id=user_id,
+        surface_ref_type=surface_ref_type,
+        surface_ref_id=surface_ref_id,
+        provider=provider,
+        model=model,
+        system_prompt=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
+    ):
+        try:
+            if provider == "anthropic":
+                out = _call_anthropic(system_prompt, user_prompt, max_tokens, model, db)
+            elif provider == "openai":
+                out = _call_openai(system_prompt, user_prompt, max_tokens, model, db)
+            elif provider in ("vertex_ai", "google_gemini"):
+                out = _call_gemini(system_prompt, user_prompt, max_tokens, model, provider, db)
+            elif provider == "groq":
+                out = _call_groq(system_prompt, user_prompt, max_tokens, model, db)
+            elif provider == "ollama":
+                out = _call_ollama(system_prompt, user_prompt, max_tokens, model, db)
+            else:
+                logger.debug("No LLM provider matched for model=%s", model)
+                return ""
+            llm_feedback.record_response(out)
+            return out
+        except Exception as e:
+            logger.warning("LLM call via %s failed: %s", provider, e)
+            llm_feedback.record_error(e)
+            return ""
 
 
 # ── Model + provider resolution ────────────────────────────────────────
