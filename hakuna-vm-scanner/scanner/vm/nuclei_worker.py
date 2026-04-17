@@ -34,6 +34,11 @@ from scanner.vm.config import (
     SCAN_TIMEOUT_SECONDS,
 )
 from scanner.vm.db import _normalize_dsn
+from scanner.vm.plan_executor import (
+    ScanPlanInvalidError,
+    build_nuclei_commands_from_plan,
+    cleanup_tempfiles,
+)
 from scanner.vm.router import TemplateRouter
 
 logger = logging.getLogger(__name__)
@@ -275,56 +280,190 @@ async def _run_nuclei_scan_async(
         # Connection is only needed for the asset context lookup.
         await conn.close()
 
-    # 3. Build nuclei command — credentials (if any) become -H flags;
-    # never log their decrypted values (see _redacted_cmd_for_log).
+    # 3. Decide the command(s) to run.
+    # Credentials (if any) become -H flags; never log their decrypted values
+    # (see _redacted_cmd_for_log).
     cred_args = _credentials_to_header_args(credentials)
-    # -dast unlocks nuclei's fuzzing engine so DAST templates (those with
-    # `fuzzing:` blocks, e.g. the reewardius set under custom/dast/)
-    # actually execute instead of being silently skipped. We only pass it
-    # when such templates were actually selected by the router — for
-    # OT/IoT/SSH-only assets there's nothing to fuzz and the flag is a no-op
-    # anyway, but keeping it conditional also keeps scan profiles honest.
-    dast_args = ["-dast"] if _has_dast_template(template_args) else []
-    cmd = [
-        NUCLEI_BIN,
-        "-target", target,
-        *template_args,
-        *dast_args,
-        *cred_args,
-        "-jsonl",
-        "-timeout", str(NUCLEI_TIMEOUT),
-        "-rate-limit", str(NUCLEI_RATE_LIMIT),
-        "-no-color",
-        "-stats",
-    ]
-    logger.info("nuclei cmd: %s", _redacted_cmd_for_log(cmd))
 
+    plan_consumed = False
+    plan_skip_reason: str | None = None
+    commands: list[dict] = []  # [{cmd, tempfiles, action?}]
+    plan_dict = (scan_plan or {}).get("plan") if scan_plan else None
+
+    if plan_dict:
+        try:
+            built = build_nuclei_commands_from_plan(
+                plan=plan_dict,
+                target=target,
+                nuclei_bin=NUCLEI_BIN,
+                cred_args=cred_args,
+                nuclei_timeout=NUCLEI_TIMEOUT,
+                rate_limit=NUCLEI_RATE_LIMIT,
+            )
+            if not built:
+                # Empty list means the planner asked us to skip this asset
+                # entirely — record the reason and emit a SUCCESS-with-no-
+                # findings payload instead of running nuclei.
+                plan_skip_reason = plan_dict.get("skip_reason") or "planner skip"
+            else:
+                # Augment plan-derived tags with router port-tags (e.g. modbus,
+                # ollama) so OT/IoT routing survives even when the LLM forgets.
+                # Append as an extra command rather than mutating plan commands
+                # so the plan's reasoning stays auditable.
+                port_only_tags = sorted(_router._route_from_ports(open_ports, _router_table()))
+                if port_only_tags:
+                    port_cmd = [
+                        NUCLEI_BIN,
+                        "-target", target,
+                        "-tags", ",".join(port_only_tags),
+                        *cred_args,
+                        "-jsonl",
+                        "-timeout", str(NUCLEI_TIMEOUT),
+                        "-rate-limit", str(NUCLEI_RATE_LIMIT),
+                        "-no-color",
+                        "-stats",
+                    ]
+                    built.append({"cmd": port_cmd, "tempfiles": [], "action": {"reasoning": "router port-tag union"}})
+                commands = built
+                plan_consumed = True
+                logger.info("Using plan v%s with %d nuclei action(s) for asset %s",
+                            scan_plan.get("version"), len(plan_dict.get("actions") or []), asset_id)
+        except ScanPlanInvalidError as e:
+            logger.warning("Scan plan invalid for asset %s (%s) — falling back to router", asset_id, e)
+            commands = []  # falls through to legacy build below
+            plan_dict = None  # signal fallback in result payload
+
+    if not commands and not plan_skip_reason:
+        # Legacy path: TemplateRouter selects template args.
+        template_args = _router.get_templates_for_asset(cpe_list, tech_stack, open_ports)
+        # -dast unlocks nuclei's fuzzing engine so DAST templates (those with
+        # `fuzzing:` blocks, e.g. the reewardius set under custom/dast/)
+        # actually execute instead of being silently skipped. We only pass it
+        # when such templates were actually selected by the router — for
+        # OT/IoT/SSH-only assets there's nothing to fuzz and the flag is a no-op
+        # anyway, but keeping it conditional also keeps scan profiles honest.
+        dast_args = ["-dast"] if _has_dast_template(template_args) else []
+        legacy_cmd = [
+            NUCLEI_BIN,
+            "-target", target,
+            *template_args,
+            *dast_args,
+            *cred_args,
+            "-jsonl",
+            "-timeout", str(NUCLEI_TIMEOUT),
+            "-rate-limit", str(NUCLEI_RATE_LIMIT),
+            "-no-color",
+            "-stats",
+        ]
+        commands = [{"cmd": legacy_cmd, "tempfiles": [], "action": None}]
+
+    # 4. Execute each command in sequence, sharing the per-asset wall-clock
+    # budget. Aggregate findings across runs.
     findings: list[dict] = []
     templates_run: set[str] = set()
     nuclei_stats: dict = {}
-    stderr_chunks: list[str] = []
-    status = "error"
     stderr_text = ""
+    status = "complete" if commands else "skipped"
+    deadline = start + SCAN_TIMEOUT_SECONDS
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.DEVNULL,
-            limit=1024 * 1024,  # 1MB line limit
-        )
+        for entry in commands:
+            remaining = deadline - time.monotonic()
+            if remaining <= 1:
+                logger.warning("Asset %s: per-asset budget exhausted, %d cmd(s) left unrun", asset_id, len(commands) - commands.index(entry))
+                status = "partial"
+                break
+            cmd = entry["cmd"]
+            logger.info("nuclei cmd: %s", _redacted_cmd_for_log(cmd))
+            try:
+                run_result = await _run_one_nuclei(cmd, timeout_seconds=int(remaining))
+            except asyncio.TimeoutError:
+                logger.error("nuclei timed out for asset %s", asset_id)
+                status = "timeout"
+                if task.request.retries < task.max_retries:
+                    task.retry(countdown=60)
+                break
 
-        async def drain_stderr():
-            assert proc.stderr is not None
-            while True:
-                line = await proc.stderr.readline()
-                if not line:
-                    break
-                stderr_chunks.append(line.decode("utf-8", errors="replace").strip())
+            findings.extend(run_result["findings"])
+            templates_run.update(run_result["templates_run"])
+            stderr_text = "\n".join(filter(None, [stderr_text, run_result["stderr_text"]]))
+            # Nuclei stats from the LAST command win for templates_loaded/
+            # requests_sent — the values from earlier commands have already
+            # been logged and accumulating them across commands would be
+            # misleading (templates_loaded is per-invocation).
+            nuclei_stats = run_result["nuclei_stats"] or nuclei_stats
+            if run_result["exit_code"] != 0 and status == "complete":
+                status = "partial"
+            logger.info(
+                "nuclei finished for %s: exit=%d templates_loaded=%s requests=%s matched=%d",
+                asset_id, run_result["exit_code"],
+                nuclei_stats.get("templates_loaded", "?"),
+                nuclei_stats.get("requests_sent", "?"),
+                len(templates_run),
+            )
+    finally:
+        # Always clean up tmpfiles (per-endpoint target lists).
+        for entry in commands:
+            cleanup_tempfiles(entry.get("tempfiles") or [])
 
-        stderr_task = asyncio.create_task(drain_stderr())
+    result_payload = {
+        "asset_id": asset_id,
+        "org_id": str(org_id) if org_id is not None else None,
+        "target": target,
+        "findings": findings,
+        "templates_matched": len(templates_run),
+        "templates_loaded": nuclei_stats.get("templates_loaded", 0),
+        "requests_sent": nuclei_stats.get("requests_sent", 0),
+        "duration_seconds": round(time.monotonic() - start, 2),
+        "status": status,
+        "routing_info": routing_info,
+    }
+    if plan_skip_reason:
+        result_payload["plan_skip_reason"] = plan_skip_reason
+    # Echo back the plan version we executed against (None when no plan was
+    # supplied). Backend uses this to detect drift between the plan that was
+    # current when this scan was dispatched and the plan that's current now,
+    # so a stale plan can trigger a fresh recompute on next scan.
+    if scan_plan:
+        result_payload["plan_version_executed"] = scan_plan.get("version")
+        result_payload["plan_consumed"] = plan_consumed
+    # Include nuclei stderr when templates didn't load — helps diagnose 0/0 template issues
+    if nuclei_stats.get("templates_loaded", 0) == 0:
+        result_payload["nuclei_stderr"] = stderr_text[:3000]
+    return result_payload
 
+
+async def _run_one_nuclei(cmd: list[str], timeout_seconds: int) -> dict:
+    """Execute a single Nuclei subprocess and return its parsed output.
+
+    Encapsulates the stdout/stderr drain + JSONL parsing loop so callers
+    can run multiple commands per asset (plan-driven mode) without
+    duplicating the streaming code. Raises asyncio.TimeoutError on the
+    per-command timeout — caller decides whether to retry the whole task.
+    """
+    findings: list[dict] = []
+    templates_run: set[str] = set()
+    stderr_chunks: list[str] = []
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.DEVNULL,
+        limit=1024 * 1024,
+    )
+
+    async def drain_stderr():
+        assert proc.stderr is not None
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            stderr_chunks.append(line.decode("utf-8", errors="replace").strip())
+
+    stderr_task = asyncio.create_task(drain_stderr())
+
+    try:
         assert proc.stdout is not None
         while True:
             raw_line = await proc.stdout.readline()
@@ -343,59 +482,27 @@ async def _run_nuclei_scan_async(
             templates_run.add(template_id)
             findings.append(_result_to_finding(result))
 
-        await asyncio.wait_for(proc.wait(), timeout=SCAN_TIMEOUT_SECONDS)
+        await asyncio.wait_for(proc.wait(), timeout=timeout_seconds)
         await stderr_task
-
-        exit_code = proc.returncode
-        stderr_text = "\n".join(stderr_chunks)
-        nuclei_stats = _parse_nuclei_stats(stderr_chunks)
-        logger.info(
-            "nuclei finished for %s: exit=%d templates_loaded=%s requests=%s matched=%d",
-            asset_id, exit_code,
-            nuclei_stats.get("templates_loaded", "?"),
-            nuclei_stats.get("requests_sent", "?"),
-            len(templates_run),
-        )
-        if exit_code != 0:
-            logger.warning("nuclei exited %d for %s: %s", exit_code, asset_id, stderr_text[:1000])
-
-        status = "complete" if exit_code == 0 else "partial"
-
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        logger.error("nuclei timed out for asset %s", asset_id)
-        nuclei_stats = _parse_nuclei_stats(stderr_chunks)
-        stderr_text = "\n".join(stderr_chunks)
-        status = "timeout"
+        raise
 
-        # Retry once on timeout
-        if task.request.retries < task.max_retries:
-            task.retry(countdown=60)
-
-    result_payload = {
-        "asset_id": asset_id,
-        "org_id": str(org_id) if org_id is not None else None,
-        "target": target,
+    return {
         "findings": findings,
-        "templates_matched": len(templates_run),
-        "templates_loaded": nuclei_stats.get("templates_loaded", 0),
-        "requests_sent": nuclei_stats.get("requests_sent", 0),
-        "duration_seconds": round(time.monotonic() - start, 2),
-        "status": status,
-        "routing_info": routing_info,
+        "templates_run": templates_run,
+        "stderr_chunks": stderr_chunks,
+        "stderr_text": "\n".join(stderr_chunks),
+        "nuclei_stats": _parse_nuclei_stats(stderr_chunks),
+        "exit_code": proc.returncode if proc.returncode is not None else -1,
     }
-    # Echo back the plan version we executed against (None when no plan was
-    # supplied). Backend uses this to detect drift between the plan that was
-    # current when this scan was dispatched and the plan that's current now,
-    # so a stale plan can trigger a fresh recompute on next scan.
-    if scan_plan:
-        result_payload["plan_version_executed"] = scan_plan.get("version")
-        result_payload["plan_consumed"] = False  # PR 2 flips this to True
-    # Include nuclei stderr when templates didn't load — helps diagnose 0/0 template issues
-    if nuclei_stats.get("templates_loaded", 0) == 0:
-        result_payload["nuclei_stderr"] = stderr_text[:3000]
-    return result_payload
+
+
+def _router_table() -> dict:
+    """Expose the loaded routing table to nuclei_worker for port-tag union."""
+    from scanner.vm.router import _load_routing_table
+    return _load_routing_table()
 
 
 def _resolve_target(asset) -> str:

@@ -332,12 +332,33 @@ async def store_katana_endpoints(
             if AUTH_INDICATORS.search(body):
                 is_auth = True
 
+        # Promote katana fields into the typed columns added by alembic 010
+        # so the planner can rank these endpoints (status 200 + has-body
+        # endpoints are higher-signal scan targets than 401/302 surfaces).
+        response = entry.get("response") or {}
+        headers = response.get("headers") or {}
+        status_code = response.get("status_code") or response.get("status")
+        content_type = None
+        if isinstance(headers, dict):
+            for key in ("content-type", "Content-Type", "content_type"):
+                if key in headers:
+                    content_type = str(headers[key])[:128]
+                    break
+
         endpoint_id = uuid.uuid4()
         await db.execute(
             text("""
-                INSERT INTO asset_endpoints (id, asset_id, url, path, method, discovered_at, is_auth_page)
-                VALUES (:id, :asset_id, :url, :path, :method, :now, :is_auth)
-                ON CONFLICT DO NOTHING
+                INSERT INTO asset_endpoints (
+                    id, asset_id, url, path, method,
+                    source, content_type, status_code,
+                    discovered_at, is_auth_page
+                )
+                VALUES (
+                    :id, :asset_id, :url, :path, :method,
+                    'katana', :content_type, :status_code,
+                    :now, :is_auth
+                )
+                ON CONFLICT (asset_id, url, method, source) DO NOTHING
             """),
             {
                 "id": endpoint_id,
@@ -345,6 +366,8 @@ async def store_katana_endpoints(
                 "url": url,
                 "path": path,
                 "method": method,
+                "content_type": content_type,
+                "status_code": int(status_code) if isinstance(status_code, (int, str)) and str(status_code).isdigit() else None,
                 "now": now,
                 "is_auth": is_auth,
             },

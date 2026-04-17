@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-ENRICHMENT_STEP_COUNT = 14  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, kiterunner, trufflehog, llm_js_extraction, classify_assets, ai_exposure, nmap_dispatch
+ENRICHMENT_STEP_COUNT = 16  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, kiterunner, trufflehog, llm_js_extraction, openapi_discovery, graphql_introspection, classify_assets, ai_exposure, nmap_dispatch
 
 from app.celery_app import celery
 from app.config import settings
@@ -1158,6 +1158,118 @@ def run_ai_exposure(self, org_id: str, target_scope: str | None = None) -> dict:
     return _run_async(_do_ai_exposure(get_task_session(), org_id, target_scope=target_scope))
 
 
+@celery.task(bind=True, name="enrichment.run_openapi_discovery")
+def run_openapi_discovery(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_openapi_discovery(get_task_session(), org_id, target_scope=target_scope))
+
+
+@celery.task(bind=True, name="enrichment.run_graphql_introspection")
+def run_graphql_introspection(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_graphql_introspection(get_task_session(), org_id, target_scope=target_scope))
+
+
+# ── API discovery enrichers (PR 3 of Adaptive Scan Plan) ───────────
+
+
+async def _do_openapi_discovery(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Probe each web-facing asset's well-known OpenAPI/Swagger paths.
+
+    Hooks into the same confirmed-alive web-port asset list katana uses so
+    the cost is one extra HTTP probe round-trip per asset (cheap compared
+    to katana). Specs found turn into per-endpoint scan targets that the
+    adaptive planner can drive precisely.
+    """
+    if not settings.openapi_discovery_enabled:
+        return {"skipped": True, "reason": "disabled"}
+
+    from app.ingest.openapi_discoverer import discover_openapi_specs
+
+    assets = await _get_confirmed_alive_assets(
+        sf, org_id, target_scope=target_scope, apply_stale=True,
+    )
+    if not assets:
+        return {"specs_found": 0, "skipped_fresh": True}
+
+    HTTP_PORTS = {80, 443, 8080, 8443}
+    targets: list[dict] = []
+    for asset in assets:
+        ports = set(asset.get("open_ports") or [])
+        if not (ports & HTTP_PORTS):
+            continue
+        if asset.get("cdn_provider"):
+            # Probing a CDN's well-known paths returns the CDN's responses,
+            # not the origin's spec — skip to keep noise down.
+            continue
+        hostname = asset.get("hostname")
+        if not hostname:
+            continue
+        scheme = "https" if 443 in ports or 8443 in ports else "http"
+        targets.append({
+            "asset_id": asset["id"],
+            "base_url": f"{scheme}://{hostname}",
+        })
+
+    if not targets:
+        return {"specs_found": 0, "endpoints_stored": 0}
+
+    async with sf() as db:
+        result = await discover_openapi_specs(
+            db, uuid.UUID(org_id), targets,
+            concurrency=settings.openapi_discovery_concurrency,
+            timeout=settings.openapi_discovery_timeout,
+            max_spec_bytes=settings.openapi_discovery_max_spec_bytes,
+            max_endpoints_per_asset=settings.openapi_discovery_max_endpoints,
+        )
+    return result
+
+
+async def _do_graphql_introspection(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Probe candidate GraphQL paths and run introspection.
+
+    Same target shape as openapi discovery — confirmed-alive HTTP assets,
+    skip CDNs. Successful introspection produces per-operation endpoints
+    plus a graphql_schema artifact stored in asset_js_artifacts.
+    """
+    if not settings.graphql_introspection_enabled:
+        return {"skipped": True, "reason": "disabled"}
+
+    from app.ingest.graphql_introspector import introspect_graphql
+
+    assets = await _get_confirmed_alive_assets(
+        sf, org_id, target_scope=target_scope, apply_stale=True,
+    )
+    if not assets:
+        return {"introspection_hits": 0, "skipped_fresh": True}
+
+    HTTP_PORTS = {80, 443, 8080, 8443}
+    targets: list[dict] = []
+    for asset in assets:
+        ports = set(asset.get("open_ports") or [])
+        if not (ports & HTTP_PORTS):
+            continue
+        if asset.get("cdn_provider"):
+            continue
+        hostname = asset.get("hostname")
+        if not hostname:
+            continue
+        scheme = "https" if 443 in ports or 8443 in ports else "http"
+        targets.append({
+            "asset_id": asset["id"],
+            "base_url": f"{scheme}://{hostname}",
+        })
+
+    if not targets:
+        return {"introspection_hits": 0, "endpoints_stored": 0}
+
+    async with sf() as db:
+        result = await introspect_graphql(
+            db, uuid.UUID(org_id), targets,
+            concurrency=settings.graphql_introspection_concurrency,
+            timeout=settings.graphql_introspection_timeout,
+        )
+    return result
+
+
 @celery.task(bind=True, name="enrichment.run_enrichment_chain",
              soft_time_limit=14400, time_limit=14700)  # 4h / 4h5min — large scans (10k+ assets)
 def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> dict:
@@ -1208,8 +1320,14 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                 [
                     # Post-katana analysis: secrets scanning + LLM JS extraction
                     # depend on katana's discovered JS endpoints from Group 2.
+                    # OpenAPI/GraphQL discovery share Group 2's web-asset
+                    # candidate set so they can run alongside trufflehog/LLM —
+                    # they're cheap (~2 HTTP probes per asset) and produce
+                    # the highest-signal endpoints the planner consumes.
                     ("trufflehog", _do_trufflehog),
                     ("llm_js_extraction", _do_llm_js_extraction),
+                    ("openapi_discovery", _do_openapi_discovery),
+                    ("graphql_introspection", _do_graphql_introspection),
                 ],
                 [
                     ("classify_assets", _do_classify_assets),

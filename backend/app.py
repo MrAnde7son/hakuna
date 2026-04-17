@@ -405,6 +405,29 @@ def _deferred_startup():
         logger.info("VM scan reaper scheduled (every 5 minutes)")
     except Exception as exc:
         logger.error("VM scan reaper failed to start: %s", exc)
+    # Replan stale Adaptive Scan Plans (every 6 hours).
+    # Plans are normally refreshed at the tail of the enrichment pipeline,
+    # but assets that haven't been re-enriched in a while still benefit
+    # from a periodic sweep — e.g. when CPE/tech weights change in the
+    # planner config. Capped per-org at 50 assets per run to keep LLM
+    # spend bounded.
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler as _PlanReplanBG
+        from apscheduler.triggers.interval import IntervalTrigger as _PlanReplanInterval
+        from services.scan_plan_scheduler import replan_stale_plans
+        _replan_scheduler = _PlanReplanBG()
+        _replan_scheduler.add_job(
+            replan_stale_plans,
+            _PlanReplanInterval(hours=6),
+            id="scan_plan_replan",
+            replace_existing=True,
+            misfire_grace_time=600,
+            coalesce=True,
+        )
+        _replan_scheduler.start()
+        logger.info("Scan plan replan scheduler started (every 6 hours)")
+    except Exception as exc:
+        logger.error("Scan plan replan scheduler failed to start: %s", exc)
     # Start SIEM detection engine (rule evaluator, every 1 min)
     try:
         from services.detection_engine import start_detection_scheduler

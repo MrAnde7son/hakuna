@@ -285,11 +285,21 @@ async def store_llm_js_endpoints(
         url = path  # relative path — full URL not known
 
         endpoint_id = uuid.uuid4()
+        # auth_required surfaces from the LLM extraction prompt — pass it
+        # through so the planner can rank auth-required endpoints higher
+        # in per-asset target lists (they're the higher-signal scan targets).
+        auth_required = ep.get("auth_required")
         await db.execute(
             text("""
-                INSERT INTO asset_endpoints (id, asset_id, url, path, method, discovered_at, is_auth_page)
-                VALUES (:id, :asset_id, :url, :path, :method, :now, false)
-                ON CONFLICT DO NOTHING
+                INSERT INTO asset_endpoints (
+                    id, asset_id, url, path, method,
+                    source, auth_required, discovered_at, is_auth_page
+                )
+                VALUES (
+                    :id, :asset_id, :url, :path, :method,
+                    'llm_js', :auth_required, :now, false
+                )
+                ON CONFLICT (asset_id, url, method, source) DO NOTHING
             """),
             {
                 "id": endpoint_id,
@@ -297,6 +307,7 @@ async def store_llm_js_endpoints(
                 "url": url,
                 "path": path,
                 "method": method,
+                "auth_required": bool(auth_required) if auth_required is not None else None,
                 "now": now,
             },
         )

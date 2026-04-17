@@ -125,6 +125,7 @@ const NAV_GROUPS = [
     items: [
       { path: '/assets', labelKey: 'nav.assets', icon: Server, permission: 'page_assets' },
       { path: '/findings', labelKey: 'nav.findings', icon: Bug, permission: 'page_findings' },
+      { path: '/attack-paths', labelKey: 'nav.attackPaths', icon: Network, permission: 'page_findings' },
       { path: '/inventory', labelKey: 'nav.inventory', icon: Database, permission: 'page_inventory' },
     ],
   },
@@ -141,7 +142,6 @@ const NAV_GROUPS = [
     items: [
       { path: '/campaigns', labelKey: 'nav.campaigns', icon: Target, permission: 'page_campaigns' },
       { path: '/aggregated-solutions', labelKey: 'nav.remediation', icon: Layers, permission: 'page_remediation' },
-      { path: '/attack-paths', labelKey: 'nav.attackPaths', icon: Network, permission: 'page_findings' },
       { path: '/agents', labelKey: 'nav.agents', icon: Bot, permission: 'page_agents' },
     ],
   },

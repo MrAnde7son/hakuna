@@ -3,7 +3,7 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from core.database import get_db
@@ -13,15 +13,21 @@ from services.finding_correlator import correlate_findings
 router = APIRouter(prefix="/api/correlations", tags=["Correlations"])
 
 
-def _org_scope(org_ids: Optional[List[int]]) -> tuple[str, dict]:
-    """Build a SQL WHERE fragment scoped to accessible orgs.
+def _scope_clause(
+    org_ids: Optional[List[int]], alias: str = "ap"
+) -> tuple[str, dict, list]:
+    """Build an org-scope fragment for raw-SQL queries.
 
-    Returns (where_clause, params). `org_ids is None` means superadmin
-    (no filter). An empty list is treated as "no access" by the caller.
+    Returns (clause, params, bindparams). `org_ids is None` means superadmin
+    with no org context — we don't filter by org.
     """
     if org_ids is None:
-        return "WHERE 1=1", {}
-    return "WHERE ap.org_id IN :org_ids", {"org_ids": tuple(org_ids)}
+        return f"{alias}.org_id IS NOT NULL", {}, []
+    return (
+        f"{alias}.org_id IN :org_ids",
+        {"org_ids": list(org_ids)},
+        [bindparam("org_ids", expanding=True)],
+    )
 
 
 @router.post("/run")
@@ -30,10 +36,10 @@ async def run_correlation(
     current_user: dict = Depends(get_current_user),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """Trigger cross-finding correlation for the current org.
+    """Trigger cross-finding correlation for the caller's active org.
 
-    Runs against the caller's active org context. Superadmins without
-    X-Org-Context must set the header to pick a target org.
+    Superadmins must pin an org via the X-Org-Context header; MSSP parents
+    are scoped to whichever linked org they're currently viewing.
     """
     if org_ids is None or len(org_ids) != 1:
         raise HTTPException(
@@ -41,8 +47,7 @@ async def run_correlation(
             detail="Correlation requires a single org context (set X-Org-Context).",
         )
 
-    result = correlate_findings(db, org_ids[0])
-    return result
+    return correlate_findings(db, org_ids[0])
 
 
 @router.get("/attack-paths")
@@ -58,23 +63,21 @@ async def list_attack_paths(
     if org_ids is not None and not org_ids:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
-    where, params = _org_scope(org_ids)
+    scope_clause, params, binds = _scope_clause(org_ids, alias="ap")
+    where = f"WHERE {scope_clause}"
 
     if severity:
         where += " AND ap.severity = :severity"
         params["severity"] = severity
 
-    # Count
-    count_result = db.execute(
-        text(f"SELECT COUNT(*) FROM attack_paths ap {where}"),
-        params,
-    )
-    total = count_result.scalar()
+    count_stmt = text(f"SELECT COUNT(*) FROM attack_paths ap {where}")
+    if binds:
+        count_stmt = count_stmt.bindparams(*binds)
+    total = db.execute(count_stmt, params).scalar()
 
-    # Fetch page
     offset = (page - 1) * page_size
-    result = db.execute(
-        text(f"""
+    list_stmt = text(
+        f"""
             SELECT ap.id, ap.title, ap.severity, ap.steps, ap.chain_length, ap.created_at,
                    ap.narrative, ap.recommended_mitigations,
                    entry_a.hostname as entry_hostname, target_a.hostname as target_hostname
@@ -86,9 +89,12 @@ async def list_attack_paths(
                 CASE ap.severity WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3 ELSE 4 END,
                 ap.chain_length DESC
             LIMIT :limit OFFSET :offset
-        """),
-        {**params, "limit": page_size, "offset": offset},
+        """
     )
+    if binds:
+        list_stmt = list_stmt.bindparams(*binds)
+
+    result = db.execute(list_stmt, {**params, "limit": page_size, "offset": offset})
 
     paths = [
         {
@@ -114,24 +120,26 @@ async def get_attack_path(
     path_id: int,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    org_ids: list = Depends(get_accessible_org_ids),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Get a single attack path with full details."""
-    org_id = org_ids[0] if org_ids else None
-    if not org_id:
-        raise HTTPException(status_code=400, detail="No org context")
+    if org_ids is not None and not org_ids:
+        raise HTTPException(status_code=404, detail="Attack path not found")
 
-    result = db.execute(
-        text("""
+    scope_clause, params, binds = _scope_clause(org_ids, alias="ap")
+    stmt = text(
+        f"""
             SELECT ap.*, entry_a.hostname as entry_hostname, target_a.hostname as target_hostname
             FROM attack_paths ap
             LEFT JOIN assets entry_a ON entry_a.id = ap.entry_asset_id
             LEFT JOIN assets target_a ON target_a.id = ap.target_asset_id
-            WHERE ap.id = :id AND ap.org_id = :org_id
-        """),
-        {"id": path_id, "org_id": org_id},
+            WHERE ap.id = :id AND {scope_clause}
+        """
     )
-    row = result.fetchone()
+    if binds:
+        stmt = stmt.bindparams(*binds)
+
+    row = db.execute(stmt, {**params, "id": path_id}).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Attack path not found")
 
@@ -157,29 +165,33 @@ async def list_corroborated_findings(
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    org_ids: list = Depends(get_accessible_org_ids),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """List findings corroborated by multiple scanners."""
-    org_id = org_ids[0] if org_ids else None
-    if not org_id:
-        raise HTTPException(status_code=400, detail="No org context")
+    if org_ids is not None and not org_ids:
+        return {"items": [], "page": page, "page_size": page_size}
+
+    scope_clause, params, binds = _scope_clause(org_ids, alias="a")
 
     offset = (page - 1) * page_size
-    result = db.execute(
-        text("""
+    stmt = text(
+        f"""
             SELECT f.id, f.plugin_name, f.severity, f.severity_label, f.cves,
                    f.source_systems, f.custom_fields,
                    a.hostname, a.ip
             FROM findings f
             JOIN assets a ON a.id = f.asset_id
-            WHERE a.org_id = :org_id
+            WHERE {scope_clause}
               AND f.custom_fields::jsonb ? 'corroboration'
               AND (f.custom_fields->'corroboration'->>'corroborated')::boolean = true
             ORDER BY f.severity DESC, f.priority_score DESC NULLS LAST
             LIMIT :limit OFFSET :offset
-        """),
-        {"org_id": org_id, "limit": page_size, "offset": offset},
+        """
     )
+    if binds:
+        stmt = stmt.bindparams(*binds)
+
+    result = db.execute(stmt, {**params, "limit": page_size, "offset": offset})
 
     findings = [
         {

@@ -1,0 +1,136 @@
+{
+  "_meta": {
+    "description": "Seed database for retirejs_scanner. Subset of retirejs/retire.js jsrepository.json — covers the highest-frequency vulnerable JS libs we see in the wild. A separate cron task is expected to refresh this from upstream periodically.",
+    "source": "https://github.com/RetireJS/retire.js/blob/master/repository/jsrepository.json",
+    "schema_version": "1"
+  },
+  "jquery": {
+    "extractors": {
+      "filename": ["jquery-(?P<version>[0-9._-]+)(?:\\.min)?\\.js"],
+      "uri": ["jquery[/-](?P<version>[0-9._-]+)(?:\\.min)?\\.js"],
+      "filecontent": ["jQuery JavaScript Library v(?P<version>[0-9._]+)"]
+    },
+    "vulnerabilities": [
+      {
+        "below": "1.6.3",
+        "severity": "medium",
+        "identifiers": {"CVE": ["CVE-2011-4969"]},
+        "info": ["XSS via location.hash"]
+      },
+      {
+        "below": "1.9.0",
+        "severity": "medium",
+        "identifiers": {"CVE": ["CVE-2012-6708"]},
+        "info": ["Selector XSS"]
+      },
+      {
+        "below": "3.0.0",
+        "severity": "medium",
+        "identifiers": {"CVE": ["CVE-2015-9251"]},
+        "info": ["Cross-site scripting in $.ajax"]
+      },
+      {
+        "below": "3.4.0",
+        "severity": "medium",
+        "identifiers": {"CVE": ["CVE-2019-11358"]},
+        "info": ["jQuery.extend prototype pollution"]
+      },
+      {
+        "below": "3.5.0",
+        "severity": "medium",
+        "identifiers": {"CVE": ["CVE-2020-11023", "CVE-2020-11022"]},
+        "info": ["XSS when passing untrusted HTML"]
+      }
+    ]
+  },
+  "lodash": {
+    "extractors": {
+      "filename": ["lodash[._-](?P<version>[0-9._]+)(?:\\.min)?\\.js"],
+      "uri": ["lodash[/-](?P<version>[0-9._]+)(?:\\.min)?\\.js"],
+      "filecontent": ["Lo[Dd]ash <https?://lodash.com/?>\\s*\\n\\s*\\* +Build:.*\\n\\s*\\*[ \\t]+Copyright[^\\n]*\\n[\\s\\S]{0,2000}?VERSION = '(?P<version>[0-9._]+)'"]
+    },
+    "vulnerabilities": [
+      {
+        "below": "4.17.5",
+        "severity": "high",
+        "identifiers": {"CVE": ["CVE-2018-3721"]},
+        "info": ["Prototype pollution in defaultsDeep"]
+      },
+      {
+        "below": "4.17.11",
+        "severity": "high",
+        "identifiers": {"CVE": ["CVE-2018-16487"]},
+        "info": ["Prototype pollution in merge / mergeWith / defaultsDeep"]
+      },
+      {
+        "below": "4.17.12",
+        "severity": "medium",
+        "identifiers": {"CVE": ["CVE-2019-10744"]},
+        "info": ["Prototype pollution in defaultsDeep"]
+      },
+      {
+        "below": "4.17.21",
+        "severity": "high",
+        "identifiers": {"CVE": ["CVE-2020-8203", "CVE-2021-23337"]},
+        "info": ["Prototype pollution + command injection in template"]
+      }
+    ]
+  },
+  "angularjs": {
+    "extractors": {
+      "filename": ["angular[._-](?P<version>[0-9._]+)(?:\\.min)?\\.js"],
+      "uri": ["angular[/-](?P<version>[0-9._]+)(?:\\.min)?\\.js"],
+      "filecontent": ["AngularJS v(?P<version>[0-9._]+)"]
+    },
+    "vulnerabilities": [
+      {
+        "below": "1.8.0",
+        "severity": "medium",
+        "identifiers": {"CVE": ["CVE-2020-7676"]},
+        "info": ["XSS in jqLite"]
+      }
+    ]
+  },
+  "moment.js": {
+    "extractors": {
+      "filename": ["moment(?:-with-locales)?\\.?(?P<version>[0-9._]+)(?:\\.min)?\\.js"],
+      "uri": ["moment[/-](?P<version>[0-9._]+)(?:\\.min)?\\.js"],
+      "filecontent": ["//! moment\\.js\\s*\\n//! version : (?P<version>[0-9._]+)"]
+    },
+    "vulnerabilities": [
+      {
+        "below": "2.29.4",
+        "severity": "high",
+        "identifiers": {"CVE": ["CVE-2022-31129"]},
+        "info": ["ReDoS in rfc2822 parsing"]
+      },
+      {
+        "below": "2.19.3",
+        "severity": "medium",
+        "identifiers": {"CVE": ["CVE-2017-18214"]},
+        "info": ["ReDoS in moment.js"]
+      }
+    ]
+  },
+  "bootstrap": {
+    "extractors": {
+      "filename": ["bootstrap[._-](?P<version>[0-9._]+)(?:\\.min)?\\.js"],
+      "uri": ["bootstrap[/-](?P<version>[0-9._]+)(?:\\.min)?\\.js"],
+      "filecontent": ["\\* Bootstrap v(?P<version>[0-9._]+)"]
+    },
+    "vulnerabilities": [
+      {
+        "below": "3.4.0",
+        "severity": "medium",
+        "identifiers": {"CVE": ["CVE-2018-14040", "CVE-2018-14041", "CVE-2018-14042"]},
+        "info": ["XSS in collapse / scrollspy / tooltip"]
+      },
+      {
+        "below": "4.3.1",
+        "severity": "medium",
+        "identifiers": {"CVE": ["CVE-2019-8331"]},
+        "info": ["XSS in tooltip data-template"]
+      }
+    ]
+  }
+}

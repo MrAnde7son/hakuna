@@ -10,6 +10,7 @@ Covers PR 1 of the APSP feature:
 The deterministic fallback path (no LLM) keeps these tests free from
 network calls — _llm_plan raises and the planner falls back as designed.
 """
+import asyncio
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -119,15 +120,20 @@ def asset_with_context(db_session, test_org, test_scan):
     return asset
 
 
-class TestComputeAndPersist:
-    @pytest.mark.asyncio
-    async def test_first_call_persists_plan(self, db_session, test_org, asset_with_context):
-        """Plan is computed, written to the asset row, version bumps to 1."""
-        # Force deterministic fallback path so no network calls are made.
-        with patch.object(scan_planner, "_llm_plan", side_effect=RuntimeError("no LLM in tests")):
-            plan = await scan_planner.compute_and_persist_scan_plan(
-                db_session, test_org.id, asset_with_context.id,
+def _persist(db_session, org_id, asset_id, force=False):
+    """Sync wrapper — backend convention is asyncio.run, not pytest-asyncio."""
+    with patch.object(scan_planner, "_llm_plan", side_effect=RuntimeError("no LLM in tests")):
+        return asyncio.run(
+            scan_planner.compute_and_persist_scan_plan(
+                db_session, org_id, asset_id, force=force,
             )
+        )
+
+
+class TestComputeAndPersist:
+    def test_first_call_persists_plan(self, db_session, test_org, asset_with_context):
+        """Plan is computed, written to the asset row, version bumps to 1."""
+        plan = _persist(db_session, test_org.id, asset_with_context.id)
 
         assert plan is not None
         assert plan.actions, "deterministic plan always produces at least nuclei"
@@ -138,16 +144,12 @@ class TestComputeAndPersist:
         assert asset_with_context.scan_plan_signature is not None
         assert asset_with_context.scan_plan_computed_at is not None
 
-    @pytest.mark.asyncio
-    async def test_second_call_with_unchanged_context_hits_cache(
+    def test_second_call_with_unchanged_context_hits_cache(
         self, db_session, test_org, asset_with_context,
     ):
         """If nothing meaningful changed, no replanning happens — the plan
         body, signature, and version stay put."""
-        with patch.object(scan_planner, "_llm_plan", side_effect=RuntimeError("no LLM in tests")):
-            await scan_planner.compute_and_persist_scan_plan(
-                db_session, test_org.id, asset_with_context.id,
-            )
+        _persist(db_session, test_org.id, asset_with_context.id)
 
         db_session.refresh(asset_with_context)
         v1 = asset_with_context.scan_plan_version
@@ -158,8 +160,10 @@ class TestComputeAndPersist:
             scan_planner, "generate_scan_plan",
             side_effect=AssertionError("planner should NOT be called on cache hit"),
         ):
-            plan = await scan_planner.compute_and_persist_scan_plan(
-                db_session, test_org.id, asset_with_context.id,
+            plan = asyncio.run(
+                scan_planner.compute_and_persist_scan_plan(
+                    db_session, test_org.id, asset_with_context.id,
+                )
             )
 
         assert plan is not None
@@ -167,35 +171,22 @@ class TestComputeAndPersist:
         assert asset_with_context.scan_plan_version == v1, "version must not bump on cache hit"
         assert asset_with_context.scan_plan_signature == sig1
 
-    @pytest.mark.asyncio
-    async def test_force_true_bypasses_cache(
-        self, db_session, test_org, asset_with_context,
-    ):
+    def test_force_true_bypasses_cache(self, db_session, test_org, asset_with_context):
         """force=True replans even when the signature matches."""
-        with patch.object(scan_planner, "_llm_plan", side_effect=RuntimeError("no LLM in tests")):
-            await scan_planner.compute_and_persist_scan_plan(
-                db_session, test_org.id, asset_with_context.id,
-            )
+        _persist(db_session, test_org.id, asset_with_context.id)
         db_session.refresh(asset_with_context)
         v1 = asset_with_context.scan_plan_version
 
-        with patch.object(scan_planner, "_llm_plan", side_effect=RuntimeError("no LLM in tests")):
-            await scan_planner.compute_and_persist_scan_plan(
-                db_session, test_org.id, asset_with_context.id, force=True,
-            )
+        _persist(db_session, test_org.id, asset_with_context.id, force=True)
 
         db_session.refresh(asset_with_context)
         assert asset_with_context.scan_plan_version == v1 + 1
 
-    @pytest.mark.asyncio
-    async def test_signature_change_triggers_replan(
+    def test_signature_change_triggers_replan(
         self, db_session, test_org, asset_with_context,
     ):
         """Mutating the asset's tech stack should bust the cache on next call."""
-        with patch.object(scan_planner, "_llm_plan", side_effect=RuntimeError("no LLM in tests")):
-            await scan_planner.compute_and_persist_scan_plan(
-                db_session, test_org.id, asset_with_context.id,
-            )
+        _persist(db_session, test_org.id, asset_with_context.id)
         db_session.refresh(asset_with_context)
         v1 = asset_with_context.scan_plan_version
         sig1 = asset_with_context.scan_plan_signature
@@ -206,19 +197,17 @@ class TestComputeAndPersist:
         asset_with_context.easm_data = easm
         db_session.flush()
 
-        with patch.object(scan_planner, "_llm_plan", side_effect=RuntimeError("no LLM in tests")):
-            await scan_planner.compute_and_persist_scan_plan(
-                db_session, test_org.id, asset_with_context.id,
-            )
+        _persist(db_session, test_org.id, asset_with_context.id)
 
         db_session.refresh(asset_with_context)
         assert asset_with_context.scan_plan_version == v1 + 1
         assert asset_with_context.scan_plan_signature != sig1
 
-    @pytest.mark.asyncio
-    async def test_missing_asset_returns_none(self, db_session, test_org):
-        plan = await scan_planner.compute_and_persist_scan_plan(
-            db_session, test_org.id, asset_id=999_999,
+    def test_missing_asset_returns_none(self, db_session, test_org):
+        plan = asyncio.run(
+            scan_planner.compute_and_persist_scan_plan(
+                db_session, test_org.id, asset_id=999_999,
+            )
         )
         assert plan is None
 

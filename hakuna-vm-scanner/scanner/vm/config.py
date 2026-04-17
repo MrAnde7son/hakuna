@@ -32,3 +32,13 @@ DAST_TEMPLATES_REPO = os.environ.get(
 DAST_TEMPLATES_DIR = os.path.join(TEMPLATES_DIR, "custom", "dast")
 
 SCAN_TIMEOUT_SECONDS = int(os.environ.get("SCAN_TIMEOUT_SECONDS", "600"))
+
+# When the backend supplies a precomputed adaptive scan plan with a target
+# list (per-endpoint Nuclei targeting), cap the number of URLs we actually
+# pass to Nuclei. Per-endpoint × DAST templates is multiplicative — without
+# a cap a single misbehaving plan can spawn hours of work. The plan is
+# expected to rank endpoints by value (auth_required, has_parameters,
+# OpenAPI-known) and the cap keeps us honest even when the planner
+# overshoots. 200 is a deliberate compromise: enough to cover the main
+# attack surface of typical APIs without ballooning per-asset wall time.
+NUCLEI_MAX_TARGETS_PER_ASSET = int(os.environ.get("NUCLEI_MAX_TARGETS_PER_ASSET", "200"))
