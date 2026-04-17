@@ -65,6 +65,12 @@ def upgrade():
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             """))
+            if _pgvector:
+                # Table may have been created by a prior run when pgvector was
+                # unavailable — add the embedding column now if missing.
+                conn.execute(text(
+                    "ALTER TABLE llm_interactions ADD COLUMN IF NOT EXISTS embedding vector(1024)"
+                ))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_llm_int_org_surface_created ON llm_interactions (org_id, surface, created_at DESC)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_llm_int_agent_run ON llm_interactions (agent_run_id)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_llm_int_surface_ref ON llm_interactions (surface, surface_ref_id)"))
