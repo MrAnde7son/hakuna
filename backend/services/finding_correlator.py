@@ -17,6 +17,10 @@ from datetime import datetime
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from core.database import DATABASE_URL
+
+_SQLITE = DATABASE_URL.startswith("sqlite")
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,14 +61,16 @@ def _correlate_by_cve(db: Session, org_id: int) -> int:
     update both findings' source_systems to include all contributing sources.
     """
     # Get all findings with CVEs for this org
+    cves_not_empty = "CAST(f.cves AS TEXT) != '[]'" if _SQLITE else "f.cves::text != '[]'"
     result = db.execute(
-        text("""
+        text(f"""
             SELECT f.id, f.asset_id, f.source_type, f.source_systems, f.cves, f.custom_fields
             FROM findings f
             JOIN assets a ON a.id = f.asset_id
-            WHERE a.org_id = :org_id
+            JOIN scans s ON s.id = f.scan_id
+            WHERE s.org_id = :org_id
               AND f.cves IS NOT NULL
-              AND f.cves::text != '[]'
+              AND {cves_not_empty}
               AND f.workflow_status NOT IN ('false_positive', 'accepted_risk')
         """),
         {"org_id": org_id},
@@ -98,29 +104,36 @@ def _correlate_by_cve(db: Session, org_id: int) -> int:
         merged_sources = sorted(all_sources)
 
         # Update all findings in this group
+        corr_data = {
+            "corroborated": True,
+            "sources": merged_sources,
+            "cve": cve,
+            "confidence": "high" if len(source_types) >= 3 else "medium",
+        }
         for finding_id, _, _ in findings:
-            db.execute(
-                text("""
-                    UPDATE findings SET
-                        source_systems = :sources,
-                        custom_fields = jsonb_set(
-                            COALESCE(custom_fields, '{}')::jsonb,
-                            '{corroboration}',
-                            :corr_data::jsonb
-                        )
-                    WHERE id = :id
-                """),
-                {
-                    "id": finding_id,
-                    "sources": json.dumps(merged_sources),
-                    "corr_data": json.dumps({
-                        "corroborated": True,
-                        "sources": merged_sources,
-                        "cve": cve,
-                        "confidence": "high" if len(source_types) >= 3 else "medium",
-                    }),
-                },
-            )
+            if _SQLITE:
+                # SQLite: read-modify-write the JSON column in Python
+                row = db.execute(text("SELECT custom_fields FROM findings WHERE id = :id"), {"id": finding_id}).fetchone()
+                cf = json.loads(row.custom_fields) if row and row.custom_fields else {}
+                cf["corroboration"] = corr_data
+                db.execute(
+                    text("UPDATE findings SET source_systems = :sources, custom_fields = :cf WHERE id = :id"),
+                    {"id": finding_id, "sources": json.dumps(merged_sources), "cf": json.dumps(cf)},
+                )
+            else:
+                db.execute(
+                    text("""
+                        UPDATE findings SET
+                            source_systems = :sources,
+                            custom_fields = jsonb_set(
+                                COALESCE(custom_fields, '{}')::jsonb,
+                                '{corroboration}',
+                                :corr_data::jsonb
+                            )
+                        WHERE id = :id
+                    """),
+                    {"id": finding_id, "sources": json.dumps(merged_sources), "corr_data": json.dumps(corr_data)},
+                )
             corroborated += 1
 
     db.commit()
@@ -140,7 +153,8 @@ def _generate_attack_paths(db: Session, org_id: int) -> int:
             SELECT DISTINCT a.id, a.hostname, a.ip, a.risk_score
             FROM assets a
             JOIN findings f ON f.asset_id = a.id
-            WHERE a.org_id = :org_id
+            JOIN scans s ON s.id = a.scan_id
+            WHERE s.org_id = :org_id
               AND a.is_internet_facing = true
               AND f.severity >= 3
               AND f.workflow_status NOT IN ('resolved', 'false_positive', 'accepted_risk')
@@ -226,7 +240,8 @@ def _bfs_attack_chains(
             SELECT f.id, f.plugin_name, f.severity, a.hostname
             FROM findings f
             JOIN assets a ON a.id = f.asset_id
-            WHERE f.asset_id = :aid AND a.org_id = :org_id
+            JOIN scans s ON s.id = f.scan_id
+            WHERE f.asset_id = :aid AND s.org_id = :org_id
               AND f.severity >= 3
               AND f.workflow_status NOT IN ('resolved', 'false_positive', 'accepted_risk')
             ORDER BY f.severity DESC, f.priority_score DESC NULLS LAST
@@ -271,7 +286,6 @@ def _bfs_attack_chains(
                 JOIN assets a ON a.id = CASE WHEN ar.source_asset_id = :aid THEN ar.target_asset_id ELSE ar.source_asset_id END
                 WHERE ar.org_id = :org_id
                   AND (ar.source_asset_id = :aid OR ar.target_asset_id = :aid)
-                  AND a.org_id = :org_id
             """),
             {"org_id": org_id, "aid": current_asset_id},
         )

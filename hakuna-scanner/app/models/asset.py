@@ -132,6 +132,8 @@ class ScanRun(Base):
     stage_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stage_log: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
     # Orphan recovery: how many times this run has been re-dispatched after
     # the worker lost it (crash, OOM, deploy). Capped at MAX_RECOVERY_ATTEMPTS
     # in app.tasks.recovery.

@@ -1,14 +1,17 @@
 """API routes for cross-finding correlation and attack paths."""
 
+import json
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
-from core.database import get_db
+from core.database import get_db, DATABASE_URL
 from core.auth import get_current_user, get_accessible_org_ids
 from services.finding_correlator import correlate_findings
+
+_SQLITE = DATABASE_URL.startswith("sqlite")
 
 router = APIRouter(prefix="/api/correlations", tags=["Correlations"])
 
@@ -171,9 +174,18 @@ async def list_corroborated_findings(
     if org_ids is not None and not org_ids:
         return {"items": [], "page": page, "page_size": page_size}
 
-    scope_clause, params, binds = _scope_clause(org_ids, alias="a")
+    scope_clause, params, binds = _scope_clause(org_ids, alias="sc")
 
     offset = (page - 1) * page_size
+
+    if _SQLITE:
+        corr_filter = "json_extract(f.custom_fields, '$.corroboration.corroborated') = 1"
+    else:
+        corr_filter = (
+            "f.custom_fields::jsonb ? 'corroboration' "
+            "AND (f.custom_fields->'corroboration'->>'corroborated')::boolean = true"
+        )
+
     stmt = text(
         f"""
             SELECT f.id, f.plugin_name, f.severity, f.severity_label, f.cves,
@@ -181,9 +193,9 @@ async def list_corroborated_findings(
                    a.hostname, a.ip
             FROM findings f
             JOIN assets a ON a.id = f.asset_id
+            JOIN scans sc ON sc.id = f.scan_id
             WHERE {scope_clause}
-              AND f.custom_fields::jsonb ? 'corroboration'
-              AND (f.custom_fields->'corroboration'->>'corroborated')::boolean = true
+              AND {corr_filter}
             ORDER BY f.severity DESC, f.priority_score DESC NULLS LAST
             LIMIT :limit OFFSET :offset
         """
@@ -201,7 +213,7 @@ async def list_corroborated_findings(
             "severity_label": row.severity_label,
             "cves": row.cves,
             "source_systems": row.source_systems,
-            "corroboration": (row.custom_fields or {}).get("corroboration", {}),
+            "corroboration": (json.loads(row.custom_fields) if isinstance(row.custom_fields, str) else row.custom_fields or {}).get("corroboration", {}),
             "hostname": row.hostname,
             "ip": str(row.ip) if row.ip else None,
         }

@@ -854,6 +854,9 @@ export default function FindingDetail() {
             </Section>
         )
       })()}
+      {/* AI Validation — LLM verdict + agent run history, only for high/critical */}
+      <FindingValidationCard findingId={finding.id} severity={finding.severity} />
+
       </>)}
 
       {activeTab === 'remediation' && (<>
@@ -914,9 +917,6 @@ export default function FindingDetail() {
           </div>
         </Card>
       )}
-
-      {/* AI Validation — LLM verdict + agent run history, only for high/critical */}
-      <FindingValidationCard findingId={finding.id} severity={finding.severity} />
 
       {/* Aggregated Solution Banner */}
       {finding.aggregated_solution && (

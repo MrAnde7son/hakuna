@@ -468,6 +468,7 @@ _RETRYABLE_HTTPX_ERRORS: tuple[type[Exception], ...] = (
     httpx.RemoteProtocolError,
     httpx.ConnectError,
     httpx.PoolTimeout,
+    RuntimeError,  # uvloop "handler is closed" on stale TCP transport
 )
 
 
