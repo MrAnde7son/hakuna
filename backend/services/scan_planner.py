@@ -13,11 +13,12 @@ Output is a structured ScanPlan that the VM scanner can execute.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import text, func
 from sqlalchemy.orm import Session
@@ -173,6 +174,155 @@ async def generate_scan_plan(
     return _deterministic_plan(asset_context)
 
 
+def compute_plan_signature(context: dict) -> str:
+    """Stable hash over the inputs that meaningfully change a plan.
+
+    Used to short-circuit replanning when nothing material has changed since
+    the last plan was stored on the asset. Specifically excludes timestamps
+    and counts that wobble without affecting the planning decision (e.g.
+    last_scan timestamp, total findings_summary which can fluctuate by one
+    open finding without changing the strategic picture).
+    """
+    keys = (
+        sorted([str(c) for c in context.get("cpes") or []]),
+        sorted([str(t) for t in context.get("tech_stack") or []]),
+        sorted([int(p) for p in context.get("open_ports") or [] if p is not None]),
+        int(context.get("criticality") or 0),
+        # bucket risk score into halves so micro-jitter doesn't bust the cache
+        round(float(context.get("risk_score") or 0.0) * 2) / 2,
+        bool(context.get("is_internet_facing")),
+        context.get("device_type") or "",
+        context.get("asset_type") or "",
+        context.get("environment") or "",
+        # endpoint count drives per-endpoint targeting decisions
+        int(context.get("endpoint_count") or 0),
+        int(context.get("js_vuln_lib_count") or 0),
+        int(context.get("leaked_secret_count") or 0),
+    )
+    payload = json.dumps(keys, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+async def compute_and_persist_scan_plan(
+    db: Session,
+    org_id: int,
+    asset_id: int,
+    force: bool = False,
+    llm_provider: str = "anthropic",
+) -> ScanPlan | None:
+    """Compute a scan plan for an asset and persist it on the Asset row.
+
+    Cache strategy: compute the signature first; if it matches the stored
+    ``scan_plan_signature`` and ``force=False``, return the existing plan
+    without calling the LLM. This is the common path — most enrichment
+    refreshes don't change the things plans depend on.
+
+    Returns the persisted ScanPlan, or None when the asset is missing.
+    """
+    asset = (
+        db.query(Asset)
+        .join(Scan, Asset.scan_id == Scan.id)
+        .filter(Asset.id == asset_id, Scan.org_id == org_id)
+        .first()
+    )
+    if not asset:
+        return None
+
+    context = _gather_asset_context(db, org_id, asset_id)
+    if not context:
+        return None
+
+    signature = compute_plan_signature(context)
+    if (
+        not force
+        and asset.scan_plan_signature == signature
+        and asset.scan_plan
+    ):
+        # Cache hit — nothing meaningful changed since last plan.
+        try:
+            return _scan_plan_from_dict(asset.scan_plan)
+        except (KeyError, TypeError):
+            # Stored plan is malformed somehow — fall through and recompute.
+            logger.warning("Stored scan_plan for asset %s is malformed; recomputing", asset_id)
+
+    plan = await generate_scan_plan(db, org_id, asset_id, llm_provider)
+
+    asset.scan_plan = plan.to_dict()
+    asset.scan_plan_signature = signature
+    asset.scan_plan_computed_at = datetime.utcnow()
+    asset.scan_plan_version = (asset.scan_plan_version or 0) + 1
+    db.commit()
+    logger.info(
+        "Persisted scan_plan v%d for asset=%s tier=%s actions=%d",
+        asset.scan_plan_version, asset_id, plan.risk_tier, len(plan.actions),
+    )
+    return plan
+
+
+def invalidate_stale_plans(
+    db: Session,
+    org_id: int,
+    max_age_hours: int = 168,
+) -> list[int]:
+    """Return ids of assets whose scan_plan is stale and should be recomputed.
+
+    "Stale" means either:
+      - never planned (scan_plan_computed_at IS NULL), or
+      - last enriched after the plan was computed, or
+      - older than ``max_age_hours`` regardless of enrichment activity.
+
+    Doesn't itself recompute — that's left to a worker that walks this list
+    so per-asset failures don't poison the batch. Returning ids (rather than
+    Asset rows) keeps memory flat for large orgs.
+    """
+    cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+    rows = (
+        db.query(Asset.id)
+        .join(Scan, Asset.scan_id == Scan.id)
+        .filter(
+            Scan.org_id == org_id,
+            Asset.asset_status == "active",
+        )
+        .filter(
+            (Asset.scan_plan_computed_at.is_(None))
+            | (Asset.scan_plan_computed_at < cutoff)
+            | (
+                (Asset.last_enriched.isnot(None))
+                & (Asset.scan_plan_computed_at < Asset.last_enriched)
+            )
+        )
+        .order_by(Asset.scan_plan_computed_at.asc().nullsfirst())
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
+def _scan_plan_from_dict(data: dict) -> ScanPlan:
+    """Reconstruct a ScanPlan from its persisted JSON form."""
+    actions = [
+        ScanAction(
+            tool=a["tool"],
+            priority=a.get("priority", 3),
+            tags=a.get("tags", []),
+            templates=a.get("templates", []),
+            flags=a.get("flags", {}),
+            timeout=a.get("timeout", 600),
+            reasoning=a.get("reasoning", ""),
+        )
+        for a in data.get("actions", [])
+    ]
+    return ScanPlan(
+        asset_id=data["asset_id"],
+        asset_hostname=data.get("asset_hostname", ""),
+        risk_tier=data.get("risk_tier", "medium"),
+        actions=actions,
+        total_estimated_duration=data.get("total_estimated_duration", 0),
+        skip_reason=data.get("skip_reason"),
+        reasoning=data.get("reasoning", ""),
+        created_at=data.get("created_at", datetime.utcnow().isoformat()),
+    )
+
+
 async def generate_batch_plans(
     db: Session,
     org_id: int,
@@ -283,6 +433,46 @@ def _gather_asset_context(db: Session, org_id: int, asset_id: int) -> dict | Non
     except Exception:
         logger.debug("Could not determine last scan time for asset %d", asset_id)
 
+    # Counts the planner uses both for context and for signature stability.
+    # The endpoint/JS-intel counts are populated by hakuna-scanner enrichment
+    # (PR 3 onward); for assets that haven't been enriched yet they default
+    # to zero — the planner gracefully falls back to host-level scanning.
+    endpoint_count = 0
+    js_vuln_lib_count = 0
+    leaked_secret_count = 0
+    try:
+        # asset_endpoints lives in the scanner DB on a separate database in
+        # production, but in single-DB dev environments the table may exist
+        # in the backend DB too. Tolerate "table not found" silently.
+        endpoint_count = db.execute(
+            text("SELECT COUNT(*) FROM asset_endpoints WHERE asset_id = :aid"),
+            {"aid": asset_id},
+        ).scalar() or 0
+    except Exception:
+        endpoint_count = 0
+
+    try:
+        js_vuln_lib_count = (
+            db.query(func.count(Finding.id))
+            .filter(
+                Finding.asset_id == asset_id,
+                Finding.plugin_family == "JSLibScan",
+            )
+            .scalar()
+            or 0
+        )
+        leaked_secret_count = (
+            db.query(func.count(Finding.id))
+            .filter(
+                Finding.asset_id == asset_id,
+                Finding.plugin_family == "JSSecretScan",
+            )
+            .scalar()
+            or 0
+        )
+    except Exception:
+        pass
+
     return {
         "asset_id": asset.id,
         "hostname": asset.hostname or "",
@@ -306,6 +496,9 @@ def _gather_asset_context(db: Session, org_id: int, asset_id: int) -> dict | Non
         "last_enriched": asset.last_enriched.isoformat() if asset.last_enriched else None,
         "easm_tech": tech_stack,
         "easm_waf": easm.get("waf"),
+        "endpoint_count": int(endpoint_count),
+        "js_vuln_lib_count": int(js_vuln_lib_count),
+        "leaked_secret_count": int(leaked_secret_count),
     }
 
 

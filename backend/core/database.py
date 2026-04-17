@@ -59,6 +59,7 @@ def init_db():
         IntegrationConfig,
         ReportTemplate,
         Agent, AgentRun, AgentSchedule,
+        LLMInteraction, LLMInteractionOutcome,
         FindingException, ScanComparison,
         AggregatedSolution,
         AuditLog,

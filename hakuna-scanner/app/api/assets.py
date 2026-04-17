@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from app.config import settings
 from app.database import get_db
 from app.ingest.cpe_infer import filter_cpe_list
-from app.models.asset import Asset, AssetPort
+from app.models.asset import Asset, AssetEndpoint, AssetPort
 
 router = APIRouter(prefix="/api/v1/orgs/{org_id}/assets", tags=["assets"])
 
@@ -65,6 +65,31 @@ class AssetStats(BaseModel):
     with_http: int
     with_cdn: int
     with_expired_cert: int
+
+
+class EndpointResponse(BaseModel):
+    id: uuid.UUID
+    asset_id: uuid.UUID
+    asset_hostname: str | None = None
+    url: str
+    path: str | None = None
+    method: str
+    source: str
+    status_code: int | None = None
+    auth_required: bool | None = None
+    content_type: str | None = None
+    is_auth_page: bool = False
+    parameters: dict | list | None = None
+    discovered_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class EndpointListResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    endpoints: list[EndpointResponse]
 
 
 def _asset_to_response(asset: Asset) -> AssetResponse:
@@ -177,6 +202,81 @@ async def asset_stats(org_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         with_cdn=with_cdn,
         with_expired_cert=with_expired,
     )
+
+
+@router.get("/endpoints", response_model=EndpointListResponse)
+async def list_endpoints(
+    org_id: uuid.UUID,
+    asset_id: uuid.UUID | None = Query(None, description="Filter to a single asset"),
+    source: str | None = Query(None, description="Filter by discovery source (katana|kiterunner|openapi|graphql|llm_js|sourcemap|wordlist)"),
+    method: str | None = Query(None, description="Filter by HTTP method"),
+    auth_required: bool | None = Query(None, description="Filter by auth_required flag"),
+    search: str | None = Query(None, description="Substring match on path or url"),
+    sort_by: str = Query("discovered_at", description="Sort column: discovered_at | status_code | path | method | source"),
+    order: str = Query("desc", description="asc or desc"),
+    limit: int = Query(100, le=1000),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """List discovered API/web endpoints for an org.
+
+    Joins asset_endpoints with assets so we can filter by org_id (endpoints
+    don't carry org_id directly) and return the parent hostname without a
+    second round-trip.
+    """
+    base = (
+        select(AssetEndpoint, Asset.hostname)
+        .join(Asset, AssetEndpoint.asset_id == Asset.id)
+        .where(Asset.org_id == org_id)
+    )
+    if asset_id is not None:
+        base = base.where(AssetEndpoint.asset_id == asset_id)
+    if source:
+        base = base.where(AssetEndpoint.source == source)
+    if method:
+        base = base.where(AssetEndpoint.method == method.upper())
+    if auth_required is not None:
+        base = base.where(AssetEndpoint.auth_required == auth_required)
+    if search:
+        pattern = f"%{search}%"
+        base = base.where(AssetEndpoint.url.ilike(pattern) | AssetEndpoint.path.ilike(pattern))
+
+    # Total count — wrap the filtered join as a subquery so the count
+    # reflects the endpoint rows, not the asset rows (which a naive count
+    # over the join would double up).
+    total = (
+        await db.execute(select(func.count()).select_from(base.subquery()))
+    ).scalar() or 0
+
+    sort_col = {
+        "discovered_at": AssetEndpoint.discovered_at,
+        "status_code": AssetEndpoint.status_code,
+        "path": AssetEndpoint.path,
+        "method": AssetEndpoint.method,
+        "source": AssetEndpoint.source,
+    }.get(sort_by, AssetEndpoint.discovered_at)
+    base = base.order_by(sort_col.asc() if order == "asc" else sort_col.desc())
+
+    rows = (await db.execute(base.limit(limit).offset(offset))).all()
+    endpoints = [
+        EndpointResponse.model_validate({
+            "id": ep.id,
+            "asset_id": ep.asset_id,
+            "asset_hostname": hostname,
+            "url": ep.url,
+            "path": ep.path,
+            "method": ep.method,
+            "source": ep.source,
+            "status_code": ep.status_code,
+            "auth_required": ep.auth_required,
+            "content_type": ep.content_type,
+            "is_auth_page": ep.is_auth_page,
+            "parameters": ep.parameters,
+            "discovered_at": ep.discovered_at,
+        })
+        for ep, hostname in rows
+    ]
+    return EndpointListResponse(total=total, limit=limit, offset=offset, endpoints=endpoints)
 
 
 @router.get("/{asset_id}", response_model=AssetResponse)

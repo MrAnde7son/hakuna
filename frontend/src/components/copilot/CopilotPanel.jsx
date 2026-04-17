@@ -398,11 +398,19 @@ const baseMdComponents = {
   ol: ({ children }) => <ol style={{ margin: '3px 0', paddingLeft: 18 }}>{children}</ol>,
   li: ({ children }) => <li style={{ margin: '1px 0' }}>{children}</li>,
   strong: ({ children }) => <strong style={{ fontWeight: 700, color: 'var(--text)' }}>{children}</strong>,
-  code: ({ inline, className, children }) => {
-    if (inline) return <code style={{ background: 'var(--bg-secondary)', padding: '1px 4px', borderRadius: 3, fontSize: 11, fontFamily: 'monospace' }}>{children}</code>
-    // Detect richblock fenced code blocks (```richblock or ```richblock:type)
-    const lang = className ? className.replace('language-', '') : ''
+  // react-markdown v10 removed the `inline` prop — block code always has a
+  // `language-*` class and is wrapped in `<pre>`. We passthrough `pre` so our
+  // `code` handler owns the block wrapper (no double `<pre>`) and can swap in
+  // rich blocks without nesting them inside a real `<pre>`.
+  pre: ({ children }) => <>{children}</>,
+  code: ({ className, children }) => {
+    const match = /language-(\w+)/.exec(className || '')
     const raw = String(children).replace(/\n$/, '')
+    const isBlock = !!match || raw.includes('\n')
+    if (!isBlock) {
+      return <code style={{ background: 'var(--bg-secondary)', padding: '1px 4px', borderRadius: 3, fontSize: 11, fontFamily: 'monospace' }}>{children}</code>
+    }
+    const lang = match ? match[1] : ''
     const rich = tryRenderRichBlock(lang, raw)
     if (rich) return rich
     return <pre style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, padding: 8, overflowX: 'auto', fontSize: 11, fontFamily: 'monospace', margin: '6px 0', color: 'var(--text)' }}><code>{children}</code></pre>

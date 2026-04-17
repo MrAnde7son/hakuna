@@ -1,8 +1,11 @@
 """LLM-powered vulnerability validation — detects false positives in Nuclei findings.
 
-After Nuclei scanning, critical/high findings are batched and analyzed by an LLM
+After Nuclei scanning, Critical findings are batched and analyzed by an LLM
 to determine if they are true positives, false positives, or need manual review.
 Results are stored in the finding's llm_validation JSON column.
+
+Severity cutoff is controlled by LLM_VALIDATION_MIN_SEVERITY (default 4 =
+Critical). Set to 3 to include High as well.
 """
 
 from __future__ import annotations
@@ -52,11 +55,18 @@ def validate_findings(
 
     Returns {"validated": int, "true_positive": int, "false_positive": int, "needs_review": int}.
     """
-    # Fast exit if no LLM provider is configured
-    if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
-        return {"validated": 0, "skipped": "no_api_key"}
+    # Fast exit if no LLM provider is configured. Defer the check to
+    # agent_engine.get_default_model which knows about Vertex / Gemini /
+    # Ollama / Groq too — not just Anthropic/OpenAI env vars.
+    try:
+        from agents.agent_engine import get_default_model
+        if not get_default_model(db):
+            return {"validated": 0, "skipped": "no_llm_provider_configured"}
+    except Exception:
+        # If agent_engine can't resolve a provider, skip this cycle.
+        return {"validated": 0, "skipped": "no_llm_provider_configured"}
 
-    min_severity = int(os.environ.get("LLM_VALIDATION_MIN_SEVERITY", "3"))
+    min_severity = int(os.environ.get("LLM_VALIDATION_MIN_SEVERITY", "4"))
 
     # Fetch candidate findings: critical/high from vm_scanner (Nuclei)
     params = {"org_id": org_id, "min_sev": min_severity, "limit": max_findings}
@@ -95,7 +105,7 @@ def validate_findings(
     # Process in batches
     for i in range(0, len(findings), BATCH_SIZE):
         batch = findings[i:i + BATCH_SIZE]
-        verdicts = _validate_batch(batch)
+        verdicts = _validate_batch(batch, db=db)
 
         for verdict in verdicts:
             finding_id = verdict.get("finding_id")
@@ -147,11 +157,12 @@ def validate_findings(
     return stats
 
 
-def _validate_batch(findings: list) -> list[dict]:
+def _validate_batch(findings: list, db=None) -> list[dict]:
     """Send a batch of findings to the LLM for validation.
 
-    Uses the same multi-provider httpx pattern as scan_planner._call_llm.
-    Tries Anthropic first, falls back to OpenAI.
+    Uses services.llm_provider.call_llm — honors whichever provider the
+    system is configured for (Anthropic, OpenAI, Vertex AI, Gemini,
+    Groq, Ollama).
 
     Returns list of verdict dicts.
     """
@@ -188,6 +199,7 @@ def _validate_batch(findings: list) -> list[dict]:
             system_prompt=_SYSTEM_PROMPT,
             user_prompt=user_message,
             max_tokens=2048,
+            db=db,
         )
     except Exception as e:
         logger.warning("LLM validation batch failed: %s", e)
@@ -214,10 +226,13 @@ def _call_llm(
     system_prompt: str,
     user_prompt: str,
     max_tokens: int = 2048,
+    db=None,
 ) -> str:
-    """Multi-provider LLM call — delegates to the shared services.llm_provider.
+    """Multi-provider LLM call — delegates to services.llm_provider.
 
-    Reads LLM_VALIDATION_MODEL env var to override the default per provider.
+    Resolves the provider the same way the agent engine does (Vertex AI,
+    Anthropic, OpenAI, Gemini, Groq, Ollama). LLM_VALIDATION_MODEL env
+    var overrides the default model if set.
     """
     from services.llm_provider import call_llm
     return call_llm(
@@ -225,4 +240,5 @@ def _call_llm(
         user_prompt=user_prompt,
         max_tokens=max_tokens,
         model_env="LLM_VALIDATION_MODEL",
+        db=db,
     )

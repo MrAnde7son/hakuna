@@ -11,6 +11,12 @@ logger = logging.getLogger(__name__)
 
 _routing_table: dict | None = None
 
+# Web-serving ports that cause DAST templates under custom/dast/ to be
+# auto-included. Kept deliberately conservative — ports here should be
+# the same ones gated by the "web" entry in routing_table.json port_gates,
+# plus common dev/framework ports where web apps frequently listen.
+_WEB_PORTS: frozenset[int] = frozenset({80, 443, 3000, 5000, 8000, 8001, 8080, 8443})
+
 
 def _load_routing_table() -> dict:
     global _routing_table
@@ -65,7 +71,7 @@ class TemplateRouter:
         final_tags = self._apply_port_gates(set(pre_gate_tags), open_ports, rt)
         gated_tags = pre_gate_tags - final_tags
 
-        custom_paths = self._get_custom_templates(final_tags)
+        custom_paths = self._get_custom_templates(final_tags, open_ports)
         fallback = not final_tags and not custom_paths
 
         if fallback:
@@ -131,7 +137,7 @@ class TemplateRouter:
         tags = self._apply_port_gates(tags, open_ports, rt)
 
         # 4. Custom templates
-        custom_paths = self._get_custom_templates(tags)
+        custom_paths = self._get_custom_templates(tags, open_ports)
 
         # Build CLI args
         args: list[str] = []
@@ -228,14 +234,40 @@ class TemplateRouter:
 
         return tags
 
-    def _get_custom_templates(self, derived_tags: set[str]) -> list[str]:
-        """Glob custom templates — include if matching any derived tag or tagged 'always'."""
+    def _get_custom_templates(
+        self,
+        derived_tags: set[str],
+        open_ports: list[int] | None = None,
+    ) -> list[str]:
+        """Glob custom templates. Include a template when any of:
+
+        - it carries the ``always`` tag,
+        - its tags intersect ``derived_tags``, or
+        - it lives under ``custom/dast/`` and the asset has a web-serving
+          port open.
+
+        The ``dast/`` carve-out exists because third-party DAST templates
+        (e.g. the reewardius set synced by ``scheduler.dast_template_sync``)
+        use tags like ``xss``, ``sqli``, ``ssrf`` that aren't derived from
+        CPE/tech fingerprinting. Path-based inclusion gives them the same
+        auto-apply semantics as ``always`` — scoped to web assets so we
+        don't fire HTTP probes at non-HTTP targets — without modifying
+        upstream templates (which would get overwritten on next sync).
+        """
         custom_dir = os.path.join(TEMPLATES_DIR, "custom")
         if not os.path.isdir(custom_dir):
             return []
 
+        dast_dir_prefix = os.path.join(custom_dir, "dast") + os.sep
+        has_web_port = bool(set(open_ports or []) & _WEB_PORTS)
+
         paths: list[str] = []
         for yaml_path in sorted(glob.glob(os.path.join(custom_dir, "**", "*.yaml"), recursive=True)):
+            # DAST path-based inclusion — bypass tag check when asset is web-facing.
+            if yaml_path.startswith(dast_dir_prefix):
+                if has_web_port:
+                    paths.append(yaml_path)
+                continue
             try:
                 with open(yaml_path) as f:
                     content = f.read()

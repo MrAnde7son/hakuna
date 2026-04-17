@@ -49,6 +49,7 @@ import {
   Shield,
   AlertTriangle,
   Plug,
+  Network,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -92,6 +93,7 @@ const OnboardingWizard = React.lazy(() => import('./components/onboarding/Onboar
 const EventSearch = React.lazy(() => import('./components/siem/EventSearch.jsx'))
 const DetectionRules = React.lazy(() => import('./components/siem/DetectionRules.jsx'))
 const AlertTriage = React.lazy(() => import('./components/siem/AlertTriage.jsx'))
+const AttackPaths = React.lazy(() => import('./components/attackpaths/AttackPaths.jsx'))
 
 // Global scan context
 export const ScanContext = createContext({ activeScanId: null, setActiveScanId: () => {}, scans: [], refreshScans: () => {} })
@@ -123,6 +125,7 @@ const NAV_GROUPS = [
     items: [
       { path: '/assets', labelKey: 'nav.assets', icon: Server, permission: 'page_assets' },
       { path: '/findings', labelKey: 'nav.findings', icon: Bug, permission: 'page_findings' },
+      { path: '/attack-paths', labelKey: 'nav.attackPaths', icon: Network, permission: 'page_findings' },
       { path: '/inventory', labelKey: 'nav.inventory', icon: Database, permission: 'page_inventory' },
     ],
   },
@@ -1236,6 +1239,7 @@ function AppShell() {
                 <Route path="/siem/search" element={<EventSearch />} />
                 <Route path="/siem/rules" element={<DetectionRules />} />
                 <Route path="/siem/alerts" element={<AlertTriage />} />
+                <Route path="/attack-paths" element={<AttackPaths />} />
                 <Route path="/docs" element={<UserDocs />} />
               </Routes>
             </Suspense>

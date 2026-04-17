@@ -5,6 +5,7 @@ import { ArrowLeft, ExternalLink, Zap, Shield, ShieldCheck, Terminal, Info, Cros
 import { getFinding, getFindingSources, getFindingAssessments, resolveFinding, unresolveFinding, updateFindingStatus, updateFindingContext, createException, createCampaign, runCampaign, syncFindingTickets, getPatchAdvisories } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, Button, EffortBadge, ResolvedOwnerBadge, Pill, Select, Input, ErrorBanner, SkeletonDetail, useToast, buildFindingBreakdown, useRiskWeights, PatchReliabilityBadge } from '../shared/ui.jsx'
 import CustomAttributesCard from '../shared/CustomAttributesCard.jsx'
+import FindingValidationCard from '../validation/FindingValidationCard.jsx'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import BlastRadiusPanel from '../campaigns/BlastRadiusPanel.jsx'
@@ -853,6 +854,9 @@ export default function FindingDetail() {
             </Section>
         )
       })()}
+      {/* AI Validation — LLM verdict + agent run history, only for high/critical */}
+      <FindingValidationCard findingId={finding.id} severity={finding.severity} />
+
       </>)}
 
       {activeTab === 'remediation' && (<>
