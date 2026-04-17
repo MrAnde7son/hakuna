@@ -307,6 +307,9 @@ def _upsert_entity(
             existing.direct_parent_name = entity_data.get("direct_parent_name")
         if domain and domain not in (existing.associated_domains or []):
             existing.associated_domains = list(set((existing.associated_domains or []) + [domain]))
+            sources = dict(existing.domain_sources or {})
+            sources.setdefault(domain, "wikidata_official")
+            existing.domain_sources = sources
         existing.updated_at = datetime.utcnow()
         if org_id and not existing.org_id:
             existing.org_id = org_id
@@ -321,6 +324,7 @@ def _upsert_entity(
             direct_parent_lei=entity_data.get("direct_parent_qid"),
             direct_parent_name=entity_data.get("direct_parent_name"),
             associated_domains=[domain] if domain else [],
+            domain_sources={domain: "wikidata_official"} if domain else {},
             org_id=org_id or parent_org_id,
             raw_data=entity_data,
         )

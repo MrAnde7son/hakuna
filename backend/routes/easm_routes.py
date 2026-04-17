@@ -26,6 +26,9 @@ from services.easm import (
     get_easm_domains,
     get_easm_scan_runs,
     create_easm_org,
+    fan_out_subsidiary_scans,
+    DEFAULT_SUBSIDIARY_FANOUT_CAP,
+    HIGH_CONFIDENCE_DOMAIN_SOURCES,
 )
 
 logger = logging.getLogger(__name__)
@@ -600,6 +603,48 @@ def sync_corporate_structure(
     return result
 
 
+@router.post("/corporate/scan-subsidiaries")
+async def scan_subsidiary_domains(
+    include_low_confidence: bool = Query(
+        False,
+        description=(
+            "If true, also scan low-confidence domains (e.g. DNS-probe "
+            "guesses of {name}.com). Use only when you've verified the "
+            "domains belong to in-scope subsidiaries — DNS probes often "
+            "hit squatters or unrelated companies."
+        ),
+    ),
+    max_subsidiaries: int = Query(
+        DEFAULT_SUBSIDIARY_FANOUT_CAP, ge=1, le=200,
+        description="Cap on how many subsidiary domains to scan in this call.",
+    ),
+    scan_type: str = Query(
+        "discovery",
+        description="Scanner profile: 'discovery' (light), 'full', or 'enrichment'.",
+    ),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Manually trigger EASM scans for known subsidiary domains.
+
+    By default only scans high-confidence domains (sourced from Wikidata/EDGAR/
+    GLEIF or name-matched against the org's existing scope). Operators can
+    opt in to low-confidence (DNS-probe) domains with
+    ``include_low_confidence=true`` after verifying they're authorized targets.
+    """
+    org = _get_org(db, user)
+    if not org.easm_org_id:
+        raise HTTPException(400, "EASM is not configured for this organization")
+
+    result = await fan_out_subsidiary_scans(
+        db, org,
+        scan_type=scan_type,
+        include_low_confidence=include_low_confidence,
+        max_subsidiaries=max_subsidiaries,
+    )
+    return result
+
+
 @router.get("/corporate/subsidiaries")
 def list_subsidiaries(
     asset_id: Optional[int] = Query(None),
@@ -672,6 +717,7 @@ def get_corporate_entity(
             "country": entity.headquarters_country or entity.legal_address_country,
             "city": entity.headquarters_city or entity.legal_address_city,
             "associated_domains": entity.associated_domains or [],
+            "domain_sources": entity.domain_sources or {},
             "source": "local",
         }
 
