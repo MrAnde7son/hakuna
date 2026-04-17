@@ -28,4 +28,4 @@ terraform/terraform.tfvars
 hakuna-vm-scanner/templates/custom/dast/
 
 
-celerybeat-schedule
+**/celerybeat-schedule
