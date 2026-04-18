@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import useURLFilters from '../../hooks/useURLFilters.js'
 import { Server, RefreshCw, Edit2, Tag, X, Crosshair, Download, Bookmark, SlidersHorizontal, X as XIcon, Database, MoreHorizontal, AlertTriangle, ChevronLeft, ChevronRight, Zap, Radar, Filter, ChevronDown, ChevronUp } from 'lucide-react'
 import { useScan, useIsMobile } from '../../App.jsx'
-import { getAssets, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags, createCampaign, startVmScan, listCustomFieldDefinitions } from '../../api.js'
+import { getAssets, getAssetTypes, updateAsset, getBlastRadiusBulk, assignTags, unassignTags, confirmAssetOwner, exportDownload, advancedSearch, setAssetOwnership, getSBOMComponents, syncEasmAssets, getEasmStatus, getTags, createCampaign, startVmScan, listCustomFieldDefinitions } from '../../api.js'
 import useScanProgress from '../../hooks/useScanProgress.js'
 import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
@@ -414,6 +414,13 @@ export default function AssetInventory() {
   const isMobile = useIsMobile()
   const [showMobileFilters, setShowMobileFilters] = useState(false)
   const [firstSeenAfter, setFirstSeenAfter] = useState(null)
+  const [availableAssetTypes, setAvailableAssetTypes] = useState(null)
+
+  useEffect(() => {
+    getAssetTypes()
+      .then(data => setAvailableAssetTypes(Array.isArray(data?.types) ? data.types : []))
+      .catch(() => setAvailableAssetTypes([]))
+  }, [])
 
   // Sync tagFilter from URL ?tags= param on mount
   const tagsSynced = useRef(false)
@@ -1119,13 +1126,20 @@ export default function AssetInventory() {
             value={filters.assetType}
             onChange={v => setFilter('assetType', v)}
             placeholder={t('assets.anyType', 'Any type')}
-            options={[
-              'host', 'web_app', 'cloud_instance', 'api_endpoint',
-              'identity', 'container_image', 'code_repo', 'k8s_workload',
-              'ai_inference', 'ai_service', 'ai_agent', 'ai_notebook', 'vector_db',
-              'iot_gateway', 'camera', 'nas', 'printer',
-              'plc', 'scada', 'smart_building',
-            ].map(v => ({ value: v, label: getAssetTypeLabel(v) }))}
+            options={(() => {
+              const all = [
+                'host', 'web_app', 'cloud_instance', 'api_endpoint',
+                'identity', 'container_image', 'code_repo', 'k8s_workload',
+                'ai_inference', 'ai_service', 'ai_agent', 'ai_notebook', 'vector_db',
+                'iot_gateway', 'camera', 'nas', 'printer',
+                'plc', 'scada', 'smart_building',
+              ]
+              const present = availableAssetTypes == null ? all : new Set(availableAssetTypes)
+              const visible = availableAssetTypes == null
+                ? all
+                : all.filter(v => present.has(v) || v === filters.assetType)
+              return visible.map(v => ({ value: v, label: getAssetTypeLabel(v) }))
+            })()}
           />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

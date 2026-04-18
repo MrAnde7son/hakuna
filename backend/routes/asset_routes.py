@@ -479,6 +479,21 @@ def list_assets(
     return {"total": total, "page": 1 if page_size == 0 else page, "page_size": page_size, "assets": result}
 
 
+@router.get("/api/assets/types")
+def list_asset_types(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Return distinct asset_type values present in the caller's accessible orgs."""
+    q = db.query(Asset.asset_type).join(Scan, Asset.scan_id == Scan.id)
+    q = apply_scan_org_filter(q, org_ids)
+    q = apply_owner_scope_to_assets(q, user_owner_scopes(db, current_user.id))
+    rows = q.filter(Asset.asset_type.isnot(None)).distinct().all()
+    types = sorted({r[0] for r in rows if r[0]})
+    return {"types": types}
+
+
 @router.get("/api/assets/{asset_id}")
 def get_asset(asset_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     query = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Asset.id == asset_id)

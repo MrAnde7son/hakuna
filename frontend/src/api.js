@@ -367,6 +367,7 @@ export const getAssets = (params = {}) => {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
   return request(`/assets?${q}`)
 }
+export const getAssetTypes = () => request('/assets/types')
 export const getAsset = (id) => request(`/assets/${id}`)
 export const getAssetRiskBreakdown = (id) => request(`/assets/${id}/risk-breakdown`)
 export const getAssetSources = (id) => request(`/assets/${id}/sources`)
