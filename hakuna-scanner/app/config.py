@@ -122,6 +122,57 @@ class Settings(BaseSettings):
     llm_js_extraction_min_file_size: int = 10000  # bytes
     llm_js_extraction_model: str = "claude-haiku-4-5-20251001"
 
+    # ── API discovery enrichers (PR 3 of Adaptive Scan Plan) ──
+    # OpenAPI / Swagger spec discovery: probe well-known paths, parse paths
+    # × methods, persist as asset_endpoints with source="openapi". Specs
+    # are the single highest-signal endpoint source — when available, every
+    # endpoint comes with method + parameters + auth requirement, so the
+    # planner can fuzz them precisely without crawling.
+    openapi_discovery_enabled: bool = True
+    openapi_discovery_concurrency: int = 10
+    openapi_discovery_timeout: int = 8       # per-probe seconds
+    openapi_discovery_max_spec_bytes: int = 5_000_000  # cap on spec size
+    openapi_discovery_max_endpoints: int = 1000        # cap on endpoints stored per asset
+
+    # GraphQL introspection: detect /graphql-style endpoints, attempt
+    # introspection POST. Introspection-enabled in prod is itself a finding.
+    graphql_introspection_enabled: bool = True
+    graphql_introspection_timeout: int = 8
+    graphql_introspection_concurrency: int = 10
+
+    # Per-asset target list cap when planner uses -list mode (mirrors
+    # NUCLEI_MAX_TARGETS_PER_ASSET on the VM scanner side — keep in sync).
+    asset_endpoints_per_asset_cap: int = 200
+
+    # ── JS intelligence quartet (PR 4 of Adaptive Scan Plan) ──
+    # Retire.js — match downloaded JS files against a known-vuln library
+    # repo (jsrepository.json from upstream retirejs/retire.js). Each hit
+    # becomes a Finding with the CVE list. Deterministic; no LLM cost.
+    retirejs_enabled: bool = True
+
+    # Source map exploitation — when JS files leak .map files, parse them
+    # to recover original sources. The recovered sources are fed back into
+    # endpoint extraction and secret scanning to amplify those passes
+    # rather than being a separate sink. Hard caps prevent a malicious
+    # server from serving a 1GB sourcemap and OOMing the worker.
+    sourcemap_extraction_enabled: bool = True
+    sourcemap_max_bytes: int = 5_000_000
+    sourcemap_max_per_asset: int = 30
+    sourcemap_concurrency: int = 10
+    sourcemap_timeout: int = 10
+
+    # Secret/token scanning in JS — entropy + pattern based. Stores SHA-256
+    # + first/last 4 chars in evidence — never the raw secret.
+    js_secret_scanning_enabled: bool = True
+    js_secret_min_entropy: float = 4.0  # Shannon bits/char floor for "high-entropy" pattern
+
+    # LLM deep JS analysis — beyond endpoint extraction: identify auth flow,
+    # role logic, hidden admin routes. Cost-gated: criticality >= min OR
+    # is_internet_facing. Cached by content_hash for refresh_days.
+    llm_js_deep_analysis_enabled: bool = False  # off by default — explicit opt-in
+    llm_js_deep_min_criticality: int = 5
+    llm_js_deep_refresh_days: int = 7
+
     # Scanner registry — feature flag for the registry-driven orchestration.
     # When False, enrichment.py uses its hardcoded step_groups literal.
     # When True, step_groups are built from the SCANNER_REGISTRY at runtime.

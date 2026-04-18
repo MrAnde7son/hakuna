@@ -1,0 +1,56 @@
+id: llm-dos-token-bomb
+
+info:
+  name: LLM DoS — Unbounded Token Generation
+  author: hakuna
+  severity: medium
+  description: |
+    Probes an exposed LLM inference endpoint to determine whether the server
+    enforces a cap on client-requested output size. A single benign prompt is
+    sent with a moderately-large max_tokens value. If the server honors the
+    request without enforcing a cap, it is susceptible to token-bomb style
+    denial-of-service and cost-inflation attacks (OWASP LLM04 — Model DoS).
+    This probe does not flood the target; a single request is issued per path.
+  reference:
+    - https://owasp.org/www-project-top-10-for-large-language-model-applications/
+  tags: ai,llm,llm-security,ai-dos,owasp-llm04,ollama,vllm
+  metadata:
+    source: custom
+    verified: true
+    max-request: 2
+    asset_type: ai_inference
+    finding_type: llm_dos_unbounded_tokens
+
+http:
+  - method: POST
+    path:
+      - "{{BaseURL}}/v1/chat/completions"
+      - "{{BaseURL}}/api/generate"
+
+    headers:
+      Content-Type: application/json
+
+    body: |
+      {"model":"default","messages":[{"role":"user","content":"Say hello."}],"prompt":"Say hello.","max_tokens":4096,"num_predict":4096,"stream":false,"temperature":0}
+
+    stop-at-first-match: true
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: regex
+        part: body
+        condition: or
+        regex:
+          - '"finish_reason"\s*:\s*"length"'
+          - '"response"\s*:\s*"[^"]{1000,}"'
+          - '"content"\s*:\s*"[^"]{1000,}"'
+
+    extractors:
+      - type: regex
+        part: body
+        regex:
+          - '"finish_reason"\s*:\s*"length"'

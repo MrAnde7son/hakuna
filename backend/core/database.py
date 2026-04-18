@@ -2,6 +2,7 @@ import logging
 import os
 
 from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ def init_db():
         IntegrationConfig,
         ReportTemplate,
         Agent, AgentRun, AgentSchedule,
+        LLMInteraction, LLMInteractionOutcome,
         FindingException, ScanComparison,
         AggregatedSolution,
         AuditLog,
@@ -358,8 +360,21 @@ def _run_migrations():
             if hasattr(mod, "upgrade"):
                 mod.upgrade()
                 with engine.connect() as conn:
-                    conn.execute(text("INSERT INTO _migrations (name) VALUES (:name)"), {"name": script.name})
-                    conn.commit()
+                    try:
+                        conn.execute(
+                            text("INSERT INTO _migrations (name) VALUES (:name)"),
+                            {"name": script.name},
+                        )
+                        conn.commit()
+                    except IntegrityError:
+                        # Another worker/replica recorded this migration first
+                        # (concurrent boot race). The migration body is required
+                        # to be idempotent (see docstring), so this is safe.
+                        conn.rollback()
+                        logger.info(
+                            "Migration %s already recorded by another worker",
+                            script.name,
+                        )
                 logger.info("Migration applied: %s", script.name)
             else:
                 logger.warning("Migration %s has no upgrade() — skipping", script.name)

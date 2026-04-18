@@ -1,30 +1,56 @@
 """API routes for cross-finding correlation and attack paths."""
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import case, text
-from sqlalchemy.orm import Session, aliased
+import json
+from typing import List, Optional
 
-from core.database import get_db
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import bindparam, text
+from sqlalchemy.orm import Session
+
+from core.database import get_db, DATABASE_URL
 from core.auth import get_current_user, get_accessible_org_ids
-from models.models import AttackPath, Asset
 from services.finding_correlator import correlate_findings
 
+_SQLITE = DATABASE_URL.startswith("sqlite")
+
 router = APIRouter(prefix="/api/correlations", tags=["Correlations"])
+
+
+def _scope_clause(
+    org_ids: Optional[List[int]], alias: str = "ap"
+) -> tuple[str, dict, list]:
+    """Build an org-scope fragment for raw-SQL queries.
+
+    Returns (clause, params, bindparams). `org_ids is None` means superadmin
+    with no org context — we don't filter by org.
+    """
+    if org_ids is None:
+        return f"{alias}.org_id IS NOT NULL", {}, []
+    return (
+        f"{alias}.org_id IN :org_ids",
+        {"org_ids": list(org_ids)},
+        [bindparam("org_ids", expanding=True)],
+    )
 
 
 @router.post("/run")
 async def run_correlation(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    org_ids: list = Depends(get_accessible_org_ids),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """Trigger cross-finding correlation for the current org."""
-    org_id = org_ids[0] if org_ids else None
-    if not org_id:
-        raise HTTPException(status_code=400, detail="No org context")
+    """Trigger cross-finding correlation for the caller's active org.
 
-    result = correlate_findings(db, org_id)
-    return result
+    Superadmins must pin an org via the X-Org-Context header; MSSP parents
+    are scoped to whichever linked org they're currently viewing.
+    """
+    if org_ids is None or len(org_ids) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Correlation requires a single org context (set X-Org-Context).",
+        )
+
+    return correlate_findings(db, org_ids[0])
 
 
 @router.get("/attack-paths")
@@ -34,55 +60,59 @@ async def list_attack_paths(
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    org_ids: list = Depends(get_accessible_org_ids),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
-    """List attack paths for the current org."""
-    org_id = org_ids[0] if org_ids else None
-    if not org_id:
-        raise HTTPException(status_code=400, detail="No org context")
+    """List attack paths visible to the caller (MSSP parents see linked orgs)."""
+    if org_ids is not None and not org_ids:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
-    entry_a = aliased(Asset)
-    target_a = aliased(Asset)
+    scope_clause, params, binds = _scope_clause(org_ids, alias="ap")
+    where = f"WHERE {scope_clause}"
 
-    base_q = (
-        db.query(AttackPath, entry_a.hostname, target_a.hostname)
-        .outerjoin(entry_a, entry_a.id == AttackPath.entry_asset_id)
-        .outerjoin(target_a, target_a.id == AttackPath.target_asset_id)
-        .filter(AttackPath.org_id == org_id)
-    )
     if severity:
-        base_q = base_q.filter(AttackPath.severity == severity)
+        where += " AND ap.severity = :severity"
+        params["severity"] = severity
 
-    total = base_q.count()
+    count_stmt = text(f"SELECT COUNT(*) FROM attack_paths ap {where}")
+    if binds:
+        count_stmt = count_stmt.bindparams(*binds)
+    total = db.execute(count_stmt, params).scalar()
 
-    severity_order = case(
-        (AttackPath.severity == "Critical", 1),
-        (AttackPath.severity == "High", 2),
-        (AttackPath.severity == "Medium", 3),
-        else_=4,
+    offset = (page - 1) * page_size
+    list_stmt = text(
+        f"""
+            SELECT ap.id, ap.title, ap.severity, ap.steps, ap.chain_length, ap.created_at,
+                   ap.narrative, ap.recommended_mitigations,
+                   entry_a.hostname as entry_hostname, target_a.hostname as target_hostname
+            FROM attack_paths ap
+            LEFT JOIN assets entry_a ON entry_a.id = ap.entry_asset_id
+            LEFT JOIN assets target_a ON target_a.id = ap.target_asset_id
+            {where}
+            ORDER BY
+                CASE ap.severity WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3 ELSE 4 END,
+                ap.chain_length DESC
+            LIMIT :limit OFFSET :offset
+        """
     )
+    if binds:
+        list_stmt = list_stmt.bindparams(*binds)
 
-    rows = (
-        base_q.order_by(severity_order, AttackPath.chain_length.desc())
-        .limit(page_size)
-        .offset((page - 1) * page_size)
-        .all()
-    )
+    result = db.execute(list_stmt, {**params, "limit": page_size, "offset": offset})
 
     paths = [
         {
-            "id": ap.id,
-            "title": ap.title,
-            "severity": ap.severity,
-            "steps": ap.steps,
-            "chain_length": ap.chain_length,
-            "entry_hostname": entry_hostname,
-            "target_hostname": target_hostname,
-            "narrative": ap.narrative,
-            "recommended_mitigations": ap.recommended_mitigations,
-            "created_at": ap.created_at.isoformat() if ap.created_at else None,
+            "id": row.id,
+            "title": row.title,
+            "severity": row.severity,
+            "steps": row.steps,
+            "chain_length": row.chain_length,
+            "entry_hostname": row.entry_hostname,
+            "target_hostname": row.target_hostname,
+            "narrative": row.narrative,
+            "recommended_mitigations": row.recommended_mitigations,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
         }
-        for ap, entry_hostname, target_hostname in rows
+        for row in result.fetchall()
     ]
 
     return {"items": paths, "total": total, "page": page, "page_size": page_size}
@@ -93,24 +123,26 @@ async def get_attack_path(
     path_id: int,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    org_ids: list = Depends(get_accessible_org_ids),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Get a single attack path with full details."""
-    org_id = org_ids[0] if org_ids else None
-    if not org_id:
-        raise HTTPException(status_code=400, detail="No org context")
+    if org_ids is not None and not org_ids:
+        raise HTTPException(status_code=404, detail="Attack path not found")
 
-    result = db.execute(
-        text("""
+    scope_clause, params, binds = _scope_clause(org_ids, alias="ap")
+    stmt = text(
+        f"""
             SELECT ap.*, entry_a.hostname as entry_hostname, target_a.hostname as target_hostname
             FROM attack_paths ap
             LEFT JOIN assets entry_a ON entry_a.id = ap.entry_asset_id
             LEFT JOIN assets target_a ON target_a.id = ap.target_asset_id
-            WHERE ap.id = :id AND ap.org_id = :org_id
-        """),
-        {"id": path_id, "org_id": org_id},
+            WHERE ap.id = :id AND {scope_clause}
+        """
     )
-    row = result.fetchone()
+    if binds:
+        stmt = stmt.bindparams(*binds)
+
+    row = db.execute(stmt, {**params, "id": path_id}).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Attack path not found")
 
@@ -136,29 +168,42 @@ async def list_corroborated_findings(
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    org_ids: list = Depends(get_accessible_org_ids),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """List findings corroborated by multiple scanners."""
-    org_id = org_ids[0] if org_ids else None
-    if not org_id:
-        raise HTTPException(status_code=400, detail="No org context")
+    if org_ids is not None and not org_ids:
+        return {"items": [], "page": page, "page_size": page_size}
+
+    scope_clause, params, binds = _scope_clause(org_ids, alias="sc")
 
     offset = (page - 1) * page_size
-    result = db.execute(
-        text("""
+
+    if _SQLITE:
+        corr_filter = "json_extract(f.custom_fields, '$.corroboration.corroborated') = 1"
+    else:
+        corr_filter = (
+            "f.custom_fields::jsonb ? 'corroboration' "
+            "AND (f.custom_fields->'corroboration'->>'corroborated')::boolean = true"
+        )
+
+    stmt = text(
+        f"""
             SELECT f.id, f.plugin_name, f.severity, f.severity_label, f.cves,
                    f.source_systems, f.custom_fields,
                    a.hostname, a.ip
             FROM findings f
             JOIN assets a ON a.id = f.asset_id
-            WHERE a.org_id = :org_id
-              AND f.custom_fields::jsonb ? 'corroboration'
-              AND (f.custom_fields->'corroboration'->>'corroborated')::boolean = true
+            JOIN scans sc ON sc.id = f.scan_id
+            WHERE {scope_clause}
+              AND {corr_filter}
             ORDER BY f.severity DESC, f.priority_score DESC NULLS LAST
             LIMIT :limit OFFSET :offset
-        """),
-        {"org_id": org_id, "limit": page_size, "offset": offset},
+        """
     )
+    if binds:
+        stmt = stmt.bindparams(*binds)
+
+    result = db.execute(stmt, {**params, "limit": page_size, "offset": offset})
 
     findings = [
         {
@@ -168,7 +213,7 @@ async def list_corroborated_findings(
             "severity_label": row.severity_label,
             "cves": row.cves,
             "source_systems": row.source_systems,
-            "corroboration": (row.custom_fields or {}).get("corroboration", {}),
+            "corroboration": (json.loads(row.custom_fields) if isinstance(row.custom_fields, str) else row.custom_fields or {}).get("corroboration", {}),
             "hostname": row.hostname,
             "ip": str(row.ip) if row.ip else None,
         }

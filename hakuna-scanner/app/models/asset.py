@@ -97,7 +97,7 @@ class AssetEnrichment(Base):
 
 
 class AssetEndpoint(Base):
-    """Katana-discovered endpoints."""
+    """Discovered web/API endpoints (katana, kiterunner, openapi, graphql, llm_js, sourcemap, wordlist)."""
     __tablename__ = "asset_endpoints"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -107,6 +107,12 @@ class AssetEndpoint(Base):
     method: Mapped[str] = mapped_column(String(16), default="GET")
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     is_auth_page: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String(32), default="katana")
+    auth_required: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    parameters: Mapped[dict | list | None] = mapped_column(JSONB, nullable=True)
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     asset: Mapped["Asset"] = relationship(back_populates="endpoints")
 
@@ -131,6 +137,8 @@ class ScanRun(Base):
     total_stages: Mapped[int] = mapped_column(Integer, default=0)
     stage_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stage_log: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     # Orphan recovery: how many times this run has been re-dispatched after
     # the worker lost it (crash, OOM, deploy). Capped at MAX_RECOVERY_ATTEMPTS

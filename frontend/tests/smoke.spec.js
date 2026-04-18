@@ -34,6 +34,7 @@ const ROUTES = [
   { path: '/siem/search', name: 'SIEM Event Search' },
   { path: '/siem/rules', name: 'SIEM Detection Rules' },
   { path: '/siem/alerts', name: 'SIEM Alert Triage' },
+  { path: '/attack-paths', name: 'Attack Paths' },
 ]
 
 // Public routes (no auth required).

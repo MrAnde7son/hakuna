@@ -12,15 +12,23 @@ sync).
 """
 
 import asyncio
+import glob
 import json
 import logging
 import os
+import shutil
+import subprocess
 import urllib.request
 
 from celery.schedules import crontab
 
 from scanner.vm.celery_app import celery_app
-from scanner.vm.config import DATABASE_URL, TEMPLATES_DIR
+from scanner.vm.config import (
+    DAST_TEMPLATES_DIR,
+    DAST_TEMPLATES_REPO,
+    DATABASE_URL,
+    TEMPLATES_DIR,
+)
 from scanner.vm.db import _normalize_dsn
 
 logger = logging.getLogger(__name__)
@@ -132,11 +140,70 @@ def _rebuild_routing_tags() -> None:
     reload_routing_table()
 
 
+@celery_app.task(queue="vm_queue", name="vm.dast_template_sync")
+def dast_template_sync() -> dict:
+    """Clone or fast-forward reewardius/nuclei-dast-templates into custom/dast/.
+
+    These are auto-included by router._get_custom_templates when the asset
+    has a web-serving port open (no separate scan profile needed — DAST
+    runs as part of every VM scan against HTTP-facing targets).
+
+    Scheduled daily; the upstream repo is low-volume so more frequent syncs
+    would just waste API calls.
+    """
+    return _dast_template_sync_impl()
+
+
+def _dast_template_sync_impl(
+    repo_url: str | None = None,
+    target_dir: str | None = None,
+) -> dict:
+    """Sync implementation — parameters exist for testability."""
+    repo = repo_url or DAST_TEMPLATES_REPO
+    dest = target_dir or DAST_TEMPLATES_DIR
+
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+
+    if os.path.isdir(os.path.join(dest, ".git")):
+        cmd = ["git", "-C", dest, "pull", "--ff-only", "--quiet"]
+        action = "pull"
+    else:
+        # Fresh clone — wipe any stale non-git dir first so clone doesn't fail.
+        if os.path.exists(dest):
+            shutil.rmtree(dest)
+        cmd = ["git", "clone", "--depth", "1", "--quiet", repo, dest]
+        action = "clone"
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except Exception as exc:
+        logger.exception("DAST template %s subprocess failed", action)
+        return {"status": "error", "action": action, "error": str(exc)}
+
+    if result.returncode != 0:
+        logger.warning("DAST template %s failed: %s", action, result.stderr[:500])
+        return {
+            "status": "error",
+            "action": action,
+            "stderr": result.stderr[:500],
+        }
+
+    template_count = len(
+        glob.glob(os.path.join(dest, "**", "*.yaml"), recursive=True)
+    )
+    logger.info("DAST template %s succeeded: %d templates", action, template_count)
+    return {"status": "ok", "action": action, "template_count": template_count}
+
+
 # Beat schedule — only template sync runs here. Scan scheduling lives in the backend.
 celery_app.conf.beat_schedule.update({
     "template-sync-every-6h": {
         "task": "vm.template_sync_check",
         "schedule": crontab(hour="*/6", minute=0),
+    },
+    "dast-template-sync-daily": {
+        "task": "vm.dast_template_sync",
+        "schedule": crontab(hour=3, minute=0),  # 03:00 UTC
     },
 })
 

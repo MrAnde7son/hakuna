@@ -57,3 +57,122 @@ class TestBeatSchedule:
 
         job = celery_app.conf.beat_schedule["template-sync-every-6h"]
         assert job["task"] == "vm.template_sync_check"
+
+    def test_dast_template_sync_scheduled(self):
+        from scanner.vm.celery_app import celery_app
+
+        job = celery_app.conf.beat_schedule["dast-template-sync-daily"]
+        assert job["task"] == "vm.dast_template_sync"
+
+
+class TestDastTemplateSync:
+    """Tests for the reewardius DAST template sync task."""
+
+    def test_clone_when_dest_does_not_exist(self, tmp_path):
+        """First run → git clone --depth 1 into the target directory."""
+        from scanner.vm.scheduler import _dast_template_sync_impl
+
+        dest = str(tmp_path / "dast")
+
+        def fake_run(cmd, **kwargs):
+            # Simulate clone by creating the dir with one yaml + a .git marker
+            import os
+            os.makedirs(os.path.join(dest, ".git"), exist_ok=True)
+            with open(os.path.join(dest, "xss.yaml"), "w") as f:
+                f.write("id: xss\ninfo:\n  tags: xss\n")
+            return MagicMock(returncode=0, stderr="")
+
+        with patch("scanner.vm.scheduler.subprocess.run", side_effect=fake_run) as mock_run:
+            result = _dast_template_sync_impl(
+                repo_url="https://example.test/dast.git",
+                target_dir=dest,
+            )
+
+        assert result["status"] == "ok"
+        assert result["action"] == "clone"
+        assert result["template_count"] == 1
+        # Verify we invoked git clone --depth 1
+        call_cmd = mock_run.call_args.args[0]
+        assert call_cmd[0] == "git"
+        assert "clone" in call_cmd
+        assert "--depth" in call_cmd
+
+    def test_pull_when_git_dir_exists(self, tmp_path):
+        """Subsequent runs → git -C <dest> pull --ff-only."""
+        import os
+
+        from scanner.vm.scheduler import _dast_template_sync_impl
+
+        dest = str(tmp_path / "dast")
+        os.makedirs(os.path.join(dest, ".git"), exist_ok=True)
+        with open(os.path.join(dest, "sqli.yaml"), "w") as f:
+            f.write("id: sqli\ninfo:\n  tags: sqli\n")
+
+        with patch(
+            "scanner.vm.scheduler.subprocess.run",
+            return_value=MagicMock(returncode=0, stderr=""),
+        ) as mock_run:
+            result = _dast_template_sync_impl(target_dir=dest)
+
+        assert result["status"] == "ok"
+        assert result["action"] == "pull"
+        call_cmd = mock_run.call_args.args[0]
+        assert call_cmd[:3] == ["git", "-C", dest]
+        assert "pull" in call_cmd
+        assert "--ff-only" in call_cmd
+
+    def test_clone_removes_stale_non_git_dir(self, tmp_path):
+        """If destination exists without .git, wipe it before cloning
+        (a half-written sync shouldn't poison the next run)."""
+        import os
+
+        from scanner.vm.scheduler import _dast_template_sync_impl
+
+        dest = str(tmp_path / "dast")
+        os.makedirs(dest)
+        stale_path = os.path.join(dest, "stale.txt")
+        with open(stale_path, "w") as f:
+            f.write("leftover")
+
+        def fake_run(cmd, **kwargs):
+            # After rmtree, clone recreates the directory
+            os.makedirs(os.path.join(dest, ".git"), exist_ok=True)
+            return MagicMock(returncode=0, stderr="")
+
+        with patch("scanner.vm.scheduler.subprocess.run", side_effect=fake_run):
+            result = _dast_template_sync_impl(target_dir=dest)
+
+        assert result["status"] == "ok"
+        assert result["action"] == "clone"
+        assert not os.path.exists(stale_path)
+
+    def test_returns_error_when_git_fails(self, tmp_path):
+        """Non-zero git exit is surfaced with a truncated stderr."""
+        from scanner.vm.scheduler import _dast_template_sync_impl
+
+        dest = str(tmp_path / "dast")
+
+        with patch(
+            "scanner.vm.scheduler.subprocess.run",
+            return_value=MagicMock(returncode=128, stderr="fatal: could not connect"),
+        ):
+            result = _dast_template_sync_impl(target_dir=dest)
+
+        assert result["status"] == "error"
+        assert result["action"] == "clone"
+        assert "fatal" in result["stderr"]
+
+    def test_returns_error_when_subprocess_raises(self, tmp_path):
+        """Timeouts / missing git binary don't crash the Celery worker."""
+        from scanner.vm.scheduler import _dast_template_sync_impl
+
+        dest = str(tmp_path / "dast")
+
+        with patch(
+            "scanner.vm.scheduler.subprocess.run",
+            side_effect=FileNotFoundError("git not installed"),
+        ):
+            result = _dast_template_sync_impl(target_dir=dest)
+
+        assert result["status"] == "error"
+        assert "git not installed" in result["error"]

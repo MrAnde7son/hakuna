@@ -6,14 +6,28 @@ whether assets are alive, unconfirmed, or likely dead.
 
 import json
 import logging
+import os
 import socket
 import uuid
 from datetime import datetime, timezone
 
+import aiohttp
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+# Path to the takeover fingerprint database. Loaded lazily so tests can
+# reload it (see `reload_takeover_db`).
+_TAKEOVER_DB_PATH = os.path.join(os.path.dirname(__file__), "takeover_fingerprints.json")
+
+# Cap the body read to avoid pulling large pages; the fingerprint strings
+# we care about always appear in the first few KB.
+_TAKEOVER_MAX_BODY_BYTES = 16_000
+
+# Per-probe HTTP timeout. Short enough that a hundred dangling hosts don't
+# stall discovery; long enough to catch slow cloud error pages.
+_TAKEOVER_HTTP_TIMEOUT = 5.0
 
 # Known cloud provider IP ranges (CIDR prefixes) for dangling DNS detection.
 # This is a simplified check — production should use published IP range files.
@@ -51,6 +65,164 @@ def identify_cloud_provider(ip: str) -> str | None:
             if ip.startswith(prefix):
                 return provider
     return None
+
+
+def _load_takeover_db() -> list[dict]:
+    """Load the takeover fingerprint database from disk."""
+    try:
+        with open(_TAKEOVER_DB_PATH) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("takeover fingerprints: failed to load %s: %s", _TAKEOVER_DB_PATH, exc)
+        return []
+    return data.get("services", [])
+
+
+_TAKEOVER_DB: list[dict] = _load_takeover_db()
+
+
+def reload_takeover_db() -> None:
+    """Force-reload the takeover fingerprint DB. For tests."""
+    global _TAKEOVER_DB
+    _TAKEOVER_DB = _load_takeover_db()
+
+
+# Severity labels in the JSON are the same strings the Finding table stores,
+# but we normalize defensively in case the DB is ever edited.
+_SEVERITY_ALIASES = {
+    "critical": "critical",
+    "high": "high",
+    "medium": "medium",
+    "med": "medium",
+    "low": "low",
+    "info": "info",
+}
+
+
+def _match_cname_service(cname_targets: list[str]) -> dict | None:
+    """Return the first service entry whose cname_patterns match any target."""
+    if not cname_targets or not _TAKEOVER_DB:
+        return None
+    lowered = [c.lower().rstrip(".") for c in cname_targets if c]
+    for service in _TAKEOVER_DB:
+        for pattern in service.get("cname_patterns", []):
+            pat = pattern.lower()
+            for target in lowered:
+                if pat in target:
+                    return service
+    return None
+
+
+def _match_body_service(status: int, body: str) -> dict | None:
+    """Return the first service entry whose http_fingerprints match."""
+    if not body or not _TAKEOVER_DB:
+        return None
+    for service in _TAKEOVER_DB:
+        allowed_codes = service.get("status_codes") or []
+        if allowed_codes and status not in allowed_codes:
+            continue
+        for fp in service.get("http_fingerprints", []):
+            if fp and fp in body:
+                return service
+    return None
+
+
+async def _fetch_probe(url: str, session: aiohttp.ClientSession) -> tuple[int, str] | None:
+    """Lightweight GET used only for takeover fingerprinting. Never raises."""
+    try:
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=_TAKEOVER_HTTP_TIMEOUT),
+            allow_redirects=False,
+            ssl=False,
+        ) as resp:
+            raw = await resp.content.read(_TAKEOVER_MAX_BODY_BYTES)
+            body = raw.decode("utf-8", errors="replace")
+            return resp.status, body
+    except Exception:
+        return None
+
+
+async def check_takeover_fingerprint(
+    hostname: str,
+    cname_targets: list[str] | None = None,
+    session: aiohttp.ClientSession | None = None,
+) -> dict | None:
+    """Probe a dangling hostname for a known takeover fingerprint.
+
+    Strategy:
+      1. If the CNAME target matches a known service, that's a strong pre-filter
+         — try HTTP and confirm with a body fingerprint. If the body matches,
+         return the service entry with the HTTP evidence attached. If the
+         body doesn't match (or HTTP fails), fall back to the CNAME-only
+         match so we still flag the dangling record.
+      2. If no CNAME match, try both http:// and https:// and match body
+         fingerprints against any service in the DB.
+
+    Returns a dict augmenting the matched service entry with probe evidence,
+    or None if nothing matched. Never raises.
+    """
+    if not _TAKEOVER_DB:
+        return None
+
+    owns_session = session is None
+    try:
+        if owns_session:
+            connector = aiohttp.TCPConnector(limit=5, ssl=False)
+            session = aiohttp.ClientSession(
+                connector=connector,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; HakunaScanner/1.0 takeover-probe)"},
+            )
+
+        cname_match = _match_cname_service(cname_targets or [])
+
+        # Always try HTTP + HTTPS to grab a body fingerprint.
+        http_result = None
+        for scheme in ("https", "http"):
+            probe = await _fetch_probe(f"{scheme}://{hostname}", session)
+            if probe is not None:
+                http_result = (scheme, probe[0], probe[1])
+                break
+
+        body_match = None
+        if http_result is not None:
+            _, status, body = http_result
+            body_match = _match_body_service(status, body)
+
+        # Prefer body-fingerprint match (strongest evidence); fall back to
+        # CNAME-only match which is still actionable but weaker.
+        matched = body_match or cname_match
+        if matched is None:
+            return None
+
+        severity = _SEVERITY_ALIASES.get(
+            str(matched.get("severity", "")).lower(), "high",
+        )
+        evidence = {
+            "service": matched.get("name"),
+            "severity": severity,
+            "description": matched.get("description", ""),
+            "matched_by": "http_fingerprint" if body_match else "cname_pattern",
+        }
+        if cname_match and cname_match is matched:
+            evidence["cname_pattern_matched"] = True
+        if http_result is not None:
+            scheme, status, body = http_result
+            evidence["http_status"] = status
+            evidence["http_scheme"] = scheme
+            if body_match:
+                # Record which fingerprint triggered for downstream triage.
+                for fp in body_match.get("http_fingerprints", []):
+                    if fp in body:
+                        evidence["matched_fingerprint"] = fp
+                        break
+        return evidence
+    finally:
+        if owns_session and session is not None:
+            try:
+                await session.close()
+            except Exception:
+                pass
 
 
 def check_dns_resolution(hostname: str) -> list[str]:
@@ -187,26 +359,85 @@ async def create_dangling_dns_finding(
     hostname: str,
     resolved_ips: list[str],
     cloud_provider: str | None,
+    cname_targets: list[str] | None = None,
+    session: aiohttp.ClientSession | None = None,
 ) -> uuid.UUID:
-    """Create a finding record for dangling DNS / potential subdomain takeover."""
+    """Create a finding record for dangling DNS / potential subdomain takeover.
+
+    When CNAME targets are known, attempts a lightweight HTTP probe against
+    the hostname and cross-references the response with
+    ``takeover_fingerprints.json`` to confirm a specific vulnerable service
+    (S3, GitHub Pages, Heroku, etc.). A confirmed fingerprint promotes the
+    finding to ``subdomain_takeover`` with severity taken from the fingerprint
+    entry. Falls back to the legacy cloud-provider IP-prefix heuristic when
+    no fingerprint matches.
+    """
     finding_id = uuid.uuid4()
     now = datetime.now(timezone.utc)
 
-    severity = "high" if cloud_provider else "medium"
-    title = f"Dangling DNS: {hostname}"
-    if cloud_provider:
-        title = f"Potential subdomain takeover ({cloud_provider}): {hostname}"
-
-    description = (
-        f"Hostname {hostname} resolves to {', '.join(resolved_ips)} but no ports respond. "
-        f"This may indicate a dangling DNS record pointing to a decommissioned resource."
-    )
-    if cloud_provider:
-        description += (
-            f" The resolved IP belongs to {cloud_provider}, suggesting the underlying "
-            f"cloud resource may have been released. An attacker could claim this resource "
-            f"and serve content on {hostname}."
+    # Try fingerprint-based detection first — strongest signal available.
+    takeover_evidence: dict | None = None
+    try:
+        takeover_evidence = await check_takeover_fingerprint(
+            hostname, cname_targets=cname_targets, session=session,
         )
+    except Exception as exc:
+        # Never let probe errors break finding creation.
+        logger.debug("takeover fingerprint probe failed for %s: %s", hostname, exc)
+        takeover_evidence = None
+
+    if takeover_evidence is not None:
+        service_name = takeover_evidence.get("service") or "unknown-service"
+        severity = takeover_evidence.get("severity") or "high"
+        finding_type = "subdomain_takeover"
+        title = f"Subdomain takeover ({service_name}): {hostname}"
+        description = (
+            f"Hostname {hostname} is vulnerable to subdomain takeover via {service_name}.\n\n"
+            f"{takeover_evidence.get('description', '')}"
+        ).strip()
+        matched_by = takeover_evidence.get("matched_by")
+        if matched_by == "http_fingerprint":
+            description += (
+                f"\n\nConfirmed by HTTP response fingerprint "
+                f"(status {takeover_evidence.get('http_status')}): "
+                f"'{takeover_evidence.get('matched_fingerprint', '')}'."
+            )
+        elif matched_by == "cname_pattern":
+            description += (
+                "\n\nMatched by CNAME target pattern; HTTP body fingerprint was "
+                "not conclusive but the CNAME points at an unclaimed provider "
+                "endpoint."
+            )
+        meta = {
+            "resolved_ips": resolved_ips,
+            "cloud_provider": cloud_provider,
+            "hostname": hostname,
+            "cname_targets": cname_targets or [],
+            "takeover": takeover_evidence,
+        }
+    else:
+        severity = "high" if cloud_provider else "medium"
+        finding_type = "dangling_dns"
+        title = f"Dangling DNS: {hostname}"
+        if cloud_provider:
+            title = f"Potential subdomain takeover ({cloud_provider}): {hostname}"
+
+        description = (
+            f"Hostname {hostname} resolves to {', '.join(resolved_ips)} but no ports respond. "
+            f"This may indicate a dangling DNS record pointing to a decommissioned resource."
+        )
+        if cloud_provider:
+            description += (
+                f" The resolved IP belongs to {cloud_provider}, suggesting the underlying "
+                f"cloud resource may have been released. An attacker could claim this resource "
+                f"and serve content on {hostname}."
+            )
+        meta = {
+            "resolved_ips": resolved_ips,
+            "cloud_provider": cloud_provider,
+            "hostname": hostname,
+            "cname_targets": cname_targets or [],
+        }
 
     await db.execute(
         text("""
@@ -218,15 +449,11 @@ async def create_dangling_dns_finding(
             "id": finding_id,
             "org_id": org_id,
             "asset_id": asset_id,
-            "finding_type": "dangling_dns",
+            "finding_type": finding_type,
             "severity": severity,
             "title": title,
             "desc": description,
-            "meta": json.dumps({
-                "resolved_ips": resolved_ips,
-                "cloud_provider": cloud_provider,
-                "hostname": hostname,
-            }),
+            "meta": json.dumps(meta),
             "now": now,
         },
     )

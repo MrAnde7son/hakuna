@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import text
 
-ENRICHMENT_STEP_COUNT = 13  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, kiterunner, trufflehog, llm_js_extraction, classify_assets, nmap_dispatch
+ENRICHMENT_STEP_COUNT = 16  # tlsx, httpx, cdncheck, js_fingerprint, favicon, endpoint_probe, katana, protocol_probe, kiterunner, trufflehog, llm_js_extraction, openapi_discovery, graphql_introspection, classify_assets, ai_exposure, nmap_dispatch
 
 from app.celery_app import celery
 from app.config import settings
@@ -655,6 +655,80 @@ async def _do_classify_assets(sf, org_id: str, target_scope: str | None = None) 
     return {"total_assets": len(assets), "classified": classified}
 
 
+async def _do_ai_exposure(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Probe AI/LLM/vector-DB assets for unauthenticated exposure.
+
+    Runs after classify_assets so ``assets.asset_type`` has been set. Each
+    probe defined in ``ai_exposure_probes.json`` sends a read-only request
+    and, when the response matches the probe's success_when criteria, emits
+    a Finding via the existing Finding write path.
+    """
+    from app.ingest.ai_exposure_probe import (
+        AI_ASSET_TYPES,
+        probe_assets as ai_probe_assets,
+        store_ai_exposure_findings,
+    )
+
+    scope_sql, scope_params = build_target_scope(target_scope)
+    extra = compose_where(scope_sql)
+    params = {"org_id": org_id, **scope_params}
+
+    # Only pull assets already classified as AI/LLM/vector-db to keep the
+    # probe surface minimal. asset_type is set by _do_classify_assets which
+    # runs in the preceding step group.
+    ai_types = list(AI_ASSET_TYPES)
+    async with sf() as db:
+        result = await db.execute(
+            text(f"""
+                SELECT id, hostname, host(ip) as ip, open_ports, asset_type, tags
+                FROM assets
+                WHERE org_id = :org_id
+                  AND asset_type = ANY(:ai_types)
+                  AND (liveness_state = 'confirmed_alive'
+                       OR (liveness_state = 'unconfirmed' AND http_status IS NOT NULL))
+                  {extra}
+            """),
+            {**params, "ai_types": ai_types},
+        )
+        assets = [
+            {
+                "id": row.id,
+                "hostname": row.hostname,
+                "ip": row.ip,
+                "open_ports": row.open_ports or [],
+                "asset_type": row.asset_type,
+                "tags": row.tags or [],
+            }
+            for row in result.fetchall()
+        ]
+
+    if not assets:
+        return {"probed": 0, "no_ai_assets": True}
+
+    logger.info("org=%s ai_exposure: probing %d AI assets", org_id, len(assets))
+
+    try:
+        probe_results = await ai_probe_assets(
+            assets,
+            concurrency=settings.endpoint_probe_concurrency,
+        )
+    except Exception as exc:
+        # Probe orchestration failures must never break the enrichment chain.
+        logger.error("org=%s ai_exposure: probe_assets failed: %s", org_id, exc)
+        return {"probed": len(assets), "error": str(exc)}
+
+    async with sf() as db:
+        store_result = await store_ai_exposure_findings(
+            db, uuid.UUID(org_id), probe_results,
+        )
+
+    return {
+        "probed": len(assets),
+        "assets_exposed": store_result["hosts_affected"],
+        "findings_created": store_result["findings_created"],
+    }
+
+
 async def _do_cdncheck(sf, org_id: str, target_scope: str | None = None) -> dict:
     hostnames = await _get_confirmed_alive_hostnames(
         sf, org_id, target_scope=target_scope, apply_stale=True,
@@ -1079,6 +1153,123 @@ def run_llm_js_extraction(self, org_id: str, target_scope: str | None = None) ->
     return _run_async(_do_llm_js_extraction(get_task_session(), org_id, target_scope=target_scope))
 
 
+@celery.task(bind=True, name="enrichment.run_ai_exposure")
+def run_ai_exposure(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_ai_exposure(get_task_session(), org_id, target_scope=target_scope))
+
+
+@celery.task(bind=True, name="enrichment.run_openapi_discovery")
+def run_openapi_discovery(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_openapi_discovery(get_task_session(), org_id, target_scope=target_scope))
+
+
+@celery.task(bind=True, name="enrichment.run_graphql_introspection")
+def run_graphql_introspection(self, org_id: str, target_scope: str | None = None) -> dict:
+    return _run_async(_do_graphql_introspection(get_task_session(), org_id, target_scope=target_scope))
+
+
+# ── API discovery enrichers (PR 3 of Adaptive Scan Plan) ───────────
+
+
+async def _do_openapi_discovery(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Probe each web-facing asset's well-known OpenAPI/Swagger paths.
+
+    Hooks into the same confirmed-alive web-port asset list katana uses so
+    the cost is one extra HTTP probe round-trip per asset (cheap compared
+    to katana). Specs found turn into per-endpoint scan targets that the
+    adaptive planner can drive precisely.
+    """
+    if not settings.openapi_discovery_enabled:
+        return {"skipped": True, "reason": "disabled"}
+
+    from app.ingest.openapi_discoverer import discover_openapi_specs
+
+    assets = await _get_confirmed_alive_assets(
+        sf, org_id, target_scope=target_scope, apply_stale=True,
+    )
+    if not assets:
+        return {"specs_found": 0, "skipped_fresh": True}
+
+    HTTP_PORTS = {80, 443, 8080, 8443}
+    targets: list[dict] = []
+    for asset in assets:
+        ports = set(asset.get("open_ports") or [])
+        if not (ports & HTTP_PORTS):
+            continue
+        if asset.get("cdn_provider"):
+            # Probing a CDN's well-known paths returns the CDN's responses,
+            # not the origin's spec — skip to keep noise down.
+            continue
+        hostname = asset.get("hostname")
+        if not hostname:
+            continue
+        scheme = "https" if 443 in ports or 8443 in ports else "http"
+        targets.append({
+            "asset_id": asset["id"],
+            "base_url": f"{scheme}://{hostname}",
+        })
+
+    if not targets:
+        return {"specs_found": 0, "endpoints_stored": 0}
+
+    async with sf() as db:
+        result = await discover_openapi_specs(
+            db, uuid.UUID(org_id), targets,
+            concurrency=settings.openapi_discovery_concurrency,
+            timeout=settings.openapi_discovery_timeout,
+            max_spec_bytes=settings.openapi_discovery_max_spec_bytes,
+            max_endpoints_per_asset=settings.openapi_discovery_max_endpoints,
+        )
+    return result
+
+
+async def _do_graphql_introspection(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Probe candidate GraphQL paths and run introspection.
+
+    Same target shape as openapi discovery — confirmed-alive HTTP assets,
+    skip CDNs. Successful introspection produces per-operation endpoints
+    plus a graphql_schema artifact stored in asset_js_artifacts.
+    """
+    if not settings.graphql_introspection_enabled:
+        return {"skipped": True, "reason": "disabled"}
+
+    from app.ingest.graphql_introspector import introspect_graphql
+
+    assets = await _get_confirmed_alive_assets(
+        sf, org_id, target_scope=target_scope, apply_stale=True,
+    )
+    if not assets:
+        return {"introspection_hits": 0, "skipped_fresh": True}
+
+    HTTP_PORTS = {80, 443, 8080, 8443}
+    targets: list[dict] = []
+    for asset in assets:
+        ports = set(asset.get("open_ports") or [])
+        if not (ports & HTTP_PORTS):
+            continue
+        if asset.get("cdn_provider"):
+            continue
+        hostname = asset.get("hostname")
+        if not hostname:
+            continue
+        scheme = "https" if 443 in ports or 8443 in ports else "http"
+        targets.append({
+            "asset_id": asset["id"],
+            "base_url": f"{scheme}://{hostname}",
+        })
+
+    if not targets:
+        return {"introspection_hits": 0, "endpoints_stored": 0}
+
+    async with sf() as db:
+        result = await introspect_graphql(
+            db, uuid.UUID(org_id), targets,
+            concurrency=settings.graphql_introspection_concurrency,
+            timeout=settings.graphql_introspection_timeout,
+        )
+    return result
+
+
 @celery.task(bind=True, name="enrichment.run_enrichment_chain",
              soft_time_limit=14400, time_limit=14700)  # 4h / 4h5min — large scans (10k+ assets)
 def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> dict:
@@ -1129,11 +1320,24 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                 [
                     # Post-katana analysis: secrets scanning + LLM JS extraction
                     # depend on katana's discovered JS endpoints from Group 2.
+                    # OpenAPI/GraphQL discovery share Group 2's web-asset
+                    # candidate set so they can run alongside trufflehog/LLM —
+                    # they're cheap (~2 HTTP probes per asset) and produce
+                    # the highest-signal endpoints the planner consumes.
                     ("trufflehog", _do_trufflehog),
                     ("llm_js_extraction", _do_llm_js_extraction),
+                    ("openapi_discovery", _do_openapi_discovery),
+                    ("graphql_introspection", _do_graphql_introspection),
                 ],
                 [
                     ("classify_assets", _do_classify_assets),
+                ],
+                [
+                    # ai_exposure depends on asset_type set by classify_assets,
+                    # so it must run in a later group. Emits Findings for
+                    # unauthenticated Ollama / vLLM / Qdrant / MCP / LangServe
+                    # / LiteLLM / Milvus / Chroma endpoints.
+                    ("ai_exposure", _do_ai_exposure),
                 ],
                 [("nmap_dispatch", None)],  # handled separately; includes UDP
             ]

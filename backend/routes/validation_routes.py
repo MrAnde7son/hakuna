@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from core.auth import get_accessible_org_ids, get_current_user
 from core.database import get_db
-from models.models import Agent, AgentRun, Asset, Finding
+from models.models import Agent, AgentRun, Asset, Finding, Scan
 
 router = APIRouter(prefix="/api/validation", tags=["Validation"])
 
@@ -40,10 +40,12 @@ def run_validation(
         raise HTTPException(status_code=400, detail="No org context")
 
     # Org filter: ensure this finding belongs to an accessible org
+    # Asset doesn't have org_id directly — org is on the Scan table.
     finding = (
         db.query(Finding)
         .join(Asset, Asset.id == Finding.asset_id)
-        .filter(Finding.id == finding_id, Asset.org_id.in_(org_ids))
+        .join(Scan, Scan.id == Finding.scan_id)
+        .filter(Finding.id == finding_id, Scan.org_id.in_(org_ids))
         .first()
     )
     if not finding:
@@ -82,7 +84,8 @@ def get_validation_status(
     finding = (
         db.query(Finding)
         .join(Asset, Asset.id == Finding.asset_id)
-        .filter(Finding.id == finding_id, Asset.org_id.in_(org_ids))
+        .join(Scan, Scan.id == Finding.scan_id)
+        .filter(Finding.id == finding_id, Scan.org_id.in_(org_ids))
         .first()
     )
     if not finding:
@@ -98,7 +101,7 @@ def get_validation_status(
     if asset:
         validator_agents = (
             db.query(Agent)
-            .filter(Agent.org_id == asset.org_id, Agent.name.like("Vulnerability Validator%"))
+            .filter(Agent.org_id == (asset.scan.org_id if asset.scan else None), Agent.name.like("Vulnerability Validator%"))
             .all()
         )
         validator_ids = [a.id for a in validator_agents]
@@ -157,8 +160,9 @@ def get_validation_queue(
     rows = (
         db.query(Finding)
         .join(Asset, Asset.id == Finding.asset_id)
+        .join(Scan, Scan.id == Finding.scan_id)
         .filter(
-            Asset.org_id.in_(org_ids),
+            Scan.org_id.in_(org_ids),
             Finding.severity >= 3,
             Finding.source_type == "vm_scanner",
             Finding.llm_validation.isnot(None),

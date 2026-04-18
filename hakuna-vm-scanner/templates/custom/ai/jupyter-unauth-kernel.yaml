@@ -1,0 +1,57 @@
+id: jupyter-unauth-kernel
+
+info:
+  name: Jupyter — Unauthenticated Kernel Access
+  author: hakuna
+  severity: critical
+  description: |
+    Detects an exposed Jupyter server that permits unauthenticated access to
+    its kernel and kernelspec APIs. Access to /api/kernels and /api/kernelspecs
+    without authentication implies arbitrary code execution on the host: an
+    attacker can create a new kernel and execute Python code in the server
+    context. This is a frequent exposure for ML/data-science workbenches and
+    should be treated as a pre-auth RCE.
+  reference:
+    - https://jupyter-server.readthedocs.io/en/latest/operators/security.html
+    - https://owasp.org/www-project-top-10-for-large-language-model-applications/
+  tags: ai,jupyter,llm-security,exposure,rce
+  metadata:
+    source: custom
+    verified: true
+    max-request: 2
+    asset_type: ai_notebook
+    finding_type: exposed_jupyter_kernel
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/api/kernelspecs"
+      - "{{BaseURL}}/api/kernels"
+
+    stop-at-first-match: true
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        part: body
+        condition: or
+        words:
+          - '"spec":'
+          - '"execution_state":'
+
+      - type: word
+        part: body
+        condition: or
+        words:
+          - '"name":'
+          - '"id":'
+
+    extractors:
+      - type: regex
+        part: body
+        regex:
+          - '"name"\s*:\s*"([^"]+)"'

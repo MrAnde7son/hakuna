@@ -322,6 +322,7 @@ const ASSET_FILTER_SCHEMA = {
   search: { default: '' },
   env: { default: '' },
   criticality: { default: '' },
+  assetType: { default: '' },
   minRisk: { default: '' },
   maxRisk: { default: '' },
   minCritical: { default: '' },
@@ -464,7 +465,7 @@ export default function AssetInventory() {
     }
   }
 
-  const activeFilterCount = ['search', 'env', 'criticality', 'minRisk', 'maxRisk', 'minCritical', 'minHigh', 'serverRole', 'source', 'minSources']
+  const activeFilterCount = ['search', 'env', 'criticality', 'assetType', 'minRisk', 'maxRisk', 'minCritical', 'minHigh', 'serverRole', 'source', 'minSources']
     .filter(k => filters[k]).length + (filters.credentialed !== null ? 1 : 0)
 
   const load = () => {
@@ -474,6 +475,7 @@ export default function AssetInventory() {
       scan_id: activeScanId,
       environment: filters.env || undefined,
       criticality: filters.criticality || undefined,
+      asset_type: filters.assetType || undefined,
       search: filters.search || undefined,
       min_risk: filters.minRisk || undefined,
       max_risk: filters.maxRisk || undefined,
@@ -1111,6 +1113,19 @@ export default function AssetInventory() {
             onChange={v => setFilter('criticality', v)}
             placeholder={t('assets.anyCriticality')}
             options={[1,2,3,4,5,6,7,8,9,10].map(n => ({ value: String(n), label: `${n} – ${CRITICALITY_LABELS[n]}` }))}
+          />
+
+          <Select
+            value={filters.assetType}
+            onChange={v => setFilter('assetType', v)}
+            placeholder={t('assets.anyType', 'Any type')}
+            options={[
+              'host', 'web_app', 'cloud_instance', 'api_endpoint',
+              'identity', 'container_image', 'code_repo', 'k8s_workload',
+              'ai_inference', 'ai_service', 'ai_agent', 'ai_notebook', 'vector_db',
+              'iot_gateway', 'camera', 'nas', 'printer',
+              'plc', 'scada', 'smart_building',
+            ].map(v => ({ value: v, label: getAssetTypeLabel(v) }))}
           />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
