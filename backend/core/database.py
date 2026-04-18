@@ -31,7 +31,11 @@ if DATABASE_URL.startswith("sqlite"):
 # endpoint can't saturate the connection pool or DB CPU. The default is
 # reset on every checkout so a long-running job that temporarily raised
 # the limit can't leak that state into the next request via pool reuse.
-_DEFAULT_STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "30000"))
+# TODO: 27 background-job sites open their own SessionLocal() and may issue
+# statements >30s (threat-intel sync, EASM scheduler, report PDFs, lake
+# maintenance, agent runs). Audit those before tightening below 120s, and
+# wrap any legitimate long-running statement in disable_statement_timeout().
+_DEFAULT_STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "120000"))
 if DATABASE_URL.startswith("postgresql"):
     @event.listens_for(engine, "connect")
     def _set_pg_connect_defaults(dbapi_conn, connection_record):
