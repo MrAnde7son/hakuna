@@ -1541,7 +1541,7 @@ async def _background_process_scan(
 
 # 200 MB cap — big enough for real Nessus files, small enough to keep
 # 5 concurrent uploads under the 2 GB Cloud Run memory budget.
-MAX_SCAN_UPLOAD_BYTES = int(os.getenv("MAX_SCAN_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+MAX_SCAN_UPLOAD_BYTES = int(os.getenv("MAX_SCAN_UPLOAD_BYTES", str(500 * 1024 * 1024)))
 
 
 @app.post("/api/upload", dependencies=[Depends(check_scan_limit)])
