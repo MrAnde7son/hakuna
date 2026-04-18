@@ -100,6 +100,41 @@ function getTabGroups(t) {
 // Flat list of all valid tab keys (for URL validation) — keys are static, no translation needed
 const ALL_TABS = ['surface', 'users', 'groups', 'loggedon', 'computers', 'databases', 'services', 'software', 'processes', 'apiEndpoints', 'netconns', 'shares', 'security', 'patches', 'policy', 'certs', 'credentials', 'tasks', 'envvars', 'aitools', 'easm_assets', 'easm_breaches', 'easm_corporate']
 
+// Friendlier URL slugs accepted in `?tab=` — guessable aliases redirect to the
+// canonical tab so shared deep-links don't silently fall back to "surface".
+const TAB_SLUG_ALIASES = {
+  'attack-surface': 'surface',
+  'attack_surface': 'surface',
+  'connections': 'netconns',
+  'network': 'netconns',
+  'network-connections': 'netconns',
+  'logged-on': 'loggedon',
+  'logged_on': 'loggedon',
+  'api': 'apiEndpoints',
+  'api-endpoints': 'apiEndpoints',
+  'api_endpoints': 'apiEndpoints',
+  'endpoints': 'apiEndpoints',
+  'certificates': 'certs',
+  'scheduled-tasks': 'tasks',
+  'scheduled_tasks': 'tasks',
+  'password-policies': 'policy',
+  'password_policies': 'policy',
+  'policies': 'policy',
+  'ai-tools': 'aitools',
+  'ai_tools': 'aitools',
+  'env-vars': 'envvars',
+  'env_vars': 'envvars',
+  'environment-variables': 'envvars',
+  'security-controls': 'security',
+  'security_controls': 'security',
+}
+
+function resolveTabSlug(raw) {
+  if (!raw) return null
+  if (ALL_TABS.includes(raw)) return raw
+  return TAB_SLUG_ALIASES[raw.toLowerCase()] || null
+}
+
 // Find which group a tab key belongs to
 function groupForTab(tabKey, tabGroups) {
   for (const g of tabGroups) {
@@ -3909,7 +3944,7 @@ export default function InventoryExplorer() {
   const { activeScanId } = useScan()
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get('tab')
-  const activeTab = ALL_TABS.includes(tabParam) ? tabParam : 'surface'
+  const activeTab = resolveTabSlug(tabParam) || 'surface'
   const setActiveTab = (key) => setSearchParams(prev => { prev.set('tab', key); return prev })
   const assetId = searchParams.get('asset_id')
   const assetName = searchParams.get('asset_name')

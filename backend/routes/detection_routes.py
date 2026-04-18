@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from core.database import get_db
@@ -21,38 +21,54 @@ VALID_SEVERITIES = {"info", "low", "medium", "high", "critical"}
 # ── Pydantic schemas ────────────────────────────────────
 
 class RuleCreate(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1)
     description: Optional[str] = None
     severity: str = "medium"
     query: dict = {}
-    window_seconds: int = 300
-    threshold: int = 1
+    window_seconds: int = Field(default=300, ge=1)
+    threshold: int = Field(default=1, ge=1)
     group_by: List[str] = []
-    schedule_minutes: int = 5
+    schedule_minutes: int = Field(default=5, ge=1)
     mitre_techniques: List[str] = []
     asset_filter: Optional[dict] = None
     enabled: bool = True
 
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("name must not be blank")
+        return v.strip()
+
 
 class RuleTest(BaseModel):
     query: dict = {}
-    window_seconds: int = 300
-    threshold: int = 1
+    window_seconds: int = Field(default=300, ge=1)
+    threshold: int = Field(default=1, ge=1)
     group_by: List[str] = []
 
 
 class RuleUpdate(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1)
     description: Optional[str] = None
     severity: Optional[str] = None
     query: Optional[dict] = None
-    window_seconds: Optional[int] = None
-    threshold: Optional[int] = None
+    window_seconds: Optional[int] = Field(default=None, ge=1)
+    threshold: Optional[int] = Field(default=None, ge=1)
     group_by: Optional[List[str]] = None
-    schedule_minutes: Optional[int] = None
+    schedule_minutes: Optional[int] = Field(default=None, ge=1)
     mitre_techniques: Optional[List[str]] = None
     asset_filter: Optional[dict] = None
     enabled: Optional[bool] = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, v):
+        if v is None:
+            return v
+        if not v.strip():
+            raise ValueError("name must not be blank")
+        return v.strip()
 
 
 class AlertUpdate(BaseModel):

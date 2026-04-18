@@ -35,6 +35,37 @@ ALL_PERMISSION_KEYS = [
     "page_workflows", "page_siem",
 ]
 
+# Action permissions that require a page permission to actually be usable:
+# granting "manage_tags" without "page_tags" produced contradictory roles where
+# users had the right to mutate but not to open the page. When an action is
+# granted, auto-enable its host page so roles remain internally consistent.
+ACTION_IMPLIES_PAGE = {
+    "manage_tags":          "page_tags",
+    "manage_campaigns":     "page_campaigns",
+    "manage_workflows":     "page_workflows",
+    "manage_users":         "page_settings",
+    "manage_integrations":  "page_settings",
+    "manage_exceptions":    "page_findings",
+    "upload_scan":          "page_upload",
+    "delete_scan":          "page_upload",
+    "read_assets":          "page_assets",
+    "write_assets":         "page_assets",
+    "read_findings":        "page_findings",
+    "write_findings":       "page_findings",
+    "view_reports":         "page_reports",
+    "export_report":        "page_reports",
+}
+
+
+def enforce_page_consistency(perms: dict) -> dict:
+    """Auto-enable any page permission implied by a granted action permission."""
+    out = dict(perms or {})
+    for action, page in ACTION_IMPLIES_PAGE.items():
+        if out.get(action):
+            out[page] = True
+    return out
+
+
 # Built-in role defaults — what each role gets out of the box.
 _ALL_TRUE = {k: True for k in ALL_PERMISSION_KEYS}
 

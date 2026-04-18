@@ -21,7 +21,7 @@ from core.auth import (
     require_auth, require_role, get_current_user, get_accessible_org_ids,
     get_user_custom_roles, resolve_effective_permissions, ALL_PERMISSION_KEYS,
     ACCESS_TOKEN_EXPIRE_MINUTES, validate_password_strength,
-    LOGIN_FAILURE_THRESHOLD, LOGIN_LOCKOUT_MINUTES,
+    LOGIN_FAILURE_THRESHOLD, LOGIN_LOCKOUT_MINUTES, enforce_page_consistency,
 )
 from core.audit import log_audit, diff as _diff
 from core.i18n import get_locale_from_request, t as translate
@@ -1255,6 +1255,7 @@ async def create_role(
 
     perms = {k: bool(v) for k, v in (body.base_permissions or {}).items() if k in BASE_PERMISSION_KEYS}
     deny = {k: bool(v) for k, v in (body.deny_permissions or {}).items() if k in BASE_PERMISSION_KEYS}
+    perms = enforce_page_consistency(perms)
     role = CustomRole(
         org_id=user.org_id,
         name=body.name,
@@ -1327,7 +1328,9 @@ async def update_role(
     if body.description is not None:
         role.description = body.description
     if body.base_permissions is not None:
-        role.base_permissions = {k: bool(v) for k, v in body.base_permissions.items() if k in BASE_PERMISSION_KEYS}
+        role.base_permissions = enforce_page_consistency(
+            {k: bool(v) for k, v in body.base_permissions.items() if k in BASE_PERMISSION_KEYS}
+        )
     if body.deny_permissions is not None:
         role.deny_permissions = {k: bool(v) for k, v in body.deny_permissions.items() if k in BASE_PERMISSION_KEYS}
     if body.is_active is not None:

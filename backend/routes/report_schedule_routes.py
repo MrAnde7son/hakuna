@@ -7,12 +7,23 @@ startup and re-syncs every few minutes so API edits take effect promptly.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+
+# Minimal sanity check: local@domain.tld with at least one dot in the domain.
+# Deliberately looser than RFC 5322 — just rejects obvious garbage like
+# "not-an-email" that previously slipped through and fed bad addresses into
+# scheduled delivery.
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+def _split_recipients(recipients: str) -> List[str]:
+    return [r.strip() for r in recipients.split(",") if r.strip()]
 
 from core.auth import require_auth, get_accessible_org_ids
 from core.database import get_db
@@ -116,6 +127,12 @@ def _validate_schedule_fields(data: dict) -> None:
     recipients = (data.get("recipients") or "").strip()
     if not recipients:
         raise HTTPException(400, "recipients is required")
+    parsed = _split_recipients(recipients)
+    if not parsed:
+        raise HTTPException(400, "recipients is required")
+    invalid = [r for r in parsed if not _EMAIL_RE.match(r)]
+    if invalid:
+        raise HTTPException(400, f"Invalid recipient email(s): {', '.join(invalid)}")
     if data.get("hour") is not None and not (0 <= int(data["hour"]) <= 23):
         raise HTTPException(400, "hour must be 0..23")
     if data.get("minute") is not None and not (0 <= int(data["minute"]) <= 59):

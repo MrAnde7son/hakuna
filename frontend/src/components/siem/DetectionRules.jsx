@@ -78,8 +78,12 @@ export default function DetectionRules() {
   return (
     <div>
       <PageHeader
-        title={t('siem.detectionRules', 'Detection Rules')}
-        subtitle={`${total} ${t('siem.rules', 'rules')}`}
+        title={tab === 'suppression'
+          ? t('siem.suppressionRules', 'Suppression Rules')
+          : t('siem.detectionRules', 'Detection Rules')}
+        subtitle={tab === 'suppression'
+          ? t('siem.suppressionSubtitle', 'Prevent known-good activity from creating alerts')
+          : `${total} ${t('siem.rules', 'rules')}`}
         action={tab === 'rules' ? (
           <div style={{ display: 'flex', gap: 8 }}>
             <Button onClick={() => setShowLibrary(true)} variant="ghost">
@@ -240,6 +244,14 @@ function RuleModal({ rule, onClose, onSave, t }) {
   const [showAssetFilter, setShowAssetFilter] = useState(Object.keys(rule?.asset_filter || {}).length > 0)
   const [queryField, setQueryField] = useState('')
   const [queryValue, setQueryValue] = useState('')
+  const [saveError, setSaveError] = useState(null)
+  const [saving, setSaving] = useState(false)
+
+  const trimmedName = form.name.trim()
+  const nameValid = trimmedName.length > 0
+  const thresholdValid = Number.isInteger(form.threshold) && form.threshold >= 1
+  const windowValid = Number.isInteger(form.window_seconds) && form.window_seconds >= 1
+  const canSubmit = nameValid && thresholdValid && windowValid && !saving
 
   const addFilter = () => {
     if (queryField && queryValue) {
@@ -263,13 +275,17 @@ function RuleModal({ rule, onClose, onSave, t }) {
           <div style={{ display: 'flex', gap: 8 }}>
             <div style={{ flex: 1 }}>
               <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 4, display: 'block' }}>Threshold (count)</label>
-              <input type="number" value={form.threshold} onChange={e => setForm(f => ({ ...f, threshold: parseInt(e.target.value) || 1 }))}
-                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', boxSizing: 'border-box' }} />
+              <input type="number" min="1" step="1" value={form.threshold}
+                     onChange={e => { const n = parseInt(e.target.value, 10); setForm(f => ({ ...f, threshold: Number.isFinite(n) ? n : f.threshold })) }}
+                     style={{ width: '100%', padding: 8, borderRadius: 6, border: `1px solid ${thresholdValid ? 'var(--border)' : '#dc2626'}`, background: 'var(--bg-secondary)', color: 'var(--text)', boxSizing: 'border-box' }} />
+              {!thresholdValid && <div style={{ fontSize: 11, color: '#dc2626', marginTop: 3 }}>Must be at least 1.</div>}
             </div>
             <div style={{ flex: 1 }}>
               <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 4, display: 'block' }}>Window (seconds)</label>
-              <input type="number" value={form.window_seconds} onChange={e => setForm(f => ({ ...f, window_seconds: parseInt(e.target.value) || 300 }))}
-                     style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', boxSizing: 'border-box' }} />
+              <input type="number" min="1" step="1" value={form.window_seconds}
+                     onChange={e => { const n = parseInt(e.target.value, 10); setForm(f => ({ ...f, window_seconds: Number.isFinite(n) ? n : f.window_seconds })) }}
+                     style={{ width: '100%', padding: 8, borderRadius: 6, border: `1px solid ${windowValid ? 'var(--border)' : '#dc2626'}`, background: 'var(--bg-secondary)', color: 'var(--text)', boxSizing: 'border-box' }} />
+              {!windowValid && <div style={{ fontSize: 11, color: '#dc2626', marginTop: 3 }}>Must be at least 1.</div>}
             </div>
           </div>
           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)' }}>Filters</div>
@@ -370,17 +386,35 @@ function RuleModal({ rule, onClose, onSave, t }) {
             )}
           </div>
         </div>
+        {saveError && (
+          <div style={{ marginTop: 12, padding: '8px 10px', background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.35)', borderRadius: 6, color: '#dc2626', fontSize: 12 }}>
+            {saveError}
+          </div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
           <button onClick={onClose} style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}>
             {t('common.cancel', 'Cancel')}
           </button>
-          <button onClick={() => {
-            const payload = { ...form }
+          <button onClick={async () => {
+            setSaveError(null)
+            if (!canSubmit) {
+              if (!nameValid) setSaveError('Rule name is required.')
+              else if (!thresholdValid) setSaveError('Threshold must be at least 1.')
+              else if (!windowValid) setSaveError('Window must be at least 1 second.')
+              return
+            }
+            const payload = { ...form, name: trimmedName }
             if (Object.keys(payload.asset_filter).length === 0) payload.asset_filter = null
-            onSave(payload)
-          }} disabled={!form.name}
-                  style={{ padding: '8px 16px', borderRadius: 6, border: 'none', background: 'var(--accent)', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
-            {isEdit ? t('common.save', 'Save') : t('common.create', 'Create')}
+            setSaving(true)
+            try {
+              await onSave(payload)
+            } catch (err) {
+              setSaveError(err?.message || 'Failed to save rule.')
+              setSaving(false)
+            }
+          }} disabled={!canSubmit}
+                  style={{ padding: '8px 16px', borderRadius: 6, border: 'none', background: canSubmit ? 'var(--accent)' : 'var(--bg-secondary)', color: canSubmit ? '#fff' : 'var(--text-muted)', fontWeight: 600, cursor: canSubmit ? 'pointer' : 'not-allowed' }}>
+            {saving ? t('common.saving', 'Saving…') : isEdit ? t('common.save', 'Save') : t('common.create', 'Create')}
           </button>
         </div>
       </div>

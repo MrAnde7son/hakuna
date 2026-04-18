@@ -855,6 +855,36 @@ def extract_service_config(plugin_output: str, asset_id: int, scan_id: int) -> l
 # Plugin 64582 — Netstat Connection Info (structured)
 # ─────────────────────────────────────────────────────────
 
+# Canonical TCP/UDP states — anything else (e.g. a stray PID from a Linux
+# `netstat -p` line that omits the State column for UDP) is dropped so the
+# column doesn't end up with values like "3892" side-by-side with "listen".
+_VALID_NET_STATES = {
+    "listen", "established", "syn_sent", "syn_received",
+    "fin_wait_1", "fin_wait_2", "time_wait", "close", "close_wait",
+    "last_ack", "closing",
+}
+_NET_STATE_ALIASES = {
+    "listening": "listen",
+    "syn-sent": "syn_sent",
+    "syn_recv": "syn_received",
+    "syn-received": "syn_received",
+    "closed": "close",
+    "close-wait": "close_wait",
+    "last-ack": "last_ack",
+    "fin-wait-1": "fin_wait_1",
+    "fin-wait-2": "fin_wait_2",
+    "time-wait": "time_wait",
+}
+
+
+def _normalize_net_state(raw):
+    if not raw:
+        return None
+    s = str(raw).strip().lower()
+    s = _NET_STATE_ALIASES.get(s, s)
+    return s if s in _VALID_NET_STATES else None
+
+
 def extract_netstat_info(plugin_output: str, asset_id: int, scan_id: int) -> list[dict]:
     """Parse structured netstat blocks from plugin 64582."""
     if not plugin_output:
@@ -873,7 +903,7 @@ def extract_netstat_info(plugin_output: str, asset_id: int, scan_id: int) -> lis
     )
     for m in block_pattern.finditer(plugin_output):
         proto = m.group(1).lower()
-        state = m.group(2).lower()
+        state = _normalize_net_state(m.group(2))
         local_addr = m.group(3).strip()
         local_port_str = m.group(4).strip()
         remote_addr = m.group(5).strip()
@@ -930,7 +960,7 @@ def extract_netstat_active(plugin_output: str, asset_id: int, scan_id: int) -> l
             local_port_str = m.group(3)
             remote_addr = m.group(4)
             remote_port_str = m.group(5)
-            state = m.group(6).lower()
+            state = _normalize_net_state(m.group(6))
             pid_str = m.group(7)
 
             try:
@@ -970,7 +1000,7 @@ def extract_netstat_active(plugin_output: str, asset_id: int, scan_id: int) -> l
         local_port_str = m.group(3)
         remote_addr = m.group(4)
         remote_port_str = m.group(5)
-        state = m.group(6).lower()
+        state = _normalize_net_state(m.group(6))
 
         try:
             local_port = int(local_port_str)

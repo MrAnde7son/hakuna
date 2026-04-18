@@ -4859,18 +4859,25 @@ export default function ReportBuilder() {
   const openReport = (report) => setActiveReport(report)
 
   const saveReport = async (updated) => {
+    const proposedName = (updated.name || '').trim()
+    const placeholderName = t('reports.untitledReport')
+    if (!updated.id && (!proposedName || proposedName === placeholderName)) {
+      toast?.error?.(t('reports.nameRequired', 'Please rename the report before saving.'))
+        || window.alert(t('reports.nameRequired', 'Please rename the report before saving.'))
+      return
+    }
     try {
       if (updated.id) {
         await updateReportTemplate(updated.id, {
-          name: updated.name,
+          name: proposedName || updated.name,
           config: { widgets: updated.widgets || [], createdAt: updated.createdAt },
         })
       } else {
         const result = await createReportTemplate({
-          name: updated.name,
+          name: proposedName,
           config: { widgets: updated.widgets || [], createdAt: updated.createdAt },
         })
-        updated = { ...updated, id: result.id }
+        updated = { ...updated, id: result.id, name: proposedName }
       }
       setActiveReport(updated)
       loadFromApi()
