@@ -721,6 +721,77 @@ def delete_integration(integration_id: str, db: Session = Depends(get_db),
     return {"deleted": True}
 
 
+@router.get("/integrations/{integration_id}/webhook")
+def get_webhook_info(integration_id: str, db: Session = Depends(get_db),
+                     user: User = Depends(require_auth)):
+    """Return the ingest endpoint ID and metadata for a webhook integration.
+
+    Does NOT return the bearer token or HMAC secret — those are only shown
+    once at creation and cannot be retrieved. Use /webhook/rotate to generate
+    a new pair if lost.
+    """
+    i = _get_integration_or_404(db, integration_id, user.org_id)
+    if i.transport_type != "webhook":
+        raise HTTPException(400, "Integration is not a webhook transport")
+
+    ep = db.query(IngestEndpoint).filter(
+        IngestEndpoint.integration_id == integration_id,
+        IngestEndpoint.org_id == user.org_id,
+    ).first()
+    if not ep:
+        raise HTTPException(404, "No ingest endpoint found for this integration")
+
+    return {
+        "endpoint_id": ep.id,
+        "parser_type": ep.parser_type,
+        "token_prefix": ep.token_prefix,
+        "is_active": ep.is_active,
+        "last_used_at": ep.last_used_at.isoformat() if ep.last_used_at else None,
+        "request_count": ep.request_count or 0,
+        "created_at": ep.created_at.isoformat() if ep.created_at else None,
+    }
+
+
+@router.post("/integrations/{integration_id}/webhook/rotate")
+def rotate_webhook_credentials(integration_id: str, db: Session = Depends(get_db),
+                                user: User = Depends(require_auth)):
+    """Rotate the bearer token and HMAC secret for a webhook integration.
+
+    Returns the new plaintext token and HMAC secret ONCE. The old credentials
+    immediately stop working.
+    """
+    import secrets as _secrets
+    from passlib.hash import bcrypt
+
+    i = _get_integration_or_404(db, integration_id, user.org_id)
+    if i.transport_type != "webhook":
+        raise HTTPException(400, "Integration is not a webhook transport")
+
+    ep = db.query(IngestEndpoint).filter(
+        IngestEndpoint.integration_id == integration_id,
+        IngestEndpoint.org_id == user.org_id,
+    ).first()
+    if not ep:
+        raise HTTPException(404, "No ingest endpoint found for this integration")
+
+    token = f"hki_{_secrets.token_urlsafe(32)}"
+    hmac_secret = _secrets.token_urlsafe(32)
+    ep.token_hash = bcrypt.hash(token)
+    ep.token_prefix = token[:12]
+    ep.hmac_secret_hash = bcrypt.hash(hmac_secret)
+    db.commit()
+    db.refresh(ep)
+
+    return {
+        "endpoint_id": ep.id,
+        "token": token,
+        "hmac_secret": hmac_secret,
+        "token_prefix": ep.token_prefix,
+        "parser_type": ep.parser_type,
+        "warning": "Save token and HMAC secret now — they will not be shown again.",
+    }
+
+
 @router.post("/integrations/{integration_id}/enable")
 def enable_integration(integration_id: str, db: Session = Depends(get_db),
                         user: User = Depends(require_auth)):

@@ -30,9 +30,11 @@ celery.conf.update(
         "app.tasks.nmap",
         "app.tasks.scheduler",
         "app.tasks.recovery",
+        "app.tasks.github_attribution",
     ],
     task_routes={
         "nmap.nmap_enrich_asset": {"queue": "nmap_queue"},
+        "easm.run_github_npm_attribution": {"queue": "easm_queue"},
     },
 )
 

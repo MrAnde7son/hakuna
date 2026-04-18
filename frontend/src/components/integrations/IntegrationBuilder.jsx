@@ -250,19 +250,23 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         const targetSchema = await getTargetSchema(i.entity)
         setSchema(targetSchema || [])
       } catch { /* fall back to full schema already loaded */ }
-      // Fetch live data so source fields, records picker, etc. are populated
-      try {
-        const result = await integrationConnect({
-          transport_type: i.transport_type,
-          transport_config: i.transport_config || {},
-          credentials_id: i.credentials_id,
-          records_path: i.records_path || undefined,
-        })
-        setRawResponse(result.raw_response)
-        setSampleRecords(result.sample_records || [])
-        setDetectedPaths(result.detected_paths || [])
-      } catch (e) {
-        console.warn('Could not fetch live data for edit:', e.message)
+      // Fetch live data so source fields, records picker, etc. are populated.
+      // Webhook transports don't support /connect (they're passive inbound endpoints)
+      // so skip this step for them.
+      if (i.transport_type !== 'webhook') {
+        try {
+          const result = await integrationConnect({
+            transport_type: i.transport_type,
+            transport_config: i.transport_config || {},
+            credentials_id: i.credentials_id,
+            records_path: i.records_path || undefined,
+          })
+          setRawResponse(result.raw_response)
+          setSampleRecords(result.sample_records || [])
+          setDetectedPaths(result.detected_paths || [])
+        } catch (e) {
+          console.warn('Could not fetch live data for edit:', e.message)
+        }
       }
       setStep(stepKeyIndex('map')) // jump to field mapper for edits
     }).catch(console.error)

@@ -1238,6 +1238,8 @@ export const ibGetIntegrationRun = (integrationId, runId) => request(`${IB}/inte
 export const ibUpdateLogo = (id, data) => request(`${IB}/integrations/${id}/logo`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
 })
+export const ibGetWebhookInfo = (id) => request(`${IB}/integrations/${id}/webhook`)
+export const ibRotateWebhookCredentials = (id) => request(`${IB}/integrations/${id}/webhook/rotate`, { method: 'POST' })
 
 // Active Directory / LDAP
 export const adTestConnection = (data) => request(`${IB}/integrations/active-directory/test-connection`, {

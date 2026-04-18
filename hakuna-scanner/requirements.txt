@@ -13,3 +13,5 @@ python-multipart==0.0.9
 python-libnmap==0.7.3
 aiohttp>=3.9.0
 playwright>=1.40.0
+packaging>=23.0
+pyyaml>=6.0

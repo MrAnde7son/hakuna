@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Play, Pencil, Power, PowerOff, Trash2, CheckCircle2, XCircle,
-  Clock, ChevronDown, ChevronUp, AlertTriangle, Loader, Image,
+  Clock, ChevronDown, ChevronUp, AlertTriangle, Loader, Image, Copy, RefreshCw, KeyRound,
 } from 'lucide-react'
 import { Card, Button, Spinner, PageHeader, useToast, useConfirm } from '../shared/ui.jsx'
 import {
   ibGetIntegration, ibGetIntegrationRuns, ibGetIntegrationRun, ibRunIntegration,
   ibDeleteIntegration, ibEnableIntegration, ibDisableIntegration, ibUpdateLogo,
+  ibGetWebhookInfo, ibRotateWebhookCredentials,
 } from '../../api.js'
 
 const STATUS_COLORS = {
@@ -35,6 +36,9 @@ export default function IntegrationDetail({ embedded, integrationId: embeddedId,
   const [runDetail, setRunDetail] = useState({})
   const [logoInput, setLogoInput] = useState(false)
   const [logoUrl, setLogoUrl] = useState('')
+  const [webhookInfo, setWebhookInfo] = useState(null)
+  const [rotatedSecrets, setRotatedSecrets] = useState(null)
+  const [rotating, setRotating] = useState(false)
   const toast = useToast()
   const confirm = useConfirm()
 
@@ -43,11 +47,41 @@ export default function IntegrationDetail({ embedded, integrationId: embeddedId,
       const [i, r] = await Promise.all([ibGetIntegration(id), ibGetIntegrationRuns(id)])
       setIntegration(i)
       setRuns(r)
+      if (i.transport_type === 'webhook') {
+        try {
+          const info = await ibGetWebhookInfo(id)
+          setWebhookInfo(info)
+        } catch (e) {
+          console.warn('Could not load webhook info:', e.message)
+        }
+      }
     } catch (e) {
       console.error(e)
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleRotate = async () => {
+    if (!await confirm('Rotate credentials? The current token and HMAC secret will stop working immediately.')) return
+    setRotating(true)
+    try {
+      const res = await ibRotateWebhookCredentials(id)
+      setRotatedSecrets(res)
+      setWebhookInfo(info => ({ ...info, token_prefix: res.token_prefix }))
+      toast.success('Credentials rotated — save them now')
+    } catch (e) {
+      toast.error('Failed to rotate: ' + e.message)
+    } finally {
+      setRotating(false)
+    }
+  }
+
+  const copyToClipboard = (text, label) => {
+    navigator.clipboard.writeText(text).then(
+      () => toast.success(`${label} copied`),
+      () => toast.error('Copy failed'),
+    )
   }
 
   useEffect(() => { load() }, [id])
@@ -251,6 +285,17 @@ export default function IntegrationDetail({ embedded, integrationId: embeddedId,
         </div>
       </Card>
 
+      {integration.transport_type === 'webhook' && webhookInfo && (
+        <WebhookPanel
+          info={webhookInfo}
+          rotatedSecrets={rotatedSecrets}
+          onDismissSecrets={() => setRotatedSecrets(null)}
+          onRotate={handleRotate}
+          rotating={rotating}
+          onCopy={copyToClipboard}
+        />
+      )}
+
       {/* Run history */}
       <div style={{ marginBottom: 12, fontSize: 14, fontWeight: 600 }}>
         Run History
@@ -442,6 +487,94 @@ function RunDetailPanel({ run, detail }) {
           <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
         </div>
       )}
+    </div>
+  )
+}
+
+
+function WebhookPanel({ info, rotatedSecrets, onDismissSecrets, onRotate, rotating, onCopy }) {
+  const url = `${window.location.origin}/api/ingest/events/${info.endpoint_id}`
+  return (
+    <Card style={{ marginBottom: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <KeyRound size={14} /> Webhook Endpoint
+        </div>
+        <Button
+          onClick={onRotate}
+          disabled={rotating}
+          style={{ fontSize: 11, padding: '4px 10px', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 4 }}
+        >
+          <RefreshCw size={12} /> {rotating ? 'Rotating...' : 'Rotate Credentials'}
+        </Button>
+      </div>
+
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>POST URL</div>
+      <SecretRow value={url} onCopy={() => onCopy(url, 'URL')} monospace />
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 12, fontSize: 12 }}>
+        <KV label="Parser" value={info.parser_type} />
+        <KV label="Token Prefix" value={info.token_prefix ? `${info.token_prefix}…` : '—'} />
+        <KV label="Requests" value={info.request_count ?? 0} />
+        <KV label="Last Used" value={info.last_used_at ? new Date(info.last_used_at).toLocaleString() : 'Never'} />
+      </div>
+
+      {rotatedSecrets && (
+        <div style={{
+          marginTop: 16, padding: 12, borderRadius: 6,
+          background: '#eab30815', border: '1px solid #eab30840',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, color: '#eab308', fontSize: 12, fontWeight: 600 }}>
+            <AlertTriangle size={14} /> {rotatedSecrets.warning || 'Save these credentials now — they will not be shown again.'}
+          </div>
+
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Bearer Token</div>
+          <SecretRow value={rotatedSecrets.token} onCopy={() => onCopy(rotatedSecrets.token, 'Token')} monospace />
+
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10, marginBottom: 4 }}>HMAC Secret</div>
+          <SecretRow value={rotatedSecrets.hmac_secret} onCopy={() => onCopy(rotatedSecrets.hmac_secret, 'HMAC secret')} monospace />
+
+          <div style={{ marginTop: 10, textAlign: 'right' }}>
+            <button
+              onClick={onDismissSecrets}
+              style={{ fontSize: 11, background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+            >
+              I've saved them — hide
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!rotatedSecrets && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10 }}>
+          The bearer token and HMAC secret are stored hashed and cannot be retrieved. Click "Rotate Credentials" to generate a new pair.
+        </div>
+      )}
+    </Card>
+  )
+}
+
+function SecretRow({ value, onCopy, monospace }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      padding: '6px 10px', borderRadius: 6, border: '1px solid var(--border)',
+      background: 'var(--bg-secondary)',
+    }}>
+      <span style={{
+        flex: 1, fontSize: 12, color: 'var(--text)',
+        fontFamily: monospace ? 'var(--mono, monospace)' : 'inherit',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      }}>
+        {value}
+      </span>
+      <button
+        onClick={onCopy}
+        style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 2, display: 'flex' }}
+        title="Copy"
+      >
+        <Copy size={14} />
+      </button>
     </div>
   )
 }

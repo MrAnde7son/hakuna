@@ -26,5 +26,6 @@ celery_app.conf.update(
     include=[
         "scanner.vm.nuclei_worker",
         "scanner.vm.scheduler",
+        "scanner.vm.code_repo_worker",
     ],
 )
