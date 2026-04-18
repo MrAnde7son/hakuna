@@ -1637,6 +1637,14 @@ class ExternalTagMap(Base):
 # Global Exceptions / Waivers
 # ─────────────────────────────────────────────────────────
 
+@importable(
+    slug="finding_exception",
+    display_name="Finding Exception",
+    category="core",
+    dedup_keys=["org_id", "source_system", "source_id"],
+    required_fields=["exception_type"],
+    description="Accepted risks, false positives, severity overrides, and compensating controls imported from other VM tools",
+)
 class FindingException(Base):
     """Global exception (accepted risk / false positive) that persists across scans.
     Matched by plugin_id + optional asset scope (ip or all assets) + optional rule conditions."""
@@ -1670,12 +1678,16 @@ class FindingException(Base):
     expires_at = Column(DateTime, nullable=True)  # null = permanent
     review_by = Column(DateTime, nullable=True)  # recertification date (soft reminder, does not deactivate)
     is_active = Column(Boolean, default=True, index=True)
+    # Provenance — set when imported from a third-party VM tool via the integration builder
+    source_system = Column(String, nullable=True, index=True)
+    source_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
     __table_args__ = (
         Index("ix_exception_plugin_asset", "plugin_id", "asset_ip"),
+        Index("ix_exception_source", "source_system", "source_id"),
     )
 
 

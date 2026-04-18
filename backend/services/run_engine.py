@@ -240,9 +240,10 @@ async def _execute_pull(db, transport, config, credentials, integration, run, pr
     # Check if this connector requires LLM extraction (unstructured sources)
     llm_extract_config = config.get("llm_extract")
 
-    # SIEM events go directly to siem_events table — no Scan wrapper needed
+    # Org-scoped entities (siem_event, finding_exception) bypass the Scan wrapper
     scan_id = None
-    if entity != "siem_event":
+    _ORG_SCOPED_ENTITIES = {"siem_event", "finding_exception"}
+    if entity not in _ORG_SCOPED_ENTITIES:
         # Reuse existing scan for this integration, or create one if first run
         scan_filename = f"integration:{integration.name or integration.id}"
         placeholder_scan = (
@@ -377,6 +378,10 @@ async def _execute_pull(db, transport, config, credentials, integration, run, pr
                         str(mapped.get("event_type", "")),
                     ])
                     mapped["dedup_hash"] = hashlib.sha256(_key.encode()).hexdigest()
+
+            # Finding exceptions are org-scoped; inject org_id for generic upsert
+            elif entity == "finding_exception":
+                mapped["org_id"] = integration.org_id
 
             # Collect mapping errors
             for err in result["errors"]:
