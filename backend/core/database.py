@@ -26,6 +26,33 @@ if DATABASE_URL.startswith("sqlite"):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
+
+# Postgres: enforce a default statement timeout so a runaway query on one
+# endpoint can't saturate the connection pool or DB CPU. The default is
+# reset on every checkout so a long-running job that temporarily raised
+# the limit can't leak that state into the next request via pool reuse.
+# TODO: 27 background-job sites open their own SessionLocal() and may issue
+# statements >30s (threat-intel sync, EASM scheduler, report PDFs, lake
+# maintenance, agent runs). Audit those before tightening below 120s, and
+# wrap any legitimate long-running statement in disable_statement_timeout().
+_DEFAULT_STATEMENT_TIMEOUT_MS = int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "120000"))
+if DATABASE_URL.startswith("postgresql"):
+    @event.listens_for(engine, "connect")
+    def _set_pg_connect_defaults(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute(f"SET statement_timeout = {_DEFAULT_STATEMENT_TIMEOUT_MS}")
+        cursor.execute("SET idle_in_transaction_session_timeout = 60000")
+        cursor.close()
+
+    @event.listens_for(engine, "checkout")
+    def _reset_pg_timeout(dbapi_conn, connection_record, connection_proxy):
+        # Rebind to the per-request default in case the previous user of
+        # this pooled connection changed it (e.g. a long-running ingest
+        # issued `SET statement_timeout = 0`).
+        cursor = dbapi_conn.cursor()
+        cursor.execute(f"SET statement_timeout = {_DEFAULT_STATEMENT_TIMEOUT_MS}")
+        cursor.close()
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

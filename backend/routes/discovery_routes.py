@@ -684,25 +684,60 @@ async def provision_service_account(connector_id: str, body: ProvisionRequest,
 # File Upload (temp file for FileTransport)
 # ─────────────────────────────────────────────────────────
 
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+_SAFE_FILENAME_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+)
+
+
+def _sanitize_filename(name: str, fallback: str = "upload.bin") -> str:
+    """Strip path components and reduce to an allowlisted character set."""
+    base = os.path.basename(name or "")
+    base = base.lstrip(".")  # no hidden-file names
+    cleaned = "".join(c if c in _SAFE_FILENAME_CHARS else "_" for c in base)
+    cleaned = cleaned[:128]
+    return cleaned or fallback
+
+
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...), user: User = Depends(require_auth)):
     """Upload a file for FileTransport. Returns persistent path."""
-    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads")
+    upload_dir = os.path.realpath(
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "uploads")
+    )
     os.makedirs(upload_dir, exist_ok=True)
 
-    # Sanitize filename
-    safe_name = file.filename.replace("/", "_").replace("\\", "_")
+    safe_name = _sanitize_filename(file.filename)
     dest = os.path.join(upload_dir, f"{secrets.token_hex(8)}_{safe_name}")
 
-    content = await file.read()
+    # Defence-in-depth: resolved path must still live under upload_dir.
+    if not os.path.realpath(dest).startswith(upload_dir + os.sep):
+        raise HTTPException(400, "Invalid filename")
+
+    total = 0
     with open(dest, "wb") as f:
-        f.write(content)
+        while True:
+            chunk = await file.read(1024 * 1024)  # 1 MB chunks
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                f.close()
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
+                raise HTTPException(
+                    413,
+                    f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)",
+                )
+            f.write(chunk)
 
     return {
         "path": dest,
-        "filename": file.filename,
-        "size": len(content),
-        "format": _detect_format(file.filename),
+        "filename": safe_name,
+        "size": total,
+        "format": _detect_format(safe_name),
     }
 
 

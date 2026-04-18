@@ -44,6 +44,11 @@ variable "jwt_secret" {
   type        = string
   description = "JWT signing secret. Generate with: openssl rand -hex 32"
   sensitive   = true
+
+  validation {
+    condition     = length(var.jwt_secret) >= 32
+    error_message = "jwt_secret must be at least 32 characters — backend rejects shorter values at startup (core/auth.py)."
+  }
 }
 
 variable "cloud_run_min_instances" {
@@ -54,14 +59,25 @@ variable "cloud_run_min_instances" {
 
 variable "cloud_run_max_instances" {
   type        = number
-  description = "Maximum Cloud Run instances"
-  default     = 5
+  description = "Maximum Cloud Run instances. Bumped from 5 → 12 so concurrent scan uploads (200 MB each × 2 Gi per instance) don't OOM the service under beta load."
+  default     = 12
 }
 
 variable "db_tier" {
   type        = string
   description = "Cloud SQL machine type. Phase 1: db-custom-2-4096. Phase 2+: db-custom-2-7680 or larger."
   default     = "db-custom-2-4096"
+}
+
+variable "db_availability_type" {
+  type        = string
+  description = "Cloud SQL availability type. ZONAL = Phase 1 (~$95/mo, no HA). REGIONAL = HA auto-failover (~$195/mo). Flip to REGIONAL when ready for Phase 3."
+  default     = "ZONAL"
+
+  validation {
+    condition     = contains(["REGIONAL", "ZONAL"], var.db_availability_type)
+    error_message = "db_availability_type must be REGIONAL or ZONAL."
+  }
 }
 
 variable "scanner_machine_type" {
@@ -105,6 +121,11 @@ variable "integration_secret_key" {
   type        = string
   description = "AES-256 key for encrypting integration credentials. Generate with: openssl rand -hex 32. Must be stable — changing it invalidates all stored credentials."
   sensitive   = true
+
+  validation {
+    condition     = length(var.integration_secret_key) == 64 && can(regex("^[0-9a-fA-F]+$", var.integration_secret_key))
+    error_message = "integration_secret_key must be exactly 64 hex characters (32 bytes) — services/credential_vault.py rejects anything else."
+  }
 }
 
 # ── Stripe billing ────────────────────────────────────────────────────────────
