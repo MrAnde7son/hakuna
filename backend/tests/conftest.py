@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 # Set env vars BEFORE any app imports
 os.environ.setdefault("INTEGRATION_SECRET_KEY", secrets.token_hex(32))
 os.environ["TESTING"] = "1"
+os.environ.setdefault("ENVIRONMENT", "test")
 
 import pytest
 from sqlalchemy import create_engine, event
