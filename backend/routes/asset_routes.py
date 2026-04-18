@@ -441,7 +441,10 @@ def list_assets(
     # Custom field filters: ?cf_<key>=<value>
     q = _apply_custom_field_filters(q, Asset, request)
     if tags:
-        pairs = tag_engine.parse_tag_filter(tags)
+        try:
+            pairs = tag_engine.parse_tag_filter(tags)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         id_sets = tag_engine.resolve_tag_ids(pairs, expand_children, db)
         q = tag_engine.apply_asset_tag_filter(q, id_sets, tag_logic, db)
     q = _apply_sort(q, Asset, sort_by, order, Asset.risk_score)

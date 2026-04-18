@@ -74,7 +74,10 @@ def get_summary(scan_id: Optional[int] = None, tags: Optional[str] = None, tag_l
         finding_q = finding_q.filter(Finding.scan_id == scan_id)
 
     if tags:
-        pairs = tag_engine.parse_tag_filter(tags)
+        try:
+            pairs = tag_engine.parse_tag_filter(tags)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         id_sets = tag_engine.resolve_tag_ids(pairs, False, db)
         asset_q = tag_engine.apply_asset_tag_filter(asset_q, id_sets, tag_logic, db)
         finding_q = tag_engine.apply_finding_tag_filter(finding_q, id_sets, tag_logic, db)
@@ -361,7 +364,10 @@ def get_heatmap(
     if scan_id:
         q = q.filter(Finding.scan_id == scan_id)
     if tags:
-        pairs = tag_engine.parse_tag_filter(tags)
+        try:
+            pairs = tag_engine.parse_tag_filter(tags)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         id_sets = tag_engine.resolve_tag_ids(pairs, False, db)
         q = tag_engine.apply_finding_tag_filter(q, id_sets, tag_logic, db)
 
@@ -498,7 +504,10 @@ def get_risk_grade(
         asset_q = asset_q.filter(Asset.scan_id == scan_id)
         finding_q = finding_q.filter(Finding.scan_id == scan_id)
     if tags:
-        pairs = tag_engine.parse_tag_filter(tags)
+        try:
+            pairs = tag_engine.parse_tag_filter(tags)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         id_sets = tag_engine.resolve_tag_ids(pairs, False, db)
         asset_q = tag_engine.apply_asset_tag_filter(asset_q, id_sets, tag_logic, db)
         finding_q = tag_engine.apply_finding_tag_filter(finding_q, id_sets, tag_logic, db)
@@ -716,7 +725,10 @@ def get_plugin_families(scan_id: Optional[int] = None, tags: Optional[str] = Non
     if scan_id:
         q = q.filter(Finding.scan_id == scan_id)
     if tags:
-        pairs = tag_engine.parse_tag_filter(tags)
+        try:
+            pairs = tag_engine.parse_tag_filter(tags)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         id_sets = tag_engine.resolve_tag_ids(pairs, False, db)
         q = tag_engine.apply_finding_tag_filter(q, id_sets, tag_logic, db)
     families = [row[0] for row in q.all() if row[0]]
@@ -1445,7 +1457,10 @@ def get_owner_risk_summary(
     if scan_id:
         finding_q = finding_q.filter(Finding.scan_id == scan_id)
     if tags:
-        pairs = tag_engine.parse_tag_filter(tags)
+        try:
+            pairs = tag_engine.parse_tag_filter(tags)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         id_sets = tag_engine.resolve_tag_ids(pairs, False, db)
         finding_q = tag_engine.apply_finding_tag_filter(finding_q, id_sets, tag_logic, db)
 

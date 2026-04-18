@@ -162,6 +162,14 @@ const DATA_SOURCES = {
   siem_recent_alerts:      (scanId, f) => getSiemRecentAlerts(f?.limit || 15),
 }
 
+// Sources whose backend endpoints honor the `tags` query param. Widgets
+// pointing at any other source will render unfiltered data even when a
+// global tag filter is active — so the UI surfaces an "unfiltered" badge
+// to prevent users from trusting these numbers as filtered.
+const SOURCES_SUPPORTING_TAG_FILTER = new Set([
+  'summary', 'heatmap', 'assets', 'findings', 'plugin_families', 'risk_grade',
+])
+
 // Filter definitions per source — drives ConfigPanel filter UI
 const SOURCE_FILTERS = {
   findings: [
@@ -3824,6 +3832,8 @@ function WidgetLibrary({ onAdd }) {
 
 function CanvasWidget({ widget, index, total, scanId, isSelected, onSelect, onUpdate, onDelete, onMoveUp, onMoveDown, preview, globalTags, globalTagLogic }) {
   const col = WIDTH_COL[widget.width] || 4
+  const widgetSourceId = DATA_PRESETS[widget.config?.preset]?.source
+  const tagFilterIgnored = !!globalTags && !!widgetSourceId && !SOURCES_SUPPORTING_TAG_FILTER.has(widgetSourceId)
 
   return (
     <div
@@ -3848,6 +3858,19 @@ function CanvasWidget({ widget, index, total, scanId, isSelected, onSelect, onUp
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {!preview && <GripVertical size={14} color="var(--text-muted)" style={{ cursor: 'grab' }} />}
           <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)' }}>{widget.title}</span>
+          {tagFilterIgnored && (
+            <span
+              title="Tag filter not applied — this data source does not support tag filtering, so numbers reflect all data."
+              style={{
+                fontSize: 10, fontWeight: 500, color: '#b45309',
+                background: 'rgba(251, 191, 36, 0.12)',
+                border: '1px solid rgba(217, 119, 6, 0.35)',
+                borderRadius: 4, padding: '1px 6px', letterSpacing: 0.2,
+              }}
+            >
+              unfiltered
+            </span>
+          )}
         </div>
         {!preview && (
           <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>

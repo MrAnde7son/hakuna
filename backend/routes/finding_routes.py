@@ -191,7 +191,10 @@ def list_findings(
             if _cf_key:
                 q = q.filter(_json_text_at(Finding.custom_fields, _cf_key).ilike(f"%{_cf_value}%"))
     if tags:
-        pairs = tag_engine.parse_tag_filter(tags)
+        try:
+            pairs = tag_engine.parse_tag_filter(tags)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         id_sets = tag_engine.resolve_tag_ids(pairs, expand_children, db)
         q = tag_engine.apply_finding_tag_filter(q, id_sets, tag_logic, db)
     # Product / CPE filters — join through SBOM to find findings linked to a product or CPE

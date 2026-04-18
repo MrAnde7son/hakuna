@@ -132,13 +132,24 @@ def build_tree(tags: list, db: Session = None) -> list:
 def parse_tag_filter(tags_str: str) -> list:
     """
     Parse 'network:dmz,env:prod' → [('network','dmz'), ('env','prod')]
+
+    Raises ValueError on any non-empty segment that is not in 'category:value'
+    shape. Silently dropping malformed segments previously caused widgets to
+    render unfiltered data while the user believed a filter was active.
     """
     pairs = []
     for part in tags_str.split(","):
         part = part.strip()
-        if ":" in part:
-            cat, val = part.split(":", 1)
-            pairs.append((cat.strip(), val.strip()))
+        if not part:
+            continue
+        if ":" not in part:
+            raise ValueError(f"Invalid tag filter segment: {part!r}. Expected 'category:value'.")
+        cat, val = part.split(":", 1)
+        cat = cat.strip()
+        val = val.strip()
+        if not cat or not val:
+            raise ValueError(f"Invalid tag filter segment: {part!r}. Expected 'category:value'.")
+        pairs.append((cat, val))
     return pairs
 
 

@@ -633,7 +633,9 @@ export default function CampaignDetail() {
         setQueryLogic(data.query_logic || 'AND')
         setNameVal(data.name || '')
         setDescVal(data.description || '')
-        if (autoRun && !(data.owner_groups?.length > 0)) {
+        // Only auto-run on the very first visit (never run before) to avoid
+        // silently mutating last_run_at on every detail-page open.
+        if (autoRun && !data.last_run_at && !(data.owner_groups?.length > 0)) {
           setRunning(true)
           runCampaign(id)
             .then(() => getCampaign(id))
