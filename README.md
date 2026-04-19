@@ -11,9 +11,14 @@ An open-source vulnerability management platform that imports scan results from 
 
 ### Scan Management & Import
 - **Multi-format import** — Upload `.nessus` (XML), `.html`, or `.csv` exports from Tenable Nessus, plus Qualys, Rapid7, and OpenVAS formats. Auto-detected on upload.
+- **Active VM scanning** — Built-in Nuclei-based scanner (`hakuna-vm-scanner`) runs signature, DAST, and LLM-driven vulnerability agents against live targets. Templates routed by CPE, tech stack, and open ports with dedicated coverage for OT (Siemens PLCs), IoT (Hikvision), and AI surfaces (Ollama, LangChain, vector DBs).
+- **Schemathesis API fuzzing** — Property-based fuzzing for OpenAPI and GraphQL endpoints discovered during EASM. Catches 5xx crashes, schema violations, and content-type drift.
+- **Specialist LLM agents** — Five opt-in vulnerability specialists (injection, XSS, SSRF, authentication, authorization) run per-asset with bounded iteration budgets and tool registries.
+- **Authenticated scanning** — `AuthProfile` model supports static credentials and Playwright-driven `form_login` flows with TOTP, session caching (AES-256-GCM), and automatic reuse across Nuclei, Schemathesis, and agent workers.
 - **Cross-source normalization** — Canonical vulnerability identity across scanners via CVE references for consistent deduplication.
 - **Scan comparison** — Side-by-side delta timelines, regression reports, temporal summaries, and remediation velocity metrics.
-- **Deduplication** — Per-type dedup configuration with type-specific key fields, match modes (AND/OR), and merge strategies. Supports cross-scan and within-scan scopes for all asset types and entity types.
+- **Scan progress tracking** — Live per-job status with Celery-backed refresh/rescan endpoints and edit-and-rerun.
+- **Deduplication** — Per-type dedup configuration with type-specific key fields, match modes (AND/OR), and merge strategies. Supports cross-scan and within-scan scopes for all asset types and entity types. Per-org overrides inherit from platform defaults.
 
 ### Prioritization & Risk
 - **Smart prioritization** — Findings scored 0–10 using a weighted formula combining CVSS, VPR, exploit availability, asset criticality, and plugin family.
@@ -25,18 +30,40 @@ An open-source vulnerability management platform that imports scan results from 
 - **Asset type rules** — Low-code classification rules that automatically assign asset types during ingestion based on configurable conditions (e.g., web service detected → web_app). Rules support identity mapping with field copy, domain extraction, static values, and coalesce functions.
 - **Asset & finding observations** — Per-source snapshots showing what each scanner or integration contributed to a merged asset or finding. See exactly which fields came from Nessus vs. CrowdStrike vs. EASM.
 - **Asset & finding explorer** — Browse all assets and findings with filtering, sorting, NLP search, and drill-down detail views.
+- **API endpoint inventory** — OpenAPI/GraphQL specs discovered during EASM are stored as first-class `api_endpoint` assets and fed into Schemathesis fuzzing.
+- **Subsidiary domain discovery** — Parent-child domain hierarchies with provenance tracking expand EASM coverage across business units and M&A assets.
 - **Attack surface inventory** — Auto-extracts 18+ entity types from informational plugins: users, groups, services, network connections, scheduled tasks, patches, logged-on users, shares, software, certificates, security controls, computers, password policies, environment variables, AI tools, processes, database instances, and credentials.
 - **Asset classification** — Automatically infers environment (production/staging/dev/DMZ/external) from hostname patterns and IP ranges, and detects asset roles (domain controller, database, web server, etc.).
 - **Ownership inference** — Derives asset ownership from inventory data (primary user, admin contacts, responsible team) with configurable ownership rules and priority-based assignment.
+- **Custom fields** — Define arbitrary metadata fields for assets and findings with backfill across existing records.
 - **SBOM pipeline** — Software Bill of Materials extracted from inventory, correlated with CVE data and product end-of-life tracking via endoflife.date.
-- **External Attack Surface Management (EASM)** — Discovers external-facing domains, ports, technologies, and certificates. Auto-inferred from registration email domain with synthetic scan import.
+- **External Attack Surface Management (EASM)** — Discovers external-facing domains, ports, technologies, certificates, and screenshots. Auto-inferred from registration email domain with synthetic scan import.
+
+### Attack Paths & Correlation
+- **Attack path generation** — Correlation engine builds entry → pivot → target chains with scoring by pivot quality (exploit path verified, service exposed, reachability, identity primitive, inference).
+- **LLM-narrated paths** — Each path gets a plain-English narrative explaining the chain, plus recommended mitigations and score breakdowns.
+- **Corroboration view** — Findings confirmed by multiple scanners surface separately with higher confidence.
+- **Blast radius API** — Risk propagation across attack graph with team-scoped visibility (entry and target must both match the user's owner role scope).
+
+### SIEM & Detection
+- **Event ingest** — Hot-tier event ingestion via webhooks, Splunk HEC, and generic CEF/LEEF parsers with HMAC-SHA256 signature verification and token-bucket rate limiting.
+- **Event search** — Time-range, severity, source-system, and free-text filtering with histogram visualization.
+- **Detection rules** — Custom rules with JSON queries, threshold + time window (5m–24h), group-by fields, MITRE technique tagging, and scheduled evaluation. Supports user-authored, Sigma-imported, and built-in template rules.
+- **Suppression rules** — Silence low-fidelity alerts with condition-based matching.
+- **Alert triage** — Status workflow (new/investigating/resolved/false positive), campaign linking, assigned-to tracking, and triage notes.
+- **Detection rule library** — Template catalog for one-click deployment of common detections.
 
 ### Remediation & Automation
 - **Remediation campaigns** — Rule-based campaign builder with condition catalog, blast-radius preview (attack path graph visualization), owner assignment, and progress tracking.
 - **Aggregated solutions** — Groups related vulnerabilities into single remediation actions by root cause (outdated version, EOL software, missing patch, misconfiguration, deprecated protocol) with downstream impact assessment.
-- **AI agent system** — Multi-provider agent framework (Claude, GPT, Gemini, Llama/Mixtral) with 50+ security tools, template gallery (Daily Triage, Weekly Summary, Incident Response, Compliance Report, Executive Dashboard), cron scheduling, streaming execution, and document uploads.
+- **AI agent system** — Multi-provider agent framework (Claude, GPT, Gemini, Vertex AI, Groq/Llama, Ollama) with 50+ security tools, template gallery (Daily Triage, Weekly Summary, Incident Response, Compliance Report, Executive Dashboard), cron scheduling, streaming execution, and document uploads.
+- **Agent pipelines** — Multi-stage agent chains with model routing (reasoning/deterministic/balanced), structured context handoff, automatic compression, and graceful error handling.
+- **Validation agent framework** — Per-finding LLM validation writes `verdict`, `confidence`, and `validated_at` back to findings; prioritizer consumes true-positive signals.
+- **LLM feedback loop** — Every LLM interaction (agent, validator, triage, planner) is recorded with tokens, latency, tool calls, and an outcome score in [-1, +1]. On Postgres, pgvector embeddings power exemplar retrieval for future runs.
+- **Copilot (web + mobile)** — Context-aware AI assistant in a sliding desktop panel and full-screen mobile experience. Suggested prompts adapt per page, and three autonomy levels (Conservative/Standard/Autonomous) control action approval.
 - **Workflow builder** — Visual drag-and-drop workflow editor with node catalog, templates, and execution engine.
-- **Integrations** — Connect to Jira, ServiceNow, Slack, Teams, and Email (SMTP) for workflow automation. Configure and test from the UI.
+- **Integration Builder** — No-code connector platform supporting API (REST/GraphQL), SQL, File upload, LDAP, MCP, and Webhook transports. Auth templates: None, Bearer, OAuth2 client credentials, API Key (header), Basic. Includes multi-step wizard with auto-mapping, sample detection, credential vaulting, and scheduled sync.
+- **Integrations** — Connect to Jira, ServiceNow, Slack, Teams, Email (SMTP), Tenable.io/Tenable.sc, and CrowdStrike. Configure and test from the UI. Tenable.io integration guides API-key generation end-to-end.
 
 ### Threat Intelligence
 - **MITRE ATT&CK** — Full STIX bundle sync, threat group/TTP mapping, and CVE enrichment with a dedicated Threat Intel Center.
@@ -45,12 +72,14 @@ An open-source vulnerability management platform that imports scan results from 
 - **Security tool catalog** — 100+ mappings of service/software patterns to security products (EDR, AV, SIEM, etc.) for coverage gap analysis.
 
 ### Governance & Compliance
-- **Authentication & RBAC** — JWT-based auth with role-based access control (superadmin, org_admin, analyst, viewer, custom). 30+ granular permissions with tri-state toggles and per-tag restrictions.
+- **Authentication & RBAC** — JWT-based auth, SAML/OIDC SSO, and role-based access control (superadmin, org_admin, analyst, viewer, custom). 30+ granular permissions with tri-state toggles and per-tag restrictions.
+- **Built-in team roles** — IT, DevOps, SOC, and VM scoped roles with automatic asset/finding filtering. Ownership rules support auto-tag passthrough so team assignment propagates into tags.
 - **Multi-tenancy & MSSP** — Multi-org management, org switching, parent-child hierarchies for reseller models, and separate client workspaces.
 - **SLA tracking** — Configure SLA deadlines per severity, track compliance, and recalculate across scans.
 - **Global exceptions** — Accept risk or mark findings as false positives with expiration dates and automatic re-evaluation.
 - **Audit logging** — Immutable activity trail tracking all create/update/delete actions with diff viewer showing old-to-new values.
 - **Peer benchmarking** — Compare org metrics (risk grade, MTTR, SLA compliance, critical density) against industry baselines (financial, healthcare, technology, government) and platform-wide aggregates.
+- **Control assessments** — Map findings and inventory data to compliance controls for coverage analysis.
 
 ### Reporting & Search
 - **Reports** — Dashboard with charts (Recharts), exportable report builder, metrics timeline, and top automation requests.
@@ -59,11 +88,17 @@ An open-source vulnerability management platform that imports scan results from 
 - **Data export** — Streaming CSV and JSON export for assets, findings, and all inventory tables.
 
 ### Platform
-- **Tagging system** — Hierarchical tags with colors, bulk assignment, auto-tag rules, tag mappings from field values, and external tag sources (CSV, ServiceNow, REST API).
+- **Tagging system** — Hierarchical tags with colors, bulk assignment, auto-tag rules (including passthrough from integration sources), tag mappings from field values, and external tag sources (CSV, ServiceNow, REST API).
 - **Config portability** — Export/import organizational configs (risk config, auto-tag rules, report templates, campaign workflows, dedup configs) with conflict resolution strategies.
+- **On-prem relay agents** — Lightweight Docker agents bridge cloud Hakuna to on-prem products (Jira DC, ServiceNow, CrowdStrike GovCloud). Outbound-only WebSocket connection, `agent_local` or `cloud_managed` credential modes, token rotation, and allowed-host scoping.
+- **Command palette** — Cmd+K / Ctrl+K global search across pages, findings, and assets.
+- **Notifications** — In-app notification center with unread counts and targeted delivery.
+- **Onboarding wizard** — First-run guided setup for new orgs.
 - **Internationalization** — 12 supported languages: English, Japanese, French, German, Hebrew, Russian, Chinese, Spanish, Portuguese, Dutch, Arabic, and Italian.
 - **Dark mode** — System-preference-aware theme toggle with localStorage persistence.
+- **Mobile UI** — Responsive layout with a bottom tab bar that surfaces Copilot as a primary action.
 - **In-app documentation** — Searchable user docs covering all features, onboarding, API reference, and keyboard shortcuts.
+- **Production-ready infra** — Cloud Run + Cloud SQL deployment via Terraform, Sentry error tracking, migration runner resilient to concurrent replicas, and 500 MB scan upload ceiling.
 - **Docker support** — Run the full stack with `docker compose up`.
 
 ## Quick Start
@@ -118,9 +153,9 @@ npm run dev
 
 1. Open `http://localhost:3000`
 2. Register an account (first user becomes superadmin)
-3. Upload a scan file — drag and drop `.nessus`, `.html`, `.csv`, or other supported formats
-4. Findings are parsed, scored, enriched, and deduplicated automatically
-5. Use the sidebar to navigate between Reports, Assets, Findings, Inventory, Campaigns, Remediation, Agents, Threat Intel, and Settings
+3. Upload a scan file — drag and drop `.nessus`, `.html`, `.csv`, or other supported formats — or launch an active VM scan from Scan Management
+4. Findings are parsed, scored, enriched, correlated into attack paths, and deduplicated automatically
+5. Use the sidebar to navigate between Reports, Assets, Findings, Attack Paths, Inventory, SIEM (Events/Rules/Alerts), Campaigns, Remediation, Agents, Threat Intel, and Settings. Copilot is always one tap away on the right rail (or the mobile tab bar).
 
 ## Architecture
 
@@ -144,8 +179,27 @@ npm run dev
 │   │   └── registry.py              # Parser auto-detection registry
 │   ├── routes/
 │   │   ├── auth_routes.py           # Registration, login, org management
+│   │   ├── auth_profile_routes.py   # Scan credential profiles (form_login, static)
 │   │   ├── threat_intel_routes.py   # Threat intel API
 │   │   ├── agent_routes.py          # AI agent CRUD & execution
+│   │   ├── copilot_routes.py        # Security Copilot conversations
+│   │   ├── correlation_routes.py    # Attack path generation & narration
+│   │   ├── detection_routes.py      # Detection rules, alerts, suppressions
+│   │   ├── siem_routes.py           # SIEM events, search, endpoints
+│   │   ├── siem_ingest_routes.py    # Webhook / HEC event ingest
+│   │   ├── vm_routes.py             # Active VM scanner integration
+│   │   ├── integration_builder_routes.py  # No-code connector platform
+│   │   ├── relay_routes.py          # On-prem relay agent management
+│   │   ├── validation_routes.py     # Finding validation workflows
+│   │   ├── control_assessment_routes.py   # Compliance control mapping
+│   │   ├── custom_field_routes.py   # Custom asset/finding metadata
+│   │   ├── graph_routes.py          # Attack graph materialization
+│   │   ├── blast_radius_routes.py   # Risk propagation analysis
+│   │   ├── notification_routes.py   # In-app notifications
+│   │   ├── onboarding_routes.py     # First-run onboarding wizard
+│   │   ├── billing_routes.py        # Billing plans, checkout, usage
+│   │   ├── saml_routes.py           # SAML SSO
+│   │   ├── scan_planner_routes.py   # Intelligent scan plan generation
 │   │   ├── export.py                # CSV/JSON data export
 │   │   ├── easm_routes.py           # External attack surface management
 │   │   ├── sbom_routes.py           # Software bill of materials
@@ -176,11 +230,24 @@ npm run dev
 │   │   ├── agent_prompts.py         # Template system prompts
 │   │   ├── agent_scheduler.py       # Cron-based scheduling
 │   │   └── agent_context.py         # Agent state management
+│   ├── integrations/
+│   │   └── connectors/              # Tenable.io, ServiceNow, Jira, Slack, Teams, CrowdStrike, ...
 │   └── threat_intel/
 │       ├── threat_intel_sync.py     # MITRE STIX bundle sync
 │       ├── intel_updater.py         # NVD + CISA KEV auto-update
 │       ├── ttp_matcher.py           # Finding → ATT&CK mapping
 │       └── security_tool_catalog.py # Security product detection
+├── hakuna-scanner/                  # Passive discovery scanner (EASM)
+├── hakuna-vm-scanner/               # Active VM scanner
+│   └── scanner/vm/
+│       ├── nuclei_worker.py         # Nuclei template execution
+│       ├── schemathesis_worker.py   # OpenAPI / GraphQL fuzzing
+│       ├── agent_worker.py          # Specialist vuln agent orchestrator
+│       ├── agent_specialists.py     # Injection, XSS, SSRF, AuthN, AuthZ agents
+│       ├── session_broker.py        # Playwright-driven authenticated scanning
+│       ├── llm_provider.py          # Multi-provider LLM adapter
+│       └── router.py                # Template routing (CPE, tech, port, OT/IoT/AI)
+├── hakuna-relay-agent/              # On-prem relay agent Docker image
 ├── frontend/                        # React 18 / Vite
 │   └── src/
 │       ├── App.jsx                  # Router, layout, context providers
@@ -189,21 +256,26 @@ npm run dev
 │       │   └── ThemeContext.jsx      # Dark/light mode
 │       └── components/
 │           ├── reports/             # Dashboard, ReportBuilder, NLPReportBuilder
-│           ├── assets/              # AssetInventory, InventoryExplorer
+│           ├── assets/              # AssetInventory, AssetDetail, InventoryExplorer
 │           ├── findings/            # FindingExplorer, FindingDetail
+│           ├── attackpaths/         # AttackPaths, AttackPathGraph
+│           ├── siem/                # EventSearch, DetectionRules, AlertTriage
+│           ├── copilot/             # CopilotPanel, RichBlockRenderer (web + mobile)
 │           ├── campaigns/           # Campaigns, CampaignDetail, BlastRadiusPanel, RuleBuilder
 │           ├── remediation/         # RemediationQueue, AggregatedSolutions
 │           ├── agents/              # AgentBuilder, AutomateModal
 │           ├── threats/             # ThreatIntelCenter, ExternalSources
 │           ├── workflows/           # WorkflowBuilder
+│           ├── integrations/        # IntegrationBuilder, IntegrationList, RelayAgentManager
+│           ├── scans/               # ScanManagement, AuthProfileManager, AuthProfileForm
 │           ├── settings/            # Settings, TagManager, RiskSettings, SLASettings,
-│           │                        #   IntegrationSettings, GlobalExceptions, UserManagement,
+│           │                        #   IntegrationBuilderTab, GlobalExceptions, UserManagement,
 │           │                        #   RoleManager, AuditLog, OrgsPanel, OwnershipRules,
-│           │                        #   TagMappings, UsersPanel
+│           │                        #   TagMappings, CustomFieldManager, SSOSettings, UsersPanel
 │           ├── upload/              # UploadScan (multi-format, EASM setup)
-│           ├── auth/                # Login, Register
+│           ├── auth/                # Login, Register, SSO callback, invite flow
 │           ├── docs/                # UserDocs (in-app documentation)
-│           └── shared/              # ui.jsx, NLPSearchBar
+│           └── shared/              # ui.jsx, NLPSearchBar, CommandPalette, MobileBottomTabs
 ├── intel.json                       # CVE enrichment data
 ├── docker-compose.yml               # Docker orchestration
 └── start.sh                         # One-command launcher
@@ -228,6 +300,15 @@ Key endpoints:
 | `POST /api/upload` | Upload a scan file (Nessus, Qualys, Rapid7, OpenVAS) |
 | `GET /api/scans` | List all imported scans |
 | `GET /api/scans/compare` | Compare two scans (delta) |
+| **VM Scanner** | |
+| `POST /api/vm/scan` | Launch an active Nuclei-based scan (supports auth profiles, agent specialists) |
+| `POST /api/vm/refresh/{id}` | Refresh scan status and ingest new findings |
+| `POST /api/vm/rescan/{id}` | Re-run a scan with optional overrides |
+| `GET /api/vm/health` | VM scanner container health |
+| **Auth Profiles** | |
+| `GET /api/auth-profiles` | List scan authentication profiles (static + form_login) |
+| `POST /api/auth-profiles` | Create an auth profile |
+| `POST /api/auth-profiles/{id}/test` | Test login flow (Playwright) |
 | **Assets & Findings** | |
 | `GET /api/assets` | List assets (supports tag, NLP, type, and environment filtering) |
 | `GET /api/assets/:id/sources` | Per-source observation snapshots for an asset |
@@ -254,11 +335,27 @@ Key endpoints:
 | `POST /api/workflows/:id/execute` | Execute a workflow |
 | `GET /api/agents` | AI agent definitions |
 | `POST /api/agents/:id/run` | Execute an agent (supports streaming) |
+| `POST /api/copilot/message` | Chat with the security Copilot |
+| **Attack Paths & Correlation** | |
+| `POST /api/correlations/run` | Dispatch correlation as background job |
+| `GET /api/correlations/attack-paths` | List attack paths (filter by severity, score, scan) |
+| `GET /api/correlations/corroborated` | Findings corroborated by multiple scanners |
+| `GET /api/blast-radius/*` | Risk propagation analysis |
+| **SIEM** | |
+| `GET /api/siem/events` | Event search with histogram |
+| `POST /api/ingest/*` | Webhook / Splunk HEC / generic event ingest (HMAC-signed) |
+| `GET /api/detection-rules` | Detection rules (custom, Sigma, built-in) |
+| `POST /api/detection-rules/import-sigma` | Import Sigma rule |
+| `GET /api/alerts` | Alert triage queue |
+| `GET /api/suppression-rules` | Alert suppression rules |
 | **Tagging** | |
 | `POST /api/tags` | Create/manage tags |
-| `POST /api/auto-tag-rules` | Auto-tagging rules |
+| `POST /api/auto-tag-rules` | Auto-tagging rules (supports passthrough from integration values) |
+| `GET /api/custom-fields` | Custom metadata fields for assets/findings |
 | **Integrations** | |
-| `GET /api/integrations` | Integration configs (Jira, ServiceNow, Slack, Teams, Email) |
+| `GET /api/integrations` | Integration configs (Jira, ServiceNow, Slack, Teams, Email, Tenable.io, CrowdStrike) |
+| `GET /api/integration-builder/*` | No-code connector platform (schema, auth, auto-mapping, credentials) |
+| `GET /api/relay-agents` | On-prem relay agent management |
 | **Threat Intel** | |
 | `GET /api/threat-intel/*` | Threat groups, TTPs, campaigns, CVE enrichment |
 | **Governance** | |
@@ -294,12 +391,17 @@ score = (0.30 × CVSS_norm + 0.30 × VPR_norm + 0.20 × exploit_bonus
 
 The platform includes a built-in AI agent framework for security automation:
 
-- **Multi-provider support** — Claude (Anthropic), GPT (OpenAI), Gemini (Google), Llama/Mixtral (Groq)
+- **Multi-provider support** — Claude (Anthropic), GPT (OpenAI), Gemini (Google), Vertex AI, Llama/Mixtral (Groq), and self-hosted Ollama with automatic fallback across configured providers
 - **50+ built-in tools** — Query findings, check SLA status, identify risk assets, find quick wins, lookup exploit data, and more
 - **Template gallery** — Pre-built agents for daily triage, weekly summaries, incident response, compliance reports, and executive dashboards
+- **Specialist vulnerability agents** — Opt-in LLM specialists for injection, XSS, SSRF, authentication, and authorization flaws run alongside Nuclei in active VM scans
+- **Validation framework** — Per-finding LLM verdicts (true positive / false positive / uncertain) with confidence scores feed back into prioritization
+- **Feedback loop** — Every LLM call is tracked with tokens, latency, and tool traces; outcome scores train future exemplar retrieval via pgvector on Postgres
 - **Scheduled execution** — Cron-based scheduling with next-run tracking
 - **Streaming output** — Real-time agent responses in the UI
+- **Agent pipelines** — Multi-stage chains with per-stage model routing and structured context handoff
 - **Document uploads** — Attach knowledge base documents for agent context
+- **Copilot** — Context-aware assistant (web + mobile full-screen) with Conservative/Standard/Autonomous action-approval modes
 
 ## Multi-Tenancy
 

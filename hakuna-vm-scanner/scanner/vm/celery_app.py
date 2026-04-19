@@ -25,6 +25,8 @@ celery_app.conf.update(
     worker_concurrency=4,
     include=[
         "scanner.vm.nuclei_worker",
+        "scanner.vm.schemathesis_worker",
+        "scanner.vm.agent_worker",
         "scanner.vm.scheduler",
         "scanner.vm.code_repo_worker",
     ],

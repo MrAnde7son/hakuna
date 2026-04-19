@@ -100,6 +100,19 @@ export function AuthProvider({ children }) {
     return data
   }, [])
 
+  const refreshAuth = useCallback(async () => {
+    try {
+      const me = await authMe()
+      setUser(me)
+      setOrg(me.org)
+      setAccessibleOrgs(me.accessible_orgs || [me.org])
+      setEffectivePermissions(me.effective_permissions || {})
+      return me
+    } catch {
+      return null
+    }
+  }, [])
+
   const logout = useCallback(() => {
     clearStoredToken()
     Sentry.setUser(null)
@@ -134,6 +147,7 @@ export function AuthProvider({ children }) {
       register,
       googleLogin,
       logout,
+      refreshAuth,
       switchOrg,
       currentOrgContext,
       hasPermission,

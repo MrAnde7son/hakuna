@@ -10,8 +10,11 @@ import yaml
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from scanner.vm.agent_worker import run_agent_scan
+from scanner.vm.agent_specialists import AGENT_CATEGORIES
 from scanner.vm.config import TEMPLATES_DIR
 from scanner.vm.nuclei_worker import fetch_alive_assets, run_nuclei_adhoc, run_nuclei_scan
+from scanner.vm.schemathesis_worker import run_schemathesis_scan
 from scanner.vm.template_validator import validate_custom_template
 
 router = APIRouter(prefix="/vm", tags=["vm-scanner"])
@@ -54,6 +57,21 @@ class ScanRequest(BaseModel):
                     "version: <int>}. When present, the worker uses the plan "
                     "instead of the static template router. Plans for targets "
                     "not in this map fall through to the legacy router.",
+    )
+    enable_agents: bool = Field(
+        default=False,
+        description="When true, fan out the specialist LLM agents alongside "
+                    "nuclei for every asset_id. Cost is measured in LLM tokens, "
+                    "not CPU — the backend MUST opt in explicitly per scan so "
+                    "an 'enabled by default' config change can't quietly burn "
+                    "budget. Pairs with `agent_categories` to narrow scope.",
+    )
+    agent_categories: list[str] | None = Field(
+        default=None,
+        description="Optional list of agent categories to run when "
+                    "enable_agents=true. Valid values: "
+                    "injection, xss, ssrf, authn, authz. None = run all five "
+                    "(each still self-gates via applicable_when).",
     )
 
 
@@ -110,6 +128,23 @@ async def create_scan(body: ScanRequest):
     else:
         asset_ids = body.asset_ids or []
 
+    # Assets with OpenAPI/GraphQL endpoints get an additional schemathesis
+    # job alongside nuclei. Check once up-front so we don't do one DB round
+    # trip per asset inside the dispatch loop.
+    api_fuzz_asset_ids = await _assets_with_api_specs(asset_ids) if asset_ids else set()
+
+    # Validate requested agent categories once so a typo fails the whole
+    # dispatch up-front instead of quietly dropping agents per asset.
+    agent_categories: list[str] | None = None
+    if body.enable_agents and body.agent_categories:
+        invalid = [c for c in body.agent_categories if c not in AGENT_CATEGORIES]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown agent_categories: {invalid}. Valid: {list(AGENT_CATEGORIES)}",
+            )
+        agent_categories = body.agent_categories
+
     for i, aid in enumerate(asset_ids):
         # Asset-based plans key by asset_id when callers want to send them.
         plan_payload = scan_plans.get(aid)
@@ -119,6 +154,34 @@ async def create_scan(body: ScanRequest):
             countdown=i * 5,
         )
         job_ids.append(result.id)
+
+        if aid in api_fuzz_asset_ids:
+            # Stagger schemathesis slightly after nuclei so the shared HTTP
+            # budget on the target isn't doubly pressured during the first
+            # few seconds of the scan.
+            sm_result = run_schemathesis_scan.apply_async(
+                args=[aid],
+                kwargs={"credentials": credentials_payload},
+                countdown=i * 5 + 2,
+            )
+            job_ids.append(sm_result.id)
+
+        if body.enable_agents:
+            # Agents go last in the countdown so nuclei + schemathesis
+            # have warmed up the target (and potentially populated more
+            # asset_endpoints via their own probes) before the LLM-driven
+            # specialists start spending tokens. Each specialist
+            # self-gates via applicable_when, so an asset with no HTTP
+            # surface still won't waste an LLM call.
+            agent_result = run_agent_scan.apply_async(
+                args=[aid],
+                kwargs={
+                    "credentials": credentials_payload,
+                    "categories": agent_categories,
+                },
+                countdown=i * 5 + 4,
+            )
+            job_ids.append(agent_result.id)
     offset = len(asset_ids)
 
     # Queue ad-hoc target scans
@@ -224,6 +287,58 @@ async def list_custom_templates():
             continue
 
     return templates
+
+
+async def _assets_with_api_specs(asset_ids: list[str]) -> set[str]:
+    """Return the subset of ``asset_ids`` that have OpenAPI/GraphQL endpoints.
+
+    Used to gate the schemathesis fan-out so we don't enqueue no-op tasks
+    for every nuclei dispatch. One batched query keeps this cheap even
+    when ``scan_all=true`` sends hundreds of ids.
+
+    Degrades gracefully: any error (DB unreachable, id parse failure)
+    returns an empty set. The nuclei scan is the primary signal and must
+    not be aborted because the optional API-fuzz fan-out can't be resolved.
+    """
+    if not asset_ids:
+        return set()
+    import logging
+    import uuid as _uuid
+
+    import asyncpg
+
+    from scanner.vm.config import DATABASE_URL
+    from scanner.vm.db import _normalize_dsn
+
+    _logger = logging.getLogger(__name__)
+
+    try:
+        uuids = [_uuid.UUID(a) for a in asset_ids]
+    except (ValueError, TypeError):
+        return set()
+
+    try:
+        conn = await asyncpg.connect(_normalize_dsn(DATABASE_URL))
+    except Exception as e:
+        _logger.warning("schemathesis fan-out skipped — cannot reach DB: %s", e)
+        return set()
+
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT asset_id
+            FROM asset_endpoints
+            WHERE asset_id = ANY($1::uuid[])
+              AND source IN ('openapi', 'graphql')
+            """,
+            uuids,
+        )
+        return {str(r["asset_id"]) for r in rows}
+    except Exception as e:
+        _logger.warning("schemathesis fan-out skipped — asset_endpoints query failed: %s", e)
+        return set()
+    finally:
+        await conn.close()
 
 
 def create_app():

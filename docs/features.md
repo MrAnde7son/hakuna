@@ -2,6 +2,32 @@
 
 ## Scan Management
 
+### Active VM Scanning (`hakuna-vm-scanner`)
+
+Hakuna ships with a dedicated active scanner container that runs alongside the backend:
+
+- **Nuclei worker** — Signature and DAST coverage using the full community template set (4,800+) plus custom categories for OT (Siemens PLCs), IoT (Hikvision cameras), and AI surfaces (Ollama, LangChain, vector DBs)
+- **Template routing** — Templates are dispatched based on detected CPEs, tech stack fingerprints, and open ports. Port-based gating blocks irrelevant templates (e.g., web templates never hit a database-only host)
+- **Schemathesis worker** — Property-based fuzzing for OpenAPI and GraphQL schemas discovered during EASM. Catches 5xx crashes, response-schema violations, and content-type drift
+- **Specialist LLM agents** — Opt-in via `enable_agents: true` on scan creation. Five specialists (injection, XSS, SSRF, authentication, authorization) each get a 60-second/10-iteration budget per asset with a shared tool registry (`http_request`, `check_pattern`, `emit_finding`)
+- **Multi-provider LLM** — Specialists use the same provider chain as backend agents (Anthropic → OpenAI → Vertex AI → Gemini → Groq → Ollama) and gracefully skip when no key is configured
+- **Health endpoint** — `GET /api/vm/health` confirms the scanner container is reachable
+
+Trigger a scan from **Scan Management → New Scan** or via `POST /api/vm/scan`. Refresh or rescan via `/api/vm/refresh/{id}` and `/api/vm/rescan/{id}`.
+
+### Authenticated Scanning (Auth Profiles)
+
+`AuthProfile` enables authenticated scans across all VM workers:
+
+| Profile Type | Description |
+|--------------|-------------|
+| `static` | Direct credential (basic, bearer, api_key, cookie) from the credential vault |
+| `form_login` | Playwright-driven login flow with ordered steps, configurable success condition, and optional TOTP |
+
+Sessions are cached (AES-256-GCM encrypted cookies + scraped headers) per-org with configurable TTL. The session broker returns the cached blob to Nuclei, Schemathesis, and agent workers so a single login covers the whole scan. Rotate or invalidate sessions by updating the underlying credential — `session_credential_hash` tracks changes.
+
+Manage auth profiles in **Settings → Scans → Authentication Profiles** or via `/api/auth-profiles`. The detect-login-flow endpoint uses an LLM to suggest a flow from an observed login page.
+
 ### Multi-Format Import
 
 Upload scan files from multiple vulnerability scanners:
@@ -185,10 +211,22 @@ Configure ownership rules in **Settings > Ownership Rules** with:
 
 EASM discovers your external-facing attack surface:
 1. **Domain inference** — Auto-extracts corporate domains from registration email
-2. **External scanning** — Discovers subdomains, open ports, technologies, certificates, CDN/WAF presence
-3. **Synthetic import** — Results are imported as synthetic scans for correlation with internal data
+2. **External scanning** — Discovers subdomains, open ports, technologies, certificates, CDN/WAF presence, and screenshots
+3. **API spec discovery** — OpenAPI and GraphQL schemas are parsed and stored as `api_endpoint` assets for downstream Schemathesis fuzzing
+4. **Subsidiary domains** — Parent-child domain hierarchy with provenance tracking expands coverage to M&A and business-unit subsidiaries
+5. **Synthetic import** — Results are imported as synthetic scans for correlation with internal data
 
 Setup is triggered automatically on registration with a corporate email, or manually via the scan management page.
+
+### Custom Fields
+
+Define arbitrary metadata fields for assets and findings:
+- Supported types: string, number, boolean, date, enum (single/multi)
+- Backfill across existing records on creation
+- Filterable and sortable in explorers
+- Exposed in exports, NLP search, and API responses
+
+Manage in **Settings → Custom Fields** or via `/api/custom-fields`.
 
 ---
 
@@ -251,6 +289,104 @@ Visual drag-and-drop workflow editor:
 - Integration nodes (Jira, Slack, ServiceNow, Teams, Email)
 - Execution engine with logging
 
+### Validation Framework
+
+Automatic per-finding LLM validation writes structured verdicts back onto findings:
+
+- **Verdict** — `true_positive`, `false_positive`, or `uncertain`
+- **Confidence** — numeric score 0–1
+- **Validated at** — timestamp of last validation pass
+
+The prioritizer rewards confirmed true positives. Verdicts are recorded via the LLM interaction feedback loop so future runs retrieve similar exemplars.
+
+### Copilot
+
+Context-aware security assistant available on every page:
+
+- **Desktop** — Sliding right-side panel (480px default, resizable)
+- **Mobile** — Full-screen modal launched from the bottom tab bar
+- **Context-aware prompts** — Suggested prompts change per page (e.g., on `/findings`: "Show me critical unresolved findings")
+- **Rich block rendering** — Markdown, structured data tables, finding/asset cards
+- **Autonomy levels** — `Conservative` (approve everything), `Standard` (auto-approve low-risk), `Autonomous` (external-only approvals)
+- **Conversation persistence** — Chats retained per org; autonomy mode persisted per user
+
+---
+
+## Attack Paths & Correlation
+
+The correlation engine builds attack chains and scores them end-to-end.
+
+### Attack Path Generation
+
+- **Entry selection** — Critical/High finding or internet-facing asset, plus optional public exploit availability
+- **Pivot scoring** — Each step scored by: `exploit_path_verified`, `service_exposed`, `reachability`, `identity_primitive`, `inference`
+- **Target labels** — Domain controller, internet-facing, host-with-critical-finding
+- **Narrative** — LLM generates a plain-English description of the chain
+- **Recommended mitigations** — Prioritized remediation steps for each path
+- **Team scoping** — Both entry and target must match the viewer's owner-role scope; users only see paths relevant to their team
+
+### Running Correlations
+
+- `POST /api/correlations/run` dispatches a background Celery job and returns a `job_id`
+- `GET /api/correlations/attack-paths` lists paths with filters (severity, min score, narrated, scan_id)
+- `GET /api/correlations/corroborated` surfaces findings confirmed by multiple scanners
+
+### Blast Radius & Graph
+
+- `GET /api/blast-radius/*` quantifies downstream risk propagation
+- `GET /api/graph/*` materializes the attack graph for visualization
+
+---
+
+## SIEM Module
+
+### Event Ingest
+
+Hot-tier event ingestion for integration-driven SIEM correlation:
+
+- **Webhook** — Generic JSON with configurable parser
+- **Splunk HEC** — Native HTTP Event Collector compatibility
+- **CEF / LEEF** — Palo Alto, Check Point, and other vendor formats
+- **HMAC-SHA256** signature verification on every payload
+- **Rate limiting** — In-memory token bucket (1,000 tokens/sec, 1,000 capacity per endpoint)
+- **Asset resolution** — Events are correlated to assets by source IP or hostname automatically
+
+Create endpoints in **Integrations → Event Ingest**. The secret is shown once at creation; rotate via `POST /api/ingest/{id}/rotate`.
+
+### Event Search
+
+- Time range: 1h, 6h, 24h, 7d, 30d, custom
+- Filter: severity, source system, free-text
+- Histogram visualization for volume
+- Sort by event time, severity, or source
+
+### Detection Rules
+
+Custom alerting rules with scheduled evaluation:
+
+- **Query** — JSON filter expression against event fields
+- **Threshold + window** — `N events within M minutes` (5m–24h)
+- **Group by** — Field list to aggregate before thresholding
+- **MITRE tagging** — Link rules to ATT&CK techniques for threat intel correlation
+- **Sources** — `user` (custom), `sigma` (imported), `builtin` (template library)
+- **Rule library** — Pre-built templates for common detections; enable with one click
+- **Dry-run testing** — Test against recent events before enabling
+- **Schedule** — Background evaluation on configurable interval
+
+Manage in `/siem/rules` or via `/api/detection-rules`. Import Sigma via `POST /api/detection-rules/import-sigma`.
+
+### Suppression Rules
+
+Silence low-fidelity alerts with condition-based matching. Tracked separately from detection rules so suppressions can be audited independently.
+
+### Alert Triage
+
+- Status workflow: `new` → `investigating` → `resolved` / `false_positive`
+- Campaign linking — attach an alert to an active remediation campaign
+- Assigned-to tracking with owner-role filtering
+- Triage notes and reasoning
+- Alert dashboards at `/siem/alerts` with severity/source aggregations
+
 ---
 
 ## Threat Intelligence
@@ -293,6 +429,8 @@ JWT-based authentication with:
 - Password hashing (bcrypt)
 - Session management via AuthContext
 - Locale preference persistence
+- SAML and OIDC SSO (configure in **Settings → SSO**)
+- Password reset via email, invite acceptance flow, email verification
 
 ### Role-Based Access Control (RBAC)
 
@@ -309,6 +447,22 @@ JWT-based authentication with:
 - Actions (10 operations)
 
 Tri-state permission toggles (off/allow/deny) with per-tag restrictions for fine-grained data access control.
+
+### Team Roles & Ownership Scopes
+
+Built-in team-scoped roles add another axis of access control on top of RBAC:
+
+| Team Role | Default Scope |
+|-----------|---------------|
+| `it` | IT-managed assets (endpoints, servers) |
+| `devops` | Cloud, container, and code-repo assets |
+| `soc` | Detection rules, alerts, attack paths |
+| `vm` | Vulnerability management (findings, campaigns) |
+
+- Users are assigned one or more team roles — visible data is filtered by `user_owner_scopes`
+- Ownership rules can reference team roles so assignment propagates automatically
+- Passthrough auto-tag rules create tags from integration source values (e.g., Jira project → `team:platform`)
+- Audit logging captures every ownership change
 
 ### Multi-Tenancy
 
@@ -347,6 +501,21 @@ Compare your security posture against:
 - **Platform aggregates** — Anonymous cross-tenant metrics
 
 Metrics compared: risk grade, mean time to remediate, SLA compliance rate, critical vulnerability density.
+
+### Control Assessments
+
+Map findings and inventory data to compliance controls for coverage analysis. Useful for CIS, NIST CSF, ISO 27001, and custom frameworks. Available via `/api/control-assessments`.
+
+### LLM Feedback Loop
+
+Every LLM call — from agents, the validator, alert triage, or the scan planner — is persisted for auditing and learning:
+
+- **LLMInteraction** — Provider, model, system prompt hash, messages, response, tool calls, tokens, latency, surface (agent/validator/etc.), org context
+- **LLMInteractionOutcome** — Asynchronously linked outcome score in [-1, +1] (e.g., "did the agent's action succeed?")
+- **Semantic retrieval** — On Postgres, pgvector embeddings power exemplar retrieval so future runs can condition on similar past successes
+- **Audit access** — Admin-only view of recent LLM traces for debugging and compliance
+
+This makes AI behavior observable, reviewable, and steerable over time.
 
 ---
 
@@ -437,6 +606,46 @@ Configure and test integrations from **Settings > Integrations**:
 | Slack | Notifications, alerts, campaign updates |
 | Microsoft Teams | Notifications, alerts, campaign updates |
 | Email (SMTP) | Reports, alerts, campaign notifications |
+| Tenable.io / Tenable.sc | Pull findings via API key; guided key generation wizard |
+| CrowdStrike | EDR correlation, asset enrichment, control assessment |
+
+### Integration Builder (No-Code Connectors)
+
+Build custom connectors without code. The multi-step wizard covers schema discovery, authentication, field mapping, and scheduled sync.
+
+**Supported transport types:**
+
+| Transport | Use Case |
+|-----------|----------|
+| API | REST / GraphQL with paging, cursor, and incremental sync |
+| SQL | Direct database queries (Postgres, MySQL, SQL Server) |
+| File | Scheduled file upload or S3/GCS pull |
+| LDAP | Active Directory / LDAP directory sync |
+| MCP | Model Context Protocol tool discovery |
+| Webhook | Inbound HTTP ingest with HMAC validation |
+
+**Authentication templates:**
+
+| Auth Type | Description |
+|-----------|-------------|
+| `none` | Unauthenticated sources |
+| `bearer` | Static Bearer token in `Authorization` header |
+| `oauth2_client_credentials` | OAuth2 with client ID/secret, auto token refresh |
+| `api_key_header` | Named header with key (e.g., `X-ApiKey`) |
+| `basic` | HTTP Basic with username/password |
+
+**Wizard steps (API example):** Choose Source → Authenticate → Connect → Pick Records → Pick Target → Map Fields → Preview → Save.
+
+**Wizard steps (Webhook example):** Choose Source → Parser → Pick Target → Create Endpoint → Setup & Test → Map Fields → Done.
+
+**Features:**
+- Auto-mapping suggestions based on field name similarity and sample data
+- JSON-path extraction for nested source fields
+- Dedup key configuration per target model
+- Preview & test before save
+- OAuth2 auto-discovery (well-known metadata URL)
+- Credential vault — credentials encrypted at rest, scoped per-org
+- Relay agent routing for on-prem sources
 
 ### On-Prem Relay Agents
 
@@ -507,3 +716,46 @@ Toggle between light and dark themes:
 - Automatically detects system preference on first load
 - Persisted in localStorage
 - Toggle available in the sidebar
+
+---
+
+## Mobile Experience
+
+Hakuna's responsive layout adapts to phone and tablet viewports:
+
+- **Bottom tab bar** — Primary navigation at the bottom of the screen with Copilot centered as a primary action
+- **Full-screen Copilot** — On small viewports, Copilot takes the full screen instead of a sidebar
+- **Touch-optimized controls** — Larger hit targets and swipe gestures where appropriate
+- **Responsive tables** — Collapse to card views on narrow screens
+
+---
+
+## Command Palette
+
+Keyboard-driven global search with `Cmd+K` (macOS) or `Ctrl+K` (Windows/Linux):
+
+- Navigate to any page by name
+- Search across findings and assets inline
+- Arrow keys + Enter for selection
+- Static shortcut list plus live backend search
+
+---
+
+## Notifications
+
+In-app notification center:
+
+- Unread count badge in the header
+- Targeted per-user delivery
+- Actions like "Assign me to this finding" or "Campaign ready for review"
+- Retrieve via `GET /api/notifications`
+
+---
+
+## Onboarding
+
+First-run guided setup for new organizations:
+
+- Integrates with Settings to capture initial risk/SLA config
+- Seeds default tags, team roles, and auto-tag rules
+- Suggests integrations based on the registration email domain

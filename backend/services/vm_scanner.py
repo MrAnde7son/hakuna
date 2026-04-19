@@ -209,6 +209,8 @@ async def start_vm_scan(
     asset_ids: list[int] | None = None,
     credential_id: str | None = None,
     auth_profile_id: str | None = None,
+    enable_agents: bool = False,
+    agent_categories: list[str] | None = None,
 ) -> Optional[dict]:
     """
     Create a Scan record and dispatch targets to the VM scanner container.
@@ -258,6 +260,13 @@ async def start_vm_scan(
         scan_metadata["credential_id"] = credential_id
     if auth_profile_id:
         scan_metadata["auth_profile_id"] = auth_profile_id
+    # Persist the agent-fanout intent so rescan replays the same settings
+    # without the caller having to re-opt-in. False values are omitted to
+    # keep existing metadata rows untouched.
+    if enable_agents:
+        scan_metadata["enable_agents"] = True
+        if agent_categories:
+            scan_metadata["agent_categories"] = list(agent_categories)
 
     scan = Scan(
         org_id=org.id,
@@ -300,6 +309,10 @@ async def start_vm_scan(
     if scan_plans:
         scan_body["scan_plans"] = scan_plans
         scan_metadata["scan_plan_count"] = len(scan_plans)
+    if enable_agents:
+        scan_body["enable_agents"] = True
+        if agent_categories:
+            scan_body["agent_categories"] = list(agent_categories)
     result = await _vm_request("POST", "/vm/scans/", json=scan_body)
 
     if result and result.get("job_ids"):
@@ -327,6 +340,8 @@ async def rescan_vm_scan(
     targets_override: list[str] | None = None,
     credential_id_override: str | None = None,
     auth_profile_id_override: str | None = None,
+    enable_agents_override: bool | None = None,
+    agent_categories_override: list[str] | None = None,
     overrides_applied: bool = False,
 ) -> Optional[dict]:
     """
@@ -346,6 +361,15 @@ async def rescan_vm_scan(
 
     credential_id = credential_id_override if overrides_applied else meta.get("credential_id")
     auth_profile_id = auth_profile_id_override if overrides_applied else meta.get("auth_profile_id")
+    # Rescan replays agent settings when the caller doesn't override. An
+    # explicit ``enable_agents_override=False`` with overrides_applied=True
+    # turns agents back off.
+    if overrides_applied and enable_agents_override is not None:
+        enable_agents = bool(enable_agents_override)
+        agent_categories = agent_categories_override
+    else:
+        enable_agents = bool(meta.get("enable_agents"))
+        agent_categories = meta.get("agent_categories")
 
     now = datetime.utcnow()
 
@@ -398,6 +422,15 @@ async def rescan_vm_scan(
         new_meta["auth_profile_id"] = auth_profile_id
     else:
         new_meta.pop("auth_profile_id", None)
+    if enable_agents:
+        new_meta["enable_agents"] = True
+        if agent_categories:
+            new_meta["agent_categories"] = list(agent_categories)
+        else:
+            new_meta.pop("agent_categories", None)
+    else:
+        new_meta.pop("enable_agents", None)
+        new_meta.pop("agent_categories", None)
 
     scan.scan_date = now.isoformat()
     scan.raw_metadata = new_meta
@@ -407,6 +440,10 @@ async def rescan_vm_scan(
     scan_body: dict = {"targets": targets}
     if credentials_payload:
         scan_body["credentials"] = credentials_payload
+    if enable_agents:
+        scan_body["enable_agents"] = True
+        if agent_categories:
+            scan_body["agent_categories"] = list(agent_categories)
     result = await _vm_request("POST", "/vm/scans/", json=scan_body)
 
     if result and result.get("job_ids"):
@@ -858,6 +895,27 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         if existing:
             continue
 
+        # plugin_family distinguishes Nuclei signature matches from
+        # Schemathesis property-based check failures and specialist
+        # agent LLM-driven findings — all three flow through this
+        # worker → backend path via identical payload shape, but
+        # downstream (llm validator, rule engine, UI badge) wants to
+        # treat them differently.
+        _finding_type = (f.get("type") or "").lower()
+        if _finding_type == "agent-vuln":
+            plugin_family = "Agent"
+        elif _finding_type == "api-fuzz":
+            plugin_family = "Schemathesis"
+        else:
+            plugin_family = "Nuclei"
+
+        # Schemathesis pre-seeds llm_validation.verdict on its results so
+        # high-confidence findings (server errors, schema violations)
+        # bypass the async LLM re-validation queue and feed the
+        # prioritizer immediately. The Nuclei path leaves this None and
+        # the post-ingest llm_vuln_validator fills it in.
+        llm_validation = f.get("llm_validation") if isinstance(f.get("llm_validation"), dict) else None
+
         finding = Finding(
             scan_id=scan.id,
             asset_id=asset.id,
@@ -868,11 +926,12 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
             severity=severity_map.get(severity_str, 0),
             description=f.get("description", ""),
             solution="",
-            plugin_family="Nuclei",
+            plugin_family=plugin_family,
             plugin_output=_build_nuclei_plugin_output(f),
             port=str(f.get("port", "")) if f.get("port") else None,
             first_seen=now,
             last_seen=now,
+            llm_validation=llm_validation,
         )
         db.add(finding)
         db.flush()

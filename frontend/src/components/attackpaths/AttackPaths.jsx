@@ -782,7 +782,7 @@ export default function AttackPaths() {
   )
 
   return (
-    <div style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
+    <div>
       <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
       <PageHeader
         title={t('attackPaths.title', 'Attack Paths')}

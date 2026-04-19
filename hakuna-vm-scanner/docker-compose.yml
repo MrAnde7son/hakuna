@@ -45,6 +45,7 @@ services:
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
       PYTHONPATH: /app
       TEMPLATES_DIR: /app/templates
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
     volumes:
       - ./scanner:/app/scanner
       - ./templates:/app/templates
@@ -69,9 +70,26 @@ services:
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
       PYTHONPATH: /app
       TEMPLATES_DIR: /app/templates
+      # Vertex AI — passthrough from the host shell so a developer who ran
+      # `gcloud auth application-default login` locally gets the same LLM
+      # provider (vertex_ai) the Cloud Run backend resolves to. The scanner's
+      # llm_provider module respects integration_configs first; these are
+      # only a fallback when nothing is stored in the DB.
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
+      # Legacy / optional provider keys — same order as backend agent_engine
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
     volumes:
       - ./scanner:/app/scanner
       - ./templates:/app/templates
+      # ADC mount — google-genai SDK looks up
+      # application_default_credentials.json here. Safe read-only bind of
+      # the host's ~/.config/gcloud; the ADC file is per-developer and
+      # never baked into the image.
+      - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
     depends_on:
       postgres:
         condition: service_healthy

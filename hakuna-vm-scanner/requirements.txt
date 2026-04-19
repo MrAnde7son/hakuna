@@ -9,3 +9,8 @@ pyyaml==6.0.1
 httptools==0.6.1
 aiohttp>=3.9.0
 packaging>=23.0
+schemathesis>=3.36,<4
+hypothesis>=6.100
+anthropic>=0.39
+openai>=1.50
+google-genai>=0.3

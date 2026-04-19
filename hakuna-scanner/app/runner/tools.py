@@ -115,7 +115,11 @@ class HttpxRunner(BaseRunner):
         if self.screenshots:
             ss_dir = self.screenshot_dir or settings.screenshot_dir
             os.makedirs(ss_dir, exist_ok=True)
-            cmd.extend(["-screenshot", "-srd", ss_dir])
+            # -system-chrome: use /usr/bin/chromium from the image instead of
+            # letting rod (httpx's browser lib) download its own build from
+            # storage.googleapis.com on first use. That download races the
+            # per-host timeout and leaves 0-byte PNGs for every host.
+            cmd.extend(["-screenshot", "-system-chrome", "-srd", ss_dir])
         return cmd
 
     async def run(self, org_id: str | None = None):

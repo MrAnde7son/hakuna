@@ -412,9 +412,18 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
 
   // ── Auto Provision ──
   if (flow.pattern === 'auto_provision') {
+    const promptSteps = flow.admin_credential_prompt?.steps || []
+    const adminFields = flow.admin_credentials
+      || promptSteps.map(s => ({ ...s.capture, instruction: s.instruction }))
+      || []
+    const allFilled = adminFields.every(f => (values[f.field] || '').trim().length > 0)
+
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Auto-Provision Service Account</h3>
+        {flow.description && (
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--text-muted)' }}>{flow.description}</p>
+        )}
         <div style={{
           padding: '10px 16px', borderRadius: 8, background: '#eab30818',
           border: '1px solid #eab30840', fontSize: 12, color: '#eab308',
@@ -422,8 +431,11 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
           These credentials are used once to create a dedicated Hakuna service account and are never stored.
         </div>
 
-        {(flow.admin_credentials || []).map(field => (
+        {adminFields.map(field => (
           <div key={field.field}>
+            {field.instruction && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>{field.instruction}</div>
+            )}
             <label style={labelStyle}>{field.label}</label>
             <input
               type={field.type || 'text'}
@@ -435,7 +447,13 @@ export default function StepAuthenticate({ connectorId, connectorDetail, onCompl
           </div>
         ))}
 
-        <Button onClick={handleValidate} disabled={validating}>
+        {error && (
+          <div style={{ padding: '10px 16px', borderRadius: 8, background: '#ef444418', border: '1px solid #ef444440', color: '#ef4444', fontSize: 12 }}>
+            {error}
+          </div>
+        )}
+
+        <Button onClick={handleValidate} disabled={validating || !allFilled}>
           {validating ? <InlineSpinner /> : 'Provision Hakuna Account'}
         </Button>
       </div>

@@ -18,18 +18,18 @@ export default function SubscriptionBanner() {
     return (
       <div style={{
         margin: '0 0 12px', padding: '10px 16px', borderRadius: 8,
-        background: '#451a03', border: '1px solid #92400e',
+        background: 'var(--warning-subtle)', border: '1px solid var(--warning)',
         display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
       }}>
-        <AlertTriangle size={16} color="#fdba74" style={{ flexShrink: 0 }} />
-        <span style={{ color: '#fdba74', flex: 1 }}>
+        <AlertTriangle size={16} color="var(--warning)" style={{ flexShrink: 0 }} />
+        <span style={{ color: 'var(--warning)', flex: 1 }}>
           Your payment failed. Update your payment method to avoid service interruption.
         </span>
         <button
           onClick={() => navigate('/profile')}
           style={{
-            padding: '4px 12px', borderRadius: 5, border: 'none',
-            background: '#92400e', color: '#fdba74', fontSize: 12,
+            padding: '4px 12px', borderRadius: 5, border: '1px solid var(--warning)',
+            background: 'transparent', color: 'var(--warning)', fontSize: 12,
             fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
           }}
         >
@@ -39,7 +39,7 @@ export default function SubscriptionBanner() {
           onClick={() => setDismissed(true)}
           style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2 }}
         >
-          <X size={14} color="#fdba74" />
+          <X size={14} color="var(--warning)" />
         </button>
       </div>
     )

@@ -1,8 +1,35 @@
 import React, { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext.jsx'
-import { authChangePassword, getBillingPlans, createCheckoutSession, createPortalSession } from '../../api.js'
+import { authChangePassword, getBillingPlans, getBillingUsage, createCheckoutSession, createPortalSession } from '../../api.js'
 import { KeyRound, CreditCard, Star, Check, AlertTriangle } from 'lucide-react'
 import { useToast } from '../shared/ui.jsx'
+
+const formatTokens = (n) =>
+  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` :
+  n >= 1_000 ? `${(n / 1_000).toFixed(0)}K` : `${n}`
+
+function TokenUsageBar({ usage }) {
+  if (!usage) return null
+  const pct = Math.min(usage.percentage || 0, 100)
+  const barColor = usage.exceeded ? 'var(--danger)' : usage.warning ? 'var(--warning)' : 'var(--accent)'
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>
+        <span>AI tokens this period</span>
+        <span>{formatTokens(usage.used)} / {formatTokens(usage.limit)}</span>
+      </div>
+      <div style={{ height: 6, borderRadius: 3, background: 'var(--border)', overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: `${pct}%`, background: barColor, borderRadius: 3, transition: 'width 0.3s ease' }} />
+      </div>
+      {usage.exceeded && (
+        <div style={{ color: 'var(--danger)', fontSize: 11, marginTop: 4 }}>
+          Monthly quota exceeded — agents and copilot are paused until reset.
+        </div>
+      )}
+    </div>
+  )
+}
 
 const ROLE_COLORS = {
   superadmin: { bg: 'var(--warning-subtle)', color: 'var(--warning)', label: 'Super Admin' },
@@ -25,21 +52,48 @@ function RoleBadge({ role }) {
 }
 
 function SubscriptionSection() {
-  const { org, isPro, isAdmin } = useAuth()
+  const { org, isPro, isAdmin, refreshAuth } = useAuth()
   const toast = useToast()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [plans, setPlans] = useState([])
+  const [usage, setUsage] = useState(null)
   const [billingCycle, setBillingCycle] = useState('monthly')
   const [loading, setLoading] = useState(false)
 
-  const tier = org?.subscription_tier || 'free'
   const status = org?.subscription_status
 
   useEffect(() => {
     getBillingPlans().then(d => setPlans(d.plans || [])).catch(() => {})
+    getBillingUsage().then(setUsage).catch(() => {})
   }, [])
+
+  // Handle Stripe checkout success — refresh org state and notify the user.
+  useEffect(() => {
+    if (searchParams.get('success') !== '1') return
+    let cancelled = false
+    refreshAuth().then(me => {
+      if (cancelled) return
+      if (me?.org?.subscription_tier === 'pro') {
+        toast.success('Welcome to Pro! Your subscription is active.')
+      } else {
+        toast.success('Checkout complete. Your subscription will activate shortly.')
+      }
+      getBillingUsage().then(setUsage).catch(() => {})
+    })
+    const next = new URLSearchParams(searchParams)
+    next.delete('success')
+    setSearchParams(next, { replace: true })
+    return () => { cancelled = true }
+  }, [searchParams, refreshAuth, setSearchParams, toast])
 
   const proPlan = plans.find(p => p.tier === 'pro')
   const freePlan = plans.find(p => p.tier === 'free')
+
+  const monthlyPrice = proPlan?.price_monthly ?? 0
+  const annualPrice = proPlan?.price_annual ?? 0
+  const annualPerMonth = annualPrice ? Math.round(annualPrice / 12) : 0
+  const annualSavings = monthlyPrice && annualPrice ? (monthlyPrice * 12 - annualPrice) : 0
+  const displayPrice = billingCycle === 'annual' ? annualPerMonth : monthlyPrice
 
   const handleUpgrade = async () => {
     if (!proPlan) return
@@ -78,7 +132,7 @@ function SubscriptionSection() {
       background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 10, padding: 20,
       marginTop: 16,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: isPro ? 0 : 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <CreditCard size={16} />
           <span style={{ fontSize: 14, fontWeight: 600 }}>Subscription</span>
@@ -105,27 +159,55 @@ function SubscriptionSection() {
       {status === 'past_due' && (
         <div style={{
           margin: '12px 0', padding: '10px 14px', borderRadius: 8,
-          background: '#451a03', border: '1px solid #92400e',
+          background: 'var(--warning-subtle)', border: '1px solid var(--warning)',
           display: 'flex', alignItems: 'center', gap: 8, fontSize: 13,
         }}>
-          <AlertTriangle size={14} color="#fdba74" />
-          <span style={{ color: '#fdba74', flex: 1 }}>Payment failed. Update your payment method to avoid interruption.</span>
+          <AlertTriangle size={14} color="var(--warning)" />
+          <span style={{ color: 'var(--warning)', flex: 1 }}>Payment failed. Update your payment method to avoid interruption.</span>
           {isAdmin && <button onClick={handleManage} style={{
-            padding: '4px 10px', borderRadius: 5, border: 'none', background: '#92400e',
-            color: '#fdba74', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+            padding: '4px 10px', borderRadius: 5, border: '1px solid var(--warning)', background: 'transparent',
+            color: 'var(--warning)', fontSize: 11, fontWeight: 600, cursor: 'pointer',
           }}>Fix Payment</button>}
         </div>
       )}
 
-      {isPro && org?.current_period_end && (
+      {status === 'trialing' && org?.trial_ends_at && (
+        <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
+          Trial ends: {new Date(org.trial_ends_at).toLocaleDateString()}
+        </div>
+      )}
+
+      {isPro && status !== 'trialing' && org?.current_period_end && (
         <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
           Next billing date: {new Date(org.current_period_end).toLocaleDateString()}
         </div>
       )}
 
+      <TokenUsageBar usage={usage} />
+
+      {/* Active plan summary for Pro users */}
+      {isPro && proPlan && (
+        <div style={{
+          marginTop: 16, border: '1px solid var(--accent)', borderRadius: 8, padding: 16,
+          background: 'var(--bg)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+            <Star size={14} color="var(--warning)" />
+            <span style={{ fontSize: 14, fontWeight: 700 }}>Your plan: Pro</span>
+          </div>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
+            {(proPlan.features || []).map(f => (
+              <li key={f} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)' }}>
+                <Check size={12} color="var(--success)" /> {f}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Plan comparison — only show when on free tier */}
       {!isPro && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
           {/* Free */}
           <div style={{
             border: '1px solid var(--border)', borderRadius: 8, padding: 16,
@@ -133,7 +215,7 @@ function SubscriptionSection() {
           }}>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Free</div>
             <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
-              {(freePlan?.features || ['Dashboard & reports', 'Findings & assets', '3 scans', '3 users', '3 campaigns', 'Integrations', 'Workflows']).map(f => (
+              {(freePlan?.features || []).map(f => (
                 <li key={f} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)' }}>
                   <Check size={12} color="var(--muted)" /> {f}
                 </li>
@@ -147,14 +229,14 @@ function SubscriptionSection() {
             background: 'var(--bg)',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-              <Star size={14} color="#f59e0b" />
+              <Star size={14} color="var(--warning)" />
               <span style={{ fontSize: 14, fontWeight: 700 }}>Pro</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 4, marginBottom: 4 }}>
-              <span style={{ fontSize: 22, fontWeight: 800 }}>${billingCycle === 'annual' ? '167' : '200'}</span>
+              <span style={{ fontSize: 22, fontWeight: 800 }}>${displayPrice}</span>
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>/mo</span>
             </div>
-            <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
               <button onClick={() => setBillingCycle('monthly')} style={{
                 padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)',
                 background: billingCycle === 'monthly' ? 'var(--accent)' : 'transparent',
@@ -167,14 +249,14 @@ function SubscriptionSection() {
                 color: billingCycle === 'annual' ? '#fff' : 'var(--muted)',
                 fontSize: 10, fontWeight: 600, cursor: 'pointer',
               }}>Annual</button>
-              {billingCycle === 'annual' && (
-                <span style={{ fontSize: 10, color: '#22c55e', fontWeight: 600 }}>Save $400</span>
+              {billingCycle === 'annual' && annualSavings > 0 && (
+                <span style={{ fontSize: 10, color: 'var(--success)', fontWeight: 600 }}>Save ${annualSavings}</span>
               )}
             </div>
             <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
-              {(proPlan?.features || ['Everything in Free', 'Unlimited scans', 'Unlimited users', 'Unlimited campaigns', 'AI agents']).map(f => (
+              {(proPlan?.features || []).map(f => (
                 <li key={f} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)' }}>
-                  <Check size={12} color="#22c55e" /> {f}
+                  <Check size={12} color="var(--success)" /> {f}
                 </li>
               ))}
             </ul>
@@ -187,6 +269,41 @@ function SubscriptionSection() {
                 {loading ? 'Redirecting...' : 'Upgrade to Pro'}
               </button>
             )}
+          </div>
+
+          {/* Enterprise / MSP */}
+          <div style={{
+            border: '1px solid var(--border)', borderRadius: 8, padding: 16,
+            background: 'var(--bg)',
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>Enterprise</div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
+              Custom pricing for MSPs and large teams.
+            </div>
+            <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 12px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+              {[
+                'Everything in Pro',
+                'Multi-org / MSSP tenancy',
+                'Self-hosted or private deployment',
+                'SSO & custom RBAC',
+                'White-label & API access',
+                'Priority support & SLA',
+              ].map(f => (
+                <li key={f} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)' }}>
+                  <Check size={12} color="var(--muted)" /> {f}
+                </li>
+              ))}
+            </ul>
+            <a
+              href="mailto:sales@hakuna.security?subject=Enterprise%20plan%20inquiry"
+              style={{
+                display: 'block', textAlign: 'center', textDecoration: 'none',
+                padding: '8px 0', borderRadius: 6, border: '1px solid var(--accent)',
+                color: 'var(--accent)', fontSize: 13, fontWeight: 600,
+              }}
+            >
+              Contact Sales
+            </a>
           </div>
         </div>
       )}

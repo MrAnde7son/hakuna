@@ -63,6 +63,7 @@ import SSOCallback from './components/auth/SSOCallback.jsx'
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
 import SubscriptionBanner from './components/billing/SubscriptionBanner.jsx'
 import GettingStartedPanel from './components/onboarding/GettingStartedPanel.jsx'
+import FirstScanBanner from './components/onboarding/FirstScanBanner.jsx'
 import { ThemeProvider, useTheme } from './contexts/ThemeContext.jsx'
 import NotificationBell from './components/notifications/NotificationBell.jsx'
 import { getScans, setOrgContext, authUpdateLocale, getFindings, getAssets, getCampaigns, getOnboardingStatus } from './api.js'
@@ -1212,6 +1213,7 @@ function AppShell() {
             }}
           >
             <GettingStartedPanel />
+            <FirstScanBanner />
             <SubscriptionBanner />
             <ErrorBoundary fullPage title="Page failed to load">
             <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: 'var(--muted)' }}>Loading...</div>}>

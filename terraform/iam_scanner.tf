@@ -13,6 +13,7 @@ resource "google_project_iam_member" "scanner_roles" {
     "roles/artifactregistry.reader",      # pull Docker images
     "roles/logging.logWriter",            # write logs to Cloud Logging
     "roles/monitoring.metricWriter",      # write metrics
+    "roles/aiplatform.user",              # Vertex AI — specialist agent worker invokes Gemini via ADC
   ])
 
   project = var.project_id

@@ -25,6 +25,11 @@ class VmScanRequest(BaseModel):
     asset_ids: List[int] | None = None  # existing asset IDs to link findings to
     credential_id: str | None = None  # IntegrationCredential.id for authenticated scans
     auth_profile_id: str | None = None  # AuthProfile.id — drives Playwright login
+    # Specialist LLM agents are opt-in per scan because their cost is
+    # measured in LLM tokens. Default False to avoid quiet regressions
+    # when the scanner service picks up a new release.
+    enable_agents: bool = False
+    agent_categories: List[str] | None = None  # subset of injection/xss/ssrf/authn/authz
 
 
 class VmRescanRequest(BaseModel):
@@ -34,6 +39,8 @@ class VmRescanRequest(BaseModel):
     targets: List[str] | None = None
     credential_id: str | None = None
     auth_profile_id: str | None = None
+    enable_agents: bool | None = None
+    agent_categories: List[str] | None = None
 
 
 def _get_org(db: Session, user: User) -> Organization:
@@ -61,6 +68,8 @@ async def create_vm_scan(
         asset_ids=body.asset_ids,
         credential_id=body.credential_id,
         auth_profile_id=body.auth_profile_id,
+        enable_agents=body.enable_agents,
+        agent_categories=body.agent_categories,
     )
     if not result:
         raise HTTPException(502, "Failed to start VM scan — scanner may be unavailable")
@@ -102,13 +111,18 @@ async def rescan(
         raise HTTPException(403, "Access denied")
 
     overrides_applied = body is not None and any(
-        v is not None for v in (body.targets, body.credential_id, body.auth_profile_id)
+        v is not None for v in (
+            body.targets, body.credential_id, body.auth_profile_id,
+            body.enable_agents, body.agent_categories,
+        )
     )
     result = await rescan_vm_scan(
         db, scan,
         targets_override=(body.targets if body else None),
         credential_id_override=(body.credential_id if body else None),
         auth_profile_id_override=(body.auth_profile_id if body else None),
+        enable_agents_override=(body.enable_agents if body else None),
+        agent_categories_override=(body.agent_categories if body else None),
         overrides_applied=overrides_applied,
     )
     if not result:

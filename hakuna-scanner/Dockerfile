@@ -13,7 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxcomposite1 libxdamage1 libxrandr2 xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Tell httpx/rod where to find chromium (no download needed)
+# Tell httpx/rod where to find chromium (no download needed). Note that
+# httpx also needs the -system-chrome flag at runtime — without it, rod
+# tries to download its own Chromium from storage.googleapis.com on first
+# use regardless of these env vars, the download is killed by the per-host
+# timeout, and every screenshot ends up as a 0-byte PNG. See HttpxRunner.
 ENV CHROMIUM_PATH=/usr/bin/chromium
 
 # Install Go 1.22 (needed for PD tools)

@@ -362,6 +362,21 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
   const [manualTarget, setManualTarget] = useState('')
   const [authProfiles, setAuthProfiles] = useState([])
   const [authProfileId, setAuthProfileId] = useState('')
+  // Specialist LLM agents — off by default because they cost tokens.
+  // `agentCategories === null` means "run all five"; setting it narrows
+  // the dispatch to the chosen subset. Matches the scanner API contract.
+  const AGENT_CATEGORIES = ['injection', 'xss', 'ssrf', 'authn', 'authz']
+  const [enableAgents, setEnableAgents] = useState(false)
+  const [agentCategories, setAgentCategories] = useState(null)
+
+  const toggleAgentCategory = (cat) => {
+    setAgentCategories(prev => {
+      const current = prev || [...AGENT_CATEGORIES]
+      return current.includes(cat)
+        ? current.filter(c => c !== cat)
+        : [...current, cat]
+    })
+  }
 
   useEffect(() => {
     import('../../api.js').then(api => api.listAuthProfiles())
@@ -452,6 +467,14 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
         }
       }
       if (authProfileId) payload.auth_profile_id = authProfileId
+      if (enableAgents) {
+        payload.enable_agents = true
+        // Omit the field entirely when all five are selected — lets the
+        // scanner use its own default (every category, self-gated).
+        if (agentCategories && agentCategories.length && agentCategories.length < AGENT_CATEGORIES.length) {
+          payload.agent_categories = agentCategories
+        }
+      }
       const res = await startVmScan(payload)
       // No confirmation UI — parent navigates to the live findings view and
       // the panel unmounts. See handleNewVmScan in ScanManagement.
@@ -632,6 +655,50 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
           </select>
         </div>
       )}
+
+      {/* Specialist LLM agents — opt-in per scan. Uses the same LLM
+          provider the backend resolves (Vertex on GCP via ADC).
+          Agents need asset context (asset_endpoints) so they self-gate
+          when run against manual targets with no prior discovery. */}
+      <div style={{
+        marginBottom: 12, padding: '10px 12px', borderRadius: 8,
+        background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+      }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={enableAgents}
+            onChange={e => setEnableAgents(e.target.checked)}
+          />
+          <span style={{ fontSize: 12, fontWeight: 600 }}>Run specialist agents (LLM)</span>
+        </label>
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, marginLeft: 22 }}>
+          Runs five LLM specialists (Injection, XSS, SSRF, AuthN, AuthZ) per asset.
+          Cost: LLM tokens. Best on assets with discovered endpoints.
+        </div>
+        {enableAgents && (
+          <div style={{ marginTop: 10, marginLeft: 22, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {AGENT_CATEGORIES.map(cat => {
+              const selected = !agentCategories || agentCategories.includes(cat)
+              return (
+                <button
+                  key={cat}
+                  onClick={() => toggleAgentCategory(cat)}
+                  style={{
+                    fontSize: 11, padding: '3px 10px', borderRadius: 12, cursor: 'pointer',
+                    background: selected ? '#ec489922' : 'transparent',
+                    border: `1px solid ${selected ? '#ec4899' : 'var(--border)'}`,
+                    color: selected ? '#ec4899' : 'var(--text-muted)',
+                    fontWeight: 600,
+                  }}
+                >
+                  {cat}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
 
       {error && (
         <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 12, padding: '8px 10px', background: '#dc262611', borderRadius: 6 }}>
@@ -1467,12 +1534,28 @@ function ScheduleDropdown({ scan, onUpdate }) {
 
 function EditVmScanModal({ scan, onClose, onSaved }) {
   const toast = useToast()
+  const AGENT_CATEGORIES = ['injection', 'xss', 'ssrf', 'authn', 'authz']
   const origTargets = (scan.raw_metadata?.targets || []).join('\n')
   const origAuthProfileId = scan.raw_metadata?.auth_profile_id || ''
+  const origEnableAgents = !!scan.raw_metadata?.enable_agents
+  const origAgentCategories = Array.isArray(scan.raw_metadata?.agent_categories)
+    ? scan.raw_metadata.agent_categories
+    : null
   const [targets, setTargets] = useState(origTargets)
   const [authProfileId, setAuthProfileId] = useState(origAuthProfileId)
   const [authProfiles, setAuthProfiles] = useState([])
   const [saving, setSaving] = useState(false)
+  const [enableAgents, setEnableAgents] = useState(origEnableAgents)
+  const [agentCategories, setAgentCategories] = useState(origAgentCategories)
+
+  const toggleAgentCategory = (cat) => {
+    setAgentCategories(prev => {
+      const current = prev || [...AGENT_CATEGORIES]
+      return current.includes(cat)
+        ? current.filter(c => c !== cat)
+        : [...current, cat]
+    })
+  }
 
   useEffect(() => {
     import('../../api.js').then(api => api.listAuthProfiles())
@@ -1485,10 +1568,20 @@ function EditVmScanModal({ scan, onClose, onSaved }) {
     if (parsed.length === 0) { toast.error('At least one target is required'); return }
     setSaving(true)
     try {
-      await rescanVmScan(scan.id, {
+      // Always send enable_agents explicitly so the backend's rescan
+      // path can honour an explicit "turn agents OFF" — sending false
+      // is meaningful state, not a default. Categories only flow when
+      // the user narrowed the selection.
+      const payload = {
         targets: parsed,
         auth_profile_id: authProfileId || null,
-      })
+        enable_agents: enableAgents,
+      }
+      if (enableAgents && agentCategories && agentCategories.length
+          && agentCategories.length < AGENT_CATEGORIES.length) {
+        payload.agent_categories = agentCategories
+      }
+      await rescanVmScan(scan.id, payload)
       toast.success('Scan re-queued with new config')
       onSaved()
     } catch (e) {
@@ -1557,6 +1650,46 @@ function EditVmScanModal({ scan, onClose, onSaved }) {
               </option>
             ))}
           </select>
+        </div>
+
+        <div style={{
+          marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+          background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+        }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={enableAgents}
+              onChange={e => setEnableAgents(e.target.checked)}
+            />
+            <span style={{ fontSize: 12, fontWeight: 600 }}>Run specialist agents (LLM)</span>
+          </label>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, marginLeft: 22 }}>
+            Runs five LLM specialists (Injection, XSS, SSRF, AuthN, AuthZ) per asset.
+            Cost: LLM tokens. Best on assets with discovered endpoints.
+          </div>
+          {enableAgents && (
+            <div style={{ marginTop: 10, marginLeft: 22, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {AGENT_CATEGORIES.map(cat => {
+                const selected = !agentCategories || agentCategories.includes(cat)
+                return (
+                  <button
+                    key={cat}
+                    onClick={() => toggleAgentCategory(cat)}
+                    style={{
+                      fontSize: 11, padding: '3px 10px', borderRadius: 12, cursor: 'pointer',
+                      background: selected ? '#ec489922' : 'transparent',
+                      border: `1px solid ${selected ? '#ec4899' : 'var(--border)'}`,
+                      color: selected ? '#ec4899' : 'var(--text-muted)',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {cat}
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>

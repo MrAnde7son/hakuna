@@ -98,5 +98,12 @@
     "web": { "ports": [80, 443, 8080, 8443], "tags": ["http", "ssl"] },
     "smb": { "ports": [445],                  "tags": ["smb"] },
     "db":  { "ports": [3306, 5432, 6379, 27017], "tags": ["db"] }
+  },
+  "spec_gates": {
+    "api_fuzz": {
+      "sources": ["openapi", "graphql"],
+      "tags": ["api-fuzz", "schemathesis"],
+      "scanner": "schemathesis"
+    }
   }
 }

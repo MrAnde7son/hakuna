@@ -7,11 +7,13 @@ The platform includes a built-in AI agent framework for security automation. Age
 | Provider | Models |
 |----------|--------|
 | Anthropic | Claude (Sonnet, Opus, Haiku) |
-| OpenAI | GPT-4, GPT-4o, GPT-3.5 |
-| Google | Gemini Pro, Gemini Flash |
+| OpenAI | GPT-4, GPT-4o, GPT-5 |
+| Google Gemini | Gemini 2.x Pro, Gemini Flash |
+| Google Vertex AI | Claude, Gemini via Vertex |
 | Groq | Llama 3, Mixtral |
+| Ollama | Self-hosted open models (local or private network) |
 
-Configure your API key in the agent builder. Keys are stored per-organization.
+Configure your API key in the agent builder (or in **Settings → Integrations → LLM Providers**). Keys are stored per-organization and resolved via a fallback chain: Anthropic → OpenAI → Vertex → Gemini → Groq → Ollama. The VM scanner's specialist agents reuse the same chain.
 
 ## Template Gallery
 
@@ -89,3 +91,67 @@ Every agent execution is logged with:
 - Step count
 - Full output transcript
 - Timestamp and duration
+
+## Copilot
+
+In addition to scheduled and on-demand agents, the platform ships a Copilot assistant surfaced on every page:
+
+- **Desktop** — Sliding right-side panel (resizable, default 480px)
+- **Mobile** — Full-screen experience launched from the bottom tab bar
+- **Context-aware prompts** — Suggested prompts change per page (e.g., on Findings: "Show me critical unresolved findings")
+- **Rich blocks** — Markdown, structured data tables, clickable finding/asset cards
+- **Autonomy levels** — Conservative (approve all actions), Standard (auto-approve low-risk), Autonomous (approve only external side effects)
+
+Copilot shares the agent tool registry and LLM provider chain, so autonomy and audit trails are consistent with scheduled agents.
+
+## Specialist VM Agents
+
+Active VM scans can run specialist LLM agents alongside Nuclei via `POST /api/vm/scan` with `enable_agents: true`.
+
+| Specialist | Targets |
+|------------|---------|
+| Injection | SQLi, NoSQLi, command injection, SSTI |
+| XSS | Reflected, stored, DOM-based |
+| SSRF | Server-side request forgery |
+| AuthN | Session fixation, MFA bypass, weak auth |
+| AuthZ | IDOR, privilege escalation, horizontal/vertical bypass |
+
+Each specialist:
+- Runs on a 60-second / 10-iteration budget per asset
+- Uses a shared tool registry: `http_request`, `check_pattern`, `emit_finding`
+- Skips assets that fail applicability filters (e.g., AuthZ needs parameterized endpoints, SSRF needs HTTP targets)
+- Reuses session cookies from the auth profile session broker
+- Gracefully degrades to `skipped` status if no LLM key is configured
+
+Filter which specialists run via `agent_categories: ["injection", "xss"]`.
+
+## Validation Framework
+
+Findings can be validated automatically by the LLM validator:
+
+- **Verdict** — `true_positive`, `false_positive`, `uncertain`
+- **Confidence** — 0–1 score
+- **Validated at** — timestamp
+
+Verdicts feed back into prioritization — true positives receive score bonuses. The validator writes to `findings.llm_validation` and logs each call to the LLM feedback loop for auditing.
+
+## Agent Pipelines
+
+Pipelines chain agents into multi-stage flows:
+- **Model routing** — Per-stage model tier (reasoning / balanced / deterministic)
+- **Structured handoff** — Typed JSON context between stages
+- **Automatic compression** — Long-stage output is summarized before the next stage
+- **Error handling** — Failed stages return structured error objects instead of aborting
+
+Manage pipelines via `/api/agents/pipelines` endpoints.
+
+## LLM Feedback Loop
+
+Every LLM call (agent run, validator, Copilot turn, scan planner) is persisted:
+
+- **Inputs** — Provider, model, system prompt hash, messages, org context
+- **Outputs** — Response, tool calls (name, args, result summary, ok flag, latency ms), tokens, latency
+- **Outcome** — Async-linked score in [-1, +1]
+- **Retrieval** — On Postgres, pgvector embeddings enable exemplar retrieval to condition future runs
+
+This is how the platform learns which prompts and tool patterns work best in your environment over time.

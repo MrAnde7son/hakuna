@@ -99,6 +99,8 @@ resource "google_compute_instance" "scanners" {
 
     # ── Write docker-compose.yml ────────────────────────────────────────────
     mkdir -p /opt/hakuna-scanners
+    # Shared volume for EASM httpx screenshots — worker writes, api reads.
+    mkdir -p /opt/hakuna-scanners/screenshots
     cd /opt/hakuna-scanners
 
     cat > docker-compose.yml << COMPOSE
@@ -124,6 +126,10 @@ resource "google_compute_instance" "scanners" {
           retries: 10
 
       # ── hakuna-scanner (EASM) — Redis DB 2, hakuna_easm database ─────────
+      # easm-worker writes httpx screenshots to /data/screenshots and
+      # easm-api serves them via /api/v1/orgs/.../assets/.../screenshot.
+      # Both containers bind-mount the same host dir so the API can see
+      # files written by the worker.
       easm-api:
         image: $${AR_BASE}/hakuna-scanner:latest
         command: sh -c "PYTHONPATH=/app alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8001"
@@ -138,6 +144,8 @@ resource "google_compute_instance" "scanners" {
           NAABU_PORTS: "80,443,8080,8443,8888,9000,9443,3000,5000"
           SUBFINDER_SOURCES: "all"
           ORG_SCAN_STAGGER_SECONDS: "30"
+        volumes:
+          - /opt/hakuna-scanners/screenshots:/data/screenshots
         depends_on:
           cloud-sql-proxy:
             condition: service_healthy
@@ -153,6 +161,8 @@ resource "google_compute_instance" "scanners" {
           CELERY_CONCURRENCY: "4"
           SCAN_TIMEOUT_SECONDS: "600"
           NAABU_PORTS: "80,443,8080,8443,8888,9000,9443,3000,5000"
+        volumes:
+          - /opt/hakuna-scanners/screenshots:/data/screenshots
         depends_on:
           cloud-sql-proxy:
             condition: service_healthy
@@ -186,6 +196,7 @@ resource "google_compute_instance" "scanners" {
           NUCLEI_TIMEOUT: "30"
           NUCLEI_RATE_LIMIT: "150"
           SCAN_TIMEOUT_SECONDS: "600"
+          GOOGLE_CLOUD_PROJECT: "$${PROJECT_ID}"
         depends_on:
           cloud-sql-proxy:
             condition: service_healthy
@@ -202,6 +213,10 @@ resource "google_compute_instance" "scanners" {
           TEMPLATES_DIR: "/app/templates"
           NUCLEI_BIN: "/root/go/bin/nuclei"
           NUCLEI_RATE_LIMIT: "150"
+          # Vertex AI / Gemini — agent_worker resolves the LLM provider
+          # from env + integration_configs. On GCE the scanner SA's ADC
+          # satisfies auth; only the project id has to be passed in.
+          GOOGLE_CLOUD_PROJECT: "$${PROJECT_ID}"
         depends_on:
           cloud-sql-proxy:
             condition: service_healthy
