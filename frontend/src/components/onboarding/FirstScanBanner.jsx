@@ -145,16 +145,20 @@ export default function FirstScanBanner() {
 
   return (
     <div style={{
-      margin: '0 0 12px 0',
-      borderRadius: 12,
-      border: `1px solid ${isComplete ? 'rgba(22,163,74,0.25)' : 'rgba(99,102,241,0.25)'}`,
+      position: 'sticky',
+      top: 0,
+      zIndex: 49,
+      margin: '-18px -18px 16px -18px',
+      padding: '10px 18px',
+      borderBottom: `1px solid ${isComplete ? 'rgba(22,163,74,0.25)' : 'rgba(99,102,241,0.25)'}`,
       background: isComplete
-        ? 'linear-gradient(135deg, rgba(22,163,74,0.06), rgba(22,163,74,0.02))'
-        : 'linear-gradient(135deg, rgba(99,102,241,0.06), rgba(124,58,237,0.02))',
-      padding: 14,
+        ? 'linear-gradient(135deg, rgba(22,163,74,0.10), rgba(22,163,74,0.04))'
+        : 'linear-gradient(135deg, rgba(99,102,241,0.10), rgba(124,58,237,0.04))',
+      backdropFilter: 'blur(6px)',
+      boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
       display: 'flex',
       flexDirection: 'column',
-      gap: 10,
+      gap: 8,
     }}>
       {/* Top row: title + actions */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
