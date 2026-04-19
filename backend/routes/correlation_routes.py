@@ -9,7 +9,9 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from core.database import get_db, DATABASE_URL
-from core.auth import get_current_user, get_accessible_org_ids
+from core.auth import get_accessible_org_ids, get_current_user, require_permission
+from core.builtin_team_roles import user_owner_scopes
+from models.models import User
 from services.finding_correlator import correlate_findings
 
 
@@ -65,9 +67,37 @@ def _scope_clause(
     )
 
 
+def _team_scope_clause(scopes: Optional[set]) -> tuple[str, dict, list]:
+    """Mirror `apply_owner_scope_to_findings` for raw-SQL attack-path queries.
+
+    A team-scoped user must see only paths whose entry AND target asset
+    fall within their owner-role scope (matching either Asset.inferred_team
+    or AssetOwnership.owner_role). Both endpoints must match — otherwise we
+    leak the existence of out-of-scope hosts via the path's structure.
+    """
+    if scopes is None:
+        return "", {}, []
+    if not scopes:
+        # User has scoped roles but matches no team — see nothing.
+        return " AND 1=0", {}, []
+    return (
+        " AND ("
+        "  (entry_a.inferred_team IN :scopes "
+        "   OR EXISTS (SELECT 1 FROM asset_ownership ao_e "
+        "              WHERE ao_e.asset_id = entry_a.id AND ao_e.owner_role IN :scopes))"
+        " AND "
+        "  (target_a.inferred_team IN :scopes "
+        "   OR EXISTS (SELECT 1 FROM asset_ownership ao_t "
+        "              WHERE ao_t.asset_id = target_a.id AND ao_t.owner_role IN :scopes))"
+        ")",
+        {"scopes": list(scopes)},
+        [bindparam("scopes", expanding=True)],
+    )
+
+
 @router.post("/run", status_code=202)
 async def run_correlation(
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(require_permission("write_findings")),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Dispatch cross-finding correlation as a background job.
@@ -124,6 +154,10 @@ _SORT_COLUMNS = {
 
 @router.get("/attack-paths")
 async def list_attack_paths(
+    scan_id: Optional[int] = Query(
+        None,
+        description="Restrict to paths involving any finding from this scan (matches the sidebar scan picker)",
+    ),
     severity: str = Query(None, description="Critical, High, Medium"),
     search: str = Query(None, description="Substring match on title / entry / target hostname"),
     entry_reason: str = Query(None, description="Substring match on entry_reason code"),
@@ -135,7 +169,7 @@ async def list_attack_paths(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(require_permission("read_findings")),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """List attack paths visible to the caller (MSSP parents see linked orgs).
@@ -148,7 +182,12 @@ async def list_attack_paths(
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
     scope_clause, params, binds = _scope_clause(org_ids, alias="ap")
+    team_clause, team_params, team_binds = _team_scope_clause(
+        user_owner_scopes(db, current_user.id)
+    )
     where_parts = [scope_clause]
+    params.update(team_params)
+    binds.extend(team_binds)
 
     if severity:
         where_parts.append("ap.severity = :severity")
@@ -181,7 +220,29 @@ async def list_attack_paths(
     elif narrated is False:
         where_parts.append("(ap.narrative IS NULL OR ap.narrative = '')")
 
-    where = "WHERE " + " AND ".join(where_parts)
+    if scan_id is not None:
+        # Mirror the sidebar scan filter: include paths that touch any finding
+        # in the chosen scan. Paths are stitched across scans, so an "all
+        # steps from this scan" rule would be too strict — show paths the
+        # selected scan participates in.
+        if _SQLITE:
+            where_parts.append(
+                "EXISTS (SELECT 1 FROM json_each(ap.steps) je "
+                "JOIN findings f "
+                "  ON f.id = CAST(json_extract(je.value, '$.finding_id') AS INTEGER) "
+                "WHERE f.scan_id = :scan_id)"
+            )
+        else:
+            where_parts.append(
+                "EXISTS (SELECT 1 FROM jsonb_array_elements(ap.steps::jsonb) je "
+                "JOIN findings f ON f.id = (je->>'finding_id')::int "
+                "WHERE f.scan_id = :scan_id)"
+            )
+        params["scan_id"] = scan_id
+
+    # team_clause carries its own leading " AND " (or is empty) so it composes
+    # cleanly after the org/filter conjunction.
+    where = "WHERE " + " AND ".join(where_parts) + team_clause
 
     # Resolve sort column (whitelist) + direction. Secondary sort by id keeps
     # pagination stable when primary keys tie.
@@ -249,7 +310,7 @@ async def list_attack_paths(
 async def get_attack_path(
     path_id: int,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(require_permission("read_findings")),
     org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
 ):
     """Get a single attack path with full details."""
@@ -257,13 +318,18 @@ async def get_attack_path(
         raise HTTPException(status_code=404, detail="Attack path not found")
 
     scope_clause, params, binds = _scope_clause(org_ids, alias="ap")
+    team_clause, team_params, team_binds = _team_scope_clause(
+        user_owner_scopes(db, current_user.id)
+    )
+    params.update(team_params)
+    binds.extend(team_binds)
     stmt = text(
         f"""
             SELECT ap.*, entry_a.hostname as entry_hostname, target_a.hostname as target_hostname
             FROM attack_paths ap
             LEFT JOIN assets entry_a ON entry_a.id = ap.entry_asset_id
             LEFT JOIN assets target_a ON target_a.id = ap.target_asset_id
-            WHERE ap.id = :id AND {scope_clause}
+            WHERE ap.id = :id AND {scope_clause}{team_clause}
         """
     )
     if binds:

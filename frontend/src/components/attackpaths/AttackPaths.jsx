@@ -8,6 +8,7 @@ import {
 import {
   getJobStatus, getOrgContext, listAttackPaths, runCorrelation,
 } from '../../api.js'
+import { useScan } from '../../App.jsx'
 import AttackPathGraph from './AttackPathGraph.jsx'
 import {
   Card, PageHeader, EmptyState, SeverityBadge, Button, Pill,
@@ -593,6 +594,9 @@ export default function AttackPaths() {
   const { t } = useTranslation()
   const [searchParams, setSearchParams] = useSearchParams()
   const filters = useMemo(() => readFiltersFromUrl(searchParams), [searchParams])
+  // Sidebar scan picker — when set, restrict to paths involving findings from
+  // that scan. null/undefined means "all scans" so we omit the param.
+  const { activeScanId } = useScan()
 
   // Local, immediate value for the search input — debounced into the URL so
   // we don't fire a request on every keystroke.
@@ -668,6 +672,7 @@ export default function AttackPaths() {
         if (v === '' || v == null) continue
         params[k] = v
       }
+      if (activeScanId) params.scan_id = activeScanId
       const res = await listAttackPaths(params)
       setPaths((res?.items || []).map(normalizePath))
       setTotal(res?.total || 0)
@@ -678,10 +683,20 @@ export default function AttackPaths() {
     }
   }
 
+  // Clear results when the sidebar scan changes so the skeleton (gated on
+  // `paths === null`) re-shows during the refetch — otherwise stale rows from
+  // the previous scan linger silently. We deliberately don't do this for
+  // ordinary filter changes to avoid a flash on every keystroke.
+  useEffect(() => {
+    setPaths(null)
+    setSelectedId(null)
+  }, [activeScanId])
+
   useEffect(() => { reload() }, [
     filters.search, filters.severity, filters.entry_reason,
     filters.target_reason, filters.min_score, filters.narrated,
     filters.sort_by, filters.order, filters.page, filters.page_size,
+    activeScanId,
   ])
 
   // Poll the active job's status while running. Stops cleanly when the job
