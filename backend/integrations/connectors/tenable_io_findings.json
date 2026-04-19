@@ -27,46 +27,22 @@
   },
   "records_path": "vulnerabilities",
   "credential_acquisition": {
-    "pattern": "auto_provision",
-    "description": "Hakuna will create a dedicated hakuna-integration service user in your Tenable.io account with minimum required permissions.",
-    "provisioning_steps": [
+    "pattern": "guided_generation",
+    "description": "Generate API keys in Tenable: Settings \u2192 My Account \u2192 API Keys \u2192 Generate. Paste them below.",
+    "fields": [
       {
-        "method": "POST",
-        "path": "/users",
-        "body": {
-          "username": "hakuna-integration",
-          "permissions": 32,
-          "type": "service"
-        },
-        "success_extracts": {
-          "user_id": "response.uuid",
-          "access_key": "response.access_key",
-          "secret_key": "response.secret_key"
-        }
+        "field": "access_key",
+        "label": "Access Key",
+        "type": "password",
+        "help": "From Tenable UI: Settings \u2192 My Account \u2192 API Keys"
+      },
+      {
+        "field": "secret_key",
+        "label": "Secret Key",
+        "type": "password",
+        "help": "Shown only once when generated \u2014 regenerate in Tenable if lost"
       }
     ],
-    "admin_credential_prompt": {
-      "steps": [
-        {
-          "instruction": "Provide an administrator API key to create the service account",
-          "capture": {
-            "field": "admin_access_key",
-            "label": "Admin Access Key",
-            "type": "password",
-            "auto_validate": true
-          }
-        },
-        {
-          "instruction": "Provide the admin secret key",
-          "capture": {
-            "field": "admin_secret_key",
-            "label": "Admin Secret Key",
-            "type": "password",
-            "auto_validate": true
-          }
-        }
-      ]
-    },
     "validation_request": {
       "method": "GET",
       "path": "/server/status",
@@ -74,9 +50,6 @@
         "X-ApiKeys": "accessKey={{access_key}};secretKey={{secret_key}}"
       },
       "success_condition": "status == 200",
-      "success_extracts": {
-        "connected_user": "hakuna-integration"
-      },
       "error_message": "Could not authenticate with Tenable.io. Check the API keys and try again."
     }
   },
