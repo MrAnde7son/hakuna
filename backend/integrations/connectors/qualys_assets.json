@@ -1,0 +1,143 @@
+{
+  "id": "qualys_assets",
+  "relay_capable": true,
+  "name": "Qualys \u2014 Assets",
+  "description": "Pull host inventory from Qualys VMDR (IPs, DNS, NetBIOS, OS, tracking method, AWS/Azure/GCP tags, tags)",
+  "category": "Vulnerability Management",
+  "logo": "/logos/vendors/qualys.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "POST",
+    "path": "/api/2.0/fo/asset/host/",
+    "headers": {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "X-Requested-With": "curl"
+    },
+    "body": {
+      "action": "list",
+      "details": "All/AGs",
+      "show_tags": "1",
+      "show_cloud_tags": "1",
+      "host_metadata": "all",
+      "output_format": "JSON",
+      "truncation_limit": "1000"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 1000,
+      "offset_param": "id_min"
+    }
+  },
+  "records_path": "HOST_LIST_OUTPUT.RESPONSE.HOST_LIST.HOST",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Qualys API URL",
+      "placeholder": "https://qualysapi.qualys.com"
+    },
+    "steps": [
+      {
+        "instruction": "Log into Qualys as an administrator"
+      },
+      {
+        "instruction": "Go to Subscription \u2192 Users \u2192 Your User \u2192 API credentials"
+      },
+      {
+        "instruction": "Copy your Qualys username",
+        "capture": {
+          "field": "username",
+          "label": "Qualys API Username",
+          "type": "text",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Copy your Qualys password",
+        "capture": {
+          "field": "password",
+          "label": "Qualys API Password",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "POST",
+      "path": "/api/2.0/fo/asset/host/?action=list&truncation_limit=1",
+      "auth": "basic",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate. Check your credentials."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "ID",
+      "target": "source_id"
+    },
+    {
+      "source": "IP",
+      "target": "ip_address"
+    },
+    {
+      "source": "DNS",
+      "target": "fqdn"
+    },
+    {
+      "source": "NETBIOS",
+      "target": "hostname"
+    },
+    {
+      "source": "OS",
+      "target": "os"
+    },
+    {
+      "source": "LAST_SCAN_DATETIME",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "FIRST_FOUND_DATE",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "ID",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': record.get('IP', ''), 'hostname': record.get('NETBIOS', '') or record.get('DNS', ''), 'fqdn': record.get('DNS', ''), 'device_id': value, 'display_name': record.get('DNS') or record.get('NETBIOS') or record.get('IP', '')}"
+      }
+    },
+    {
+      "source": "ID",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'tracking_method': record.get('TRACKING_METHOD', ''), 'qg_hostid': record.get('QG_HOSTID', ''), 'last_vm_scanned_date': record.get('LAST_VM_SCANNED_DATE', ''), 'last_vm_auth_scanned_date': record.get('LAST_VM_AUTH_SCANNED_DATE', ''), 'last_compliance_scanned_date': record.get('LAST_COMPLIANCE_SCAN_DATETIME', ''), 'cloud_provider': record.get('CLOUD_PROVIDER', ''), 'cloud_service': record.get('CLOUD_SERVICE', ''), 'cloud_resource_id': record.get('CLOUD_RESOURCE_ID', ''), 'asset_group_ids': (record.get('ASSET_GROUP_IDS') or '').split(',') if record.get('ASSET_GROUP_IDS') else [], 'tags': [(t.get('TAG') or {}).get('NAME', '') for t in ((record.get('TAGS') or {}).get('TAG') or []) if isinstance(t, dict)] if isinstance(record.get('TAGS'), dict) else [], 'network_id': record.get('NETWORK_ID', '')}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "truncation_limit": {
+      "type": "integer",
+      "default": 1000,
+      "description": "Number of hosts per page (max 10000)"
+    },
+    "vm_scan_date_after": {
+      "type": "string",
+      "default": "",
+      "description": "Only include hosts scanned after this date (YYYY-MM-DD)"
+    }
+  }
+}

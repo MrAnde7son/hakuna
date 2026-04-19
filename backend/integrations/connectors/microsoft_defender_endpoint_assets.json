@@ -1,0 +1,148 @@
+{
+  "id": "microsoft_defender_endpoint_assets",
+  "name": "Microsoft Defender for Endpoint \u2014 Machines",
+  "description": "Pull managed device inventory from Microsoft Defender for Endpoint (OS, onboarding status, health, risk score, exposure level)",
+  "category": "Endpoint Security",
+  "logo": "/logos/vendors/microsoft.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://api.securitycenter.microsoft.com",
+    "method": "GET",
+    "path": "/api/machines",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {},
+    "pagination": {
+      "strategy": "cursor",
+      "cursor_field": "@odata.nextLink",
+      "cursor_is_full_url": true
+    }
+  },
+  "records_path": "value",
+  "credential_acquisition": {
+    "pattern": "client_credentials",
+    "token_url": "https://login.microsoftonline.com/{{credentials.tenant_id}}/oauth2/v2.0/token",
+    "grant_type": "client_credentials",
+    "fields": [
+      {
+        "field": "tenant_id",
+        "label": "Azure AD Tenant ID",
+        "type": "text",
+        "help": "Directory (tenant) ID from your Azure AD app registration"
+      },
+      {
+        "field": "client_id",
+        "label": "Application (Client) ID",
+        "type": "text",
+        "help": "Application ID from your Azure AD app registration"
+      },
+      {
+        "field": "client_secret",
+        "label": "Client Secret",
+        "type": "password",
+        "help": "Client secret value generated in Certificates & secrets"
+      }
+    ],
+    "scopes": [
+      "https://api.securitycenter.microsoft.com/.default"
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/machines",
+      "query_params": {
+        "$top": "1"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Microsoft Defender. Check tenant ID, client ID, and secret, and that the app has Machine.Read.All permission."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "computerDnsName",
+      "target": "hostname"
+    },
+    {
+      "source": "computerDnsName",
+      "target": "fqdn"
+    },
+    {
+      "source": "lastIpAddress",
+      "target": "ip_address"
+    },
+    {
+      "source": "osPlatform",
+      "target": "os"
+    },
+    {
+      "source": "osVersion",
+      "target": "os_version"
+    },
+    {
+      "source": "lastSeen",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "firstSeen",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "riskScore",
+      "target": "criticality",
+      "transform": {
+        "type": "map",
+        "mapping": {
+          "None": 3,
+          "Informational": 3,
+          "Low": 4,
+          "Medium": 6,
+          "High": 8,
+          "Critical": 10
+        }
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': record.get('lastIpAddress', ''), 'hostname': record.get('computerDnsName', ''), 'fqdn': record.get('computerDnsName', ''), 'device_id': value, 'display_name': record.get('computerDnsName') or record.get('lastIpAddress', '')}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'risk_score': record.get('riskScore', ''), 'exposure_level': record.get('exposureLevel', ''), 'health_status': record.get('healthStatus', ''), 'onboarding_status': record.get('onboardingStatus', ''), 'machine_tags': record.get('machineTags') or [], 'rbac_group_id': record.get('rbacGroupId', ''), 'rbac_group_name': record.get('rbacGroupName', ''), 'aad_device_id': record.get('aadDeviceId', ''), 'agent_version': record.get('agentVersion', ''), 'os_build': record.get('osBuild', ''), 'os_architecture': record.get('osArchitecture', ''), 'os_processor': record.get('osProcessor', ''), 'device_value': record.get('deviceValue', ''), 'defender_av_status': record.get('defenderAvStatus', ''), 'managed_by': record.get('managedBy', ''), 'managed_by_status': record.get('managedByStatus', ''), 'last_external_ip': record.get('lastExternalIpAddress', ''), 'machine_type': record.get('machineType', '')}"
+      }
+    },
+    {
+      "source": "machineTags",
+      "target": "tags"
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "filter": {
+      "type": "string",
+      "default": "",
+      "description": "OData $filter (e.g., healthStatus eq 'Active', lastSeen gt 2024-01-01)"
+    }
+  }
+}

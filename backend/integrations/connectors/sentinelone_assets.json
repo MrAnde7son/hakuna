@@ -1,0 +1,136 @@
+{
+  "id": "sentinelone_assets",
+  "name": "SentinelOne \u2014 Agents",
+  "description": "Pull endpoint inventory from SentinelOne (agent status, OS, site/group, network interfaces, domain, last activity)",
+  "category": "Endpoint Security",
+  "logo": "/logos/vendors/sentinelone.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/web/api/v2.1/agents",
+    "headers": {
+      "Authorization": "ApiToken {{credentials.api_token}}"
+    },
+    "query_params": {
+      "limit": "200"
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 200,
+      "cursor_field": "pagination.nextCursor",
+      "cursor_param": "cursor"
+    }
+  },
+  "records_path": "data",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "SentinelOne Console URL",
+      "placeholder": "https://your-org.sentinelone.net"
+    },
+    "steps": [
+      {
+        "instruction": "Log into the SentinelOne Management Console"
+      },
+      {
+        "instruction": "Navigate to Settings > Users > your user, or Settings > Service Users to create a dedicated API user"
+      },
+      {
+        "instruction": "Click Actions > Generate API Token. Copy the token value.",
+        "capture": {
+          "field": "api_token",
+          "label": "Paste API Token here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/web/api/v2.1/system/info",
+      "headers": {
+        "Authorization": "ApiToken {{api_token}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with SentinelOne. Check the API token and console URL."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "computerName",
+      "target": "hostname"
+    },
+    {
+      "source": "networkInterfaces[0].inet[0]",
+      "target": "ip_address"
+    },
+    {
+      "source": "networkInterfaces[0].physical",
+      "target": "mac_address"
+    },
+    {
+      "source": "osName",
+      "target": "os"
+    },
+    {
+      "source": "osRevision",
+      "target": "os_version"
+    },
+    {
+      "source": "domain",
+      "target": "fqdn",
+      "transform": {
+        "type": "expression",
+        "expr": "(record.get('computerName', '') + '.' + str(value)) if value and value != 'WORKGROUP' else record.get('computerName', '')"
+      }
+    },
+    {
+      "source": "lastActiveDate",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "registeredAt",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': ((record.get('networkInterfaces') or [{}])[0].get('inet') or [''])[0], 'hostname': record.get('computerName', ''), 'fqdn': record.get('computerName', '') + ('.' + str(record.get('domain', '')) if record.get('domain') and record.get('domain') != 'WORKGROUP' else ''), 'device_id': value, 'display_name': record.get('computerName') or value}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'agent_version': record.get('agentVersion', ''), 'is_active': record.get('isActive', False), 'is_decommissioned': record.get('isDecommissioned', False), 'is_up_to_date': record.get('isUpToDate', False), 'infected': record.get('infected', False), 'scan_status': record.get('scanStatus', ''), 'site_id': record.get('siteId', ''), 'site_name': record.get('siteName', ''), 'group_id': record.get('groupId', ''), 'group_name': record.get('groupName', ''), 'account_id': record.get('accountId', ''), 'account_name': record.get('accountName', ''), 'machine_type': record.get('machineType', ''), 'os_type': record.get('osType', ''), 'os_arch': record.get('osArch', ''), 'model_name': record.get('modelName', ''), 'serial_number': record.get('serialNumber', ''), 'cpu_count': record.get('cpuCount', ''), 'total_memory': record.get('totalMemory', ''), 'domain': record.get('domain', ''), 'active_threats': record.get('activeThreats', 0), 'external_ip': record.get('externalIp', ''), 'network_status': record.get('networkStatus', ''), 'tags': [(t or {}).get('key', '') for t in (record.get('tags') or {}).get('sentinelone', []) if isinstance(t, dict)] if isinstance(record.get('tags'), dict) else []}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "is_active": {
+      "type": "boolean",
+      "default": true,
+      "description": "Only pull currently-active agents"
+    }
+  }
+}

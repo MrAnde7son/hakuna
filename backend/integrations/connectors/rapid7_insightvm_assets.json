@@ -1,0 +1,130 @@
+{
+  "id": "rapid7_insightvm_assets",
+  "name": "Rapid7 InsightVM \u2014 Assets",
+  "description": "Pull asset inventory from Rapid7 InsightVM (hostname, OS, MAC, risk score, last assessed, users, services)",
+  "category": "Vulnerability Management",
+  "logo": "/logos/vendors/rapid7.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "GET",
+    "path": "/api/3/assets",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "query_params": {
+      "size": "500"
+    },
+    "pagination": {
+      "strategy": "page",
+      "page_size": 500,
+      "page_param": "page",
+      "size_param": "size",
+      "total_field": "page.totalResources"
+    }
+  },
+  "records_path": "resources",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "InsightVM Console URL",
+      "placeholder": "https://insightvm.example.com:3780"
+    },
+    "fields": [
+      {
+        "field": "username",
+        "label": "Username",
+        "type": "text",
+        "help": "InsightVM API username (leave empty if using API key only)",
+        "required": false
+      },
+      {
+        "field": "api_key",
+        "label": "API Key",
+        "type": "password",
+        "help": "API key generated from InsightVM console under Administration > User Management"
+      }
+    ],
+    "auth_header": {
+      "type": "basic",
+      "username": "{{credentials.username}}",
+      "password": "{{credentials.api_key}}"
+    },
+    "validation_request": {
+      "method": "GET",
+      "path": "/api/3/administration/info",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with InsightVM. Verify your console URL and API key."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "hostName",
+      "target": "hostname"
+    },
+    {
+      "source": "ip",
+      "target": "ip_address"
+    },
+    {
+      "source": "mac",
+      "target": "mac_address"
+    },
+    {
+      "source": "os",
+      "target": "os"
+    },
+    {
+      "source": "osFingerprint.version",
+      "target": "os_version"
+    },
+    {
+      "source": "riskScore",
+      "target": "criticality",
+      "transform": {
+        "type": "expression",
+        "expr": "min(10, max(1, int(float(value or 0) / 1000))) if value else 5"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': record.get('ip', ''), 'hostname': record.get('hostName', ''), 'fqdn': record.get('hostName', ''), 'device_id': value, 'display_name': record.get('hostName') or record.get('ip', '')}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'risk_score': record.get('riskScore', 0), 'vulnerability_count': (record.get('vulnerabilities') or {}).get('total', 0), 'vulnerability_critical': (record.get('vulnerabilities') or {}).get('critical', 0), 'vulnerability_severe': (record.get('vulnerabilities') or {}).get('severe', 0), 'vulnerability_moderate': (record.get('vulnerabilities') or {}).get('moderate', 0), 'os_family': (record.get('osFingerprint') or {}).get('family', ''), 'os_vendor': (record.get('osFingerprint') or {}).get('vendor', ''), 'os_product': (record.get('osFingerprint') or {}).get('product', ''), 'os_system_name': (record.get('osFingerprint') or {}).get('systemName', ''), 'os_cpe': ((record.get('osFingerprint') or {}).get('cpe') or {}).get('v2.2', ''), 'type': record.get('type', ''), 'assessed_for_vulnerabilities': record.get('assessedForVulnerabilities', False), 'assessed_for_policies': record.get('assessedForPolicies', False), 'service_count': len(record.get('services') or []), 'user_count': len(record.get('users') or []), 'software_count': len(record.get('software') or [])}"
+      }
+    },
+    {
+      "source": "history[-1].date",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "size": {
+      "type": "integer",
+      "default": 500,
+      "description": "Number of assets per page (max 500)"
+    }
+  }
+}

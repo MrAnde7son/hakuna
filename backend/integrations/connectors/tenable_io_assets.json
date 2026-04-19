@@ -1,0 +1,146 @@
+{
+  "id": "tenable_io_assets",
+  "relay_capable": true,
+  "name": "Tenable.io \u2014 Assets",
+  "description": "Pull rich asset inventory from Tenable.io via the asset export API (OS, cloud tags, ACR/AES scores, agent metadata, network interfaces)",
+  "category": "Vulnerability Management",
+  "logo": "/logos/vendors/tenable.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "https://cloud.tenable.com",
+    "method": "POST",
+    "path": "/assets/export",
+    "headers": {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "X-ApiKeys": "accessKey={{credentials.access_key}};secretKey={{credentials.secret_key}}"
+    },
+    "body": {
+      "chunk_size": 1000
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 1000,
+      "cursor_field": "export_uuid",
+      "next_path": "/assets/export/{{cursor}}/chunks/{{chunk_id}}"
+    }
+  },
+  "records_path": "assets",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "description": "Generate API keys in Tenable: Settings \u2192 My Account \u2192 API Keys \u2192 Generate. Paste them below. Requires 'CAN VIEW' access to assets.",
+    "fields": [
+      {
+        "field": "access_key",
+        "label": "Access Key",
+        "type": "password",
+        "help": "From Tenable UI: Settings \u2192 My Account \u2192 API Keys"
+      },
+      {
+        "field": "secret_key",
+        "label": "Secret Key",
+        "type": "password",
+        "help": "Shown only once when generated \u2014 regenerate in Tenable if lost"
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/server/status",
+      "headers": {
+        "X-ApiKeys": "accessKey={{access_key}};secretKey={{secret_key}}"
+      },
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate with Tenable.io. Check the API keys and try again."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "hostnames[0]",
+      "target": "hostname"
+    },
+    {
+      "source": "ipv4s[0]",
+      "target": "ip_address"
+    },
+    {
+      "source": "fqdns[0]",
+      "target": "fqdn"
+    },
+    {
+      "source": "operating_systems[0]",
+      "target": "os"
+    },
+    {
+      "source": "mac_addresses[0]",
+      "target": "mac_address"
+    },
+    {
+      "source": "last_seen",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "first_seen",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "acr_score",
+      "target": "criticality",
+      "transform": {
+        "type": "expression",
+        "expr": "int(value) if value is not None else 5"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': (record.get('ipv4s') or [''])[0], 'hostname': (record.get('hostnames') or [''])[0], 'fqdn': (record.get('fqdns') or [''])[0], 'device_id': value, 'instance_id': (record.get('aws_ec2_instance_id') or record.get('azure_resource_id') or record.get('gcp_instance_id') or ''), 'display_name': (record.get('hostnames') or [''])[0] or (record.get('fqdns') or [''])[0] or (record.get('ipv4s') or [''])[0]}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'acr_score': record.get('acr_score'), 'aes_score': record.get('aes_score'), 'exposure_score': record.get('exposure_score'), 'system_type': (record.get('system_types') or [''])[0], 'agent_uuid': (record.get('agent_uuids') or [''])[0], 'agent_names': record.get('agent_names') or [], 'has_agent': record.get('has_agent', False), 'has_plugin_results': record.get('has_plugin_results', False), 'last_authenticated_scan_date': record.get('last_authenticated_scan_date', ''), 'last_licensed_scan_date': record.get('last_licensed_scan_date', ''), 'cloud_provider': ('aws' if record.get('aws_ec2_instance_id') else 'azure' if record.get('azure_resource_id') else 'gcp' if record.get('gcp_instance_id') else ''), 'aws_ec2_instance_id': record.get('aws_ec2_instance_id', ''), 'aws_ec2_instance_type': record.get('aws_ec2_instance_type', ''), 'aws_region': record.get('aws_region', ''), 'aws_owner_id': record.get('aws_owner_id', ''), 'azure_resource_id': record.get('azure_resource_id', ''), 'azure_vm_id': record.get('azure_vm_id', ''), 'gcp_project_id': record.get('gcp_project_id', ''), 'gcp_instance_id': record.get('gcp_instance_id', ''), 'gcp_zone': record.get('gcp_zone', ''), 'network_interfaces': record.get('network_interfaces') or [], 'tags': record.get('tags') or []}"
+      }
+    },
+    {
+      "source": "tags",
+      "target": "tags",
+      "transform": {
+        "type": "expression",
+        "expr": "[t.get('key', '') + ':' + t.get('value', '') for t in (value or []) if isinstance(t, dict)]"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "chunk_size": {
+      "type": "integer",
+      "default": 1000,
+      "description": "Number of assets per export chunk"
+    },
+    "last_assessed": {
+      "type": "integer",
+      "default": 0,
+      "description": "Unix timestamp \u2014 only include assets last assessed after this time (0 = all)"
+    }
+  }
+}

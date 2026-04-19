@@ -1,0 +1,136 @@
+{
+  "id": "wiz_assets",
+  "name": "Wiz \u2014 Cloud Resources",
+  "description": "Pull cloud asset inventory from Wiz (VMs, containers, serverless, k8s, storage) with cloud provider, region, account, and tags",
+  "category": "Cloud Security",
+  "logo": "/logos/vendors/wiz.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "POST",
+    "path": "/api/v1/graphql",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "query": "query CloudResources($first: Int, $after: String, $filterBy: CloudResourceFilters) { cloudResources(first: $first, after: $after, filterBy: $filterBy) { nodes { id name type nativeType region cloudPlatform providerUniqueId firstSeen lastSeen status cloudAccount { id name externalId } subscription { id name externalId } resourceGroupExternalId tags { key value } } pageInfo { hasNextPage endCursor } totalCount } }",
+      "variables": {
+        "first": 200,
+        "after": "{{pagination.cursor}}",
+        "filterBy": {}
+      }
+    },
+    "pagination": {
+      "strategy": "cursor",
+      "page_size": 200,
+      "cursor_field": "data.cloudResources.pageInfo.endCursor",
+      "has_next_field": "data.cloudResources.pageInfo.hasNextPage"
+    }
+  },
+  "records_path": "data.cloudResources.nodes",
+  "credential_acquisition": {
+    "pattern": "client_credentials",
+    "instance_url_field": {
+      "label": "Wiz API Endpoint URL",
+      "placeholder": "https://api.us1.app.wiz.io"
+    },
+    "token_url": "https://auth.app.wiz.io/oauth/token",
+    "grant_type": "client_credentials",
+    "client_id_field": {
+      "label": "Wiz Service Account Client ID",
+      "type": "text"
+    },
+    "client_secret_field": {
+      "label": "Wiz Service Account Client Secret",
+      "type": "password"
+    },
+    "scopes": [
+      "read:cloud_resources"
+    ],
+    "audience": "wiz-api",
+    "validation_request": {
+      "method": "POST",
+      "path": "/api/v1/graphql",
+      "body": {
+        "query": "{ systemHealth { status } }"
+      },
+      "success_condition": "status == 200",
+      "success_extracts": {
+        "connected_status": "data.systemHealth.status"
+      },
+      "error_message": "Could not authenticate with Wiz. Check your service account credentials."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "id",
+      "target": "source_id"
+    },
+    {
+      "source": "name",
+      "target": "hostname"
+    },
+    {
+      "source": "firstSeen",
+      "target": "first_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "lastSeen",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "type",
+      "target": "asset_type",
+      "transform": {
+        "type": "expression",
+        "expr": "{'VIRTUAL_MACHINE': 'cloud_instance', 'CONTAINER': 'container_image', 'SERVERLESS': 'cloud_instance', 'HOSTED_TECHNOLOGY': 'cloud_instance', 'KUBERNETES_CLUSTER': 'k8s_workload', 'KUBERNETES_NODE': 'k8s_workload', 'KUBERNETES_POD': 'k8s_workload', 'BUCKET': 'cloud_instance', 'DATABASE': 'cloud_instance'}.get(value, 'cloud_instance')"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'display_name': record.get('name', ''), 'cloud_provider': record.get('cloudPlatform', ''), 'region': record.get('region', ''), 'instance_id': record.get('providerUniqueId', '') or value, 'native_type': record.get('nativeType', '')}"
+      }
+    },
+    {
+      "source": "id",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'native_type': record.get('nativeType', ''), 'cloud_provider': record.get('cloudPlatform', ''), 'cloud_region': record.get('region', ''), 'status': record.get('status', ''), 'provider_unique_id': record.get('providerUniqueId', ''), 'cloud_account_id': (record.get('cloudAccount') or {}).get('externalId', ''), 'cloud_account_name': (record.get('cloudAccount') or {}).get('name', ''), 'subscription_id': (record.get('subscription') or {}).get('externalId', ''), 'subscription_name': (record.get('subscription') or {}).get('name', ''), 'resource_group': record.get('resourceGroupExternalId', ''), 'wiz_type': record.get('type', '')}"
+      }
+    },
+    {
+      "source": "tags",
+      "target": "tags",
+      "transform": {
+        "type": "expression",
+        "expr": "[(t or {}).get('key', '') + ':' + (t or {}).get('value', '') for t in (value or []) if isinstance(t, dict)]"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "resource_types": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Wiz resource types to pull (e.g., VIRTUAL_MACHINE, CONTAINER, SERVERLESS). Empty = all."
+    }
+  }
+}

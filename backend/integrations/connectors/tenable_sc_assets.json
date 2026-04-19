@@ -1,0 +1,149 @@
+{
+  "id": "tenable_sc_assets",
+  "relay_capable": true,
+  "name": "Tenable Security Center \u2014 Assets",
+  "description": "Pull asset inventory from Tenable Security Center (IPs, DNS, OS, repository, NetBIOS, MAC, tags)",
+  "category": "Vulnerability Management",
+  "logo": "/logos/vendors/tenable.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "api",
+  "transport_config": {
+    "base_url": "{{instance_url}}",
+    "method": "POST",
+    "path": "/rest/analysis",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-ApiKey": "accesskey={{credentials.access_key}};secretkey={{credentials.secret_key}}"
+    },
+    "body": {
+      "type": "vuln",
+      "query": {
+        "tool": "sumip",
+        "type": "vuln",
+        "startOffset": "{{params.start_offset}}",
+        "endOffset": "{{params.end_offset}}"
+      },
+      "sourceType": "cumulative",
+      "sortField": "ip",
+      "sortDir": "asc"
+    },
+    "pagination": {
+      "strategy": "offset",
+      "page_size": 1000,
+      "offset_param": "startOffset",
+      "total_field": "response.totalRecords"
+    }
+  },
+  "records_path": "response.results",
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "instance_url_field": {
+      "label": "Your Tenable SC URL",
+      "placeholder": "https://sc.yourcompany.com"
+    },
+    "steps": [
+      {
+        "instruction": "Log into Tenable Security Center as an administrator"
+      },
+      {
+        "instruction": "Go to your username menu \u2192 API Keys",
+        "deeplink_path": "/users/edit#api-keys"
+      },
+      {
+        "instruction": "Click Generate. Copy the Access Key.",
+        "capture": {
+          "field": "access_key",
+          "label": "Paste Access Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      },
+      {
+        "instruction": "Copy the Secret Key.",
+        "capture": {
+          "field": "secret_key",
+          "label": "Paste Secret Key here",
+          "type": "password",
+          "auto_validate": true
+        }
+      }
+    ],
+    "validation_request": {
+      "method": "GET",
+      "path": "/rest/currentUser",
+      "auth_header": "X-ApiKey: accesskey={{access_key}};secretkey={{secret_key}}",
+      "success_condition": "status == 200",
+      "error_message": "Could not authenticate. Check both keys and try again."
+    }
+  },
+  "default_field_map": [
+    {
+      "source": "ip",
+      "target": "ip_address"
+    },
+    {
+      "source": "dnsName",
+      "target": "fqdn"
+    },
+    {
+      "source": "netbiosName",
+      "target": "hostname"
+    },
+    {
+      "source": "macAddress",
+      "target": "mac_address"
+    },
+    {
+      "source": "osCPE",
+      "target": "os"
+    },
+    {
+      "source": "lastSeen",
+      "target": "last_seen",
+      "transform": {
+        "type": "datetime"
+      }
+    },
+    {
+      "source": "ip",
+      "target": "source_id",
+      "transform": {
+        "type": "expression",
+        "expr": "str((record.get('repository') or {}).get('id', '')) + ':' + str(value)"
+      }
+    },
+    {
+      "source": "ip",
+      "target": "asset_identity",
+      "transform": {
+        "type": "expression",
+        "expr": "{'ip': value, 'hostname': record.get('netbiosName', '') or record.get('dnsName', ''), 'fqdn': record.get('dnsName', ''), 'display_name': record.get('dnsName') or record.get('netbiosName') or value}"
+      }
+    },
+    {
+      "source": "ip",
+      "target": "asset_attributes",
+      "transform": {
+        "type": "expression",
+        "expr": "{'repository_id': (record.get('repository') or {}).get('id', ''), 'repository_name': (record.get('repository') or {}).get('name', ''), 'policy_name': record.get('policyName', ''), 'plugin_set': record.get('pluginSet', ''), 'score': record.get('score', ''), 'severity_critical': record.get('severityCritical', 0), 'severity_high': record.get('severityHigh', 0), 'severity_medium': record.get('severityMedium', 0), 'severity_low': record.get('severityLow', 0), 'severity_info': record.get('severityInfo', 0), 'total_vulns': record.get('total', 0)}"
+      }
+    }
+  ],
+  "dedup_key": [
+    "source_system",
+    "source_id"
+  ],
+  "params_schema": {
+    "start_offset": {
+      "type": "integer",
+      "default": 0,
+      "description": "Starting record offset"
+    },
+    "end_offset": {
+      "type": "integer",
+      "default": 1000,
+      "description": "Ending record offset"
+    }
+  }
+}
