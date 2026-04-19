@@ -371,8 +371,9 @@ def get_cves(
             cve_list = list(scan_cve_ids)
             for i in range(0, len(cve_list), BATCH):
                 batch = cve_list[i:i+BATCH]
-                db.execute(text("INSERT OR IGNORE INTO _scan_cves (cve_id) VALUES " +
-                    ",".join(["(:v%d)" % j for j in range(len(batch))])),
+                db.execute(text("INSERT INTO _scan_cves (cve_id) VALUES " +
+                    ",".join(["(:v%d)" % j for j in range(len(batch))]) +
+                    " ON CONFLICT (cve_id) DO NOTHING"),
                     {"v%d" % j: v for j, v in enumerate(batch)})
             q = q.filter(ThreatCVE.cve_id.in_(text("SELECT cve_id FROM _scan_cves")))
         else:
