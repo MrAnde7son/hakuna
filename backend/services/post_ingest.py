@@ -176,11 +176,21 @@ def finalize_scan(
             lambda: _infer_asset_relationships(db, org_id, scan_id),
         )
 
-    # 9.6. Cross-finding correlation — link findings across scanners (Nessus + Nuclei)
-    # for same CVEs, generate attack paths through the knowledge graph.
+    # 9.55. Inventory-derived edges (netconn, AD trusts, domain membership,
+    # shared sessions, runs-as principals) — feeds attack-path BFS.
+    if org_id:
+        results["inventory_edges"] = _step(
+            db, "Inventory graph edges",
+            lambda: _extract_inventory_edges(db, org_id, scan_id),
+        )
+
+    # 9.6. Cross-finding correlation — dispatched as a background job
+    # (CVE corroboration + attack-path BFS + up to 50 LLM narrations).
+    # Runs async so multi-scan ingests don't serialise on one slow run,
+    # and debounces per-org so EASM's batch polling doesn't cause thrash.
     if org_id:
         results["finding_correlation"] = _step(
-            db, "Cross-finding correlation",
+            db, "Cross-finding correlation (dispatched)",
             lambda: _correlate_findings(db, org_id),
         )
 
@@ -606,9 +616,73 @@ def _fire_data_triggers(db, scan_id, new_asset_ids, new_finding_ids):
 
 
 def _correlate_findings(db, org_id):
-    """Cross-finding correlation: CVE-based linking + attack path generation."""
-    from services.finding_correlator import correlate_findings
-    return correlate_findings(db, org_id)
+    """Kick off cross-finding correlation as a *background job*.
+
+    Correlation runs CVE corroboration + attack-path BFS + up to 50 LLM
+    narration calls. Running inline blocked the post-ingest response for
+    30-60s and caused SQLite writer contention with the APScheduler.
+
+    Dispatched via job_manager with per-org debounce: if a correlation
+    job is already pending/running, or finished within the last minute
+    for this org, skip. That absorbs EASM's multi-batch polling and
+    multi-scan uploads without triggering redundant runs.
+
+    Returns {dispatched, reason?, job_id?} for pipeline logging.
+    """
+    from datetime import datetime, timedelta
+    from services.job_manager import dispatch, list_jobs
+    from core.database import SessionLocal
+
+    job_name = f"correlation_run_org{org_id}"
+    debounce = timedelta(seconds=60)
+    now = datetime.utcnow()
+
+    # Scan recent jobs for the same org. The registry is in-memory and
+    # bounded, so this is O(small).
+    for j in list_jobs(limit=50):
+        if j.get("name") != job_name:
+            continue
+        status = j.get("status")
+        if status in ("pending", "running"):
+            logger.info(
+                "org=%d correlation already %s (job=%s) — skipping dispatch",
+                org_id, status, j.get("job_id"),
+            )
+            return {"dispatched": False, "reason": "already_running"}
+        completed_at = j.get("completed_at")
+        if completed_at:
+            try:
+                ts = datetime.fromisoformat(completed_at)
+                if now - ts < debounce:
+                    logger.info(
+                        "org=%d correlation ran %.0fs ago — skipping dispatch",
+                        org_id, (now - ts).total_seconds(),
+                    )
+                    return {"dispatched": False, "reason": "debounced"}
+            except (ValueError, TypeError):
+                pass
+        # Only consider the most recent job for this org.
+        break
+
+    def _run():
+        # Dedicated session — the caller's request-scoped session closes
+        # the moment post_ingest returns.
+        bg_db = SessionLocal()
+        try:
+            from services.finding_correlator import correlate_findings
+            return correlate_findings(bg_db, org_id)
+        finally:
+            bg_db.close()
+
+    job = dispatch(job_name, _run, timeout=900)
+    logger.info("org=%d correlation dispatched as job=%s", org_id, job.id)
+    return {"dispatched": True, "job_id": job.id}
+
+
+def _extract_inventory_edges(db, org_id, scan_id):
+    """Materialize AssetRelationship edges from Inventory* tables."""
+    from services.inventory_graph_extractor import extract_inventory_edges
+    return extract_inventory_edges(db, org_id, scan_id)
 
 
 def _llm_validate_findings(db, org_id, scan_id):

@@ -24,6 +24,16 @@ class VmScanRequest(BaseModel):
     targets: List[str]
     asset_ids: List[int] | None = None  # existing asset IDs to link findings to
     credential_id: str | None = None  # IntegrationCredential.id for authenticated scans
+    auth_profile_id: str | None = None  # AuthProfile.id — drives Playwright login
+
+
+class VmRescanRequest(BaseModel):
+    """Optional overrides for edit-and-rerun. Any field left as None keeps the
+    scan's existing value; explicitly sending a field (even empty list / null)
+    replaces it."""
+    targets: List[str] | None = None
+    credential_id: str | None = None
+    auth_profile_id: str | None = None
 
 
 def _get_org(db: Session, user: User) -> Organization:
@@ -50,6 +60,7 @@ async def create_vm_scan(
         db, org, targets,
         asset_ids=body.asset_ids,
         credential_id=body.credential_id,
+        auth_profile_id=body.auth_profile_id,
     )
     if not result:
         raise HTTPException(502, "Failed to start VM scan — scanner may be unavailable")
@@ -77,17 +88,29 @@ async def refresh_scan(
 @router.post("/rescan/{scan_id}")
 async def rescan(
     scan_id: int,
+    body: VmRescanRequest | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(require_auth),
 ):
-    """Re-run a VM scan with the same targets."""
+    """Re-run a VM scan. Body is optional — send overrides to edit-and-rerun
+    (targets/credential/auth_profile) without creating a new scan row.
+    Omit the body to replay the scan as-is."""
     scan = db.query(Scan).filter(Scan.id == scan_id, Scan.source_type == "vm_scanner").first()
     if not scan:
         raise HTTPException(404, "VM scan not found")
     if user.role != "superadmin" and scan.org_id != user.org_id:
         raise HTTPException(403, "Access denied")
 
-    result = await rescan_vm_scan(db, scan)
+    overrides_applied = body is not None and any(
+        v is not None for v in (body.targets, body.credential_id, body.auth_profile_id)
+    )
+    result = await rescan_vm_scan(
+        db, scan,
+        targets_override=(body.targets if body else None),
+        credential_id_override=(body.credential_id if body else None),
+        auth_profile_id_override=(body.auth_profile_id if body else None),
+        overrides_applied=overrides_applied,
+    )
     if not result:
         raise HTTPException(502, "Failed to start VM scan — scanner may be unavailable or scan has no targets")
     return result

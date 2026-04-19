@@ -137,12 +137,78 @@ async def _resolve_scan_credentials(
     return payload
 
 
+async def _resolve_auth_profile(
+    db: Session, org_id: int, auth_profile_id: str,
+) -> dict:
+    """Resolve an AuthProfile into a ScanCredentials payload.
+
+    Branches on AuthProfile.profile_type:
+
+    - ``static``     — reference to a credential; we map it through
+                       ``_resolve_scan_credentials`` and hand the payload
+                       straight to the scanner. No Playwright.
+    - ``form_login`` — drive Playwright (cached in Redis/DB) via
+                       services.session_broker, then fold the resulting
+                       cookies + scraped headers onto the credential-derived
+                       payload. nuclei_worker's ``-H`` builder is additive
+                       on ``headers`` on top of any basic/bearer/cookie
+                       scheme — see hakuna-vm-scanner/scanner/vm/nuclei_worker.py.
+    """
+    from fastapi import HTTPException
+    from models.models import AuthProfile
+    from services import session_broker
+
+    profile = db.query(AuthProfile).filter(
+        AuthProfile.id == auth_profile_id,
+        AuthProfile.org_id == org_id,
+    ).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="AuthProfile not found")
+
+    # Credential mapping is the common base for both types — static returns
+    # it directly, form_login adds session cookies on top.
+    payload = await _resolve_scan_credentials(db, org_id, profile.credential_id)
+
+    if (profile.profile_type or "").lower() == "static":
+        logger.info(
+            "VM scan applying auth_profile id=%s org=%s type=static",
+            auth_profile_id, org_id,
+        )
+        return payload
+
+    # form_login — drive the browser, merge session onto the payload
+    try:
+        bundle = await session_broker.get_or_create_session(db, org_id, auth_profile_id)
+    except session_broker.SessionBrokerError as e:
+        raise HTTPException(status_code=400, detail=f"AuthProfile login failed: {e}")
+
+    merged_headers = dict(payload.get("headers") or {})
+    if bundle.cookie_header:
+        existing_cookie = merged_headers.get("Cookie") or ""
+        merged = "; ".join(c for c in (existing_cookie, bundle.cookie_header) if c)
+        if merged:
+            merged_headers["Cookie"] = merged
+    for name, value in (bundle.headers or {}).items():
+        merged_headers[name] = value
+
+    new_payload = dict(payload)
+    new_payload["headers"] = merged_headers
+    logger.info(
+        "VM scan applying auth_profile id=%s org=%s type=form_login cookies=%d headers=%d",
+        auth_profile_id, org_id,
+        len(bundle.cookie_header.split("; ")) if bundle.cookie_header else 0,
+        len(bundle.headers or {}),
+    )
+    return new_payload
+
+
 async def start_vm_scan(
     db: Session,
     org: Organization,
     targets: list[str],
     asset_ids: list[int] | None = None,
     credential_id: str | None = None,
+    auth_profile_id: str | None = None,
 ) -> Optional[dict]:
     """
     Create a Scan record and dispatch targets to the VM scanner container.
@@ -151,6 +217,11 @@ async def start_vm_scan(
       passed to the scanner as HTTP headers. The credential must belong to
       ``org``; HTTPException(404) is raised if not. Decrypted values are
       never logged or persisted on the scan record.
+    auth_profile_id: optional AuthProfile.id — when set, the session broker
+      drives Playwright through the profile's login flow and merges the
+      resulting cookies/headers into credentials_payload before dispatch.
+      Only the id is persisted on the scan record; the session blob itself
+      lives inline on the AuthProfile row (encrypted).
     Returns dict with scan_id, job_ids, status.
     """
     now = datetime.utcnow()
@@ -162,10 +233,14 @@ async def start_vm_scan(
         for t, aid in zip(targets, asset_ids):
             target_asset_map[t] = aid
 
-    # Resolve credentials (if requested) before creating the Scan record so
-    # a bad credential_id fails fast with no side effects on the DB.
+    # Resolve auth before creating the Scan record so a bad id fails fast
+    # with no side effects. auth_profile_id wins if both are set — a profile
+    # already bundles a credential reference, and re-merging on top of a
+    # second credential_id produces a confusing payload.
     credentials_payload: dict | None = None
-    if credential_id:
+    if auth_profile_id:
+        credentials_payload = await _resolve_auth_profile(db, org.id, auth_profile_id)
+    elif credential_id:
         credentials_payload = await _resolve_scan_credentials(db, org.id, credential_id)
 
     scan_metadata = {
@@ -178,9 +253,11 @@ async def start_vm_scan(
         "findings_emitted": 0,
         "imported_job_ids": [],
     }
-    # Store only the credential id reference — NEVER the decrypted values.
+    # Store only id references — NEVER the decrypted values / session blob.
     if credential_id:
         scan_metadata["credential_id"] = credential_id
+    if auth_profile_id:
+        scan_metadata["auth_profile_id"] = auth_profile_id
 
     scan = Scan(
         org_id=org.id,
@@ -244,16 +321,33 @@ async def start_vm_scan(
     }
 
 
-async def rescan_vm_scan(db: Session, scan: Scan) -> Optional[dict]:
+async def rescan_vm_scan(
+    db: Session,
+    scan: Scan,
+    targets_override: list[str] | None = None,
+    credential_id_override: str | None = None,
+    auth_profile_id_override: str | None = None,
+    overrides_applied: bool = False,
+) -> Optional[dict]:
     """
-    Re-run an existing VM scan in-place: clear old results and re-dispatch the same targets.
+    Re-run an existing VM scan in-place: clear old results and re-dispatch.
+
+    By default replays the original targets, credential_id, and auth_profile_id
+    captured in scan.raw_metadata. Any ``*_override`` argument replaces the
+    corresponding field — used by the edit-and-rerun flow so the UI can let
+    users tweak targets or auth without creating a brand-new scan row.
+    ``overrides_applied=True`` signals that the caller explicitly passed
+    overrides (even empty ones), so we treat ``[]`` as "clear targets".
     """
-    targets = (scan.raw_metadata or {}).get("targets", [])
+    meta = dict(scan.raw_metadata or {})
+    targets = targets_override if (targets_override is not None) else meta.get("targets", [])
     if not targets:
         return None
 
+    credential_id = credential_id_override if overrides_applied else meta.get("credential_id")
+    auth_profile_id = auth_profile_id_override if overrides_applied else meta.get("auth_profile_id")
+
     now = datetime.utcnow()
-    meta = dict(scan.raw_metadata or {})
 
     # Snapshot previous run before wiping state
     previous_run = {
@@ -263,7 +357,18 @@ async def rescan_vm_scan(db: Session, scan: Scan) -> Optional[dict]:
         "findings_emitted": meta.get("findings_emitted", 0),
         "job_statuses": meta.get("job_statuses", {}),
         "scan_date": scan.scan_date,
+        "targets": meta.get("targets", []),
+        "credential_id": meta.get("credential_id"),
+        "auth_profile_id": meta.get("auth_profile_id"),
     }
+
+    # Resolve auth before wiping state — a bad profile/credential should fail
+    # the whole rescan, not leave the scan in a half-cleared state.
+    credentials_payload: dict | None = None
+    if auth_profile_id:
+        credentials_payload = await _resolve_auth_profile(db, scan.org_id, auth_profile_id)
+    elif credential_id:
+        credentials_payload = await _resolve_scan_credentials(db, scan.org_id, credential_id)
 
     # Delete findings and assets from the previous run that belong to this scan
     finding_ids = [r[0] for r in db.query(Finding.id).filter(Finding.scan_id == scan.id).all()]
@@ -271,10 +376,10 @@ async def rescan_vm_scan(db: Session, scan: Scan) -> Optional[dict]:
         db.query(Finding).filter(Finding.id.in_(finding_ids)).delete(synchronize_session=False)
     db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
 
-    # Reset scan state, preserving previous_run history
-    scan.scan_date = now.isoformat()
-    scan.raw_metadata = {
+    # Reset scan state, preserving previous_run history + updated targets/auth
+    new_meta = {
         **meta,
+        "targets": targets,
         "status": "running",
         "job_ids": [],
         "completed_jobs": 0,
@@ -284,10 +389,25 @@ async def rescan_vm_scan(db: Session, scan: Scan) -> Optional[dict]:
         "job_statuses": {},
         "previous_run": previous_run,
     }
+    # Update id references (or drop them if cleared)
+    if credential_id:
+        new_meta["credential_id"] = credential_id
+    else:
+        new_meta.pop("credential_id", None)
+    if auth_profile_id:
+        new_meta["auth_profile_id"] = auth_profile_id
+    else:
+        new_meta.pop("auth_profile_id", None)
+
+    scan.scan_date = now.isoformat()
+    scan.raw_metadata = new_meta
     db.flush()
 
     # Re-dispatch to VM scanner container
-    result = await _vm_request("POST", "/vm/scans/", json={"targets": targets})
+    scan_body: dict = {"targets": targets}
+    if credentials_payload:
+        scan_body["credentials"] = credentials_payload
+    result = await _vm_request("POST", "/vm/scans/", json=scan_body)
 
     if result and result.get("job_ids"):
         scan.raw_metadata = {

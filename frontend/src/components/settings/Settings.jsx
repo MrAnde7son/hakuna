@@ -6,6 +6,7 @@ import { Card, ExportImportButtons } from '../shared/ui.jsx'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import RiskSettings from './RiskSettings.jsx'
 import ScanManagement from '../scans/ScanManagement.jsx'
+import AuthProfileManager from '../scans/AuthProfileManager.jsx'
 import TagManager from './TagManager.jsx'
 import CustomFieldManager from './CustomFieldManager.jsx'
 import SLASettings from './SLASettings.jsx'
@@ -450,7 +451,7 @@ function EntityCard({ entityKey, label, cfg, onChange, runEntityKey, availableSo
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { isAdmin, isSuperadmin, isMSSP } = useAuth()
-  const VALID_TABS = ['upload', 'dedup', 'risk', 'tags', 'custom-fields', 'sla', 'exceptions', 'integrations', 'integration-builder', 'relay-agents', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'sso']
+  const VALID_TABS = ['upload', 'auth-profiles', 'dedup', 'risk', 'tags', 'custom-fields', 'sla', 'exceptions', 'integrations', 'integration-builder', 'relay-agents', 'audit-log', 'ownership', 'users', 'roles', 'orgs', 'sso']
   const tabParam = searchParams.get('tab')
   const activeTab = VALID_TABS.includes(tabParam) ? tabParam : 'upload'
   const setActiveTab = (id) => setSearchParams(prev => { prev.set('tab', id); return prev })
@@ -545,8 +546,9 @@ export default function Settings() {
     {
       label: 'Data Management',
       items: [
-        { id: 'upload',  label: 'Scans',          icon: <Upload size={14} /> },
-        { id: 'dedup',   label: 'Deduplication',  icon: <SettingsIcon size={14} /> },
+        { id: 'upload',         label: 'Scans',         icon: <Upload size={14} /> },
+        { id: 'auth-profiles',  label: 'Auth Profiles', icon: <KeyRound size={14} /> },
+        { id: 'dedup',          label: 'Deduplication', icon: <SettingsIcon size={14} /> },
       ],
     },
     {
@@ -624,6 +626,9 @@ export default function Settings() {
 
       {/* Scans tab */}
       {activeTab === 'upload' && <ScanManagement />}
+
+      {/* Auth Profiles tab */}
+      {activeTab === 'auth-profiles' && <AuthProfileManager />}
 
       {/* Risk tab */}
       {activeTab === 'risk' && <RiskSettings />}

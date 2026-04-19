@@ -1127,9 +1127,35 @@ export const startVmScan = (data) => request('/vm/scan', {
 
 export const refreshVmScan = (scanId) => request(`/vm/refresh/${scanId}`, { method: 'POST' })
 
-export const rescanVmScan = (scanId) => request(`/vm/rescan/${scanId}`, { method: 'POST' })
+export const rescanVmScan = (scanId, overrides = null) => request(`/vm/rescan/${scanId}`, {
+  method: 'POST',
+  ...(overrides
+    ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(overrides) }
+    : {}),
+})
 
 export const getVmHealth = () => request('/vm/health').catch(() => null)
+
+// ── Auth Profiles (authenticated VM scans) ────────────────
+export const listAuthProfiles = () => request('/auth-profiles')
+export const getAuthProfile = (id) => request(`/auth-profiles/${id}`)
+export const createAuthProfile = (data) => request('/auth-profiles', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const updateAuthProfile = (id, data) => request(`/auth-profiles/${id}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+export const deleteAuthProfile = (id) => request(`/auth-profiles/${id}`, { method: 'DELETE' })
+export const testAuthProfile = (id) => request(`/auth-profiles/${id}/test`, { method: 'POST' })
+export const detectAuthFlow = (loginUrl) => request('/auth-profiles/detect-flow', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ login_url: loginUrl }),
+})
 
 export const getEasmAssets = (params = {}) => {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
@@ -1428,8 +1454,15 @@ export const getSuppressionRules = (params = {}) => {
 export const createSuppressionRule = (data) => request('/suppression-rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
 export const updateSuppressionRule = (id, data) => request(`/suppression-rules/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
 
+// ── Background jobs ──────────────────────────────────────
+
+export const getJobStatus = (jobId) => request(`/jobs/${jobId}/status`)
+
 // ── Attack Paths / Corroborated Findings ─────────────────
 
+// Returns { job_id, status, poll_url } — the server runs correlation in the
+// background. Use getJobStatus(job_id) to poll. Safe to navigate away; the
+// job keeps running server-side.
 export const runCorrelation = () => request('/correlations/run', { method: 'POST' })
 export const listAttackPaths = (params = {}) => {
   const q = new URLSearchParams(params).toString()

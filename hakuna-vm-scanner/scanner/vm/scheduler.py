@@ -17,7 +17,9 @@ import json
 import logging
 import os
 import shutil
+import socket
 import subprocess
+import urllib.error
 import urllib.request
 
 from celery.schedules import crontab
@@ -32,6 +34,15 @@ from scanner.vm.config import (
 from scanner.vm.db import _normalize_dsn
 
 logger = logging.getLogger(__name__)
+
+
+def _template_sync_disabled() -> bool:
+    """True when operator has opted out (air-gapped / egress-restricted).
+
+    Reads at call-time so tests and restarts pick up the flag without
+    module reloads.
+    """
+    return os.environ.get("TEMPLATE_SYNC_DISABLED", "").lower() in ("1", "true", "yes")
 
 
 def _run_async(coro):
@@ -54,11 +65,21 @@ def template_sync_check() -> dict:
 
 
 async def _template_sync_check_async() -> dict:
+    if _template_sync_disabled():
+        # Explicit opt-out — don't hit the network, don't emit a warning.
+        # Air-gapped deployments set TEMPLATE_SYNC_DISABLED=1 and sync
+        # templates via their own artifact pipeline.
+        return {"status": "disabled"}
+
     # 1. Get current local version
     local_version = _get_local_template_version()
 
     # 2. Check GitHub releases API for latest version
     latest_version = _get_latest_github_release()
+    if latest_version is None:
+        # Network / DNS error — treated as soft failure so the 6-hourly
+        # task doesn't flood logs when the container has no egress.
+        return {"status": "unreachable", "local_version": local_version}
     if not latest_version:
         return {"status": "error", "message": "Could not fetch latest release"}
 
@@ -99,13 +120,22 @@ def _get_local_template_version() -> str:
 
 
 def _get_latest_github_release() -> str | None:
-    """Query GitHub API for latest nuclei-templates release tag."""
+    """Query GitHub API for latest nuclei-templates release tag.
+
+    Returns None on any error; callers distinguish "no egress" from real
+    failures by the log level — DNS/URL errors log a compact info message
+    (the container runs this every 6h, so a stack trace per cycle would
+    drown real issues), anything else logs a warning with traceback.
+    """
     url = "https://api.github.com/repos/projectdiscovery/nuclei-templates/releases/latest"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "hakuna-vm-scanner"})
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode())
             return data.get("tag_name", "")
+    except (urllib.error.URLError, socket.gaierror, TimeoutError) as exc:
+        logger.info("Template sync: GitHub unreachable (%s) — skipping this cycle", exc)
+        return None
     except Exception:
         logger.warning("Failed to check GitHub for template updates", exc_info=True)
         return None

@@ -75,6 +75,29 @@ class TestParseNucleiStats:
     def test_missing_stats_return_empty(self):
         assert _parse_nuclei_stats(["[INF] random noise"]) == {}
 
+    def test_modern_startup_banner(self):
+        """Nuclei v3+ prints authoritative counts in the startup banner.
+        Regression guard — when only these lines appear, we must still
+        emit templates_loaded (previously returned 0/? because the parser
+        only matched the progress ticker)."""
+        stderr = [
+            "[INF] Templates clustered: 1762 (Reduced 7856 Requests)",
+            "[INF] Templates loaded for current scan: 4820",
+            "[INF] Executing 4820 signed templates from projectdiscovery/nuclei-templates",
+        ]
+        stats = _parse_nuclei_stats(stderr)
+        assert stats["templates_loaded"] == 4820
+
+    def test_progress_ticker_ratio_form(self):
+        """The -stats ticker prints 'Templates: N/M' — we want N (executed)."""
+        stderr = [
+            "| Duration: 00:00:12 | Matched: 0 | Requests: 566/566 | Templates: 389/389 |",
+        ]
+        stats = _parse_nuclei_stats(stderr)
+        assert stats["templates_loaded"] == 389
+        assert stats["requests_sent"] == 566
+        assert stats["results_found"] == 0
+
 
 class TestResultToFinding:
     """The payload shape run_nuclei_scan and run_nuclei_adhoc return must be

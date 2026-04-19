@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import {
   Upload, CheckCircle, AlertCircle, FileText, X, Radar, Globe, Plus,
   RefreshCw, Trash2, Search, Clock, Server, Shield, Loader,
-  Play, MonitorSmartphone, History, ChevronDown, ChevronUp,
+  Play, MonitorSmartphone, History, ChevronDown, ChevronUp, Edit2, Save,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import useURLFilters from '../../hooks/useURLFilters.js'
@@ -359,6 +360,14 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
   const [scanning, setScanning] = useState(false)
   const [error, setError] = useState(null)
   const [manualTarget, setManualTarget] = useState('')
+  const [authProfiles, setAuthProfiles] = useState([])
+  const [authProfileId, setAuthProfileId] = useState('')
+
+  useEffect(() => {
+    import('../../api.js').then(api => api.listAuthProfiles())
+      .then(rows => setAuthProfiles(Array.isArray(rows) ? rows : []))
+      .catch(() => setAuthProfiles([]))
+  }, [])
 
   // Debounce search input
   useEffect(() => {
@@ -442,6 +451,7 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
           asset_ids: assetEntries.map(e => e.asset_id),
         }
       }
+      if (authProfileId) payload.auth_profile_id = authProfileId
       const res = await startVmScan(payload)
       // No confirmation UI — parent navigates to the live findings view and
       // the panel unmounts. See handleNewVmScan in ScanManagement.
@@ -598,6 +608,28 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {authProfiles.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4, color: 'var(--text-muted)' }}>
+            Auth profile (optional)
+          </label>
+          <select
+            value={authProfileId}
+            onChange={e => setAuthProfileId(e.target.value)}
+            style={{
+              width: '100%', padding: '7px 10px', fontSize: 12,
+              background: 'var(--bg-card)', color: 'var(--text-primary)',
+              border: '1px solid var(--border)', borderRadius: 6,
+            }}
+          >
+            <option value="">None — unauthenticated scan</option>
+            {authProfiles.map(p => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
         </div>
       )}
 
@@ -1431,6 +1463,115 @@ function ScheduleDropdown({ scan, onUpdate }) {
 }
 
 
+// ── Edit & rerun modal (VM scans) ────────────────────────────────────
+
+function EditVmScanModal({ scan, onClose, onSaved }) {
+  const toast = useToast()
+  const origTargets = (scan.raw_metadata?.targets || []).join('\n')
+  const origAuthProfileId = scan.raw_metadata?.auth_profile_id || ''
+  const [targets, setTargets] = useState(origTargets)
+  const [authProfileId, setAuthProfileId] = useState(origAuthProfileId)
+  const [authProfiles, setAuthProfiles] = useState([])
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    import('../../api.js').then(api => api.listAuthProfiles())
+      .then(rows => setAuthProfiles(Array.isArray(rows) ? rows : []))
+      .catch(() => setAuthProfiles([]))
+  }, [])
+
+  const onSave = async () => {
+    const parsed = targets.split(/[,\n]+/).map(t => t.trim()).filter(Boolean)
+    if (parsed.length === 0) { toast.error('At least one target is required'); return }
+    setSaving(true)
+    try {
+      await rescanVmScan(scan.id, {
+        targets: parsed,
+        auth_profile_id: authProfileId || null,
+      })
+      toast.success('Scan re-queued with new config')
+      onSaved()
+    } catch (e) {
+      toast.error(e.message || 'Failed to rerun scan')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return createPortal(
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+    }}>
+      <div style={{
+        background: 'var(--bg-card)', border: '1px solid var(--border)',
+        borderRadius: 8, padding: 24, width: 560, maxHeight: '92vh', overflow: 'auto',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <h2 style={{ margin: 0, fontSize: 17 }}>Edit &amp; rerun</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
+            <X size={18} />
+          </button>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+          Updates this scan's config and re-dispatches. Previous findings are cleared.
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4, fontWeight: 500 }}>
+            Targets
+          </div>
+          <textarea
+            value={targets}
+            onChange={e => setTargets(e.target.value)}
+            rows={5}
+            style={{
+              width: '100%', padding: '8px 10px', borderRadius: 6,
+              border: '1px solid var(--border)', background: 'var(--bg)',
+              color: 'var(--text-primary)', fontSize: 13, fontFamily: 'monospace',
+              boxSizing: 'border-box', resize: 'vertical',
+            }}
+          />
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            One per line, or comma-separated.
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4, fontWeight: 500 }}>
+            Auth profile
+          </div>
+          <select
+            value={authProfileId}
+            onChange={e => setAuthProfileId(e.target.value)}
+            style={{
+              width: '100%', padding: '7px 10px', fontSize: 13,
+              background: 'var(--bg-card)', color: 'var(--text-primary)',
+              border: '1px solid var(--border)', borderRadius: 6,
+            }}
+          >
+            <option value="">None — unauthenticated scan</option>
+            {authProfiles.map(p => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.profile_type === 'static' ? 'static' : 'form login'})
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={onSave} disabled={saving}>
+            <Save size={14} /> {saving ? 'Saving…' : 'Save & Rerun'}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+
 // ── Scan card ────────────────────────────────────────────────────────
 
 function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
@@ -1445,6 +1586,7 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
   const isRunning = scanStatus === 'running' || scanStatus === 'queued'
   const [showHistory, setShowHistory] = useState(false)
   const [rescanning, setRescanning] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
 
   return (
     <div style={{
@@ -1538,6 +1680,22 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
             )}
             {isVm && !isRunning && (
               <button
+                onClick={() => setEditOpen(true)}
+                title="Edit & rerun (targets, auth profile)"
+                style={{
+                  background: 'none', border: '1px solid var(--border)',
+                  borderRadius: 6, padding: '5px 8px', cursor: 'pointer',
+                  color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = '#ec4899'; e.currentTarget.style.color = '#ec4899' }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}
+              >
+                <Edit2 size={12} />
+              </button>
+            )}
+            {isVm && !isRunning && (
+              <button
                 disabled={rescanning}
                 onClick={async () => {
                   setRescanning(true)
@@ -1555,6 +1713,13 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
               >
                 <RefreshCw size={12} style={rescanning ? { animation: 'spin 1s linear infinite' } : undefined} />
               </button>
+            )}
+            {editOpen && (
+              <EditVmScanModal
+                scan={scan}
+                onClose={() => setEditOpen(false)}
+                onSaved={async () => { setEditOpen(false); if (onRefresh) await onRefresh() }}
+              />
             )}
             <Button size="sm" onClick={() => onSelect(scan.id)}>View</Button>
             {deleting ? (

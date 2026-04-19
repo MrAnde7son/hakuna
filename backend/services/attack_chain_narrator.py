@@ -19,7 +19,7 @@ import logging
 from collections import Counter
 from typing import Iterable
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from services.llm_provider import call_llm
@@ -65,52 +65,23 @@ def narrate_attack_paths(
             WHERE org_id = :org_id
               AND narrative IS NULL
               AND chain_length >= 2
-              AND severity = ANY(:severities)
-            ORDER BY
-                CASE severity WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 ELSE 3 END,
-                chain_length DESC
-            LIMIT :limit
-        """) if _is_postgres(db) else text("""
-            SELECT id, title, severity, steps, entry_asset_id, target_asset_id, chain_length
-            FROM attack_paths
-            WHERE org_id = :org_id
-              AND narrative IS NULL
-              AND chain_length >= 2
               AND severity IN :severities
             ORDER BY
+                COALESCE(score, 0) DESC,
                 CASE severity WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 ELSE 3 END,
-                chain_length DESC
+                chain_length DESC,
+                id DESC
             LIMIT :limit
-        """),
+        """).bindparams(bindparam("severities", expanding=True)),
         {
             "org_id": org_id,
-            "severities": (tuple(eligible_severities) if not _is_postgres(db) else eligible_severities),
+            "severities": list(eligible_severities),
             "limit": max_paths,
         },
     ).fetchall()
 
     if not rows:
         return {"processed": 0, "skipped": 0, "no_candidates": True}
-
-    # Precompute mitigation ranking across all paths for this org
-    all_paths = db.execute(
-        text("""
-            SELECT id, steps
-            FROM attack_paths
-            WHERE org_id = :org_id
-        """),
-        {"org_id": org_id},
-    ).fetchall()
-
-    finding_to_paths: Counter[int] = Counter()
-    for p in all_paths:
-        steps = _parse_steps(p.steps)
-        seen_in_this_path: set[int] = set()
-        for step in steps:
-            fid = step.get("finding_id")
-            if fid and fid not in seen_in_this_path:
-                finding_to_paths[fid] += 1
-                seen_in_this_path.add(fid)
 
     processed = 0
     skipped_no_llm = 0
@@ -134,23 +105,13 @@ def narrate_attack_paths(
             skipped_no_llm += 1
             continue
 
-        # Mitigation ranking: for each finding in this chain, count its total
-        # participation across all paths for this org. Higher = fixing it
-        # breaks more chains.
-        mitigations = _rank_mitigations(steps, finding_to_paths)
-
+        # Mitigation ranking is now populated upfront for every path via
+        # rank_all_mitigations(); here we only write the LLM-derived prose.
         db.execute(
-            text("""
-                UPDATE attack_paths
-                SET narrative = :narrative,
-                    recommended_mitigations = :mitigations
-                WHERE id = :id
-            """),
-            {
-                "id": row.id,
-                "narrative": narrative.strip(),
-                "mitigations": json.dumps(mitigations),
-            },
+            text(
+                "UPDATE attack_paths SET narrative = :narrative WHERE id = :id"
+            ),
+            {"id": row.id, "narrative": narrative.strip()},
         )
         processed += 1
 
@@ -227,6 +188,60 @@ def _build_narrative_context(db: Session, path_row, steps: list[dict]) -> dict:
         "chain_length": path_row.chain_length,
         "steps": enriched_steps,
     }
+
+
+def rank_all_mitigations(db: Session, org_id: int) -> int:
+    """Compute and persist `recommended_mitigations` for every attack path
+    in the org. Independent of LLM narration — mitigation ranking is pure
+    statistics (chain participation counts) and must always be populated,
+    even for paths the narrator skipped due to its top-N budget.
+
+    Returns the number of rows updated.
+    """
+    paths = db.execute(
+        text(
+            "SELECT id, steps FROM attack_paths WHERE org_id = :org_id"
+        ),
+        {"org_id": org_id},
+    ).fetchall()
+    if not paths:
+        return 0
+
+    # Count each finding's cross-path participation once. If the same finding
+    # appears twice in the same chain, still count it only once for that chain.
+    finding_to_paths: Counter[int] = Counter()
+    parsed_steps: dict[int, list[dict]] = {}
+    for p in paths:
+        steps = _parse_steps(p.steps)
+        parsed_steps[p.id] = steps
+        seen_in_this_path: set[int] = set()
+        for step in steps:
+            fid = step.get("finding_id")
+            if fid and fid not in seen_in_this_path:
+                finding_to_paths[fid] += 1
+                seen_in_this_path.add(fid)
+
+    updated = 0
+    # Commit periodically so the SQLite writer lock doesn't stay held the
+    # full duration — matches the pattern in finding_correlator.
+    COMMIT_BATCH = 50
+    for p in paths:
+        steps = parsed_steps.get(p.id) or []
+        if not steps:
+            continue
+        mitigations = _rank_mitigations(steps, finding_to_paths)
+        db.execute(
+            text(
+                "UPDATE attack_paths SET recommended_mitigations = :m WHERE id = :id"
+            ),
+            {"id": p.id, "m": json.dumps(mitigations)},
+        )
+        updated += 1
+        if updated % COMMIT_BATCH == 0:
+            db.commit()
+    db.commit()
+    logger.info("org=%d mitigations ranked for %d attack paths", org_id, updated)
+    return updated
 
 
 def _rank_mitigations(steps: list[dict], finding_to_paths: Counter[int]) -> list[dict]:

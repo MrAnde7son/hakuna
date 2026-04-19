@@ -25,6 +25,17 @@ if DATABASE_URL.startswith("sqlite"):
     def _set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        # WAL lets readers proceed while a writer holds the DB — without it, a
+        # long scan-upload transaction blocks every other request (including
+        # the auth SELECT on users) with "database is locked".
+        cursor.execute("PRAGMA journal_mode=WAL")
+        # Wait up to 30s for a contended lock instead of erroring immediately.
+        # Background jobs (correlation, EASM enrichment, report rendering) can
+        # hold write locks for tens of seconds; at 10s we saw spurious
+        # 'database is locked' errors from the APScheduler event-cursor updates
+        # while correlation was running.
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
 # Postgres: enforce a default statement timeout so a runaway query on one

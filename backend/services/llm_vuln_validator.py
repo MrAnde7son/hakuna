@@ -83,7 +83,8 @@ def validate_findings(
                    a.hostname, a.ip, a.os, a.easm_data
             FROM findings f
             JOIN assets a ON a.id = f.asset_id
-            WHERE a.org_id = :org_id
+            JOIN scans s ON s.id = f.scan_id
+            WHERE s.org_id = :org_id
               AND f.severity >= :min_sev
               AND f.source_type = 'vm_scanner'
               AND f.plugin_family = 'Nuclei'

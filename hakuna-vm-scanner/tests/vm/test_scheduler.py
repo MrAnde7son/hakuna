@@ -1,5 +1,7 @@
 """Tests for the VM scanner scheduler."""
 
+import socket
+import urllib.error
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,6 +9,7 @@ import pytest
 from scanner.vm.scheduler import (
     _get_latest_github_release,
     _get_local_template_version,
+    _template_sync_check_async,
 )
 
 
@@ -33,6 +36,57 @@ class TestLocalTemplateVersion:
         # The function iterates config_paths, so we need to mock more carefully
         # Just test it doesn't crash and returns a string
         assert isinstance(result, str)
+
+
+class TestGithubReleaseFetch:
+    """DNS failures must not emit a stack trace at warning level — this
+    task runs every 6h and a network-restricted container would flood
+    logs with identical tracebacks otherwise."""
+
+    def test_dns_error_logs_info_not_warning(self, caplog):
+        err = urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+        with patch("scanner.vm.scheduler.urllib.request.urlopen", side_effect=err):
+            with caplog.at_level("INFO", logger="scanner.vm.scheduler"):
+                result = _get_latest_github_release()
+        assert result is None
+        # Must log at INFO, not WARNING; must NOT include a traceback.
+        records = [r for r in caplog.records if "GitHub unreachable" in r.getMessage()]
+        assert records, "expected one compact info log for DNS failure"
+        assert all(r.levelname == "INFO" and r.exc_info is None for r in records)
+
+    def test_unexpected_error_still_logs_warning(self, caplog):
+        with patch(
+            "scanner.vm.scheduler.urllib.request.urlopen",
+            side_effect=RuntimeError("bug"),
+        ):
+            with caplog.at_level("WARNING", logger="scanner.vm.scheduler"):
+                result = _get_latest_github_release()
+        assert result is None
+        assert any(
+            r.levelname == "WARNING" and r.exc_info for r in caplog.records
+        )
+
+
+class TestTemplateSyncDisabled:
+    """Operator opt-out for air-gapped deployments — skip the HTTP call
+    entirely when TEMPLATE_SYNC_DISABLED is set, so we never even try
+    to resolve GitHub."""
+
+    def test_disabled_flag_short_circuits(self, monkeypatch):
+        monkeypatch.setenv("TEMPLATE_SYNC_DISABLED", "1")
+        with patch("scanner.vm.scheduler._get_latest_github_release") as gh:
+            import asyncio
+            result = asyncio.run(_template_sync_check_async())
+        assert result == {"status": "disabled"}
+        gh.assert_not_called()
+
+    def test_unreachable_surfaces_local_version(self, monkeypatch):
+        monkeypatch.delenv("TEMPLATE_SYNC_DISABLED", raising=False)
+        with patch("scanner.vm.scheduler._get_local_template_version", return_value="v10.0.0"):
+            with patch("scanner.vm.scheduler._get_latest_github_release", return_value=None):
+                import asyncio
+                result = asyncio.run(_template_sync_check_async())
+        assert result == {"status": "unreachable", "local_version": "v10.0.0"}
 
 
 class TestBeatSchedule:

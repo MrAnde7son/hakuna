@@ -70,19 +70,47 @@ _router = TemplateRouter()
 def _parse_nuclei_stats(stderr_lines: list[str]) -> dict:
     """Extract execution stats from Nuclei stderr output.
 
-    Nuclei prints lines like:
-      [INF] Templates: 12352 | ...
-      [INF] Total requests: 45210 | ...
+    Nuclei's output format has drifted across versions; we match several
+    shapes so the parser survives template/binary upgrades:
+
+      - Startup banner (authoritative count at scan start):
+          ``[INF] Templates loaded for current scan: 4820``
+          ``[INF] Executing 4820 signed templates from ...``
+      - Periodic `-stats` ticker and final summary:
+          ``| Templates: 389/389 | Requests: 566/566 | Matched: 0 |``
+          ``Duration: 00:00:12 | Requests: 566 | Matched: 0 | Templates: 389 |``
+      - Legacy summary:
+          ``[INF] Total requests: 45210``
+          ``[INF] Results found: 3``
+
+    For ratio forms (``N/M``) we capture the first number (executed so
+    far); at 100%% progress this equals the total, which is what callers
+    expect for ``templates_loaded`` / ``requests_sent``.
     """
     stats: dict = {}
     for line in stderr_lines:
+        m = re.search(r"Templates loaded for current scan:\s*(\d+)", line, re.IGNORECASE)
+        if m:
+            stats["templates_loaded"] = int(m.group(1))
+            continue
+        m = re.search(r"Executing\s+(\d+)\s+(?:signed\s+)?templates", line, re.IGNORECASE)
+        if m:
+            stats.setdefault("templates_loaded", int(m.group(1)))
+            continue
         m = re.search(r"Templates:\s*(\d+)", line)
         if m:
             stats["templates_loaded"] = int(m.group(1))
         m = re.search(r"Total requests:\s*(\d+)", line, re.IGNORECASE)
         if m:
             stats["requests_sent"] = int(m.group(1))
+            continue
+        m = re.search(r"Requests:\s*(\d+)", line, re.IGNORECASE)
+        if m:
+            stats["requests_sent"] = int(m.group(1))
         m = re.search(r"Results found:\s*(\d+)", line, re.IGNORECASE)
+        if m:
+            stats["results_found"] = int(m.group(1))
+        m = re.search(r"Matched:\s*(\d+)", line, re.IGNORECASE)
         if m:
             stats["results_found"] = int(m.group(1))
     return stats
@@ -630,15 +658,19 @@ async def _run_nuclei_adhoc_async(
 
         # Build nuclei command — broad template selection for ad-hoc scans.
         # Credentials (if any) become -H flags; values are never logged.
-        # -dast is always on for adhoc: targets are raw URLs/hostnames (always
-        # web-ish) and we're loading the whole community tree, which includes
-        # dast/ and fuzzing/ templates that require the flag to execute.
+        # NOTE: `-dast` is deliberately NOT set here. In nuclei `-dast`
+        # *restricts* execution to templates with `fuzzing:` blocks — it
+        # does not add them to an existing selection. Enabling it on an
+        # adhoc scan against a target with no discoverable parameters
+        # (e.g. a SaaS landing page) resulted in 0 requests sent and 0
+        # matches in ~15s. Leaving it off runs the full community set so
+        # detection/exposure templates can match; the per-asset scan path
+        # still opts into `-dast` conditionally via _has_dast_template.
         cred_args = _credentials_to_header_args(credentials)
         cmd = [
             NUCLEI_BIN,
             "-target", target,
             "-t", NUCLEI_COMMUNITY_TEMPLATES,
-            "-dast",
             *cred_args,
             "-jsonl",
             "-timeout", str(NUCLEI_TIMEOUT),
@@ -758,6 +790,11 @@ async def _run_nuclei_adhoc_async(
             "findings": findings,
             "asset_id": str(asset_id) if asset_id else None,
         }
+        # Mirror run_nuclei_scan: when nothing was loaded, surface stderr so
+        # the backend can triage template path / -dast / auth issues without
+        # needing shell access to the worker.
+        if nuclei_stats.get("templates_loaded", 0) == 0:
+            adhoc_payload["nuclei_stderr"] = "\n".join(stderr_chunks)[:3000]
         if scan_plan:
             adhoc_payload["plan_version_executed"] = scan_plan.get("version")
             adhoc_payload["plan_consumed"] = False  # PR 2 flips this to True
