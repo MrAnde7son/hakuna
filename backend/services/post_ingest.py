@@ -81,6 +81,16 @@ def finalize_batch(
         lambda: _prioritize_findings(db, scan_id, org_id, new_finding_ids=new_finding_ids),
     )
 
+    # Severity counter recomputation — recounts critical/high/medium/low/info
+    # per asset across ALL findings (not just this scan) for assets touched by
+    # the batch. Required because scanners that link findings to pre-existing
+    # assets (VM scanner → EASM-discovered web_app) otherwise leave the
+    # counter columns stale, and the assets inventory reads them directly.
+    results["severity_counts"] = _step(
+        db, "Asset severity counts (batch)",
+        lambda: _recompute_asset_severity_counts(db, scan_id, new_finding_ids=new_finding_ids),
+    )
+
     # Risk score recomputation — only affects assets in this scan
     results["risk_scores"] = _step(
         db, "Risk score recomputation (batch)",
@@ -239,6 +249,15 @@ def finalize_scan(
     results["prioritize"] = _step(
         db, "Finding prioritization",
         lambda: _prioritize_findings(db, scan_id, org_id),
+    )
+
+    # 12.7. Asset severity counter recomputation — scan-wide version.
+    # Same purpose as the batch step: keep Asset.critical_count/high_count/etc.
+    # consistent with Finding rows across scan boundaries (VM scanner, EASM,
+    # integrations often link findings to assets from a different scan).
+    results["severity_counts"] = _step(
+        db, "Asset severity counts",
+        lambda: _recompute_asset_severity_counts(db, scan_id),
     )
 
     # 13. Asset risk score recomputation
@@ -645,6 +664,88 @@ def _prioritize_findings(db, scan_id, org_id, new_finding_ids=None):
             "Prioritization: %d finding(s) scored for scan %d", updated, scan_id
         )
     return {"updated": updated, "total": len(findings)}
+
+
+def _recompute_asset_severity_counts(db, scan_id, new_finding_ids=None):
+    """Recount Finding.severity per asset and write back the stored counter
+    columns (critical_count/high_count/medium_count/low_count/info_count).
+
+    Scope of *which assets* to recount:
+      - If new_finding_ids is provided → the distinct asset_ids on those rows
+        (batch mode — called from finalize_batch).
+      - Otherwise → every asset that has a finding in this scan, unioned
+        with assets whose scan_id == scan_id (scan-wide mode).
+
+    For each asset in scope, the count is computed across *all* findings
+    linked to that asset, regardless of scan_id. This is deliberate: VM
+    scanner and other streaming ingestors link new findings to pre-existing
+    assets (from an earlier EASM scan, say), and the per-scan recount in
+    app.py misses those. Recounting over all findings is idempotent.
+    """
+    from models.models import Asset, Finding
+    from sqlalchemy import func as sa_func
+
+    if new_finding_ids:
+        asset_ids = [
+            r[0] for r in db.query(Finding.asset_id)
+            .filter(Finding.id.in_(new_finding_ids))
+            .filter(Finding.asset_id.isnot(None))
+            .distinct().all()
+        ]
+    else:
+        finding_asset_ids = [
+            r[0] for r in db.query(Finding.asset_id)
+            .filter(Finding.scan_id == scan_id)
+            .filter(Finding.asset_id.isnot(None))
+            .distinct().all()
+        ]
+        scan_asset_ids = [
+            r[0] for r in db.query(Asset.id)
+            .filter(Asset.scan_id == scan_id).all()
+        ]
+        asset_ids = list(set(finding_asset_ids) | set(scan_asset_ids))
+
+    if not asset_ids:
+        return {"updated": 0, "total": 0}
+
+    rows = (
+        db.query(Finding.asset_id, Finding.severity, sa_func.count(Finding.id))
+        .filter(Finding.asset_id.in_(asset_ids))
+        .group_by(Finding.asset_id, Finding.severity)
+        .all()
+    )
+    count_map: dict[int, dict[int, int]] = {}
+    for asset_id, sev, cnt in rows:
+        count_map.setdefault(asset_id, {})[sev] = cnt
+
+    assets = db.query(Asset).filter(Asset.id.in_(asset_ids)).all()
+    updated = 0
+    for asset in assets:
+        counts = count_map.get(asset.id, {})
+        new_c = counts.get(4, 0)
+        new_h = counts.get(3, 0)
+        new_m = counts.get(2, 0)
+        new_l = counts.get(1, 0)
+        new_i = counts.get(0, 0)
+        if (
+            asset.critical_count != new_c
+            or asset.high_count != new_h
+            or asset.medium_count != new_m
+            or asset.low_count != new_l
+            or asset.info_count != new_i
+        ):
+            asset.critical_count = new_c
+            asset.high_count = new_h
+            asset.medium_count = new_m
+            asset.low_count = new_l
+            asset.info_count = new_i
+            updated += 1
+    if updated:
+        db.flush()
+        logger.info(
+            "Severity counts: %d asset(s) updated (scan %s)", updated, scan_id
+        )
+    return {"updated": updated, "total": len(assets)}
 
 
 def _recompute_risk_scores(db, scan_id):

@@ -1128,6 +1128,7 @@ AGENT_TEMPLATES = [
             "update_finding_validation",
             # Read-only context
             "get_finding_detail", "get_asset_profile",
+            "get_threat_cves", "list_exceptions",
             "fetch_url", "search_web",
             # Memory + clarification
             "read_scratchpad", "write_scratchpad", "request_clarification",
@@ -1140,6 +1141,43 @@ AGENT_TEMPLATES = [
         "suggested_input": "Validate finding {finding_id} — determine whether it's truly exploitable and record your verdict.",
     },
 ]
+
+
+# ── Protocol Audit templates (auto-expanded from AUDITS registry) ────
+#
+# One template per (protocol, mission) tuple. Kept after the hand-written
+# entries above so the static validator_agent etc. remain the source of truth
+# for their shape; protocol audits are a uniform family so we generate them.
+def _build_protocol_audit_templates() -> list[dict]:
+    from agents.audit_registry import AUDITS
+
+    out: list[dict] = []
+    for proto, audit in AUDITS.items():
+        for mission in audit.missions:
+            prompt = ENHANCED_PROMPTS.get(mission.prompt_key)
+            if not prompt:
+                continue
+            out.append({
+                "id": f"{proto}_audit_{mission.key}",
+                "name": f"{audit.label} — {mission.label}",
+                "description": mission.description,
+                "icon": "shield-alert",
+                "system_prompt": prompt,
+                "tools": list(audit.tool_names),
+                "guardrails": {
+                    "max_steps": mission.suggested_budget,
+                    "read_only": False,           # emit_finding writes Finding rows
+                    "autonomy_level": "autonomous",  # read-only probes; no HITL needed
+                },
+                "suggested_input": (
+                    f"Audit asset {{asset_id}} for {mission.label.lower()} exposures via {proto.upper()}."
+                ),
+                "hidden": True,  # not user-browsable; kicked off via /api/audits/run
+            })
+    return out
+
+
+AGENT_TEMPLATES.extend(_build_protocol_audit_templates())
 
 
 def _schedule_to_dict(s: AgentSchedule):

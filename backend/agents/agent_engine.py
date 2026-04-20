@@ -570,8 +570,17 @@ def _execute_tool(agent: Agent, db: Session, tool_name: str, tool_input: Optiona
         else:
             # Coerce params to match schema types (fixes LLMs sending "50" instead of 50)
             coerced_input = _coerce_params(tool_input, tool_def["parameters"])
-            # Inject agent_id for scratchpad tools
-            enriched_input = {**coerced_input, "_agent_id": agent.id, "_org_id": agent.org_id}
+            # Inject agent_id for scratchpad tools; merge any per-run context
+            # the caller stashed in agent.memory["_run_ctx"] (protocol audits
+            # use this to pass relay_agent_id / credential_id / mission to tools
+            # without exposing them to the LLM's tool schema).
+            run_ctx = (agent.memory or {}).get("_run_ctx") or {}
+            enriched_input = {
+                **run_ctx,
+                **coerced_input,
+                "_agent_id": agent.id,
+                "_org_id": agent.org_id,
+            }
             result = tool_def["fn"](db, enriched_input)
     except ValueError as e:
         result = {"error": str(e)}

@@ -734,7 +734,7 @@ function PoliciesTab({ asset }) {
 const SOURCE_LABELS = {
   nessus: 'Nessus', tenable_sc: 'Tenable.sc', qualys: 'Qualys', rapid7: 'Rapid7',
   openvas: 'OpenVAS', crowdstrike: 'CrowdStrike', wiz: 'Wiz', easm: 'EASM',
-  vm_scanner: 'VM Scanner',
+  vm_scanner: 'VM Audit',
 }
 
 const FIELD_LABELS = {

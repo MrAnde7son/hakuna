@@ -1112,9 +1112,10 @@ def _classify_vm_target(target: str) -> dict:
         parsed = urlparse(t)
         if parsed.scheme in ("http", "https") and parsed.hostname:
             host = parsed.hostname
+            from services.dedup import normalize_web_app_url
             return {
                 "asset_type": "web_app",
-                "url": t,
+                "url": normalize_web_app_url(t) or t,
                 "ip": host if _is_ip(host) else None,
                 "hostname": host if not _is_ip(host) else None,
             }

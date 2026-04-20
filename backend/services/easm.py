@@ -764,6 +764,22 @@ async def get_easm_scan_status(hakuna_org_id: str, scan_id: str) -> Optional[dic
     return await _hakuna_request("GET", f"/orgs/{hakuna_org_id}/scans/{scan_id}")
 
 
+async def cancel_easm_scan(hakuna_org_id: str, scan_id: str) -> tuple[bool, Optional[str]]:
+    """Ask hakuna-scanner to cancel a queued/running scan run.
+
+    Returns ``(ok, error_message)``. ``ok=True`` means the scanner flipped
+    the run to cancelled; ``ok=False`` means it was unreachable or already
+    in a terminal state (the caller can still update local metadata so the
+    UI stops polling).
+    """
+    data, status, err = await _hakuna_request_detailed(
+        "POST", f"/orgs/{hakuna_org_id}/scans/{scan_id}/cancel"
+    )
+    if data is not None:
+        return True, None
+    return False, err or (f"HTTP {status}" if status else "Scanner unreachable")
+
+
 async def get_easm_assets(
     hakuna_org_id: str,
     limit: int = 1000,
@@ -1671,9 +1687,10 @@ def _import_assets_for_domain(
             if not type_kwargs:
                 http_url = (ea.get("http_url") or "").strip()
                 if http_url:
+                    from services.dedup import normalize_web_app_url
                     type_kwargs = {
                         "asset_type": "web_app",
-                        "asset_identity": {"url": http_url},
+                        "asset_identity": {"url": normalize_web_app_url(http_url) or http_url},
                         "asset_attributes": {},
                     }
 

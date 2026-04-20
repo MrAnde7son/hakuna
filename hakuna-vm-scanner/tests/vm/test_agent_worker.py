@@ -30,10 +30,14 @@ from scanner.vm.agent_specialists import (
     AgentContext,
     TOOLS,
     _check_pattern_handler,
+    _diff_responses_handler,
     _emit_finding_handler,
     _has_any_http_endpoint,
     _has_auth_surface,
     _has_parameterised_endpoint,
+    _memory_set_handler,
+    _oob_check_handler,
+    _oob_get_probe_handler,
     _request_handler,
     _safe_url,
     _summary_handler,
@@ -455,6 +459,167 @@ class TestSimpleHandlers:
         assert out["status"] == "acknowledged"
 
 
+class TestMemorySetHandler:
+    def test_stores_and_returns_total_keys(self):
+        ctx = _ctx()
+        out = _memory_set_handler({"key": "waf_present", "value": "cloudflare"}, ctx)
+        assert out["status"] == "stored"
+        assert ctx.shared_memory["waf_present"] == "cloudflare"
+        assert out["total_keys"] == 1
+
+    def test_requires_key(self):
+        assert "error" in _memory_set_handler({"value": "x"}, _ctx())
+
+    def test_requires_value(self):
+        assert "error" in _memory_set_handler({"key": "k"}, _ctx())
+
+    def test_coerces_dict_value_to_json(self):
+        """Non-string values are JSON-serialised before storage so the
+        next specialist's initial message stays flat text."""
+        ctx = _ctx()
+        _memory_set_handler({"key": "cookie", "value": {"sid": "abc"}}, ctx)
+        assert '"sid"' in ctx.shared_memory["cookie"]
+
+    def test_truncates_long_values(self):
+        ctx = _ctx()
+        _memory_set_handler({"key": "k", "value": "x" * 10_000}, ctx)
+        assert len(ctx.shared_memory["k"]) <= 2_000
+
+    def test_rejects_when_full(self):
+        """Capacity cap protects downstream initial-message size."""
+        ctx = _ctx(shared_memory={f"k{i}": "v" for i in range(32)})
+        out = _memory_set_handler({"key": "new", "value": "v"}, ctx)
+        assert "error" in out
+        assert "new" not in ctx.shared_memory
+
+    def test_overwrite_existing_key_allowed_when_full(self):
+        """Hitting the cap shouldn't stop the agent from correcting
+        a prior memory entry."""
+        ctx = _ctx(shared_memory={f"k{i}": "v" for i in range(32)})
+        out = _memory_set_handler({"key": "k0", "value": "updated"}, ctx)
+        assert out["status"] == "stored"
+        assert ctx.shared_memory["k0"] == "updated"
+
+
+class TestDiffResponsesHandler:
+    def test_detects_status_change(self):
+        out = _diff_responses_handler({
+            "baseline": {"status_code": 200, "body": "ok", "elapsed_ms": 10, "body_length": 2},
+            "probe": {"status_code": 500, "body": "err", "elapsed_ms": 12, "body_length": 3},
+        }, _ctx())
+        assert out["status_changed"] is True
+        assert out["status_baseline"] == 200
+        assert out["status_probe"] == 500
+
+    def test_computes_length_and_timing_deltas(self):
+        """Timing delta is how a time-based SQLi specialist confirms.
+        Length delta is how a boolean-based SQLi specialist confirms."""
+        out = _diff_responses_handler({
+            "baseline": {"status_code": 200, "body": "a", "elapsed_ms": 50, "body_length": 1},
+            "probe": {"status_code": 200, "body": "a" * 100, "elapsed_ms": 5_200, "body_length": 100},
+        }, _ctx())
+        assert out["length_delta"] == 99
+        assert out["elapsed_delta_ms"] == 5_150
+
+    def test_reports_added_and_removed_lines(self):
+        out = _diff_responses_handler({
+            "baseline": {"status_code": 200, "body": "hello\nworld", "elapsed_ms": 10},
+            "probe": {"status_code": 200, "body": "hello\nuid=0(root)", "elapsed_ms": 10},
+        }, _ctx())
+        assert "uid=0(root)" in out["added_lines"]
+        assert "world" in out["removed_lines"]
+
+    def test_rejects_non_dict_inputs(self):
+        """LLMs occasionally pass strings instead of objects. Surface the
+        error rather than crashing."""
+        out = _diff_responses_handler({"baseline": "{}", "probe": {}}, _ctx())
+        assert "error" in out
+
+
+class TestOOBHandlers:
+    def test_get_probe_unconfigured(self, monkeypatch):
+        """With no collaborator URL set, the tool returns configured=False
+        and the prompts instruct the model to skip blind-case branches."""
+        monkeypatch.setattr("scanner.vm.agent_specialists._OOB_BASE_URL", "")
+        out = _oob_get_probe_handler({}, _ctx())
+        assert out["configured"] is False
+        assert "error" in out
+
+    def test_get_probe_configured_returns_unique_token(self, monkeypatch):
+        monkeypatch.setattr(
+            "scanner.vm.agent_specialists._OOB_BASE_URL", "https://collab.example",
+        )
+        ctx = _ctx()
+        out = _oob_get_probe_handler({}, ctx)
+        assert out["configured"] is True
+        assert out["probe_url"].startswith("https://collab.example/probe/")
+        assert out["token"] in out["probe_url"]
+        # Token is recorded in shared_memory for audit trail.
+        assert out["token"] in ctx.shared_memory.get("_oob_tokens", "")
+
+    def test_get_probe_tokens_accumulate(self, monkeypatch):
+        """Multiple probes in one run are recorded without clobbering."""
+        monkeypatch.setattr(
+            "scanner.vm.agent_specialists._OOB_BASE_URL", "https://collab.example",
+        )
+        ctx = _ctx()
+        t1 = _oob_get_probe_handler({}, ctx)["token"]
+        t2 = _oob_get_probe_handler({}, ctx)["token"]
+        assert t1 != t2
+        assert t1 in ctx.shared_memory["_oob_tokens"]
+        assert t2 in ctx.shared_memory["_oob_tokens"]
+
+    def test_check_unconfigured(self, monkeypatch):
+        monkeypatch.setattr("scanner.vm.agent_specialists._OOB_BASE_URL", "")
+        out = _oob_check_handler({"token": "abc"}, _ctx())
+        assert out["configured"] is False
+
+    def test_check_requires_token(self, monkeypatch):
+        monkeypatch.setattr(
+            "scanner.vm.agent_specialists._OOB_BASE_URL", "https://collab.example",
+        )
+        out = _oob_check_handler({}, _ctx(http_client=MagicMock()))
+        assert "error" in out
+
+    def test_check_parses_hits_field(self, monkeypatch):
+        monkeypatch.setattr(
+            "scanner.vm.agent_specialists._OOB_BASE_URL", "https://collab.example",
+        )
+        mock_client = MagicMock()
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"hits": ["GET /probe/abc from 1.2.3.4", "another"]}
+        mock_client.get.return_value = mock_resp
+        out = _oob_check_handler({"token": "abc"}, _ctx(http_client=mock_client))
+        assert out["hit_count"] == 2
+        assert len(out["hits"]) == 2
+
+    def test_check_parses_interactions_field(self, monkeypatch):
+        """interact.sh-style collaborators use 'interactions' not 'hits' —
+        we accept both to avoid locking users into one backend."""
+        monkeypatch.setattr(
+            "scanner.vm.agent_specialists._OOB_BASE_URL", "https://collab.example",
+        )
+        mock_client = MagicMock()
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"interactions": [{"type": "dns"}]}
+        mock_client.get.return_value = mock_resp
+        out = _oob_check_handler({"token": "abc"}, _ctx(http_client=mock_client))
+        assert out["hit_count"] == 1
+
+    def test_check_handles_collaborator_error(self, monkeypatch):
+        """A 500 from the collaborator shouldn't bubble into the LLM as an
+        unclassified tool exception — it should come back as a diagnostic
+        error dict so the model can move on."""
+        monkeypatch.setattr(
+            "scanner.vm.agent_specialists._OOB_BASE_URL", "https://collab.example",
+        )
+        mock_client = MagicMock()
+        mock_client.get.return_value = MagicMock(status_code=503)
+        out = _oob_check_handler({"token": "abc"}, _ctx(http_client=mock_client))
+        assert "error" in out
+        assert "503" in out["error"]
+
+
 class TestToolSchemas:
     def test_anthropic_schemas_include_all_tools(self):
         schemas = tool_schemas_for_anthropic()
@@ -486,6 +651,36 @@ class TestSpecialistsRegistry:
             assert "emit_finding" in spec.system_prompt.lower() or \
                    "emit finding" in spec.system_prompt.lower() or \
                    "EMIT_FINDING" in spec.system_prompt
+
+
+class TestBuildInitialMessage:
+    def test_omits_memory_block_when_empty(self):
+        """Default state — no prior specialists have run, so no MEMORY
+        section should appear and pollute the prompt."""
+        from scanner.vm.agent_worker import _build_initial_message
+        msg = _build_initial_message(_ctx(), SPECIALISTS["injection"])
+        assert "MEMORY" not in msg
+
+    def test_includes_memory_block_when_populated(self):
+        """Hints from earlier specialists must land in the prompt so the
+        model uses them instead of re-discovering."""
+        from scanner.vm.agent_worker import _build_initial_message
+        ctx = _ctx(shared_memory={"valid_user_id": "42", "waf_present": "false"})
+        msg = _build_initial_message(ctx, SPECIALISTS["authz"])
+        assert "MEMORY" in msg
+        assert "valid_user_id" in msg
+        assert "42" in msg
+
+    def test_hides_underscore_prefixed_keys(self):
+        """Internal bookkeeping (OOB token list) must not leak into the
+        prompt — the model doesn't need our audit trail, and it bloats
+        the context for every specialist."""
+        from scanner.vm.agent_worker import _build_initial_message
+        ctx = _ctx(shared_memory={"_oob_tokens": "abc,def", "jwt_leaked": "true"})
+        msg = _build_initial_message(ctx, SPECIALISTS["authn"])
+        assert "_oob_tokens" not in msg
+        assert "abc" not in msg
+        assert "jwt_leaked" in msg
 
 
 class TestRunAgentScanAdhoc:

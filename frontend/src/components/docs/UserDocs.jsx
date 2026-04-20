@@ -163,7 +163,7 @@ function DocContent() {
         <SubHeading>What You Can Do</SubHeading>
         <Ul>
           <li><strong>Import scans</strong> — Upload <Code>.nessus</Code>, <Code>.html</Code>, or <Code>.csv</Code> exports from Tenable Nessus, Qualys, Rapid7, or OpenVAS. Format is auto-detected.</li>
-          <li><strong>Run active scans</strong> — Discover external-facing assets with the built-in EASM scanner, or run authenticated vulnerability scans with the VM scanner (powered by Nuclei).</li>
+          <li><strong>Run audits</strong> — Discover external-facing assets with the built-in EASM audit, or run remote vulnerability audits with the VM audit (powered by Nuclei).</li>
           <li><strong>Prioritize findings</strong> — Findings are scored 0–10 using CVSS, VPR, exploit availability, SSVC decision, asset criticality, and plugin family.</li>
           <li><strong>Manage assets</strong> — Browse all assets with risk scores, ownership, environment tags, and blast-radius analysis.</li>
           <li><strong>Track remediation</strong> — Create campaigns from templates, assign owners, attach workflows, and monitor progress.</li>
@@ -196,8 +196,8 @@ function DocContent() {
         </P>
         <Ul>
           <li><strong>Upload a scan file</strong> — Drag and drop a Nessus, Qualys, Rapid7, or OpenVAS export. Supported formats: <Code>.nessus</Code> (XML, richest data), <Code>.html</Code>, <Code>.csv</Code>. Format is auto-detected.</li>
-          <li><strong>EASM scan</strong> — Enter a domain to run an external attack surface discovery scan. Discovers subdomains, open ports, technologies, and TLS certificates without uploading a file.</li>
-          <li><strong>VM scan</strong> — Run an authenticated Nuclei-powered vulnerability scan against targets in your environment.</li>
+          <li><strong>EASM audit</strong> — Enter a domain to run an external attack surface discovery audit. Discovers subdomains, open ports, technologies, and TLS certificates without uploading a file.</li>
+          <li><strong>VM audit</strong> — Run a Nuclei-powered remote vulnerability audit against targets in your environment.</li>
         </Ul>
         <P>
           After import, findings are parsed, scored, enriched with CVSS/VPR/SSVC data, and deduplicated automatically.
@@ -224,7 +224,7 @@ function DocContent() {
       <Section id="scans">
         <Heading id="scans"><Globe size={22} /> Scans & Discovery</Heading>
         <P>
-          The Scans page (<Code>/scans</Code>) is your hub for all scan data — imported files, EASM discoveries, and VM scan results.
+          The Scans page (<Code>/scans</Code>) is your hub for all scan data — imported files, EASM audits, and VM audit results.
           All scan types appear in the same list and can be selected in the <strong>Active Scan</strong> sidebar filter.
         </P>
 
@@ -251,13 +251,13 @@ function DocContent() {
           <li><strong>Continuous monitoring</strong> — Re-run scans at any time to detect new exposure.</li>
         </Ul>
         <P>
-          To start an EASM scan, click <strong>New Scan → EASM Scan</strong> on the Scans page, enter your target domain, and click <strong>Start Discovery</strong>.
+          To start an EASM audit, click <strong>New Scan → EASM Audit</strong> on the Scans page, enter your target domain, and click <strong>Start Discovery</strong>.
           Results are imported automatically as a new scan entry with source type <em>EASM</em>.
         </P>
 
-        <SubHeading>VM Scanner — Active Vulnerability Scanning</SubHeading>
+        <SubHeading>VM Audit — Remote Vulnerability Auditing</SubHeading>
         <P>
-          The VM scanner runs authenticated vulnerability checks against your internal or external assets using Nuclei templates.
+          The VM audit runs remote vulnerability checks against your internal or external assets using Nuclei templates.
           It is designed for assets that are confirmed alive (validated via liveness checks) and have been enriched with port/service data.
         </P>
         <Ul>
@@ -265,10 +265,10 @@ function DocContent() {
           <li><strong>Template routing</strong> — Templates are automatically selected based on CPE data, detected technologies, and service fingerprints.</li>
           <li><strong>Custom templates</strong> — Upload your own Nuclei YAML templates for organization-specific checks.</li>
           <li><strong>Deduplication</strong> — Findings are deduplicated on <Code>(org, asset, finding_type, title)</Code> — re-scanning updates existing open findings rather than creating duplicates.</li>
-          <li><strong>Celery scheduling</strong> — VM scan jobs run as background tasks and can be scheduled for continuous coverage.</li>
+          <li><strong>Celery scheduling</strong> — VM audit jobs run as background tasks and can be scheduled for continuous coverage.</li>
         </Ul>
         <P>
-          To start a VM scan, click <strong>New Scan → VM Scan</strong> and select the target scope.
+          To start a VM audit, click <strong>New Scan → VM Audit</strong> and select the target scope.
           Results appear as a new scan entry with source type <em>VM</em>.
         </P>
 

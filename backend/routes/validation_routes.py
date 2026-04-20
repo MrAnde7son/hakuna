@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/validation", tags=["Validation"])
 
 
 @router.post("/run/{finding_id}")
-def run_validation(
+async def run_validation(
     finding_id: int,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),

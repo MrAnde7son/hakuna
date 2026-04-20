@@ -217,6 +217,69 @@ def get_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[List
     }
 
 
+@router.post("/api/scans/{scan_id}/cancel")
+async def cancel_scan(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Stop an in-flight VM or EASM scan.
+
+    - VM: revokes Celery task ids on the VM scanner (best-effort) and flips
+      ``raw_metadata.status`` to ``"cancelled"`` so the UI and reaper stop
+      tracking it.
+    - EASM: asks hakuna-scanner to mark the ScanRun cancelled. Celery chain
+      keeps draining to completion on the scanner side (the per-stage DB
+      writes don't hold a cancellation check), but the UI stops polling and
+      the local Scan row reflects the cancelled state.
+    - Uploaded scans (nessus, qualys, …) are ingest-only — returns 400.
+    """
+    q = apply_org_filter(db.query(Scan), Scan, org_ids)
+    scan = q.filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+
+    meta = scan.raw_metadata or {}
+    status = meta.get("status")
+    if status not in ("running", "queued"):
+        raise HTTPException(409, f"Scan is not running (status={status or 'completed'})")
+
+    from core.audit import log_audit
+    scan_name = scan.scan_name or scan.filename
+
+    if scan.source_type == "vm_scanner":
+        from services.vm_scanner import _revoke_vm_jobs_sync
+        job_ids = meta.get("job_ids") or []
+        revoked = _revoke_vm_jobs_sync(job_ids)
+        scan.raw_metadata = {
+            **meta,
+            "status": "cancelled",
+            "error": "Cancelled by user",
+        }
+        log_audit(db, "cancel", "scan", scan_id, entity_name=scan_name, org_id=scan.org_id)
+        db.commit()
+        return {"message": "Scan cancelled", "revoked_jobs": revoked, "total_jobs": len(job_ids)}
+
+    if scan.source_type == "easm":
+        from services.easm import cancel_easm_scan
+        hakuna_org_id = meta.get("hakuna_org_id")
+        run_id = meta.get("run_id")
+        remote_ok, remote_err = (False, None)
+        if hakuna_org_id and run_id:
+            remote_ok, remote_err = await cancel_easm_scan(hakuna_org_id, run_id)
+        scan.raw_metadata = {
+            **meta,
+            "status": "cancelled",
+            "error": "Cancelled by user" + (f" (scanner: {remote_err})" if remote_err and not remote_ok else ""),
+        }
+        log_audit(db, "cancel", "scan", scan_id, entity_name=scan_name, org_id=scan.org_id)
+        db.commit()
+        return {"message": "Scan cancelled", "scanner_cancelled": remote_ok}
+
+    raise HTTPException(400, f"Scans of type '{scan.source_type}' cannot be cancelled")
+
+
 @router.delete("/api/scans/{scan_id}")
 def delete_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[List[int]] = Depends(get_accessible_org_ids)):
     # Import these from app to avoid duplicating cascade logic

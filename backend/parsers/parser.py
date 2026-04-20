@@ -508,10 +508,11 @@ def parse_nessus_xml(xml_content: str, filename: str) -> dict:
         # For WAS web_app assets, preserve the full URL as identity
         if asset.get("asset_type") == "web_app":
             from urllib.parse import urlparse
+            from services.dedup import normalize_web_app_url
             parsed_url = urlparse(host_name)
             domain = parsed_url.hostname or host_name
             asset["asset_identity"] = {
-                "url": host_name,
+                "url": normalize_web_app_url(host_name) or host_name,
                 "domain": domain,
                 "display_name": host_name,
             }

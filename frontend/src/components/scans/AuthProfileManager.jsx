@@ -65,7 +65,7 @@ export default function AuthProfileManager() {
     <div>
       <PageHeader
         title={t('authProfiles.title', 'Auth Profiles')}
-        subtitle={t('authProfiles.subtitle', 'Login flows for authenticated VM scans')}
+        subtitle={t('authProfiles.subtitle', 'Login flows for authenticated VM audits')}
         action={
           <Button onClick={() => setEditing({})}>
             <Plus size={14} /> {t('authProfiles.new', 'New profile')}

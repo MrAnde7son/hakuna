@@ -159,6 +159,45 @@ class TestAdhocTargetFanOut:
         call_kwargs = mock_agents.apply_async.call_args.kwargs
         assert call_kwargs["kwargs"]["categories"] is None
 
+    @patch("scanner.vm.api._web_url_for_agent", new_callable=AsyncMock)
+    @patch("scanner.vm.api.run_agent_scan_adhoc")
+    @patch("scanner.vm.api.run_nuclei_adhoc")
+    def test_bare_host_agent_dispatch_when_web(self, mock_nuclei, mock_agents, mock_probe, client):
+        """Bare hostnames get a dispatch-time web probe. When the probe
+        resolves a scheme, the normalized URL is forwarded to the agent."""
+        mock_nuclei.apply_async.return_value = MagicMock(id="nuclei-1")
+        mock_agents.apply_async.return_value = MagicMock(id="agent-1")
+        mock_probe.return_value = "https://example.com"
+
+        resp = client.post("/vm/scans/", json={
+            "targets": ["example.com"],
+            "enable_agents": True,
+        })
+
+        assert resp.status_code == 200
+        assert "agent-1" in resp.json()["job_ids"]
+        mock_agents.apply_async.assert_called_once()
+        assert mock_agents.apply_async.call_args.kwargs["args"][0] == "https://example.com"
+
+    @patch("scanner.vm.api._web_url_for_agent", new_callable=AsyncMock)
+    @patch("scanner.vm.api.run_agent_scan_adhoc")
+    @patch("scanner.vm.api.run_nuclei_adhoc")
+    def test_bare_host_agent_skipped_when_not_web(self, mock_nuclei, mock_agents, mock_probe, client):
+        """Non-web targets (probe returns None) don't fan out to agents —
+        the worker would just skip all five specialists and log 'not
+        applicable', wasting a Celery slot and LLM provider handshake."""
+        mock_nuclei.apply_async.return_value = MagicMock(id="nuclei-1")
+        mock_probe.return_value = None
+
+        resp = client.post("/vm/scans/", json={
+            "targets": ["ssh-only.example.com"],
+            "enable_agents": True,
+        })
+
+        assert resp.status_code == 200
+        assert resp.json()["job_ids"] == ["nuclei-1"]
+        mock_agents.apply_async.assert_not_called()
+
     @patch("scanner.vm.api.run_agent_scan_adhoc")
     @patch("scanner.vm.api.run_content_discovery_adhoc")
     @patch("scanner.vm.api.run_nuclei_adhoc")

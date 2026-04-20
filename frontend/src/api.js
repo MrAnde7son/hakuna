@@ -307,6 +307,7 @@ export const skipOnboarding = () => request('/onboarding/skip', { method: 'POST'
 // Scans
 export const getScans = () => request('/scans')
 export const deleteScan = (id) => request(`/scans/${id}`, { method: 'DELETE' })
+export const cancelScan = (id) => request(`/scans/${id}/cancel`, { method: 'POST' })
 export const getScanStatus = (id) => request(`/scans/${id}`)
 export const updateScanSchedule = (id, schedule) => request(`/scans/${id}/schedule`, {
   method: 'PATCH',
@@ -1136,14 +1137,15 @@ export const rescanVmScan = (scanId, overrides = null) => request(`/vm/rescan/${
 
 export const getVmHealth = () => request('/vm/health').catch(() => null)
 
-// ── WMI Inventory (authenticated Windows scans via relay) ─
-export const startWmiScan = (data) => request('/wmi/scan', {
+// ── Protocol Audits (credentialed ReAct audits per protocol) ─
+export const listAuditProtocols = () => request('/audits/protocols')
+export const getAuditProtocol = (protocol) => request(`/audits/protocols/${protocol}`)
+export const startAuditRun = (data) => request('/audits/run', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(data),
 })
-
-export const getWmiProfiles = () => request('/wmi/profiles')
+export const getAuditScan = (scanId) => request(`/audits/scans/${scanId}`)
 
 // ── Auth Profiles (authenticated VM scans) ────────────────
 export const listAuthProfiles = () => request('/auth-profiles')

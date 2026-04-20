@@ -36,30 +36,50 @@ VALIDATOR_AGENT_DESCRIPTION = (
 )
 
 
+VALIDATOR_TOOLS = [
+    "probe_url_status", "probe_tcp_connect",
+    "fetch_response_headers", "check_response_body",
+    "update_finding_validation",
+    "get_finding_detail", "get_asset_profile",
+    "get_threat_cves", "list_exceptions",
+    "fetch_url", "search_web",
+    "read_scratchpad", "write_scratchpad", "request_clarification",
+]
+
+
 def get_or_create_validator_agent(db: Session, org_id: int) -> Agent:
-    """Return the per-org validator Agent, creating it on first use."""
+    """Return the per-org validator Agent, creating it on first use.
+
+    For existing auto-managed agents, reconciles the tool list and system
+    prompt against the current definition so schema/prompt updates apply
+    without a migration.
+    """
+    from agents.agent_prompts import ENHANCED_PROMPTS
+
     existing = db.query(Agent).filter(
         Agent.org_id == org_id,
         Agent.name == VALIDATOR_AGENT_NAME,
     ).first()
     if existing:
+        desired_prompt = ENHANCED_PROMPTS["validator_agent"]
+        changed = False
+        if set(existing.tools or []) != set(VALIDATOR_TOOLS):
+            existing.tools = VALIDATOR_TOOLS
+            changed = True
+        if existing.system_prompt != desired_prompt:
+            existing.system_prompt = desired_prompt
+            changed = True
+        if changed:
+            db.commit()
+            db.refresh(existing)
         return existing
-
-    from agents.agent_prompts import ENHANCED_PROMPTS
 
     agent = Agent(
         org_id=org_id,
         name=VALIDATOR_AGENT_NAME,
         description=VALIDATOR_AGENT_DESCRIPTION,
         system_prompt=ENHANCED_PROMPTS["validator_agent"],
-        tools=[
-            "probe_url_status", "probe_tcp_connect",
-            "fetch_response_headers", "check_response_body",
-            "update_finding_validation",
-            "get_finding_detail", "get_asset_profile",
-            "fetch_url", "search_web",
-            "read_scratchpad", "write_scratchpad", "request_clarification",
-        ],
+        tools=list(VALIDATOR_TOOLS),
         guardrails={
             "max_steps": 10,
             "read_only": False,
@@ -96,16 +116,42 @@ def dispatch_validation_for_finding(db: Session, finding_id: int) -> dict:
         return {"error": f"finding {finding_id} asset has no scan/org context"}
     agent = get_or_create_validator_agent(db, org_id)
 
+    llm_val = f.llm_validation or {}
+    prior_reasoning = (llm_val.get("reasoning") or "").strip()
+
+    context_lines = [
+        f"Plugin: {f.plugin_name or f.plugin_id}",
+        f"Severity: {f.severity_label or f.severity}",
+        f"Asset: {asset.hostname or asset.ip}"
+        + (f" (OS: {asset.os})" if asset.os else "")
+        + (" [internet-facing]" if getattr(asset, "is_internet_facing", False) else ""),
+        f"Port/Proto: {f.port}/{f.protocol or 'tcp'}",
+        f"CVEs: {f.cves or []}",
+        "",
+        "Threat intel (denormalized on finding):",
+        f"  KEV: {bool(f.is_kev)}  EPSS: {f.epss_score}  "
+        f"Exploit available: {bool(f.exploit_available)}  "
+        f"Maturity: {f.exploit_maturity or 'unknown'}  "
+        f"Ransomware-linked: {bool(getattr(f, 'ransomware_linked', False))}  "
+        f"Zero-day: {bool(getattr(f, 'zero_day', False))}",
+        "",
+        "Analyst-set context (trust these — they were entered by a human):",
+        f"  Reachability: {f.ctx_reachability or 'unset'}",
+        f"  Exploitability: {f.ctx_exploitability or 'unset'}",
+        f"  Accessibility: {f.ctx_accessibility or 'unset'}",
+        f"  Compensating controls: {f.ctx_compensating_control or 'none recorded'}",
+    ]
+    if prior_reasoning:
+        context_lines += ["", "Prior LLM validator flagged this as needs_review:", f"  {prior_reasoning}"]
+
     user_input = (
         f"Validate finding {finding_id}.\n\n"
-        f"Plugin: {f.plugin_name or f.plugin_id}\n"
-        f"Severity: {f.severity_label or f.severity}\n"
-        f"Asset: {asset.hostname or asset.ip}\n"
-        f"Port: {f.port}\n"
-        f"CVEs: {f.cves or []}\n\n"
-        f"Determine whether this finding is genuinely exploitable in the "
-        f"target's current configuration. Use safe probes only, then call "
-        f"update_finding_validation with your verdict."
+        + "\n".join(context_lines)
+        + "\n\nDetermine whether this finding is genuinely exploitable in the "
+        "target's current configuration. Before probing, check for existing "
+        "exceptions/compensating controls (list_exceptions) and enrich CVE "
+        "intel if needed (get_threat_cves). Use safe probes only, then call "
+        "update_finding_validation with your verdict."
     )
 
     agent_id = agent.id

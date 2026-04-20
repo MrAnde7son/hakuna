@@ -81,8 +81,8 @@ from routes.benchmark_routes import router as benchmark_router
 from routes.easm_routes import router as easm_router
 from routes.sbom_routes import router as sbom_router
 from routes.vm_routes import router as vm_router
-from routes.wmi_scan_routes import router as wmi_scan_router
 from routes.auth_profile_routes import router as auth_profile_router
+from routes.audit_routes import router as audit_router
 from routes.integration_builder_routes import router as integration_builder_router
 from routes.discovery_routes import router as discovery_router
 from routes.billing_routes import router as billing_router
@@ -310,8 +310,8 @@ app.include_router(benchmark_router)
 app.include_router(easm_router)
 app.include_router(sbom_router)
 app.include_router(vm_router)
-app.include_router(wmi_scan_router)
 app.include_router(auth_profile_router)
+app.include_router(audit_router)
 app.include_router(integration_builder_router)
 app.include_router(discovery_router)
 app.include_router(billing_router)

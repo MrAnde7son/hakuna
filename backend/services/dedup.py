@@ -13,12 +13,56 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from sqlalchemy import func, or_
 
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent.parent / "config" / "dedup_config.json"
+
+
+def normalize_web_app_url(url: str | None) -> str | None:
+    """Canonicalize a web_app URL so the dedup engine matches URLs emitted
+    by different scanners. Nessus WAS writes a trailing slash
+    (``http://host:8080/``), VM scanner and EASM write the raw target
+    (``http://host:8080``) — without this they land as two distinct assets.
+
+    Rules (conservative — only collapse semantically-identical URLs):
+      - lowercase scheme and host
+      - drop default ports (80 for http, 443 for https)
+      - strip a trailing slash when the path is exactly "/"
+      - leave query, fragment, userinfo, and non-root paths untouched
+    """
+    if not url or not isinstance(url, str):
+        return url
+    s = url.strip()
+    if "://" not in s:
+        return s
+    try:
+        p = urlparse(s)
+    except Exception:
+        return s
+    scheme = (p.scheme or "").lower()
+    host = (p.hostname or "").lower()
+    if not scheme or not host:
+        return s
+    port = p.port
+    if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
+        netloc = host
+    elif port:
+        netloc = f"{host}:{port}"
+    else:
+        netloc = host
+    if p.username:
+        userinfo = p.username
+        if p.password:
+            userinfo = f"{userinfo}:{p.password}"
+        netloc = f"{userinfo}@{netloc}"
+    path = p.path or ""
+    if path == "/":
+        path = ""
+    return urlunparse((scheme, netloc, path, p.params or "", p.query or "", p.fragment or ""))
 
 
 def _unpack_entity_map(entry: tuple) -> tuple:
@@ -392,19 +436,21 @@ def _get_asset_field(asset_or_dict, field: str):
     """Resolve a field value from an asset: try model column first, then asset_identity dict.
     For host-type fields (ip, hostname, fqdn, netbios_name) the column is authoritative.
     For non-host type fields (url, instance_id, etc.) they live inside asset_identity.
+    ``url`` values are normalized so dedup ignores cosmetic differences
+    (trailing slash, default port, scheme/host casing).
     """
     if isinstance(asset_or_dict, dict):
         val = asset_or_dict.get(field)
         if val is None:
             val = (asset_or_dict.get("asset_identity") or {}).get(field)
-        return val
     else:
-        # SQLAlchemy model
         val = getattr(asset_or_dict, field, None)
         if val is None:
             identity = asset_or_dict.asset_identity or {}
             val = identity.get(field)
-        return val
+    if field == "url" and isinstance(val, str):
+        return normalize_web_app_url(val)
+    return val
 
 
 _HOST_COLUMN_FIELDS = {"ip", "hostname", "fqdn", "netbios_name", "mac_address", "os"}

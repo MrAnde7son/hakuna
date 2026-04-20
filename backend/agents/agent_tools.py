@@ -975,6 +975,8 @@ def get_finding_detail(db: Session, params: dict):
         "cvss2": f.cvss2_score, "cvss3": f.cvss3_score, "vpr": f.vpr_score,
         "epss": f.epss_score, "is_kev": f.is_kev,
         "exploit_available": f.exploit_available, "exploit_maturity": f.exploit_maturity,
+        "ransomware_linked": getattr(f, "ransomware_linked", None),
+        "zero_day": getattr(f, "zero_day", None),
         "cves": f.cves, "synopsis": f.synopsis,
         "description": (f.description or "")[:2000],
         "solution": f.solution,
@@ -989,6 +991,11 @@ def get_finding_detail(db: Session, params: dict):
         "first_seen": f.first_seen.isoformat() if f.first_seen else None,
         "times_seen": f.times_seen,
         "is_regression": f.is_regression,
+        "ctx_reachability": f.ctx_reachability,
+        "ctx_exploitability": f.ctx_exploitability,
+        "ctx_accessibility": f.ctx_accessibility,
+        "ctx_compensating_control": f.ctx_compensating_control,
+        "llm_validation": f.llm_validation,
         "asset_ip": asset.ip if asset else None,
         "asset_hostname": asset.hostname if asset else None,
         "asset_os": asset.os if asset else None,
@@ -6584,3 +6591,13 @@ def get_exposure_context(db: Session, params: dict):
             for f in findings
         ],
     }
+
+
+# ── Protocol audit tool palettes ─────────────────────────────────────────
+#
+# Side-effect imports: each protocol's tools module (`agents.tools.wmi_tools`,
+# later `ldap_tools`, `smb_tools`, …) registers its tools via `@agent_tool`
+# and its `ProtocolAudit` entry via `register_audit()`. Importing the package
+# triggers both registrations so TOOL_REGISTRY and AUDITS are populated before
+# any route or agent_engine reads from them.
+from agents import tools as _protocol_tools  # noqa: F401, E402

@@ -31,6 +31,7 @@ import asyncio
 import logging
 from typing import Any
 
+from .method_registry import register_method
 from .wmi_catalog import (
     STDREGPROV_UNINSTALL_PATHS,
     UNINSTALL_VALUES,
@@ -56,6 +57,15 @@ HKEY_LOCAL_MACHINE = 0x80000002
 
 class WMIError(Exception):
     """Any WMI connection / query failure surfaced back to the backend."""
+
+
+@register_method("wmi_query")
+async def wmi_query_handler(ws, task, transport_config, credentials, params) -> dict:
+    """Task method handler — adapts the executor's uniform signature to run_wmi_queries."""
+    target = (transport_config or {}).get("target")
+    profiles = (params or {}).get("profiles") or []
+    timeout_s = int((params or {}).get("timeout_s") or 120)
+    return await run_wmi_queries(target, credentials or {}, profiles, timeout_s)
 
 
 async def run_wmi_queries(

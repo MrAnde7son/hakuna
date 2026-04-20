@@ -169,3 +169,33 @@ async def get_scan(
     if not scan:
         raise HTTPException(404, "Scan run not found")
     return scan
+
+
+@router.post("/{scan_id}/cancel", response_model=ScanRunResponse)
+async def cancel_scan(
+    org_id: uuid.UUID,
+    scan_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark a queued/running scan as cancelled.
+
+    Celery tasks already dispatched keep running to completion — revoking
+    the chain mid-flight isn't safe here (the workers hold DB transactions
+    per-stage). But flipping the status gates the UI poll loop and prevents
+    downstream stages from updating the row further in practice, since the
+    status checks in the task code skip terminal rows.
+    """
+    result = await db.execute(
+        select(ScanRun).where(ScanRun.id == scan_id, ScanRun.org_id == org_id)
+    )
+    scan = result.scalar_one_or_none()
+    if not scan:
+        raise HTTPException(404, "Scan run not found")
+    if scan.status not in ("queued", "running"):
+        raise HTTPException(409, f"Scan is already {scan.status}")
+    scan.status = "cancelled"
+    scan.finished_at = datetime.utcnow()
+    scan.error = "Cancelled by user"
+    await db.commit()
+    await db.refresh(scan)
+    return scan

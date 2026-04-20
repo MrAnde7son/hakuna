@@ -1,6 +1,6 @@
 """Specialist vulnerability agent worker.
 
-Runs the five specialist agents (injection, XSS, SSRF, authn, authz)
+Runs the six specialist agents (injection, XSS, SSRF, authn, authz, files)
 against a single asset and emits findings in the Celery result payload
 using the same shape as ``nuclei_worker`` / ``schemathesis_worker`` so
 the backend's ``_import_nuclei_job_findings`` ingest path handles them
@@ -227,7 +227,7 @@ def run_agent_scan(
     """Run the specialist agents against one asset.
 
     ``categories`` lets the backend pin specialists explicitly (e.g.,
-    "only run authz on this re-test"). When None, runs all five and
+    "only run authz on this re-test"). When None, runs all six and
     lets ``select_applicable_specialists`` gate individual agents.
     """
     try:
@@ -775,16 +775,32 @@ def _build_initial_message(ctx: AgentContext, spec: SpecialistSpec) -> str:
             ][:10],
         })
 
+    # Surface what earlier specialists stashed via memory_set. Strip
+    # internal bookkeeping keys (leading underscore) so the model only
+    # sees actionable hints, not our OOB token list.
+    visible_memory = {
+        k: v for k, v in ctx.shared_memory.items() if not k.startswith("_")
+    }
+
     lines = [
         f"SPECIALIST: {spec.display_name}",
         f"TARGET: {ctx.target}",
         f"ASSET_ID: {ctx.asset_id}",
         f"AUTH_HEADERS_PROVIDED: {sorted(ctx.headers.keys())}",
+    ]
+    if visible_memory:
+        lines.extend([
+            "",
+            "MEMORY (from earlier specialists on this asset — trust these hints, they're concrete facts not guesses):",
+            json.dumps(visible_memory, indent=2),
+        ])
+    lines.extend([
+        "",
         f"ENDPOINTS (first {len(ep_slice)} of {len(ctx.endpoints)}):",
         json.dumps(ep_slice, indent=2),
         "",
         "Begin. Use tools to probe. Call emit_finding for every confirmed vuln. Call summary when done.",
-    ]
+    ])
     return "\n".join(lines)
 
 

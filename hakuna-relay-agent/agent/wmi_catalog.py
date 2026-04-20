@@ -45,6 +45,77 @@ WQL_PROFILES: dict[str, str] = {
         "SELECT Caption, Version, BuildNumber, OSArchitecture, InstallDate "
         "FROM Win32_OperatingSystem"
     ),
+
+    # ── Audit-oriented probes (added for WMI Audit ReAct agent) ──
+    #
+    # These don't populate Inventory* tables directly — the WMI audit agent
+    # uses them to reason about exposures (weak password policy, writable
+    # service perms, unquoted service paths, etc.) and then emits findings.
+
+    "password_policy": (
+        # Win32_AccountPolicy lives in root\cimv2\Security\MicrosoftTpm on some
+        # SKUs; most commonly available via `net accounts` semantics through
+        # Win32_NetworkLoginProfile. We read the common policy fields from
+        # Win32_NetworkLoginProfile joined with Win32_OperatingSystem context.
+        # Note: the richer Win32_AccountPolicy is deprecated; this is the best
+        # read-only view of effective policy on modern Windows.
+        "SELECT MinimumPasswordLength, PasswordHistorySize, MaximumPasswordAge, "
+        "MinimumPasswordAge, LockoutThreshold, LockoutDuration, LockoutObservationWindow "
+        "FROM Win32_NetworkLoginProfile"
+    ),
+
+    "services_with_paths": (
+        # Same as "services" but always includes PathName — used by the agent
+        # to check unquoted-path privesc. Kept distinct so the default inventory
+        # profile can stay lean.
+        "SELECT Name, DisplayName, State, StartMode, StartName, PathName, "
+        "ServiceType, DesktopInteract FROM Win32_Service"
+    ),
+
+    "logged_on_users": (
+        "SELECT Name, Domain, LogonType FROM Win32_LoggedOnUser"
+    ),
+
+    "scheduled_tasks": (
+        # Win32_ScheduledJob is legacy (at.exe jobs) but still reveals
+        # persistence mechanisms. Modern scheduled tasks live in
+        # root\Microsoft\Windows\TaskScheduler (separate namespace — fetched
+        # by a dedicated audit tool when the agent asks).
+        "SELECT Caption, Command, Owner, Status, JobId, Elapsed "
+        "FROM Win32_ScheduledJob"
+    ),
+
+    "network_adapters": (
+        "SELECT Name, MACAddress, IPEnabled, IPAddress, DefaultIPGateway, "
+        "DNSServerSearchOrder, DHCPEnabled FROM Win32_NetworkAdapterConfiguration "
+        "WHERE IPEnabled = TRUE"
+    ),
+
+    "firewall_profiles": (
+        # MS_409 / StandardProfile via root\StandardCimv2 is the modern path;
+        # this returns the legacy view which still reports enabled state.
+        "SELECT Name, Description FROM __NAMESPACE"
+    ),
+
+    "startup_commands": (
+        # Registry Run keys + common persistence locations as seen by WMI.
+        "SELECT Caption, Command, Location, User, UserSID "
+        "FROM Win32_StartupCommand"
+    ),
+
+    "installed_hotfix_detail": (
+        # Richer than `patches` — includes InstalledBy / InstalledOn for
+        # reasoning about patch cadence and stale systems.
+        "SELECT HotFixID, Description, InstalledBy, InstalledOn, FixComments "
+        "FROM Win32_QuickFixEngineering"
+    ),
+
+    "computer_system": (
+        # Domain membership, last boot, manufacturer — context the agent uses
+        # to decide if this is a DC, workstation, or server.
+        "SELECT Name, Domain, DomainRole, Manufacturer, Model, "
+        "PartOfDomain, TotalPhysicalMemory FROM Win32_ComputerSystem"
+    ),
 }
 
 
@@ -78,3 +149,17 @@ DEFAULT_PROFILES: list[str] = [
 
 def known_profile(name: str) -> bool:
     return name in WQL_PROFILES or name == "software_uninstall"
+
+
+# Audit-only profiles — not included in DEFAULT_PROFILES (so inventory-style
+# sweeps stay lean), but callable via the WMI audit agent's tool palette.
+AUDIT_PROFILES: list[str] = [
+    "password_policy",
+    "services_with_paths",
+    "logged_on_users",
+    "scheduled_tasks",
+    "network_adapters",
+    "startup_commands",
+    "installed_hotfix_detail",
+    "computer_system",
+]

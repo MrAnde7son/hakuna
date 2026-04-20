@@ -1,18 +1,19 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import {
   Upload, CheckCircle, AlertCircle, FileText, X, Radar, Globe, Plus,
   RefreshCw, Trash2, Search, Clock, Server, Shield, Loader,
   Play, MonitorSmartphone, History, ChevronDown, ChevronUp, Edit2, Save,
-  Key, Radio, Terminal,
+  Square, Terminal, Key, Radio, ShieldAlert,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import useURLFilters from '../../hooks/useURLFilters.js'
 import {
-  uploadScan, deleteScan, getScanStatus, getEasmStatus, scanEasmDomain, rescanEasmScan, refreshEasmScan, setupEasm,
+  uploadScan, deleteScan, cancelScan, getScanStatus, getEasmStatus, scanEasmDomain, rescanEasmScan, refreshEasmScan, setupEasm,
   getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
-  startWmiScan, getWmiProfiles, getCredentials, createCredential, getRelayAgents,
+  getCredentials, createCredential, getRelayAgents,
+  listAuditProtocols, startAuditRun, getBillingUsage,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, useConfirm, useToast } from '../shared/ui.jsx'
 import { getAssetDisplayName, getAssetTarget } from '../../utils/assetDisplay.js'
@@ -28,7 +29,8 @@ const SOURCE_TYPES = {
   rapid7: { label: 'Rapid7', icon: Shield, color: '#f97316', bg: '#f9731622' },
   openvas: { label: 'OpenVAS', icon: Shield, color: '#22c55e', bg: '#22c55e22' },
   vm_scanner: { label: 'VM', icon: MonitorSmartphone, color: '#ec4899', bg: '#ec489922' },
-  wmi_inventory: { label: 'WMI', icon: Terminal, color: '#14b8a6', bg: '#14b8a622' },
+  wmi_audit: { label: 'WMI Audit', icon: Terminal, color: '#14b8a6', bg: '#14b8a622' },
+  // Future protocol audits land here as siblings: ldap_audit, smb_audit, etc.
 }
 
 function getSourceMeta(type) {
@@ -161,7 +163,7 @@ function UploadRow({ upload, onDismiss }) {
 
 // ── New scan modal ───────────────────────────────────────────────────
 
-function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, onSetupEasm, onVmScan, onWmiScan }) {
+function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, onSetupEasm, onVmScan, onAuditScan }) {
   const [mode, setMode] = useState(null)
   const [domain, setDomain] = useState('')
   const [scanType, setScanType] = useState('full')
@@ -213,9 +215,9 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
 
         {!mode && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <SourceOption icon={Globe} label="EASM Scan" description={easmEnabled ? 'Scan a domain' : 'Set up EASM scanning'} color="#0ea5e9" onClick={() => setMode(easmEnabled ? 'easm' : 'easm-setup')} />
-            <SourceOption icon={MonitorSmartphone} label="VM Scanner" description="Vulnerability scan" color="#ec4899" onClick={() => setMode('vm')} />
-            <SourceOption icon={Terminal} label="WMI Inventory" description="Authenticated Windows scan" color="#14b8a6" onClick={() => setMode('wmi')} />
+            <SourceOption icon={Globe} label="EASM Audit" description={easmEnabled ? 'Audit a domain' : 'Set up EASM auditing'} color="#0ea5e9" onClick={() => setMode(easmEnabled ? 'easm' : 'easm-setup')} />
+            <SourceOption icon={MonitorSmartphone} label="VM Audit" description="Remote vulnerability audit" color="#ec4899" onClick={() => setMode('vm')} />
+            <SourceOption icon={ShieldAlert} label="Authenticated Audit" description="Credentialed ReAct audit (WMI, more coming)" color="#14b8a6" onClick={() => setMode('audit')} />
             <SourceOption icon={Upload} label="Import File" description="Nessus XML, HTML, CSV" color="#6366f1" onClick={() => setMode('upload')} />
           </div>
         )}
@@ -278,11 +280,11 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
           />
         )}
 
-        {mode === 'wmi' && (
-          <WmiScannerPanel
+        {mode === 'audit' && (
+          <AuditScanPanel
             onClose={onClose}
             onBack={() => setMode(null)}
-            onWmiScan={onWmiScan}
+            onAuditScan={onAuditScan}
           />
         )}
 
@@ -375,9 +377,9 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
   const [authProfiles, setAuthProfiles] = useState([])
   const [authProfileId, setAuthProfileId] = useState('')
   // Specialist LLM agents — off by default because they cost tokens.
-  // `agentCategories === null` means "run all five"; setting it narrows
+  // `agentCategories === null` means "run all six"; setting it narrows
   // the dispatch to the chosen subset. Matches the scanner API contract.
-  const AGENT_CATEGORIES = ['injection', 'xss', 'ssrf', 'authn', 'authz']
+  const AGENT_CATEGORIES = ['injection', 'xss', 'ssrf', 'authn', 'authz', 'files']
   const [enableAgents, setEnableAgents] = useState(false)
   const [agentCategories, setAgentCategories] = useState(null)
 
@@ -731,25 +733,32 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
 }
 
 
-// ── WMI inventory panel ──────────────────────────────────────────────
+// ── Authenticated Audit panel (protocol-scoped ReAct) ────────────────
 //
-// Credentialed Windows inventory scan. Unlike VM (which takes raw targets),
-// WMI writes Inventory* rows against existing Asset IDs — so only the
-// asset-list flow, no manual-target tab. The submit call is synchronous
-// end-to-end: start_wmi_scan writes rows and runs finalize_scan before
-// returning, so findings (from sbom_pipeline CVE correlation) are visible
-// as soon as we navigate.
-const CRED_CONNECTOR_ID = 'windows_host'
+// One panel serves every registered protocol audit (currently WMI; LDAP/SMB/
+// Kerberos/SNMP/WinRM land as siblings). The protocol + mission catalog is
+// read from /api/audits/protocols so new protocols appear automatically when
+// they're registered on the backend.
+//
+// UX flow:
+//   1. Protocol dropdown (one entry per AUDITS registration)
+//   2. Mission dropdown (populates from chosen protocol's missions)
+//   3. Credential + relay pickers (filtered by the protocol's requirements)
+//   4. Asset picker (multi-select)
+//   5. Budget editors (max_steps, wallclock_s) pre-filled from the mission
+//   6. Rough cost estimate ($ per host × host count)
+//   7. Start → scan row + background agent runs
 
-function WmiScannerPanel({ onClose, onBack, onWmiScan }) {
-  const [credentials, setCredentials] = useState([])
-  const [relayAgents, setRelayAgents] = useState([])
-  const [profiles, setProfiles] = useState([])
+function AuditScanPanel({ onClose, onBack, onAuditScan }) {
+  const [protocols, setProtocols] = useState([])             // [{protocol, label, missions, credential_connector_ids, ...}]
+  const [selectedProtocol, setSelectedProtocol] = useState('')
+  const [selectedMission, setSelectedMission] = useState('')
   const [loadingPrereqs, setLoadingPrereqs] = useState(true)
 
+  const [credentials, setCredentials] = useState([])
+  const [relayAgents, setRelayAgents] = useState([])
   const [credentialId, setCredentialId] = useState('')
   const [relayAgentId, setRelayAgentId] = useState('')
-  const [selectedProfiles, setSelectedProfiles] = useState([])
   const [showCreateCred, setShowCreateCred] = useState(false)
 
   const [assets, setAssets] = useState([])
@@ -760,28 +769,38 @@ function WmiScannerPanel({ onClose, onBack, onWmiScan }) {
   const [selectedAssets, setSelectedAssets] = useState(new Map())
   const [assetSearch, setAssetSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
+
+  const [maxSteps, setMaxSteps] = useState(20)
+  const [wallclockS, setWallclockS] = useState(600)
+
+  const [usage, setUsage] = useState(null)     // {used, limit, percentage, warning, exceeded, tier}
+
   const [scanning, setScanning] = useState(false)
   const [error, setError] = useState(null)
 
-  // ── Load prerequisites ──
+  // ── Load protocols + credentials + relays + token usage ──
   useEffect(() => {
     let cancelled = false
     async function loadPrereqs() {
       try {
-        const [creds, relays, profileResp] = await Promise.all([
+        const [protoResp, creds, relays, usageResp] = await Promise.all([
+          listAuditProtocols().catch(() => ({ audits: [] })),
           getCredentials().catch(() => []),
           getRelayAgents().catch(() => ({ items: [] })),
-          getWmiProfiles().catch(() => ({ profiles: [] })),
+          getBillingUsage().catch(() => null),
         ])
         if (cancelled) return
-        const winCreds = (creds || []).filter(c => c.connector_id === CRED_CONNECTOR_ID)
-        setCredentials(winCreds)
+        const audits = protoResp?.audits || []
+        setProtocols(audits)
+        if (audits.length === 1) {
+          setSelectedProtocol(audits[0].protocol)
+          if (audits[0].missions?.length) setSelectedMission(audits[0].missions[0].key)
+        }
+        setCredentials(Array.isArray(creds) ? creds : [])
         const connected = (relays?.items || relays || []).filter(r => r.is_connected || r.status === 'connected')
         setRelayAgents(connected)
-        setProfiles(profileResp?.profiles || [])
-        setSelectedProfiles(profileResp?.profiles || [])
-        if (winCreds.length === 1) setCredentialId(winCreds[0].id)
         if (connected.length === 1) setRelayAgentId(connected[0].id)
+        setUsage(usageResp || null)
       } finally {
         if (!cancelled) setLoadingPrereqs(false)
       }
@@ -790,13 +809,40 @@ function WmiScannerPanel({ onClose, onBack, onWmiScan }) {
     return () => { cancelled = true }
   }, [])
 
+  // Current protocol + mission objects from the catalog
+  const currentProtocol = protocols.find(p => p.protocol === selectedProtocol)
+  const currentMission = currentProtocol?.missions?.find(m => m.key === selectedMission)
+
+  // Filter credentials by the protocol's allowed connector_ids
+  const eligibleCredentials = currentProtocol
+    ? credentials.filter(c => (currentProtocol.credential_connector_ids || []).includes(c.connector_id))
+    : credentials
+
+  // Reset mission + credential when the protocol changes so stale selections don't leak
+  useEffect(() => {
+    if (!currentProtocol) return
+    if (currentProtocol.missions?.length && !currentProtocol.missions.find(m => m.key === selectedMission)) {
+      setSelectedMission(currentProtocol.missions[0].key)
+    }
+    if (credentialId && !eligibleCredentials.find(c => c.id === credentialId)) {
+      setCredentialId('')
+    }
+  }, [selectedProtocol]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Pre-fill max_steps from the mission's suggested_budget
+  useEffect(() => {
+    if (currentMission?.suggested_budget) {
+      setMaxSteps(currentMission.suggested_budget)
+    }
+  }, [currentMission])
+
   // Debounce asset search
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(assetSearch), 300)
     return () => clearTimeout(t)
   }, [assetSearch])
 
-  // First page (+ when search changes)
+  // First page of assets (+ when search changes)
   useEffect(() => {
     setLoading(true)
     setPage(1)
@@ -825,54 +871,83 @@ function WmiScannerPanel({ onClose, onBack, onWmiScan }) {
   }
 
   const hasMore = assets.length < total
-  const toggleAsset = (a) => {
+  const allSelected = assets.length > 0 && assets.every(a => selectedAssets.has(a.id))
+
+  const toggleAll = () => {
     setSelectedAssets(prev => {
       const next = new Map(prev)
-      if (next.has(a.id)) next.delete(a.id)
-      else next.set(a.id, a)
+      if (allSelected) assets.forEach(a => next.delete(a.id))
+      else assets.forEach(a => next.set(a.id, a))
       return next
     })
   }
-  const toggleProfile = (p) => {
-    setSelectedProfiles(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p])
+  const toggle = (asset) => {
+    setSelectedAssets(prev => {
+      const next = new Map(prev)
+      if (next.has(asset.id)) next.delete(asset.id)
+      else next.set(asset.id, asset)
+      return next
+    })
   }
 
-  const handleCreateCred = async (draft) => {
+  // Rough cost estimate — pennies-level order of magnitude, not billing-grade.
+  // Calibrated to claude-sonnet-4-6 at ~15k tokens per host for a medium audit.
+  const { costPerHostUSD, tokensPerHost } = useMemo(() => {
+    if (!currentMission) return { costPerHostUSD: 0, tokensPerHost: 0 }
+    const hint = currentMission.cost_hint || 'medium'
+    const usd = { low: 0.05, medium: 0.12, high: 0.25 }[hint] ?? 0.12
+    const tokens = { low: 6_000, medium: 15_000, high: 30_000 }[hint] ?? 15_000
+    return { costPerHostUSD: usd, tokensPerHost: tokens }
+  }, [currentMission])
+  const estimatedCost = costPerHostUSD * selectedAssets.size
+  const estimatedTokens = tokensPerHost * selectedAssets.size
+
+  // Quota-based warnings — would this audit push us over the monthly limit?
+  const quotaRemaining = usage ? Math.max(0, (usage.limit || 0) - (usage.used || 0)) : null
+  const quotaExhausted = usage?.exceeded
+  const quotaWouldExceed = quotaRemaining !== null && estimatedTokens > quotaRemaining
+  const quotaWouldWarn = !quotaWouldExceed && usage && !usage.exceeded
+    && quotaRemaining !== null && (estimatedTokens + (usage.used || 0)) / (usage.limit || 1) > 0.8
+
+  const canStart = !!selectedProtocol && !!selectedMission && !!credentialId
+    && !!relayAgentId && selectedAssets.size > 0 && !scanning && !quotaExhausted
+
+  const handleCreateCredential = async (data) => {
     try {
       const created = await createCredential({
-        name: draft.name,
-        connector_id: CRED_CONNECTOR_ID,
+        ...data,
+        connector_id: currentProtocol?.credential_connector_ids?.[0] || 'windows_host',
         auth_type: 'basic',
-        values: { username: draft.username, password: draft.password, domain: draft.domain || '' },
       })
       setCredentials(prev => [...prev, {
-        id: created.id, name: created.name, connector_id: CRED_CONNECTOR_ID,
-        auth_type: 'basic', connected_user: draft.username,
+        id: created.id, name: created.name,
+        connector_id: created.connector_id, auth_type: created.auth_type,
       }])
       setCredentialId(created.id)
       setShowCreateCred(false)
-    } catch (e) {
-      setError(e.message)
+    } catch (err) {
+      setError(err.message)
     }
   }
 
-  const canScan = credentialId && relayAgentId && selectedAssets.size > 0 && selectedProfiles.length > 0 && !scanning
-
-  const handleScan = async () => {
-    if (!canScan) return
+  const handleStart = async () => {
+    if (!canStart) return
     setScanning(true)
     setError(null)
     try {
-      const res = await startWmiScan({
-        asset_ids: [...selectedAssets.keys()],
+      const res = await startAuditRun({
+        protocol: selectedProtocol,
+        mission: selectedMission,
+        asset_ids: Array.from(selectedAssets.keys()),
         credential_id: credentialId,
         relay_agent_id: relayAgentId,
-        profiles: selectedProfiles,
+        max_steps: maxSteps,
+        wallclock_s: wallclockS,
       })
-      if (onWmiScan) onWmiScan(res)
+      if (onAuditScan) onAuditScan(res)
+      onClose()
     } catch (err) {
       setError(err.message)
-    } finally {
       setScanning(false)
     }
   }
@@ -881,127 +956,169 @@ function WmiScannerPanel({ onClose, onBack, onWmiScan }) {
     return (
       <div>
         <BackButton onClick={onBack} />
-        <div style={{ padding: 24, display: 'flex', justifyContent: 'center' }}><Spinner /></div>
+        <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>
+          <Spinner /> Loading audit configuration…
+        </div>
       </div>
     )
   }
 
-  const prereqIssue = credentials.length === 0 || relayAgents.length === 0
+  if (protocols.length === 0) {
+    return (
+      <div>
+        <BackButton onClick={onBack} />
+        <div style={{ padding: 16, background: 'var(--bg-secondary)', borderRadius: 8, fontSize: 13, color: 'var(--text-muted)' }}>
+          No authenticated audit protocols are registered. Check that the backend has the audit registry loaded.
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div>
       <BackButton onClick={onBack} />
 
-      {prereqIssue && (
+      {/* Protocol + mission */}
+      <AuditRow icon={ShieldAlert} label="Protocol">
+        <select
+          value={selectedProtocol}
+          onChange={e => setSelectedProtocol(e.target.value)}
+          style={_selectStyle}
+        >
+          <option value="">Select protocol…</option>
+          {protocols.map(p => (
+            <option key={p.protocol} value={p.protocol}>{p.label}</option>
+          ))}
+        </select>
+      </AuditRow>
+
+      {currentProtocol && (
+        <AuditRow icon={Shield} label="Mission">
+          <select
+            value={selectedMission}
+            onChange={e => setSelectedMission(e.target.value)}
+            style={_selectStyle}
+          >
+            {currentProtocol.missions.map(m => (
+              <option key={m.key} value={m.key}>{m.label}</option>
+            ))}
+          </select>
+        </AuditRow>
+      )}
+
+      {currentMission?.description && (
         <div style={{
-          padding: '10px 12px', borderRadius: 6, marginBottom: 14,
-          background: '#f59e0b11', border: '1px solid #f59e0b55',
-          fontSize: 12, color: 'var(--text-secondary)',
+          fontSize: 11, color: 'var(--text-muted)', marginBottom: 10,
+          padding: '6px 10px', background: 'var(--bg-secondary)', borderRadius: 6,
         }}>
-          {credentials.length === 0 && (
-            <div>Add a Windows credential below to continue.</div>
-          )}
-          {relayAgents.length === 0 && (
-            <div>No relay agent connected. Set one up under Settings → Relay Agents.</div>
-          )}
+          {currentMission.description}
         </div>
       )}
 
       {/* Credential */}
-      <Row icon={Key} label="Credential">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+      <AuditRow icon={Key} label="Credential">
+        <div style={{ display: 'flex', gap: 6, flex: 1 }}>
           <select
             value={credentialId}
             onChange={e => setCredentialId(e.target.value)}
-            style={selectStyle}
+            style={{ ..._selectStyle, flex: 1 }}
           >
             <option value="">Select credential…</option>
-            {credentials.map(c => (
-              <option key={c.id} value={c.id}>
-                {c.name}{c.connected_user ? ` — ${c.connected_user}` : ''}
-              </option>
+            {eligibleCredentials.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>
-          <button onClick={() => setShowCreateCred(v => !v)} style={ghostButtonStyle}>
+          <button
+            onClick={() => setShowCreateCred(v => !v)}
+            style={_compactBtnStyle}
+          >
             <Plus size={12} /> New
           </button>
         </div>
-      </Row>
+      </AuditRow>
+
       {showCreateCred && (
-        <InlineCredForm
-          onSave={handleCreateCred}
+        <AuditInlineCredForm
+          onSave={handleCreateCredential}
           onCancel={() => setShowCreateCred(false)}
         />
       )}
 
       {/* Relay agent */}
-      <Row icon={Radio} label="Relay">
+      <AuditRow icon={Radio} label="Relay">
         <select
           value={relayAgentId}
           onChange={e => setRelayAgentId(e.target.value)}
-          style={{ ...selectStyle, flex: 1 }}
+          style={_selectStyle}
         >
-          <option value="">Select connected agent…</option>
+          <option value="">Select relay agent…</option>
           {relayAgents.map(r => (
             <option key={r.id} value={r.id}>{r.name || r.id}</option>
           ))}
         </select>
-      </Row>
+      </AuditRow>
 
       {/* Assets */}
-      <div style={{ marginTop: 14, marginBottom: 10 }}>
+      <div style={{ marginTop: 12, marginBottom: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
           <Server size={13} color="var(--text-muted)" />
-          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', flex: 1 }}>
-            Target assets — {selectedAssets.size} selected
-          </div>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' }}>
+            Assets ({selectedAssets.size} selected)
+          </span>
+          <div style={{ flex: 1 }} />
+          <input
+            value={assetSearch}
+            onChange={e => setAssetSearch(e.target.value)}
+            placeholder="Search assets…"
+            style={{
+              fontSize: 11, padding: '4px 8px', borderRadius: 5,
+              border: '1px solid var(--border)', background: 'var(--bg)',
+              color: 'var(--text-primary)', width: 140,
+            }}
+          />
         </div>
-        <input
-          value={assetSearch}
-          onChange={e => setAssetSearch(e.target.value)}
-          placeholder="Search hostname, FQDN, or IP"
-          style={{
-            width: '100%', padding: '8px 10px', borderRadius: 6,
-            border: '1px solid var(--border)', background: 'var(--bg)',
-            color: 'var(--text-primary)', fontSize: 13, boxSizing: 'border-box',
-            marginBottom: 8,
-          }}
-        />
         <div style={{
-          maxHeight: 180, overflowY: 'auto',
           border: '1px solid var(--border)', borderRadius: 6,
+          maxHeight: 180, overflowY: 'auto',
         }}>
-          {loading ? (
-            <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>Loading…</div>
-          ) : assets.length === 0 ? (
-            <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>No assets match</div>
-          ) : (
+          {loading && <div style={{ padding: 16, textAlign: 'center' }}><Spinner /></div>}
+          {!loading && assets.length === 0 && (
+            <div style={{ padding: 14, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
+              No assets match.
+            </div>
+          )}
+          {!loading && assets.length > 0 && (
             <>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '6px 10px', borderBottom: '1px solid var(--border)',
+                background: 'var(--bg-secondary)', fontSize: 11,
+              }}>
+                <input type="checkbox" checked={allSelected} onChange={toggleAll} />
+                <span style={{ color: 'var(--text-muted)' }}>Select all on this page</span>
+              </div>
               {assets.map(a => (
                 <label key={a.id} style={{
                   display: 'flex', alignItems: 'center', gap: 8,
-                  padding: '6px 10px', borderBottom: '1px solid var(--border)',
-                  cursor: 'pointer', fontSize: 12,
+                  padding: '6px 10px', cursor: 'pointer',
+                  borderBottom: '1px solid var(--border-subtle, var(--border))',
+                  fontSize: 12,
                 }}>
                   <input
                     type="checkbox"
                     checked={selectedAssets.has(a.id)}
-                    onChange={() => toggleAsset(a)}
+                    onChange={() => toggle(a)}
                   />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600 }}>{getAssetDisplayName(a)}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                      {[a.ip, a.os].filter(Boolean).join(' · ') || 'OS unknown'}
-                    </div>
-                  </div>
+                  <span style={{ fontWeight: 600 }}>{getAssetDisplayName(a)}</span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{getAssetTarget(a)}</span>
                 </label>
               ))}
               {hasMore && (
                 <button onClick={loadMore} disabled={loadingMore} style={{
-                  width: '100%', padding: '6px', border: 'none', background: 'transparent',
+                  width: '100%', padding: 8, background: 'transparent', border: 'none',
                   color: 'var(--accent)', cursor: 'pointer', fontSize: 11,
                 }}>
-                  {loadingMore ? 'Loading…' : `Load more (${total - assets.length} remaining)`}
+                  {loadingMore ? 'Loading…' : `Load ${Math.min(PAGE_SIZE, total - assets.length)} more`}
                 </button>
               )}
             </>
@@ -1009,47 +1126,97 @@ function WmiScannerPanel({ onClose, onBack, onWmiScan }) {
         </div>
       </div>
 
-      {/* Profiles */}
-      <details style={{ marginBottom: 12 }}>
-        <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)', fontWeight: 600 }}>
-          Profiles — {selectedProfiles.length}/{profiles.length} selected
-        </summary>
-        <div style={{
-          display: 'grid', gridTemplateColumns: '1fr 1fr',
-          gap: 4, marginTop: 8, padding: 8,
-          background: 'var(--bg-secondary)', borderRadius: 6,
-        }}>
-          {profiles.map(p => (
-            <label key={p} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, cursor: 'pointer' }}>
-              <input type="checkbox" checked={selectedProfiles.includes(p)} onChange={() => toggleProfile(p)} />
-              {p}
-            </label>
-          ))}
-        </div>
-      </details>
+      {/* Budget */}
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <AuditNumberInput
+          icon={Clock} label="Max steps"
+          value={maxSteps} onChange={setMaxSteps}
+          min={5} max={60}
+        />
+        <AuditNumberInput
+          icon={Clock} label="Wall-clock (s)"
+          value={wallclockS} onChange={setWallclockS}
+          min={60} max={3600}
+        />
+      </div>
 
-      {error && (
-        <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 12, padding: '8px 10px', background: '#dc262611', borderRadius: 6 }}>
-          {error}
+      {/* Cost + quota hint */}
+      {selectedAssets.size > 0 && currentMission && (
+        <div style={{
+          marginTop: 10, padding: '8px 10px', borderRadius: 6,
+          background: quotaWouldExceed ? '#dc262611' : (quotaWouldWarn ? '#f59e0b11' : '#14b8a608'),
+          border: `1px solid ${quotaWouldExceed ? '#dc262644' : (quotaWouldWarn ? '#f59e0b44' : '#14b8a622')}`,
+          fontSize: 11, color: 'var(--text-muted)',
+        }}>
+          <div>
+            ≈ ${costPerHostUSD.toFixed(2)}/host · ~{(tokensPerHost / 1000).toFixed(0)}k tokens/host × {selectedAssets.size} host{selectedAssets.size === 1 ? '' : 's'} ≈ ${estimatedCost.toFixed(2)} · ~{(estimatedTokens / 1000).toFixed(0)}k tokens
+          </div>
+          {usage && (
+            <div style={{ marginTop: 4, fontSize: 10 }}>
+              Quota ({usage.tier}): {(usage.used || 0).toLocaleString()} / {(usage.limit || 0).toLocaleString()} used ({usage.percentage?.toFixed?.(0) ?? 0}%)
+              {quotaWouldExceed && (
+                <span style={{ color: '#dc2626', fontWeight: 600 }}> — this run would exceed your monthly quota</span>
+              )}
+              {quotaWouldWarn && (
+                <span style={{ color: '#f59e0b', fontWeight: 600 }}> — this run would push you past 80% of monthly quota</span>
+              )}
+            </div>
+          )}
         </div>
       )}
 
-      <Button onClick={handleScan} disabled={!canScan} style={{ width: '100%', background: '#14b8a6' }}>
+      {quotaExhausted && (
+        <div style={{
+          marginTop: 10, padding: '8px 10px', borderRadius: 6,
+          background: '#dc262611', border: '1px solid #dc262644',
+          fontSize: 12, color: '#dc2626',
+        }}>
+          Monthly AI token quota exhausted. Upgrade your plan or wait for the quota to reset before starting a new audit.
+        </div>
+      )}
+
+      {error && (
+        <div style={{
+          fontSize: 12, color: '#dc2626', marginTop: 10,
+          padding: '8px 10px', background: '#dc262611', borderRadius: 6,
+        }}>{error}</div>
+      )}
+
+      <Button
+        onClick={handleStart}
+        disabled={!canStart}
+        style={{
+          width: '100%', marginTop: 14,
+          background: canStart ? '#14b8a6' : 'var(--bg-secondary)',
+          opacity: canStart ? 1 : 0.6,
+        }}
+      >
         {scanning ? (
-          <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Scanning…</>
+          <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Starting…</>
         ) : (
-          <><Play size={13} /> Scan {selectedAssets.size} host{selectedAssets.size !== 1 ? 's' : ''}</>
+          <><Play size={13} /> Run {currentMission?.label || 'Audit'} on {selectedAssets.size} host{selectedAssets.size === 1 ? '' : 's'}</>
         )}
       </Button>
-      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
     </div>
   )
 }
 
 
-// Compact row label + input, reused inside WmiScannerPanel to fit the
-// modal's tight vertical budget without dropping clarity.
-function Row({ icon: Icon, label, children }) {
+// ── Small reusable pieces for AuditScanPanel ─────────────────────────
+
+const _selectStyle = {
+  flex: 1, padding: '6px 8px', borderRadius: 6,
+  border: '1px solid var(--border)', background: 'var(--bg)',
+  color: 'var(--text-primary)', fontSize: 12,
+}
+const _compactBtnStyle = {
+  display: 'flex', alignItems: 'center', gap: 4,
+  padding: '6px 10px', borderRadius: 6,
+  border: '1px solid var(--border)', background: 'transparent',
+  color: 'var(--text-secondary)', fontSize: 11, cursor: 'pointer',
+}
+
+function AuditRow({ icon: Icon, label, children }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 80, flexShrink: 0 }}>
@@ -1061,50 +1228,54 @@ function Row({ icon: Icon, label, children }) {
   )
 }
 
+function AuditNumberInput({ icon: Icon, label, value, onChange, min, max }) {
+  return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8 }}>
+      <Icon size={12} color="var(--text-muted)" />
+      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', minWidth: 70 }}>{label}</span>
+      <input
+        type="number"
+        value={value}
+        min={min} max={max}
+        onChange={e => onChange(Number(e.target.value) || value)}
+        style={{
+          width: 70, padding: '4px 6px', borderRadius: 5,
+          border: '1px solid var(--border)', background: 'var(--bg)',
+          color: 'var(--text-primary)', fontSize: 12,
+        }}
+      />
+    </div>
+  )
+}
 
-function InlineCredForm({ onSave, onCancel }) {
+function AuditInlineCredForm({ onSave, onCancel }) {
   const [name, setName] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [domain, setDomain] = useState('')
 
-  const canSave = name.trim() && username.trim() && password.trim()
-
-  const field = (value, setter, placeholder, type = 'text') => (
-    <input
-      type={type}
-      value={value}
-      onChange={e => setter(e.target.value)}
-      placeholder={placeholder}
-      style={{
-        width: '100%', padding: '7px 10px', borderRadius: 6,
-        border: '1px solid var(--border)', background: 'var(--bg)',
-        color: 'var(--text-primary)', fontSize: 12, boxSizing: 'border-box',
-      }}
-    />
-  )
+  const valid = name.trim() && username.trim() && password
 
   return (
     <div style={{
-      padding: 10, marginBottom: 12,
-      background: 'var(--bg-secondary)', borderRadius: 6,
-      display: 'flex', flexDirection: 'column', gap: 6,
+      padding: 10, borderRadius: 6, marginBottom: 10,
+      background: 'var(--bg-secondary)', border: '1px solid var(--border)',
     }}>
-      {field(name, setName, 'Name (e.g. win-admin)')}
-      {field(username, setUsername, 'Username')}
-      {field(password, setPassword, 'Password', 'password')}
-      {field(domain, setDomain, 'Domain (optional)')}
+      <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 8, color: 'var(--text-muted)' }}>
+        New credential
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+        <input placeholder="Name" value={name} onChange={e => setName(e.target.value)} style={_credInput} />
+        <input placeholder="Domain (optional)" value={domain} onChange={e => setDomain(e.target.value)} style={_credInput} />
+        <input placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} style={_credInput} />
+        <input placeholder="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} style={_credInput} />
+      </div>
       <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-        <button onClick={onCancel} style={ghostButtonStyle}>Cancel</button>
+        <button onClick={onCancel} style={_compactBtnStyle}>Cancel</button>
         <button
-          onClick={() => onSave({ name, username, password, domain })}
-          disabled={!canSave}
-          style={{
-            ...ghostButtonStyle,
-            background: canSave ? '#14b8a6' : 'var(--bg-secondary)',
-            color: canSave ? '#fff' : 'var(--text-muted)',
-            border: 'none', opacity: canSave ? 1 : 0.6,
-          }}
+          onClick={() => onSave({ name: name.trim(), encrypted_values: { username, password, domain } })}
+          disabled={!valid}
+          style={{ ..._compactBtnStyle, background: valid ? '#14b8a6' : 'var(--bg)', color: valid ? 'white' : 'var(--text-muted)', border: 'none' }}
         >
           Save
         </button>
@@ -1113,18 +1284,10 @@ function InlineCredForm({ onSave, onCancel }) {
   )
 }
 
-
-const selectStyle = {
-  background: 'var(--bg)', border: '1px solid var(--border)',
-  color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px',
-  fontSize: 12, outline: 'none', cursor: 'pointer',
-}
-
-const ghostButtonStyle = {
-  display: 'inline-flex', alignItems: 'center', gap: 4,
-  background: 'transparent', color: 'var(--text-secondary)',
-  border: '1px solid var(--border)', borderRadius: 6,
-  padding: '6px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+const _credInput = {
+  padding: '6px 8px', borderRadius: 5,
+  border: '1px solid var(--border)', background: 'var(--bg)',
+  color: 'var(--text-primary)', fontSize: 11,
 }
 
 
@@ -1955,7 +2118,7 @@ function ScheduleDropdown({ scan, onUpdate }) {
 
 function EditVmScanModal({ scan, onClose, onSaved }) {
   const toast = useToast()
-  const AGENT_CATEGORIES = ['injection', 'xss', 'ssrf', 'authn', 'authz']
+  const AGENT_CATEGORIES = ['injection', 'xss', 'ssrf', 'authn', 'authz', 'files']
   const origTargets = (scan.raw_metadata?.targets || []).join('\n')
   const origAuthProfileId = scan.raw_metadata?.auth_profile_id || ''
   const origEnableAgents = !!scan.raw_metadata?.enable_agents
@@ -2128,7 +2291,7 @@ function EditVmScanModal({ scan, onClose, onSaved }) {
 
 // ── Scan card ────────────────────────────────────────────────────────
 
-function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
+function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onCancel, cancelling }) {
   const meta = getSourceMeta(scan.source_type)
   const isEasm = scan.source_type === 'easm'
   const isVm = scan.source_type === 'vm_scanner'
@@ -2138,6 +2301,7 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
   const scanStatus = (isEasm || isVm) ? scan.raw_metadata?.status : null
   const easmStatus = scanStatus  // keep compat
   const isRunning = scanStatus === 'running' || scanStatus === 'queued'
+  const canCancel = isRunning && (isEasm || isVm)
   const [showHistory, setShowHistory] = useState(false)
   const [rescanning, setRescanning] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
@@ -2275,6 +2439,27 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh }) {
                 onSaved={async () => { setEditOpen(false); if (onRefresh) await onRefresh() }}
               />
             )}
+            {canCancel && (
+              cancelling ? (
+                <Spinner size={16} />
+              ) : (
+                <button
+                  onClick={() => onCancel(scan.id)}
+                  title="Stop scan"
+                  style={{
+                    background: 'none', border: '1px solid var(--border)',
+                    borderRadius: 6, padding: '5px 8px', cursor: 'pointer',
+                    color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
+                    transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = '#dc2626'; e.currentTarget.style.color = '#dc2626' }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}
+                >
+                  <Square size={11} fill="currentColor" />
+                  Stop
+                </button>
+              )
+            )}
             <Button size="sm" onClick={() => onSelect(scan.id)}>View</Button>
             {deleting ? (
               <Spinner size={16} />
@@ -2342,6 +2527,7 @@ export default function ScanManagement() {
 
   const [uploads, setUploads] = useState([])
   const [deletingId, setDeletingId] = useState(null)
+  const [cancellingId, setCancellingId] = useState(null)
   const [showNewScan, setShowNewScan] = useState(false)
   const { filters, setFilter, clearFilters: clearURLFilters } = useURLFilters({
     source: { default: '' },
@@ -2490,6 +2676,20 @@ export default function ScanManagement() {
     }
   }
 
+  const handleCancel = async (scanId) => {
+    if (!await confirm('Stop this scan? In-flight jobs will be revoked.')) return
+    setCancellingId(scanId)
+    try {
+      await cancelScan(scanId)
+      await refreshScans()
+      toast.success('Scan stopped')
+    } catch (err) {
+      toast.error(err?.message || 'Failed to stop scan')
+    } finally {
+      setCancellingId(null)
+    }
+  }
+
   const handleSelectScan = (scanId) => {
     setActiveScanId(scanId)
     navigate('/')
@@ -2521,12 +2721,11 @@ export default function ScanManagement() {
     setShowNewScan(false)
   }
 
-  // WMI is synchronous from the user's perspective — start_wmi_scan writes
-  // Inventory* rows and calls finalize_scan before returning. Findings from
-  // CVE correlation (sbom_pipeline) land in the same query, so the findings
-  // view populates immediately rather than streaming. Same navigation target
-  // as VM, different arrival shape.
-  const handleNewWmiScan = async (res) => {
+  // Authenticated audits kick off N background agent runs + write findings
+  // as they emit. Like VM scans, the scan id is the entry point — we drop
+  // into the findings view filtered by it so results appear as the agents
+  // surface them.
+  const handleNewAuditScan = async (res) => {
     await refreshScans()
     if (res?.scan_id) {
       setActiveScanId(res.scan_id)
@@ -2681,6 +2880,7 @@ export default function ScanManagement() {
             <option value="completed">Completed</option>
             <option value="partial">Partial</option>
             <option value="failed">Failed</option>
+            <option value="cancelled">Cancelled</option>
           </select>
 
           <select
@@ -2770,6 +2970,8 @@ export default function ScanManagement() {
                 scan={scan}
                 onDelete={handleDelete}
                 deleting={deletingId === scan.id}
+                onCancel={handleCancel}
+                cancelling={cancellingId === scan.id}
                 onSelect={handleSelectScan}
                 onRescan={handleRescanDomain}
                 onRefresh={refreshScans}
@@ -2789,7 +2991,7 @@ export default function ScanManagement() {
           onScanDomain={handleScanDomain}
           onSetupEasm={handleSetupEasm}
           onVmScan={handleNewVmScan}
-          onWmiScan={handleNewWmiScan}
+          onAuditScan={handleNewAuditScan}
         />
       )}
     </div>
