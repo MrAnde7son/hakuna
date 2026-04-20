@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
 
 from scanner.vm.agent_worker import run_agent_scan
 from scanner.vm.agent_specialists import AGENT_CATEGORIES
-from scanner.vm.config import TEMPLATES_DIR
+from scanner.vm.config import CONTENT_DISCOVERY_ENABLED, TEMPLATES_DIR
+from scanner.vm.content_discovery_worker import run_content_discovery_scan
 from scanner.vm.nuclei_worker import fetch_alive_assets, run_nuclei_adhoc, run_nuclei_scan
 from scanner.vm.schemathesis_worker import run_schemathesis_scan
 from scanner.vm.template_validator import validate_custom_template
@@ -72,6 +73,17 @@ class ScanRequest(BaseModel):
                     "enable_agents=true. Valid values: "
                     "injection, xss, ssrf, authn, authz. None = run all five "
                     "(each still self-gates via applicable_when).",
+    )
+    enable_content_discovery: bool = Field(
+        default=True,
+        description="When true, fan out the ffuf-based content-discovery "
+                    "worker for each asset with a web-serving port open. "
+                    "On by default — content discovery fills the gap left "
+                    "by Nuclei/Schemathesis, which only fuzz known URLs. "
+                    "Callers can opt out per scan by setting false. The "
+                    "worker-side CONTENT_DISCOVERY_ENABLED env var is a "
+                    "separate global kill-switch that ops can flip without "
+                    "coordinating with the backend.",
     )
 
 
@@ -133,6 +145,18 @@ async def create_scan(body: ScanRequest):
     # trip per asset inside the dispatch loop.
     api_fuzz_asset_ids = await _assets_with_api_specs(asset_ids) if asset_ids else set()
 
+    # Content discovery needs a web-serving port. The caller opts in
+    # with enable_content_discovery AND the worker env CONTENT_DISCOVERY_ENABLED
+    # must be true — both gates so a forgotten scan option can't quietly
+    # burn request budget against customer hosts. Asset-side port check
+    # happens in the worker via _resolve_base_url (returns None for non-web).
+    dispatch_content_discovery = bool(
+        body.enable_content_discovery and CONTENT_DISCOVERY_ENABLED
+    )
+    content_discovery_asset_ids = (
+        await _assets_with_web_ports(asset_ids) if (dispatch_content_discovery and asset_ids) else set()
+    )
+
     # Validate requested agent categories once so a typo fails the whole
     # dispatch up-front instead of quietly dropping agents per asset.
     agent_categories: list[str] | None = None
@@ -165,6 +189,19 @@ async def create_scan(body: ScanRequest):
                 countdown=i * 5 + 2,
             )
             job_ids.append(sm_result.id)
+
+        if aid in content_discovery_asset_ids:
+            # Content discovery goes first in the per-asset sub-sequence
+            # (countdown +1) so the endpoints it uncovers land in
+            # asset_endpoints before downstream workers run — this is
+            # the feedback-loop pay-off. The next scan's Nuclei-DAST /
+            # schemathesis stage will see them as fresh targets.
+            cd_result = run_content_discovery_scan.apply_async(
+                args=[aid],
+                kwargs={"credentials": credentials_payload},
+                countdown=i * 5 + 1,
+            )
+            job_ids.append(cd_result.id)
 
         if body.enable_agents:
             # Agents go last in the countdown so nuclei + schemathesis
@@ -336,6 +373,60 @@ async def _assets_with_api_specs(asset_ids: list[str]) -> set[str]:
         return {str(r["asset_id"]) for r in rows}
     except Exception as e:
         _logger.warning("schemathesis fan-out skipped — asset_endpoints query failed: %s", e)
+        return set()
+    finally:
+        await conn.close()
+
+
+async def _assets_with_web_ports(asset_ids: list[str]) -> set[str]:
+    """Return the subset of ``asset_ids`` that have a web-serving port open.
+
+    Checks ``assets.open_ports`` for any of the standard HTTP(S) ports we
+    gate content discovery on. Matches the port set in
+    ``scanner.vm.router._WEB_PORTS`` — kept as a literal here to avoid
+    importing the template router into the dispatch path (the router
+    depends on TEMPLATES_DIR which may not exist in slim API containers).
+
+    Degrades gracefully: any error returns an empty set so the rest of
+    the fan-out still dispatches.
+    """
+    if not asset_ids:
+        return set()
+    import logging
+    import uuid as _uuid
+
+    import asyncpg
+
+    from scanner.vm.config import DATABASE_URL
+    from scanner.vm.db import _normalize_dsn
+
+    _logger = logging.getLogger(__name__)
+
+    try:
+        uuids = [_uuid.UUID(a) for a in asset_ids]
+    except (ValueError, TypeError):
+        return set()
+
+    try:
+        conn = await asyncpg.connect(_normalize_dsn(DATABASE_URL))
+    except Exception as e:
+        _logger.warning("content-discovery fan-out skipped — cannot reach DB: %s", e)
+        return set()
+
+    web_ports = [80, 443, 3000, 5000, 8000, 8001, 8080, 8443]
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT id FROM assets
+            WHERE id = ANY($1::uuid[])
+              AND open_ports && $2::int[]
+            """,
+            uuids,
+            web_ports,
+        )
+        return {str(r["id"]) for r in rows}
+    except Exception as e:
+        _logger.warning("content-discovery fan-out skipped — assets query failed: %s", e)
         return set()
     finally:
         await conn.close()

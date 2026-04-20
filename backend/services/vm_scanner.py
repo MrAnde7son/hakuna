@@ -211,6 +211,7 @@ async def start_vm_scan(
     auth_profile_id: str | None = None,
     enable_agents: bool = False,
     agent_categories: list[str] | None = None,
+    enable_content_discovery: bool = True,
 ) -> Optional[dict]:
     """
     Create a Scan record and dispatch targets to the VM scanner container.
@@ -267,6 +268,8 @@ async def start_vm_scan(
         scan_metadata["enable_agents"] = True
         if agent_categories:
             scan_metadata["agent_categories"] = list(agent_categories)
+    if enable_content_discovery:
+        scan_metadata["enable_content_discovery"] = True
 
     scan = Scan(
         org_id=org.id,
@@ -313,6 +316,8 @@ async def start_vm_scan(
         scan_body["enable_agents"] = True
         if agent_categories:
             scan_body["agent_categories"] = list(agent_categories)
+    if enable_content_discovery:
+        scan_body["enable_content_discovery"] = True
     result = await _vm_request("POST", "/vm/scans/", json=scan_body)
 
     if result and result.get("job_ids"):
@@ -370,6 +375,14 @@ async def rescan_vm_scan(
     else:
         enable_agents = bool(meta.get("enable_agents"))
         agent_categories = meta.get("agent_categories")
+    # Content discovery is on by default. Rescans replay the stored
+    # flag when it's present; when absent (scans predating the feature)
+    # we default to True so rescans of legacy scans pick up the new
+    # surface automatically. Callers that need to suppress it should
+    # set scan_metadata["enable_content_discovery"]=False explicitly.
+    enable_content_discovery = bool(
+        meta.get("enable_content_discovery", True)
+    )
 
     now = datetime.utcnow()
 
@@ -431,6 +444,10 @@ async def rescan_vm_scan(
     else:
         new_meta.pop("enable_agents", None)
         new_meta.pop("agent_categories", None)
+    if enable_content_discovery:
+        new_meta["enable_content_discovery"] = True
+    else:
+        new_meta.pop("enable_content_discovery", None)
 
     scan.scan_date = now.isoformat()
     scan.raw_metadata = new_meta
@@ -444,6 +461,8 @@ async def rescan_vm_scan(
         scan_body["enable_agents"] = True
         if agent_categories:
             scan_body["agent_categories"] = list(agent_categories)
+    if enable_content_discovery:
+        scan_body["enable_content_discovery"] = True
     result = await _vm_request("POST", "/vm/scans/", json=scan_body)
 
     if result and result.get("job_ids"):
@@ -906,6 +925,8 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
             plugin_family = "Agent"
         elif _finding_type == "api-fuzz":
             plugin_family = "Schemathesis"
+        elif _finding_type == "content-discovery":
+            plugin_family = "ContentDiscovery"
         else:
             plugin_family = "Nuclei"
 

@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "description": "Exposure rules — paths that, when returning a matching status + body signature, constitute a finding rather than just a new endpoint. Matched after ffuf's path phase.",
+  "rules": [
+    {
+      "id": "git-directory-exposed",
+      "name": "Exposed .git directory",
+      "severity": "high",
+      "path_suffixes": [".git/HEAD", ".git/config", ".git/index", ".git/logs/HEAD"],
+      "status_codes": [200],
+      "body_contains_any": ["ref:", "[core]", "DIRC", "repositoryformatversion"],
+      "description": "The web server exposes the .git directory. An attacker can reconstruct source code and extract embedded secrets.",
+      "references": ["https://owasp.org/www-community/vulnerabilities/Information_exposure_through_directory_listing"]
+    },
+    {
+      "id": "dotenv-exposed",
+      "name": "Exposed .env file",
+      "severity": "critical",
+      "path_suffixes": [".env", ".env.bak", ".env.local", ".env.prod", ".env.production", ".env.staging"],
+      "status_codes": [200],
+      "body_regex": "(?m)^[A-Z_][A-Z0-9_]*\\s*=",
+      "description": "The web server exposes a .env file, typically containing database credentials, API keys, and secrets.",
+      "references": ["https://owasp.org/www-community/Improper_Error_Handling"]
+    },
+    {
+      "id": "wp-config-backup",
+      "name": "WordPress config backup exposed",
+      "severity": "critical",
+      "path_suffixes": ["wp-config.php.bak", "wp-config.php~", "wp-config.old"],
+      "status_codes": [200],
+      "body_contains_any": ["DB_PASSWORD", "AUTH_KEY", "define('DB_"],
+      "description": "A backup of wp-config.php is served as plaintext, exposing database credentials and WordPress secret keys."
+    },
+    {
+      "id": "aws-credentials-exposed",
+      "name": "Exposed AWS credentials file",
+      "severity": "critical",
+      "path_suffixes": [".aws/credentials"],
+      "status_codes": [200],
+      "body_contains_any": ["aws_access_key_id", "[default]"],
+      "description": "The AWS credentials file is publicly accessible. Rotate the exposed keys immediately."
+    },
+    {
+      "id": "ssh-private-key-exposed",
+      "name": "Exposed SSH private key",
+      "severity": "critical",
+      "path_suffixes": [".ssh/id_rsa", ".ssh/id_ed25519", "id_rsa"],
+      "status_codes": [200],
+      "body_contains_any": ["-----BEGIN OPENSSH PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----"],
+      "description": "An SSH private key is publicly served by the web server."
+    },
+    {
+      "id": "spring-actuator-env",
+      "name": "Spring Boot /actuator/env exposed",
+      "severity": "high",
+      "path_suffixes": ["actuator/env", "actuator/configprops", "actuator/heapdump"],
+      "status_codes": [200],
+      "body_contains_any": ["\"activeProfiles\"", "\"propertySources\"", "contexts"],
+      "description": "Spring Boot actuator endpoints are exposed without authentication. /env leaks configuration, /heapdump leaks memory contents."
+    },
+    {
+      "id": "phpinfo-exposed",
+      "name": "phpinfo() page exposed",
+      "severity": "medium",
+      "path_suffixes": ["phpinfo.php", "info.php", "test.php"],
+      "status_codes": [200],
+      "body_contains_any": ["<title>phpinfo()</title>", "PHP Version"],
+      "description": "A phpinfo() page is publicly accessible, leaking PHP version, loaded modules, and environment variables."
+    },
+    {
+      "id": "apache-server-status",
+      "name": "Apache mod_status exposed",
+      "severity": "medium",
+      "path_suffixes": ["server-status", "server-info"],
+      "status_codes": [200],
+      "body_contains_any": ["Apache Server Status", "Server Version", "Current Time"],
+      "description": "Apache server-status / server-info page is publicly accessible, leaking internal request URIs and server configuration."
+    },
+    {
+      "id": "debug-endpoint-exposed",
+      "name": "Debug endpoint exposed",
+      "severity": "medium",
+      "path_suffixes": ["debug/pprof", "_debug/pprof", "debug/vars"],
+      "status_codes": [200],
+      "body_contains_any": ["/debug/pprof/", "cmdline", "goroutine"],
+      "description": "A Go pprof debug endpoint is publicly accessible, allowing memory/CPU profiling and potentially DoS."
+    },
+    {
+      "id": "prometheus-metrics-exposed",
+      "name": "Prometheus /metrics endpoint exposed",
+      "severity": "low",
+      "path_suffixes": ["metrics", "prometheus/metrics"],
+      "status_codes": [200],
+      "body_contains_any": ["# HELP ", "# TYPE "],
+      "description": "Prometheus metrics endpoint is publicly accessible. Low-severity info disclosure but can leak internal hostnames, request paths, and build versions."
+    },
+    {
+      "id": "dockerfile-exposed",
+      "name": "Dockerfile exposed",
+      "severity": "low",
+      "path_suffixes": ["Dockerfile", "docker-compose.yml", "docker-compose.yaml"],
+      "status_codes": [200],
+      "body_contains_any": ["FROM ", "services:", "image:"],
+      "description": "Dockerfile or compose file is publicly accessible. May leak base image versions, build arguments, and service configuration."
+    },
+    {
+      "id": "package-json-exposed",
+      "name": "package.json exposed",
+      "severity": "info",
+      "path_suffixes": ["package.json", "composer.json"],
+      "status_codes": [200],
+      "body_contains_any": ["\"dependencies\"", "\"require\""],
+      "description": "Dependency manifest is publicly accessible. Low-risk but exposes the application's dependency graph for supply-chain reconnaissance."
+    },
+    {
+      "id": "ds-store-exposed",
+      "name": ".DS_Store exposed",
+      "severity": "info",
+      "path_suffixes": [".DS_Store"],
+      "status_codes": [200],
+      "description": "macOS .DS_Store file is publicly accessible. Reveals directory contents."
+    }
+  ]
+}

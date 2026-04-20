@@ -16,6 +16,13 @@ ENV GOPATH="/root/go"
 # Install nuclei
 RUN go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
 
+# Install ffuf — used by the content_discovery_worker for path + parameter
+# brute-forcing. Pinned to v2 (stable major); any bump should be verified
+# against the worker's JSON output parsing since ffuf has changed field
+# names between majors.
+RUN go install github.com/ffuf/ffuf/v2@latest \
+    && ln -sf /root/go/bin/ffuf /usr/local/bin/ffuf
+
 # Download default templates
 RUN nuclei -update-templates || true
 

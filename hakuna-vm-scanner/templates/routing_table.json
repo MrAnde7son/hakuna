@@ -104,6 +104,13 @@
       "sources": ["openapi", "graphql"],
       "tags": ["api-fuzz", "schemathesis"],
       "scanner": "schemathesis"
+    },
+    "content_discovery": {
+      "ports": [80, 443, 3000, 5000, 8000, 8001, 8080, 8443],
+      "tags": ["content-discovery", "exposure"],
+      "scanner": "content_discovery",
+      "requires_opt_in": true,
+      "skip_if_tags": ["ot", "ics", "iot-restricted"]
     }
   }
 }

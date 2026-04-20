@@ -27,6 +27,7 @@ celery_app.conf.update(
         "scanner.vm.nuclei_worker",
         "scanner.vm.schemathesis_worker",
         "scanner.vm.agent_worker",
+        "scanner.vm.content_discovery_worker",
         "scanner.vm.scheduler",
         "scanner.vm.code_repo_worker",
     ],
