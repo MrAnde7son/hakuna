@@ -1117,7 +1117,7 @@ AGENT_TEMPLATES = [
     {
         "id": "validator_agent",
         "name": "Vulnerability Validator",
-        "description": "Autonomous validator for high/critical Nuclei findings. Runs safe probes to confirm or refute exploitability, then requests a human approval before writing the verdict.",
+        "description": "Autonomous validator for high/critical findings. Runs safe probes to confirm or refute exploitability, then requests a human approval before writing the verdict.",
         "icon": "shield-check",
         "system_prompt": ENHANCED_PROMPTS["validator_agent"],
         "tools": [

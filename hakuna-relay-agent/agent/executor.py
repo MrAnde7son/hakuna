@@ -80,6 +80,18 @@ async def handle_task(task: dict, ws, config: AgentConfig):
                 "result": result,
             }))
 
+        elif method == "wmi_query":
+            from .wmi_query import run_wmi_queries
+            target = transport_config.get("target")
+            profiles = params.get("profiles") or []
+            timeout_s = int(params.get("timeout_s") or 120)
+            result = await run_wmi_queries(target, credentials, profiles, timeout_s)
+            await ws.send(json.dumps({
+                "type": "task_complete",
+                "task_id": task_id,
+                "result": result,
+            }))
+
         else:
             await ws.send(json.dumps({
                 "type": "task_error",

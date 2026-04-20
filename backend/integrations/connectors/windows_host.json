@@ -1,0 +1,56 @@
+{
+  "id": "windows_host",
+  "name": "Windows Host (WMI)",
+  "description": "Credentials for authenticated Windows inventory scans over WMI/DCERPC via the relay agent. Collects installed software, services, patches, shares, and local users without an agent on the host.",
+  "category": "Endpoint Security",
+  "logo": "/logos/vendors/microsoft.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "wmi",
+  "relay_capable": true,
+
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Enter the local or domain user with WMI read access on the target hosts (e.g. a scanning service account). Must be a local Administrator or domain user in the target's local Administrators group — remote WMI requires it.",
+        "capture": {
+          "field": "username",
+          "label": "Username",
+          "type": "text",
+          "placeholder": "svc-hakuna-scanner",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Enter the password for the account above. Stored AES-256-GCM encrypted in the credential vault.",
+        "capture": {
+          "field": "password",
+          "label": "Password",
+          "type": "password",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Enter the NetBIOS or Active Directory domain (leave blank for a local account on a workgroup host).",
+        "capture": {
+          "field": "domain",
+          "label": "Domain (optional)",
+          "type": "text",
+          "placeholder": "CORP",
+          "required": false,
+          "auto_validate": false
+        }
+      }
+    ]
+  },
+
+  "params_schema": {
+    "note": {
+      "label": "Note",
+      "type": "text",
+      "default": "",
+      "description": "This connector stores credentials only. Scans are triggered from the 'WMI Inventory' page — a connected relay agent and target Windows assets are required."
+    }
+  }
+}

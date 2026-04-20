@@ -1136,6 +1136,15 @@ export const rescanVmScan = (scanId, overrides = null) => request(`/vm/rescan/${
 
 export const getVmHealth = () => request('/vm/health').catch(() => null)
 
+// ── WMI Inventory (authenticated Windows scans via relay) ─
+export const startWmiScan = (data) => request('/wmi/scan', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(data),
+})
+
+export const getWmiProfiles = () => request('/wmi/profiles')
+
 // ── Auth Profiles (authenticated VM scans) ────────────────
 export const listAuthProfiles = () => request('/auth-profiles')
 export const getAuthProfile = (id) => request(`/auth-profiles/${id}`)

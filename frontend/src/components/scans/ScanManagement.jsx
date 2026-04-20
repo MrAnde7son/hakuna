@@ -5,12 +5,14 @@ import {
   Upload, CheckCircle, AlertCircle, FileText, X, Radar, Globe, Plus,
   RefreshCw, Trash2, Search, Clock, Server, Shield, Loader,
   Play, MonitorSmartphone, History, ChevronDown, ChevronUp, Edit2, Save,
+  Key, Radio, Terminal,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import useURLFilters from '../../hooks/useURLFilters.js'
 import {
   uploadScan, deleteScan, getScanStatus, getEasmStatus, scanEasmDomain, rescanEasmScan, refreshEasmScan, setupEasm,
   getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
+  startWmiScan, getWmiProfiles, getCredentials, createCredential, getRelayAgents,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, useConfirm, useToast } from '../shared/ui.jsx'
 import { getAssetDisplayName, getAssetTarget } from '../../utils/assetDisplay.js'
@@ -26,6 +28,7 @@ const SOURCE_TYPES = {
   rapid7: { label: 'Rapid7', icon: Shield, color: '#f97316', bg: '#f9731622' },
   openvas: { label: 'OpenVAS', icon: Shield, color: '#22c55e', bg: '#22c55e22' },
   vm_scanner: { label: 'VM', icon: MonitorSmartphone, color: '#ec4899', bg: '#ec489922' },
+  wmi_inventory: { label: 'WMI', icon: Terminal, color: '#14b8a6', bg: '#14b8a622' },
 }
 
 function getSourceMeta(type) {
@@ -158,7 +161,7 @@ function UploadRow({ upload, onDismiss }) {
 
 // ── New scan modal ───────────────────────────────────────────────────
 
-function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, onSetupEasm, onVmScan }) {
+function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, onSetupEasm, onVmScan, onWmiScan }) {
   const [mode, setMode] = useState(null)
   const [domain, setDomain] = useState('')
   const [scanType, setScanType] = useState('full')
@@ -209,9 +212,10 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
         </div>
 
         {!mode && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <SourceOption icon={Globe} label="EASM Scan" description={easmEnabled ? 'Scan a domain' : 'Set up EASM scanning'} color="#0ea5e9" onClick={() => setMode(easmEnabled ? 'easm' : 'easm-setup')} />
             <SourceOption icon={MonitorSmartphone} label="VM Scanner" description="Vulnerability scan" color="#ec4899" onClick={() => setMode('vm')} />
+            <SourceOption icon={Terminal} label="WMI Inventory" description="Authenticated Windows scan" color="#14b8a6" onClick={() => setMode('wmi')} />
             <SourceOption icon={Upload} label="Import File" description="Nessus XML, HTML, CSV" color="#6366f1" onClick={() => setMode('upload')} />
           </div>
         )}
@@ -271,6 +275,14 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
             onClose={onClose}
             onBack={() => setMode(null)}
             onVmScan={onVmScan}
+          />
+        )}
+
+        {mode === 'wmi' && (
+          <WmiScannerPanel
+            onClose={onClose}
+            onBack={() => setMode(null)}
+            onWmiScan={onWmiScan}
           />
         )}
 
@@ -716,6 +728,403 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
       <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
     </div>
   )
+}
+
+
+// ── WMI inventory panel ──────────────────────────────────────────────
+//
+// Credentialed Windows inventory scan. Unlike VM (which takes raw targets),
+// WMI writes Inventory* rows against existing Asset IDs — so only the
+// asset-list flow, no manual-target tab. The submit call is synchronous
+// end-to-end: start_wmi_scan writes rows and runs finalize_scan before
+// returning, so findings (from sbom_pipeline CVE correlation) are visible
+// as soon as we navigate.
+const CRED_CONNECTOR_ID = 'windows_host'
+
+function WmiScannerPanel({ onClose, onBack, onWmiScan }) {
+  const [credentials, setCredentials] = useState([])
+  const [relayAgents, setRelayAgents] = useState([])
+  const [profiles, setProfiles] = useState([])
+  const [loadingPrereqs, setLoadingPrereqs] = useState(true)
+
+  const [credentialId, setCredentialId] = useState('')
+  const [relayAgentId, setRelayAgentId] = useState('')
+  const [selectedProfiles, setSelectedProfiles] = useState([])
+  const [showCreateCred, setShowCreateCred] = useState(false)
+
+  const [assets, setAssets] = useState([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [selectedAssets, setSelectedAssets] = useState(new Map())
+  const [assetSearch, setAssetSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [scanning, setScanning] = useState(false)
+  const [error, setError] = useState(null)
+
+  // ── Load prerequisites ──
+  useEffect(() => {
+    let cancelled = false
+    async function loadPrereqs() {
+      try {
+        const [creds, relays, profileResp] = await Promise.all([
+          getCredentials().catch(() => []),
+          getRelayAgents().catch(() => ({ items: [] })),
+          getWmiProfiles().catch(() => ({ profiles: [] })),
+        ])
+        if (cancelled) return
+        const winCreds = (creds || []).filter(c => c.connector_id === CRED_CONNECTOR_ID)
+        setCredentials(winCreds)
+        const connected = (relays?.items || relays || []).filter(r => r.is_connected || r.status === 'connected')
+        setRelayAgents(connected)
+        setProfiles(profileResp?.profiles || [])
+        setSelectedProfiles(profileResp?.profiles || [])
+        if (winCreds.length === 1) setCredentialId(winCreds[0].id)
+        if (connected.length === 1) setRelayAgentId(connected[0].id)
+      } finally {
+        if (!cancelled) setLoadingPrereqs(false)
+      }
+    }
+    loadPrereqs()
+    return () => { cancelled = true }
+  }, [])
+
+  // Debounce asset search
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(assetSearch), 300)
+    return () => clearTimeout(t)
+  }, [assetSearch])
+
+  // First page (+ when search changes)
+  useEffect(() => {
+    setLoading(true)
+    setPage(1)
+    getAssets({ page: 1, page_size: PAGE_SIZE, search: debouncedSearch || undefined })
+      .then(data => {
+        const list = Array.isArray(data) ? data : data?.assets || []
+        const tot = data?.total ?? list.length
+        setAssets(list)
+        setTotal(tot)
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false))
+  }, [debouncedSearch])
+
+  const loadMore = () => {
+    const nextPage = page + 1
+    setLoadingMore(true)
+    getAssets({ page: nextPage, page_size: PAGE_SIZE, search: debouncedSearch || undefined })
+      .then(data => {
+        const list = Array.isArray(data) ? data : data?.assets || []
+        setAssets(prev => [...prev, ...list])
+        setPage(nextPage)
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoadingMore(false))
+  }
+
+  const hasMore = assets.length < total
+  const toggleAsset = (a) => {
+    setSelectedAssets(prev => {
+      const next = new Map(prev)
+      if (next.has(a.id)) next.delete(a.id)
+      else next.set(a.id, a)
+      return next
+    })
+  }
+  const toggleProfile = (p) => {
+    setSelectedProfiles(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p])
+  }
+
+  const handleCreateCred = async (draft) => {
+    try {
+      const created = await createCredential({
+        name: draft.name,
+        connector_id: CRED_CONNECTOR_ID,
+        auth_type: 'basic',
+        values: { username: draft.username, password: draft.password, domain: draft.domain || '' },
+      })
+      setCredentials(prev => [...prev, {
+        id: created.id, name: created.name, connector_id: CRED_CONNECTOR_ID,
+        auth_type: 'basic', connected_user: draft.username,
+      }])
+      setCredentialId(created.id)
+      setShowCreateCred(false)
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const canScan = credentialId && relayAgentId && selectedAssets.size > 0 && selectedProfiles.length > 0 && !scanning
+
+  const handleScan = async () => {
+    if (!canScan) return
+    setScanning(true)
+    setError(null)
+    try {
+      const res = await startWmiScan({
+        asset_ids: [...selectedAssets.keys()],
+        credential_id: credentialId,
+        relay_agent_id: relayAgentId,
+        profiles: selectedProfiles,
+      })
+      if (onWmiScan) onWmiScan(res)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  if (loadingPrereqs) {
+    return (
+      <div>
+        <BackButton onClick={onBack} />
+        <div style={{ padding: 24, display: 'flex', justifyContent: 'center' }}><Spinner /></div>
+      </div>
+    )
+  }
+
+  const prereqIssue = credentials.length === 0 || relayAgents.length === 0
+
+  return (
+    <div>
+      <BackButton onClick={onBack} />
+
+      {prereqIssue && (
+        <div style={{
+          padding: '10px 12px', borderRadius: 6, marginBottom: 14,
+          background: '#f59e0b11', border: '1px solid #f59e0b55',
+          fontSize: 12, color: 'var(--text-secondary)',
+        }}>
+          {credentials.length === 0 && (
+            <div>Add a Windows credential below to continue.</div>
+          )}
+          {relayAgents.length === 0 && (
+            <div>No relay agent connected. Set one up under Settings → Relay Agents.</div>
+          )}
+        </div>
+      )}
+
+      {/* Credential */}
+      <Row icon={Key} label="Credential">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+          <select
+            value={credentialId}
+            onChange={e => setCredentialId(e.target.value)}
+            style={selectStyle}
+          >
+            <option value="">Select credential…</option>
+            {credentials.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.name}{c.connected_user ? ` — ${c.connected_user}` : ''}
+              </option>
+            ))}
+          </select>
+          <button onClick={() => setShowCreateCred(v => !v)} style={ghostButtonStyle}>
+            <Plus size={12} /> New
+          </button>
+        </div>
+      </Row>
+      {showCreateCred && (
+        <InlineCredForm
+          onSave={handleCreateCred}
+          onCancel={() => setShowCreateCred(false)}
+        />
+      )}
+
+      {/* Relay agent */}
+      <Row icon={Radio} label="Relay">
+        <select
+          value={relayAgentId}
+          onChange={e => setRelayAgentId(e.target.value)}
+          style={{ ...selectStyle, flex: 1 }}
+        >
+          <option value="">Select connected agent…</option>
+          {relayAgents.map(r => (
+            <option key={r.id} value={r.id}>{r.name || r.id}</option>
+          ))}
+        </select>
+      </Row>
+
+      {/* Assets */}
+      <div style={{ marginTop: 14, marginBottom: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <Server size={13} color="var(--text-muted)" />
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', flex: 1 }}>
+            Target assets — {selectedAssets.size} selected
+          </div>
+        </div>
+        <input
+          value={assetSearch}
+          onChange={e => setAssetSearch(e.target.value)}
+          placeholder="Search hostname, FQDN, or IP"
+          style={{
+            width: '100%', padding: '8px 10px', borderRadius: 6,
+            border: '1px solid var(--border)', background: 'var(--bg)',
+            color: 'var(--text-primary)', fontSize: 13, boxSizing: 'border-box',
+            marginBottom: 8,
+          }}
+        />
+        <div style={{
+          maxHeight: 180, overflowY: 'auto',
+          border: '1px solid var(--border)', borderRadius: 6,
+        }}>
+          {loading ? (
+            <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>Loading…</div>
+          ) : assets.length === 0 ? (
+            <div style={{ padding: 16, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>No assets match</div>
+          ) : (
+            <>
+              {assets.map(a => (
+                <label key={a.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '6px 10px', borderBottom: '1px solid var(--border)',
+                  cursor: 'pointer', fontSize: 12,
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={selectedAssets.has(a.id)}
+                    onChange={() => toggleAsset(a)}
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600 }}>{getAssetDisplayName(a)}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      {[a.ip, a.os].filter(Boolean).join(' · ') || 'OS unknown'}
+                    </div>
+                  </div>
+                </label>
+              ))}
+              {hasMore && (
+                <button onClick={loadMore} disabled={loadingMore} style={{
+                  width: '100%', padding: '6px', border: 'none', background: 'transparent',
+                  color: 'var(--accent)', cursor: 'pointer', fontSize: 11,
+                }}>
+                  {loadingMore ? 'Loading…' : `Load more (${total - assets.length} remaining)`}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Profiles */}
+      <details style={{ marginBottom: 12 }}>
+        <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)', fontWeight: 600 }}>
+          Profiles — {selectedProfiles.length}/{profiles.length} selected
+        </summary>
+        <div style={{
+          display: 'grid', gridTemplateColumns: '1fr 1fr',
+          gap: 4, marginTop: 8, padding: 8,
+          background: 'var(--bg-secondary)', borderRadius: 6,
+        }}>
+          {profiles.map(p => (
+            <label key={p} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, cursor: 'pointer' }}>
+              <input type="checkbox" checked={selectedProfiles.includes(p)} onChange={() => toggleProfile(p)} />
+              {p}
+            </label>
+          ))}
+        </div>
+      </details>
+
+      {error && (
+        <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 12, padding: '8px 10px', background: '#dc262611', borderRadius: 6 }}>
+          {error}
+        </div>
+      )}
+
+      <Button onClick={handleScan} disabled={!canScan} style={{ width: '100%', background: '#14b8a6' }}>
+        {scanning ? (
+          <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Scanning…</>
+        ) : (
+          <><Play size={13} /> Scan {selectedAssets.size} host{selectedAssets.size !== 1 ? 's' : ''}</>
+        )}
+      </Button>
+      <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+    </div>
+  )
+}
+
+
+// Compact row label + input, reused inside WmiScannerPanel to fit the
+// modal's tight vertical budget without dropping clarity.
+function Row({ icon: Icon, label, children }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, width: 80, flexShrink: 0 }}>
+        <Icon size={13} color="var(--text-muted)" />
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)' }}>{label}</span>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+
+function InlineCredForm({ onSave, onCancel }) {
+  const [name, setName] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [domain, setDomain] = useState('')
+
+  const canSave = name.trim() && username.trim() && password.trim()
+
+  const field = (value, setter, placeholder, type = 'text') => (
+    <input
+      type={type}
+      value={value}
+      onChange={e => setter(e.target.value)}
+      placeholder={placeholder}
+      style={{
+        width: '100%', padding: '7px 10px', borderRadius: 6,
+        border: '1px solid var(--border)', background: 'var(--bg)',
+        color: 'var(--text-primary)', fontSize: 12, boxSizing: 'border-box',
+      }}
+    />
+  )
+
+  return (
+    <div style={{
+      padding: 10, marginBottom: 12,
+      background: 'var(--bg-secondary)', borderRadius: 6,
+      display: 'flex', flexDirection: 'column', gap: 6,
+    }}>
+      {field(name, setName, 'Name (e.g. win-admin)')}
+      {field(username, setUsername, 'Username')}
+      {field(password, setPassword, 'Password', 'password')}
+      {field(domain, setDomain, 'Domain (optional)')}
+      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+        <button onClick={onCancel} style={ghostButtonStyle}>Cancel</button>
+        <button
+          onClick={() => onSave({ name, username, password, domain })}
+          disabled={!canSave}
+          style={{
+            ...ghostButtonStyle,
+            background: canSave ? '#14b8a6' : 'var(--bg-secondary)',
+            color: canSave ? '#fff' : 'var(--text-muted)',
+            border: 'none', opacity: canSave ? 1 : 0.6,
+          }}
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  )
+}
+
+
+const selectStyle = {
+  background: 'var(--bg)', border: '1px solid var(--border)',
+  color: 'var(--text-primary)', borderRadius: 6, padding: '7px 10px',
+  fontSize: 12, outline: 'none', cursor: 'pointer',
+}
+
+const ghostButtonStyle = {
+  display: 'inline-flex', alignItems: 'center', gap: 4,
+  background: 'transparent', color: 'var(--text-secondary)',
+  border: '1px solid var(--border)', borderRadius: 6,
+  padding: '6px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer',
 }
 
 
@@ -2100,6 +2509,20 @@ export default function ScanManagement() {
     setShowNewScan(false)
   }
 
+  // WMI is synchronous from the user's perspective — start_wmi_scan writes
+  // Inventory* rows and calls finalize_scan before returning. Findings from
+  // CVE correlation (sbom_pipeline) land in the same query, so the findings
+  // view populates immediately rather than streaming. Same navigation target
+  // as VM, different arrival shape.
+  const handleNewWmiScan = async (res) => {
+    await refreshScans()
+    if (res?.scan_id) {
+      setActiveScanId(res.scan_id)
+      navigate(`/findings?scan_id=${res.scan_id}`)
+    }
+    setShowNewScan(false)
+  }
+
   const handleRescanDomain = async (scanId) => {
     try {
       await rescanEasmScan(scanId, 'full')
@@ -2354,6 +2777,7 @@ export default function ScanManagement() {
           onScanDomain={handleScanDomain}
           onSetupEasm={handleSetupEasm}
           onVmScan={handleNewVmScan}
+          onWmiScan={handleNewWmiScan}
         />
       )}
     </div>
