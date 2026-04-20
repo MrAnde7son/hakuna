@@ -8,6 +8,7 @@
   "entity": "asset",
   "transport_type": "wmi",
   "relay_capable": true,
+  "credential_only": true,
 
   "credential_acquisition": {
     "pattern": "guided_generation",

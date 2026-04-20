@@ -213,6 +213,11 @@ class TestConnectorFieldMapCompleteness:
         spec = _load_connector(connector_id)
         if spec["direction"] != "pull" or spec["entity"] != "asset":
             pytest.skip("Not a pull/asset connector")
+        if spec.get("credential_only"):
+            # Credential-only connectors (e.g. windows_host for WMI scans)
+            # never actually pull records — they exist to give the credential
+            # UI a flow, then their creds are consumed by a separate scan path.
+            pytest.skip("Credential-only connector")
         targets = [r["target"] for r in spec["default_field_map"]]
         assert "source_id" in targets, f"{connector_id}: must map source_id"
         assert "hostname" in targets, f"{connector_id}: must map hostname"
@@ -223,6 +228,8 @@ class TestConnectorFieldMapCompleteness:
         spec = _load_connector(connector_id)
         if spec["direction"] != "pull" or spec["entity"] != "finding":
             pytest.skip("Not a pull/finding connector")
+        if spec.get("credential_only"):
+            pytest.skip("Credential-only connector")
         targets = [r["target"] for r in spec["default_field_map"]]
         assert "severity" in targets, f"{connector_id}: must map severity"
 
@@ -232,6 +239,8 @@ class TestConnectorFieldMapCompleteness:
         spec = _load_connector(connector_id)
         if spec["direction"] != "pull" or spec["entity"] != "finding":
             pytest.skip("Not a pull/finding connector")
+        if spec.get("credential_only"):
+            pytest.skip("Credential-only connector")
         targets = set(r["target"] for r in spec["default_field_map"])
         has_identity = "source_id" in targets or "plugin_id" in targets
         assert has_identity, f"{connector_id}: must map source_id or plugin_id"
@@ -242,6 +251,8 @@ class TestConnectorFieldMapCompleteness:
         spec = _load_connector(connector_id)
         if spec["direction"] != "pull":
             pytest.skip("Not a pull connector")
+        if spec.get("credential_only"):
+            pytest.skip("Credential-only connector")
         assert spec.get("dedup_key"), f"{connector_id}: pull connector must have dedup_key"
 
     @pytest.mark.parametrize("connector_id", ALL_CONNECTOR_IDS)
