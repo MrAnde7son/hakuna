@@ -414,3 +414,64 @@ def apply_scan_org_filter(query, org_ids: Optional[List[int]]):
     if org_ids is None:
         return query
     return query.filter(Scan.org_id.in_(org_ids))
+
+
+# ─────────────────────────────────────────────────────────
+# Guest context — passcode-gated campaign collaboration
+# ─────────────────────────────────────────────────────────
+# An external invitee who has successfully unlocked a campaign share link holds
+# a `guest_session` HttpOnly cookie (signed JWT with a SEPARATE secret). This
+# intentionally does NOT produce a User record — it's a scoped, time-limited
+# capability restricted to one share_link_id. Endpoints that accept guests
+# use `get_guest_context` as their dep instead of `get_current_user`.
+
+from fastapi import Request, Cookie
+from pydantic import BaseModel
+
+
+class GuestContext(BaseModel):
+    """Resolved guest session. NOT a User — lives alongside it.
+
+    `share_link_id` is the primary capability — every downstream query on a
+    guest endpoint MUST filter by it (or by the derived `campaign_id`).
+    """
+    share_link_id: int
+    campaign_id: int
+    org_id: int
+    external_email: Optional[str] = None
+    permissions: dict = {}
+
+
+async def get_guest_context(
+    guest_session: Optional[str] = Cookie(None),
+    db: Session = Depends(get_db),
+) -> GuestContext:
+    """Resolve the guest_session cookie into a GuestContext.
+
+    Raises 401 when the cookie is missing, invalid, expired, OR when the
+    referenced share link has been revoked / locked out since the cookie was
+    issued — so revocation takes effect immediately without cookie expiry.
+    """
+    from core.tokens import decode_guest_session_token
+    from models.models import CampaignShareLink
+
+    if not guest_session:
+        raise HTTPException(status_code=401, detail="Guest session required")
+
+    payload = decode_guest_session_token(guest_session)  # raises 401 on invalid/expired
+
+    share_link_id = int(payload["share_link_id"])
+    link = db.query(CampaignShareLink).filter(CampaignShareLink.id == share_link_id).first()
+    if link is None or link.revoked_at is not None:
+        raise HTTPException(status_code=401, detail="Share link revoked")
+
+    if link.expires_at is not None and link.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=401, detail="Share link expired")
+
+    return GuestContext(
+        share_link_id=link.id,
+        campaign_id=link.campaign_id,
+        org_id=link.org_id,
+        external_email=payload.get("email"),
+        permissions=link.permissions or {},
+    )

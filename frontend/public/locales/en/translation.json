@@ -12,6 +12,7 @@
     "searchResults": "Search Results"
   },
   "nav": {
+    "home": "Home",
     "intelligence": "Intelligence",
     "exposure": "Exposure",
     "response": "Response",
@@ -27,6 +28,7 @@
     "alerts": "Alerts",
     "ingestSources": "Sources",
     "campaigns": "Campaigns",
+    "campaignsV2": "Campaigns v2",
     "remediation": "Remediation",
     "agents": "Agents",
     "agentApprovals": "Approval Queue",

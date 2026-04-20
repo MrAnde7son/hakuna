@@ -556,6 +556,75 @@ export const updateCampaignFinding = (campaignId, cfId, data) =>
     body: JSON.stringify(data),
   })
 
+// Campaign collaborators + activity (CampaignsV2 launch wizard / internal side)
+export const inviteCampaignCollaborator = (campaignId, data) =>
+  request(`/campaigns/${campaignId}/collaborators`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+export const listCampaignCollaborators = (campaignId) =>
+  request(`/campaigns/${campaignId}/collaborators`)
+export const revokeCampaignCollaborator = (campaignId, cid) =>
+  request(`/campaigns/${campaignId}/collaborators/${cid}`, { method: 'DELETE' })
+export const rotateCampaignPasscode = (campaignId, cid) =>
+  request(`/campaigns/${campaignId}/collaborators/${cid}/rotate-passcode`, { method: 'POST' })
+export const getCampaignActivity = (campaignId, opts = {}) => {
+  const qs = new URLSearchParams(Object.entries(opts).filter(([, v]) => v != null)).toString()
+  return request(`/campaigns/${campaignId}/activity${qs ? '?' + qs : ''}`)
+}
+export const postCampaignActivity = (campaignId, data) =>
+  request(`/campaigns/${campaignId}/activity`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+
+// Public (passcode-gated) campaign collaboration — external view at /c/:token.
+// These deliberately bypass the authenticated `request()` helper because we
+// don't want it attaching Authorization / X-Org-Context headers or doing the
+// 401→/login redirect. They rely on the `guest_session` HttpOnly cookie set
+// by /unlock, and require `credentials: 'include'` so the browser actually
+// sends that cookie on subsequent calls.
+async function publicRequest(path, opts = {}) {
+  const res = await fetch(`${BASE}${path}`, {
+    credentials: 'include',
+    ...opts,
+    headers: {
+      ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(opts.headers || {}),
+    },
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    const e = new Error(err.detail || 'Request failed')
+    e.status = res.status
+    throw e
+  }
+  if (res.status === 204) return null
+  return res.json()
+}
+export const publicCampaignMeta = (token) =>
+  publicRequest(`/public/campaigns/${encodeURIComponent(token)}/meta`)
+export const publicCampaignUnlock = (token, passcode) =>
+  publicRequest(`/public/campaigns/${encodeURIComponent(token)}/unlock`, {
+    method: 'POST',
+    body: JSON.stringify({ passcode }),
+  })
+export const publicCampaignLogout = (token) =>
+  publicRequest(`/public/campaigns/${encodeURIComponent(token)}/logout`, { method: 'POST' })
+export const publicCampaignGet = (token) =>
+  publicRequest(`/public/campaigns/${encodeURIComponent(token)}`)
+export const publicCampaignActivityList = (token, opts = {}) => {
+  const qs = new URLSearchParams(Object.entries(opts).filter(([, v]) => v != null)).toString()
+  return publicRequest(`/public/campaigns/${encodeURIComponent(token)}/activity${qs ? '?' + qs : ''}`)
+}
+export const publicCampaignActivityPost = (token, data) =>
+  publicRequest(`/public/campaigns/${encodeURIComponent(token)}/activity`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+
 // Blast Radius
 export const getBlastRadius = (asset_id, finding_id) =>
   request(`/blast-radius?asset_id=${asset_id}${finding_id ? `&finding_id=${finding_id}` : ''}`)

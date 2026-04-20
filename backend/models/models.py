@@ -1458,7 +1458,14 @@ class Campaign(Base):
     slack_channel_id = Column(String)    # Slack channel ID (e.g. C0123456789)
     slack_channel_name = Column(String)  # Slack channel name (e.g. campaign-log4shell)
 
+    # Attached automations chosen at launch time (CampaignsV2 wizard).
+    # Shape: {"agent_ids": [int], "workflow_ids": [int]}
+    automations_config = Column(JSON, default=dict)
+
     findings = relationship("CampaignFinding", back_populates="campaign", cascade="all, delete-orphan")
+    share_links = relationship("CampaignShareLink", back_populates="campaign", cascade="all, delete-orphan")
+    collaborators = relationship("CampaignCollaborator", back_populates="campaign", cascade="all, delete-orphan")
+    activity_entries = relationship("CampaignActivity", back_populates="campaign", cascade="all, delete-orphan")
 
 
 # ─────────────────────────────────────────────────────────
@@ -1497,6 +1504,104 @@ class CampaignFinding(Base):
 
     campaign = relationship("Campaign", back_populates="findings")
     finding = relationship("Finding")
+
+
+# ─────────────────────────────────────────────────────────
+# Campaign Collaboration (CampaignsV2 — external-user participation)
+# ─────────────────────────────────────────────────────────
+
+class CampaignShareLink(Base):
+    """Passcode-gated public link for an external collaborator to access a campaign.
+
+    One share link ≈ one invited external email. The link carries a random
+    share_token (URL path) and a short numeric passcode (bcrypt-hashed). On
+    successful unlock the backend issues a guest_session cookie scoped to this
+    link only — see core.tokens.create_guest_session_token.
+    """
+    __tablename__ = "campaign_share_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+
+    share_token = Column(String(64), unique=True, nullable=False, index=True)
+    passcode_hash = Column(String(255), nullable=False)
+    passcode_version = Column(Integer, default=1)  # bumped on rotate
+
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    # Brute-force protection — a consecutive-failures counter + timeout.
+    failed_attempts = Column(Integer, default=0)
+    lock_until = Column(DateTime, nullable=True)
+
+    # Whitelist of workflow IDs this external user is allowed to trigger.
+    # Empty / null = no automation triggers allowed.
+    allowed_automations = Column(JSON, default=list)
+
+    # Coarse-grained permissions for the guest. Shape:
+    # {"comment": true, "agent_chat": true, "upload_cred": true, "trigger_automation": false}
+    permissions = Column(JSON, default=dict)
+
+    campaign = relationship("Campaign", back_populates="share_links")
+    collaborators = relationship("CampaignCollaborator", back_populates="share_link")
+
+
+class CampaignCollaborator(Base):
+    """An internal user OR an external invitee attached to a campaign.
+
+    Internal: user_id set, share_link_id null.
+    External: share_link_id + external_email set, user_id null.
+    """
+    __tablename__ = "campaign_collaborators"
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False, index=True)
+    share_link_id = Column(Integer, ForeignKey("campaign_share_links.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
+    external_email = Column(String, nullable=True)
+    external_name = Column(String, nullable=True)
+    invited_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    invited_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, nullable=True)
+
+    # role: internal_owner / external_owner / observer
+    role = Column(String, default="external_owner")
+
+    campaign = relationship("Campaign", back_populates="collaborators")
+    share_link = relationship("CampaignShareLink", back_populates="collaborators")
+
+
+class CampaignActivity(Base):
+    """Unified activity feed for a campaign — comments, agent turns, automation events.
+
+    Rendered on both the internal campaign detail view and the external
+    /c/:shareToken collaboration page.
+    """
+    __tablename__ = "campaign_activity"
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False, index=True)
+
+    # author_type: user / external / agent / system
+    author_type = Column(String, nullable=False)
+    author_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    author_collaborator_id = Column(Integer, ForeignKey("campaign_collaborators.id"), nullable=True)
+    author_display_name = Column(String, nullable=True)  # cached for audit even if collaborator deleted
+
+    # kind: comment / agent_message / automation_run / credential_upload / system_event
+    kind = Column(String, nullable=False, default="comment")
+    body = Column(Text, nullable=True)
+
+    # Free-form metadata for non-comment kinds (tool call events, workflow_run_id, credential_id, etc.)
+    extra = Column(JSON, default=dict)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    campaign = relationship("Campaign", back_populates="activity_entries")
 
 
 # ─────────────────────────────────────────────────────────

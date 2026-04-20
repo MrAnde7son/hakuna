@@ -49,6 +49,9 @@ class CampaignCreateBody(BaseModel):
     query_logic: str = "AND"
     owner_id: Optional[int] = None
     auto_ticket: Optional[AutoTicketConfig] = None
+    # CampaignsV2 launch wizard — attached automations chosen at launch.
+    # Shape: {"agent_ids": [int], "workflow_ids": [int]}
+    automations_config: Optional[dict] = None
 
 
 class CampaignUpdateBody(BaseModel):
@@ -277,6 +280,7 @@ def create_campaign(body: CampaignCreateBody, db: Session = Depends(get_db), use
         query_logic=body.query_logic,
         owner_id=body.owner_id,
         status="draft",
+        automations_config=body.automations_config or {},
     )
     db.add(campaign)
     db.flush()
@@ -596,4 +600,338 @@ def create_campaign_slack_channel(campaign_id: int, db: Session = Depends(get_db
         "channel_id": result["channel_id"],
         "channel_name": result["channel_name"],
         "invited": result["invited"],
+    }
+
+
+# ─────────────────────────────────────────────────────────
+# CampaignsV2 — Collaborators & Activity feed
+# ─────────────────────────────────────────────────────────
+# These endpoints power the new launch wizard and the internal view of a
+# passcode-gated collaboration. Public/external counterparts live in
+# routes/public_campaign_routes.py.
+
+from datetime import timedelta
+from models.models import (
+    CampaignShareLink, CampaignCollaborator, CampaignActivity, Organization,
+)
+from core.tokens import (
+    generate_share_token, generate_passcode, hash_passcode,
+)
+from services import campaign_invites
+
+
+class InviteCollaboratorBody(BaseModel):
+    # Internal: provide user_id. External: provide external_email (+ optional name).
+    user_id: Optional[int] = None
+    external_email: Optional[str] = None
+    external_name: Optional[str] = None
+    role: str = "external_owner"  # internal_owner / external_owner / observer
+    # External-only capabilities
+    permissions: Optional[dict] = None          # {"comment": true, "agent_chat": true, ...}
+    allowed_automations: Optional[list] = None  # [workflow_id, ...]
+    expires_in_days: Optional[int] = 30
+    # Whether to attempt email delivery (always returns link+passcode either way)
+    send_email: bool = True
+    # Optional personalized message (future — not used in phase 1 template)
+    message: Optional[str] = None
+
+
+class ActivityPostBody(BaseModel):
+    body: str
+    kind: str = "comment"  # comment for now; system-authored kinds come from backend
+    extra: Optional[dict] = None
+
+
+def _require_campaign(db: Session, campaign_id: int, org_ids: Optional[List[int]]) -> Campaign:
+    q = apply_org_filter(db.query(Campaign), Campaign, org_ids)
+    c = q.filter(Campaign.id == campaign_id).first()
+    if not c:
+        raise HTTPException(404, "Campaign not found")
+    return c
+
+
+def _collaborator_to_dict(c: CampaignCollaborator, link: Optional[CampaignShareLink] = None) -> dict:
+    return {
+        "id": c.id,
+        "campaign_id": c.campaign_id,
+        "user_id": c.user_id,
+        "share_link_id": c.share_link_id,
+        "external_email": c.external_email,
+        "external_name": c.external_name,
+        "role": c.role,
+        "invited_at": c.invited_at.isoformat() if c.invited_at else None,
+        "last_seen_at": c.last_seen_at.isoformat() if c.last_seen_at else None,
+        "share_link": (
+            {
+                "id": link.id,
+                "share_token": link.share_token,
+                "expires_at": link.expires_at.isoformat() if link.expires_at else None,
+                "revoked_at": link.revoked_at.isoformat() if link.revoked_at else None,
+                "passcode_version": link.passcode_version,
+                "allowed_automations": link.allowed_automations or [],
+                "permissions": link.permissions or {},
+            }
+            if link else None
+        ),
+    }
+
+
+@router.post("/api/campaigns/{campaign_id}/collaborators")
+def invite_campaign_collaborator(
+    campaign_id: int,
+    body: InviteCollaboratorBody,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Invite an internal user or external email to collaborate on a campaign.
+
+    For externals, generates a share_token + passcode, creates a
+    CampaignShareLink, and tries to email the invite. The returned payload
+    ALWAYS contains the share URL and the (cleartext) passcode so the wizard
+    can show a copy-link card even when email delivery fails.
+    """
+    if user is None:
+        raise HTTPException(401, "Authentication required")
+    campaign = _require_campaign(db, campaign_id, org_ids)
+
+    if body.user_id is None and not body.external_email:
+        raise HTTPException(400, "Provide either user_id or external_email")
+
+    share_link = None
+    passcode_cleartext: Optional[str] = None
+
+    if body.external_email:
+        # Generate share link + passcode.
+        passcode_cleartext = generate_passcode()
+        share_link = CampaignShareLink(
+            campaign_id=campaign.id,
+            org_id=campaign.org_id,
+            share_token=generate_share_token(),
+            passcode_hash=hash_passcode(passcode_cleartext),
+            created_by=user.id,
+            expires_at=datetime.utcnow() + timedelta(days=body.expires_in_days or 30),
+            allowed_automations=body.allowed_automations or [],
+            permissions=body.permissions or {
+                "comment": True, "agent_chat": True,
+                "upload_cred": True, "trigger_automation": bool(body.allowed_automations),
+            },
+        )
+        db.add(share_link)
+        db.flush()
+
+    collab = CampaignCollaborator(
+        campaign_id=campaign.id,
+        share_link_id=share_link.id if share_link else None,
+        user_id=body.user_id,
+        external_email=body.external_email,
+        external_name=body.external_name,
+        invited_by=user.id,
+        role=body.role,
+    )
+    db.add(collab)
+    db.flush()
+
+    log_audit(
+        db, "invite", "campaign_collaborator", collab.id,
+        entity_name=body.external_email or f"user:{body.user_id}",
+        changes={
+            "campaign_id": campaign.id,
+            "role": body.role,
+            "via_share_link": bool(share_link),
+        },
+        actor=user,
+    )
+
+    email_result = None
+    if share_link and body.send_email and body.external_email:
+        try:
+            org = db.query(Organization).filter(Organization.id == campaign.org_id).first()
+            email_result = campaign_invites.send_campaign_invite_email(
+                db,
+                to_email=body.external_email,
+                invitee_name=body.external_name,
+                inviter_name=user.display_name or user.email or "Hakuna",
+                org_name=(org.name if org else "Hakuna"),
+                campaign_name=campaign.name,
+                share_token=share_link.share_token,
+                passcode=passcode_cleartext,
+                expires_at_iso=share_link.expires_at.strftime("%Y-%m-%d") if share_link.expires_at else None,
+            )
+        except Exception as e:
+            # Non-fatal — wizard always shows the link/passcode so admin can deliver out-of-band.
+            email_result = {"status": "failed", "error": str(e)}
+
+    db.commit()
+    db.refresh(collab)
+
+    out = _collaborator_to_dict(collab, share_link)
+    if share_link:
+        # Cleartext passcode is returned exactly ONCE — callers must show/copy it now.
+        out["share_link"]["passcode"] = passcode_cleartext
+        out["email"] = email_result
+    return out
+
+
+@router.get("/api/campaigns/{campaign_id}/collaborators")
+def list_campaign_collaborators(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    _require_campaign(db, campaign_id, org_ids)
+    collabs = (
+        db.query(CampaignCollaborator)
+        .filter(CampaignCollaborator.campaign_id == campaign_id)
+        .order_by(CampaignCollaborator.invited_at.desc())
+        .all()
+    )
+    link_ids = [c.share_link_id for c in collabs if c.share_link_id]
+    links = {}
+    if link_ids:
+        for l in db.query(CampaignShareLink).filter(CampaignShareLink.id.in_(link_ids)).all():
+            links[l.id] = l
+    return {
+        "collaborators": [
+            _collaborator_to_dict(c, links.get(c.share_link_id)) for c in collabs
+        ],
+    }
+
+
+@router.delete("/api/campaigns/{campaign_id}/collaborators/{cid}")
+def revoke_campaign_collaborator(
+    campaign_id: int, cid: int,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    if user is None:
+        raise HTTPException(401, "Authentication required")
+    _require_campaign(db, campaign_id, org_ids)
+    collab = db.query(CampaignCollaborator).filter(
+        CampaignCollaborator.id == cid,
+        CampaignCollaborator.campaign_id == campaign_id,
+    ).first()
+    if not collab:
+        raise HTTPException(404, "Collaborator not found")
+    if collab.share_link_id:
+        link = db.query(CampaignShareLink).filter(CampaignShareLink.id == collab.share_link_id).first()
+        if link and link.revoked_at is None:
+            link.revoked_at = datetime.utcnow()
+    db.delete(collab)
+    log_audit(db, "revoke", "campaign_collaborator", cid,
+              entity_name=collab.external_email or f"user:{collab.user_id}",
+              actor=user)
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.post("/api/campaigns/{campaign_id}/collaborators/{cid}/rotate-passcode")
+def rotate_passcode(
+    campaign_id: int, cid: int,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    if user is None:
+        raise HTTPException(401, "Authentication required")
+    _require_campaign(db, campaign_id, org_ids)
+    collab = db.query(CampaignCollaborator).filter(
+        CampaignCollaborator.id == cid,
+        CampaignCollaborator.campaign_id == campaign_id,
+    ).first()
+    if not collab or not collab.share_link_id:
+        raise HTTPException(404, "Share link not found for this collaborator")
+    link = db.query(CampaignShareLink).filter(CampaignShareLink.id == collab.share_link_id).first()
+    if not link:
+        raise HTTPException(404, "Share link not found")
+    new_pc = generate_passcode()
+    link.passcode_hash = hash_passcode(new_pc)
+    link.passcode_version = (link.passcode_version or 1) + 1
+    link.failed_attempts = 0
+    link.lock_until = None
+    log_audit(db, "rotate_passcode", "campaign_share_link", link.id,
+              entity_name=collab.external_email or "", actor=user)
+    db.commit()
+    return {
+        "status": "ok",
+        "share_link": {
+            "id": link.id,
+            "share_token": link.share_token,
+            "passcode": new_pc,  # cleartext — returned once
+            "passcode_version": link.passcode_version,
+        },
+    }
+
+
+@router.get("/api/campaigns/{campaign_id}/activity")
+def list_campaign_activity(
+    campaign_id: int,
+    page: int = 1,
+    page_size: int = 100,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    _require_campaign(db, campaign_id, org_ids)
+    total = db.query(CampaignActivity).filter(CampaignActivity.campaign_id == campaign_id).count()
+    rows = (
+        db.query(CampaignActivity)
+        .filter(CampaignActivity.campaign_id == campaign_id)
+        .order_by(CampaignActivity.created_at.asc())
+        .offset(max(0, (page - 1) * page_size))
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "total": total,
+        "activity": [
+            {
+                "id": r.id,
+                "author_type": r.author_type,
+                "author_user_id": r.author_user_id,
+                "author_collaborator_id": r.author_collaborator_id,
+                "author_display_name": r.author_display_name,
+                "kind": r.kind,
+                "body": r.body,
+                "extra": r.extra or {},
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            } for r in rows
+        ],
+    }
+
+
+@router.post("/api/campaigns/{campaign_id}/activity")
+def post_campaign_activity(
+    campaign_id: int,
+    body: ActivityPostBody,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
+    """Internal user posts a comment on the campaign feed."""
+    if user is None:
+        raise HTTPException(401, "Authentication required")
+    _require_campaign(db, campaign_id, org_ids)
+    entry = CampaignActivity(
+        campaign_id=campaign_id,
+        author_type="user",
+        author_user_id=user.id,
+        author_display_name=user.display_name or user.email,
+        kind=body.kind or "comment",
+        body=body.body,
+        extra=body.extra or {},
+    )
+    db.add(entry)
+    db.flush()
+    log_audit(db, "comment", "campaign_activity", entry.id,
+              entity_name=f"campaign:{campaign_id}", actor=user)
+    db.commit()
+    db.refresh(entry)
+    return {
+        "id": entry.id,
+        "author_type": entry.author_type,
+        "author_display_name": entry.author_display_name,
+        "kind": entry.kind,
+        "body": entry.body,
+        "created_at": entry.created_at.isoformat() if entry.created_at else None,
     }

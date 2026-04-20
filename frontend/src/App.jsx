@@ -50,6 +50,8 @@ import {
   AlertTriangle,
   Plug,
   Network,
+  Sparkles,
+  Home as HomeIcon,
 } from 'lucide-react'
 import { SUPPORTED_LANGUAGES } from './i18n/index.js'
 // Auth pages loaded eagerly (small, needed immediately)
@@ -76,8 +78,12 @@ const AssetDetail = React.lazy(() => import('./components/assets/AssetDetail.jsx
 const FindingExplorer = React.lazy(() => import('./components/findings/FindingExplorer.jsx'))
 const FindingDetail = React.lazy(() => import('./components/findings/FindingDetail.jsx'))
 const Campaigns = React.lazy(() => import('./components/campaigns/Campaigns.jsx'))
+const CampaignsV2 = React.lazy(() => import('./components/campaigns/CampaignsV2.jsx'))
+const LaunchWizard = React.lazy(() => import('./components/campaigns/LaunchWizard.jsx'))
+const CampaignCollaboration = React.lazy(() => import('./components/campaigns/CampaignCollaboration.jsx'))
 const CampaignDetail = React.lazy(() => import('./components/campaigns/CampaignDetail.jsx'))
 const Reports = React.lazy(() => import('./components/reports/Reports.jsx'))
+const Home = React.lazy(() => import('./components/home/Home.jsx'))
 const InventoryExplorer = React.lazy(() => import('./components/assets/InventoryExplorer.jsx'))
 const Settings = React.lazy(() => import('./components/settings/Settings.jsx'))
 const UploadScan = React.lazy(() => import('./components/upload/UploadScan.jsx'))
@@ -115,6 +121,22 @@ export function useIsMobile() {
 
 const NAV_GROUPS = [
   {
+    // Uncategorized top entry — no group label.
+    labelKey: null,
+    items: [
+      { path: '/home', labelKey: 'nav.home', icon: HomeIcon, permission: 'page_reports' },
+    ],
+  },
+  {
+    labelKey: 'nav.response',
+    items: [
+      { path: '/campaigns-v2', labelKey: 'nav.campaignsV2', icon: Sparkles, permission: 'page_campaigns' },
+      { path: '/campaigns', labelKey: 'nav.campaigns', icon: Target, permission: 'page_campaigns' },
+      { path: '/aggregated-solutions', labelKey: 'nav.remediation', icon: Layers, permission: 'page_remediation' },
+      { path: '/agents', labelKey: 'nav.agents', icon: Bot, permission: 'page_agents' },
+    ],
+  },
+  {
     labelKey: 'nav.intelligence',
     items: [
       { path: '/', labelKey: 'nav.reports', icon: BarChart3, exact: true, alsoPaths: ['/reports'], permission: 'page_reports' },
@@ -136,14 +158,6 @@ const NAV_GROUPS = [
       { path: '/siem/search', labelKey: 'nav.eventSearch', icon: Radio, permission: 'page_siem' },
       { path: '/siem/rules', labelKey: 'nav.detectionRules', icon: Shield, permission: 'page_siem' },
       { path: '/siem/alerts', labelKey: 'nav.alerts', icon: AlertTriangle, permission: 'page_siem' },
-    ],
-  },
-  {
-    labelKey: 'nav.response',
-    items: [
-      { path: '/campaigns', labelKey: 'nav.campaigns', icon: Target, permission: 'page_campaigns' },
-      { path: '/aggregated-solutions', labelKey: 'nav.remediation', icon: Layers, permission: 'page_remediation' },
-      { path: '/agents', labelKey: 'nav.agents', icon: Bot, permission: 'page_agents' },
     ],
   },
 ]
@@ -519,8 +533,8 @@ function Sidebar({ collapsed, onToggle, isMobile, mobileOpen }) {
           const visibleItems = group.items.filter(item => !item.permission || hasPermission(item.permission))
           if (visibleItems.length === 0) return null
           return (
-          <div key={group.labelKey} style={{ marginBottom: effectiveCollapsed ? 8 : 4 }}>
-            {!effectiveCollapsed && (
+          <div key={group.labelKey || `group-${gi}`} style={{ marginBottom: effectiveCollapsed ? 8 : 4 }}>
+            {!effectiveCollapsed && group.labelKey && (
               <div style={{
                 fontSize: 10,
                 fontWeight: 600,
@@ -1219,11 +1233,14 @@ function AppShell() {
             <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: 'var(--muted)' }}>Loading...</div>}>
               <Routes>
                 <Route path="/" element={<Reports />} />
+                <Route path="/home" element={<Home />} />
                 <Route path="/reports/:reportId" element={<Reports />} />
                 <Route path="/assets" element={<AssetInventory />} />
                 <Route path="/assets/:id" element={<AssetDetail />} />
                 <Route path="/findings" element={<FindingExplorer />} />
                 <Route path="/findings/:id" element={<FindingDetail />} />
+                <Route path="/campaigns-v2" element={<CampaignsV2 />} />
+                <Route path="/campaigns-v2/launch/:suggestionId" element={<LaunchWizard />} />
                 <Route path="/campaigns" element={<Campaigns />} />
                 <Route path="/campaigns/:id" element={<CampaignDetail />} />
                 <Route path="/aggregated-solutions" element={<AggregatedSolutions />} />
@@ -1296,6 +1313,11 @@ export default function App() {
                   <Route path="/accept-invite" element={<AcceptInvite />} />
                   <Route path="/verify-email" element={<VerifyEmail />} />
                   <Route path="/sso/callback" element={<SSOCallback />} />
+                  <Route path="/c/:shareToken" element={
+                    <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: 'var(--muted)' }}>Loading…</div>}>
+                      <CampaignCollaboration />
+                    </Suspense>
+                  } />
                   <Route path="/onboarding" element={
                     <ProtectedRoute>
                       <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: 'var(--muted)' }}>Loading...</div>}>
