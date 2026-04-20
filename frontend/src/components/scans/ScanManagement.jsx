@@ -1203,6 +1203,36 @@ function stageMembers(stage) {
   return new Set(stage.split('+'))
 }
 
+// VM scans fan each user-submitted target into multiple Celery jobs (nuclei,
+// content discovery, agents). Roll the per-job statuses back up to per-target
+// counts so the UI speaks the user's language: "2/3 targets", not "5/9 jobs".
+function vmTargetProgress(metadata) {
+  const jobStatuses = metadata?.job_statuses || {}
+  const submittedTargets = metadata?.targets || []
+  const perTarget = {}
+  for (const t of submittedTargets) {
+    if (t) perTarget[t] = { ok: 0, failed: 0, pending: 0 }
+  }
+  for (const info of Object.values(jobStatuses)) {
+    if (!info || !info.target) continue
+    if (!perTarget[info.target]) perTarget[info.target] = { ok: 0, failed: 0, pending: 0 }
+    if (info.status === 'SUCCESS') perTarget[info.target].ok += 1
+    else if (info.status === 'FAILURE') perTarget[info.target].failed += 1
+    else perTarget[info.target].pending += 1
+  }
+  const buckets = { ok: 0, failed: 0, pending: 0 }
+  for (const counts of Object.values(perTarget)) {
+    if (counts.failed > 0) buckets.failed += 1
+    else if (counts.pending === 0 && counts.ok > 0) buckets.ok += 1
+    else buckets.pending += 1
+  }
+  // Legacy scans with no targets list and no job_statuses yet fall back to
+  // the raw job counter so we never render "0/0".
+  const total = Object.keys(perTarget).length || metadata?.total_jobs || 0
+  const completed = buckets.ok + buckets.failed
+  return { total, completed, buckets }
+}
+
 function EasmStatusBadge({ status, metadata }) {
   if (!status || status === 'completed') return null
   // A scan is "queued" when Celery has accepted the task but no worker has
@@ -1224,10 +1254,10 @@ function EasmStatusBadge({ status, metadata }) {
   const stageIndex = metadata?.stage_index || 0
   const totalStages = metadata?.total_stages || 0
 
-  // VM scan progress
-  const completedJobs = metadata?.completed_jobs || 0
-  const totalJobs = metadata?.total_jobs || 0
-  const isVm = totalJobs > 0 && !stage
+  // VM scan progress — roll per-job statuses up to per-target so the chip
+  // shows "2/3 targets" even when each target spawned multiple worker jobs.
+  const vmProgress = vmTargetProgress(metadata)
+  const isVm = vmProgress.total > 0 && !stage
 
   const stageLabel = stage ? (STAGE_LABELS[stage] || stage) : null
   const label = isQueued ? 'Queued'
@@ -1244,7 +1274,7 @@ function EasmStatusBadge({ status, metadata }) {
       {isRunning && <Loader size={10} style={{ animation: 'spin 1.5s linear infinite' }} />}
       {isRunning ? (
         isVm
-          ? <>{completedJobs}/{totalJobs} targets</>
+          ? <>{vmProgress.completed}/{vmProgress.total} targets</>
           : stageLabel
             ? <>{stageLabel} ({stageIndex}/{totalStages})</>
             : 'Scanning...'
@@ -1484,28 +1514,10 @@ function ScanRunHistory({ expanded, domain }) {
 
 function VmScanProgress({ metadata }) {
   if (!metadata) return null
-  const { completed_jobs = 0, total_jobs = 0, findings_emitted = 0 } = metadata
-  const pct = total_jobs > 0 ? Math.round((completed_jobs / total_jobs) * 100) : 0
-  const remaining = total_jobs - completed_jobs
-
-  // Aggregate per-target states so the compact progress strip shows where the
-  // scan actually is without requiring the user to expand the detail table.
-  // The backend writes job_statuses[job_id] = { status: SUCCESS/FAILURE/PENDING }
-  // so we just bucket them. Counts surface as coloured chips; a scanner that
-  // has 2 targets done, 1 failed, 1 still running tells a very different UX
-  // story than just "1/4 done".
-  const jobStatuses = metadata.job_statuses || {}
-  const buckets = { ok: 0, failed: 0, pending: 0 }
-  for (const info of Object.values(jobStatuses)) {
-    if (!info) continue
-    if (info.status === 'SUCCESS') buckets.ok += 1
-    else if (info.status === 'FAILURE') buckets.failed += 1
-    else buckets.pending += 1
-  }
-  // Targets the scanner hasn't even acked yet don't show in job_statuses —
-  // derive pending from (total - known) so the totals always add up.
-  const unknown = Math.max(0, total_jobs - (buckets.ok + buckets.failed + buckets.pending))
-  buckets.pending += unknown
+  const { findings_emitted = 0 } = metadata
+  const { total: total_targets, completed: completed_targets, buckets } = vmTargetProgress(metadata)
+  const pct = total_targets > 0 ? Math.round((completed_targets / total_targets) * 100) : 0
+  const remaining = total_targets - completed_targets
 
   return (
     <div style={{ padding: '0 16px 12px' }}>
@@ -1518,7 +1530,7 @@ function VmScanProgress({ metadata }) {
         }} />
       </div>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-        <span>{completed_jobs}/{total_jobs} targets scanned{findings_emitted > 0 ? ` — ${findings_emitted} findings` : ''}</span>
+        <span>{completed_targets}/{total_targets} targets scanned{findings_emitted > 0 ? ` — ${findings_emitted} findings` : ''}</span>
         <div style={{ display: 'flex', gap: 6 }}>
           {buckets.ok > 0 && (
             <span style={{ color: '#22c55e', fontWeight: 600 }}>{buckets.ok} ok</span>

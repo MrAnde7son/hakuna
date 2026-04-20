@@ -53,6 +53,7 @@ from scanner.vm.agent_specialists import (
     AgentContext,
     SpecialistSpec,
     TOOLS,
+    seed_base_endpoint,
     select_applicable_specialists,
     tool_schemas_for_anthropic,
 )
@@ -249,7 +250,18 @@ def _run_async(coro):
     try:
         return loop.run_until_complete(coro)
     finally:
-        loop.close()
+        try:
+            # Force GC so finalizers that schedule cleanup coroutines
+            # (notably google-genai's BaseApiClient, which fires aclose()
+            # from __del__) enqueue their tasks before we drain.
+            import gc
+            gc.collect()
+            pending = asyncio.all_tasks(loop)
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        finally:
+            loop.close()
 
 
 async def _run_agent_scan_async(
@@ -318,6 +330,11 @@ async def _run_agent_scan_async(
     endpoints = [_coerce_endpoint(dict(r)) for r in endpoint_rows]
     target = _resolve_target(asset)
     headers = _credentials_to_headers(credentials)
+
+    # If prior scanners (katana, ffuf, openapi) produced no endpoints,
+    # seed a synthetic base-URL row so the specialists have a starting
+    # point to probe and harvest forms from.
+    endpoints = seed_base_endpoint(endpoints, target)
 
     ctx = AgentContext(
         asset_id=asset_id,
@@ -412,6 +429,196 @@ async def _run_agent_scan_async(
         "asset_id": asset_id,
         "org_id": ctx.org_id,
         "target": target,
+        "findings": findings,
+        "specialists_run": specialists_run,
+        "duration_seconds": round(time.monotonic() - start, 2),
+        "status": "complete" if findings or any(s["status"] == "summary" for s in specialists_run) else "partial",
+        "scanner": "agent",
+        "llm_provider": provider_info.provider,
+        "llm_model": provider_info.model,
+    }
+
+
+# ── Ad-hoc task ──────────────────────────────────────────────────
+
+
+@celery_app.task(queue="vm_queue", bind=True, max_retries=1)
+def run_agent_scan_adhoc(
+    self,
+    target: str,
+    org_id: str | None = None,
+    credentials: dict | None = None,
+    categories: list[str] | None = None,
+) -> dict:
+    """Ad-hoc specialist agents against a raw target URL.
+
+    Peers with ``run_nuclei_adhoc`` / ``run_content_discovery_adhoc``:
+    fires against a URL the backend has but for which we don't have a
+    scanner-side asset record. We skip the ASSET_CONTEXT_QUERY +
+    ENDPOINT_SLICE_QUERY steps — the AgentContext is built directly
+    from ``target`` plus a synthetic base-URL endpoint seeded by
+    ``seed_base_endpoint``.
+
+    With the synthetic row in place, injection / xss / ssrf all apply
+    as long as the target is http(s). Their prompts tell them to fetch
+    the base URL and harvest `<form>` action + input names before
+    picking candidates, so the agent does endpoint discovery on its
+    first tool call rather than depending on a prior crawl. Authn and
+    authz still require explicit auth material (headers or an
+    ``auth_required`` endpoint) to diff against.
+    """
+    try:
+        return _run_async(_run_agent_scan_adhoc_async(self, target, org_id, credentials, categories))
+    except Exception as exc:
+        logger.exception("run_agent_scan_adhoc failed for target %s", target)
+        return {
+            "target": target,
+            "findings": [],
+            "specialists_run": [],
+            "duration_seconds": 0,
+            "status": "error",
+            "error": str(exc),
+            "scanner": "agent",
+        }
+
+
+async def _run_agent_scan_adhoc_async(
+    task,
+    target: str,
+    org_id: str | None,
+    credentials: dict | None,
+    categories: list[str] | None,
+) -> dict:
+    start = time.monotonic()
+
+    # LLM provider resolution still needs a DB read (integration_configs).
+    # Closed right after so we don't hold the connection open across the
+    # full specialist loop — provider lookup is the only DB work here.
+    conn = await asyncpg.connect(_normalize_dsn(DATABASE_URL))
+    try:
+        integration_configs = await fetch_integration_configs(conn)
+        provider_info = resolve_provider(integration_configs)
+    finally:
+        await conn.close()
+
+    if provider_info is None:
+        return {
+            "target": target,
+            "findings": [],
+            "specialists_run": [],
+            "duration_seconds": round(time.monotonic() - start, 2),
+            "status": "skipped",
+            "error": (
+                "no LLM provider configured — set one of ANTHROPIC_API_KEY, "
+                "OPENAI_API_KEY, GOOGLE_CLOUD_PROJECT (vertex_ai), "
+                "GOOGLE_API_KEY (gemini), GROQ_API_KEY, or enable Ollama "
+                "in integration_configs"
+            ),
+            "scanner": "agent",
+        }
+
+    try:
+        adapter = build_adapter(provider_info)
+    except LLMProviderError as e:
+        return {
+            "target": target,
+            "findings": [],
+            "specialists_run": [],
+            "duration_seconds": round(time.monotonic() - start, 2),
+            "status": "error",
+            "error": f"LLM adapter init failed: {e}",
+            "scanner": "agent",
+            "llm_provider": provider_info.provider,
+            "llm_model": provider_info.model,
+        }
+
+    headers = _credentials_to_headers(credentials)
+
+    # Adhoc has no DB-backed endpoint slice — seed the synthetic base
+    # row so the specialists can start probing (and harvest HTML forms
+    # on their first tool call).
+    ctx = AgentContext(
+        asset_id="adhoc",
+        org_id=org_id,
+        target=target,
+        endpoints=seed_base_endpoint([], target),
+        headers=headers,
+        deadline=start + SCAN_TIMEOUT_SECONDS,
+    )
+
+    selected = select_applicable_specialists(ctx, categories)
+    if not selected:
+        return {
+            "target": target,
+            "org_id": org_id,
+            "findings": [],
+            "specialists_run": [],
+            "duration_seconds": round(time.monotonic() - start, 2),
+            "status": "skipped",
+            "error": "no applicable specialists for adhoc target (empty endpoint set)",
+            "scanner": "agent",
+        }
+
+    logger.info(
+        "agent_worker adhoc start target=%s specialists=%s",
+        target, [s.category for s in selected],
+    )
+
+    findings: list[dict] = []
+    specialists_run: list[dict] = []
+
+    with httpx.Client(verify=False, follow_redirects=False) as sync_client:
+        ctx.http_client = sync_client
+        for spec in selected:
+            if time.monotonic() >= ctx.deadline:
+                specialists_run.append({
+                    "category": spec.category, "status": "skipped",
+                    "reason": "target deadline reached",
+                })
+                continue
+
+            spec_start = time.monotonic()
+            spec_deadline = min(ctx.deadline, spec_start + SPECIALIST_TIMEOUT_SECONDS)
+
+            try:
+                spec_findings, iterations, stop_reason = await _run_specialist(
+                    spec=spec, ctx=ctx, deadline=spec_deadline, adapter=adapter,
+                )
+            except LLMProviderError as e:
+                return {
+                    "target": target,
+                    "org_id": org_id,
+                    "findings": findings,
+                    "specialists_run": specialists_run + [{
+                        "category": spec.category, "status": "error", "reason": str(e),
+                    }],
+                    "duration_seconds": round(time.monotonic() - start, 2),
+                    "status": "error",
+                    "error": f"LLM provider error: {e}",
+                    "scanner": "agent",
+                    "llm_provider": provider_info.provider,
+                    "llm_model": provider_info.model,
+                }
+            except Exception as e:
+                logger.exception("specialist %s crashed for adhoc target %s", spec.category, target)
+                specialists_run.append({
+                    "category": spec.category, "status": "error",
+                    "reason": str(e)[:200], "iterations": 0,
+                })
+                continue
+
+            findings.extend(spec_findings)
+            specialists_run.append({
+                "category": spec.category,
+                "status": stop_reason,
+                "iterations": iterations,
+                "findings": len(spec_findings),
+                "duration_seconds": round(time.monotonic() - spec_start, 2),
+            })
+
+    return {
+        "target": target,
+        "org_id": org_id,
         "findings": findings,
         "specialists_run": specialists_run,
         "duration_seconds": round(time.monotonic() - start, 2),
@@ -585,6 +792,7 @@ def _build_initial_message(ctx: AgentContext, spec: SpecialistSpec) -> str:
 # set without importing from agent_specialists directly.
 __all__ = [
     "run_agent_scan",
+    "run_agent_scan_adhoc",
     "AGENT_CATEGORIES",
     "_agent_payload_to_finding",
     "_credentials_to_headers",

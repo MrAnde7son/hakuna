@@ -8,6 +8,7 @@ import logging
 import re
 from datetime import datetime
 from typing import List, Optional
+from urllib.parse import urlparse
 
 import os
 
@@ -62,6 +63,32 @@ async def _vm_request(method: str, path: str, **kwargs) -> Optional[dict]:
     except Exception:
         logger.exception("VM scanner request failed: %s %s", method, path)
         return None
+
+
+def _revoke_vm_jobs_sync(job_ids: list[str]) -> int:
+    """Best-effort revoke of Celery task ids on the VM scanner.
+
+    Called from the sync reaper when marking a scan failed. Without this,
+    the tasks keep draining the queue and burning request budget against
+    targets for a Scan record that's already dead — and worse, block newer
+    scans behind the dead scan's backlog. Short per-request timeout so one
+    unreachable scanner can't stall the reaper's whole sweep.
+    """
+    if not job_ids:
+        return 0
+    revoked = 0
+    try:
+        with httpx.Client(timeout=5) as client:
+            for job_id in job_ids:
+                try:
+                    resp = client.delete(f"{VM_SCANNER_URL}/vm/scans/{job_id}")
+                    if resp.status_code == 200 and resp.json().get("revoked"):
+                        revoked += 1
+                except Exception:
+                    logger.debug("revoke failed for job %s (scanner unreachable?)", job_id)
+    except Exception:
+        logger.exception("VM revoke sweep failed")
+    return revoked
 
 
 async def _resolve_scan_credentials(
@@ -511,6 +538,7 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 "VM scan %d has been running >%dh — marking as failed (stale)",
                 scan_id, VM_SCAN_STALE_THRESHOLD_SECONDS // 3600,
             )
+            _revoke_vm_jobs_sync(job_ids)
             stale_meta = {**meta, "status": "failed", "error": "Scan timed out — job results may have expired"}
             scan.raw_metadata = stale_meta
             db.commit()
@@ -635,6 +663,7 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 "VM scan %d orphaned — all %d jobs PENDING after %.0fs; broker likely restarted",
                 scan_id, len(job_ids), age_seconds,
             )
+            _revoke_vm_jobs_sync(job_ids)
             new_meta["status"] = "failed"
             new_meta["error"] = (
                 "Orphaned — scanner broker lost the job queue (likely restart). "
@@ -728,6 +757,9 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
                     "Reaper: VM scan %d (org=%s) running >%dh — marking failed",
                     scan.id, scan.org_id, VM_SCAN_STALE_THRESHOLD_SECONDS // 3600,
                 )
+                # Revoke before mutating metadata so the tasks stop consuming
+                # queue time even if the commit below fails.
+                _revoke_vm_jobs_sync(meta.get("job_ids") or [])
                 scan.raw_metadata = {
                     **meta,
                     "status": "failed",
@@ -751,6 +783,7 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
                     "Reaper: VM scan %d (org=%s) all jobs PENDING after %.0fs — marking failed (broker orphan)",
                     scan.id, scan.org_id, age_seconds,
                 )
+                _revoke_vm_jobs_sync(meta.get("job_ids") or [])
                 scan.raw_metadata = {
                     **meta,
                     "status": "failed",
@@ -886,6 +919,9 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
     meta = scan.raw_metadata or {}
     asset: Asset | None = None
     new_asset_ids: list[int] = []
+    cls = _classify_vm_target(target) if target else {
+        "asset_type": "host", "url": None, "ip": None, "hostname": None,
+    }
 
     # Asset-based job (from run_nuclei_scan) — asset_id is authoritative.
     if asset_id_in:
@@ -904,38 +940,51 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
             asset.source_systems = existing_sources + ["vm_scanner"]
     else:
         # Adhoc job — resolve by target against this scan's prefilled map,
-        # then by IP/hostname in the same org, creating a new asset if none.
+        # then by IP/hostname/url in the same org, creating a new asset if none.
         target_asset_map = meta.get("target_asset_map", {})
         existing_asset_id = target_asset_map.get(target)
         if existing_asset_id:
             asset = db.query(Asset).filter(Asset.id == existing_asset_id).first()
 
         if not asset:
-            if _is_ip(target):
+            if cls["asset_type"] == "web_app":
+                # Match an existing web_app by the shared dedup key (url)
+                from services.dedup import resolve_asset_by_dedup_keys
+                asset = resolve_asset_by_dedup_keys(
+                    db,
+                    {"asset_identity": {"url": cls["url"]}},
+                    scan.org_id,
+                    asset_type="web_app",
+                )
+            elif cls["ip"]:
                 asset = (
                     db.query(Asset)
                     .join(Scan, Asset.scan_id == Scan.id)
-                    .filter(Scan.org_id == scan.org_id, Asset.ip == target)
+                    .filter(Scan.org_id == scan.org_id, Asset.ip == cls["ip"])
                     .first()
                 )
-            else:
+            elif cls["hostname"]:
                 asset = (
                     db.query(Asset)
                     .join(Scan, Asset.scan_id == Scan.id)
                     .filter(
                         Scan.org_id == scan.org_id,
-                        or_(Asset.hostname == target, Asset.fqdn == target),
+                        or_(Asset.hostname == cls["hostname"], Asset.fqdn == cls["hostname"]),
                     )
                     .first()
                 )
 
         if not asset:
-            asset = Asset(
-                scan_id=scan.id,
-                ip=target if _is_ip(target) else "",
-                hostname=target if not _is_ip(target) else "",
-                source_systems=["vm_scanner"],
-            )
+            asset_kwargs = {
+                "scan_id": scan.id,
+                "ip": cls["ip"] or "",
+                "hostname": cls["hostname"] or "",
+                "source_systems": ["vm_scanner"],
+            }
+            if cls["asset_type"] == "web_app":
+                asset_kwargs["asset_type"] = "web_app"
+                asset_kwargs["asset_identity"] = {"url": cls["url"]}
+            asset = Asset(**asset_kwargs)
             db.add(asset)
             db.flush()
             new_asset_ids.append(asset.id)
@@ -947,7 +996,11 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
     # Record per-source observation
     record_observation(
         db, asset_id=asset.id, source_system="vm_scanner",
-        raw_fields={"ip": target if _is_ip(target) else "", "hostname": target if not _is_ip(target) else ""},
+        raw_fields={
+            "ip": cls["ip"] or "",
+            "hostname": cls["hostname"] or "",
+            "url": cls["url"],
+        },
         scan_id=scan.id, org_id=scan.org_id,
     )
 
@@ -1044,6 +1097,33 @@ def _is_ip(s: str) -> bool:
     if len(parts) != 4:
         return False
     return all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
+
+
+def _classify_vm_target(target: str) -> dict:
+    """Classify a VM scan target string into identity fields.
+
+    Returns keys: asset_type ("host"|"web_app"), url, ip, hostname.
+    URL targets (http:// or https://) become web_app so they dedup with
+    Nessus WAS and other URL-scoped sources instead of landing as a bogus
+    host named "http://...". IPs and bare hostnames stay as host.
+    """
+    t = (target or "").strip()
+    if "://" in t:
+        parsed = urlparse(t)
+        if parsed.scheme in ("http", "https") and parsed.hostname:
+            host = parsed.hostname
+            return {
+                "asset_type": "web_app",
+                "url": t,
+                "ip": host if _is_ip(host) else None,
+                "hostname": host if not _is_ip(host) else None,
+            }
+    return {
+        "asset_type": "host",
+        "url": None,
+        "ip": t if _is_ip(t) else None,
+        "hostname": t if t and not _is_ip(t) else None,
+    }
 
 
 async def get_vm_health() -> Optional[dict]:

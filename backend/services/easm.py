@@ -8,7 +8,9 @@ Responsibilities:
 """
 import os
 import re
+import socket
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime
 from typing import Optional, Tuple
 
@@ -43,6 +45,67 @@ _NON_SOFTWARE_CPE_PAIRS = frozenset({
     "unpkg:unpkg", "cdnjs:cdnjs", "jsdelivr:jsdelivr",
     "sucuri:sucuri", "imperva:incapsula",
 })
+
+
+# Module-level executor for best-effort reverse DNS. Submitting the lookup to
+# a thread pool lets us abandon the future after a short timeout so a slow
+# resolver can't stall EASM ingest across dozens of IPs.
+_RDNS_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="easm-rdns")
+
+_IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+
+def _is_ipv4(val: str) -> bool:
+    if not val or not _IPV4_RE.match(val):
+        return False
+    return all(0 <= int(o) <= 255 for o in val.split("."))
+
+
+def _reverse_dns_best_effort(ip: str, timeout: float = 0.5) -> Optional[str]:
+    """Return the PTR hostname for `ip`, or None on failure/timeout."""
+    try:
+        fut = _RDNS_EXECUTOR.submit(socket.gethostbyaddr, ip)
+        name, _, _ = fut.result(timeout=timeout)
+        return name or None
+    except (FuturesTimeout, socket.herror, socket.gaierror, OSError):
+        return None
+    except Exception:
+        return None
+
+
+def _resolve_host_fields(
+    raw_hostname: str,
+    raw_ip: str,
+    try_reverse_dns: bool = True,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Normalize EASM-provided host/ip into (ip, hostname_short, fqdn).
+
+    EASM records sometimes carry an IP in the `hostname` field (no separate
+    `ip`). Naively splitting on '.' then turns "20.83.163.0" into "20" — the
+    bug that displayed the asset as just "20" in the UI.
+
+    Rules:
+    - If `raw_hostname` parses as an IPv4 and `raw_ip` is empty, move it into ip.
+    - If only an IP is known and reverse DNS succeeds, adopt the PTR as hostname/fqdn.
+    - `hostname` stores the short label (first dot-segment) of a real hostname;
+      `fqdn` stores the full dotted name. Neither is ever populated from an IP.
+    """
+    raw_hostname = (raw_hostname or "").strip()
+    raw_ip = (raw_ip or "").strip()
+
+    if raw_hostname and _is_ipv4(raw_hostname) and not raw_ip:
+        raw_ip = raw_hostname
+        raw_hostname = ""
+
+    if raw_ip and not raw_hostname and try_reverse_dns:
+        rdns = _reverse_dns_best_effort(raw_ip)
+        if rdns:
+            raw_hostname = rdns
+
+    ip_val = raw_ip or None
+    fqdn_val = raw_hostname if raw_hostname and "." in raw_hostname else None
+    hostname_val = raw_hostname.split(".")[0] if raw_hostname else None
+    return ip_val, hostname_val, fqdn_val
 
 
 def _filter_cpe_list(cpe_list: list) -> list:
@@ -1510,16 +1573,25 @@ def _import_assets_for_domain(
             existing_by_hostname[a.hostname] = a
 
     for ea in easm_assets:
-        hostname = ea.get("hostname", "")
-        ip = ea.get("ip", "")
-        if not hostname and not ip:
+        raw_hostname = ea.get("hostname", "") or ""
+        raw_ip = ea.get("ip", "") or ""
+        if not raw_hostname and not raw_ip:
             continue
 
-        # Filter: only assets whose hostname ends with this domain
-        if hostname and not hostname.lower().endswith(domain.lower()):
+        # Filter: only assets whose hostname ends with this domain.
+        # Skip the filter when the "hostname" value is actually an IP (it can't
+        # match any domain suffix) — _resolve_host_fields will reclassify it.
+        if raw_hostname and not _is_ipv4(raw_hostname) and not raw_hostname.lower().endswith(domain.lower()):
             continue
 
-        fqdn = hostname if "." in hostname else None
+        ip, hostname_short, fqdn = _resolve_host_fields(raw_hostname, raw_ip)
+        # Domain-scope filter for reverse-DNS-derived hostnames: if we synthesized
+        # a hostname from rDNS that doesn't match the domain scope, discard it
+        # but keep the IP-only asset.
+        if fqdn and not fqdn.lower().endswith(domain.lower()) and not raw_hostname:
+            hostname_short = None
+            fqdn = None
+        hostname = hostname_short  # UI/query references below expect `hostname`
         easm_data = _build_easm_data(ea)
 
         # Try OS detection from tech stack
@@ -1536,12 +1608,12 @@ def _import_assets_for_domain(
         asset = (
             (ip and existing_by_ip.get(ip))
             or (fqdn and existing_by_hostname.get(fqdn))
-            or (hostname and existing_by_hostname.get(hostname.split(".")[0]))
+            or (hostname and existing_by_hostname.get(hostname))
         )
         if asset:
             # Update in-place to preserve asset.id (cross-scan findings may reference it)
             asset.ip = ip or asset.ip
-            asset.hostname = hostname.split(".")[0] if hostname else asset.hostname
+            asset.hostname = hostname or asset.hostname
             asset.fqdn = fqdn or asset.fqdn
             asset.os = os_hint or asset.os
             asset.easm_data = easm_data
@@ -1590,10 +1662,25 @@ def _import_assets_for_domain(
             except Exception:
                 pass  # graceful fallback
 
+            # Fingerprint fallback: if user-defined rules didn't classify this
+            # asset and EASM detected an HTTP service on it, treat it as a
+            # web_app so it can dedup against Nessus WAS / VM scanner rows that
+            # target the same URL. Without this, EASM defaults to `host` and
+            # cross-source dedup silently splits a single logical asset into
+            # three (host + web_app + web_app).
+            if not type_kwargs:
+                http_url = (ea.get("http_url") or "").strip()
+                if http_url:
+                    type_kwargs = {
+                        "asset_type": "web_app",
+                        "asset_identity": {"url": http_url},
+                        "asset_attributes": {},
+                    }
+
             asset = Asset(
                 scan_id=scan.id,
-                ip=ip or None,
-                hostname=hostname.split(".")[0] if hostname else None,
+                ip=ip,
+                hostname=hostname,
                 fqdn=fqdn,
                 os=os_hint,
                 is_internet_facing=True,

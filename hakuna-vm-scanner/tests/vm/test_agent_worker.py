@@ -37,6 +37,7 @@ from scanner.vm.agent_specialists import (
     _request_handler,
     _safe_url,
     _summary_handler,
+    seed_base_endpoint,
     select_applicable_specialists,
     tool_schemas_for_anthropic,
 )
@@ -81,9 +82,25 @@ class TestApplicabilityPredicates:
         eps = [{"url": "https://x/api?id=1", "parameters": None}]
         assert _has_parameterised_endpoint(_ctx(endpoints=eps))
 
-    def test_parameterised_skips_static_paths(self):
+    def test_parameterised_accepts_static_paths_with_http_surface(self):
+        """Static-only endpoints used to gate out injection/SSRF, which
+        skipped apps whose entire attack surface was a root-page form
+        (ffuf doesn't parse HTML, so the parameters only appear once
+        the agent fetches the page). We now trust the specialist to do
+        that discovery — any HTTP surface qualifies, and the prompt
+        tells the agent to harvest forms before picking candidates."""
         eps = [{"url": "https://x/api/static", "parameters": None}]
-        assert not _has_parameterised_endpoint(_ctx(endpoints=eps))
+        assert _has_parameterised_endpoint(_ctx(endpoints=eps))
+
+    def test_parameterised_true_for_bare_http_target(self):
+        """Adhoc flow seeds a synthetic base endpoint; even without that,
+        the predicate must consider a bare http(s) target as probeable."""
+        assert _has_parameterised_endpoint(_ctx(target="http://20.0.0.1:8080"))
+
+    def test_parameterised_false_when_no_http_surface(self):
+        """A bare-IP target with no endpoints and no scheme stays out —
+        nothing for the agent to GET against."""
+        assert not _has_parameterised_endpoint(_ctx(target="10.0.0.1"))
 
     def test_auth_surface_detects_provided_headers(self):
         """Session broker injected a cookie → we can run authn probes."""
@@ -108,6 +125,19 @@ class TestSelectApplicableSpecialists:
         eps = [{"url": "https://x/api?id=1", "parameters": [{"name": "id"}]}]
         selected = select_applicable_specialists(_ctx(
             target="https://x", endpoints=eps,
+        ))
+        cats = {s.category for s in selected}
+        assert "injection" in cats
+        assert "xss" in cats
+        assert "ssrf" in cats
+
+    def test_bare_http_target_enables_injection_and_xss_and_ssrf(self):
+        """An http(s) target with no pre-discovered endpoints still
+        selects injection/xss/ssrf — the specialists fetch the page
+        and harvest forms themselves. This is the fix for the common
+        case of a simple app whose only input is a root-page form."""
+        selected = select_applicable_specialists(_ctx(
+            target="http://20.0.0.1:8080", endpoints=[],
         ))
         cats = {s.category for s in selected}
         assert "injection" in cats
@@ -141,6 +171,31 @@ class TestSelectApplicableSpecialists:
             categories=["not_a_thing"],
         )
         assert selected == []
+
+
+class TestSeedBaseEndpoint:
+    def test_seeds_when_empty_and_http_target(self):
+        seeded = seed_base_endpoint([], "http://20.0.0.1:8080")
+        assert len(seeded) == 1
+        assert seeded[0]["url"] == "http://20.0.0.1:8080"
+        assert seeded[0]["method"] == "GET"
+        assert seeded[0]["source"] == "synthetic_base"
+
+    def test_seeds_when_empty_and_https_target(self):
+        seeded = seed_base_endpoint([], "https://example.com")
+        assert len(seeded) == 1
+        assert seeded[0]["url"] == "https://example.com"
+
+    def test_noop_when_endpoints_present(self):
+        existing = [{"url": "https://x/api"}]
+        assert seed_base_endpoint(existing, "https://x") is existing
+
+    def test_noop_when_target_is_bare_ip(self):
+        """Without a scheme we can't synthesize a URL the agent can GET."""
+        assert seed_base_endpoint([], "10.0.0.1") == []
+
+    def test_noop_when_target_empty(self):
+        assert seed_base_endpoint([], "") == []
 
 
 class TestCredentialsToHeaders:
@@ -431,3 +486,80 @@ class TestSpecialistsRegistry:
             assert "emit_finding" in spec.system_prompt.lower() or \
                    "emit finding" in spec.system_prompt.lower() or \
                    "EMIT_FINDING" in spec.system_prompt
+
+
+class TestRunAgentScanAdhoc:
+    """The adhoc task skips the asset_context / endpoint_slice DB queries
+    and builds the AgentContext from the raw target. We exercise the
+    pre-LLM branches — the specialist loop itself is covered by the
+    asset-path tests.
+    """
+
+    @staticmethod
+    def _run(target: str, org_id: str | None = None, credentials: dict | None = None, categories: list[str] | None = None) -> dict:
+        import asyncio
+        from scanner.vm.agent_worker import _run_agent_scan_adhoc_async
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                _run_agent_scan_adhoc_async(MagicMock(), target, org_id, credentials, categories)
+            )
+        finally:
+            loop.close()
+
+    @staticmethod
+    def _fake_conn():
+        """asyncpg.Connection stub whose .close() is awaitable."""
+        from unittest.mock import AsyncMock
+        conn = MagicMock()
+        conn.close = AsyncMock(return_value=None)
+        return conn
+
+    def test_skips_when_no_provider_configured(self, monkeypatch):
+        """No LLM key at all — the task must no-op cleanly, not crash.
+        Mirrors the asset path's behaviour for air-gapped deployments."""
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "scanner.vm.agent_worker.fetch_integration_configs",
+            AsyncMock(return_value=[]),
+        )
+        monkeypatch.setattr(
+            "scanner.vm.agent_worker.resolve_provider", lambda cfg: None,
+        )
+        monkeypatch.setattr(
+            "scanner.vm.agent_worker.asyncpg.connect",
+            AsyncMock(return_value=self._fake_conn()),
+        )
+
+        result = self._run("http://example.com")
+        assert result["status"] == "skipped"
+        assert "LLM provider" in result["error"]
+        assert result["target"] == "http://example.com"
+
+    def test_skips_when_no_applicable_specialists(self, monkeypatch):
+        """A bare-IP target (no http scheme, no endpoints, no auth
+        headers) has no specialists that apply. The task must skip
+        without spending tokens."""
+        from unittest.mock import AsyncMock
+
+        provider_info = SimpleNamespace(provider="anthropic", model="claude-test")
+
+        monkeypatch.setattr(
+            "scanner.vm.agent_worker.fetch_integration_configs",
+            AsyncMock(return_value=[]),
+        )
+        monkeypatch.setattr(
+            "scanner.vm.agent_worker.resolve_provider", lambda cfg: provider_info,
+        )
+        monkeypatch.setattr(
+            "scanner.vm.agent_worker.build_adapter", lambda p: MagicMock(),
+        )
+        monkeypatch.setattr(
+            "scanner.vm.agent_worker.asyncpg.connect",
+            AsyncMock(return_value=self._fake_conn()),
+        )
+
+        result = self._run("10.0.0.1")
+        assert result["status"] == "skipped"
+        assert "no applicable specialists" in result["error"]

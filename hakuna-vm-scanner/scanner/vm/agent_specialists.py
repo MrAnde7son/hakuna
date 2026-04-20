@@ -93,12 +93,16 @@ def _has_any_http_endpoint(ctx: AgentContext) -> bool:
 
 
 def _has_parameterised_endpoint(ctx: AgentContext) -> bool:
-    """Heuristic: injection/XSS/authz need inputs to attack.
+    """Heuristic: true when some endpoint or the target itself has inputs.
 
     An endpoint with ``parameters`` populated (OpenAPI-known) or a URL
-    containing ``?``/``{id}``/``:id`` qualifies. Assets with only
-    static-path endpoints (katana-discovered HTML pages) still qualify
-    for XSS (can reflect into HTML via URL path) but not for injection.
+    containing ``?``/``{id}``/``:id`` qualifies. A bare http(s) target
+    also qualifies now: injection/SSRF specialists can GET the base
+    URL, parse the HTML for ``<form>`` elements, and discover inputs
+    themselves. The alternative — pre-gating out every asset whose
+    static discovery step happens to return zero parameterised
+    endpoints — skips agents on trivially-vulnerable apps like the
+    ones whose entire attack surface is a root-page form.
     """
     if not _has_any_http_endpoint(ctx):
         return False
@@ -109,7 +113,38 @@ def _has_parameterised_endpoint(ctx: AgentContext) -> bool:
         url = ep.get("url") or ""
         if "?" in url or "{" in url or re.search(r"/:[A-Za-z]", url):
             return True
-    return False
+    # No pre-known parameters, but there's an HTTP surface — let the
+    # LLM do form/endpoint discovery via http_request on its first turn.
+    return True
+
+
+def seed_base_endpoint(endpoints: list[dict], target: str) -> list[dict]:
+    """Return ``endpoints`` with a synthetic base-URL row if the list is empty.
+
+    When discovery yields nothing but the target is http(s), the agent
+    still needs a concrete starting point to probe. A synthetic row
+    pointing at the target base URL (no parameters, GET) gives the
+    specialists something to pick up — their prompts will then tell
+    them to fetch the page and harvest forms.
+
+    Idempotent: if ``endpoints`` already has at least one item, returns
+    it unchanged. If ``target`` isn't http(s), returns unchanged — we
+    can't synthesize an HTTP endpoint for a bare IP whose scheme we
+    don't know (guessing http vs https here is the wrong layer; that
+    decision belongs in ``_resolve_target``).
+    """
+    if endpoints:
+        return endpoints
+    if not target or not target.startswith(("http://", "https://")):
+        return endpoints
+    return [{
+        "url": target,
+        "method": "GET",
+        "source": "synthetic_base",
+        "auth_required": False,
+        "content_type": None,
+        "parameters": [],
+    }]
 
 
 def _has_auth_surface(ctx: AgentContext) -> bool:
@@ -132,39 +167,54 @@ def _has_auth_surface(ctx: AgentContext) -> bool:
 # ends.
 
 
-_INJECTION_PROMPT = """You are a specialist SQL/NoSQL/command injection tester.
+_INJECTION_PROMPT = """You are a specialist SQL/NoSQL/command/template injection tester.
 
-YOUR GOAL: For the asset's parameterised HTTP endpoints, determine whether any parameter is vulnerable to injection of untrusted input into a backend query/interpreter.
+YOUR GOAL: Determine whether any HTTP parameter on this asset is vulnerable to injection of untrusted input into a backend query/interpreter.
 
 SCOPE:
 - SQL injection (error-based, boolean-based, time-based)
 - NoSQL injection (MongoDB operator injection, JSON query injection)
-- OS command injection via user-controlled parameters
+- OS command injection via user-controlled parameters (VERY common in DevOps / internal tooling UIs — any app exposing a "run/execute/ping/lookup/shell/command" input is a prime candidate)
 - Server-side template injection (SSTI) — Jinja2/Twig/FreeMarker
 
 HOW TO PROCEED:
-1. Look at the endpoints list in the initial message. Pick the 3-5 highest-signal targets — parameters named id/user/q/search/filter are usually best. Prefer endpoints with method POST or with a query string present.
-2. For each target, send a baseline request to establish the normal response. Record status, body length, and any error-like strings.
-3. Send a minimally-invasive probe: a single quote, a boolean tautology, a sleep primitive, an SSTI sentinel. One payload at a time — not a shotgun.
-4. Compare the response to the baseline. Classification:
-   - Error message reveals backend type/query → true_positive
+
+Step 0 — DISCOVER THE ATTACK SURFACE. Do not skip this step even if the endpoints list looks populated.
+   a. GET the target base URL with http_request. Read the HTML body.
+   b. Find every `<form>` tag. For each, note the `action` (resolve relative URLs against the page), the `method`, and the `name` attributes of every `<input>`, `<textarea>`, and `<select>` inside it. These are your real parameter candidates — often the endpoints list upstream is sparse or empty.
+   c. Also look for inline JavaScript that posts to an API path (fetch(), XMLHttpRequest, $.ajax) and for visible URLs/links with `?foo=…`. Note their paths and parameter names too.
+   d. If no forms and no script-built requests are apparent, fall back to the endpoints list from the initial message.
+
+Step 1 — PICK 3-5 HIGHEST-SIGNAL PARAMETERS. Prioritise: parameters whose names suggest code execution (command, cmd, exec, run, shell, ping, host, query), then generic inputs (id, user, q, search, filter). Prefer endpoints with a form method POST or a query string present.
+
+Step 2 — BASELINE. For each target, send an unmodified request with a benign value and record status, body length, elapsed_ms, and any error-like strings.
+
+Step 3 — MINIMAL PROBE. Send ONE payload at a time — not a shotgun:
+   - SQL: single quote `'`, then a boolean tautology `' OR '1'='1`, then a time probe `';SELECT SLEEP(5)--` (or `WAITFOR DELAY '0:0:5'`).
+   - Command injection: append a benign separator + enumeration: ` ; id`, `&& id`, `| id`, ` ; whoami`, ` ; ls -la`. The output of `id` / `whoami` / `ls` in the response body is unambiguous evidence.
+   - SSTI: `{{7*7}}` (rendered as 49 → Jinja2/Twig), `${{7*7}}`, `${7*7}`.
+
+Step 4 — CLASSIFY:
+   - Backend error reveals database/shell/template engine → true_positive
+   - Command output (uid=, directory listing, hostname) present in response body → true_positive (command injection; CRITICAL severity)
    - Boolean diff produces a stable state change → true_positive
    - Time-based probe shifts response time by >= ~5s consistently → true_positive
    - No diff, generic 500, or WAF block → stop probing that parameter
-5. When you find a true positive, emit an EMIT_FINDING tool call with evidence (the exact request, the exact diff you observed). Then move on.
+
+Step 5 — EMIT. When you find a true positive, call emit_finding with concrete evidence (the request, the response diff showing the evidence text). Then move to the next target.
 
 BUDGET:
 - Max 12 tool calls per agent run.
 - Spend at most 3 calls per parameter.
-- STOP and emit a summary tool call when you've examined your top 3 candidates, even if you found nothing.
+- STOP and call summary when you've examined your top 3 candidates, even if you found nothing.
 
 SAFETY:
 - Never send destructive SQL (DROP, DELETE without WHERE, UPDATE without WHERE).
-- Never run command injection that spawns shells (;rm,;wget).
-- Time-based probes: use `SLEEP(5)` or `WAITFOR DELAY`, never sleep() > 10s.
+- For command injection, use READ-ONLY enumerations (`id`, `whoami`, `uname -a`, `ls`, `cat /etc/hostname`). Never `rm`, `wget`, `curl` to attacker-controlled hosts, shell spawning, reverse shells, or persistence.
+- Time-based probes: `SLEEP(5)` or `WAITFOR DELAY`, never sleep() > 10s.
 
 OUTPUT:
-- Every finding emitted via EMIT_FINDING must include concrete evidence — a request, a response diff, a time delta. "The parameter looked suspicious" is not a finding.
+- Every finding emitted via emit_finding must include concrete evidence — the request, the response diff, the exact command output or error string. "The parameter looked suspicious" is not a finding.
 """
 
 _XSS_PROMPT = """You are a specialist cross-site scripting tester.
@@ -177,20 +227,29 @@ SCOPE:
 - DOM XSS hints via suspicious client-side sinks in returned JavaScript
 
 HOW TO PROCEED:
-1. From the endpoints list, pick endpoints that return text/html or lack a content_type declaration. Skip pure JSON APIs — even if XSS existed, the risk is lower and the test shape is different.
-2. For each target: baseline GET, then reflect a unique-looking benign sentinel (e.g. `HakUnaXsSSentinel7823`). Fetch and check whether the sentinel appears in the response.
-3. If it reflects, escalate to a minimal payload: `<h1>x</h1>`, then `"><svg onload=1>`. Classify:
+
+Step 0 — DISCOVER THE ATTACK SURFACE. Do not skip this step.
+   a. GET the target base URL with http_request. Read the HTML body.
+   b. Find every `<form>` tag: note the `action` (resolve against the page URL), the `method`, and every `<input>/<textarea>/<select>` `name`. These are your reflection candidates — ignore what the endpoints list suggests if it's empty or sparse.
+   c. Also scan the response body for query-string links (`?foo=…`) and inline JS fetch/XHR calls — both expose additional parameterised endpoints.
+
+Step 1 — PICK TARGETS. Prefer endpoints returning text/html (or whose path looks like an HTML page) over pure JSON APIs. Prefer form inputs named `q`, `search`, `name`, `comment`, `message`, `title` — classic reflection surfaces.
+
+Step 2 — SENTINEL REFLECTION. For each target: baseline GET, then reflect a unique benign sentinel (e.g. `HakUnaXsSSentinel7823`). Check whether the sentinel appears in the response body.
+
+Step 3 — PAYLOAD ESCALATION. If the sentinel reflects, escalate minimally: `<h1>x</h1>`, then `"><svg onload=1>`. Classify:
    - Sentinel HTML-encoded (`&lt;h1&gt;`) → no finding, server encodes
    - Sentinel reflected raw in HTML context → true_positive (reflected XSS)
-   - Sentinel reflected inside attribute/script → true_positive (context-dependent)
-4. Store-then-retrieve: if the endpoint accepts POST and has a GET sibling (same path minus a trailing id), submit the sentinel via POST, then GET and check.
+   - Sentinel reflected inside an attribute or `<script>` block → true_positive (context-dependent XSS)
+
+Step 4 — STORE-THEN-RETRIEVE. If a form is POST and the page also GETs a list of prior submissions, submit the sentinel via POST, then GET the listing and check.
 
 BUDGET:
-- Max 10 tool calls. 2 calls per endpoint max.
-- Call the `emit_finding` tool for each confirmed reflection, then `summary` to exit.
+- Max 10 tool calls. 2 per endpoint.
+- Call emit_finding for each confirmed reflection, then summary to exit.
 
 SAFETY:
-- Use only harmless payloads (sentinel strings, `<h1>x</h1>`, `<svg onload=1>`). Never payloads that actually exfiltrate, redirect, or mutate state.
+- Use only harmless payloads (sentinel strings, `<h1>x</h1>`, `<svg onload=1>`). Never payloads that exfiltrate, redirect, or mutate state beyond the benign test entry.
 
 OUTPUT:
 - Finding payload must cite the exact reflected substring and its context (HTML body / attribute / script).

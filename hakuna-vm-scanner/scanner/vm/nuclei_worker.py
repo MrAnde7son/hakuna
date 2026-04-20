@@ -32,7 +32,14 @@ from scanner.vm.config import (
     NUCLEI_RATE_LIMIT,
     NUCLEI_TIMEOUT,
     SCAN_TIMEOUT_SECONDS,
+    TEMPLATES_DIR,
 )
+
+# Web ports that cause the adhoc path to include `custom/dast/` templates
+# under `-dast`. Mirrors router._WEB_PORTS — duplicated as a literal here
+# so this module doesn't have to import the router (which pulls the whole
+# routing table into memory for what's otherwise a string check).
+_ADHOC_WEB_PORTS: frozenset[int] = frozenset({80, 443, 3000, 5000, 8000, 8001, 8080, 8443, 8888, 9090, 9443})
 from scanner.vm.db import _normalize_dsn
 from scanner.vm.plan_executor import (
     ScanPlanInvalidError,
@@ -121,7 +128,17 @@ def _run_async(coro):
     try:
         return loop.run_until_complete(coro)
     finally:
-        loop.close()
+        try:
+            # Force GC so finalizers that schedule cleanup coroutines
+            # enqueue their tasks before we drain the loop.
+            import gc
+            gc.collect()
+            pending = asyncio.all_tasks(loop)
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        finally:
+            loop.close()
 
 
 def _credentials_to_header_args(credentials: dict | None) -> list[str]:
@@ -169,6 +186,53 @@ def _credentials_to_header_args(credentials: dict | None) -> list[str]:
             args.extend(["-H", f"{name}: {value}"])
 
     return args
+
+
+def _adhoc_is_web_target(target: str) -> bool:
+    """True if an adhoc ``target`` points at something ffuf/nuclei-DAST can reach.
+
+    The adhoc path has no asset record to consult, so we infer web-ness
+    from the target string itself:
+
+      - An explicit ``http://`` / ``https://`` URL.
+      - A host:port tuple whose port is in ``_ADHOC_WEB_PORTS``.
+
+    Bare hostnames/IPs (``example.com``, ``10.0.0.1``) return False.
+    Those can still be valid nuclei targets — nuclei itself will try
+    common web ports — but we don't want to blindly include DAST
+    templates for something that may actually be an SSH or DB endpoint.
+    """
+    if not target:
+        return False
+    if target.startswith(("http://", "https://")):
+        return True
+    if ":" in target and not target.startswith("["):  # skip IPv6 [::]:port for now
+        try:
+            _, port_str = target.rsplit(":", 1)
+            port = int(port_str.split("/", 1)[0])
+            return port in _ADHOC_WEB_PORTS
+        except (ValueError, IndexError):
+            return False
+    return False
+
+
+def _adhoc_dast_dir() -> str | None:
+    """Return the ``custom/dast/`` directory path if it exists and is non-empty.
+
+    Returns None when the dast set hasn't been synced yet (fresh install
+    or sync job never ran). Nuclei would error on a nonexistent ``-t``
+    path, so callers must skip the DAST command when this is None.
+    """
+    dast_dir = os.path.join(TEMPLATES_DIR, "custom", "dast")
+    if not os.path.isdir(dast_dir):
+        return None
+    try:
+        for _root, _dirs, files in os.walk(dast_dir):
+            if any(f.endswith((".yaml", ".yml")) for f in files):
+                return dast_dir
+    except OSError:
+        return None
+    return None
 
 
 def _has_dast_template(template_args: list[str]) -> bool:
@@ -656,21 +720,24 @@ async def _run_nuclei_adhoc_async(
                     asset_id = asset_row["id"]
                     resolved_org_id = asset_row["org_id"]
 
-        # Build nuclei command — broad template selection for ad-hoc scans.
+        # Build nuclei commands. For web-shaped targets we run two
+        # passes so the adhoc path gets the same coverage the asset path
+        # gets via TemplateRouter:
+        #   1. Community templates (no -dast) — detection/exposure
+        #      signatures that make up the bulk of the feed.
+        #   2. custom/dast/ templates (WITH -dast) — the reewardius
+        #      fuzzing set. These templates contain `fuzzing:` blocks
+        #      which only execute when -dast is set; without it nuclei
+        #      loads them but silently skips execution, which is what
+        #      was producing the 0-match scans against vulnerable web
+        #      apps.
+        # Combining both under a single -dast flag is wrong: -dast
+        # restricts execution to fuzzing templates, so it would suppress
+        # the whole community set. Two sequential commands is the
+        # cheapest way to cover both classes.
         # Credentials (if any) become -H flags; values are never logged.
-        # NOTE: `-dast` is deliberately NOT set here. In nuclei `-dast`
-        # *restricts* execution to templates with `fuzzing:` blocks — it
-        # does not add them to an existing selection. Enabling it on an
-        # adhoc scan against a target with no discoverable parameters
-        # (e.g. a SaaS landing page) resulted in 0 requests sent and 0
-        # matches in ~15s. Leaving it off runs the full community set so
-        # detection/exposure templates can match; the per-asset scan path
-        # still opts into `-dast` conditionally via _has_dast_template.
         cred_args = _credentials_to_header_args(credentials)
-        cmd = [
-            NUCLEI_BIN,
-            "-target", target,
-            "-t", NUCLEI_COMMUNITY_TEMPLATES,
+        base_cmd_tail = [
             *cred_args,
             "-jsonl",
             "-timeout", str(NUCLEI_TIMEOUT),
@@ -680,103 +747,161 @@ async def _run_nuclei_adhoc_async(
             "-severity", "info,low,medium,high,critical",
         ]
 
-        logger.info("nuclei adhoc cmd: %s", _redacted_cmd_for_log(cmd))
+        commands: list[tuple[str, list[str]]] = [
+            (
+                "community",
+                [
+                    NUCLEI_BIN,
+                    "-target", target,
+                    "-t", NUCLEI_COMMUNITY_TEMPLATES,
+                    *base_cmd_tail,
+                ],
+            ),
+        ]
+
+        dast_dir = _adhoc_dast_dir() if _adhoc_is_web_target(target) else None
+        if dast_dir:
+            commands.append(
+                (
+                    "dast",
+                    [
+                        NUCLEI_BIN,
+                        "-target", target,
+                        "-t", dast_dir,
+                        "-dast",
+                        *base_cmd_tail,
+                    ],
+                )
+            )
 
         findings_emitted = 0
         findings_persisted = 0
         templates_run: set[str] = set()
         findings: list[dict] = []
+        stderr_chunks: list[str] = []
+        nuclei_stats: dict = {}
+        status = "complete"
+        exit_code = 0
+        stages_run: list[str] = []
+        deadline = start + SCAN_TIMEOUT_SECONDS
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.DEVNULL,
-                limit=1024 * 1024,
-            )
+        for label, cmd in commands:
+            remaining = deadline - time.monotonic()
+            if remaining <= 1:
+                logger.warning(
+                    "adhoc %s: per-target budget exhausted before %s stage", target, label,
+                )
+                status = "partial"
+                break
 
-            stderr_chunks: list[str] = []
+            logger.info("nuclei adhoc cmd (%s): %s", label, _redacted_cmd_for_log(cmd))
 
-            async def drain_stderr():
-                assert proc.stderr is not None
+            proc = None
+            cmd_stderr: list[str] = []
+
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    limit=1024 * 1024,
+                )
+
+                async def drain_stderr(_proc, _sink: list[str]):
+                    assert _proc.stderr is not None
+                    while True:
+                        line = await _proc.stderr.readline()
+                        if not line:
+                            break
+                        _sink.append(line.decode("utf-8", errors="replace").strip())
+
+                stderr_task = asyncio.create_task(drain_stderr(proc, cmd_stderr))
+
+                assert proc.stdout is not None
                 while True:
-                    line = await proc.stderr.readline()
-                    if not line:
+                    raw_line = await proc.stdout.readline()
+                    if not raw_line:
                         break
-                    stderr_chunks.append(line.decode("utf-8", errors="replace").strip())
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        result = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
 
-            stderr_task = asyncio.create_task(drain_stderr())
+                    template_id = result.get("template-id", result.get("templateID", ""))
+                    templates_run.add(template_id)
+                    findings_emitted += 1
 
-            assert proc.stdout is not None
-            while True:
-                raw_line = await proc.stdout.readline()
-                if not raw_line:
-                    break
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                try:
-                    result = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+                    info = result.get("info", {})
+                    findings.append({
+                        "template_id": template_id,
+                        "severity": (info.get("severity") or "info").lower(),
+                        "name": info.get("name", template_id),
+                        "description": info.get("description", ""),
+                        "matched_at": result.get("matched-at", ""),
+                        "host": result.get("host", ""),
+                        "port": result.get("port", ""),
+                        "type": result.get("type", ""),
+                        "tags": info.get("tags", []),
+                        "reference": info.get("reference", []),
+                        "classification": info.get("classification", {}),
+                        "curl_command": result.get("curl-command", ""),
+                        "matcher_name": result.get("matcher-name", ""),
+                        "extracted_results": result.get("extracted-results", []),
+                    })
 
-                template_id = result.get("template-id", result.get("templateID", ""))
-                templates_run.add(template_id)
-                findings_emitted += 1
+                    # Persist to findings table when we have a resolved asset
+                    if conn and asset_id and resolved_org_id:
+                        persisted = await _emit_finding(conn, resolved_org_id, asset_id, result)
+                        if persisted:
+                            findings_persisted += 1
 
-                info = result.get("info", {})
-                findings.append({
-                    "template_id": template_id,
-                    "severity": (info.get("severity") or "info").lower(),
-                    "name": info.get("name", template_id),
-                    "description": info.get("description", ""),
-                    "matched_at": result.get("matched-at", ""),
-                    "host": result.get("host", ""),
-                    "port": result.get("port", ""),
-                    "type": result.get("type", ""),
-                    "tags": info.get("tags", []),
-                    "reference": info.get("reference", []),
-                    "classification": info.get("classification", {}),
-                    "curl_command": result.get("curl-command", ""),
-                    "matcher_name": result.get("matcher-name", ""),
-                    "extracted_results": result.get("extracted-results", []),
-                })
+                await asyncio.wait_for(proc.wait(), timeout=int(remaining))
+                await stderr_task
+                stages_run.append(label)
 
-                # Persist to findings table when we have a resolved asset
-                if conn and asset_id and resolved_org_id:
-                    persisted = await _emit_finding(conn, resolved_org_id, asset_id, result)
-                    if persisted:
-                        findings_persisted += 1
+                exit_code = proc.returncode or 0
+                cmd_stats = _parse_nuclei_stats(cmd_stderr)
+                # Stats from the most recent command win — each -t selection
+                # loads a different template set so carrying forward the
+                # community count would misreport the DAST stage.
+                nuclei_stats = cmd_stats or nuclei_stats
+                stderr_chunks.extend(cmd_stderr)
+                logger.info(
+                    "nuclei adhoc %s stage done for %s: exit=%d templates_loaded=%s requests=%s matched=%d",
+                    label, target, exit_code,
+                    cmd_stats.get("templates_loaded", "?"),
+                    cmd_stats.get("requests_sent", "?"),
+                    len(templates_run),
+                )
+                if exit_code != 0 and status == "complete":
+                    status = "partial"
+                    stderr_text = "\n".join(cmd_stderr)[:1000]
+                    logger.warning(
+                        "nuclei adhoc %s exited %d for %s: %s",
+                        label, exit_code, target, stderr_text,
+                    )
 
-            await asyncio.wait_for(proc.wait(), timeout=SCAN_TIMEOUT_SECONDS)
-            await stderr_task
+            except asyncio.TimeoutError:
+                if proc is not None:
+                    proc.kill()
+                    await proc.wait()
+                logger.error("nuclei adhoc %s timed out for target %s", label, target)
+                cmd_stats = _parse_nuclei_stats(cmd_stderr)
+                nuclei_stats = cmd_stats or nuclei_stats
+                stderr_chunks.extend(cmd_stderr)
+                status = "timeout"
+                if task.request.retries < task.max_retries:
+                    task.retry(countdown=60)
+                break
 
-            exit_code = proc.returncode
-            nuclei_stats = _parse_nuclei_stats(stderr_chunks)
-            logger.info(
-                "nuclei adhoc finished for %s: exit=%d templates_loaded=%s requests=%s matched=%d persisted=%d",
-                target, exit_code,
-                nuclei_stats.get("templates_loaded", "?"),
-                nuclei_stats.get("requests_sent", "?"),
-                len(templates_run),
-                findings_persisted,
-            )
-            if exit_code != 0:
-                stderr_text = "\n".join(stderr_chunks)[:1000]
-                logger.warning("nuclei adhoc exited %d for %s: %s", exit_code, target, stderr_text)
-
-            status = "complete" if exit_code == 0 else "partial"
-
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            logger.error("nuclei adhoc timed out for target %s", target)
-            nuclei_stats = _parse_nuclei_stats(stderr_chunks)
-            status = "timeout"
-
-            if task.request.retries < task.max_retries:
-                task.retry(countdown=60)
+        logger.info(
+            "nuclei adhoc finished for %s: stages=%d templates_matched=%d persisted=%d status=%s",
+            target, len(commands), len(templates_run), findings_persisted, status,
+        )
 
         adhoc_payload = {
             "target": target,
@@ -789,6 +914,7 @@ async def _run_nuclei_adhoc_async(
             "status": status,
             "findings": findings,
             "asset_id": str(asset_id) if asset_id else None,
+            "stages_run": stages_run,
         }
         # Mirror run_nuclei_scan: when nothing was loaded, surface stderr so
         # the backend can triage template path / -dast / auth issues without

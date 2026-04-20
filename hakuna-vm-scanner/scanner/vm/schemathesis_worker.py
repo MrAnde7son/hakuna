@@ -374,7 +374,17 @@ def _run_async(coro):
     try:
         return loop.run_until_complete(coro)
     finally:
-        loop.close()
+        try:
+            # Force GC so finalizers that schedule cleanup coroutines
+            # enqueue their tasks before we drain the loop.
+            import gc
+            gc.collect()
+            pending = asyncio.all_tasks(loop)
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        finally:
+            loop.close()
 
 
 async def _run_schemathesis_scan_async(

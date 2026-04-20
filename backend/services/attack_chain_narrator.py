@@ -107,15 +107,19 @@ def narrate_attack_paths(
 
         # Mitigation ranking is now populated upfront for every path via
         # rank_all_mitigations(); here we only write the LLM-derived prose.
+        # Commit per row so the SQLite writer lock isn't held across the
+        # next ~6s LLM call — otherwise every request that needs a write
+        # (page-visit, session touches) blocks for the full batch duration.
         db.execute(
             text(
                 "UPDATE attack_paths SET narrative = :narrative WHERE id = :id"
             ),
             {"id": row.id, "narrative": narrative.strip()},
         )
+        db.commit()
         processed += 1
 
-    db.commit()
+
     logger.info(
         "org=%d attack chain narration: processed=%d skipped_no_llm=%d candidates=%d",
         org_id, processed, skipped_no_llm, len(rows),

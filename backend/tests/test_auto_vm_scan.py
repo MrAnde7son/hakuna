@@ -331,11 +331,15 @@ class TestReapStaleVmScans:
         session.commit()
 
         from services.vm_scanner import reap_stale_vm_scans
-        result = reap_stale_vm_scans(session)
+        with patch("services.vm_scanner._revoke_vm_jobs_sync") as mock_revoke:
+            result = reap_stale_vm_scans(session)
 
         assert result["reaped"] == 1
         session.refresh(scan)
         assert scan.raw_metadata["status"] == "failed"
+        # Reaper must also revoke the Celery tasks — without this they keep
+        # draining the queue and block newer scans.
+        mock_revoke.assert_called_once_with(["job-a"])
 
     def test_reaps_pending_orphan_after_short_threshold(self, db_session):
         """All-PENDING scans older than 20min are reaped as broker orphans."""
@@ -350,12 +354,14 @@ class TestReapStaleVmScans:
         session.commit()
 
         from services.vm_scanner import reap_stale_vm_scans
-        result = reap_stale_vm_scans(session)
+        with patch("services.vm_scanner._revoke_vm_jobs_sync") as mock_revoke:
+            result = reap_stale_vm_scans(session)
 
         assert result["reaped"] == 1
         session.refresh(scan)
         assert scan.raw_metadata["status"] == "failed"
         assert "broker" in scan.raw_metadata["error"].lower()
+        mock_revoke.assert_called_once_with(["job-a", "job-b"])
 
     def test_preserves_scan_with_observed_progress(self, db_session):
         """A 30min-old scan with at least one STARTED job is still considered live."""

@@ -227,22 +227,53 @@ class LLMAdapter:
         raise NotImplementedError
 
 
+# Module-level cache so the underlying SDK client (and its async httpx
+# pool / Vertex ADC token) survives across Celery tasks. Without this,
+# each task constructs a fresh genai.Client whose BaseApiClient schedules
+# aclose() on __del__ — landing a pending Task on an event loop we're
+# about to close and triggering "Task was destroyed but it is pending".
+# Survives for the lifetime of the worker process; Celery worker recycle
+# handles eventual cleanup.
+_adapter_cache: dict[tuple, LLMAdapter] = {}
+
+
+def _adapter_cache_key(info: LLMProviderInfo) -> tuple:
+    cfg = info.config or {}
+    if info.provider == "vertex_ai":
+        return ("vertex_ai", info.model, cfg.get("project_id", ""), cfg.get("location", ""))
+    if info.provider == "ollama":
+        return ("ollama", info.model, cfg.get("base_url", ""))
+    # Key-based providers: fingerprint the key so rotation invalidates
+    # without logging the secret. Empty/missing key still produces a
+    # distinct tuple from a present one.
+    api_key = cfg.get("api_key") or ""
+    return (info.provider, info.model, api_key[:12])
+
+
 def build_adapter(info: LLMProviderInfo) -> LLMAdapter:
-    """Construct the adapter for a resolved provider.
+    """Construct (or reuse) the adapter for a resolved provider.
 
     SDK imports happen inside the adapter constructor so the scanner
     process doesn't need every LLM SDK installed — only the ones for
     the provider it actually resolves to.
     """
+    key = _adapter_cache_key(info)
+    cached = _adapter_cache.get(key)
+    if cached is not None:
+        return cached
+
     p = info.provider
     if p == "anthropic":
-        return AnthropicAdapter(info)
-    if p in ("openai", "groq", "ollama"):
-        # openai-compatible wire protocol; base_url + api_key differ.
-        return OpenAIAdapter(info)
-    if p in ("vertex_ai", "google_gemini"):
-        return GoogleGenAIAdapter(info)
-    raise LLMProviderError(f"No adapter for provider {p!r}")
+        adapter: LLMAdapter = AnthropicAdapter(info)
+    elif p in ("openai", "groq", "ollama"):
+        adapter = OpenAIAdapter(info)
+    elif p in ("vertex_ai", "google_gemini"):
+        adapter = GoogleGenAIAdapter(info)
+    else:
+        raise LLMProviderError(f"No adapter for provider {p!r}")
+
+    _adapter_cache[key] = adapter
+    return adapter
 
 
 # ── Anthropic adapter ────────────────────────────────────────────

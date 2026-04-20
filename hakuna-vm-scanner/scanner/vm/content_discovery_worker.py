@@ -57,10 +57,12 @@ import subprocess
 import tempfile
 import time
 import uuid
+from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import asyncpg
+import httpx
 
 from scanner.vm.celery_app import celery_app
 from scanner.vm.config import (
@@ -96,6 +98,14 @@ MAX_ENDPOINTS_PER_ASSET = int(os.environ.get("CONTENT_DISCOVERY_MAX_ENDPOINTS", 
 # discovery is faster than paths (smaller wordlist, GET-only, single
 # URL), but we still need a ceiling to keep the phase predictable.
 MAX_PARAM_ENDPOINTS = int(os.environ.get("CONTENT_DISCOVERY_MAX_PARAM_ENDPOINTS", "20"))
+
+# Form discovery: fetch the base URL + a bounded sample of HTML hits
+# and harvest `<form>` elements so the agent / next-scan fuzzer sees
+# parameterised endpoints even when ffuf's param wordlist misses the
+# input names (common for dev tools with bespoke field names like
+# "command" or "query_string").
+FORM_DISCOVERY_MAX_PAGES = int(os.environ.get("CONTENT_DISCOVERY_FORM_MAX_PAGES", "10"))
+FORM_DISCOVERY_TIMEOUT_S = float(os.environ.get("CONTENT_DISCOVERY_FORM_TIMEOUT_S", "10"))
 
 
 ASSET_CONTEXT_QUERY = """
@@ -523,7 +533,17 @@ def _run_async(coro):
     try:
         return loop.run_until_complete(coro)
     finally:
-        loop.close()
+        try:
+            # Force GC so finalizers that schedule cleanup coroutines
+            # enqueue their tasks before we drain the loop.
+            import gc
+            gc.collect()
+            pending = asyncio.all_tasks(loop)
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        finally:
+            loop.close()
 
 
 async def _run_content_discovery_async(
@@ -637,11 +657,21 @@ async def _run_content_discovery_async(
                 break
         hit["_matched_rule"] = matched_any
 
+    # ── Form discovery ──
+    # Fetch the base URL and a bounded slice of HTML hits to harvest
+    # `<form>` action + input names. Runs before endpoint persistence
+    # so the same DB round-trip writes both ffuf paths and form rows.
+    form_pages = _page_urls_for_form_discovery(base_url, hits)
+    discovered_forms = await _discover_forms_on_pages(form_pages, headers)
+
     # ── Persist discovered endpoints (feedback loop) ──
     conn = await asyncpg.connect(dsn)
     try:
         endpoints_stored = await _store_discovered_endpoints(
             conn, uuid.UUID(asset_id), base_url, hits,
+        )
+        forms_stored = await _store_form_endpoints(
+            conn, uuid.UUID(asset_id), discovered_forms,
         )
     finally:
         await conn.close()
@@ -687,8 +717,8 @@ async def _run_content_discovery_async(
     status = "complete" if duration < CONTENT_DISCOVERY_MAX_DURATION_S else "partial"
 
     logger.info(
-        "content_discovery done asset=%s hits=%d endpoints_stored=%d exposures=%d duration=%ss",
-        asset_id, len(hits), endpoints_stored, len(findings), duration,
+        "content_discovery done asset=%s hits=%d endpoints_stored=%d forms_stored=%d exposures=%d duration=%ss",
+        asset_id, len(hits), endpoints_stored, forms_stored, len(findings), duration,
     )
 
     return {
@@ -696,7 +726,201 @@ async def _run_content_discovery_async(
         "org_id": str(asset_dict["org_id"]) if asset_dict.get("org_id") else None,
         "target": base_url,
         "findings": findings + param_findings,
-        "endpoints_discovered": endpoints_stored,
+        "endpoints_discovered": endpoints_stored + forms_stored,
+        "forms_discovered": forms_stored,
+        "exposures_found": len(findings),
+        "duration_seconds": duration,
+        "status": status,
+        "scanner": "content_discovery",
+    }
+
+
+# ── Ad-hoc task ──────────────────────────────────────────────────
+
+
+@celery_app.task(queue="vm_queue", bind=True, max_retries=1)
+def run_content_discovery_adhoc(
+    self,
+    target: str,
+    org_id: str | None = None,
+    credentials: dict | None = None,
+) -> dict:
+    """Ad-hoc ffuf discovery against a raw target URL.
+
+    Parallel to ``run_nuclei_adhoc``: the backend has a URL/host but no
+    scanner-side asset UUID to key ``asset_endpoints`` on. We run the
+    same two ffuf phases as the asset-based variant and emit exposure
+    findings, but skip the discovered-endpoint persistence step — that
+    sink exists to seed the *next* asset scan with more URLs, and
+    without an asset row there's nowhere to write them.
+
+    Expected target: a full URL (``http://…`` or ``https://…``). Bare
+    hostnames are rejected upstream by ``scanner.vm.api`` because ffuf
+    can't guess the scheme.
+    """
+    try:
+        return _run_async(_run_content_discovery_adhoc_async(target, org_id, credentials))
+    except Exception as exc:
+        logger.exception("run_content_discovery_adhoc failed for target %s", target)
+        return {
+            "target": target,
+            "findings": [],
+            "endpoints_discovered": 0,
+            "exposures_found": 0,
+            "duration_seconds": 0,
+            "status": "error",
+            "error": str(exc),
+            "scanner": "content_discovery",
+        }
+
+
+async def _run_content_discovery_adhoc_async(
+    target: str,
+    org_id: str | None,
+    credentials: dict | None,
+) -> dict:
+    start = time.monotonic()
+
+    if not CONTENT_DISCOVERY_ENABLED:
+        return {
+            "target": target,
+            "findings": [],
+            "endpoints_discovered": 0,
+            "exposures_found": 0,
+            "duration_seconds": 0,
+            "status": "disabled",
+            "scanner": "content_discovery",
+        }
+
+    # ffuf needs a scheme; reject bare hostnames/IPs early with a clear
+    # reason so the job result isn't ambiguous. The api.py dispatcher
+    # already filters, but defense in depth — the worker must not shell
+    # out on an unusable target.
+    if not target.startswith(("http://", "https://")):
+        return {
+            "target": target,
+            "findings": [],
+            "endpoints_discovered": 0,
+            "exposures_found": 0,
+            "duration_seconds": 0,
+            "status": "skipped",
+            "error": "target must be an http(s) URL for content discovery",
+            "scanner": "content_discovery",
+        }
+
+    if not _ffuf_available():
+        return {
+            "target": target,
+            "findings": [],
+            "endpoints_discovered": 0,
+            "exposures_found": 0,
+            "duration_seconds": 0,
+            "status": "error",
+            "error": f"ffuf binary not found (FFUF_BIN={FFUF_BIN})",
+            "scanner": "content_discovery",
+        }
+
+    if not os.path.isfile(CONTENT_DISCOVERY_PATHS_WORDLIST):
+        return {
+            "target": target,
+            "findings": [],
+            "endpoints_discovered": 0,
+            "exposures_found": 0,
+            "duration_seconds": 0,
+            "status": "error",
+            "error": f"paths wordlist not found at {CONTENT_DISCOVERY_PATHS_WORDLIST}",
+            "scanner": "content_discovery",
+        }
+
+    # Normalize: drop any path on the URL — we append FUZZ ourselves.
+    parts = urlparse(target)
+    base_url = urlunparse((parts.scheme, parts.netloc, "", "", "", ""))
+
+    headers = _credentials_to_headers(credentials)
+    logger.info(
+        "content_discovery adhoc start target=%s base=%s headers=%s",
+        target, base_url, list(_redact_headers(headers)),
+    )
+
+    # ── Phase 1: path discovery ──
+    path_budget = int(CONTENT_DISCOVERY_MAX_DURATION_S * _PATH_PHASE_FRACTION)
+    path_cmd = _build_path_phase_cmd(base_url, CONTENT_DISCOVERY_PATHS_WORDLIST, path_budget)
+    raw = _run_ffuf_json(path_cmd, headers=headers, timeout_s=path_budget + 30)
+    hits = _extract_hits(raw)
+
+    rules = _load_exposure_rules()
+    findings: list[dict] = []
+    for hit in hits:
+        path = _path_from_hit(hit, base_url)
+        body = hit.get("content_preview") or ""
+        status_code = int(hit.get("status") or 0)
+        for rule in rules:
+            if _rule_matches(rule, path, status_code, body):
+                findings.append(
+                    _exposure_to_finding(
+                        rule=rule,
+                        url=hit.get("url") or urljoin(base_url + "/", path.lstrip("/")),
+                        path=path,
+                        status_code=status_code,
+                        content_length=int(hit.get("length") or 0),
+                        target=base_url,
+                    )
+                )
+                break
+
+    # ── Form discovery ──
+    # Harvest <form> endpoints from the base URL and the HTML hits.
+    # Adhoc has no asset_endpoints to write to, so we just surface the
+    # form rows in the returned payload — the agent adhoc task reads
+    # `target` directly and doesn't consume this, but the backend can
+    # log it so operators know why/if agent probes are running.
+    form_pages = _page_urls_for_form_discovery(base_url, hits)
+    discovered_forms = await _discover_forms_on_pages(form_pages, headers)
+
+    # ── Phase 2: parameter discovery ──
+    # Adhoc skips `_enrich_endpoint_parameters` — that writeback keys on
+    # an asset UUID we don't have. The param hits are still useful as
+    # signal in logs, but without a place to persist them the asset
+    # path's feedback loop (params → next scan's DAST fuzz targets) is
+    # a no-op for adhoc until we add a target-keyed endpoint store.
+    remaining = CONTENT_DISCOVERY_MAX_DURATION_S - (time.monotonic() - start)
+    if (
+        remaining > 30
+        and os.path.isfile(CONTENT_DISCOVERY_PARAMS_WORDLIST)
+    ):
+        param_targets = _select_param_targets(hits, base_url)
+        per_endpoint_budget = max(
+            int(remaining / max(len(param_targets), 1)),
+            15,
+        )
+        for endpoint_url in param_targets[:MAX_PARAM_ENDPOINTS]:
+            if time.monotonic() - start >= CONTENT_DISCOVERY_MAX_DURATION_S:
+                break
+            cmd = _build_param_phase_cmd(
+                endpoint_url,
+                CONTENT_DISCOVERY_PARAMS_WORDLIST,
+                per_endpoint_budget,
+            )
+            _run_ffuf_json(cmd, headers=headers, timeout_s=per_endpoint_budget + 15)
+
+    duration = round(time.monotonic() - start, 2)
+    status = "complete" if duration < CONTENT_DISCOVERY_MAX_DURATION_S else "partial"
+
+    logger.info(
+        "content_discovery adhoc done target=%s hits=%d forms=%d exposures=%d duration=%ss",
+        target, len(hits), len(discovered_forms), len(findings), duration,
+    )
+
+    return {
+        "target": target,
+        "org_id": org_id,
+        "findings": findings,
+        # Adhoc does not persist endpoints — surface the raw path count
+        # in the payload so the scan's job_status panel still shows what
+        # ffuf saw, even though nothing was written to the DB.
+        "endpoints_discovered": len(hits),
+        "forms_discovered": len(discovered_forms),
+        "forms": discovered_forms,
         "exposures_found": len(findings),
         "duration_seconds": duration,
         "status": status,
@@ -738,6 +962,240 @@ def _path_from_hit(hit: dict, base_url: str | None) -> str:
     if isinstance(inp, str):
         return "/" + inp.lstrip("/")
     return "/"
+
+
+# ── Form discovery ───────────────────────────────────────────────
+# ffuf is a path/param fuzzer; it doesn't read HTML. Many apps expose
+# their only attackable parameter as a `<form>` input on the home page
+# (e.g. a "command" field wired straight to a shell). We harvest those
+# explicitly so asset_endpoints ends up with rows like
+# ``{"url": "/", "parameters": [{"name": "command"}]}`` which the
+# agent's injection specialist can probe on the next scan.
+
+
+_FORM_INPUT_TAGS = ("input", "textarea", "select", "button")
+_STATIC_ASSET_EXTS = (
+    ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
+    ".woff", ".woff2", ".map", ".json", ".xml", ".pdf", ".zip",
+)
+
+
+class _FormHarvester(HTMLParser):
+    """Accumulate ``<form>`` action/method/inputs from an HTML document.
+
+    We intentionally don't use a DOM library — ``html.parser`` is
+    stdlib, forgiving of malformed markup, and this is the only HTML
+    parsing we need in this worker. Adding BeautifulSoup to chase a
+    single helper would inflate the scanner image for no real gain.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._current: dict | None = None
+        self.forms: list[dict] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        a = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "form":
+            # Nested forms aren't valid HTML — if one appears we flush
+            # the outer form first so we don't lose its inputs.
+            if self._current is not None:
+                self._flush()
+            self._current = {
+                "action": a.get("action", ""),
+                "method": (a.get("method") or "GET").upper(),
+                "inputs": [],
+            }
+            return
+        if self._current is None:
+            return
+        if tag in _FORM_INPUT_TAGS:
+            name = a.get("name")
+            if name:
+                self._current["inputs"].append({
+                    "name": name,
+                    "type": a.get("type") or tag,
+                })
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # <input .../> is a void element; browsers treat it as a self-closing
+        # tag. html.parser routes those here instead of handle_starttag.
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form" and self._current is not None:
+            self._flush()
+
+    def _flush(self) -> None:
+        if self._current is not None:
+            self.forms.append(self._current)
+            self._current = None
+
+
+def _extract_forms_from_html(html_text: str, page_url: str) -> list[dict]:
+    """Return ``[{"url","method","parameters","source"}]`` for each form.
+
+    ``action`` is resolved against ``page_url`` (browsers default an
+    empty action to "same URL as the page"). Forms with zero named
+    inputs are dropped — there's nothing to attack.
+    """
+    if not html_text:
+        return []
+    parser = _FormHarvester()
+    try:
+        parser.feed(html_text)
+        parser.close()
+    except Exception:
+        # Malformed HTML shouldn't kill the worker — skip silently.
+        logger.debug("HTML parse failed for %s", page_url, exc_info=True)
+        return []
+
+    out: list[dict] = []
+    for form in parser.forms:
+        action = form.get("action") or ""
+        resolved = urljoin(page_url, action) if action else page_url
+        method = form.get("method") or "GET"
+        names: list[str] = []
+        seen: set[str] = set()
+        for inp in form.get("inputs", []):
+            name = inp.get("name")
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+        if not names:
+            continue
+        out.append({
+            "url": resolved,
+            "method": method,
+            "parameters": [{"name": n, "source": "form_discovery"} for n in names],
+            "source": "form_discovery",
+        })
+    return out
+
+
+def _page_urls_for_form_discovery(base_url: str, hits: list[dict]) -> list[str]:
+    """Pick the pages worth fetching for HTML form extraction.
+
+    Always includes the base URL (the single highest-signal page on
+    most apps). Adds 200/500 hits that aren't static assets, up to
+    ``FORM_DISCOVERY_MAX_PAGES``. The subset is small on purpose —
+    content discovery is already rate-limited and this phase must not
+    dominate the budget.
+    """
+    base = base_url.rstrip("/")
+    pages: list[str] = [base + "/"]
+    seen: set[str] = {base + "/", base}
+    for h in hits:
+        status = int(h.get("status") or 0)
+        if status not in (200, 500):
+            continue
+        path = (h.get("path") or "").lower()
+        if any(path.endswith(ext) for ext in _STATIC_ASSET_EXTS):
+            continue
+        url = h.get("url") or urljoin(base + "/", (h.get("path") or "/").lstrip("/"))
+        if url in seen:
+            continue
+        seen.add(url)
+        pages.append(url)
+        if len(pages) >= FORM_DISCOVERY_MAX_PAGES:
+            break
+    return pages
+
+
+async def _discover_forms_on_pages(
+    pages: list[str],
+    headers: dict[str, str],
+) -> list[dict]:
+    """Fetch a small set of pages and harvest ``<form>`` endpoints.
+
+    Sequential on purpose: the page count is capped, and serial
+    requests share one ``httpx.AsyncClient`` which keeps connection
+    reuse simple. A few-second total cost is acceptable for the
+    uplift in parameterised-endpoint coverage.
+    """
+    if not pages:
+        return []
+    out: list[dict] = []
+    try:
+        async with httpx.AsyncClient(
+            verify=False,
+            follow_redirects=True,
+            timeout=FORM_DISCOVERY_TIMEOUT_S,
+            headers=headers or None,
+        ) as client:
+            for url in pages:
+                try:
+                    resp = await client.get(url)
+                except Exception:
+                    logger.debug("form discovery: fetch failed for %s", url, exc_info=True)
+                    continue
+                ctype = (resp.headers.get("content-type") or "").lower()
+                body = resp.text or ""
+                # Some misconfigured apps return HTML with no/wrong
+                # Content-Type; fall back to a cheap sniff.
+                if "html" not in ctype and not body.lstrip().lower().startswith(("<!doctype", "<html", "<form")):
+                    continue
+                out.extend(_extract_forms_from_html(body, str(resp.url)))
+    except Exception:
+        logger.exception("form discovery: client setup failed")
+    return out
+
+
+async def _store_form_endpoints(
+    conn: asyncpg.Connection,
+    asset_id: uuid.UUID,
+    forms: list[dict],
+) -> int:
+    """Insert discovered forms as ``asset_endpoints`` rows.
+
+    Uses ``source='form_discovery'`` so they're distinguishable from
+    ffuf (``content_discovery``) and katana/openapi rows. The unique
+    index is ``(asset_id, url, method, source)`` so re-runs are
+    idempotent. ``parameters`` is populated with the input names so
+    the next agent / nuclei pass has concrete fuzz slots.
+    """
+    if not forms:
+        return 0
+    stored = 0
+    now_epoch = time.time()
+    for form in forms:
+        url = form.get("url")
+        if not url:
+            continue
+        parsed = urlparse(url)
+        path = parsed.path or "/"
+        method = (form.get("method") or "GET").upper()
+        params = form.get("parameters") or []
+        try:
+            await conn.execute(
+                """
+                INSERT INTO asset_endpoints (
+                    id, asset_id, url, path, method,
+                    source, status_code, discovered_at, is_auth_page,
+                    parameters
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5,
+                    'form_discovery', NULL, to_timestamp($6) AT TIME ZONE 'UTC', false,
+                    $7::jsonb
+                )
+                ON CONFLICT (asset_id, url, method, source) DO UPDATE SET
+                    parameters = EXCLUDED.parameters,
+                    discovered_at = EXCLUDED.discovered_at
+                """,
+                uuid.uuid4(),
+                asset_id,
+                url,
+                path,
+                method,
+                now_epoch,
+                json.dumps(params),
+            )
+            stored += 1
+        except Exception:
+            logger.exception("failed to store form endpoint %s for asset %s", url, asset_id)
+    return stored
 
 
 def _select_param_targets(hits: list[dict], base_url: str) -> list[str]:

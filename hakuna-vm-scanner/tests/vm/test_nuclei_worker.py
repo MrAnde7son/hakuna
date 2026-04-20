@@ -10,6 +10,8 @@ unit-test here about deduplication.
 import inspect
 
 from scanner.vm.nuclei_worker import (
+    _adhoc_dast_dir,
+    _adhoc_is_web_target,
     _extract_cpe_list,
     _has_dast_template,
     _parse_nuclei_stats,
@@ -180,6 +182,62 @@ class TestHasDastTemplate:
         exact custom/dast/ segment."""
         args = ["-t", "/app/templates/custom/ot/dastardly-probe.yaml"]
         assert _has_dast_template(args) is False
+
+
+class TestAdhocWebTargetDetection:
+    """Controls whether the adhoc path adds a second nuclei command with
+    ``custom/dast/`` under ``-dast``.
+
+    Only URLs and host:port-of-a-web-port combos qualify. Bare hosts/IPs
+    may be web or not — nuclei's community templates already probe common
+    ports, and adding the DAST set speculatively would fire HTTP fuzzers
+    at SSH/DB endpoints.
+    """
+
+    def test_http_url_is_web(self):
+        assert _adhoc_is_web_target("http://10.0.0.1:8080") is True
+        assert _adhoc_is_web_target("https://example.com") is True
+
+    def test_host_with_web_port_is_web(self):
+        assert _adhoc_is_web_target("example.com:8080") is True
+        assert _adhoc_is_web_target("10.0.0.1:443") is True
+
+    def test_host_with_non_web_port_is_not_web(self):
+        assert _adhoc_is_web_target("example.com:22") is False
+        assert _adhoc_is_web_target("example.com:5432") is False
+
+    def test_bare_host_is_not_web(self):
+        assert _adhoc_is_web_target("example.com") is False
+        assert _adhoc_is_web_target("10.0.0.1") is False
+
+    def test_empty_returns_false(self):
+        assert _adhoc_is_web_target("") is False
+
+
+class TestAdhocDastDir:
+    def test_returns_none_when_dir_missing(self, tmp_path, monkeypatch):
+        # Point TEMPLATES_DIR at an empty tree — no custom/dast/ under it.
+        monkeypatch.setattr("scanner.vm.nuclei_worker.TEMPLATES_DIR", str(tmp_path))
+        assert _adhoc_dast_dir() is None
+
+    def test_returns_none_when_dir_empty(self, tmp_path, monkeypatch):
+        (tmp_path / "custom" / "dast").mkdir(parents=True)
+        monkeypatch.setattr("scanner.vm.nuclei_worker.TEMPLATES_DIR", str(tmp_path))
+        assert _adhoc_dast_dir() is None
+
+    def test_returns_path_when_templates_present(self, tmp_path, monkeypatch):
+        dast_dir = tmp_path / "custom" / "dast"
+        dast_dir.mkdir(parents=True)
+        (dast_dir / "xss.yaml").write_text("id: xss\ninfo:\n  tags: xss\n")
+        monkeypatch.setattr("scanner.vm.nuclei_worker.TEMPLATES_DIR", str(tmp_path))
+        assert _adhoc_dast_dir() == str(dast_dir)
+
+    def test_finds_yaml_in_subdirectories(self, tmp_path, monkeypatch):
+        nested = tmp_path / "custom" / "dast" / "reewardius"
+        nested.mkdir(parents=True)
+        (nested / "sqli.yaml").write_text("id: sqli\n")
+        monkeypatch.setattr("scanner.vm.nuclei_worker.TEMPLATES_DIR", str(tmp_path))
+        assert _adhoc_dast_dir() == str(tmp_path / "custom" / "dast")
 
 
 class TestScanPlanPlumbing:

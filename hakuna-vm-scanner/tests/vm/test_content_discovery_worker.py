@@ -19,8 +19,10 @@ from scanner.vm.content_discovery_worker import (
     MAX_ENDPOINTS_PER_ASSET,
     _credentials_to_headers,
     _exposure_to_finding,
+    _extract_forms_from_html,
     _extract_hits,
     _load_exposure_rules,
+    _page_urls_for_form_discovery,
     _path_from_hit,
     _redact_headers,
     _resolve_base_url,
@@ -281,6 +283,185 @@ class TestPathFromHit:
         assert _path_from_hit({"input": "/foo"}, None) == "/foo"
 
 
+# ── Form discovery ───────────────────────────────────────────────
+
+
+class TestExtractFormsFromHTML:
+    """Covers the root-cause fix for apps whose only attack surface is a
+    root-page form (ffuf can't see these — it never parses HTML). The
+    harvester turns them into asset_endpoints rows so the agent's
+    injection specialist has a concrete parameter to probe."""
+
+    def test_command_runner_form_becomes_parameterised_endpoint(self):
+        """The exact shape of the exposed "Command Runner" app that
+        motivated this change: a simple page with a `command` input
+        that pipes straight to a shell. The harvester must turn that
+        `<form>` into `{url, method, parameters=[{name:"command"}]}`
+        so the agent sees something to attack."""
+        html = """
+        <html><body>
+          <h1>Command Runner</h1>
+          <form action="/" method="GET">
+            <label>Enter Command:</label>
+            <input type="text" name="command" placeholder="Type your command here">
+            <button type="submit">Run</button>
+          </form>
+        </body></html>
+        """
+        forms = _extract_forms_from_html(html, "http://target.test:8080/")
+        assert len(forms) == 1
+        assert forms[0]["url"] == "http://target.test:8080/"
+        assert forms[0]["method"] == "GET"
+        names = [p["name"] for p in forms[0]["parameters"]]
+        assert "command" in names
+
+    def test_resolves_relative_action(self):
+        html = '<form action="search" method="POST"><input name="q"></form>'
+        forms = _extract_forms_from_html(html, "http://x/app/")
+        assert forms[0]["url"] == "http://x/app/search"
+
+    def test_resolves_absolute_action(self):
+        html = '<form action="https://api.x/search" method="POST"><input name="q"></form>'
+        forms = _extract_forms_from_html(html, "http://x/")
+        assert forms[0]["url"] == "https://api.x/search"
+
+    def test_empty_action_resolves_to_page_url(self):
+        """Browsers default `action=""` (or missing) to the current page.
+        The harvester must mirror that so the attack target URL is right."""
+        html = '<form method="POST"><input name="q"></form>'
+        forms = _extract_forms_from_html(html, "http://x/page?foo=1")
+        assert forms[0]["url"] == "http://x/page?foo=1"
+
+    def test_method_defaults_to_get(self):
+        html = '<form><input name="q"></form>'
+        forms = _extract_forms_from_html(html, "http://x/")
+        assert forms[0]["method"] == "GET"
+
+    def test_method_uppercased(self):
+        html = '<form method="post"><input name="q"></form>'
+        forms = _extract_forms_from_html(html, "http://x/")
+        assert forms[0]["method"] == "POST"
+
+    def test_harvests_textarea_and_select(self):
+        html = """
+        <form method="POST">
+          <input name="title">
+          <textarea name="body"></textarea>
+          <select name="tag"><option>a</option></select>
+        </form>
+        """
+        forms = _extract_forms_from_html(html, "http://x/")
+        names = {p["name"] for p in forms[0]["parameters"]}
+        assert names == {"title", "body", "tag"}
+
+    def test_skips_inputs_without_name(self):
+        """An <input> without a name doesn't submit to the server, so it
+        can't be a target. Including it in parameters would surface
+        noise to downstream fuzzers."""
+        html = '<form><input type="text"><input name="real"></form>'
+        forms = _extract_forms_from_html(html, "http://x/")
+        names = [p["name"] for p in forms[0]["parameters"]]
+        assert names == ["real"]
+
+    def test_skips_form_with_no_named_inputs(self):
+        """A form with zero named inputs has no attack surface — drop it
+        so asset_endpoints doesn't grow a parameterless row."""
+        html = '<form method="POST"><button type="submit">Go</button></form>'
+        forms = _extract_forms_from_html(html, "http://x/")
+        assert forms == []
+
+    def test_dedup_duplicate_input_names(self):
+        html = '<form><input name="q"><input name="q"></form>'
+        forms = _extract_forms_from_html(html, "http://x/")
+        assert len(forms[0]["parameters"]) == 1
+
+    def test_multiple_forms_on_one_page(self):
+        html = """
+        <form action="/login"><input name="u"><input name="p"></form>
+        <form action="/search"><input name="q"></form>
+        """
+        forms = _extract_forms_from_html(html, "http://x/")
+        assert len(forms) == 2
+        urls = {f["url"] for f in forms}
+        assert urls == {"http://x/login", "http://x/search"}
+
+    def test_void_input_tag_parsed(self):
+        """<input /> self-closed — html.parser routes these through
+        handle_startendtag, which must produce the same result."""
+        html = '<form><input name="q" /></form>'
+        forms = _extract_forms_from_html(html, "http://x/")
+        assert forms[0]["parameters"] == [
+            {"name": "q", "source": "form_discovery"}
+        ]
+
+    def test_empty_html_returns_empty(self):
+        assert _extract_forms_from_html("", "http://x/") == []
+
+    def test_html_without_forms_returns_empty(self):
+        html = "<html><body><p>hello</p></body></html>"
+        assert _extract_forms_from_html(html, "http://x/") == []
+
+    def test_malformed_html_does_not_raise(self):
+        """Scanner runs against unknown targets — a broken page must
+        never crash the discovery task."""
+        html = "<form><input name='q'>" * 100  # unclosed, repeated
+        forms = _extract_forms_from_html(html, "http://x/")
+        # Whatever we parse, we must not raise. Empty list is fine.
+        assert isinstance(forms, list)
+
+    def test_parameter_source_tagged(self):
+        """Downstream callers can filter by source to prefer form-
+        discovered inputs over ffuf's param-wordlist guesses."""
+        html = '<form><input name="cmd"></form>'
+        forms = _extract_forms_from_html(html, "http://x/")
+        assert forms[0]["source"] == "form_discovery"
+        assert forms[0]["parameters"][0]["source"] == "form_discovery"
+
+
+class TestPageURLsForFormDiscovery:
+    def test_always_includes_base_url(self):
+        pages = _page_urls_for_form_discovery("http://x", [])
+        assert pages == ["http://x/"]
+
+    def test_adds_200_html_hits(self):
+        hits = [
+            {"url": "http://x/app", "path": "/app", "status": 200},
+            {"url": "http://x/admin", "path": "/admin", "status": 200},
+        ]
+        pages = _page_urls_for_form_discovery("http://x", hits)
+        assert "http://x/app" in pages
+        assert "http://x/admin" in pages
+
+    def test_skips_static_assets(self):
+        """Fetching app.js to look for forms is pointless and wastes
+        the budget — match the same skip list as param target selection."""
+        hits = [
+            {"url": "http://x/app.js", "path": "/app.js", "status": 200},
+            {"url": "http://x/logo.png", "path": "/logo.png", "status": 200},
+        ]
+        pages = _page_urls_for_form_discovery("http://x", hits)
+        assert pages == ["http://x/"]
+
+    def test_skips_non_200_non_500(self):
+        hits = [
+            {"url": "http://x/a", "path": "/a", "status": 401},
+            {"url": "http://x/b", "path": "/b", "status": 302},
+        ]
+        pages = _page_urls_for_form_discovery("http://x", hits)
+        assert pages == ["http://x/"]
+
+    def test_respects_page_cap(self, monkeypatch):
+        monkeypatch.setattr(
+            "scanner.vm.content_discovery_worker.FORM_DISCOVERY_MAX_PAGES", 3,
+        )
+        hits = [
+            {"url": f"http://x/p{i}", "path": f"/p{i}", "status": 200}
+            for i in range(10)
+        ]
+        pages = _page_urls_for_form_discovery("http://x", hits)
+        assert len(pages) == 3
+
+
 # ── Param target selection ───────────────────────────────────────
 
 
@@ -362,3 +543,48 @@ def test_max_endpoints_cap_is_sane():
     """Catch accidental bumps — 200 already risks flooding asset_endpoints
     when content discovery runs on a directory-listing-enabled server."""
     assert 50 <= MAX_ENDPOINTS_PER_ASSET <= 500
+
+
+# ── Ad-hoc task ──────────────────────────────────────────────────
+
+
+class TestRunContentDiscoveryAdhoc:
+    """The adhoc task runs ffuf against a raw URL with no DB dependency.
+
+    Covers the input-validation guards — actual ffuf execution is
+    covered by the asset-path integration tests elsewhere.
+    """
+
+    @staticmethod
+    def _run(target: str, org_id: str | None = None, credentials: dict | None = None) -> dict:
+        import asyncio
+        from scanner.vm.content_discovery_worker import _run_content_discovery_adhoc_async
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                _run_content_discovery_adhoc_async(target, org_id, credentials)
+            )
+        finally:
+            loop.close()
+
+    def test_rejects_non_url_target(self):
+        result = self._run("example.com")
+        assert result["status"] == "skipped"
+        assert "http(s) URL" in (result.get("error") or "")
+
+    def test_returns_disabled_when_env_off(self, monkeypatch):
+        monkeypatch.setattr(
+            "scanner.vm.content_discovery_worker.CONTENT_DISCOVERY_ENABLED", False,
+        )
+        result = self._run("http://example.com")
+        assert result["status"] == "disabled"
+
+    def test_returns_error_when_ffuf_missing(self, monkeypatch):
+        """Without ffuf we must not silently succeed with zero findings —
+        downstream ops need to see the setup error."""
+        monkeypatch.setattr(
+            "scanner.vm.content_discovery_worker._ffuf_available", lambda: False,
+        )
+        result = self._run("http://example.com")
+        assert result["status"] == "error"
+        assert "ffuf" in result["error"]

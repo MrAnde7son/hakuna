@@ -10,10 +10,13 @@ import yaml
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from scanner.vm.agent_worker import run_agent_scan
+from scanner.vm.agent_worker import run_agent_scan, run_agent_scan_adhoc
 from scanner.vm.agent_specialists import AGENT_CATEGORIES
 from scanner.vm.config import CONTENT_DISCOVERY_ENABLED, TEMPLATES_DIR
-from scanner.vm.content_discovery_worker import run_content_discovery_scan
+from scanner.vm.content_discovery_worker import (
+    run_content_discovery_adhoc,
+    run_content_discovery_scan,
+)
 from scanner.vm.nuclei_worker import fetch_alive_assets, run_nuclei_adhoc, run_nuclei_scan
 from scanner.vm.schemathesis_worker import run_schemathesis_scan
 from scanner.vm.template_validator import validate_custom_template
@@ -239,6 +242,44 @@ async def create_scan(body: ScanRequest):
         )
         job_ids.append(result.id)
 
+        # Mirror the asset-based fan-out. Until this was added, adhoc
+        # targets were nuclei-only — which meant ffuf content discovery
+        # and the LLM specialists never ran on anything the backend
+        # sent over (the backend only ever posts `targets`, never
+        # `asset_ids`, because the two sides use different ID types).
+        # Schemathesis is intentionally skipped: it needs an OpenAPI /
+        # GraphQL spec that we don't have for a raw target.
+
+        # Content discovery only works against http(s) URLs — ffuf
+        # won't guess a scheme. Bare hostnames fall through to nuclei
+        # only, which is what the old behaviour did anyway.
+        is_web_target = target.startswith(("http://", "https://"))
+        if is_web_target and dispatch_content_discovery:
+            cd_result = run_content_discovery_adhoc.apply_async(
+                args=[target, body.org_id],
+                kwargs={"credentials": credentials_payload},
+                countdown=(offset + i) * 5 + 1,
+            )
+            job_ids.append(cd_result.id)
+
+        if body.enable_agents:
+            # Adhoc agents self-gate via applicable_when. With an empty
+            # endpoints list injection/ssrf/authz will cleanly skip; xss
+            # still fires on bare URL targets, and authn fires when
+            # credentials are supplied. Countdown +4 keeps the ordering
+            # (nuclei → content discovery → agents) so any surface the
+            # first two uncover warms the httpx connection pool before
+            # the LLM loop starts spending tokens.
+            agent_result = run_agent_scan_adhoc.apply_async(
+                args=[target, body.org_id],
+                kwargs={
+                    "credentials": credentials_payload,
+                    "categories": agent_categories,
+                },
+                countdown=(offset + i) * 5 + 4,
+            )
+            job_ids.append(agent_result.id)
+
     return ScanResponse(
         job_ids=job_ids,
         assets_queued=len(asset_ids),
@@ -267,6 +308,43 @@ async def get_scan_status(job_id: str):
         job_id=job_id,
         status=status,
         result=result_data,
+    )
+
+
+class RevokeResponse(BaseModel):
+    job_id: str
+    revoked: bool
+    prior_status: str
+
+
+@router.delete("/scans/{job_id}", response_model=RevokeResponse)
+async def revoke_scan(job_id: str):
+    """Revoke a Celery scan task.
+
+    Used by the backend reaper when a Scan record gets marked failed — without
+    this, the tasks keep draining from the queue long after the parent scan is
+    dead, burning request budget against targets nobody is watching and
+    blocking newer scans behind a dead scan's backlog.
+
+    `terminate=True` kills an already-running task via SIGTERM. For tasks
+    still in the queue this just tombstones the id so the worker discards it
+    on dequeue. Safe to call for unknown / already-finished ids — Celery
+    ignores the revoke and we return the current status for observability.
+    """
+    from scanner.vm.celery_app import celery_app
+
+    result = celery_app.AsyncResult(job_id)
+    prior_status = result.status
+
+    # SUCCESS/FAILURE are terminal — no-op revoke and return current status so
+    # the caller can see the revoke was unnecessary.
+    if prior_status not in ("SUCCESS", "FAILURE"):
+        celery_app.control.revoke(job_id, terminate=True, signal="SIGTERM")
+
+    return RevokeResponse(
+        job_id=job_id,
+        revoked=prior_status not in ("SUCCESS", "FAILURE"),
+        prior_status=prior_status,
     )
 
 
