@@ -73,6 +73,14 @@ def finalize_batch(
         db, "TTP matching (batch)", lambda: _match_ttps(db, scan_id)
     )
 
+    # Finding prioritization — scoped to the newly-imported rows so partial
+    # results carry a real priority_score in the UI. Runs after threat intel
+    # enrichment so KEV/EPSS/exploit-maturity feed into the score.
+    results["prioritize"] = _step(
+        db, "Finding prioritization (batch)",
+        lambda: _prioritize_findings(db, scan_id, org_id, new_finding_ids=new_finding_ids),
+    )
+
     # Risk score recomputation — only affects assets in this scan
     results["risk_scores"] = _step(
         db, "Risk score recomputation (batch)",
@@ -220,6 +228,18 @@ def finalize_scan(
             db, "LLM vulnerability validation",
             lambda: _llm_validate_findings(db, org_id, scan_id),
         )
+
+    # 12.6. Finding prioritization — populate priority_score / effort /
+    # owner / remediation for every finding in the scan. Runs after all
+    # enrichment steps so KEV / EPSS / exploit maturity / TTPs feed into
+    # the score. Idempotent — safe to re-run. This is the single authority
+    # for prioritization; every ingestion path (file upload, VM scanner,
+    # integrations) leaves priority_score at 0.0 on insert and this step
+    # fills it in.
+    results["prioritize"] = _step(
+        db, "Finding prioritization",
+        lambda: _prioritize_findings(db, scan_id, org_id),
+    )
 
     # 13. Asset risk score recomputation
     results["risk_scores"] = _step(
@@ -483,6 +503,148 @@ def _auto_vm_scan_for_easm(db, org_id, scan_id):
     except RuntimeError:
         asyncio.run(_trigger_with_own_session())
     return {"triggered": True, "domain": domain}
+
+
+def _prioritize_findings(db, scan_id, org_id, new_finding_ids=None):
+    """Compute and persist priority_score, effort_level, owner_suggestion,
+    and remediation_steps for findings in this scan.
+
+    This is the single prioritization authority for the whole platform.
+    Every ingestion path (file upload, VM/Nuclei scanner, EASM, integration
+    builder, agent findings) inserts raw Finding rows with priority_score
+    defaulting to 0.0 — this step fills them in using the finding's
+    enriched state (intel, KEV, EPSS, exploit maturity) and the asset's
+    inventory context (compensating controls, reachability).
+
+    Idempotent: re-running over the same rows produces the same score.
+    Scope:
+      - new_finding_ids set → only those rows (used by finalize_batch).
+      - None → all findings in the scan (used by finalize_scan).
+    """
+    from pathlib import Path
+    from models.models import (
+        Finding, Asset, InventorySecurityControl, InventoryNetConn,
+    )
+    from services.prioritizer import compute_priority_score
+    import core.risk_config as risk_engine
+    from parsers.parser import load_intel_json
+
+    cfg = risk_engine.load_config_for_org(db, org_id) if org_id else risk_engine.load_config()
+    intel_path = Path(__file__).parent.parent / "data" / "intel.json"
+    intel = load_intel_json(str(intel_path)) if intel_path.exists() else {}
+
+    q = db.query(Finding).filter(Finding.scan_id == scan_id)
+    if new_finding_ids:
+        q = q.filter(Finding.id.in_(new_finding_ids))
+    findings = q.all()
+    if not findings:
+        return {"updated": 0, "total": 0}
+
+    asset_ids = {f.asset_id for f in findings if f.asset_id is not None}
+    assets = {
+        a.id: a for a in db.query(Asset).filter(Asset.id.in_(asset_ids)).all()
+    } if asset_ids else {}
+
+    # Build per-asset inventory context once and reuse across this asset's findings.
+    inv_cache: dict[int, dict] = {}
+
+    def _inv_for(asset_id: int, asset) -> dict:
+        if asset_id in inv_cache:
+            return inv_cache[asset_id]
+        av = db.query(InventorySecurityControl).filter(
+            InventorySecurityControl.asset_id == asset_id,
+            InventorySecurityControl.control_type == "av",
+            InventorySecurityControl.is_enabled == True,
+        ).first()
+        fw = db.query(InventorySecurityControl).filter(
+            InventorySecurityControl.asset_id == asset_id,
+            InventorySecurityControl.control_type == "firewall",
+            InventorySecurityControl.is_enabled == True,
+        ).first()
+        netconns = db.query(InventoryNetConn.local_port, InventoryNetConn.state).filter(
+            InventoryNetConn.asset_id == asset_id,
+            InventoryNetConn.local_port.isnot(None),
+        ).all()
+        listening_ports, established_ports = set(), set()
+        for row in netconns:
+            if row.local_port is None:
+                continue
+            state = (row.state or "").upper()
+            if state in ("LISTEN", "LISTENING"):
+                listening_ports.add(row.local_port)
+            elif state == "ESTABLISHED":
+                established_ports.add(row.local_port)
+        is_internet_facing = False
+        if asset is not None:
+            if getattr(asset, "is_internet_facing", False):
+                is_internet_facing = True
+            else:
+                env = (asset.environment_tag or "").lower()
+                if env in ("external", "dmz"):
+                    is_internet_facing = True
+                elif asset.ip and not asset.ip.startswith((
+                    "10.", "172.16.", "172.17.", "172.18.", "172.19.",
+                    "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
+                    "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
+                    "172.30.", "172.31.", "192.168.", "127.",
+                )):
+                    is_internet_facing = True
+        ctx = {
+            "has_av":                  av is not None if av is not None else None,
+            "has_firewall":            fw is not None if fw is not None else None,
+            "established_connections": len(established_ports),
+            "listening_ports":         listening_ports,
+            "established_ports":       established_ports,
+            "is_internet_facing":      is_internet_facing,
+        }
+        inv_cache[asset_id] = ctx
+        return ctx
+
+    updated = 0
+    for f in findings:
+        asset = assets.get(f.asset_id)
+        inv_ctx = _inv_for(f.asset_id, asset) if asset else {}
+        finding_dict = {
+            "plugin_id":        f.plugin_id,
+            "plugin_name":      f.plugin_name,
+            "plugin_family":    f.plugin_family,
+            "severity":         f.severity,
+            "port":              f.port,
+            "cvss2_score":      f.cvss2_score,
+            "cvss3_score":      f.cvss3_score,
+            "cvss4_score":      f.cvss4_score,
+            "vpr_score":        f.vpr_score,
+            "cves":             f.cves or [],
+            "exploit_available": f.exploit_available,
+            "exploit_maturity":  f.exploit_maturity,
+            "zero_day":          f.zero_day,
+            "is_kev":            f.is_kev or False,
+            "epss_score":        f.epss_score,
+            "ransomware_linked": f.ransomware_linked or False,
+            "trending_in_news":  f.trending_in_news or False,
+            "solution":          f.solution,
+            "synopsis":          f.synopsis,
+            "asset_os":          (asset.os if asset else "") or "",
+        }
+        pdata = compute_priority_score(
+            finding_dict,
+            asset_criticality=(asset.criticality if asset else 5) or 5,
+            intel=intel,
+            risk_cfg=cfg,
+            asset_inventory=inv_ctx,
+        )
+        f.priority_score    = pdata["priority_score"]
+        f.effort_level      = pdata["effort_level"]
+        f.owner_suggestion  = pdata["owner_suggestion"]
+        f.remediation_steps = pdata["remediation_steps"]
+        updated += 1
+
+    if updated:
+        db.flush()
+        logger.info(
+            "Prioritization: %d finding(s) scored for scan %d", updated, scan_id
+        )
+    return {"updated": updated, "total": len(findings)}
 
 
 def _recompute_risk_scores(db, scan_id):

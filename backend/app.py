@@ -47,10 +47,9 @@ from models.models import (
     SLAConfig, IntegrationConfig, FindingException, ScanComparison, AuditLog, AggregatedSolution,
     BenchmarkReference, AssetObservation, FindingObservation, FirewallPolicy,
 )
-from parsers.parser import detect_and_parse, load_intel_json
+from parsers.parser import detect_and_parse
 from parsers.registry import detect_parser, list_parsers, init_parsers
 from services.normalizer import compute_normalized_id
-from services.prioritizer import compute_priority_score
 from parsers.inventory_extractor import extract_inventory_from_findings, _cn_from_dn
 from services.asset_classifier import classify_asset, _is_private_ip, enrich_asset_from_os_plugins
 import services.dedup as dedup_engine
@@ -344,9 +343,6 @@ app.include_router(graph_router)
 app.include_router(scan_planner_router)
 app.include_router(correlation_router)
 app.include_router(validation_router)
-
-
-INTEL_PATH = Path(__file__).parent / "data" / "intel.json"
 
 
 # ─────────────────────────────────────────────────────────
@@ -988,9 +984,6 @@ def _run_scan_ingest(
     mock_user = _AuditUser()
 
     try:
-        # Load CVE intel
-        intel = load_intel_json(str(INTEL_PATH)) if INTEL_PATH.exists() else {}
-
         # Detect parser
         source_parser = detect_parser(content, filename or "")
         if not source_parser:
@@ -1162,16 +1155,10 @@ def _run_scan_ingest(
                 db.flush()
                 asset_map[host_key] = asset
 
-            # Compute priority (risk_cfg passed for configurable weights;
-            # asset_inventory not available yet at upload time — defaults to neutral)
-            finding_data["asset_os"] = asset.os or ""
-            priority_data = compute_priority_score(
-                finding_data,
-                asset_criticality=asset.criticality,
-                intel=intel,
-                risk_cfg=risk_cfg,
-            )
-
+            # Prioritization is deferred to post_ingest.finalize_scan so that
+            # every ingestion path (file upload, VM scanner, integrations)
+            # goes through a single scoring authority — and so the score
+            # reflects threat-intel enrichment that hasn't run yet at insert.
             finding = Finding(
                 scan_id=scan.id,
                 asset_id=asset.id,
@@ -1206,10 +1193,6 @@ def _run_scan_ingest(
                 exploit_available=finding_data.get("exploit_available", False),
                 exploit_maturity=finding_data.get("exploit_maturity"),
                 zero_day=finding_data.get("zero_day", False),
-                priority_score=priority_data["priority_score"],
-                effort_level=priority_data["effort_level"],
-                owner_suggestion=priority_data["owner_suggestion"],
-                remediation_steps=priority_data["remediation_steps"],
                 source_systems=[source_parser.source_type],
             )
             db.add(finding)

@@ -5,6 +5,7 @@ and manages Scan records in the main database.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import List, Optional
 
@@ -773,6 +774,65 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
     return {"checked": checked, "reaped": reaped}
 
 
+_CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
+
+
+def _extract_nuclei_cves(f: dict) -> list[str]:
+    """Pull CVE IDs off a Nuclei result. Nuclei reports them under
+    info.classification["cve-id"] (string or list) for CVE-tagged templates;
+    for templates named CVE-YYYY-NNNN(.yaml) we also fall back to the
+    template_id so the finding still ties to a CVE even when the template
+    author skipped the classification block.
+    """
+    cves: list[str] = []
+    classification = f.get("classification") or {}
+    raw = classification.get("cve-id") if isinstance(classification, dict) else None
+    if isinstance(raw, str):
+        cves.extend(m.group(0).upper() for m in _CVE_RE.finditer(raw))
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str):
+                cves.extend(m.group(0).upper() for m in _CVE_RE.finditer(item))
+
+    template_id = f.get("template_id") or ""
+    if isinstance(template_id, str):
+        cves.extend(m.group(0).upper() for m in _CVE_RE.finditer(template_id))
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for c in cves:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    return unique
+
+
+def _extract_nuclei_cvss(f: dict) -> tuple[Optional[float], Optional[str]]:
+    """Return (cvss3_score, cvss3_vector) from a Nuclei result's
+    classification block, or (None, None) if absent/unparseable.
+    """
+    classification = f.get("classification") or {}
+    if not isinstance(classification, dict):
+        return None, None
+
+    score: Optional[float] = None
+    raw_score = classification.get("cvss-score")
+    if isinstance(raw_score, (int, float)):
+        score = float(raw_score)
+    elif isinstance(raw_score, str):
+        try:
+            score = float(raw_score.strip())
+        except ValueError:
+            score = None
+
+    vector: Optional[str] = None
+    raw_vec = classification.get("cvss-metrics")
+    if isinstance(raw_vec, str) and raw_vec.strip():
+        vector = raw_vec.strip()
+
+    return score, vector
+
+
 def _build_nuclei_plugin_output(f: dict) -> str:
     """Compose a human-readable plugin_output for a Nuclei finding.
 
@@ -937,6 +997,9 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         # the post-ingest llm_vuln_validator fills it in.
         llm_validation = f.get("llm_validation") if isinstance(f.get("llm_validation"), dict) else None
 
+        cves = _extract_nuclei_cves(f)
+        cvss3_score, cvss3_vector = _extract_nuclei_cvss(f)
+
         finding = Finding(
             scan_id=scan.id,
             asset_id=asset.id,
@@ -953,6 +1016,10 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
             first_seen=now,
             last_seen=now,
             llm_validation=llm_validation,
+            cves=cves,
+            normalized_id=cves[0] if cves else None,
+            cvss3_score=cvss3_score,
+            cvss3_vector=cvss3_vector,
         )
         db.add(finding)
         db.flush()
