@@ -15,8 +15,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from datetime import datetime
+
 from core.database import get_db
 from core.auth import require_auth, get_accessible_org_ids
+from core.time_utils import iso_utc
 from models.models import (
     User, CustomFieldDefinition, Asset, Finding, Scan,
     AssetObservation, FindingObservation,
@@ -146,8 +149,8 @@ def _def_to_dict(d: CustomFieldDefinition) -> dict:
         "show_in_list": bool(d.show_in_list),
         "is_active": bool(d.is_active),
         "created_by": d.created_by,
-        "created_at": d.created_at.isoformat() if d.created_at else None,
-        "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+        "created_at": iso_utc(d.created_at),
+        "updated_at": iso_utc(d.updated_at),
     }
 
 
@@ -454,6 +457,8 @@ def _jsonable(value: Any) -> Any:
         return [_jsonable(v) for v in value]
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, datetime):
+        return iso_utc(value)
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)

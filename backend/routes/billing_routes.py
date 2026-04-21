@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import require_auth, require_role
+from core.time_utils import iso_utc
 from models.models import Organization, User
 from services.billing import (
     create_checkout_session,
@@ -165,8 +166,8 @@ def billing_status(
     return {
         "subscription_tier": org.subscription_tier or "free",
         "subscription_status": org.subscription_status,
-        "current_period_end": org.current_period_end.isoformat() if org.current_period_end else None,
-        "trial_ends_at": org.trial_ends_at.isoformat() if org.trial_ends_at else None,
+        "current_period_end": iso_utc(org.current_period_end),
+        "trial_ends_at": iso_utc(org.trial_ends_at),
     }
 
 

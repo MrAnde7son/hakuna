@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import get_current_user, require_auth, get_accessible_org_ids
+from core.time_utils import iso_utc
 from core.subscription import check_scan_limit
 from models.models import Asset, Organization, Scan, User
 from services.easm import (
@@ -251,6 +252,19 @@ async def trigger_scan(
     if not scan_id:
         raise HTTPException(502, "Failed to trigger EASM scan — hakuna-scanner may be unavailable")
 
+    from core.audit import log_audit
+    log_audit(
+        db, "start", "scan", entity_id=None,
+        entity_name=f"EASM {scan_type} scan",
+        changes={
+            "source_type": "easm",
+            "scan_type": scan_type,
+            "easm_run_id": scan_id,
+        },
+        actor=user,
+    )
+    db.commit()
+
     return {"scan_id": scan_id, "scan_type": scan_type, "status": "queued"}
 
 
@@ -306,7 +320,7 @@ def list_easm_assets(
             "easm_asset_id": d.get("easm_asset_id"),
             "hostname": a.fqdn or a.hostname,
             "ip": a.ip,
-            "last_seen": a.last_seen.isoformat() if a.last_seen else None,
+            "last_seen": iso_utc(a.last_seen),
             "tech_stack": d.get("tech_stack"),
             "open_ports": d.get("open_ports"),
             "services": d.get("services"),
@@ -563,7 +577,7 @@ def list_domain_breaches(
             "domain": db_entry.domain,
             "breach_name": db_entry.breach_name,
             "exposed_count": db_entry.exposed_count,
-            "checked_at": db_entry.checked_at.isoformat() if db_entry.checked_at else None,
+            "checked_at": iso_utc(db_entry.checked_at),
             "breach_date": breach_detail.breach_date if breach_detail else None,
             "title": breach_detail.title if breach_detail else db_entry.breach_name,
             "description": breach_detail.description if breach_detail else None,

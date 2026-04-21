@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import get_current_user, require_auth
+from core.time_utils import iso_utc
 from models.models import RelayAgent, Integration
 from services.relay_broker import get_relay_broker
 
@@ -62,14 +63,14 @@ def _agent_to_dict(agent: RelayAgent, integration_count: int = 0) -> dict:
         "id": agent.id,
         "name": agent.name,
         "status": agent.status or "disconnected",
-        "last_seen_at": agent.last_seen_at.isoformat() if agent.last_seen_at else None,
+        "last_seen_at": iso_utc(agent.last_seen_at),
         "agent_version": agent.agent_version,
         "ip_address": agent.ip_address,
         "allowed_hosts": agent.allowed_hosts or [],
         "credentials_mode": agent.credentials_mode or "agent_local",
         "labels": agent.labels or {},
         "token_prefix": agent.token_prefix,
-        "created_at": agent.created_at.isoformat() if agent.created_at else None,
+        "created_at": iso_utc(agent.created_at),
         "integration_count": integration_count,
     }
 

@@ -110,6 +110,10 @@ class HttpxRunner(BaseRunner):
             "-cdn", "-follow-redirects",
             "-content-length", "-web-server", "-method",
             "-location", "-ip",
+            # Emit response headers in the JSON output. Consumed by the
+            # security-headers / cookie audit in ingest/http_header_audit.py.
+            # Flag is supported in httpx >= 1.3 (short form: -irh).
+            "-include-response-header",
             "-threads", str(settings.httpx_threads),
         ]
         if self.screenshots:

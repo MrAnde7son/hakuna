@@ -49,6 +49,9 @@ services:
     volumes:
       - ./scanner:/app/scanner
       - ./templates:/app/templates
+    networks:
+      - default
+      - hakuna-lab
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,6 +93,9 @@ services:
       # the host's ~/.config/gcloud; the ADC file is per-developer and
       # never baked into the image.
       - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+    networks:
+      - default
+      - hakuna-lab
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,3 +124,11 @@ services:
 volumes:
   pg_data:
   redis_data:
+
+# Shared network with docker-compose.lab.yml. Bring the lab up first
+# (`docker compose -f ../docker-compose.lab.yml up -d`) so the network
+# exists; workers then resolve dvwa/smb/ldap/ssh/snmp by hostname.
+networks:
+  default:
+  hakuna-lab:
+    external: true

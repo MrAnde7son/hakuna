@@ -44,7 +44,13 @@ import os
 import tempfile
 from urllib.parse import urlparse
 
-from scanner.vm.config import NUCLEI_MAX_TARGETS_PER_ASSET
+from scanner.vm.config import (
+    NUCLEI_BULK_CONCURRENCY,
+    NUCLEI_CONCURRENCY,
+    NUCLEI_EXCLUDE_TAGS,
+    NUCLEI_MAX_TARGETS_PER_ASSET,
+    NUCLEI_RETRIES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -231,9 +237,14 @@ def _build_single_command(
         "-jsonl",
         "-timeout", str(timeout),
         "-rate-limit", str(rate_limit),
+        "-c", str(NUCLEI_CONCURRENCY),
+        "-bc", str(NUCLEI_BULK_CONCURRENCY),
+        "-retries", str(NUCLEI_RETRIES),
         "-no-color",
         "-stats",
     ])
+    if NUCLEI_EXCLUDE_TAGS.strip():
+        cmd.extend(["-etags", NUCLEI_EXCLUDE_TAGS])
 
     return {"cmd": cmd, "tempfiles": tempfiles, "action": action}
 

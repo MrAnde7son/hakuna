@@ -28,8 +28,12 @@ from scanner.vm.celery_app import celery_app
 from scanner.vm.config import (
     DATABASE_URL,
     NUCLEI_BIN,
+    NUCLEI_BULK_CONCURRENCY,
     NUCLEI_COMMUNITY_TEMPLATES,
+    NUCLEI_CONCURRENCY,
+    NUCLEI_EXCLUDE_TAGS,
     NUCLEI_RATE_LIMIT,
+    NUCLEI_RETRIES,
     NUCLEI_TIMEOUT,
     SCAN_TIMEOUT_SECONDS,
     TEMPLATES_DIR,
@@ -72,6 +76,23 @@ HANDOFF_QUERY = """
 HANDOFF_QUERY_BY_ID = HANDOFF_QUERY + "\n    AND a.id = $1"
 
 _router = TemplateRouter()
+
+
+def _nuclei_perf_args() -> list[str]:
+    """Common performance-tuning flags appended to every nuclei invocation.
+
+    Composed from env-overridable config so ops can dial these per deployment
+    without a code change. Empty NUCLEI_EXCLUDE_TAGS drops the -etags flag
+    entirely (passing ``-etags ""`` would make nuclei error).
+    """
+    args = [
+        "-c", str(NUCLEI_CONCURRENCY),
+        "-bc", str(NUCLEI_BULK_CONCURRENCY),
+        "-retries", str(NUCLEI_RETRIES),
+    ]
+    if NUCLEI_EXCLUDE_TAGS.strip():
+        args.extend(["-etags", NUCLEI_EXCLUDE_TAGS])
+    return args
 
 
 def _parse_nuclei_stats(stderr_lines: list[str]) -> dict:
@@ -412,6 +433,7 @@ async def _run_nuclei_scan_async(
                         "-jsonl",
                         "-timeout", str(NUCLEI_TIMEOUT),
                         "-rate-limit", str(NUCLEI_RATE_LIMIT),
+                        *_nuclei_perf_args(),
                         "-no-color",
                         "-stats",
                     ]
@@ -444,6 +466,7 @@ async def _run_nuclei_scan_async(
             "-jsonl",
             "-timeout", str(NUCLEI_TIMEOUT),
             "-rate-limit", str(NUCLEI_RATE_LIMIT),
+            *_nuclei_perf_args(),
             "-no-color",
             "-stats",
         ]
@@ -742,6 +765,7 @@ async def _run_nuclei_adhoc_async(
             "-jsonl",
             "-timeout", str(NUCLEI_TIMEOUT),
             "-rate-limit", str(NUCLEI_RATE_LIMIT),
+            *_nuclei_perf_args(),
             "-no-color",
             "-stats",
             "-severity", "info,low,medium,high,critical",

@@ -27,6 +27,10 @@ class Asset(Base):
     cdn_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     waf: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tls_cert: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Normalized HTTP-header + cookie audit — see app.ingest.http_header_audit.
+    # Denormalized from asset_enrichments.httpx_full.security_audit so the
+    # AssetResponse API can return it without joining.
+    security_audit: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     dns_records: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True, default=list)
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -72,6 +76,9 @@ class AssetPort(Base):
     banner: Mapped[str | None] = mapped_column(Text, nullable=True)
     cpe_list: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     tls_cert: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Deep-audit result (sslyze cipher enum + chain validation + OCSP + CAA)
+    # produced by app.ingest.tls_deep_audit. See migration 013.
+    tls_deep_audit: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     nmap_scripts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 

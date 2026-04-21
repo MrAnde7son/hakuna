@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
 from core.audit import log_audit, diff as _diff
+from core.time_utils import iso_utc
 from models.models import (
     Asset, Finding, Scan,
     AssetOwnership, FindingOwnership,
@@ -204,8 +205,8 @@ def _asset_type_rule_to_dict(rule: AssetTypeRule) -> dict:
         "priority": rule.priority,
         "source_filter": rule.source_filter,
         "is_enabled": rule.is_enabled,
-        "created_at": rule.created_at.isoformat() if rule.created_at else None,
-        "updated_at": rule.updated_at.isoformat() if rule.updated_at else None,
+        "created_at": iso_utc(rule.created_at),
+        "updated_at": iso_utc(rule.updated_at),
     }
 
 
@@ -386,8 +387,8 @@ def _ownership_rule_to_dict(rule: OwnershipRule) -> dict:
         "notes": rule.notes,
         "overwrite_existing": rule.overwrite_existing,
         "is_enabled": rule.is_enabled,
-        "created_at": rule.created_at.isoformat() if rule.created_at else None,
-        "last_run_at": rule.last_run_at.isoformat() if rule.last_run_at else None,
+        "created_at": iso_utc(rule.created_at),
+        "last_run_at": iso_utc(rule.last_run_at),
         "last_run_count": rule.last_run_count,
     }
 
@@ -511,8 +512,8 @@ def _ext_source_to_dict(src: ExternalTagSource) -> dict:
         "api_url": src.api_url,
         "api_config": {k: v for k, v in (src.api_config or {}).items() if k not in ("password", "token")},
         "auto_create_tags": src.auto_create_tags,
-        "created_at": src.created_at.isoformat() if src.created_at else None,
-        "last_synced_at": src.last_synced_at.isoformat() if src.last_synced_at else None,
+        "created_at": iso_utc(src.created_at),
+        "last_synced_at": iso_utc(src.last_synced_at),
         "last_sync_count": src.last_sync_count,
         "last_sync_error": src.last_sync_error,
         "maps": [

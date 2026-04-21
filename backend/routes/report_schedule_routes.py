@@ -27,6 +27,7 @@ def _split_recipients(recipients: str) -> List[str]:
 
 from core.auth import require_auth, get_accessible_org_ids
 from core.database import get_db
+from core.time_utils import iso_utc
 from models.models import ReportSchedule, ReportTemplate, User
 
 router = APIRouter()
@@ -90,13 +91,13 @@ def _serialize(s: ReportSchedule) -> dict:
         "cron_expression": s.cron_expression,
         "timezone": s.timezone,
         "is_enabled": s.is_enabled,
-        "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
+        "last_run_at": iso_utc(s.last_run_at),
         "last_status": s.last_status,
         "last_error": s.last_error,
-        "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+        "next_run_at": iso_utc(s.next_run_at),
         "created_by": s.created_by,
-        "created_at": s.created_at.isoformat() if s.created_at else None,
-        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+        "created_at": iso_utc(s.created_at),
+        "updated_at": iso_utc(s.updated_at),
     }
 
 

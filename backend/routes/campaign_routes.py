@@ -15,6 +15,7 @@ from core.auth import (
 )
 from core.subscription import check_campaign_limit
 from core.audit import log_audit, diff as _diff
+from core.time_utils import iso_utc
 from models.models import (
     User, Scan, Asset, Finding, FindingTicket,
     Campaign, CampaignFinding, AssetOwnership,
@@ -327,8 +328,8 @@ def list_campaigns(scan_id: Optional[int] = None, db: Session = Depends(get_db),
             "query": c.query,
             "query_logic": c.query_logic,
             "finding_count": c.finding_count,
-            "created_at": c.created_at.isoformat() if c.created_at else None,
-            "last_run_at": c.last_run_at.isoformat() if c.last_run_at else None,
+            "created_at": iso_utc(c.created_at),
+            "last_run_at": iso_utc(c.last_run_at),
             "owner_id": c.owner_id,
             "owner_name": owners[c.owner_id].display_name or owners[c.owner_id].email if c.owner_id and c.owner_id in owners else None,
         }
@@ -375,8 +376,8 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db), org_ids: Optio
         "scan_id": campaign.scan_id,
         "query": campaign.query,
         "query_logic": campaign.query_logic,
-        "created_at": campaign.created_at.isoformat() if campaign.created_at else None,
-        "last_run_at": campaign.last_run_at.isoformat() if campaign.last_run_at else None,
+        "created_at": iso_utc(campaign.created_at),
+        "last_run_at": iso_utc(campaign.last_run_at),
         "finding_count": total_findings,
         "critical_count": total_critical,
         "exploit_count": total_exploit,

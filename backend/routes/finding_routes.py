@@ -14,6 +14,7 @@ from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids, apply_scan_org_filter
 from core.builtin_team_roles import user_owner_scopes, apply_owner_scope_to_findings
 from core.audit import log_audit, diff as _diff
+from core.time_utils import iso_utc
 from models.models import (
     User, Scan, Asset, Finding, FindingTicket, FindingException,
     InventorySecurityControl, InventoryLoggedOn, AggregatedSolution,
@@ -548,8 +549,8 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset:
         # Resolved ownership (full chain)
         "resolved_owner": resolved,
         # SLA tracking
-        "sla_due_date": f.sla_due_date.isoformat() if f.sla_due_date else None,
-        "resolved_at": f.resolved_at.isoformat() if f.resolved_at else None,
+        "sla_due_date": iso_utc(f.sla_due_date),
+        "resolved_at": iso_utc(f.resolved_at),
         "sla_status": f.sla_status or "n/a",
         # When the vulnerability was observed (from scanner, not upload time)
         "sla_observed_date": asset.scan_start if asset else None,
@@ -557,18 +558,18 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset:
         "workflow_status": f.workflow_status or "open",
         "workflow_assigned_to": f.workflow_assigned_to,
         "workflow_notes": f.workflow_notes,
-        "status_changed_at": f.status_changed_at.isoformat() if f.status_changed_at else None,
+        "status_changed_at": iso_utc(f.status_changed_at),
         "exception_id": f.exception_id,
         # Aggregated solution
         "aggregated_solution_id": f.aggregated_solution_id,
         # Temporal tracking
-        "first_seen": f.first_seen.isoformat() if f.first_seen else None,
-        "last_seen": f.last_seen.isoformat() if f.last_seen else None,
+        "first_seen": iso_utc(f.first_seen),
+        "last_seen": iso_utc(f.last_seen),
         "times_seen": f.times_seen or 1,
         "is_regression": f.is_regression or False,
         # Delta tracking
         "auto_resolved": f.auto_resolved or False,
-        "auto_resolved_at": f.auto_resolved_at.isoformat() if f.auto_resolved_at else None,
+        "auto_resolved_at": iso_utc(f.auto_resolved_at),
         "auto_resolved_by_scan_id": f.auto_resolved_by_scan_id,
         # Ticket tracking (lightweight for list view)
         "has_ticket": len(f.tickets) > 0 if f.tickets else False,
@@ -606,9 +607,9 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset:
                 "ticket_url": t.ticket_url,
                 "external_status": t.external_status,
                 "mapped_status": t.mapped_status,
-                "last_synced_at": t.last_synced_at.isoformat() if t.last_synced_at else None,
+                "last_synced_at": iso_utc(t.last_synced_at),
                 "sync_error": t.sync_error,
-                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "created_at": iso_utc(t.created_at),
             } for t in (f.tickets or [])],
         })
         # Validated + Business context (with auto-inference)
@@ -663,7 +664,7 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset:
                     "reason": exc.reason,
                     "debt_category": exc.debt_category,
                     "mitigation_plan": exc.mitigation_plan,
-                    "review_by": exc.review_by.isoformat() if exc.review_by else None,
+                    "review_by": iso_utc(exc.review_by),
                     "review_status": _review_status(exc.review_by),
                 }
     return base

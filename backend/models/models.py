@@ -268,6 +268,7 @@ class Asset(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    scan_run_id = Column(String, nullable=True, index=True)
     ip = Column(String)
     hostname = Column(String)
     fqdn = Column(String)
@@ -500,6 +501,7 @@ class Finding(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     scan_id = Column(Integer, ForeignKey("scans.id"), nullable=False)
+    scan_run_id = Column(String, nullable=True, index=True)
     asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False)
 
     # Multi-source provenance

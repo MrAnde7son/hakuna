@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter, require_auth
 from core.audit import log_audit, diff as _diff
 from core.database import get_db
+from core.time_utils import iso_utc
 from models.models import AuthProfile, IntegrationCredential, User
 from services import session_broker, auth_flow_detector
 
@@ -76,9 +77,9 @@ def _to_dict(profile: AuthProfile) -> dict[str, Any]:
         "success_condition": profile.success_condition or {},
         "session_ttl_seconds": profile.session_ttl_seconds,
         "session_cached": bool(profile.cached_session_blob),
-        "session_expires_at": profile.session_expires_at.isoformat() if profile.session_expires_at else None,
-        "created_at": profile.created_at.isoformat() if profile.created_at else None,
-        "updated_at": profile.updated_at.isoformat() if profile.updated_at else None,
+        "session_expires_at": iso_utc(profile.session_expires_at),
+        "created_at": iso_utc(profile.created_at),
+        "updated_at": iso_utc(profile.updated_at),
     }
 
 

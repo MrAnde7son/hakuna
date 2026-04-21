@@ -14,3 +14,10 @@ hypothesis>=6.100
 anthropic>=0.39
 openai>=1.50
 google-genai>=0.3
+# Headless-browser rendering for the agent's render_page tool. SPAs
+# hydrate in JS, so plain httpx sees an empty shell; Playwright runs
+# the page and returns the real DOM + network graph. Soft-imported in
+# agent_specialists._render_page_handler so scanners built on images
+# without chromium still load — the tool just returns available=false
+# at call time.
+playwright>=1.47

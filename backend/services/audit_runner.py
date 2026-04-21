@@ -20,10 +20,13 @@ Why scratch-agents-per-run instead of one pooled agent:
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
@@ -43,14 +46,20 @@ def dispatch_audit_run(
     org: Organization,
     protocol: str,
     mission: str,
-    asset_ids: list[int],
     relay_agent_id: str,
     credential_id: str,
+    asset_ids: list[int] | None = None,
+    targets: list[str] | None = None,
     max_steps: int | None = None,
     wallclock_s: int | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
     """Create the Scan row + one AgentRun per asset, dispatch runs in background.
+
+    Accepts either ``asset_ids`` (existing assets) or ``targets`` (free-form
+    IPs / hostnames / URLs which get upserted into Asset rows rooted at this
+    audit's Scan). Exactly one must be provided. Callers that pass ``targets``
+    have already expanded any CIDR subnets upstream.
 
     Returns:
         {
@@ -69,8 +78,8 @@ def dispatch_audit_run(
             f"unknown mission {mission!r} for protocol {protocol}; "
             f"available: {[mt.key for mt in audit.missions]}"
         )
-    if not asset_ids:
-        raise AuditDispatchError("asset_ids is required")
+    if bool(asset_ids) == bool(targets):
+        raise AuditDispatchError("provide exactly one of asset_ids or targets")
     if not relay_agent_id:
         raise AuditDispatchError("relay_agent_id is required")
     if not credential_id:
@@ -80,11 +89,15 @@ def dispatch_audit_run(
     resolved_wallclock = int(wallclock_s or audit.default_wallclock_s)
     resolved_model = model or audit.default_model
 
+    # host_count drives scan naming. For free-form targets we only know the
+    # final count after upsert, so use the input length as an upper bound.
+    host_count = len(asset_ids) if asset_ids else len(targets)
+
     # ── Scan row (one per audit run) ──
     scan = Scan(
         org_id=org.id,
-        filename=f"{protocol}_audit://{relay_agent_id}/{mission}/{len(asset_ids)}hosts",
-        scan_name=f"{audit.label} — {m.label} — {len(asset_ids)} host(s)",
+        filename=f"{protocol}_audit://{relay_agent_id}/{mission}/{host_count}hosts",
+        scan_name=f"{audit.label} — {m.label} — {host_count} host(s)",
         scan_date=datetime.utcnow().isoformat(),
         scan_type=f"{protocol}_audit",
         source_type=f"{protocol}_audit",
@@ -92,7 +105,7 @@ def dispatch_audit_run(
         raw_metadata={
             "protocol": protocol,
             "mission": mission,
-            "asset_ids": list(asset_ids),
+            "asset_ids": [],                        # filled after upsert/validation
             "relay_agent_id": relay_agent_id,
             "credential_id": credential_id,
             "max_steps": resolved_max_steps,
@@ -103,6 +116,27 @@ def dispatch_audit_run(
     )
     db.add(scan)
     db.flush()
+
+    # Free-form target flow: upsert an Asset per target (matched by IP/hostname
+    # within org, or created fresh rooted at this scan). The existing flow from
+    # here on just sees a normal asset_ids list — no downstream changes needed.
+    if targets:
+        asset_ids = []
+        for t in targets:
+            aid = _upsert_asset_by_target(db, org.id, scan.id, t)
+            if aid is not None:
+                asset_ids.append(aid)
+        md = dict(scan.raw_metadata or {})
+        md["ad_hoc_targets"] = list(targets)
+        scan.raw_metadata = md
+        db.flush()
+        if not asset_ids:
+            raise AuditDispatchError("no valid targets could be resolved")
+
+    # Persist the final asset_ids list on the scan's metadata for status UIs.
+    md = dict(scan.raw_metadata or {})
+    md["asset_ids"] = list(asset_ids)
+    scan.raw_metadata = md
 
     # Validate assets belong to the org up-front so a bad ID doesn't waste an LLM call.
     assets = db.query(Asset).filter(Asset.id.in_(asset_ids)).all()
@@ -227,6 +261,66 @@ def _build_user_input(audit: ProtocolAudit, mission: MissionTemplate, asset: Ass
         f"the checklist. Emit findings via `emit_finding` with "
         f"`protocol=\"{audit.protocol}\"` and `mission=\"{mission.key}\"`."
     )
+
+
+# ── Free-form target resolution ──────────────────────────────────────
+
+
+def _classify_target(target: str) -> dict[str, str | None]:
+    """Split a user-entered target string into ip / hostname / fqdn fields.
+
+    Accepts bare IPs, hostnames, FQDNs, and URLs (scheme is stripped). Returns
+    a dict with only the populated keys. Used by the free-form audit flow to
+    seed Asset rows with enough identity to be matched on rescan.
+    """
+    raw = (target or "").strip()
+    if not raw:
+        return {}
+    host = raw
+    if raw.startswith(("http://", "https://")):
+        parsed = urlparse(raw)
+        host = parsed.hostname or raw
+    try:
+        ipaddress.ip_address(host)
+        return {"ip": host}
+    except ValueError:
+        pass
+    # Dotted name → treat as both hostname and fqdn so either match path hits.
+    if "." in host:
+        return {"hostname": host, "fqdn": host}
+    return {"hostname": host}
+
+
+def _upsert_asset_by_target(
+    db: Session, org_id: int, scan_id: int, target: str,
+) -> int | None:
+    """Find an Asset in the org matching the target's IP/hostname/FQDN, or
+    create a new one rooted at ``scan_id``. Returns the asset id, or None if
+    the target couldn't be classified.
+    """
+    ident = _classify_target(target)
+    if not ident:
+        return None
+
+    # Org-scope via the Scan join since Asset has no org_id column.
+    q = db.query(Asset).join(Scan, Asset.scan_id == Scan.id).filter(Scan.org_id == org_id)
+    if ident.get("ip"):
+        existing = q.filter(Asset.ip == ident["ip"]).first()
+    else:
+        name = ident.get("fqdn") or ident.get("hostname")
+        existing = q.filter(or_(Asset.hostname == name, Asset.fqdn == name)).first()
+    if existing:
+        return existing.id
+
+    new_asset = Asset(
+        scan_id=scan_id,
+        ip=ident.get("ip"),
+        hostname=ident.get("hostname"),
+        fqdn=ident.get("fqdn"),
+    )
+    db.add(new_asset)
+    db.flush()
+    return new_asset.id
 
 
 # ── Background dispatch ──────────────────────────────────────────────

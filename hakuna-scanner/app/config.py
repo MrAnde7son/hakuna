@@ -91,6 +91,16 @@ class Settings(BaseSettings):
     # UX nicety for wall-time).
     screenshot_max_hosts: int = 500
 
+    # Deep TLS audit (sslyze cipher enum + chain + OCSP + CAA). Each host
+    # runs ~5 handshakes per TLS version, so per-host wall time is 10-30s.
+    # Disabled by default — flip on per-deployment once you've sized workers.
+    tls_deep_audit_enabled: bool = False
+    tls_deep_audit_concurrency: int = 8
+    tls_deep_audit_host_timeout: int = 60
+    # Cap at this many hosts per scan to avoid runaway wall time on large
+    # scans; the rest are skipped with a log message.
+    tls_deep_audit_max_hosts: int = 500
+
     # JS fingerprinting: detect client-side libraries (jQuery, Moment.js, etc.)
     # by fetching HTML + JS files and matching version patterns.
     # Also covers meta tag extraction (generator tags, HTML artifacts).

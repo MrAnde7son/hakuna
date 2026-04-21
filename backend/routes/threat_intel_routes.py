@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, asc, or_, text, case
 
 from core.database import get_db, SessionLocal
+from core.time_utils import iso_utc
 from models.models import Finding, Asset, Scan
 from models.threat_intel_models import (
     ThreatGroup, TTP, ThreatGroupTTP,
@@ -312,7 +313,7 @@ def get_feed(
             "is_active": c.is_active,
             "source": c.source,
             "source_url": c.source_url,
-            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "created_at": iso_utc(c.created_at),
         })
     return result
 
@@ -1371,8 +1372,8 @@ def _serialize_remediation_campaign(c: IntelRemediationCampaign) -> dict:
         "suggested_sigma_rules": c.suggested_sigma_rules or [],
         "suggested_patches": c.suggested_patches or [],
         "priority_score": c.priority_score,
-        "created_at": c.created_at.isoformat() if c.created_at else None,
-        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+        "created_at": iso_utc(c.created_at),
+        "updated_at": iso_utc(c.updated_at),
     }
 
 
@@ -1908,7 +1909,7 @@ def get_patches_for_cve(
                     "cve_ids": [r.cve_id],
                     "cve_count": 1,
                     "affected_packages": [r.product_name] if r.product_name else [],
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "created_at": iso_utc(r.created_at),
                     "reliability": reliability_svc.reliability_to_dict(
                         reliability_map.get(("msrc", (r.kb_id or "").strip()))
                     ),
@@ -1961,7 +1962,7 @@ def get_patches_for_cve(
                 "cve_ids": r.cve_ids or [],
                 "cve_count": len(r.cve_ids) if r.cve_ids else 0,
                 "affected_packages": r.affected_packages or [],
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "created_at": iso_utc(r.created_at),
                 "reliability": reliability_svc.reliability_to_dict(
                     reliability_map.get(((r.source or "").strip().lower(), (r.source_advisory_id or "").strip()))
                 ),
@@ -2094,7 +2095,7 @@ def get_patch_reliability(
                 "org_id": s.org_id,
                 "fingerprint": s.fingerprint,
                 "detail": s.detail or {},
-                "observed_at": s.observed_at.isoformat() if s.observed_at else None,
+                "observed_at": iso_utc(s.observed_at),
             }
             for s in signals
         ]

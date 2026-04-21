@@ -317,6 +317,77 @@ def test_dispatch_audit_run_rejects_missing_inputs(db_session, test_org, audit_a
         )
 
 
+# ── Free-form targets flow ───────────────────────────────────────────
+
+
+def test_dispatch_audit_run_with_free_form_targets_creates_assets(db_session, test_org):
+    """Free-form targets path upserts Asset rows and dispatches as usual."""
+    from services.audit_runner import dispatch_audit_run
+
+    with patch("services.audit_runner._dispatch_background_run") as mock_dispatch:
+        result = dispatch_audit_run(
+            db=db_session, org=test_org, protocol="ldap", mission="identity",
+            targets=["dc1.corp.local", "10.0.0.99"],
+            relay_agent_id="relay-dc", credential_id="dc-admin",
+        )
+
+    assert len(result["runs"]) == 2
+    scan = db_session.query(Scan).filter_by(id=result["scan_id"]).first()
+    assert scan.raw_metadata["ad_hoc_targets"] == ["dc1.corp.local", "10.0.0.99"]
+    assert len(scan.raw_metadata["asset_ids"]) == 2
+
+    # Created assets carry the parsed identity so rescan/dedup can match them.
+    assets = db_session.query(Asset).filter(
+        Asset.id.in_(scan.raw_metadata["asset_ids"])
+    ).all()
+    hostnames = {a.hostname for a in assets if a.hostname}
+    ips = {a.ip for a in assets if a.ip}
+    assert "dc1.corp.local" in hostnames
+    assert "10.0.0.99" in ips
+    assert mock_dispatch.call_count == 2
+
+
+def test_dispatch_audit_run_with_targets_reuses_existing_asset(db_session, test_org, audit_asset):
+    """An existing asset matching the target's IP is reused, not duplicated."""
+    from services.audit_runner import dispatch_audit_run
+
+    before_count = db_session.query(Asset).count()
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        result = dispatch_audit_run(
+            db=db_session, org=test_org, protocol="wmi", mission="identity",
+            targets=[audit_asset.ip],              # matches audit_asset.ip
+            relay_agent_id="relay-1", credential_id="cred-1",
+        )
+
+    after_count = db_session.query(Asset).count()
+    assert after_count == before_count              # no new asset created
+    scan = db_session.query(Scan).filter_by(id=result["scan_id"]).first()
+    assert scan.raw_metadata["asset_ids"] == [audit_asset.id]
+
+
+def test_dispatch_audit_run_rejects_both_sources(db_session, test_org, audit_asset):
+    """asset_ids + targets together is an error — exactly one allowed."""
+    from services.audit_runner import AuditDispatchError, dispatch_audit_run
+
+    with pytest.raises(AuditDispatchError, match="exactly one"):
+        dispatch_audit_run(
+            db=db_session, org=test_org, protocol="wmi", mission="identity",
+            asset_ids=[audit_asset.id], targets=["10.0.0.1"],
+            relay_agent_id="relay-1", credential_id="cred-1",
+        )
+
+
+def test_dispatch_audit_run_rejects_neither_source(db_session, test_org):
+    from services.audit_runner import AuditDispatchError, dispatch_audit_run
+
+    with pytest.raises(AuditDispatchError, match="exactly one"):
+        dispatch_audit_run(
+            db=db_session, org=test_org, protocol="wmi", mission="identity",
+            relay_agent_id="relay-1", credential_id="cred-1",
+        )
+
+
 # ── emit_finding tool ────────────────────────────────────────────────
 
 

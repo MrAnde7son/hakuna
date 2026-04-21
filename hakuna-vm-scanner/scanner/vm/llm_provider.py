@@ -101,6 +101,49 @@ async def fetch_integration_configs(conn) -> dict[str, dict]:
 # ── Pure resolver (test-friendly) ────────────────────────────────
 
 
+def resolve_specific_provider(
+    provider: str,
+    integration_configs: dict[str, dict] | None,
+    env: dict[str, str] | None = None,
+    model_override: str | None = None,
+) -> LLMProviderInfo | None:
+    """Try to resolve ONE specific provider, ignoring priority order.
+
+    Used for per-specialist model routing — authn wants Claude Sonnet
+    even when Vertex is the default, because authn is the composition
+    source and its orchestration matters more than its cost. Returns
+    None if the requested provider isn't configured; caller handles
+    the fallback to the default.
+
+    ``model_override`` pins a specific model id (e.g.
+    ``claude-sonnet-4-6``) when the provider is configured — so a
+    specialist can say "Anthropic, specifically Sonnet 4.6" instead of
+    accepting whatever default the DB row sets.
+    """
+    configs = integration_configs or {}
+    env = env if env is not None else dict(os.environ)
+
+    entry = next(
+        ((p, ev, fallback) for p, ev, fallback in _PROVIDER_DEFAULTS if p == provider),
+        None,
+    )
+    if entry is None:
+        return None
+    _, env_var, fallback_model = entry
+
+    cfg = configs.get(provider) or {}
+    if not _is_provider_configured(provider, cfg, env, env_var):
+        return None
+
+    model = model_override or cfg.get("default_model") or fallback_model
+    resolved_cfg = _build_resolved_config(provider, cfg, env)
+    logger.info(
+        "llm_provider: resolved specific %s (model=%s, source=%s)",
+        provider, model, _source_for_log(provider, cfg, env, env_var),
+    )
+    return LLMProviderInfo(provider=provider, model=model, config=resolved_cfg)
+
+
 def resolve_provider(
     integration_configs: dict[str, dict] | None,
     env: dict[str, str] | None = None,

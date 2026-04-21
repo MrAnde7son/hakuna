@@ -12,6 +12,7 @@ from sqlalchemy import func
 
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
+from core.time_utils import iso_utc
 from models.models import (
     Finding, Asset, Scan,
     SecurityControlPolicy, SecurityControlPolicyAssignment, ControlAssessment,
@@ -51,7 +52,7 @@ async def get_finding_assessments(
             "confidence": a.confidence,
             "explanation": a.explanation,
             "matched_techniques": a.matched_techniques or [],
-            "assessed_at": a.assessed_at.isoformat() if a.assessed_at else None,
+            "assessed_at": iso_utc(a.assessed_at),
             "policy": {
                 "id": policy.id,
                 "product_key": policy.product_key,
@@ -101,7 +102,7 @@ async def get_asset_policies(
             "id": a.id,
             "assignment_source": a.assignment_source,
             "source_group_name": a.source_group_name,
-            "synced_at": a.synced_at.isoformat() if a.synced_at else None,
+            "synced_at": iso_utc(a.synced_at),
             "policy": {
                 "id": policy.id,
                 "product_key": policy.product_key,

@@ -355,6 +355,99 @@ async def _do_httpx(sf, org_id: str, target_scope: str | None = None) -> dict:
     return {"probed": len(all_results), "updated": updated, "batches": len(batches)}
 
 
+async def _do_tls_deep_audit(sf, org_id: str, target_scope: str | None = None) -> dict:
+    """Run sslyze cipher-enumeration + chain validation + OCSP + CAA on
+    TLS-capable ports that tlsx already fingerprinted.
+
+    Gated by ``settings.tls_deep_audit_enabled`` because sslyze is 10-30s
+    per host and can trip WAF rate limits.
+    """
+    if not settings.tls_deep_audit_enabled:
+        return {"audited": 0, "disabled": True}
+
+    # Pull TLS-capable (host, port) pairs — only ports that already have a
+    # tls_cert row from tlsx. That filters out plain HTTP ports and ports
+    # where tlsx couldn't handshake, both of which sslyze would waste time on.
+    async with sf() as db:
+        rows = await db.execute(
+            text("""
+                SELECT a.hostname, ap.port, ap.id as port_id
+                FROM assets a
+                JOIN asset_ports ap ON ap.asset_id = a.id
+                WHERE a.org_id = :org_id
+                  AND a.liveness_state = 'confirmed_alive'
+                  AND ap.tls_cert IS NOT NULL
+                  AND (:scope IS NULL OR a.hostname LIKE :scope_like)
+                ORDER BY a.hostname, ap.port
+                LIMIT :cap
+            """),
+            {
+                "org_id": uuid.UUID(org_id),
+                "scope": target_scope,
+                "scope_like": f"%{target_scope}" if target_scope else None,
+                "cap": settings.tls_deep_audit_max_hosts,
+            },
+        )
+        targets = [(r.hostname, r.port, r.port_id) for r in rows.fetchall()]
+
+    if not targets:
+        logger.info("org=%s tls_deep_audit: no TLS-capable targets", org_id)
+        return {"audited": 0}
+
+    logger.info(
+        "org=%s tls_deep_audit: auditing %d targets concurrency=%d",
+        org_id, len(targets), settings.tls_deep_audit_concurrency,
+    )
+
+    # sslyze is blocking + CPU-bound on cryptography. Run in a thread pool
+    # with asyncio.Semaphore to bound concurrency.
+    import asyncio
+    from app.ingest.tls_deep_audit import audit_host
+
+    sem = asyncio.Semaphore(settings.tls_deep_audit_concurrency)
+
+    async def _audit(host: str, port: int, port_id):
+        async with sem:
+            try:
+                return port_id, await asyncio.wait_for(
+                    asyncio.to_thread(audit_host, host, port),
+                    timeout=settings.tls_deep_audit_host_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("tls_deep_audit timeout host=%s port=%d", host, port)
+                return port_id, None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("tls_deep_audit failed host=%s port=%d err=%s", host, port, exc)
+                return port_id, None
+
+    results = await asyncio.gather(*(_audit(h, p, pid) for h, p, pid in targets))
+
+    # Persist — one UPDATE per port_id.
+    audited = 0
+    issues_total = 0
+    async with sf() as db:
+        for port_id, audit in results:
+            if audit is None:
+                continue
+            await db.execute(
+                text("""
+                    UPDATE asset_ports
+                    SET tls_deep_audit = cast(:audit as jsonb), updated_at = :now
+                    WHERE id = :pid
+                """),
+                {
+                    "audit": json.dumps(audit),
+                    "now": datetime.now(timezone.utc),
+                    "pid": port_id,
+                },
+            )
+            audited += 1
+            issues_total += len(audit.get("issues", []))
+        await db.commit()
+
+    return {"audited": audited, "targets": len(targets), "issues": issues_total}
+
+
 async def _do_js_fingerprint(sf, org_id: str, target_scope: str | None = None) -> dict:
     """Run JS library fingerprinting on confirmed_alive HTTP assets.
 
@@ -1308,6 +1401,14 @@ def run_enrichment_chain(self, org_id: str, scan_run_id: str | None = None) -> d
                     ("tlsx", _do_tlsx),
                     ("httpx", _do_httpx),
                     ("cdncheck", _do_cdncheck),
+                ],
+                # Deep TLS audit runs after tlsx/httpx because it reads
+                # asset_ports.tls_cert to pick which ports to audit. In its
+                # own group so the sslyze wall time doesn't bottleneck the
+                # fast fingerprint stages below. Disabled by default — see
+                # settings.tls_deep_audit_enabled.
+                [
+                    ("tls_deep_audit", _do_tls_deep_audit),
                 ],
                 [
                     ("js_fingerprint", _do_js_fingerprint),

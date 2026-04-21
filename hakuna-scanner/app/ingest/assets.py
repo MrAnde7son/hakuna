@@ -182,6 +182,8 @@ async def update_enrichment(
     updated = 0
     now = datetime.now(timezone.utc)
 
+    from app.ingest.http_header_audit import audit_response
+
     for entry in httpx_results:
         host = (entry.get("input") or entry.get("host") or "").strip().lower()
         if not host:
@@ -190,6 +192,13 @@ async def update_enrichment(
         tech = entry.get("tech") or entry.get("technologies")
         cdn_name = entry.get("cdn_name") or entry.get("cdn")
         waf = entry.get("waf_name") or entry.get("waf")
+
+        # Compute security-header / cookie audit. Never raise — enrichment
+        # must not fail because of a malformed header dict.
+        try:
+            security_audit = audit_response(entry)
+        except Exception:  # noqa: BLE001
+            security_audit = None
 
         # Build services dict from httpx probe results
         url = entry.get("url") or ""
@@ -217,6 +226,7 @@ async def update_enrichment(
                     cdn_provider = :cdn,
                     waf = :waf,
                     services = COALESCE(services::jsonb, '{}'::jsonb) || COALESCE(cast(:services as jsonb), '{}'::jsonb),
+                    security_audit = cast(:security as jsonb),
                     last_enriched = :now,
                     last_seen = :now
                 WHERE org_id = :org_id AND hostname = :host
@@ -229,6 +239,7 @@ async def update_enrichment(
                 "cdn": cdn_name if isinstance(cdn_name, str) else (cdn_name[0] if cdn_name else None),
                 "waf": waf if isinstance(waf, str) else (waf[0] if waf else None),
                 "services": services_json,
+                "security": json.dumps(security_audit) if security_audit else None,
                 "org_id": org_id,
                 "host": host,
                 "now": now,

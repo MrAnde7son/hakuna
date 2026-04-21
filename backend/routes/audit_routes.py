@@ -12,16 +12,23 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from core.auth import require_auth
 from core.database import get_db
+from core.time_utils import iso_utc
 from core.subscription import check_scan_limit
 from core.token_quota import check_token_quota, get_token_usage
 from models.models import Agent, AgentRun, Organization, Scan, User
 from agents.audit_registry import AUDITS, describe_all, list_audits
 from services.audit_runner import AuditDispatchError, dispatch_audit_run
+from services.target_expander import expand_cidr_targets
+
+# Audit runs are N × ~15k LLM tokens per host, so we cap CIDR expansion
+# much tighter than VM scans (1024). A /26 or smaller is still permitted
+# inline; larger ranges should be split into separate runs intentionally.
+AUDIT_MAX_EXPANDED_HOSTS = 64
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +71,23 @@ def get_protocol_audit(protocol: str, user: User = Depends(require_auth)):
 class AuditRunRequest(BaseModel):
     protocol: str = Field(..., description="e.g. 'wmi' — must be registered in AUDITS")
     mission: str = Field(..., description="Mission key (identity|privesc|software_cve|network_hygiene|explore)")
-    asset_ids: list[int] = Field(..., min_length=1)
     credential_id: str
     relay_agent_id: str
+    # Exactly one of asset_ids or targets must be provided.
+    # targets accepts IPs, hostnames, URLs, and CIDR subnets (expanded server-side).
+    asset_ids: list[int] | None = Field(default=None, min_length=1)
+    targets: list[str] | None = Field(default=None, min_length=1)
     max_steps: int | None = None         # defaults to the mission's suggested_budget
     wallclock_s: int | None = None       # defaults to the protocol's default_wallclock_s
     model: str | None = None             # defaults to the protocol's default_model
+
+    @model_validator(mode="after")
+    def _exactly_one_target_source(self):
+        has_assets = bool(self.asset_ids)
+        has_targets = bool(self.targets)
+        if has_assets == has_targets:
+            raise ValueError("Provide exactly one of asset_ids or targets")
+        return self
 
 
 @router.post("/run", dependencies=[Depends(check_scan_limit)])
@@ -93,6 +111,19 @@ def create_audit_run(
     # — they catch mid-audit exhaustion. This check catches pre-exhaustion.
     check_token_quota(org.id, db)
 
+    # Expand CIDR subnets before dispatch so the runner sees only individual
+    # hosts. Tight cap (64) reflects the LLM cost per host.
+    expanded_targets: list[str] | None = None
+    if body.targets:
+        try:
+            expanded_targets = expand_cidr_targets(
+                body.targets, max_hosts=AUDIT_MAX_EXPANDED_HOSTS,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if not expanded_targets:
+            raise HTTPException(400, "No valid targets provided")
+
     try:
         result = dispatch_audit_run(
             db=db,
@@ -100,6 +131,7 @@ def create_audit_run(
             protocol=body.protocol,
             mission=body.mission,
             asset_ids=body.asset_ids,
+            targets=expanded_targets,
             relay_agent_id=body.relay_agent_id,
             credential_id=body.credential_id,
             max_steps=body.max_steps,
@@ -108,6 +140,22 @@ def create_audit_run(
         )
     except AuditDispatchError as e:
         raise HTTPException(400, str(e))
+
+    from core.audit import log_audit
+    scan_row = db.query(Scan).filter(Scan.id == result["scan_id"]).first()
+    log_audit(
+        db, "start", "scan", entity_id=result["scan_id"],
+        entity_name=(scan_row.scan_name if scan_row else None),
+        changes={
+            "source_type": f"{body.protocol}_audit",
+            "protocol": body.protocol,
+            "mission": body.mission,
+            "host_count": len(result.get("runs") or []),
+        },
+        actor=user,
+    )
+    db.commit()
+
     return result
 
 
@@ -166,8 +214,8 @@ def get_audit_scan(
             "agent_run_id": r.id if r else None,
             "status": r.status if r else "pending",
             "steps_used": r.steps_used if r else 0,
-            "created_at": r.created_at.isoformat() if r and r.created_at else None,
-            "finished_at": r.finished_at.isoformat() if r and r.finished_at else None,
+            "created_at": iso_utc(r.created_at) if r else None,
+            "finished_at": iso_utc(r.finished_at) if r else None,
             "error": r.error if r else None,
         })
 

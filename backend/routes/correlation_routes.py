@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db, DATABASE_URL
 from core.auth import get_accessible_org_ids, get_current_user, require_permission
+from core.time_utils import iso_utc
 from core.builtin_team_roles import user_owner_scopes
 from models.models import User
 from services.finding_correlator import correlate_findings
@@ -24,7 +25,7 @@ def _iso(value):
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value.isoformat()
+        return iso_utc(value)
     return str(value)
 
 

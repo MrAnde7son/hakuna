@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
+from core.time_utils import iso_utc
 from models.models import SIEMEvent, DetectionRule, Alert
 
 router = APIRouter()
@@ -176,7 +177,7 @@ async def recent_alerts(
             "event_count": a.event_count,
             "entity_value": a.entity_value,
             "asset_name": assets.get(a.asset_id, None) and (assets[a.asset_id].hostname or assets[a.asset_id].ip),
-            "fired_at": a.fired_at.isoformat() if a.fired_at else None,
+            "fired_at": iso_utc(a.fired_at),
         }
         for a in alerts
     ]

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from datetime import datetime
 from typing import List, Optional
 from urllib.parse import urlparse
@@ -281,8 +282,11 @@ async def start_vm_scan(
         "job_ids": [],
         "completed_jobs": 0,
         "total_jobs": len(targets),
+        "completed_targets": 0,
+        "total_targets": len(targets),
         "findings_emitted": 0,
         "imported_job_ids": [],
+        "current_run_id": uuid.uuid4().hex,
     }
     # Store only id references — NEVER the decrypted values / session blob.
     if credential_id:
@@ -414,17 +418,23 @@ async def rescan_vm_scan(
 
     now = datetime.utcnow()
 
-    # Snapshot previous run before wiping state
+    # Snapshot previous run before rotating state. We keep the prior run's
+    # findings/assets in place (tagged with previous_run_id) until the new run
+    # finalizes successfully — see _drop_superseded_run in post_ingest.
+    previous_run_id = meta.get("current_run_id")
     previous_run = {
         "status": meta.get("status", "unknown"),
         "completed_jobs": meta.get("completed_jobs", 0),
         "total_jobs": meta.get("total_jobs", 0),
+        "completed_targets": meta.get("completed_targets", 0),
+        "total_targets": meta.get("total_targets", len(meta.get("targets") or [])),
         "findings_emitted": meta.get("findings_emitted", 0),
         "job_statuses": meta.get("job_statuses", {}),
         "scan_date": scan.scan_date,
         "targets": meta.get("targets", []),
         "credential_id": meta.get("credential_id"),
         "auth_profile_id": meta.get("auth_profile_id"),
+        "run_id": previous_run_id,
     }
 
     # Resolve auth before wiping state — a bad profile/credential should fail
@@ -435,13 +445,11 @@ async def rescan_vm_scan(
     elif credential_id:
         credentials_payload = await _resolve_scan_credentials(db, scan.org_id, credential_id)
 
-    # Delete findings and assets from the previous run that belong to this scan
-    finding_ids = [r[0] for r in db.query(Finding.id).filter(Finding.scan_id == scan.id).all()]
-    if finding_ids:
-        db.query(Finding).filter(Finding.id.in_(finding_ids)).delete(synchronize_session=False)
-    db.query(Asset).filter(Asset.scan_id == scan.id).delete(synchronize_session=False)
-
-    # Reset scan state, preserving previous_run history + updated targets/auth
+    # Reset scan state, preserving previous_run history + updated targets/auth.
+    # Old run's Finding/Asset rows stay in the DB until finalize — a failed
+    # rescan then rolls back via _rollback_failed_run and the prior run is
+    # restored intact.
+    new_run_id = uuid.uuid4().hex
     new_meta = {
         **meta,
         "targets": targets,
@@ -449,10 +457,14 @@ async def rescan_vm_scan(
         "job_ids": [],
         "completed_jobs": 0,
         "total_jobs": len(targets),
+        "completed_targets": 0,
+        "total_targets": len(targets),
         "findings_emitted": 0,
         "imported_job_ids": [],
         "job_statuses": {},
         "previous_run": previous_run,
+        "previous_run_id": previous_run_id,
+        "current_run_id": new_run_id,
     }
     # Update id references (or drop them if cleared)
     if credential_id:
@@ -500,6 +512,7 @@ async def rescan_vm_scan(
             "total_jobs": len(result["job_ids"]),
         }
     else:
+        _rollback_failed_run(db, scan)
         scan.raw_metadata = {**scan.raw_metadata, "status": "failed"}
 
     db.commit()
@@ -539,7 +552,9 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 scan_id, VM_SCAN_STALE_THRESHOLD_SECONDS // 3600,
             )
             _revoke_vm_jobs_sync(job_ids)
-            stale_meta = {**meta, "status": "failed", "error": "Scan timed out — job results may have expired"}
+            _rollback_failed_run(db, scan)
+            rolled_meta = dict(scan.raw_metadata or {})
+            stale_meta = {**rolled_meta, "status": "failed", "error": "Scan timed out — job results may have expired"}
             scan.raw_metadata = stale_meta
             db.commit()
             return stale_meta
@@ -634,10 +649,29 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 "target": target or job_statuses.get(job_id, {}).get("target", ""),
             }
 
+    # Target-level progress: a target is complete only when *every* job it
+    # fanned out into (nuclei + content discovery + agent scans) is terminal.
+    # Users submit targets, so we show targets — the underlying job count is
+    # a scanner implementation detail.
+    terminal_states = {"SUCCESS", "FAILURE"}
+    jobs_by_target: dict[str, list[str]] = {}
+    for info in job_statuses.values():
+        tgt = (info or {}).get("target") or ""
+        if not tgt:
+            continue
+        jobs_by_target.setdefault(tgt, []).append((info or {}).get("status") or "")
+    completed_targets = sum(
+        1 for statuses in jobs_by_target.values()
+        if statuses and all(s in terminal_states for s in statuses)
+    )
+    total_targets = meta.get("total_targets") or len(meta.get("targets") or [])
+
     # Update metadata
     new_meta = {
         **meta,
         "completed_jobs": completed,
+        "completed_targets": completed_targets,
+        "total_targets": total_targets,
         "findings_emitted": total_findings,
         "imported_job_ids": list(imported_job_ids),
         "job_statuses": job_statuses,
@@ -664,14 +698,17 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
                 scan_id, len(job_ids), age_seconds,
             )
             _revoke_vm_jobs_sync(job_ids)
-            new_meta["status"] = "failed"
-            new_meta["error"] = (
+            scan.raw_metadata = new_meta
+            _rollback_failed_run(db, scan)
+            orphan_meta = dict(scan.raw_metadata or {})
+            orphan_meta["status"] = "failed"
+            orphan_meta["error"] = (
                 "Orphaned — scanner broker lost the job queue (likely restart). "
                 "Rescan to dispatch fresh jobs."
             )
-            scan.raw_metadata = new_meta
+            scan.raw_metadata = orphan_meta
             db.commit()
-            return new_meta
+            return orphan_meta
 
     if all_done:
         new_meta["status"] = "completed" if not any_failed else "completed_with_errors"
@@ -703,8 +740,13 @@ async def refresh_vm_scan(db: Session, scan_id: int) -> Optional[dict]:
 
     # Run full post-ingest pipeline when scan completes
     if all_done:
-        from services.post_ingest import finalize_scan
-        finalize_scan(db, scan_id=scan.id, org_id=scan.org_id)
+        try:
+            from services.post_ingest import finalize_scan
+            finalize_scan(db, scan_id=scan.id, org_id=scan.org_id)
+            db.commit()
+        except Exception:
+            logger.exception("finalize_scan failed for scan %d", scan.id)
+            db.rollback()
 
     return new_meta
 
@@ -760,8 +802,10 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
                 # Revoke before mutating metadata so the tasks stop consuming
                 # queue time even if the commit below fails.
                 _revoke_vm_jobs_sync(meta.get("job_ids") or [])
+                _rollback_failed_run(db, scan)
+                rolled = dict(scan.raw_metadata or {})
                 scan.raw_metadata = {
-                    **meta,
+                    **rolled,
                     "status": "failed",
                     "error": "Scan timed out — job results may have expired (reaped by background job)",
                 }
@@ -784,8 +828,10 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
                     scan.id, scan.org_id, age_seconds,
                 )
                 _revoke_vm_jobs_sync(meta.get("job_ids") or [])
+                _rollback_failed_run(db, scan)
+                rolled = dict(scan.raw_metadata or {})
                 scan.raw_metadata = {
-                    **meta,
+                    **rolled,
                     "status": "failed",
                     "error": (
                         "Orphaned — scanner broker lost the job queue (likely restart). "
@@ -805,6 +851,67 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
             db.close()
 
     return {"checked": checked, "reaped": reaped}
+
+
+def current_run_scope(scan: Scan, column):
+    """Return a SQLAlchemy filter clause that scopes rows to the scan's
+    current run_id (NULL-safe so legacy rows and non-VM scans aren't dropped).
+
+    Use this when querying Findings/Assets for a scan whose rescan may have
+    an old run and a new run temporarily coexisting — e.g. in-flight rescan
+    counts and listings. Pass ``Finding.scan_run_id`` or ``Asset.scan_run_id``
+    as the ``column``.
+    """
+    meta = (scan.raw_metadata or {}) if scan is not None else {}
+    current_run_id = meta.get("current_run_id")
+    if not current_run_id:
+        return True  # no run scoping available — match everything
+    return or_(column.is_(None), column == current_run_id)
+
+
+def _rollback_failed_run(db: Session, scan: Scan) -> dict:
+    """Undo the in-flight run when a VM scan fails or is reaped.
+
+    Deletes Finding/Asset rows stamped with the current run_id and restores
+    the metadata pointer to the previous run_id so the UI keeps showing the
+    last successful scan. For first-ever scans (no previous_run_id) this
+    just empties the scan — the rollback is idempotent.
+
+    Mutates scan.raw_metadata in place; caller is responsible for the commit.
+    """
+    meta = dict(scan.raw_metadata or {})
+    current_run_id = meta.get("current_run_id")
+    previous_run_id = meta.get("previous_run_id")
+    if not current_run_id:
+        return {"findings_deleted": 0, "assets_deleted": 0}
+
+    findings_deleted = db.query(Finding).filter(
+        Finding.scan_id == scan.id,
+        Finding.scan_run_id == current_run_id,
+    ).delete(synchronize_session=False)
+    assets_deleted = db.query(Asset).filter(
+        Asset.scan_id == scan.id,
+        Asset.scan_run_id == current_run_id,
+    ).delete(synchronize_session=False)
+
+    # Restore the previous run_id so mid-scan query scoping falls back to
+    # the preserved prior run. If there was no previous run, clear the field.
+    if previous_run_id:
+        meta["current_run_id"] = previous_run_id
+    else:
+        meta.pop("current_run_id", None)
+    meta.pop("previous_run_id", None)
+    scan.raw_metadata = meta
+
+    if findings_deleted or assets_deleted:
+        logger.info(
+            "Rolled back failed run (scan_id=%s run_id=%s): findings=%d assets=%d",
+            scan.id, current_run_id, findings_deleted, assets_deleted,
+        )
+    return {
+        "findings_deleted": findings_deleted,
+        "assets_deleted": assets_deleted,
+    }
 
 
 _CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
@@ -917,6 +1024,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
     asset_id_in = job_result.get("asset_id")
 
     meta = scan.raw_metadata or {}
+    current_run_id = meta.get("current_run_id")
     asset: Asset | None = None
     new_asset_ids: list[int] = []
     cls = _classify_vm_target(target) if target else {
@@ -938,6 +1046,8 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         existing_sources = list(asset.source_systems or [])
         if "vm_scanner" not in existing_sources:
             asset.source_systems = existing_sources + ["vm_scanner"]
+        if asset.scan_id == scan.id and current_run_id:
+            asset.scan_run_id = current_run_id
     else:
         # Adhoc job — resolve by target against this scan's prefilled map,
         # then by IP/hostname/url in the same org, creating a new asset if none.
@@ -977,6 +1087,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         if not asset:
             asset_kwargs = {
                 "scan_id": scan.id,
+                "scan_run_id": current_run_id,
                 "ip": cls["ip"] or "",
                 "hostname": cls["hostname"] or "",
                 "source_systems": ["vm_scanner"],
@@ -992,6 +1103,8 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
             existing_sources = list(asset.source_systems or [])
             if "vm_scanner" not in existing_sources:
                 asset.source_systems = existing_sources + ["vm_scanner"]
+            if asset.scan_id == scan.id and current_run_id:
+                asset.scan_run_id = current_run_id
 
     # Record per-source observation
     record_observation(
@@ -1018,9 +1131,12 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         if severity_str not in severity_map:
             severity_str = "info"
 
-        # Check for duplicate
+        # Check for duplicate within the current run only — old-run rows
+        # coexist until finalize swaps them out, so we must scope by run_id
+        # or we'd silently drop fresh findings as "already ingested".
         existing = db.query(Finding.id).filter(
             Finding.scan_id == scan.id,
+            Finding.scan_run_id == current_run_id,
             Finding.asset_id == asset.id,
             Finding.plugin_id == f.get("template_id", ""),
         ).first()
@@ -1055,6 +1171,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
 
         finding = Finding(
             scan_id=scan.id,
+            scan_run_id=current_run_id,
             asset_id=asset.id,
             source_type="vm_scanner",
             source_systems=["vm_scanner"],

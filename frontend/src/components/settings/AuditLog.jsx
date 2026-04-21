@@ -37,6 +37,9 @@ const ACTION_COLOR = {
   enable: '#8b5cf6',
   disable: '#f97316',
   assign: '#06b6d4',
+  start: '#10b981',
+  run: '#06b6d4',
+  cancel: '#f97316',
 }
 
 function ActionBadge({ action }) {
@@ -72,6 +75,17 @@ const ENTITY_LABEL = {
   finding_status: 'Finding Status',
   tag: 'Tag',
   auto_tag_rule: 'Auto-Tag Rule',
+  scan: 'Scan',
+  integration: 'Integration',
+  user: 'User',
+  organization: 'Organization',
+  role: 'Role',
+  role_assignment: 'Role Assignment',
+  alert: 'Alert',
+  ingest_endpoint: 'Ingest Endpoint',
+  siem_event: 'SIEM Event',
+  asset_type_rule: 'Asset Type Rule',
+  finding_context: 'Finding Context',
 }
 
 function EntityTypePill({ type }) {
@@ -215,7 +229,7 @@ export default function AuditLog() {
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
-    <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+    <div>
       <PageHeader
         title="Audit Log"
         subtitle={`${total.toLocaleString()} event${total !== 1 ? 's' : ''} recorded`}
@@ -316,10 +330,11 @@ export default function AuditLog() {
         ) : error ? (
           <div style={{ padding: 24, color: '#ef4444', textAlign: 'center', fontSize: 13 }}>{error}</div>
         ) : entries.length === 0 ? (
-          <EmptyState icon={ClipboardList} title="No events recorded" sub="Changes to exceptions, SLA, campaigns, workflows, ownership, and tags will appear here." />
+          <EmptyState icon={ClipboardList} title="No events recorded" sub="Changes to scans, integrations, exceptions, SLA, campaigns, workflows, ownership, and tags will appear here." />
         ) : (
           <>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 860 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
                   {['Time', 'Action', 'Entity Type', 'Entity', 'Actor', 'Changes'].map(h => (
@@ -391,6 +406,7 @@ export default function AuditLog() {
                 ))}
               </tbody>
             </table>
+            </div>
 
             {/* Pagination */}
             {totalPages > 1 && (

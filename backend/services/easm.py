@@ -926,6 +926,8 @@ def _build_easm_data(ea: dict) -> dict:
         "open_ports": ea.get("open_ports") or [],
         "services": ea.get("services") or {},
         "tls_cert": ea.get("tls_cert") or {},
+        "security_audit": ea.get("security_audit") or {},
+        "tls_deep_audit": ea.get("tls_deep_audit") or {},
         "cdn_provider": ea.get("cdn_provider"),
         "waf": ea.get("waf"),
         "dns_records": ea.get("dns_records") or {},
@@ -1281,6 +1283,258 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     plugin_output="\n".join(output_lines),
                     first_seen=now, last_seen=now,
                 ))
+
+    # ── HTTP security headers / cookies ───────────────────────────
+    # The hakuna-scanner runs app.ingest.http_header_audit.audit_response()
+    # over every httpx hit and stores the result on assets.security_audit.
+    # Issues are bundled into two findings per asset (one headers, one
+    # cookies) with severity = worst sub-issue, mirroring EASM-TLS-WEAK.
+    security_audit = ea.get("security_audit") or {}
+    audit_issues = security_audit.get("issues") or []
+    if audit_issues:
+        header_ids = {
+            "hsts-missing", "hsts-weak",
+            "csp-missing", "clickjacking-protection-missing",
+            "content-type-sniffing", "referrer-policy-missing",
+            "permissions-policy-missing",
+        }
+        cookie_ids = {
+            "cookie-insecure", "cookie-not-httponly",
+            "cookie-samesite-missing", "cookie-samesite-none-insecure",
+        }
+
+        def _emit_audit_finding(pid, title, family, owner, synopsis, description, solution, matching_ids):
+            matches = [i for i in audit_issues if i.get("id") in matching_ids]
+            if not matches:
+                return
+            sev = max(int(i.get("severity", 0)) for i in matches)
+            sev_label = SEVERITY_LABELS.get(sev, "Info")
+            priority = 5.5 if sev >= 2 else (3.0 if sev == 1 else 1.0)
+            effort = "quick_win"  # header/cookie fixes are config changes
+
+            output_lines = [f"Host: {hostname}"]
+            if security_audit.get("url"):
+                output_lines.append(f"URL: {security_audit['url']}")
+            output_lines.append("Issues:")
+            output_lines.extend(f"  - {i.get('detail', i.get('id'))}" for i in matches)
+
+            if pid in existing_plugins:
+                db.query(Finding).filter(
+                    Finding.scan_id == scan_id,
+                    Finding.asset_id == asset.id,
+                    Finding.plugin_id == pid,
+                ).update({
+                    "severity": sev,
+                    "severity_label": sev_label,
+                    "risk_factor": sev_label,
+                    "priority_score": priority,
+                    "last_seen": now,
+                    "plugin_output": "\n".join(output_lines),
+                })
+            else:
+                findings_to_add.append(Finding(
+                    scan_id=scan_id, asset_id=asset.id,
+                    source_type="easm", source_vuln_id=pid,
+                    plugin_id=pid,
+                    plugin_name=title,
+                    plugin_family=family,
+                    severity=sev, severity_label=sev_label, risk_factor=sev_label,
+                    priority_score=priority, effort_level=effort,
+                    owner_suggestion=owner,
+                    synopsis=synopsis,
+                    description=description,
+                    solution=solution,
+                    plugin_output="\n".join(output_lines),
+                    first_seen=now, last_seen=now,
+                ))
+
+        _emit_audit_finding(
+            pid="EASM-HTTP-HEADER-WEAK",
+            title="Weak HTTP Security Headers",
+            family="EASM: HTTP",
+            owner="IT",
+            synopsis=f"{hostname} is missing or weakly configuring one or more HTTP security headers.",
+            description=(
+                "The OWASP Secure Headers Project recommends setting "
+                "Strict-Transport-Security, Content-Security-Policy, "
+                "X-Frame-Options (or CSP frame-ancestors), X-Content-Type-Options, "
+                "Referrer-Policy, and Permissions-Policy on every HTTP response. "
+                "Missing headers expose the application to clickjacking, MIME "
+                "sniffing, referrer leakage, and protocol-downgrade attacks."
+            ),
+            solution=(
+                "Add the missing response headers at the web server, reverse "
+                "proxy, or CDN layer. Prefer HSTS max-age of 1 year or longer "
+                "with includeSubDomains; set X-Content-Type-Options: nosniff; "
+                "define an explicit Content-Security-Policy."
+            ),
+            matching_ids=header_ids,
+        )
+
+        _emit_audit_finding(
+            pid="EASM-COOKIE-WEAK",
+            title="Insecure Cookie Attributes",
+            family="EASM: HTTP",
+            owner="IT",
+            synopsis=f"{hostname} emits cookies without Secure, HttpOnly, or SameSite flags.",
+            description=(
+                "Cookies set without Secure can be exfiltrated over cleartext "
+                "HTTP; cookies without HttpOnly are readable by JavaScript and "
+                "enable session hijacking via XSS; cookies without SameSite are "
+                "sent on cross-site requests and enable CSRF. "
+                "SameSite=None without Secure is rejected by modern browsers."
+            ),
+            solution=(
+                "Set Secure, HttpOnly, and SameSite=Lax (or Strict) on all "
+                "session and CSRF-protection cookies. Use SameSite=None only "
+                "when cross-site cookie delivery is required, and always "
+                "combine it with Secure."
+            ),
+            matching_ids=cookie_ids,
+        )
+
+    # ── Deep TLS audit (sslyze cipher enum + chain + OCSP + CAA) ──
+    # Source: hakuna-scanner app.ingest.tls_deep_audit. One finding per
+    # concern, bundling all related issues and taking worst severity.
+    deep_audit = ea.get("tls_deep_audit") or {}
+    deep_issues = deep_audit.get("issues") or []
+    if deep_issues:
+        def _emit_deep_finding(pid, title, family, owner, synopsis, description, solution, matching_ids, effort="medium"):
+            matches = [i for i in deep_issues if i.get("id") in matching_ids]
+            if not matches:
+                return
+            sev = max(int(i.get("severity", 0)) for i in matches)
+            sev_label = SEVERITY_LABELS.get(sev, "Info")
+            priority = {4: 9.0, 3: 7.0, 2: 5.5, 1: 3.0, 0: 1.0}.get(sev, 1.0)
+
+            output_lines = [f"Host: {hostname}"]
+            port = deep_audit.get("port")
+            if port:
+                output_lines.append(f"Port: {port}")
+            output_lines.append("Issues:")
+            output_lines.extend(f"  - {i.get('detail', i.get('id'))}" for i in matches)
+
+            if pid in existing_plugins:
+                db.query(Finding).filter(
+                    Finding.scan_id == scan_id,
+                    Finding.asset_id == asset.id,
+                    Finding.plugin_id == pid,
+                ).update({
+                    "severity": sev,
+                    "severity_label": sev_label,
+                    "risk_factor": sev_label,
+                    "priority_score": priority,
+                    "last_seen": now,
+                    "plugin_output": "\n".join(output_lines),
+                })
+            else:
+                findings_to_add.append(Finding(
+                    scan_id=scan_id, asset_id=asset.id,
+                    source_type="easm", source_vuln_id=pid,
+                    plugin_id=pid,
+                    plugin_name=title,
+                    plugin_family=family,
+                    severity=sev, severity_label=sev_label, risk_factor=sev_label,
+                    priority_score=priority, effort_level=effort,
+                    owner_suggestion=owner,
+                    synopsis=synopsis,
+                    description=description,
+                    solution=solution,
+                    plugin_output="\n".join(output_lines),
+                    first_seen=now, last_seen=now,
+                ))
+
+        _emit_deep_finding(
+            pid="EASM-TLS-CIPHER-ACCEPTED",
+            title="Server Accepts Weak TLS Ciphers or Deprecated Versions",
+            family="EASM: TLS/SSL",
+            owner="IT",
+            synopsis=f"{hostname} accepts weak cipher suites or deprecated TLS versions during negotiation.",
+            description=(
+                "Distinct from the negotiated-cipher check (EASM-TLS-WEAK): even "
+                "when a modern client negotiates TLS 1.3 with a strong AEAD "
+                "cipher, the server may still accept SSLv3, TLS 1.0/1.1, or "
+                "weak ciphers (RC4, 3DES, NULL, EXPORT, anon, MD5) for clients "
+                "that offer them. Attackers use downgrade and legacy-client "
+                "paths (POODLE, BEAST, SWEET32, FREAK) against exactly this."
+            ),
+            solution=(
+                "Disable SSLv2, SSLv3, TLS 1.0, and TLS 1.1 entirely. Remove "
+                "cipher suites containing RC4, 3DES, DES, NULL, EXPORT, MD5, "
+                "or anonymous key exchange from the server configuration. "
+                "Prefer TLS 1.2 + TLS 1.3 with AEAD suites only."
+            ),
+            matching_ids={"tls-broken-version-accepted", "tls-deprecated-version-accepted", "tls-weak-cipher-accepted"},
+        )
+
+        _emit_deep_finding(
+            pid="EASM-CERT-CHAIN-UNTRUSTED",
+            title="Certificate Chain Does Not Validate to a Trusted Root",
+            family="EASM: TLS/SSL",
+            owner="IT",
+            synopsis=f"{hostname} presents a certificate chain that fails trust store validation.",
+            description=(
+                "The certificate chain presented by the server did not validate "
+                "against one or more standard trust stores (Mozilla, Apple, "
+                "Microsoft, Java, Android). Clients will show certificate "
+                "warnings; automated clients may refuse to connect entirely."
+            ),
+            solution=(
+                "Rebuild the certificate chain with all required intermediate "
+                "certificates. Verify the server serves the full chain (leaf "
+                "+ intermediates) in the correct order. Confirm the root CA "
+                "is present in major trust stores."
+            ),
+            matching_ids={"cert-chain-untrusted"},
+        )
+
+        _emit_deep_finding(
+            pid="EASM-CERT-OCSP",
+            title="OCSP Reports Certificate as Revoked",
+            family="EASM: TLS/SSL",
+            owner="IT",
+            synopsis=f"{hostname} is serving a revoked certificate according to OCSP.",
+            description=(
+                "The Online Certificate Status Protocol (OCSP) responder "
+                "returned a 'revoked' status for this certificate. Continuing "
+                "to serve a revoked certificate is a security incident — it "
+                "indicates either key compromise or a configuration that was "
+                "not rotated after revocation."
+            ),
+            solution=(
+                "Identify why the certificate was revoked, rotate any "
+                "potentially compromised keys, and deploy a new certificate "
+                "immediately. Check ACME / CA dashboards for the revocation "
+                "reason code."
+            ),
+            matching_ids={"cert-revoked"},
+            effort="high",
+        )
+
+        _emit_deep_finding(
+            pid="EASM-CERT-CAA-MISMATCH",
+            title="CAA Records Do Not Authorize Certificate Issuer",
+            family="EASM: DNS",
+            owner="IT",
+            synopsis=f"{hostname} has CAA DNS records that do not include the issuing CA.",
+            description=(
+                "RFC 8659 Certification Authority Authorization (CAA) DNS "
+                "records constrain which CAs may issue certificates for a "
+                "domain. The CAA records for this host do not authorize the "
+                "CA that issued the current certificate. Either the CAA "
+                "record is stale, or a certificate was issued in violation "
+                "of the published policy — which in turn suggests the CAA "
+                "check is not being enforced at issuance time, or the "
+                "domain's DNS was manipulated."
+            ),
+            solution=(
+                "Reconcile the CAA records with the CA you intend to use. "
+                "Either update the CAA record (DNS) to include the current "
+                "issuer, or reissue the certificate with a CA that the CAA "
+                "record already authorizes."
+            ),
+            matching_ids={"cert-caa-mismatch"},
+        )
 
     # ── CDN detection ─────────────────────────────────────────────
     cdn = ea.get("cdn_provider")
@@ -1774,8 +2028,13 @@ async def import_easm_assets_for_domain(
     db.commit()
 
     # Run full post-ingest pipeline (auto-tag, ownership, SLA, dedup, etc.)
-    from services.post_ingest import finalize_scan
-    finalize_scan(db, scan_id=scan.id, org_id=org.id)
+    try:
+        from services.post_ingest import finalize_scan
+        finalize_scan(db, scan_id=scan.id, org_id=org.id)
+        db.commit()
+    except Exception:
+        logger.exception("finalize_scan failed for EASM scan %d", scan.id)
+        db.rollback()
 
     logger.info(f"EASM scan for '{domain}': assets={created}, findings={findings_created} (scan_id={scan.id})")
 
@@ -2018,8 +2277,13 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             db.commit()
 
             # Run full post-ingest pipeline (auto-tag, ownership, SLA, dedup, etc.)
-            from services.post_ingest import finalize_scan
-            finalize_scan(db, scan_id=scan.id, org_id=org.id)
+            try:
+                from services.post_ingest import finalize_scan
+                finalize_scan(db, scan_id=scan.id, org_id=org.id)
+                db.commit()
+            except Exception:
+                logger.exception("finalize_scan failed for EASM scan %d", scan.id)
+                db.rollback()
 
             # Threat intel enrichment: HIBP breach check + GLEIF corporate structure
             try:

@@ -1,0 +1,93 @@
+# Intentionally vulnerable test targets for protocol-audit + VM-scanner E2E.
+#
+#   docker compose -f docker-compose.lab.yml up -d
+#   docker compose -f docker-compose.lab.yml down -v
+#
+# Every service joins the `hakuna-lab` Docker network. Scanner workers join
+# the same network as an external network (see hakuna-vm-scanner/docker-compose.yml)
+# so they resolve targets by hostname: dvwa, smb, ldap, ssh, snmp.
+#
+# Host-exposed ports are for manual poking only; the audits reach services
+# by hostname over the shared network and do not need the host mappings.
+#
+# SECURITY: these services are deliberately weak. Do not expose host ports
+# beyond localhost and never run this compose on a shared/public network.
+#
+# Seeded credentials (store in the credential vault for audit runs):
+#   SMB   — lab / labpass                      (guest access on `public`)
+#   LDAP  — cn=admin,dc=lab,dc=local / adminpass   (anon bind enabled)
+#           alice / Password1, bob / bob, svc_backup / Summer2024!
+#   SSH   — lab / labpass                      (port 2222)
+#   SNMP  — community `public` (v1/v2c, read-only)
+
+name: hakuna-lab
+
+networks:
+  default:
+    name: hakuna-lab
+
+services:
+  dvwa:
+    image: vulnerables/web-dvwa:latest
+    container_name: lab-dvwa
+    hostname: dvwa
+    ports:
+      - "127.0.0.1:8081:80"
+    restart: unless-stopped
+
+  smb:
+    image: dperson/samba:latest
+    container_name: lab-smb
+    hostname: smb
+    command: >
+      -u "lab;labpass"
+      -s "public;/share;yes;no;yes;all;none;all"
+      -s "private;/private;yes;no;no;lab;lab;lab"
+      -p
+    ports:
+      - "127.0.0.1:1139:139"
+      - "127.0.0.1:1445:445"
+    restart: unless-stopped
+
+  ldap:
+    image: bitnami/openldap:2.6
+    container_name: lab-ldap
+    hostname: ldap
+    environment:
+      LDAP_ROOT: "dc=lab,dc=local"
+      LDAP_ADMIN_USERNAME: "admin"
+      LDAP_ADMIN_PASSWORD: "adminpass"
+      LDAP_USERS: "alice,bob,svc_backup"
+      LDAP_PASSWORDS: "Password1,bob,Summer2024!"
+      LDAP_ALLOW_ANON_BINDING: "yes"
+      LDAP_PORT_NUMBER: "389"
+      LDAP_LDAPS_PORT_NUMBER: "636"
+    ports:
+      - "127.0.0.1:1389:389"
+      - "127.0.0.1:1636:636"
+    restart: unless-stopped
+
+  ssh:
+    image: linuxserver/openssh-server:latest
+    container_name: lab-ssh
+    hostname: ssh
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "UTC"
+      USER_NAME: "lab"
+      USER_PASSWORD: "labpass"
+      PASSWORD_ACCESS: "true"
+      SUDO_ACCESS: "true"
+    ports:
+      - "127.0.0.1:2222:2222"
+    restart: unless-stopped
+
+  snmp:
+    # Default config exposes community "public" (v1/v2c, read-only).
+    image: polinux/snmpd:alpine
+    container_name: lab-snmp
+    hostname: snmp
+    ports:
+      - "127.0.0.1:1161:161/udp"
+    restart: unless-stopped

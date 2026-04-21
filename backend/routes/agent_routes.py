@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db, SessionLocal
 from core.limiter import limiter
+from core.time_utils import iso_utc
 from models.models import Agent, AgentRun, AgentSchedule, AgentDocument, AgentApproval, User
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from agents.agent_tools import get_tool_catalog
@@ -95,7 +96,7 @@ def list_agents(db: Session = Depends(get_db), org_ids: Optional[List[int]] = De
         for r in latest:
             last_runs[r.agent_id] = {
                 "status": r.status,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "created_at": iso_utc(r.created_at),
                 "input": (r.input or "")[:100],
             }
         # Run count per agent
@@ -118,7 +119,7 @@ def list_agents(db: Session = Depends(get_db), org_ids: Optional[List[int]] = De
         for s in scheds:
             schedule_map.setdefault(s.agent_id, []).append({
                 "cron_expression": s.cron_expression,
-                "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+                "next_run_at": iso_utc(s.next_run_at),
             })
 
     result = []
@@ -453,7 +454,7 @@ def _doc_to_dict(d: AgentDocument):
         "content_type": d.content_type,
         "size_bytes": d.size_bytes,
         "chunk_count": d.chunk_count,
-        "created_at": d.created_at.isoformat() if d.created_at else None,
+        "created_at": iso_utc(d.created_at),
     }
 
 
@@ -689,8 +690,8 @@ def _agent_to_dict(a: Agent):
         "guardrails": a.guardrails, "memory": a.memory,
         "model": a.model,
         "document_count": len(a.documents) if a.documents else 0,
-        "created_at": a.created_at.isoformat() if a.created_at else None,
-        "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+        "created_at": iso_utc(a.created_at),
+        "updated_at": iso_utc(a.updated_at),
     }
 
 
@@ -699,8 +700,8 @@ def _run_to_dict(r: AgentRun, include_trace: bool = True):
         "id": r.id, "agent_id": r.agent_id, "input": r.input,
         "output": r.output, "status": r.status, "error": r.error,
         "steps_used": r.steps_used,
-        "created_at": r.created_at.isoformat() if r.created_at else None,
-        "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+        "created_at": iso_utc(r.created_at),
+        "finished_at": iso_utc(r.finished_at),
     }
     if include_trace:
         d["trace"] = r.trace
@@ -1185,9 +1186,9 @@ def _schedule_to_dict(s: AgentSchedule):
         "id": s.id, "agent_id": s.agent_id,
         "cron_expression": s.cron_expression, "input": s.input_template,
         "is_enabled": s.is_enabled,
-        "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
-        "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
-        "created_at": s.created_at.isoformat() if s.created_at else None,
+        "last_run_at": iso_utc(s.last_run_at),
+        "next_run_at": iso_utc(s.next_run_at),
+        "created_at": iso_utc(s.created_at),
     }
 
 
@@ -1202,8 +1203,8 @@ def _approval_to_dict(a: AgentApproval, include_snapshot: bool = False):
         "model_name": a.model_name,
         "current_step": a.current_step,
         "status": a.status,
-        "requested_at": a.requested_at.isoformat() if a.requested_at else None,
-        "decided_at": a.decided_at.isoformat() if a.decided_at else None,
+        "requested_at": iso_utc(a.requested_at),
+        "decided_at": iso_utc(a.decided_at),
         "decided_by": a.decided_by,
         "rejection_reason": a.rejection_reason,
     }

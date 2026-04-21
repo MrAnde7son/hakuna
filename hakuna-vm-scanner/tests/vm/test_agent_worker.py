@@ -17,6 +17,7 @@ logic, and the tool interface.
 
 from __future__ import annotations
 
+import json
 import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -29,27 +30,42 @@ from scanner.vm.agent_specialists import (
     SPECIALISTS,
     AgentContext,
     TOOLS,
+    _analyze_jwt_handler,
     _check_pattern_handler,
+    _check_security_headers_handler,
+    _classify_login_success,
     _diff_responses_handler,
     _emit_finding_handler,
+    _extract_forms,
+    _extract_forms_handler,
+    _extract_hidden_fields,
     _has_any_http_endpoint,
     _has_auth_surface,
+    _has_authn_surface,
+    _has_authz_surface,
     _has_parameterised_endpoint,
+    _has_state_change_surface,
     _memory_set_handler,
     _oob_check_handler,
     _oob_get_probe_handler,
+    _render_page_handler,
     _request_handler,
     _safe_url,
     _summary_handler,
+    _try_login_handler,
     seed_base_endpoint,
     select_applicable_specialists,
     tool_schemas_for_anthropic,
 )
 from scanner.vm.agent_worker import (
     _agent_payload_to_finding,
+    _apply_discovered_identity,
+    _composition_hints,
     _credentials_to_headers,
+    _seed_scan_config_capability,
     _trim_evidence,
 )
+from scanner.vm.capabilities import Capability, CapabilityType, asset_scope
 
 
 def _ctx(**overrides) -> AgentContext:
@@ -106,16 +122,57 @@ class TestApplicabilityPredicates:
         nothing for the agent to GET against."""
         assert not _has_parameterised_endpoint(_ctx(target="10.0.0.1"))
 
-    def test_auth_surface_detects_provided_headers(self):
-        """Session broker injected a cookie → we can run authn probes."""
-        assert _has_auth_surface(_ctx(headers={"Cookie": "sid=x"}))
+    def test_authz_surface_detects_provided_headers(self):
+        """Session broker injected a cookie → we can run authz probes."""
+        assert _has_authz_surface(_ctx(headers={"Cookie": "sid=x"}))
 
-    def test_auth_surface_detects_auth_required_endpoint(self):
+    def test_authz_surface_detects_auth_required_endpoint(self):
         eps = [{"url": "https://x/api", "auth_required": True}]
-        assert _has_auth_surface(_ctx(endpoints=eps))
+        assert _has_authz_surface(_ctx(endpoints=eps))
 
-    def test_auth_surface_false_when_nothing_to_probe(self):
-        assert not _has_auth_surface(_ctx())
+    def test_authz_surface_false_when_nothing_to_probe(self):
+        """authz needs a working identity to diff against — a bare
+        http target with no session is not enough."""
+        assert not _has_authz_surface(_ctx())
+        assert not _has_authz_surface(_ctx(target="https://x.example.com"))
+
+    def test_back_compat_alias_matches_authz(self):
+        """``_has_auth_surface`` remains importable for older callers and
+        retains the pre-split (strict) semantics."""
+        assert _has_auth_surface is _has_authz_surface
+
+    def test_authn_surface_detects_headers(self):
+        assert _has_authn_surface(_ctx(headers={"Cookie": "sid=x"}))
+
+    def test_authn_surface_detects_auth_required_endpoint(self):
+        eps = [{"url": "https://x/api", "auth_required": True}]
+        assert _has_authn_surface(_ctx(endpoints=eps))
+
+    def test_authn_surface_true_for_bare_http_target(self):
+        """Broadened for adhoc scans — the authn specialist fetches the
+        base URL and harvests login forms itself, so any http(s) target
+        qualifies (without this, weak-creds detection never runs on
+        ad-hoc targets like a freshly-spun DVWA)."""
+        assert _has_authn_surface(_ctx(target="http://dvwa"))
+
+    def test_authn_surface_false_when_no_http_surface(self):
+        assert not _has_authn_surface(_ctx(target="10.0.0.1"))
+
+    def test_state_change_surface_true_for_post_endpoint(self):
+        eps = [{"url": "https://x/api/save", "method": "POST"}]
+        assert _has_state_change_surface(_ctx(endpoints=eps))
+
+    def test_state_change_surface_true_for_delete_endpoint(self):
+        eps = [{"url": "https://x/api/item/1", "method": "DELETE"}]
+        assert _has_state_change_surface(_ctx(endpoints=eps))
+
+    def test_state_change_surface_true_for_bare_http_target(self):
+        """The CSRF specialist discovers state-changing forms itself;
+        any http(s) target qualifies so adhoc scans can run it."""
+        assert _has_state_change_surface(_ctx(target="http://dvwa"))
+
+    def test_state_change_surface_false_for_bare_non_http(self):
+        assert not _has_state_change_surface(_ctx(target="10.0.0.1"))
 
 
 class TestSelectApplicableSpecialists:
@@ -158,6 +215,26 @@ class TestSelectApplicableSpecialists:
         cats = {s.category for s in selected}
         assert "authn" in cats
         assert "authz" in cats
+
+    def test_adhoc_http_target_enables_authn_and_csrf_but_not_authz(self):
+        """An adhoc web scan with no session still needs to exercise
+        weak-credentials detection (authn) and missing-CSRF-token
+        detection — both specialists discover their own surface. authz
+        stays gated because IDOR diffing requires authenticated access."""
+        selected = select_applicable_specialists(_ctx(
+            target="http://dvwa", endpoints=[], headers={},
+        ))
+        cats = {s.category for s in selected}
+        assert "authn" in cats
+        assert "csrf" in cats
+        assert "authz" not in cats
+
+    def test_explicit_csrf_filter_applies_predicate(self):
+        """Requesting csrf on a non-http target still drops it."""
+        selected = select_applicable_specialists(
+            _ctx(target="10.0.0.1"), categories=["csrf"],
+        )
+        assert selected == []
 
     def test_explicit_category_filter_narrows_selection(self):
         """Callers can pin specialists. But applicable_when still runs
@@ -500,6 +577,36 @@ class TestMemorySetHandler:
         assert out["status"] == "stored"
         assert ctx.shared_memory["k0"] == "updated"
 
+    def test_mirrors_valid_credentials_to_typed_capability(self):
+        """Composition foundation: memory_set calls that existing prompts
+        already make should produce typed CRED capabilities without any
+        prompt change. Regression guard — if the prompt key or the
+        legacy-bridge parser drifts, this catches it before the scheduler
+        rewrite starts depending on the typed view."""
+        ctx = _ctx(current_specialist="authn")
+        _memory_set_handler({"key": "valid_credentials", "value": "admin:admin"}, ctx)
+        creds = ctx.capabilities.query(type=CapabilityType.CRED)
+        assert len(creds) == 1
+        assert creds[0].value["username"] == "admin"
+        assert creds[0].provenance == "specialist:authn"
+
+    def test_mirrors_unknown_key_as_note(self):
+        """Unclassified but user-visible hints become NOTE capabilities
+        so typed consumers at least know *something* was recorded."""
+        ctx = _ctx()
+        _memory_set_handler({"key": "cookie_shape", "value": "PHPSESSID=..."}, ctx)
+        notes = ctx.capabilities.query(type=CapabilityType.NOTE)
+        assert len(notes) == 1
+        assert notes[0].value["key"] == "cookie_shape"
+
+    def test_does_not_mirror_underscore_prefixed_keys(self):
+        """Internal bookkeeping (OOB tokens) is audit trail, not a
+        capability. Prompts already hide these from the MEMORY block;
+        the capability store should stay equally clean."""
+        ctx = _ctx()
+        _memory_set_handler({"key": "_oob_tokens", "value": "abc,def"}, ctx)
+        assert ctx.capabilities.all() == []
+
 
 class TestDiffResponsesHandler:
     def test_detects_status_change(self):
@@ -635,9 +742,13 @@ class TestToolSchemas:
 
 
 class TestSpecialistsRegistry:
-    def test_five_specialists_exactly(self):
+    def test_specialists_match_categories(self):
         assert set(SPECIALISTS.keys()) == set(AGENT_CATEGORIES)
-        assert len(AGENT_CATEGORIES) == 5
+        # 9 today: injection, xss, ssrf, authn, authz, csrf, files, upload, session.
+        # Adding a new category here is a deliberate expansion — update
+        # the assertion and document the new spec's rationale in the
+        # SPECIALISTS dict comment.
+        assert len(AGENT_CATEGORIES) == 9
 
     def test_every_specialist_has_bounded_iterations(self):
         """Nobody runs unbounded — every prompt must pair with a cap."""
@@ -681,6 +792,937 @@ class TestBuildInitialMessage:
         assert "_oob_tokens" not in msg
         assert "abc" not in msg
         assert "jwt_leaked" in msg
+
+    def test_renders_capabilities_block_when_populated(self):
+        """Typed primitives stashed by earlier specialists must surface
+        as a CAPABILITIES block so the next specialist sees structured
+        facts, not just prose hints. Drives the composition story once
+        downstream prompts are rewritten to consume this block."""
+        from scanner.vm.agent_specialists import _memory_set_handler
+        from scanner.vm.agent_worker import _build_initial_message
+        ctx = _ctx(current_specialist="authn")
+        _memory_set_handler({"key": "valid_credentials", "value": "admin:admin"}, ctx)
+        # Switch specialist context so the block renders for the next run.
+        ctx.current_specialist = "injection"
+        msg = _build_initial_message(ctx, SPECIALISTS["injection"])
+        assert "CAPABILITIES" in msg
+        assert "credentials" in msg
+        assert "admin" in msg
+
+    def test_omits_capabilities_block_when_empty(self):
+        """Default state — no capabilities recorded, no block in the
+        prompt. The header noise-floor stays low for the common case."""
+        from scanner.vm.agent_worker import _build_initial_message
+        msg = _build_initial_message(_ctx(), SPECIALISTS["injection"])
+        assert "CAPABILITIES" not in msg
+
+
+class TestExtractForms:
+    """Structured form parsing is how every content-discovery prompt
+    steps — asking the model to parse HTML in-prompt is wasteful and
+    misses hidden CSRF tokens on ~30% of real forms. The parser is
+    deterministic, so the tests pin down the known-hard cases.
+    """
+
+    def test_parses_single_form_with_inputs(self):
+        html = '''
+        <form action="/login" method="post">
+          <input type="text" name="username" placeholder="user" required>
+          <input type="password" name="password">
+          <input type="hidden" name="csrf_token" value="abc123">
+          <input type="submit" name="Login" value="Login">
+        </form>
+        '''
+        forms = _extract_forms(html)
+        assert len(forms) == 1
+        form = forms[0]
+        assert form["action"] == "/login"
+        assert form["method"] == "POST"
+        assert form["has_password_input"] is True
+        assert form["is_state_changing"] is True
+
+        names = {i["name"] for i in form["inputs"]}
+        assert {"username", "password", "csrf_token", "Login"} <= names
+
+        csrf_input = next(i for i in form["inputs"] if i["name"] == "csrf_token")
+        assert csrf_input["looks_like_csrf"] is True
+
+    def test_recognises_csrf_token_name_variants(self):
+        """The CSRF name regex must catch the common naming conventions —
+        missing one means the LLM won't know which hidden field to
+        preserve, and POSTs fail silently."""
+        for name in (
+            "csrf", "_csrf", "csrfmiddlewaretoken",
+            "authenticity_token", "user_token",
+            "__RequestVerificationToken", "anti-forgery",
+        ):
+            html = f'<form><input type="hidden" name="{name}" value="x"></form>'
+            forms = _extract_forms(html)
+            assert forms[0]["inputs"][0]["looks_like_csrf"] is True, name
+
+    def test_multiple_forms_independent(self):
+        """Pages often carry a search form + a login form. The parser
+        must emit both, not merge them."""
+        html = '''
+        <form action="/search" method="get"><input name="q"></form>
+        <form action="/login" method="post"><input type="password" name="p"></form>
+        '''
+        forms = _extract_forms(html)
+        assert len(forms) == 2
+        assert forms[0]["method"] == "GET"
+        assert forms[0]["is_state_changing"] is False
+        assert forms[1]["method"] == "POST"
+
+    def test_textarea_and_select_captured(self):
+        """XSS / injection specialists target textareas and selects
+        just as often as text inputs — the parser must emit them."""
+        html = '''
+        <form><textarea name="body"></textarea>
+        <select name="country"></select></form>
+        '''
+        forms = _extract_forms(html)
+        kinds = {i["kind"] for i in forms[0]["inputs"]}
+        assert "textarea" in kinds
+        assert "select" in kinds
+
+    def test_empty_html_returns_empty(self):
+        handler_result = _extract_forms_handler({"html": ""}, _ctx())
+        assert handler_result == {"forms": [], "total": 0}
+
+    def test_handler_rejects_non_string(self):
+        result = _extract_forms_handler({"html": 123}, _ctx())
+        assert "error" in result
+
+
+class TestAnalyzeJwtHandler:
+    """Common JWT misconfigurations the tool must catch. Each
+    corresponds to an actual security report pattern seen in the wild.
+    """
+
+    @staticmethod
+    def _jwt(header: dict, payload: dict, signature: str = "sig") -> str:
+        import base64
+        def enc(d):
+            raw = json.dumps(d, separators=(",", ":")).encode()
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+        parts = [enc(header), enc(payload)]
+        if signature is not None:
+            parts.append(signature)
+        return ".".join(parts)
+
+    def test_alg_none_flagged_critical(self):
+        """The canonical JWT misconfiguration — server accepts unsigned
+        tokens. Must be flagged critical so the LLM emits a finding."""
+        token = self._jwt({"alg": "none", "typ": "JWT"}, {"user": "admin"}, "")
+        result = _analyze_jwt_handler({"token": token}, _ctx())
+        assert result["valid_structure"] is True
+        assert result["highest_severity"] == "critical"
+        ids = {i["id"] for i in result["issues"]}
+        assert "alg_none_accepted_in_header" in ids
+
+    def test_missing_signature_segment_flagged(self):
+        """Two-segment JWT with a real alg declared — almost always a
+        bug in the signing pipeline. High severity."""
+        token = self._jwt({"alg": "HS256"}, {"user": "x"}, signature=None)
+        result = _analyze_jwt_handler({"token": token}, _ctx())
+        ids = {i["id"] for i in result["issues"]}
+        assert "missing_signature_segment" in ids
+
+    def test_missing_exp_flagged(self):
+        token = self._jwt({"alg": "HS256"}, {"user": "x"}, "abc")
+        result = _analyze_jwt_handler({"token": token}, _ctx())
+        ids = {i["id"] for i in result["issues"]}
+        assert "missing_exp" in ids
+
+    def test_admin_claim_flagged(self):
+        """A claim named ``admin`` in the payload is a composition
+        signal — if the LLM has alg:none primitive, it can flip this."""
+        token = self._jwt({"alg": "HS256"}, {"admin": False}, "abc")
+        result = _analyze_jwt_handler({"token": token}, _ctx())
+        ids = {i["id"] for i in result["issues"]}
+        assert "claim_admin_controls_privileges" in ids
+
+    def test_malformed_structure_rejected(self):
+        result = _analyze_jwt_handler({"token": "not.a.jwt.at.all"}, _ctx())
+        assert result["valid_structure"] is False
+
+    def test_missing_token_returns_error(self):
+        assert "error" in _analyze_jwt_handler({}, _ctx())
+
+
+class TestCheckSecurityHeadersHandler:
+    def _resp(self, *, url="https://example.com/", headers=None, status=200):
+        return {
+            "url": url, "status_code": status, "headers": headers or {},
+        }
+
+    def test_flags_missing_hsts_on_https(self):
+        out = _check_security_headers_handler(
+            {"response": self._resp(headers={})}, _ctx(),
+        )
+        ids = {f["id"] for f in out["findings"]}
+        assert "missing_hsts" in ids
+
+    def test_does_not_flag_missing_hsts_on_http(self):
+        """HSTS is meaningless on HTTP — the flag comes via the HTTPS
+        connection. Don't surface a false positive."""
+        out = _check_security_headers_handler(
+            {"response": self._resp(url="http://example.com/")}, _ctx(),
+        )
+        ids = {f["id"] for f in out["findings"]}
+        assert "missing_hsts" not in ids
+
+    def test_flags_hsts_short_max_age(self):
+        out = _check_security_headers_handler(
+            {"response": self._resp(headers={
+                "Strict-Transport-Security": "max-age=3600",
+            })}, _ctx(),
+        )
+        ids = {f["id"] for f in out["findings"]}
+        assert "hsts_short_max_age" in ids
+
+    def test_flags_missing_csp(self):
+        out = _check_security_headers_handler(
+            {"response": self._resp(headers={})}, _ctx(),
+        )
+        ids = {f["id"] for f in out["findings"]}
+        assert "missing_csp" in ids
+
+    def test_flags_csp_unsafe_inline(self):
+        out = _check_security_headers_handler(
+            {"response": self._resp(headers={
+                "Content-Security-Policy": "default-src 'self' 'unsafe-inline'",
+            })}, _ctx(),
+        )
+        ids = {f["id"] for f in out["findings"]}
+        assert "csp_unsafe_directives" in ids
+
+    def test_flags_missing_clickjack_protection(self):
+        out = _check_security_headers_handler(
+            {"response": self._resp(headers={})}, _ctx(),
+        )
+        ids = {f["id"] for f in out["findings"]}
+        assert "missing_clickjack_protection" in ids
+
+    def test_csp_frame_ancestors_counts_as_clickjack_protection(self):
+        """Modern apps use CSP frame-ancestors instead of X-Frame-Options.
+        Must not flag both if CSP covers it."""
+        out = _check_security_headers_handler(
+            {"response": self._resp(headers={
+                "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'",
+            })}, _ctx(),
+        )
+        ids = {f["id"] for f in out["findings"]}
+        assert "missing_clickjack_protection" not in ids
+
+    def test_flags_cookie_missing_httponly(self):
+        out = _check_security_headers_handler(
+            {"response": self._resp(headers={
+                "Set-Cookie": "sid=abc; Path=/",
+            })}, _ctx(),
+        )
+        ids = {f["id"] for f in out["findings"]}
+        assert "cookie_missing_httponly" in ids
+
+    def test_well_configured_response_no_findings(self):
+        """Sanity check — a fully-hardened response produces zero
+        findings. Protects against regex drift breaking recognition."""
+        out = _check_security_headers_handler({"response": self._resp(
+            headers={
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "strict-origin-when-cross-origin",
+                "Permissions-Policy": "geolocation=()",
+                "Set-Cookie": "sid=abc; Path=/; Secure; HttpOnly; SameSite=Strict",
+            },
+        )}, _ctx())
+        assert out["findings"] == [], out["findings"]
+
+    def test_rejects_non_dict_response(self):
+        assert "error" in _check_security_headers_handler(
+            {"response": "not a dict"}, _ctx(),
+        )
+
+
+class TestRenderPageHandler:
+    """The heavy one — we don't actually drive Chromium in unit tests
+    (that belongs in integration). What we pin down is the no-playwright
+    graceful-degrade path and argument validation.
+    """
+
+    def test_returns_unavailable_when_playwright_missing(self, monkeypatch):
+        """Simulate an image built without chromium. Handler must not
+        crash — just return available=false so the LLM falls back."""
+        import sys
+        # Temporarily shadow playwright module with ImportError-raising
+        # proxy by removing it from sys.modules and blocking reimport.
+        monkeypatch.setitem(sys.modules, "playwright", None)
+        monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+
+        result = _render_page_handler({"url": "https://example.com"}, _ctx())
+        assert result["available"] is False
+        assert "error" in result
+
+    def test_rejects_unsafe_scheme(self):
+        result = _render_page_handler({"url": "file:///etc/passwd"}, _ctx())
+        assert "error" in result
+
+    def test_rejects_empty_url(self):
+        result = _render_page_handler({"url": ""}, _ctx())
+        assert "error" in result
+
+    def test_rejects_past_deadline(self):
+        result = _render_page_handler(
+            {"url": "https://example.com"}, _ctx(deadline=0),
+        )
+        assert "error" in result
+
+
+class TestPerSpecialistModelRouting:
+    """The authn-on-Sonnet story: authn declares preferred_provider +
+    preferred_model, the worker resolves a specific adapter for it,
+    and the rest of the specialists stay on the scan-wide default.
+    """
+
+    def test_authn_declares_preferred_provider(self):
+        """Regression guard — the declaration is what makes the
+        routing happen. If someone reverts it, the scan quietly
+        degrades back to Flash for authn."""
+        authn = SPECIALISTS["authn"]
+        assert authn.preferred_provider == "anthropic"
+        assert authn.preferred_model == "claude-sonnet-4-6"
+
+    def test_authn_max_iterations_bumped(self):
+        """Authn's tool sequence is the longest — doubled from the
+        pre-composition budget."""
+        assert SPECIALISTS["authn"].max_iterations >= 20
+
+    def test_build_adapter_map_uses_preferred_when_available(self, monkeypatch):
+        """When Anthropic is configured, authn routes to it; other
+        specialists keep the default."""
+        from scanner.vm.agent_worker import _build_adapter_map
+        from scanner.vm.llm_provider import LLMProviderInfo
+
+        default_info = LLMProviderInfo(
+            provider="vertex_ai", model="gemini-2.5-flash",
+            config={"project_id": "p", "location": "us-central1"},
+        )
+        default_adapter = MagicMock(name="default_adapter")
+        preferred_adapter = MagicMock(name="preferred_adapter")
+
+        # Stub build_adapter to return distinct mock so we can
+        # verify routing without running real SDK init.
+        monkeypatch.setattr(
+            "scanner.vm.agent_worker.build_adapter",
+            lambda info: preferred_adapter,
+        )
+
+        integration_configs = {
+            "anthropic": {"is_enabled": True, "api_key": "sk-test"},
+        }
+
+        selected = [SPECIALISTS["authn"], SPECIALISTS["injection"]]
+        amap = _build_adapter_map(
+            selected, integration_configs, default_adapter, default_info,
+        )
+        assert amap["authn"] is preferred_adapter
+        assert amap["injection"] is default_adapter
+
+    def test_build_adapter_map_falls_back_when_preferred_unavailable(self, monkeypatch):
+        """Air-gapped / Vertex-only deployment: Anthropic not
+        configured, authn must still run — on the default adapter."""
+        from scanner.vm.agent_worker import _build_adapter_map
+        from scanner.vm.llm_provider import LLMProviderInfo
+
+        default_info = LLMProviderInfo(
+            provider="vertex_ai", model="gemini-2.5-flash", config={},
+        )
+        default_adapter = MagicMock()
+        integration_configs: dict = {}  # no Anthropic configured
+
+        amap = _build_adapter_map(
+            [SPECIALISTS["authn"]], integration_configs,
+            default_adapter, default_info,
+        )
+        assert amap["authn"] is default_adapter
+
+
+class TestExtractHiddenFields:
+    """The hidden-field parser is what makes ``try_login`` robust on
+    apps with per-session CSRF tokens (DVWA, Django, Rails). If it
+    drops a token, the POST fails silently and default-creds goes
+    undetected.
+    """
+
+    def test_extracts_dvwa_style_user_token(self):
+        html = (
+            '<form action="login.php" method="post">'
+            '<input type="text" name="username" />'
+            '<input type="password" name="password" />'
+            '<input type="hidden" name="user_token" value="abc123" />'
+            '<input type="submit" name="Login" value="Login" />'
+            '</form>'
+        )
+        fields = _extract_hidden_fields(html)
+        assert fields == {"user_token": "abc123"}
+
+    def test_extracts_multiple_hidden_fields(self):
+        """Rails-style forms carry both ``authenticity_token`` AND
+        ``utf8``. Both must surface so the POST validates."""
+        html = (
+            '<input type="hidden" name="authenticity_token" value="xyz" />'
+            '<input type="hidden" name="utf8" value="&#x2713;" />'
+        )
+        fields = _extract_hidden_fields(html)
+        assert fields["authenticity_token"] == "xyz"
+        assert fields["utf8"] == "&#x2713;"
+
+    def test_handles_unquoted_attributes(self):
+        """Real HTML often uses unquoted values. Regex must survive
+        that without dropping fields."""
+        html = '<input type=hidden name=token value=raw123>'
+        fields = _extract_hidden_fields(html)
+        assert fields == {"token": "raw123"}
+
+    def test_handles_single_quoted_values(self):
+        html = "<input type='hidden' name='csrf' value='q1' />"
+        fields = _extract_hidden_fields(html)
+        assert fields == {"csrf": "q1"}
+
+    def test_ignores_non_hidden_inputs(self):
+        """Must not pick up visible fields — those are the credentials
+        we'll fill in ourselves, and accidentally echoing a placeholder
+        value (``value="enter username"``) would break the login POST."""
+        html = (
+            '<input type="text" name="username" value="" />'
+            '<input type="password" name="password" />'
+            '<input type="hidden" name="token" value="t1" />'
+        )
+        fields = _extract_hidden_fields(html)
+        assert fields == {"token": "t1"}
+
+    def test_handles_empty_value(self):
+        """A hidden field may be intentionally blank (placeholder to
+        be filled by JS). We capture it so the POST body shape matches
+        what the form expected."""
+        html = '<input type="hidden" name="empty" value="" />'
+        fields = _extract_hidden_fields(html)
+        assert fields == {"empty": ""}
+
+    def test_no_forms_returns_empty(self):
+        assert _extract_hidden_fields("<html><body>nothing</body></html>") == {}
+
+
+class TestClassifyLoginSuccess:
+    """The heuristic is the difference between ``authn finds DVWA creds
+    and unlocks composition`` and ``authn runs 8 iterations doing
+    nothing``. Each signal below has been observed in the wild.
+    """
+
+    def test_redirected_away_from_login_is_success(self):
+        """DVWA's canonical success: POST /login.php → 302 → /index.php."""
+        ok, reason = _classify_login_success(
+            login_url="http://dvwa/login.php",
+            final_url="http://dvwa/index.php",
+            final_status=200,
+            body="<a href=logout.php>Logout</a>",
+        )
+        assert ok is True
+
+    def test_failure_marker_overrides_status(self):
+        """Even on a 200 OK with seemingly-fine URL, an explicit
+        ``Login failed`` marker must veto success. Covers apps that
+        re-render the login page with an error div."""
+        ok, reason = _classify_login_success(
+            login_url="http://dvwa/login.php",
+            final_url="http://dvwa/login.php",
+            final_status=200,
+            body="<div class='error'>Login failed.</div>",
+        )
+        assert ok is False
+        assert "failure_marker" in reason
+
+    def test_5xx_is_failure(self):
+        ok, _ = _classify_login_success(
+            login_url="http://app/login", final_url="http://app/login",
+            final_status=500, body="",
+        )
+        assert ok is False
+
+    def test_post_auth_marker_without_redirect(self):
+        """SPAs sometimes return 200 with the same URL but a
+        dashboard-shaped body. Logout link is a strong post-auth tell."""
+        ok, _ = _classify_login_success(
+            login_url="http://app/login", final_url="http://app/login",
+            final_status=200, body="<a href=/logout>Sign out</a>",
+        )
+        assert ok is True
+
+    def test_ambiguous_response_is_not_success(self):
+        """No redirect, no markers → can't claim success. Beats a
+        false-positive CRED commit that would confuse composition."""
+        ok, _ = _classify_login_success(
+            login_url="http://app/login", final_url="http://app/login",
+            final_status=200, body="<html></html>",
+        )
+        assert ok is False
+
+    def test_redirect_to_another_login_is_not_success(self):
+        """Some apps 302 to /signin on failure. Must not classify as
+        success just because the URL changed."""
+        ok, _ = _classify_login_success(
+            login_url="http://app/login", final_url="http://app/signin?error=1",
+            final_status=200, body="",
+        )
+        assert ok is False
+
+
+class TestTryLoginHandler:
+    """End-to-end handler test against a mocked httpx client. Covers
+    the hot paths: successful login auto-commits a CRED, failure does
+    not, hidden fields get forwarded verbatim, and errors fail gracefully
+    without leaving partial state in the capability store.
+    """
+
+    @staticmethod
+    def _responses(*args):
+        """Build a MagicMock.request side-effect that yields the given
+        response sequence in order."""
+        responses = list(args)
+        def _side_effect(*_a, **_kw):
+            if not responses:
+                raise AssertionError("client called more times than expected")
+            return responses.pop(0)
+        return _side_effect
+
+    @staticmethod
+    def _resp(status=200, text="", url="http://dvwa/login.php"):
+        r = MagicMock()
+        r.status_code = status
+        r.text = text
+        r.url = url
+        r.headers = {}
+        r.content = text.encode() if isinstance(text, str) else b""
+        return r
+
+    def test_successful_login_commits_cred_capability(self):
+        """Happy path: authn's Step 2 with DVWA-shaped success. Tool
+        must auto-commit so composition fires even if the LLM skips
+        the follow-up tool calls."""
+        client = MagicMock()
+        client.request.side_effect = self._responses(
+            self._resp(  # GET /login.php
+                status=200,
+                text='<form><input type="hidden" name="user_token" value="tok1"></form>',
+            ),
+            self._resp(  # POST /login.php → followed to /index.php
+                status=200,
+                text="<a href=logout.php>Logout</a>",
+                url="http://dvwa/index.php",
+            ),
+        )
+        ctx = _ctx(http_client=client, current_specialist="authn")
+
+        result = _try_login_handler({
+            "login_url": "http://dvwa/login.php",
+            "username": "admin",
+            "password": "password",
+            "extra_static_fields": {"Login": "Login"},
+        }, ctx)
+
+        assert result["likely_successful"] is True
+        assert result["capability_committed"] is True
+        assert result["extracted_hidden_fields"] == ["user_token"]
+        assert "user_token" in result["posted_field_names"]
+        assert "Login" in result["posted_field_names"]
+        assert "username" in result["posted_field_names"]
+        creds = ctx.capabilities.query(type=CapabilityType.CRED)
+        assert len(creds) == 1
+        assert creds[0].value["username"] == "admin"
+        assert creds[0].provenance == "specialist:authn"
+        # Shared memory mirrored too, so prompts reading MEMORY still work.
+        assert ctx.shared_memory["valid_credentials"] == "admin:password"
+
+    def test_failed_login_does_not_commit(self):
+        """Wrong creds → 200 OK on login page with failure marker.
+        Must NOT commit a CRED — a false commit would trigger spurious
+        composition re-runs against an unauthenticated session."""
+        client = MagicMock()
+        client.request.side_effect = self._responses(
+            self._resp(
+                status=200,
+                text='<input type="hidden" name="token" value="t">',
+            ),
+            self._resp(
+                status=200,
+                text="<div>Login failed.</div>",
+                url="http://dvwa/login.php",
+            ),
+        )
+        ctx = _ctx(http_client=client, current_specialist="authn")
+
+        result = _try_login_handler({
+            "login_url": "http://dvwa/login.php",
+            "username": "wrong", "password": "wrong",
+        }, ctx)
+
+        assert result["likely_successful"] is False
+        assert result["capability_committed"] is False
+        assert ctx.capabilities.query(type=CapabilityType.CRED) == []
+        assert "valid_credentials" not in ctx.shared_memory
+
+    def test_rejects_missing_required_params(self):
+        ctx = _ctx(http_client=MagicMock())
+        result = _try_login_handler({"login_url": "http://x"}, ctx)
+        assert "error" in result
+
+    def test_rejects_unsafe_scheme(self):
+        """file:// / javascript: etc. must never touch the network,
+        same discipline as http_request."""
+        ctx = _ctx(http_client=MagicMock())
+        result = _try_login_handler({
+            "login_url": "file:///etc/passwd",
+            "username": "a", "password": "b",
+        }, ctx)
+        assert "error" in result
+
+    def test_rejects_past_deadline(self):
+        ctx = _ctx(http_client=MagicMock(), deadline=0)
+        result = _try_login_handler({
+            "login_url": "http://x/login",
+            "username": "a", "password": "b",
+        }, ctx)
+        assert "error" in result
+
+    def test_get_failure_propagates_error(self):
+        """If the login page can't even be reached, we surface the
+        error to the LLM — which then knows not to waste iterations
+        retrying the same dead URL."""
+        client = MagicMock()
+        client.request.side_effect = Exception("connection refused")
+        ctx = _ctx(http_client=client)
+        result = _try_login_handler({
+            "login_url": "http://dead/login",
+            "username": "a", "password": "b",
+        }, ctx)
+        assert "error" in result
+        assert "GET" in result["error"]
+
+    def test_custom_field_names_are_used(self):
+        """Real apps use ``user`` / ``pass`` / ``email`` / ``j_username``.
+        Field-name overrides must land in the POST body verbatim."""
+        client = MagicMock()
+        client.request.side_effect = self._responses(
+            self._resp(status=200, text="<html></html>"),
+            self._resp(status=200, text="ok",
+                       url="http://app/dashboard"),
+        )
+        ctx = _ctx(http_client=client)
+
+        result = _try_login_handler({
+            "login_url": "http://app/login",
+            "username": "foo", "password": "bar",
+            "username_field": "email",
+            "password_field": "pwd",
+        }, ctx)
+
+        assert "email" in result["posted_field_names"]
+        assert "pwd" in result["posted_field_names"]
+        # Check the actual POST call carried the correct data.
+        post_call = client.request.call_args_list[1]
+        assert post_call.kwargs["data"]["email"] == "foo"
+        assert post_call.kwargs["data"]["pwd"] == "bar"
+
+
+class TestSeedScanConfigCapability:
+    """Scan-configured credentials must materialise as capabilities so
+    the composition machinery (hints, scheduler idempotency, re-runs
+    against identifier-bearing caps) works uniformly whether the
+    primitive came from the operator up front or from authn's
+    discovery path. Before this, operators passing ``credentials={...}``
+    got authenticated probes but an empty CAPABILITIES block — no
+    prompt steer toward post-auth endpoints.
+    """
+
+    def test_basic_creates_cred_capability(self):
+        ctx = _ctx()
+        _seed_scan_config_capability(ctx, {
+            "type": "basic", "username": "admin", "password": "password",
+        })
+        creds = ctx.capabilities.query(type=CapabilityType.CRED)
+        assert len(creds) == 1
+        assert creds[0].value["username"] == "admin"
+        assert creds[0].provenance == "scan_config"
+
+    def test_bearer_creates_session_capability(self):
+        ctx = _ctx()
+        _seed_scan_config_capability(ctx, {
+            "type": "bearer", "token": "eyJhbGciOi...",
+        })
+        sessions = ctx.capabilities.query(type=CapabilityType.SESSION)
+        assert len(sessions) == 1
+        assert sessions[0].value["jwt"].startswith("eyJ")
+
+    def test_cookie_creates_session_capability(self):
+        """DVWA-shape: operator logs in manually, pastes
+        PHPSESSID=...; security=low into scan config."""
+        ctx = _ctx()
+        _seed_scan_config_capability(ctx, {
+            "type": "cookie", "cookie": "PHPSESSID=abc; security=low",
+        })
+        sessions = ctx.capabilities.query(type=CapabilityType.SESSION)
+        assert len(sessions) == 1
+        assert "PHPSESSID" in sessions[0].value["cookie"]
+
+    def test_empty_credentials_is_noop(self):
+        """No credentials → no capability. Prevents spurious CAPABILITIES
+        block on anonymous scans where the whole point is to see what
+        a no-auth probe finds."""
+        ctx = _ctx()
+        _seed_scan_config_capability(ctx, None)
+        assert ctx.capabilities.all() == []
+
+    def test_basic_with_empty_fields_is_noop(self):
+        """Malformed scan config (missing username + password) must
+        not produce a useless CRED row with empty strings."""
+        ctx = _ctx()
+        _seed_scan_config_capability(ctx, {
+            "type": "basic", "username": "", "password": "",
+        })
+        assert ctx.capabilities.all() == []
+
+    def test_unknown_type_is_noop(self):
+        """Unrecognised auth scheme (e.g. future NTLM) falls through
+        without crashing — scan still runs with whatever headers were
+        derived, just without a typed capability."""
+        ctx = _ctx()
+        _seed_scan_config_capability(ctx, {"type": "ntlm", "token": "x"})
+        assert ctx.capabilities.all() == []
+
+
+class TestApplyDiscoveredIdentity:
+    """The auth-refresh half of composition. Without this, a CRED
+    capability committed by authn is visible to the LLM but the
+    http_request tool's default headers stay anonymous — the re-run
+    of injection against admin endpoints fails to authenticate.
+
+    Non-destructive invariants are load-bearing: scan-configured
+    headers reflect operator intent and must not be silently replaced.
+    """
+
+    @staticmethod
+    def _cred_cap(ctx, user="admin", pw="admin", confidence=0.95) -> Capability:
+        return Capability(
+            type=CapabilityType.CRED,
+            scope=asset_scope(ctx.asset_id),
+            value={"scheme": "basic", "username": user, "password": pw},
+            confidence=confidence,
+            provenance="specialist:authn",
+        )
+
+    def test_injects_basic_auth_from_cred_capability(self):
+        """Canonical chain: authn discovered admin/admin, the next
+        specialist's probes must go out authenticated without the LLM
+        constructing the header itself."""
+        ctx = _ctx()
+        ctx.capabilities.add(self._cred_cap(ctx))
+        added = _apply_discovered_identity(ctx)
+        assert added == ["Authorization"]
+        assert ctx.headers["Authorization"].startswith("Basic ")
+
+    def test_does_not_overwrite_existing_authorization(self):
+        """Scan-configured auth wins over discovered — operator intent
+        is authoritative. A session broker token should never be
+        replaced by a guessed admin/admin."""
+        ctx = _ctx(headers={"Authorization": "Bearer scan-token"})
+        ctx.capabilities.add(self._cred_cap(ctx))
+        added = _apply_discovered_identity(ctx)
+        assert added == []
+        assert ctx.headers["Authorization"] == "Bearer scan-token"
+
+    def test_case_insensitive_header_check(self):
+        """HTTP headers are case-insensitive per RFC 7230. A lowercase
+        existing ``authorization`` must still block injection."""
+        ctx = _ctx(headers={"authorization": "Bearer scan-token"})
+        ctx.capabilities.add(self._cred_cap(ctx))
+        added = _apply_discovered_identity(ctx)
+        assert added == []
+
+    def test_prefers_higher_confidence_cred(self):
+        """When multiple creds exist, the stronger confidence wins so
+        an OOB-validated pair beats a timing-based guess."""
+        ctx = _ctx()
+        ctx.capabilities.add(self._cred_cap(ctx, user="weak", pw="x", confidence=0.6))
+        ctx.capabilities.add(self._cred_cap(ctx, user="strong", pw="y", confidence=0.95))
+        _apply_discovered_identity(ctx)
+        import base64
+        auth = ctx.headers["Authorization"]
+        decoded = base64.b64decode(auth.split(" ", 1)[1]).decode()
+        assert decoded == "strong:y"
+
+    def test_falls_back_to_jwt_session_when_no_creds(self):
+        """A SESSION capability with a JWT must become ``Authorization:
+        Bearer ...`` when no CRED exists — this is how authz's
+        ``jwt_leaked_in_body`` path unlocks authenticated probing."""
+        ctx = _ctx()
+        ctx.capabilities.add(Capability(
+            type=CapabilityType.SESSION,
+            scope=asset_scope(ctx.asset_id),
+            value={"jwt": "eyJhbGciOiJub25lIn0..."},
+            confidence=0.9,
+        ))
+        added = _apply_discovered_identity(ctx)
+        assert added == ["Authorization"]
+        assert ctx.headers["Authorization"] == "Bearer eyJhbGciOiJub25lIn0..."
+
+    def test_injects_cookie_from_session_capability(self):
+        ctx = _ctx()
+        ctx.capabilities.add(Capability(
+            type=CapabilityType.SESSION,
+            scope=asset_scope(ctx.asset_id),
+            value={"cookie": "sid=abc123"},
+            confidence=0.9,
+        ))
+        added = _apply_discovered_identity(ctx)
+        assert "Cookie" in added
+        assert ctx.headers["Cookie"] == "sid=abc123"
+
+    def test_cred_preferred_over_session_for_authorization(self):
+        """When both CRED and a JWT-SESSION exist, CRED wins — concrete
+        user:pass lets the LLM re-authenticate if the session expires
+        mid-scan, whereas a bearer is one-shot."""
+        ctx = _ctx()
+        ctx.capabilities.add(self._cred_cap(ctx))
+        ctx.capabilities.add(Capability(
+            type=CapabilityType.SESSION,
+            scope=asset_scope(ctx.asset_id),
+            value={"jwt": "old-token"},
+            confidence=0.99,  # higher confidence, still loses
+        ))
+        _apply_discovered_identity(ctx)
+        assert ctx.headers["Authorization"].startswith("Basic ")
+
+    def test_empty_store_is_noop(self):
+        """Baseline case — no capabilities, no injection, no header
+        mutation. Guards against the helper accidentally adding
+        default creds when there's nothing to inject."""
+        ctx = _ctx()
+        added = _apply_discovered_identity(ctx)
+        assert added == []
+        assert ctx.headers == {}
+
+    def test_does_not_inject_cred_with_missing_fields(self):
+        """Malformed CRED capability (e.g. both username and password
+        empty) must not produce ``Basic :`` auth — silently wrong
+        header is worse than no header."""
+        ctx = _ctx()
+        ctx.capabilities.add(Capability(
+            type=CapabilityType.CRED,
+            scope=asset_scope(ctx.asset_id),
+            value={"scheme": "basic", "username": "", "password": ""},
+        ))
+        added = _apply_discovered_identity(ctx)
+        assert "Authorization" not in ctx.headers
+
+
+class TestCompositionHints:
+    """The prompt-side counterpart to identity injection. The LLM sees
+    these bullets alongside the CAPABILITIES block so it knows HOW to
+    exploit what was discovered, not just WHAT was discovered.
+    """
+
+    def test_empty_store_produces_no_hints(self):
+        """Baseline runs must not see any composition bullets — keeps
+        the initial message lean when there's nothing to compose yet."""
+        assert _composition_hints(_ctx()) == []
+
+    def test_cred_triggers_auth_hint(self):
+        """The hint must tell the model two things: probes are already
+        authenticated, and it should focus on post-auth endpoints —
+        that's the whole composition payoff."""
+        ctx = _ctx()
+        ctx.capabilities.add(Capability(
+            type=CapabilityType.CRED,
+            scope=asset_scope(ctx.asset_id),
+            value={"scheme": "basic", "username": "a", "password": "b"},
+        ))
+        hints = _composition_hints(ctx)
+        assert len(hints) == 1
+        assert "authenticated" in hints[0].lower()
+        assert "admin" in hints[0].lower() or "/api" in hints[0].lower()
+
+    def test_identifier_triggers_idor_hint(self):
+        ctx = _ctx()
+        ctx.capabilities.add(Capability(
+            type=CapabilityType.IDENTIFIER,
+            scope=asset_scope(ctx.asset_id),
+            value={"kind": "user_id", "value": "42"},
+        ))
+        hints = _composition_hints(ctx)
+        assert any("idor" in h.lower() or "authz" in h.lower() for h in hints)
+
+    def test_internal_host_triggers_ssrf_hint(self):
+        ctx = _ctx()
+        ctx.capabilities.add(Capability(
+            type=CapabilityType.INTERNAL_HOST,
+            scope=asset_scope(ctx.asset_id),
+            value={"host": "10.0.0.5", "port": 6379},
+        ))
+        hints = _composition_hints(ctx)
+        assert any("ssrf" in h.lower() for h in hints)
+
+    def test_multiple_primitives_produce_multiple_hints(self):
+        """When several composition triggers fire on the same asset,
+        each gets its own bullet — operators can trace exactly which
+        primitives shaped the re-run prompt."""
+        ctx = _ctx()
+        ctx.capabilities.add(Capability(
+            type=CapabilityType.CRED,
+            scope=asset_scope(ctx.asset_id),
+            value={"scheme": "basic", "username": "a", "password": "b"},
+        ))
+        ctx.capabilities.add(Capability(
+            type=CapabilityType.IDENTIFIER,
+            scope=asset_scope(ctx.asset_id),
+            value={"kind": "user_id", "value": "42"},
+        ))
+        ctx.capabilities.add(Capability(
+            type=CapabilityType.WEB_ROOT,
+            scope=asset_scope(ctx.asset_id),
+            value={"path": "/var/www/html"},
+        ))
+        assert len(_composition_hints(ctx)) == 3
+
+    def test_hints_ignore_notes(self):
+        """NOTE capabilities don't carry structured exploit semantics —
+        they're hints for the model's judgement, not composition
+        triggers. Must not produce COMPOSITION bullets."""
+        ctx = _ctx()
+        ctx.capabilities.add(Capability(
+            type=CapabilityType.NOTE,
+            scope=asset_scope(ctx.asset_id),
+            value={"key": "waf", "text": "cloudflare"},
+        ))
+        assert _composition_hints(ctx) == []
+
+
+class TestBuildInitialMessageComposition:
+    """Integration-ish tests: ensure the identity injection AND the
+    hints both land in the initial message when composition fires."""
+
+    def test_composition_block_appears_when_hints_fire(self):
+        from scanner.vm.agent_specialists import _memory_set_handler
+        from scanner.vm.agent_worker import _build_initial_message
+        ctx = _ctx(current_specialist="authn")
+        _memory_set_handler({"key": "valid_credentials", "value": "admin:admin"}, ctx)
+        ctx.current_specialist = "authz"
+        msg = _build_initial_message(ctx, SPECIALISTS["authz"])
+        assert "COMPOSITION GUIDANCE" in msg
+        # CAPABILITIES block + COMPOSITION GUIDANCE block must coexist —
+        # typed facts above, exploit instructions below.
+        assert "CAPABILITIES" in msg
+        assert msg.index("CAPABILITIES") < msg.index("COMPOSITION GUIDANCE")
 
 
 class TestRunAgentScanAdhoc:

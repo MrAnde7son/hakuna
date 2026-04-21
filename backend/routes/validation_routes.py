@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from core.auth import get_accessible_org_ids, get_current_user
 from core.database import get_db
+from core.time_utils import iso_utc
 from models.models import Agent, AgentRun, Asset, Finding, Scan
 
 router = APIRouter(prefix="/api/validation", tags=["Validation"])
@@ -120,7 +121,7 @@ def get_validation_status(
                 {
                     "id": r.id,
                     "status": r.status,
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "created_at": iso_utc(r.created_at),
                     "steps": len(r.trace or []),
                     "output": (r.output or "")[:500] if r.output else None,
                 }

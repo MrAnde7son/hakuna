@@ -15,6 +15,7 @@ from core.auth import (
     get_current_user, require_auth, get_accessible_org_ids,
     apply_scan_org_filter,
 )
+from core.time_utils import iso_utc
 from pathlib import Path
 
 from models.models import (
@@ -493,7 +494,7 @@ def get_audit_log(
                 "actor_email": e.actor_email,
                 "actor_display_name": e.actor_display_name,
                 "changes": e.changes,
-                "created_at": e.created_at.isoformat() if e.created_at else None,
+                "created_at": iso_utc(e.created_at),
             }
             for e in entries
         ],

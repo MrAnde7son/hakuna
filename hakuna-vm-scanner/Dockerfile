@@ -34,6 +34,19 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+# Chromium for the agent's render_page tool (SPA rendering). Playwright's
+# own installer pulls the browser + every shared library it needs;
+# ``--with-deps`` adds the apt-level fonts/codecs/gtk bits that plain
+# `apt-get install chromium` would also need. Adds ~400MB to the image.
+# Skip with --build-arg SKIP_PLAYWRIGHT=1 on minimal builds where only
+# the static specialists are needed.
+ARG SKIP_PLAYWRIGHT=0
+RUN if [ "$SKIP_PLAYWRIGHT" = "0" ]; then \
+        playwright install --with-deps chromium; \
+    else \
+        echo "skipping playwright chromium install"; \
+    fi
+
 # App code
 COPY scanner/ /app/scanner/
 COPY templates/ /app/templates/

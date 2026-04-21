@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter, apply_scan_org_filter
 from core.audit import log_audit, diff as _diff
+from core.time_utils import iso_utc
 from models.models import (
     User, Scan, Asset, Finding, Tag, TagAssignment, AutoTagRule,
     InventorySoftware, SBOMComponent,
@@ -548,7 +549,7 @@ def _rule_to_dict(rule: AutoTagRule) -> dict:
         "conditions": rule_engine.migrate_conditions(rule.conditions or [], mode="autotag"),
         "condition_logic": rule.condition_logic,
         "is_enabled": rule.is_enabled,
-        "created_at": rule.created_at.isoformat() if rule.created_at else None,
-        "last_run_at": rule.last_run_at.isoformat() if rule.last_run_at else None,
+        "created_at": iso_utc(rule.created_at),
+        "last_run_at": iso_utc(rule.last_run_at),
         "last_run_count": rule.last_run_count,
     }

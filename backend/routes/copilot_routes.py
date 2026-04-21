@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db, SessionLocal
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
+from core.time_utils import iso_utc
 from models.models import Agent, CopilotConversation, User
 from agents.agent_tools import TOOL_REGISTRY
 from agents.tool_categories import select_tools_for_message
@@ -146,8 +147,8 @@ def _conversation_to_dict(c: CopilotConversation) -> dict:
         "id": c.id,
         "title": c.title,
         "message_count": len(c.messages) if c.messages else 0,
-        "created_at": c.created_at.isoformat() if c.created_at else None,
-        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+        "created_at": iso_utc(c.created_at),
+        "updated_at": iso_utc(c.updated_at),
     }
 
 
@@ -315,7 +316,7 @@ async def send_message(
     copilot_agent = _get_or_create_copilot_agent(db, effective_org_id)
 
     # Append user message to conversation (store clean message without context metadata)
-    user_msg = {"role": "user", "content": body.message, "timestamp": datetime.utcnow().isoformat()}
+    user_msg = {"role": "user", "content": body.message, "timestamp": iso_utc(datetime.utcnow())}
     messages = list(conv.messages or [])
     messages.append(user_msg)
     conv.messages = messages
@@ -365,7 +366,7 @@ async def send_message(
                     msgs.append({
                         "role": "assistant",
                         "content": text_accum,
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": iso_utc(datetime.utcnow()),
                     })
                     c.messages = msgs
                     c.updated_at = datetime.utcnow()

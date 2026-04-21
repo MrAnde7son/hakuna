@@ -16,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingest.cpe_infer import infer_cpes
+from app.ingest.http_header_audit import audit_response
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +239,17 @@ async def store_httpx_enrichment(
 
     # httpx stores screenshot path in the JSON output when -screenshot is used
     screenshot_path = httpx_entry.get("screenshot_path") or httpx_entry.get("screenshot")
+
+    # Header / cookie audit — embedded in httpx_full under `security_audit` so
+    # the backend can read posture without a schema change. Never raise:
+    # enrichment must not fail on a malformed header dict.
+    try:
+        httpx_entry = {**httpx_entry, "security_audit": audit_response(httpx_entry)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "header_audit failed for asset=%s url=%s: %s",
+            asset_id, httpx_entry.get("url"), exc,
+        )
 
     await db.execute(
         text("""

@@ -15,6 +15,7 @@ from core.auth import (
     get_current_user, get_accessible_org_ids,
     apply_org_filter, apply_scan_org_filter,
 )
+from core.time_utils import iso_utc
 from models.models import (
     Scan, Asset, Finding, AutomateClick,
 )
@@ -89,10 +90,22 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
     if not scan_ids:
         return []
 
+    # Map scan_id → current run_id so we can filter rows of active VM rescans
+    # (old-run rows coexist with new-run rows until finalize). Non-VM scans
+    # and scans without a run_id show up with run_id=None and match all rows.
+    current_run_by_scan = {
+        s.id: (s.raw_metadata or {}).get("current_run_id") for s in scans
+    }
+    current_run_ids = [rid for rid in current_run_by_scan.values() if rid]
+
     # Batch finding counts in one query
     finding_counts = dict(
         db.query(Finding.scan_id, func.count(Finding.id))
         .filter(Finding.scan_id.in_(scan_ids))
+        .filter(or_(
+            Finding.scan_run_id.is_(None),
+            Finding.scan_run_id.in_(current_run_ids),
+        ))
         .group_by(Finding.scan_id)
         .all()
     )
@@ -101,6 +114,10 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
     direct_asset_counts = dict(
         db.query(Asset.scan_id, func.count(Asset.id))
         .filter(Asset.scan_id.in_(scan_ids))
+        .filter(or_(
+            Asset.scan_run_id.is_(None),
+            Asset.scan_run_id.in_(current_run_ids),
+        ))
         .group_by(Asset.scan_id)
         .all()
     )
@@ -113,6 +130,10 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
         vm_asset_counts = dict(
             db.query(Finding.scan_id, func.count(distinct(Finding.asset_id)))
             .filter(Finding.scan_id.in_(vm_scan_ids), Finding.asset_id.isnot(None))
+            .filter(or_(
+                Finding.scan_run_id.is_(None),
+                Finding.scan_run_id.in_(current_run_ids),
+            ))
             .group_by(Finding.scan_id)
             .all()
         )
@@ -138,13 +159,13 @@ def list_scans(db: Session = Depends(get_db), org_ids: Optional[List[int]] = Dep
             "source_type": s.source_type or "nessus",
             "source_version": s.source_version,
             "raw_metadata": s.raw_metadata,
-            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "created_at": iso_utc(s.created_at),
             "asset_count": asset_count,
             "finding_count": finding_counts.get(s.id, 0),
             "schedule": s.schedule,
             "status": s.status or "completed",
-            "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
-            "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+            "last_run_at": iso_utc(s.last_run_at),
+            "next_run_at": iso_utc(s.next_run_at),
             "run_count": s.run_count or 0,
         })
     return result
@@ -156,8 +177,11 @@ def get_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[List
     scan = q.filter(Scan.id == scan_id).first()
     if not scan:
         raise HTTPException(404, "Scan not found")
-    finding_count = db.query(func.count(Finding.id)).filter(Finding.scan_id == scan_id).scalar()
-    asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == scan_id).scalar()
+    current_run_id = (scan.raw_metadata or {}).get("current_run_id")
+    run_scope_f = or_(Finding.scan_run_id.is_(None), Finding.scan_run_id == current_run_id) if current_run_id else True
+    run_scope_a = or_(Asset.scan_run_id.is_(None), Asset.scan_run_id == current_run_id) if current_run_id else True
+    finding_count = db.query(func.count(Finding.id)).filter(Finding.scan_id == scan_id).filter(run_scope_f).scalar()
+    asset_count = db.query(func.count(Asset.id)).filter(Asset.scan_id == scan_id).filter(run_scope_a).scalar()
 
     # Surface streaming-progress state so the UI can render per-target / per-stage
     # detail while the scan is still running, instead of just a spinner on the
@@ -185,6 +209,8 @@ def get_scan(scan_id: int, db: Session = Depends(get_db), org_ids: Optional[List
         progress = {
             "completed_jobs": meta.get("completed_jobs", 0),
             "total_jobs": meta.get("total_jobs", 0),
+            "completed_targets": meta.get("completed_targets", 0),
+            "total_targets": meta.get("total_targets", len(meta.get("targets") or [])),
             "targets": targets,
         }
     elif scan.source_type == "easm":
@@ -249,11 +275,13 @@ async def cancel_scan(
     scan_name = scan.scan_name or scan.filename
 
     if scan.source_type == "vm_scanner":
-        from services.vm_scanner import _revoke_vm_jobs_sync
+        from services.vm_scanner import _revoke_vm_jobs_sync, _rollback_failed_run
         job_ids = meta.get("job_ids") or []
         revoked = _revoke_vm_jobs_sync(job_ids)
+        _rollback_failed_run(db, scan)
+        rolled = dict(scan.raw_metadata or {})
         scan.raw_metadata = {
-            **meta,
+            **rolled,
             "status": "cancelled",
             "error": "Cancelled by user",
         }
@@ -339,7 +367,7 @@ def update_scan_schedule(
     return {
         "id": scan.id,
         "schedule": scan.schedule,
-        "next_run_at": scan.next_run_at.isoformat() if scan.next_run_at else None,
+        "next_run_at": iso_utc(scan.next_run_at),
     }
 
 

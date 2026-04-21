@@ -421,11 +421,12 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
   const [manualTarget, setManualTarget] = useState('')
   const [authProfiles, setAuthProfiles] = useState([])
   const [authProfileId, setAuthProfileId] = useState('')
-  // Specialist LLM agents — off by default because they cost tokens.
-  // `agentCategories === null` means "run all six"; setting it narrows
+  // Specialist LLM agents — on by default for VM scans. Users can untick
+  // per-scan if they want to skip the LLM cost.
+  // `agentCategories === null` means "run all seven"; setting it narrows
   // the dispatch to the chosen subset. Matches the scanner API contract.
-  const AGENT_CATEGORIES = ['injection', 'xss', 'ssrf', 'authn', 'authz', 'files']
-  const [enableAgents, setEnableAgents] = useState(false)
+  const AGENT_CATEGORIES = ['injection', 'xss', 'ssrf', 'authn', 'authz', 'csrf', 'files']
+  const [enableAgents, setEnableAgents] = useState(true)
   const [agentCategories, setAgentCategories] = useState(null)
 
   const toggleAgentCategory = (cat) => {
@@ -546,7 +547,29 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
   }
 
   const manualTargets = manualTarget.split(/[,\n]+/).map(t => t.trim()).filter(Boolean)
-  const canScan = tab === 'manual' ? manualTargets.length > 0 : selectedAssets.size > 0
+  // Preview how many host targets the backend will actually dispatch once
+  // CIDR subnets are expanded. Cap mirrors the backend cap so the preview
+  // can't spiral past what the server would accept.
+  const CIDR_PREVIEW_CAP = 1024
+  const expandedTargetCount = (() => {
+    let total = 0
+    for (const t of manualTargets) {
+      const m = t.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\/(\d{1,2})$/)
+      if (m) {
+        const prefix = parseInt(m[2], 10)
+        if (prefix >= 0 && prefix <= 32) {
+          total += prefix >= 31 ? 1 : Math.pow(2, 32 - prefix) - 2
+          continue
+        }
+      }
+      total += 1
+    }
+    return total
+  })()
+  const targetCountExceedsCap = expandedTargetCount > CIDR_PREVIEW_CAP
+  const canScan = tab === 'manual'
+    ? manualTargets.length > 0 && !targetCountExceedsCap
+    : selectedAssets.size > 0
 
   const tabStyle = (active) => ({
     flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 600,
@@ -600,7 +623,17 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
             }}
           />
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, marginBottom: 14 }}>
-            One target per line, or comma-separated. {manualTargets.length > 0 && `${manualTargets.length} target${manualTargets.length !== 1 ? 's' : ''} detected.`}
+            One target per line, or comma-separated. CIDR subnets (e.g. 192.168.1.0/24) expand to individual hosts.
+            {manualTargets.length > 0 && (
+              <> {expandedTargetCount !== manualTargets.length
+                ? `${manualTargets.length} entr${manualTargets.length !== 1 ? 'ies' : 'y'} → ${expandedTargetCount} host${expandedTargetCount !== 1 ? 's' : ''} after expansion.`
+                : `${manualTargets.length} target${manualTargets.length !== 1 ? 's' : ''} detected.`}</>
+            )}
+            {targetCountExceedsCap && (
+              <div style={{ color: '#dc2626', marginTop: 4, fontWeight: 600 }}>
+                Expansion exceeds the {CIDR_PREVIEW_CAP}-host cap. Narrow your subnet.
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -769,7 +802,7 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
         {scanning ? (
           <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Scanning...</>
         ) : (
-          <><Play size={13} /> Scan {tab === 'manual' ? `${manualTargets.length} Target${manualTargets.length !== 1 ? 's' : ''}` : `${selectedAssets.size} Asset${selectedAssets.size !== 1 ? 's' : ''}`}</>
+          <><Play size={13} /> Scan {tab === 'manual' ? `${expandedTargetCount} Target${expandedTargetCount !== 1 ? 's' : ''}` : `${selectedAssets.size} Asset${selectedAssets.size !== 1 ? 's' : ''}`}</>
         )}
       </Button>
       <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
@@ -807,6 +840,11 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
   const [credentialId, setCredentialId] = useState('')
   const [relayAgentId, setRelayAgentId] = useState('')
   const [showCreateCred, setShowCreateCred] = useState(false)
+
+  // Target source — mirrors VM scanner UX. 'manual' lets the user type
+  // free-form IPs/hostnames/CIDRs; 'assets' picks from the asset inventory.
+  const [tab, setTab] = useState('assets')
+  const [manualTarget, setManualTarget] = useState('')
 
   const [assets, setAssets] = useState([])
   const [total, setTotal] = useState(0)
@@ -946,6 +984,32 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
     })
   }
 
+  // Manual target parsing + CIDR expansion preview. Mirrors the VM scan
+  // panel so users get the same count feedback before dispatch. Cap (64)
+  // matches AUDIT_MAX_EXPANDED_HOSTS on the backend — the button disables
+  // when exceeded instead of bouncing off a 400.
+  const AUDIT_CIDR_PREVIEW_CAP = 64
+  const manualTargets = manualTarget.split(/[,\n]+/).map(t => t.trim()).filter(Boolean)
+  const expandedManualCount = (() => {
+    let total = 0
+    for (const t of manualTargets) {
+      const m = t.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\/(\d{1,2})$/)
+      if (m) {
+        const prefix = parseInt(m[2], 10)
+        if (prefix >= 0 && prefix <= 32) {
+          total += prefix >= 31 ? 1 : Math.pow(2, 32 - prefix) - 2
+          continue
+        }
+      }
+      total += 1
+    }
+    return total
+  })()
+  const manualCountExceedsCap = expandedManualCount > AUDIT_CIDR_PREVIEW_CAP
+
+  // Host count drives cost + the button label — switches on the active tab.
+  const hostCount = tab === 'manual' ? expandedManualCount : selectedAssets.size
+
   // Rough cost estimate — pennies-level order of magnitude, not billing-grade.
   // Calibrated to claude-sonnet-4-6 at ~15k tokens per host for a medium audit.
   const { costPerHostUSD, tokensPerHost } = useMemo(() => {
@@ -955,8 +1019,8 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
     const tokens = { low: 6_000, medium: 15_000, high: 30_000 }[hint] ?? 15_000
     return { costPerHostUSD: usd, tokensPerHost: tokens }
   }, [currentMission])
-  const estimatedCost = costPerHostUSD * selectedAssets.size
-  const estimatedTokens = tokensPerHost * selectedAssets.size
+  const estimatedCost = costPerHostUSD * hostCount
+  const estimatedTokens = tokensPerHost * hostCount
 
   // Quota-based warnings — would this audit push us over the monthly limit?
   const quotaRemaining = usage ? Math.max(0, (usage.limit || 0) - (usage.used || 0)) : null
@@ -965,8 +1029,11 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
   const quotaWouldWarn = !quotaWouldExceed && usage && !usage.exceeded
     && quotaRemaining !== null && (estimatedTokens + (usage.used || 0)) / (usage.limit || 1) > 0.8
 
+  const hasTargetSource = tab === 'manual'
+    ? (manualTargets.length > 0 && !manualCountExceedsCap)
+    : selectedAssets.size > 0
   const canStart = !!selectedProtocol && !!selectedMission && !!credentialId
-    && !!relayAgentId && selectedAssets.size > 0 && !scanning && !quotaExhausted
+    && !!relayAgentId && hasTargetSource && !scanning && !quotaExhausted
 
   const handleCreateCredential = async (data) => {
     try {
@@ -991,15 +1058,20 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
     setScanning(true)
     setError(null)
     try {
-      const res = await startAuditRun({
+      const payload = {
         protocol: selectedProtocol,
         mission: selectedMission,
-        asset_ids: Array.from(selectedAssets.keys()),
         credential_id: credentialId,
         relay_agent_id: relayAgentId,
         max_steps: maxSteps,
         wallclock_s: wallclockS,
-      })
+      }
+      if (tab === 'manual') {
+        payload.targets = manualTargets
+      } else {
+        payload.asset_ids = Array.from(selectedAssets.keys())
+      }
+      const res = await startAuditRun(payload)
       if (onAuditScan) onAuditScan(res)
       onClose()
     } catch (err) {
@@ -1129,7 +1201,72 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
         </select>
       </AuditRow>
 
-      {/* Assets */}
+      {/* Target source — tab switcher mirrors VM scan for UX parity */}
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginTop: 14, marginBottom: 10 }}>
+        <button
+          style={{
+            flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 600,
+            background: 'none', border: 'none', cursor: 'pointer',
+            borderBottom: `2px solid ${tab === 'manual' ? '#14b8a6' : 'transparent'}`,
+            color: tab === 'manual' ? '#14b8a6' : 'var(--text-muted)',
+          }}
+          onClick={() => setTab('manual')}
+        >Enter Target</button>
+        <button
+          style={{
+            flex: 1, padding: '8px 0', fontSize: 12, fontWeight: 600,
+            background: 'none', border: 'none', cursor: 'pointer',
+            borderBottom: `2px solid ${tab === 'assets' ? '#14b8a6' : 'transparent'}`,
+            color: tab === 'assets' ? '#14b8a6' : 'var(--text-muted)',
+          }}
+          onClick={() => setTab('assets')}
+        >Select Assets</button>
+      </div>
+
+      {tab === 'manual' && (
+        <div style={{ marginBottom: 6 }}>
+          <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 6, color: 'var(--text-muted)' }}>
+            Target(s) — IP, hostname, URL, or CIDR
+          </label>
+          <textarea
+            value={manualTarget}
+            onChange={e => setManualTarget(e.target.value)}
+            placeholder={'dc1.corp.local\n10.0.0.5\n192.168.1.0/28'}
+            rows={3}
+            style={{
+              width: '100%', padding: '8px 10px', borderRadius: 6,
+              border: '1px solid var(--border)', background: 'var(--bg)',
+              color: 'var(--text-primary)', fontSize: 12, fontFamily: 'monospace',
+              boxSizing: 'border-box', resize: 'vertical',
+            }}
+          />
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+            One per line, or comma-separated. CIDR subnets expand to hosts (cap {AUDIT_CIDR_PREVIEW_CAP}).
+            {manualTargets.length > 0 && (
+              <> {expandedManualCount !== manualTargets.length
+                ? ` ${manualTargets.length} entr${manualTargets.length !== 1 ? 'ies' : 'y'} → ${expandedManualCount} host${expandedManualCount !== 1 ? 's' : ''}.`
+                : ` ${manualTargets.length} target${manualTargets.length !== 1 ? 's' : ''} detected.`}</>
+            )}
+          </div>
+          {manualCountExceedsCap && (
+            <div style={{ fontSize: 11, color: '#dc2626', marginTop: 4, fontWeight: 600 }}>
+              Expansion exceeds the {AUDIT_CIDR_PREVIEW_CAP}-host cap. Narrow your subnet or split into multiple runs.
+            </div>
+          )}
+          {manualTargets.length > 0 && currentProtocol && (
+            <div style={{
+              marginTop: 8, padding: '6px 10px', borderRadius: 6,
+              background: '#f59e0b11', border: '1px solid #f59e0b33',
+              fontSize: 11, color: 'var(--text-muted)',
+            }}>
+              Free-form targets are sent as-is — make sure each host actually exposes {currentProtocol.label}.
+              Mismatched hosts will still consume LLM tokens before the audit gives up.
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'assets' && (
       <div style={{ marginTop: 12, marginBottom: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
           <Server size={13} color="var(--text-muted)" />
@@ -1196,6 +1333,7 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
           )}
         </div>
       </div>
+      )}
 
       {/* Budget */}
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
@@ -1212,7 +1350,7 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
       </div>
 
       {/* Cost + quota hint */}
-      {selectedAssets.size > 0 && currentMission && (
+      {hostCount > 0 && currentMission && (
         <div style={{
           marginTop: 10, padding: '8px 10px', borderRadius: 6,
           background: quotaWouldExceed ? '#dc262611' : (quotaWouldWarn ? '#f59e0b11' : '#14b8a608'),
@@ -1220,7 +1358,7 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
           fontSize: 11, color: 'var(--text-muted)',
         }}>
           <div>
-            ≈ ${costPerHostUSD.toFixed(2)}/host · ~{(tokensPerHost / 1000).toFixed(0)}k tokens/host × {selectedAssets.size} host{selectedAssets.size === 1 ? '' : 's'} ≈ ${estimatedCost.toFixed(2)} · ~{(estimatedTokens / 1000).toFixed(0)}k tokens
+            ≈ ${costPerHostUSD.toFixed(2)}/host · ~{(tokensPerHost / 1000).toFixed(0)}k tokens/host × {hostCount} host{hostCount === 1 ? '' : 's'} ≈ ${estimatedCost.toFixed(2)} · ~{(estimatedTokens / 1000).toFixed(0)}k tokens
           </div>
           {usage && (
             <div style={{ marginTop: 4, fontSize: 10 }}>
@@ -1265,7 +1403,7 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
         {scanning ? (
           <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Starting…</>
         ) : (
-          <><Play size={13} /> Run {currentMission?.label || 'Audit'} on {selectedAssets.size} host{selectedAssets.size === 1 ? '' : 's'}</>
+          <><Play size={13} /> Run {currentMission?.label || 'Audit'} on {hostCount} host{hostCount === 1 ? '' : 's'}</>
         )}
       </Button>
     </div>
@@ -1981,7 +2119,7 @@ function VmScanHistory({ expanded, metadata }) {
               }} />
               <span style={{ fontWeight: 500, color: 'var(--text-secondary)' }}>{prLabel}</span>
               <span style={{ color: 'var(--text-muted)', flex: 1 }}>
-                {pr.completed_jobs ?? 0}/{pr.total_jobs ?? 0} targets done
+                {pr.completed_targets ?? pr.completed_jobs ?? 0}/{pr.total_targets ?? pr.total_jobs ?? 0} targets done
               </span>
               <span style={{ color: 'var(--text-muted)' }}>
                 {pr.findings_emitted ?? 0} finding{(pr.findings_emitted ?? 0) !== 1 ? 's' : ''}
@@ -2189,7 +2327,7 @@ function ScheduleDropdown({ scan, onUpdate }) {
 
 function EditVmScanModal({ scan, onClose, onSaved }) {
   const toast = useToast()
-  const AGENT_CATEGORIES = ['injection', 'xss', 'ssrf', 'authn', 'authz', 'files']
+  const AGENT_CATEGORIES = ['injection', 'xss', 'ssrf', 'authn', 'authz', 'csrf', 'files']
   const origTargets = (scan.raw_metadata?.targets || []).join('\n')
   const origAuthProfileId = scan.raw_metadata?.auth_profile_id || ''
   const origEnableAgents = !!scan.raw_metadata?.enable_agents

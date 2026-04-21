@@ -128,6 +128,17 @@ def finalize_scan(
     """
     results = {}
 
+    # 0. Drop superseded run rows — VM rescans write new-run findings
+    # alongside the previous run's rows. At successful finalize, we resolve
+    # any open tickets on the prior run's findings (the vuln wasn't re-
+    # detected, so the work is done) and delete rows tagged with a stale
+    # run_id. Must run BEFORE cross-scan dedup so the dedup pass doesn't
+    # see stale rows and keep them as the latest.
+    results["drop_superseded_run"] = _step(
+        db, "Drop superseded run rows",
+        lambda: _drop_superseded_run(db, scan_id),
+    )
+
     # 1a. OS & Software auto-tags (built-in)
     results["os_software_tags"] = _step(
         db, "OS/Software auto-tags", lambda: _run_os_software_tags(db, scan_id)
@@ -303,6 +314,69 @@ def _step(db: Session, name: str, fn):
 
 
 # ── Individual pipeline steps ──────────────────────────────────────────
+
+
+def _drop_superseded_run(db, scan_id):
+    """Delete Finding/Asset rows from the scan's previous run at finalize.
+
+    VM rescans mint a new `current_run_id` and write alongside the prior
+    run's rows. Once the new run completes successfully we drop anything
+    tagged with a stale run_id. A failed rescan takes the opposite path
+    (_rollback_failed_run in vm_scanner) so the prior run is preserved.
+
+    Open tickets on superseded findings are logged then cascade-deleted
+    via the FindingTicket FK (ON DELETE CASCADE). If the underlying vuln
+    isn't detected by the latest scan, the remediation work is done.
+    """
+    from models.models import Scan, Finding, Asset, FindingTicket
+
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        return {"findings_deleted": 0, "assets_deleted": 0}
+    meta = scan.raw_metadata or {}
+    current_run_id = meta.get("current_run_id")
+    if not current_run_id:
+        return {"findings_deleted": 0, "assets_deleted": 0}
+
+    stale_finding_ids = [
+        fid for (fid,) in db.query(Finding.id).filter(
+            Finding.scan_id == scan_id,
+            Finding.scan_run_id.isnot(None),
+            Finding.scan_run_id != current_run_id,
+        ).all()
+    ]
+
+    tickets_auto_resolved = 0
+    findings_deleted = 0
+    if stale_finding_ids:
+        tickets_auto_resolved = db.query(FindingTicket).filter(
+            FindingTicket.finding_id.in_(stale_finding_ids),
+        ).delete(synchronize_session=False)
+        if tickets_auto_resolved:
+            logger.info(
+                "Auto-resolved %d tickets on superseded findings (scan_id=%s)",
+                tickets_auto_resolved, scan_id,
+            )
+        findings_deleted = db.query(Finding).filter(
+            Finding.id.in_(stale_finding_ids),
+        ).delete(synchronize_session=False)
+
+    assets_deleted = db.query(Asset).filter(
+        Asset.scan_id == scan_id,
+        Asset.scan_run_id.isnot(None),
+        Asset.scan_run_id != current_run_id,
+    ).delete(synchronize_session=False)
+
+    if findings_deleted or assets_deleted:
+        logger.info(
+            "Dropped superseded run rows (scan_id=%s): findings=%d assets=%d",
+            scan_id, findings_deleted, assets_deleted,
+        )
+    return {
+        "findings_deleted": findings_deleted,
+        "assets_deleted": assets_deleted,
+        "tickets_auto_resolved": tickets_auto_resolved,
+    }
 
 
 def _run_os_software_tags(db, scan_id):

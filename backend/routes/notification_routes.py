@@ -13,6 +13,7 @@ from sqlalchemy import func, desc
 
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids
+from core.time_utils import iso_utc
 from models.models import (
     Notification, NotificationRead, UserPageVisit,
     Finding, Asset, Scan, User,
@@ -97,7 +98,7 @@ async def list_notifications(
                 "entity_type": n.entity_type,
                 "entity_id": n.entity_id,
                 "metadata": n.metadata_,
-                "created_at": n.created_at.isoformat() if n.created_at else None,
+                "created_at": iso_utc(n.created_at),
                 "is_read": n.id in read_set,
             }
             for n in items
@@ -310,5 +311,5 @@ async def new_since_counts(
 
     return {
         "counts": result,
-        "timestamps": {k: v.isoformat() for k, v in visit_map.items()},
+        "timestamps": {k: iso_utc(v) for k, v in visit_map.items()},
     }

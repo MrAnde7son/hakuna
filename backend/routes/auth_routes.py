@@ -25,6 +25,7 @@ from core.auth import (
 )
 from core.audit import log_audit, diff as _diff
 from core.i18n import get_locale_from_request, t as translate
+from core.time_utils import iso_utc
 from core.subscription import check_user_invite_limit
 from core.builtin_team_roles import seed_builtin_team_roles
 from services.easm import trigger_easm_for_new_org
@@ -104,8 +105,8 @@ def _user_response(user: User, org: Organization) -> dict:
         "is_active": user.is_active,
         "locale": user.locale or "en",
         "email_verified": bool(user.email_verified),
-        "created_at": user.created_at.isoformat() if user.created_at else None,
-        "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        "created_at": iso_utc(user.created_at),
+        "last_login_at": iso_utc(user.last_login_at),
         "org": {
             "id": org.id,
             "name": org.name,
@@ -129,7 +130,7 @@ def _org_response(org: Organization) -> dict:
         "is_active": org.is_active,
         "subscription_tier": org.subscription_tier or "free",
         "subscription_status": org.subscription_status,
-        "created_at": org.created_at.isoformat() if org.created_at else None,
+        "created_at": iso_utc(org.created_at),
     }
 
 
@@ -1080,7 +1081,7 @@ async def mssp_invite_client(
         "invite_url": invite_url,
         "token": token,
         "email_sent": email_sent,
-        "expires_at": invite.expires_at.isoformat(),
+        "expires_at": iso_utc(invite.expires_at),
     }
 
 
@@ -1100,7 +1101,7 @@ async def get_invite_info(token: str, db: Session = Depends(get_db)):
         "mssp_org_name": mssp.name if mssp else "",
         "invited_email": invite.invited_email,
         "client_org_name": invite.client_org_name,
-        "expires_at": invite.expires_at.isoformat(),
+        "expires_at": iso_utc(invite.expires_at),
     }
 
 
@@ -1234,7 +1235,7 @@ def _role_response(role: CustomRole, db: Session) -> dict:
         "base_permissions": role.base_permissions or {},
         "deny_permissions": role.deny_permissions or {},
         "is_active": role.is_active,
-        "created_at": role.created_at.isoformat() if role.created_at else None,
+        "created_at": iso_utc(role.created_at),
         "tag_permissions": perms,
         "member_count": member_count,
     }

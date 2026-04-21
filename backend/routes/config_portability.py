@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from core.auth import require_auth
 from core.database import get_db
+from core.time_utils import iso_utc
 from models.models import (
     User, Tag, AutoTagRule, ReportTemplate,
     Campaign, Workflow, WorkflowNode, WorkflowEdge,
@@ -49,7 +50,7 @@ def _envelope(config_type: str, data: dict) -> dict:
         "format": ENVELOPE_FORMAT,
         "version": ENVELOPE_VERSION,
         "type": config_type,
-        "exported_at": datetime.utcnow().isoformat() + "Z",
+        "exported_at": iso_utc(datetime.utcnow()),
         "data": data,
     }
 
@@ -339,8 +340,8 @@ def list_report_templates(db: Session = Depends(get_db)):
         {
             "id": t.id, "name": t.name, "description": t.description,
             "config": t.config, "is_default": t.is_default,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-            "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+            "created_at": iso_utc(t.created_at),
+            "updated_at": iso_utc(t.updated_at),
         }
         for t in templates
     ]
@@ -374,8 +375,8 @@ def get_report_template(template_id: int, db: Session = Depends(get_db)):
     return {
         "id": t.id, "name": t.name, "description": t.description,
         "config": t.config, "is_default": t.is_default,
-        "created_at": t.created_at.isoformat() if t.created_at else None,
-        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        "created_at": iso_utc(t.created_at),
+        "updated_at": iso_utc(t.updated_at),
     }
 
 

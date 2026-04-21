@@ -342,16 +342,16 @@ const ASSET_FILTER_SCHEMA = {
 // framing) and the component is small.
 function LiveScanBanner({ status, progress, total }) {
   if (!progress) return null
-  const totalJobs = progress.total_jobs || 0
-  const completedJobs = progress.completed_jobs || 0
+  const totalTargets = progress.total_targets || 0
+  const completedTargets = progress.completed_targets || 0
   const currentStage = progress.current_stage
   const stageIndex = progress.stage_index || 0
   const totalStages = progress.total_stages || 0
   const incrementalAssets = progress.incremental_asset_count || 0
 
   let summary
-  if (totalJobs > 0) {
-    summary = `${completedJobs} / ${totalJobs} targets scanned`
+  if (totalTargets > 0) {
+    summary = `${completedTargets} / ${totalTargets} target${totalTargets === 1 ? '' : 's'} scanned`
   } else if (totalStages > 0) {
     const stageLabel = currentStage ? ` · ${currentStage}` : ''
     const assetsSummary = incrementalAssets > 0 ? ` · ${incrementalAssets} new assets` : ''

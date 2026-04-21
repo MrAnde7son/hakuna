@@ -15,6 +15,7 @@ from sqlalchemy import func, desc, or_, cast, Text
 from core.database import get_db
 from core.query_guards import set_statement_timeout
 from core.auth import get_accessible_org_ids, apply_org_filter, apply_scan_org_filter
+from core.time_utils import iso_utc
 from models.models import (
     Scan, Asset, Finding, ScanComparison, SLAConfig, FindingException,
     AggregatedSolution, Tag, TagAssignment,
@@ -766,7 +767,7 @@ def get_trending(
 
         result = []
         for s in scans:
-            scan_dt = s.scan_date or s.created_at.isoformat()
+            scan_dt = s.scan_date or iso_utc(s.created_at)
             # Parse scan date to compare
             if isinstance(scan_dt, str):
                 try:
@@ -788,7 +789,7 @@ def get_trending(
             result.append({
                 "scan_id": s.id,
                 "scan_name": s.scan_name,
-                "scan_date": scan_dt if isinstance(scan_dt, str) else scan_dt.isoformat(),
+                "scan_date": scan_dt if isinstance(scan_dt, str) else iso_utc(scan_dt),
                 **counts,
             })
     else:
@@ -810,7 +811,7 @@ def get_trending(
             result.append({
                 "scan_id": s.id,
                 "scan_name": s.scan_name,
-                "scan_date": s.scan_date or s.created_at.isoformat(),
+                "scan_date": s.scan_date or iso_utc(s.created_at),
                 "critical": c.critical if c else 0,
                 "high": c.high if c else 0,
                 "medium": c.medium if c else 0,
@@ -926,7 +927,7 @@ def get_metrics_timeline(db: Session = Depends(get_db), org_ids: Optional[List[i
         result.append({
             "scan_id": s.id,
             "scan_name": s.scan_name or s.filename,
-            "scan_date": s.scan_date or (s.created_at.isoformat() if s.created_at else None),
+            "scan_date": s.scan_date or iso_utc(s.created_at),
             # Severity
             "critical": critical,
             "high": high,
@@ -1045,7 +1046,7 @@ def scan_delta_timeline(db: Session = Depends(get_db)):
         timeline.append({
             "scan_id": current.id,
             "scan_name": current.scan_name or current.filename,
-            "scan_date": current.scan_date or (current.created_at.isoformat() if current.created_at else None),
+            "scan_date": current.scan_date or iso_utc(current.created_at),
             "base_scan_id": base.id,
             "base_scan_name": base.scan_name or base.filename,
             "new_count": delta["new_count"],
@@ -1164,8 +1165,8 @@ def get_regressions(
             "severity_label": f.severity_label,
             "asset_ip": asset.ip if asset else None,
             "asset_hostname": asset.hostname if asset else None,
-            "first_seen": f.first_seen.isoformat() if f.first_seen else None,
-            "last_seen": f.last_seen.isoformat() if f.last_seen else None,
+            "first_seen": iso_utc(f.first_seen),
+            "last_seen": iso_utc(f.last_seen),
             "times_seen": f.times_seen,
             "priority_score": f.priority_score,
             "scan_id": f.scan_id,

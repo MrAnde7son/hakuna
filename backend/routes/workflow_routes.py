@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from core.auth import get_current_user, get_accessible_org_ids, apply_org_filter
 from core.audit import log_audit, diff as _diff
+from core.time_utils import iso_utc
 from models.models import (
     User, Workflow, WorkflowNode, WorkflowEdge,
     WorkflowExecution, WorkflowExecutionLog,
@@ -38,9 +39,9 @@ def _workflow_to_dict(wf: Workflow) -> dict:
         "description": wf.description,
         "status": wf.status,
         "is_enabled": wf.is_enabled,
-        "created_at": wf.created_at.isoformat() if wf.created_at else None,
-        "updated_at": wf.updated_at.isoformat() if wf.updated_at else None,
-        "last_run_at": wf.last_run_at.isoformat() if wf.last_run_at else None,
+        "created_at": iso_utc(wf.created_at),
+        "updated_at": iso_utc(wf.updated_at),
+        "last_run_at": iso_utc(wf.last_run_at),
         "run_count": wf.run_count,
         "version": getattr(wf, "version", 1) or 1,
         "node_count": len(wf.nodes),
@@ -77,8 +78,8 @@ def _execution_to_dict(ex: WorkflowExecution) -> dict:
         "workflow_id": ex.workflow_id,
         "status": ex.status,
         "trigger_type": ex.trigger_type,
-        "started_at": ex.started_at.isoformat() if ex.started_at else None,
-        "completed_at": ex.completed_at.isoformat() if ex.completed_at else None,
+        "started_at": iso_utc(ex.started_at),
+        "completed_at": iso_utc(ex.completed_at),
         "items_processed": ex.items_processed,
         "result_summary": ex.result_summary,
         "error": ex.error,
@@ -213,7 +214,7 @@ def update_workflow(wf_id: int, body: WorkflowUpdate, db: Session = Depends(get_
             "version": wf.version or 1,
             "nodes": old_nodes,
             "edges": old_edges,
-            "saved_at": datetime.utcnow().isoformat(),
+            "saved_at": iso_utc(datetime.utcnow()),
         })
         # Keep last 20 versions
         wf.version_history = history[-20:]
@@ -300,7 +301,7 @@ def restore_workflow_version(wf_id: int, version: int, db: Session = Depends(get
         "version": wf.version or 1,
         "nodes": old_nodes,
         "edges": old_edges,
-        "saved_at": datetime.utcnow().isoformat(),
+        "saved_at": iso_utc(datetime.utcnow()),
     })
     wf.version_history = history[-20:]
     wf.version = (wf.version or 1) + 1
@@ -378,7 +379,7 @@ def get_workflow_execution(exec_id: int, db: Session = Depends(get_db)):
             "items_out": log.items_out,
             "output_data": log.output_data,
             "error": log.error,
-            "executed_at": log.executed_at.isoformat() if log.executed_at else None,
+            "executed_at": iso_utc(log.executed_at),
         }
         for log in ex.logs
     ]

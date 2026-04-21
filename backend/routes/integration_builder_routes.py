@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import get_current_user, require_auth
+from core.time_utils import iso_utc
 from models.models import (
     User, Integration, IntegrationCredential, IntegrationRun, DiscoveredSpec,
     IngestEndpoint,
@@ -639,6 +640,22 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
     db.commit()
     db.refresh(integration)
 
+    from core.audit import log_audit
+    log_audit(
+        db, "create", "integration", entity_id=None,
+        entity_name=integration.name,
+        changes={
+            "integration_id": integration.id,
+            "direction": integration.direction,
+            "entity": integration.entity,
+            "transport_type": integration.transport_type,
+            "template_id": integration.template_id,
+            "enabled": integration.enabled,
+        },
+        actor=user,
+    )
+    db.commit()
+
     # For webhook transport, auto-create an ingest endpoint
     ingest_creds = None
     if body.transport_type == "webhook":
@@ -746,9 +763,9 @@ def get_webhook_info(integration_id: str, db: Session = Depends(get_db),
         "parser_type": ep.parser_type,
         "token_prefix": ep.token_prefix,
         "is_active": ep.is_active,
-        "last_used_at": ep.last_used_at.isoformat() if ep.last_used_at else None,
+        "last_used_at": iso_utc(ep.last_used_at),
         "request_count": ep.request_count or 0,
-        "created_at": ep.created_at.isoformat() if ep.created_at else None,
+        "created_at": iso_utc(ep.created_at),
     }
 
 
@@ -840,6 +857,15 @@ async def run_integration(integration_id: str, background_tasks: BackgroundTasks
     db.commit()
     db.refresh(run)
     run_id = run.id
+
+    from core.audit import log_audit
+    log_audit(
+        db, "run", "integration", entity_id=None,
+        entity_name=i.name,
+        changes={"integration_id": i.id, "run_id": run_id, "triggered_by": "manual"},
+        actor=user,
+    )
+    db.commit()
 
     # Execute in background with its own DB session.
     # Wrapped in create_task (preferred over ensure_future) with error logging.
