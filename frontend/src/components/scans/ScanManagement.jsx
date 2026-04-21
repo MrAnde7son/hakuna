@@ -5,7 +5,7 @@ import {
   Upload, CheckCircle, AlertCircle, FileText, X, Radar, Globe, Plus,
   RefreshCw, Trash2, Search, Clock, Server, Shield, Loader,
   Play, MonitorSmartphone, History, ChevronDown, ChevronUp, Edit2, Save,
-  Square, Terminal, Key, Radio, ShieldAlert,
+  Square, Terminal, Key, Radio, ShieldAlert, Users, HardDrive, Database, Network,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import useURLFilters from '../../hooks/useURLFilters.js'
@@ -163,12 +163,40 @@ function UploadRow({ upload, onDismiss }) {
 
 // ── New scan modal ───────────────────────────────────────────────────
 
+// Per-protocol card visuals. Backend AUDITS registry is the source of truth
+// for protocol + mission + tool palette; the frontend reframes the user-facing
+// label around the *outcome* (what the audit reveals) rather than the wire
+// protocol, since practitioners pick an audit by goal, not transport.
+// New protocols fall back to the default ShieldAlert + teal until added here.
+const AUDIT_CARD_META = {
+  wmi:   { icon: Terminal,  color: '#14b8a6', label: 'Endpoint Audit (WMI)',          description: 'Inspect Windows host config' },
+  ldap:  { icon: Users,     color: '#8b5cf6', label: 'Active Directory Audit (LDAP)', description: 'Query users, groups, domain' },
+  smb:   { icon: HardDrive, color: '#f97316', label: 'Windows Share Audit (SMB)',     description: 'Inventory shares and exposure' },
+  mssql: { icon: Database,  color: '#0284c7', label: 'Database Audit (MSSQL)',        description: 'Inspect SQL Server config' },
+  snmp:  { icon: Network,   color: '#65a30d', label: 'Network Device Audit (SNMP)',   description: 'Query routers, switches, printers' },
+}
+
 function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, onSetupEasm, onVmScan, onAuditScan }) {
   const [mode, setMode] = useState(null)
   const [domain, setDomain] = useState('')
   const [scanType, setScanType] = useState('full')
   const [scanning, setScanning] = useState(false)
   const [error, setError] = useState(null)
+  const [auditProtocols, setAuditProtocols] = useState([])   // flattened from /api/audits/protocols
+
+  // Load registered protocol audits so each gets its own top-level card.
+  // Cards render immediately for EASM/VM/Import; audit cards append as the
+  // list arrives (one round-trip, silently ignored on failure).
+  useEffect(() => {
+    let cancelled = false
+    listAuditProtocols()
+      .then(resp => {
+        if (cancelled) return
+        setAuditProtocols(resp?.audits || [])
+      })
+      .catch(() => { /* empty list — audit cards simply don't appear */ })
+    return () => { cancelled = true }
+  }, [])
 
   const handleScanDomain = async () => {
     if (!domain.trim()) return
@@ -217,7 +245,22 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <SourceOption icon={Globe} label="EASM Audit" description={easmEnabled ? 'Audit a domain' : 'Set up EASM auditing'} color="#0ea5e9" onClick={() => setMode(easmEnabled ? 'easm' : 'easm-setup')} />
             <SourceOption icon={MonitorSmartphone} label="VM Audit" description="Remote vulnerability audit" color="#ec4899" onClick={() => setMode('vm')} />
-            <SourceOption icon={ShieldAlert} label="Authenticated Audit" description="Credentialed ReAct audit (WMI, more coming)" color="#14b8a6" onClick={() => setMode('audit')} />
+            {/* Credentialed protocol audits — one card per registered protocol.
+                Authentication mode (basic/NTLM/anonymous) is a property of each
+                protocol's tool palette, not a separate top-level choice. */}
+            {auditProtocols.map(p => {
+              const meta = AUDIT_CARD_META[p.protocol] || { icon: ShieldAlert, color: '#14b8a6' }
+              return (
+                <SourceOption
+                  key={p.protocol}
+                  icon={meta.icon}
+                  label={meta.label || p.label}
+                  description={meta.description || 'Protocol ReAct audit'}
+                  color={meta.color}
+                  onClick={() => setMode(`audit:${p.protocol}`)}
+                />
+              )
+            })}
             <SourceOption icon={Upload} label="Import File" description="Nessus XML, HTML, CSV" color="#6366f1" onClick={() => setMode('upload')} />
           </div>
         )}
@@ -280,11 +323,13 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
           />
         )}
 
-        {mode === 'audit' && (
+        {typeof mode === 'string' && mode.startsWith('audit:') && (
           <AuditScanPanel
             onClose={onClose}
             onBack={() => setMode(null)}
             onAuditScan={onAuditScan}
+            preselectedProtocol={mode.slice('audit:'.length)}
+            availableProtocols={auditProtocols}
           />
         )}
 
@@ -749,9 +794,11 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
 //   6. Rough cost estimate ($ per host × host count)
 //   7. Start → scan row + background agent runs
 
-function AuditScanPanel({ onClose, onBack, onAuditScan }) {
-  const [protocols, setProtocols] = useState([])             // [{protocol, label, missions, credential_connector_ids, ...}]
-  const [selectedProtocol, setSelectedProtocol] = useState('')
+function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, availableProtocols }) {
+  // When the parent modal already fetched the protocol catalog (and the user
+  // picked a specific card), we skip the refetch and preselect the protocol.
+  const [protocols, setProtocols] = useState(availableProtocols || [])
+  const [selectedProtocol, setSelectedProtocol] = useState(preselectedProtocol || '')
   const [selectedMission, setSelectedMission] = useState('')
   const [loadingPrereqs, setLoadingPrereqs] = useState(true)
 
@@ -778,13 +825,17 @@ function AuditScanPanel({ onClose, onBack, onAuditScan }) {
   const [scanning, setScanning] = useState(false)
   const [error, setError] = useState(null)
 
-  // ── Load protocols + credentials + relays + token usage ──
+  // ── Load protocols (if not passed in) + credentials + relays + token usage ──
   useEffect(() => {
     let cancelled = false
     async function loadPrereqs() {
       try {
+        // Protocols come from the parent modal when preselectedProtocol was used.
+        const protoPromise = protocols.length > 0
+          ? Promise.resolve({ audits: protocols })
+          : listAuditProtocols().catch(() => ({ audits: [] }))
         const [protoResp, creds, relays, usageResp] = await Promise.all([
-          listAuditProtocols().catch(() => ({ audits: [] })),
+          protoPromise,
           getCredentials().catch(() => []),
           getRelayAgents().catch(() => ({ items: [] })),
           getBillingUsage().catch(() => null),
@@ -792,9 +843,14 @@ function AuditScanPanel({ onClose, onBack, onAuditScan }) {
         if (cancelled) return
         const audits = protoResp?.audits || []
         setProtocols(audits)
-        if (audits.length === 1) {
-          setSelectedProtocol(audits[0].protocol)
-          if (audits[0].missions?.length) setSelectedMission(audits[0].missions[0].key)
+        // Preselect mission: prefer first mission of the (possibly preselected) protocol,
+        // else first mission of the first protocol.
+        const activeProto = audits.find(p => p.protocol === selectedProtocol) || audits[0]
+        if (activeProto) {
+          if (!selectedProtocol) setSelectedProtocol(activeProto.protocol)
+          if (activeProto.missions?.length && !selectedMission) {
+            setSelectedMission(activeProto.missions[0].key)
+          }
         }
         setCredentials(Array.isArray(creds) ? creds : [])
         const connected = (relays?.items || relays || []).filter(r => r.is_connected || r.status === 'connected')
@@ -807,7 +863,7 @@ function AuditScanPanel({ onClose, onBack, onAuditScan }) {
     }
     loadPrereqs()
     return () => { cancelled = true }
-  }, [])
+  }, [])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Current protocol + mission objects from the catalog
   const currentProtocol = protocols.find(p => p.protocol === selectedProtocol)
@@ -978,19 +1034,34 @@ function AuditScanPanel({ onClose, onBack, onAuditScan }) {
     <div>
       <BackButton onClick={onBack} />
 
-      {/* Protocol + mission */}
-      <AuditRow icon={ShieldAlert} label="Protocol">
-        <select
-          value={selectedProtocol}
-          onChange={e => setSelectedProtocol(e.target.value)}
-          style={_selectStyle}
-        >
-          <option value="">Select protocol…</option>
-          {protocols.map(p => (
-            <option key={p.protocol} value={p.protocol}>{p.label}</option>
-          ))}
-        </select>
-      </AuditRow>
+      {/* Protocol label (static when preselected from the modal's card click;
+          selectable when this panel is invoked generically). */}
+      {preselectedProtocol && currentProtocol ? (
+        <div style={{
+          marginBottom: 10, padding: '8px 10px', borderRadius: 6,
+          background: 'var(--bg-secondary)',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <ShieldAlert size={14} color="var(--text-muted)" />
+          <span style={{ fontSize: 12, fontWeight: 600 }}>{currentProtocol.label}</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            ({(currentProtocol.auth_modes || []).join(', ')})
+          </span>
+        </div>
+      ) : (
+        <AuditRow icon={ShieldAlert} label="Protocol">
+          <select
+            value={selectedProtocol}
+            onChange={e => setSelectedProtocol(e.target.value)}
+            style={_selectStyle}
+          >
+            <option value="">Select protocol…</option>
+            {protocols.map(p => (
+              <option key={p.protocol} value={p.protocol}>{p.label}</option>
+            ))}
+          </select>
+        </AuditRow>
+      )}
 
       {currentProtocol && (
         <AuditRow icon={Shield} label="Mission">

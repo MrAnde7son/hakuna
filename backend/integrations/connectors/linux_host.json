@@ -1,0 +1,79 @@
+{
+  "id": "linux_host",
+  "name": "Linux Host (SSH)",
+  "description": "Credentials for authenticated Linux audit over SSH via the relay agent. The ReAct agent reads a curated allowlist of system files (/etc/os-release, sshd_config, /etc/passwd, sudoers, crontabs) and runs read-only inspection commands (ss, ps, find, dpkg/rpm/apk) to surface hardening, identity, and software-inventory exposures.",
+  "category": "Endpoint Security",
+  "logo": "/logos/vendors/linux.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "ssh",
+  "relay_capable": true,
+  "credential_only": true,
+
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Enter the SSH username on the target host. Prefer a dedicated low-privilege audit account (e.g. 'svc-hakuna-audit'). Root is not required — the agent degrades gracefully when a probe needs elevation it doesn't have.",
+        "capture": {
+          "field": "username",
+          "label": "Username",
+          "type": "text",
+          "placeholder": "svc-hakuna-audit",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Password (optional if using a private key). Stored AES-256-GCM encrypted in the credential vault.",
+        "capture": {
+          "field": "password",
+          "label": "Password",
+          "type": "password",
+          "required": false,
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Private key in PEM format (optional if using a password). Paste the full key including the BEGIN/END lines. OpenSSH and PKCS#8 formats are both supported.",
+        "capture": {
+          "field": "private_key",
+          "label": "Private Key (PEM)",
+          "type": "textarea",
+          "required": false,
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "Passphrase for the private key (if the key is encrypted). Leave blank for an unencrypted key.",
+        "capture": {
+          "field": "private_key_passphrase",
+          "label": "Private Key Passphrase",
+          "type": "password",
+          "required": false,
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "SSH port. Defaults to 22.",
+        "capture": {
+          "field": "port",
+          "label": "Port",
+          "type": "text",
+          "placeholder": "22",
+          "default": "22",
+          "required": false,
+          "auto_validate": false
+        }
+      }
+    ]
+  },
+
+  "params_schema": {
+    "note": {
+      "label": "Note",
+      "type": "text",
+      "default": "",
+      "description": "This connector stores credentials only. Audits are triggered from the 'SSH Audit' page — a connected relay agent with SSH reachability to the target is required."
+    }
+  }
+}

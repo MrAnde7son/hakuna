@@ -17,14 +17,16 @@ from models.models import Agent, Asset, Finding, Scan
 # ── Registry + tool palette ──────────────────────────────────────────
 
 
-def test_registry_populates_wmi_audit():
+def test_registry_populates_all_audits():
     """Loading agent_tools (which side-effect-imports agents.tools) must
-    populate the AUDITS registry with the WMI protocol audit."""
+    populate the AUDITS registry with every protocol audit."""
     import agents.agent_tools  # noqa: F401 — triggers tool + audit registration
     from agents.audit_registry import AUDITS, get_audit, list_audits
 
     assert "wmi" in AUDITS
-    assert list_audits() == ["wmi"]
+    assert "ldap" in AUDITS
+    assert "smb" in AUDITS
+    assert set(list_audits()) == {"wmi", "ldap", "smb"}
 
     wmi = get_audit("wmi")
     assert wmi.label == "WMI Audit"
@@ -32,6 +34,21 @@ def test_registry_populates_wmi_audit():
     assert "basic" in wmi.auth_modes
     assert {m.key for m in wmi.missions} == {
         "identity", "privesc", "software_cve", "network_hygiene", "explore",
+    }
+
+    ldap = get_audit("ldap")
+    assert ldap.label == "LDAP Audit"
+    assert ldap.relay_method == "ldap_query"
+    assert {m.key for m in ldap.missions} == {
+        "identity", "ad_structure", "acl_audit", "explore",
+    }
+
+    smb = get_audit("smb")
+    assert smb.label == "SMB Audit"
+    assert smb.relay_method == "smb_query"
+    assert "anonymous" in smb.auth_modes
+    assert {m.key for m in smb.missions} == {
+        "share_audit", "signing_coercion", "null_session", "explore",
     }
 
 
@@ -51,35 +68,95 @@ def test_wmi_tool_palette_registered():
     assert not missing, f"tools missing from TOOL_REGISTRY: {missing}"
 
 
+def test_ldap_tool_palette_registered():
+    from agents.agent_tools import TOOL_REGISTRY
+
+    expected = {
+        "ldap_get_domain_info", "ldap_get_password_policy",
+        "ldap_find_kerberoastable", "ldap_find_asrep_roastable",
+        "ldap_list_privileged_groups", "ldap_get_group_members",
+        "ldap_get_user",
+        "ldap_find_unconstrained_delegation", "ldap_find_constrained_delegation",
+        "ldap_find_rbcd", "ldap_get_object_acl",
+        "ldap_list_trusts", "ldap_list_ous", "ldap_list_computers",
+        "ldap_raw_search",
+    }
+    missing = expected - set(TOOL_REGISTRY.keys())
+    assert not missing, f"LDAP tools missing from TOOL_REGISTRY: {missing}"
+
+
+def test_smb_tool_palette_registered():
+    from agents.agent_tools import TOOL_REGISTRY
+
+    expected = {
+        "smb_get_server_info", "smb_check_signing",
+        "smb_list_shares", "smb_list_share_contents",
+        "smb_check_null_session", "smb_list_shares_anonymous",
+        "smb_samr_enum_users_anonymous", "smb_check_guest_access",
+        "smb_check_named_pipe",
+    }
+    missing = expected - set(TOOL_REGISTRY.keys())
+    assert not missing, f"SMB tools missing from TOOL_REGISTRY: {missing}"
+
+
 def test_mission_prompts_resolved():
     """Each mission's prompt should have {preamble} expanded at import time."""
     from agents.agent_prompts import ENHANCED_PROMPTS
 
-    for key in (
-        "wmi_audit_identity",
-        "wmi_audit_privesc",
-        "wmi_audit_software_cve",
-        "wmi_audit_network_hygiene",
+    wmi_keys = [
+        "wmi_audit_identity", "wmi_audit_privesc",
+        "wmi_audit_software_cve", "wmi_audit_network_hygiene",
         "wmi_audit_explore",
-    ):
+    ]
+    ldap_keys = [
+        "ldap_audit_identity", "ldap_audit_ad_structure",
+        "ldap_audit_acl_audit", "ldap_audit_explore",
+    ]
+    smb_keys = [
+        "smb_audit_share_audit", "smb_audit_signing_coercion",
+        "smb_audit_null_session", "smb_audit_explore",
+    ]
+
+    for key in wmi_keys + ldap_keys + smb_keys:
         prompt = ENHANCED_PROMPTS[key]
         assert "{preamble}" not in prompt, f"{key} still has unresolved preamble"
-        assert "Windows host auditor" in prompt, f"{key} missing shared preamble"
+
+    # Each preamble family stamps its own persona line — verify the right
+    # preamble was chosen per protocol.
+    for k in wmi_keys:
+        assert "Windows host auditor" in ENHANCED_PROMPTS[k]
+    for k in ldap_keys:
+        assert "Active Directory auditor" in ENHANCED_PROMPTS[k]
+    for k in smb_keys:
+        assert "SMB auditor" in ENHANCED_PROMPTS[k]
 
 
 def test_protocol_audit_templates_registered():
-    """AGENT_TEMPLATES gets one entry per (protocol, mission) tuple."""
+    """AGENT_TEMPLATES gets one entry per (protocol, mission) tuple for every audit."""
     from routes.agent_routes import AGENT_TEMPLATES
 
     template_ids = {t["id"] for t in AGENT_TEMPLATES}
-    for mission in ("identity", "privesc", "software_cve", "network_hygiene", "explore"):
-        assert f"wmi_audit_{mission}" in template_ids, f"wmi_audit_{mission} template missing"
+    expected = (
+        [f"wmi_audit_{m}" for m in ("identity", "privesc", "software_cve", "network_hygiene", "explore")]
+        + [f"ldap_audit_{m}" for m in ("identity", "ad_structure", "acl_audit", "explore")]
+        + [f"smb_audit_{m}" for m in ("share_audit", "signing_coercion", "null_session", "explore")]
+    )
+    for tid in expected:
+        assert tid in template_ids, f"{tid} template missing"
 
-    # Each audit template should carry the full tool palette.
-    ident = next(t for t in AGENT_TEMPLATES if t["id"] == "wmi_audit_identity")
-    assert "emit_finding" in ident["tools"]
-    assert "wmi_get_password_policy" in ident["tools"]
-    assert ident["guardrails"]["autonomy_level"] == "autonomous"
+    # Each audit template should carry emit_finding + its own protocol tool.
+    wmi_ident = next(t for t in AGENT_TEMPLATES if t["id"] == "wmi_audit_identity")
+    assert "emit_finding" in wmi_ident["tools"]
+    assert "wmi_get_password_policy" in wmi_ident["tools"]
+    assert wmi_ident["guardrails"]["autonomy_level"] == "autonomous"
+
+    ldap_ident = next(t for t in AGENT_TEMPLATES if t["id"] == "ldap_audit_identity")
+    assert "ldap_find_kerberoastable" in ldap_ident["tools"]
+    assert "emit_finding" in ldap_ident["tools"]
+
+    smb_share = next(t for t in AGENT_TEMPLATES if t["id"] == "smb_audit_share_audit")
+    assert "smb_list_shares" in smb_share["tools"]
+    assert "emit_finding" in smb_share["tools"]
 
 
 # ── dispatch_audit_run ───────────────────────────────────────────────
@@ -150,6 +227,49 @@ def test_dispatch_audit_run_creates_scan_and_scratch_agents(db_session, test_org
     assert agent.guardrails["autonomy_level"] == "autonomous"
 
     # Background job was dispatched once per asset.
+    assert mock_dispatch.call_count == 1
+
+
+def test_dispatch_audit_run_ldap(db_session, test_org, audit_asset):
+    """LDAP audit uses a different relay method + tool palette but same orchestrator."""
+    from services.audit_runner import dispatch_audit_run
+
+    with patch("services.audit_runner._dispatch_background_run") as mock_dispatch:
+        result = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="ldap", mission="identity",
+            asset_ids=[audit_asset.id],
+            relay_agent_id="relay-dc",
+            credential_id="dc-admin",
+        )
+    assert result["protocol"] == "ldap"
+    assert result["mission"] == "identity"
+    scan = db_session.query(Scan).filter_by(id=result["scan_id"]).first()
+    assert scan.scan_type == "ldap_audit"
+    agent = db_session.query(Agent).filter_by(id=result["runs"][0]["agent_id"]).first()
+    # Scratch agent gets the LDAP palette, not WMI.
+    assert "ldap_find_kerberoastable" in agent.tools
+    assert "wmi_get_password_policy" not in agent.tools
+    assert mock_dispatch.call_count == 1
+
+
+def test_dispatch_audit_run_smb(db_session, test_org, audit_asset):
+    from services.audit_runner import dispatch_audit_run
+
+    with patch("services.audit_runner._dispatch_background_run") as mock_dispatch:
+        result = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="smb", mission="signing_coercion",
+            asset_ids=[audit_asset.id],
+            relay_agent_id="relay-1",
+            credential_id="windows-admin",
+        )
+    assert result["protocol"] == "smb"
+    scan = db_session.query(Scan).filter_by(id=result["scan_id"]).first()
+    assert scan.scan_type == "smb_audit"
+    agent = db_session.query(Agent).filter_by(id=result["runs"][0]["agent_id"]).first()
+    assert "smb_check_signing" in agent.tools
+    assert "smb_check_named_pipe" in agent.tools
     assert mock_dispatch.call_count == 1
 
 

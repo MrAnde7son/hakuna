@@ -9,8 +9,12 @@ from .transport import LocalApiTransport
 
 # Side-effect imports: each method handler registers itself on import.
 # Keep these at module load so METHOD_HANDLERS is populated before the first
-# task arrives. New protocol handlers (ldap_query, kerberos_probe, smb_enum,
-# etc.) plug in by importing them here.
+# task arrives. New protocol handlers (kerberos_probe, smb_enum, etc.) plug
+# in by importing them here.
+from . import ldap_query  # noqa: F401
+from . import smb_query  # noqa: F401
+from . import snmp_query  # noqa: F401
+from . import ssh_query  # noqa: F401
 from . import wmi_query  # noqa: F401
 
 logger = logging.getLogger(__name__)

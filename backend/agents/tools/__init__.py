@@ -9,3 +9,7 @@ populated before routes or agent_engine read from them.
 # Side-effect imports — order here matters only for debuggability, not correctness.
 from agents.tools import emit_finding  # noqa: F401
 from agents.tools import wmi_tools  # noqa: F401
+from agents.tools import ldap_tools  # noqa: F401
+from agents.tools import smb_tools  # noqa: F401
+from agents.tools import snmp_tools  # noqa: F401
+from agents.tools import ssh_tools  # noqa: F401

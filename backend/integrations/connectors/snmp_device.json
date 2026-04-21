@@ -1,0 +1,103 @@
+{
+  "id": "snmp_device",
+  "name": "SNMP Device",
+  "description": "Credentials for authenticated SNMP audit of network devices (routers, switches, firewalls, printers) and legacy systems via the relay agent. Supports v1/v2c community strings and v3 (USM with authPriv).",
+  "category": "Network Infrastructure",
+  "logo": "/logos/vendors/snmp.svg",
+  "direction": "pull",
+  "entity": "asset",
+  "transport_type": "snmp",
+  "relay_capable": true,
+  "credential_only": true,
+
+  "credential_acquisition": {
+    "pattern": "guided_generation",
+    "steps": [
+      {
+        "instruction": "Select the SNMP version this device speaks. v2c is the most common on legacy gear; v3 is required for authenticated + encrypted polling.",
+        "capture": {
+          "field": "version",
+          "label": "SNMP Version",
+          "type": "select",
+          "options": ["v1", "v2c", "v3"],
+          "default": "v2c",
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "For v1/v2c: enter the read-only community string. Leave blank if using v3. Stored AES-256-GCM encrypted.",
+        "capture": {
+          "field": "community",
+          "label": "Community String (v1/v2c)",
+          "type": "password",
+          "placeholder": "public",
+          "required": false,
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "For v3 only: USM username.",
+        "capture": {
+          "field": "username",
+          "label": "Username (v3)",
+          "type": "text",
+          "required": false,
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "For v3 only: authentication protocol.",
+        "capture": {
+          "field": "auth_protocol",
+          "label": "Auth Protocol (v3)",
+          "type": "select",
+          "options": ["none", "MD5", "SHA", "SHA224", "SHA256", "SHA384", "SHA512"],
+          "default": "SHA",
+          "required": false,
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "For v3 only: authentication passphrase.",
+        "capture": {
+          "field": "auth_key",
+          "label": "Auth Passphrase (v3)",
+          "type": "password",
+          "required": false,
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "For v3 only: privacy (encryption) protocol.",
+        "capture": {
+          "field": "priv_protocol",
+          "label": "Privacy Protocol (v3)",
+          "type": "select",
+          "options": ["none", "DES", "3DES", "AES", "AES192", "AES256"],
+          "default": "AES",
+          "required": false,
+          "auto_validate": false
+        }
+      },
+      {
+        "instruction": "For v3 only: privacy passphrase.",
+        "capture": {
+          "field": "priv_key",
+          "label": "Privacy Passphrase (v3)",
+          "type": "password",
+          "required": false,
+          "auto_validate": false
+        }
+      }
+    ]
+  },
+
+  "params_schema": {
+    "note": {
+      "label": "Note",
+      "type": "text",
+      "default": "",
+      "description": "This connector stores credentials only. Audits are triggered from the 'SNMP Audit' page — a connected relay agent with UDP 161 access to the target device is required."
+    }
+  }
+}
