@@ -11,8 +11,14 @@ and services.wmi_result_mapper (which dispatches each profile's rows to the
 right Inventory* table). Keep them stable.
 """
 
-# WQL strings — executed directly via IWbemServices.ExecQuery in root\cimv2.
-WQL_PROFILES: dict[str, str] = {
+# WQL profiles. Each entry is either:
+#   - A plain WQL string → executed in root\cimv2 (the default namespace), or
+#   - A (namespace, query) tuple → executed in the given namespace instead.
+# The executor in wmi_query.py reads the tuple form and opens the target
+# namespace lazily. Cross-namespace profiles let the agent reach security-
+# specific providers (MSFT_MpComputerStatus, Win32_EncryptableVolume,
+# MSFT_NetFirewallProfile, etc.) that aren't in the default cimv2 namespace.
+WQL_PROFILES: dict[str, str | tuple[str, str]] = {
     "software_product": (
         "SELECT Name, Version, Vendor, InstallDate FROM Win32_Product"
     ),
@@ -115,6 +121,67 @@ WQL_PROFILES: dict[str, str] = {
         # to decide if this is a DC, workstation, or server.
         "SELECT Name, Domain, DomainRole, Manufacturer, Model, "
         "PartOfDomain, TotalPhysicalMemory FROM Win32_ComputerSystem"
+    ),
+
+    # ── Cross-namespace profiles (security providers) ────────────────────
+    #
+    # These live outside root\cimv2. The executor opens a fresh IWbemServices
+    # against the named namespace for these. Per-profile error isolation
+    # still applies — missing providers (e.g., MSFT_NetFirewallProfile on
+    # pre-Win8 hosts) yield a _errors entry rather than failing the batch.
+
+    "defender_status": (
+        r"root\Microsoft\Windows\Defender",
+        "SELECT AMEngineVersion, AntivirusEnabled, AntispywareEnabled, "
+        "BehaviorMonitorEnabled, NISEnabled, OnAccessProtectionEnabled, "
+        "RealTimeProtectionEnabled, AntivirusSignatureLastUpdated, "
+        "QuickScanAge, FullScanAge, TamperProtectionSource, "
+        "IsTamperProtected FROM MSFT_MpComputerStatus",
+    ),
+
+    "firewall_profile": (
+        r"root\StandardCimv2",
+        # Enabled: 1=true/0=false. DefaultInboundAction: 2=Block 4=Allow.
+        # Modern API; preferred over the legacy HNetCfg/FwPolicy2 COM object.
+        "SELECT Name, Enabled, DefaultInboundAction, DefaultOutboundAction, "
+        "LogAllowed, LogBlocked, LogIgnored, LogFileName, LogMaxSizeKilobytes, "
+        "AllowInboundRules, AllowLocalFirewallRules, AllowLocalIPsecRules, "
+        "AllowUserApps, AllowUserPorts, NotifyOnListen "
+        "FROM MSFT_NetFirewallProfile",
+    ),
+
+    "bitlocker_volumes": (
+        r"root\cimv2\Security\MicrosoftVolumeEncryption",
+        # ProtectionStatus: 0=unprotected 1=protected 2=unknown.
+        # EncryptionMethod: 0=none, 1=AES128_diffuser, 2=AES256_diffuser,
+        # 3=AES128, 4=AES256, 6=XTS_AES128, 7=XTS_AES256.
+        "SELECT DeviceID, DriveLetter, PersistentVolumeID, ProtectionStatus, "
+        "EncryptionMethod, ConversionStatus, VolumeType, LockStatus "
+        "FROM Win32_EncryptableVolume",
+    ),
+
+    "tpm_info": (
+        r"root\cimv2\Security\MicrosoftTpm",
+        "SELECT IsActivated_InitialValue, IsEnabled_InitialValue, "
+        "IsOwned_InitialValue, ManufacturerId, ManufacturerVersion, "
+        "SpecVersion, PhysicalPresenceVersionInfo "
+        "FROM Win32_Tpm",
+    ),
+
+    # ── Root\cimv2 additions (no namespace change) ───────────────────────
+
+    "system_drivers": (
+        # Kernel driver inventory + signing state. StartMode of Boot/System
+        # + unsigned is a classic rootkit / legacy-driver indicator.
+        "SELECT Name, DisplayName, State, StartMode, PathName, ServiceType "
+        "FROM Win32_SystemDriver"
+    ),
+
+    "shares_detailed": (
+        # Same as `shares` but with AllowMaximum for connection caps — some
+        # checks flag shares with unlimited connections as risky.
+        "SELECT Name, Path, Description, Type, AllowMaximum "
+        "FROM Win32_Share"
     ),
 }
 

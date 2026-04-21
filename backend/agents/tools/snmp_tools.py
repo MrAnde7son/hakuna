@@ -267,6 +267,80 @@ def snmp_walk_tool(db, params: dict) -> dict:
     }
 
 
+# ── HOST-RESOURCES-MIB (installed software / processes / devices) ─────
+
+
+@agent_tool(
+    "snmp_host_resources",
+    "Walk HOST-RESOURCES-MIB (RFC 2790) to enumerate what's running on the "
+    "target: installed software (hrSWInstalledTable), running processes "
+    "(hrSWRunTable), and hardware devices (hrDeviceTable). Works on any "
+    "host with net-snmp or the Windows SNMP service configured. Use this "
+    "to correlate with CVE feeds (installed software) and spot persistence "
+    "/ malware (running processes from non-standard paths). Optionally "
+    "scope the walk: `scope=[installed_software]` for just software, etc. "
+    "Can return hundreds of rows on Windows servers — capped at 500 each.",
+    {
+        "asset_id": {"type": "integer"},
+        "scope": {
+            "type": "array",
+            "description": "Optional subset of ['installed_software', 'running_processes', 'devices']",
+            "items": {"type": "string", "enum": ["installed_software", "running_processes", "devices"]},
+        },
+    },
+)
+def snmp_host_resources_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    scope = params.get("scope") or None
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    op_params = {"scope": scope} if scope else {}
+    _, result = _run_async(_dispatch_snmp(
+        db, org_id, asset_id, "host_resources", op_params, relay, cred,
+    ))
+    # Result already grouped; just slim for LLM consumption.
+    out: dict[str, Any] = {}
+    for key in ("installed_software", "running_processes", "devices"):
+        if key in result:
+            section = result[key]
+            items = section.get("items") or []
+            out[key] = {
+                "total": section.get("total", len(items)),
+                "items": _trim(items, 40),
+            }
+    if result.get("_errors"):
+        out["errors"] = result["_errors"]
+    return out
+
+
+@agent_tool(
+    "snmp_list_listeners",
+    "List TCP listening ports (tcpConnTable filtered to state=listen) and "
+    "UDP bound ports (udpTable) on the target. This is the inside view of "
+    "what services the host exposes — compare against an external scan to "
+    "spot ports only reachable from localhost / internal networks vs those "
+    "exposed externally. Useful on embedded devices (printers, switches, "
+    "cameras) where nmap fingerprinting is unreliable.",
+    {"asset_id": {"type": "integer"}},
+)
+def snmp_list_listeners_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_snmp(
+        db, org_id, asset_id, "listeners", {}, relay, cred,
+    ))
+    tcp = result.get("tcp") or {}
+    udp = result.get("udp") or {}
+    return {
+        "tcp_total": tcp.get("total", 0),
+        "udp_total": udp.get("total", 0),
+        "tcp_listeners": _trim(tcp.get("listeners") or [], 40),
+        "udp_listeners": _trim(udp.get("listeners") or [], 40),
+        "errors": result.get("_errors") or {},
+    }
+
+
 # ── Registry ──────────────────────────────────────────────────────────
 
 
@@ -276,6 +350,8 @@ _SNMP_TOOL_NAMES = [
     # Inventory / topology
     "snmp_list_interfaces", "snmp_get_arp_table",
     "snmp_get_ip_addresses", "snmp_get_routing_table",
+    # HOST-RESOURCES-MIB — software/processes/devices/listeners
+    "snmp_host_resources", "snmp_list_listeners",
     # Escape hatch
     "snmp_get", "snmp_walk",
     # Shared

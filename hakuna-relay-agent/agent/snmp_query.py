@@ -57,6 +57,34 @@ _OID_IP_ROUTE_DEST = "1.3.6.1.2.1.4.21.1.1"
 _OID_IP_ROUTE_NEXTHOP = "1.3.6.1.2.1.4.21.1.7"
 _OID_IP_ROUTE_MASK = "1.3.6.1.2.1.4.21.1.11"
 
+# HOST-RESOURCES-MIB (RFC 2790). Only a subset — we pull what's useful for
+# software/process/device inventory on Linux net-snmp and Windows snmp service.
+_OID_HR_SW_INSTALLED_NAME = "1.3.6.1.2.1.25.6.3.1.2"  # hrSWInstalledName
+_OID_HR_SW_INSTALLED_DATE = "1.3.6.1.2.1.25.6.3.1.5"  # hrSWInstalledDate
+_OID_HR_SW_RUN_NAME = "1.3.6.1.2.1.25.4.2.1.2"        # hrSWRunName
+_OID_HR_SW_RUN_PATH = "1.3.6.1.2.1.25.4.2.1.4"        # hrSWRunPath
+_OID_HR_SW_RUN_PARAMS = "1.3.6.1.2.1.25.4.2.1.5"      # hrSWRunParameters
+_OID_HR_SW_RUN_TYPE = "1.3.6.1.2.1.25.4.2.1.6"        # hrSWRunType (2=op 3=app 4=other)
+_OID_HR_SW_RUN_STATUS = "1.3.6.1.2.1.25.4.2.1.7"      # hrSWRunStatus
+_OID_HR_DEVICE_TYPE = "1.3.6.1.2.1.25.3.2.1.2"        # hrDeviceType
+_OID_HR_DEVICE_DESCR = "1.3.6.1.2.1.25.3.2.1.3"       # hrDeviceDescr
+_OID_HR_DEVICE_STATUS = "1.3.6.1.2.1.25.3.2.1.5"      # hrDeviceStatus
+
+# TCP/UDP listener tables (RFC 4022 / RFC 4113). Legacy IPv4-only columns —
+# many embedded devices don't expose the v6/dual-stack variants.
+_OID_TCP_CONN_STATE = "1.3.6.1.2.1.6.13.1.1"          # tcpConnState
+_OID_TCP_CONN_LOCAL_ADDR = "1.3.6.1.2.1.6.13.1.2"     # tcpConnLocalAddress
+_OID_TCP_CONN_LOCAL_PORT = "1.3.6.1.2.1.6.13.1.3"     # tcpConnLocalPort
+_OID_UDP_LOCAL_ADDR = "1.3.6.1.2.1.7.5.1.1"           # udpLocalAddress
+_OID_UDP_LOCAL_PORT = "1.3.6.1.2.1.7.5.1.2"           # udpLocalPort
+
+# TCP state mapping (tcpConnState). State 2 = listen.
+_TCP_STATES = {
+    1: "closed", 2: "listen", 3: "synSent", 4: "synReceived",
+    5: "established", 6: "finWait1", 7: "finWait2", 8: "closeWait",
+    9: "lastAck", 10: "closing", 11: "timeWait", 12: "deleteTCB",
+}
+
 _DEFAULT_COMMUNITIES = [
     "public", "private", "community", "manager",
     "cisco", "admin", "monitor", "default",
@@ -152,6 +180,10 @@ def _run_sync(target: str, port: int, creds: dict, op: str, op_params: dict) -> 
         return _op_get(mods, target, port, auth, op_params)
     if op == "walk":
         return _op_walk(mods, target, port, auth, op_params)
+    if op == "host_resources":
+        return _op_host_resources(mods, target, port, auth, op_params)
+    if op == "listeners":
+        return _op_listeners(mods, target, port, auth)
     return {"_errors": {op: f"unknown op: {op}"}}
 
 
@@ -311,6 +343,143 @@ def _op_walk(mods: dict, target: str, port: int, auth, op_params: dict) -> dict:
         "total": len(rows),
         "rows": [{"oid": o, "value": str(v)} for o, v in rows[:_MAX_WALK_ROWS]],
     }
+
+
+def _op_host_resources(mods: dict, target: str, port: int, auth, op_params: dict) -> dict:
+    """Walk HOST-RESOURCES-MIB for software/process/device inventory.
+
+    `op_params.scope` is an optional list filtering which tables to walk:
+    ["installed_software", "running_processes", "devices"]. Defaults to all
+    three. Each is expensive on large hosts (a Windows box may have 500+
+    installed programs and 300+ running processes) so callers can opt out.
+    """
+    scope = op_params.get("scope") or ["installed_software", "running_processes", "devices"]
+    out: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+
+    if "installed_software" in scope:
+        try:
+            rows = _walk_columns(mods, target, port, auth, {
+                "name": _OID_HR_SW_INSTALLED_NAME,
+                "installed_date": _OID_HR_SW_INSTALLED_DATE,
+            })
+            items = [{"name": r.get("name"), "installed_date": r.get("installed_date")}
+                     for r in rows.values() if r.get("name")]
+            out["installed_software"] = {"total": len(items), "items": items[:_MAX_WALK_ROWS]}
+        except Exception as e:
+            errors["installed_software"] = f"{type(e).__name__}: {e}"
+
+    if "running_processes" in scope:
+        try:
+            rows = _walk_columns(mods, target, port, auth, {
+                "name": _OID_HR_SW_RUN_NAME,
+                "path": _OID_HR_SW_RUN_PATH,
+                "params": _OID_HR_SW_RUN_PARAMS,
+                "type": _OID_HR_SW_RUN_TYPE,
+                "status": _OID_HR_SW_RUN_STATUS,
+            })
+            # HOST-RESOURCES-MIB process types: 2=operatingSystem,
+            # 3=deviceDriver, 4=application.
+            type_map = {1: "unknown", 2: "operatingSystem", 3: "deviceDriver", 4: "application"}
+            status_map = {1: "running", 2: "runnable", 3: "notRunnable", 4: "invalid"}
+            items = []
+            for r in rows.values():
+                if not r.get("name"):
+                    continue
+                items.append({
+                    "pid": r.get("index"),
+                    "name": r.get("name"),
+                    "path": r.get("path") or None,
+                    "params": r.get("params") or None,
+                    "type": type_map.get(_as_int(r.get("type")), r.get("type")),
+                    "status": status_map.get(_as_int(r.get("status")), r.get("status")),
+                })
+            out["running_processes"] = {"total": len(items), "items": items[:_MAX_WALK_ROWS]}
+        except Exception as e:
+            errors["running_processes"] = f"{type(e).__name__}: {e}"
+
+    if "devices" in scope:
+        try:
+            rows = _walk_columns(mods, target, port, auth, {
+                "type_oid": _OID_HR_DEVICE_TYPE,
+                "descr": _OID_HR_DEVICE_DESCR,
+                "status": _OID_HR_DEVICE_STATUS,
+            })
+            status_map = {1: "unknown", 2: "running", 3: "warning", 4: "testing", 5: "down"}
+            items = [{"index": r.get("index"), "descr": r.get("descr"),
+                      "type_oid": r.get("type_oid"),
+                      "status": status_map.get(_as_int(r.get("status")), r.get("status"))}
+                     for r in rows.values() if r.get("descr")]
+            out["devices"] = {"total": len(items), "items": items[:_MAX_WALK_ROWS]}
+        except Exception as e:
+            errors["devices"] = f"{type(e).__name__}: {e}"
+
+    if errors:
+        out["_errors"] = errors
+    return out
+
+
+def _op_listeners(mods: dict, target: str, port: int, auth) -> dict:
+    """Walk tcpConnTable (listen state only) + udpTable for service inventory.
+
+    The OID index carries the local IP + port. For TCP we filter to
+    tcpConnState=2 (listen); UDP has no state column — every entry is a
+    listener. This lets the agent correlate SNMP's view of open ports with
+    what an external scanner (nmap/Nuclei) sees from the outside.
+    """
+    out: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+
+    try:
+        # Walk state and port separately, join by the full index tail
+        # (local_ip.local_port.remote_ip.remote_port).
+        state_rows = dict(_walk_flat(mods, target, port, auth, _OID_TCP_CONN_STATE))
+        port_rows = dict(_walk_flat(mods, target, port, auth, _OID_TCP_CONN_LOCAL_PORT))
+        tcp_listeners: list[dict] = []
+        for oid, state_val in state_rows.items():
+            try:
+                state = int(state_val)
+            except Exception:
+                continue
+            if state != 2:  # not a listener
+                continue
+            # Strip the state column prefix to get the index tail.
+            idx = oid[len(_OID_TCP_CONN_STATE) + 1:]
+            # Rebuild the port OID by replacing the column.
+            port_oid = f"{_OID_TCP_CONN_LOCAL_PORT}.{idx}"
+            local_port = port_rows.get(port_oid)
+            # The index itself is local_ip.local_port.remote_ip.remote_port.
+            parts = idx.split(".")
+            local_ip = ".".join(parts[:4]) if len(parts) >= 4 else None
+            tcp_listeners.append({
+                "proto": "tcp",
+                "local_address": local_ip,
+                "local_port": _as_int(local_port) if local_port is not None else None,
+                "state": _TCP_STATES.get(state, str(state)),
+            })
+        out["tcp"] = {"total": len(tcp_listeners), "listeners": tcp_listeners[:_MAX_WALK_ROWS]}
+    except Exception as e:
+        errors["tcp"] = f"{type(e).__name__}: {e}"
+
+    try:
+        udp_rows = dict(_walk_flat(mods, target, port, auth, _OID_UDP_LOCAL_PORT))
+        udp_listeners: list[dict] = []
+        for oid, port_val in udp_rows.items():
+            idx = oid[len(_OID_UDP_LOCAL_PORT) + 1:]
+            parts = idx.split(".")
+            local_ip = ".".join(parts[:4]) if len(parts) >= 4 else None
+            udp_listeners.append({
+                "proto": "udp",
+                "local_address": local_ip,
+                "local_port": _as_int(port_val),
+            })
+        out["udp"] = {"total": len(udp_listeners), "listeners": udp_listeners[:_MAX_WALK_ROWS]}
+    except Exception as e:
+        errors["udp"] = f"{type(e).__name__}: {e}"
+
+    if errors:
+        out["_errors"] = errors
+    return out
 
 
 def _op_community_probe(mods: dict, target: str, port: int) -> dict:

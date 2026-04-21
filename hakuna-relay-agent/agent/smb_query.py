@@ -100,6 +100,10 @@ def _run_sync(target: str, creds: dict, op: str, op_params: dict, anonymous: boo
             return _op_check_pipe(conn, op_params)
         if op == "samr_enum_anon":
             return _op_samr_enum_anon(conn, target)
+        if op == "reg_read":
+            return _op_reg_read(conn, op_params)
+        if op == "samr_password_policy":
+            return _op_samr_password_policy(conn)
         return {"_errors": {op: f"unknown op: {op}"}}
     finally:
         try:
@@ -300,6 +304,310 @@ def _op_samr_enum_anon(conn, target: str) -> dict:
             pass
 
     return {"anonymous_access": True, "users": users}
+
+
+def _op_samr_password_policy(conn) -> dict:
+    """Read domain password/lockout policy via SAMR over \\PIPE\\samr.
+
+    Returns the effective policy for every enumerable domain on the target
+    (typically the Builtin domain and the account domain — on a member host
+    the account domain is the local SAM, on a DC it's the AD domain). This
+    is a *credentialed* query: unlike _op_samr_enum_anon, we don't set
+    anonymous=True at dispatch time, so it uses the authenticated SMB session.
+
+    Policy fields come from SamrQueryInformationDomain (DOMAIN_PASSWORD_INFORMATION
+    and DOMAIN_LOCKOUT_INFORMATION levels). Time fields are NT filetime deltas
+    — negative int64 representing 100ns intervals. We convert to seconds for
+    readability; the backend tool converts to days.
+    """
+    try:
+        from impacket.dcerpc.v5 import transport, samr
+    except Exception as e:
+        return {"_errors": {"samr_password_policy": f"impacket import: {e}"}}
+
+    rpctransport = transport.SMBTransport(
+        conn.getRemoteName(), conn.getRemoteHost(),
+        filename=r"\samr", smb_connection=conn,
+    )
+    try:
+        dce = rpctransport.get_dce_rpc()
+        dce.connect()
+        dce.bind(samr.MSRPC_UUID_SAMR)
+    except Exception as e:
+        return {"_errors": {"samr_password_policy": f"bind: {type(e).__name__}: {e}"}}
+
+    out_domains: list[dict] = []
+    try:
+        server_handle = samr.hSamrConnect(dce)["ServerHandle"]
+        try:
+            domains = samr.hSamrEnumerateDomainsInSamServer(dce, server_handle)["Buffer"]["Buffer"]
+        except Exception as e:
+            return {"_errors": {"samr_password_policy": f"enum_domains: {type(e).__name__}: {e}"}}
+
+        for d in domains:
+            name = str(d["Name"])
+            # Skip the Builtin domain — its password policy isn't user-facing.
+            if name.lower() == "builtin":
+                continue
+            try:
+                sid = samr.hSamrLookupDomainInSamServer(dce, server_handle, name)["DomainId"]
+                domain_handle = samr.hSamrOpenDomain(dce, server_handle, domainId=sid)["DomainHandle"]
+            except Exception as e:
+                out_domains.append({"domain": name, "error": f"open: {type(e).__name__}: {e}"})
+                continue
+            entry: dict[str, Any] = {"domain": name}
+            try:
+                pw_info = samr.hSamrQueryInformationDomain(
+                    dce, domain_handle, samr.DOMAIN_INFORMATION_CLASS.DomainPasswordInformation,
+                )["Buffer"]["Password"]
+                entry["min_password_length"] = int(pw_info["MinPasswordLength"])
+                entry["password_history_length"] = int(pw_info["PasswordHistoryLength"])
+                entry["password_properties"] = int(pw_info["PasswordProperties"])
+                # DOMAIN_PASSWORD_COMPLEX = 0x1.
+                entry["complexity_required"] = bool(int(pw_info["PasswordProperties"]) & 0x1)
+                entry["max_password_age_seconds"] = _filetime_delta_seconds(pw_info["MaxPasswordAge"])
+                entry["min_password_age_seconds"] = _filetime_delta_seconds(pw_info["MinPasswordAge"])
+            except Exception as e:
+                entry["password_error"] = f"{type(e).__name__}: {e}"
+            try:
+                lock_info = samr.hSamrQueryInformationDomain(
+                    dce, domain_handle, samr.DOMAIN_INFORMATION_CLASS.DomainLockoutInformation,
+                )["Buffer"]["Lockout"]
+                entry["lockout_threshold"] = int(lock_info["LockoutThreshold"])
+                entry["lockout_duration_seconds"] = _filetime_delta_seconds(lock_info["LockoutDuration"])
+                entry["lockout_observation_seconds"] = _filetime_delta_seconds(lock_info["LockoutObservationWindow"])
+            except Exception as e:
+                entry["lockout_error"] = f"{type(e).__name__}: {e}"
+            try:
+                samr.hSamrCloseHandle(dce, domain_handle)
+            except Exception:
+                pass
+            out_domains.append(entry)
+        try:
+            samr.hSamrCloseHandle(dce, server_handle)
+        except Exception:
+            pass
+    finally:
+        try:
+            dce.disconnect()
+        except Exception:
+            pass
+
+    return {"domains": out_domains}
+
+
+def _filetime_delta_seconds(ft) -> int | None:
+    """Convert SAMR's int64 FILETIME delta (100-ns intervals, negative) to seconds.
+
+    SAMR returns -1 for "never" on things like MaxPasswordAge when disabled.
+    We map that to None so the agent can reason about it explicitly.
+    """
+    try:
+        # impacket wraps these in LARGE_INTEGER with HighPart/LowPart.
+        high = int(ft["HighPart"])
+        low = int(ft["LowPart"]) & 0xFFFFFFFF
+        val = (high << 32) | low
+        # Treat the two-complement high bit as signed.
+        if high & 0x80000000:
+            val -= 1 << 64
+        if val == -1 or val == 0:
+            return None
+        # Delta is negative for "X time from now"; flip to positive seconds.
+        return abs(val) // 10_000_000
+    except Exception:
+        return None
+
+
+# ── Remote registry (MS-RRP over \PIPE\winreg) ──────────────────────
+
+# Human hive name → rrp open-hive function. We bind these lazily inside
+# _op_reg_read because impacket isn't importable at module load on relays
+# that don't do SMB audits.
+_HIVE_OPENERS = {
+    "HKLM": "hOpenLocalMachine",
+    "HKEY_LOCAL_MACHINE": "hOpenLocalMachine",
+    "HKU": "hOpenUsers",
+    "HKEY_USERS": "hOpenUsers",
+    "HKCR": "hOpenClassesRoot",
+    "HKEY_CLASSES_ROOT": "hOpenClassesRoot",
+}
+
+# Numeric registry value types → human label. Used to normalize rrp output.
+_REG_TYPE_LABELS = {
+    1: "REG_SZ",
+    2: "REG_EXPAND_SZ",
+    3: "REG_BINARY",
+    4: "REG_DWORD",
+    7: "REG_MULTI_SZ",
+    11: "REG_QWORD",
+}
+
+
+def _op_reg_read(conn, op_params: dict) -> dict:
+    """Execute a batch of registry read ops over \\PIPE\\winreg (MS-RRP).
+
+    `op_params.reads` is a list of `{op, hive, key, value_name?}` entries.
+    The connection is shared across all reads in the batch so we pay the pipe
+    open + RPC bind cost once. Per-op errors are captured, not raised —
+    permission-denied on one key shouldn't wipe out a 10-read batch.
+
+    RemoteRegistry must be running on the target (modern Windows sets it to
+    Manual/Trigger Start; opening \\PIPE\\winreg as an admin usually
+    trigger-starts it). If it's disabled, the first bind fails with a clear
+    error that the agent can surface as a finding.
+    """
+    reads = (op_params or {}).get("reads") or []
+    if not isinstance(reads, list) or not reads:
+        return {"_errors": {"reg_read": "reads must be a non-empty list"}}
+
+    try:
+        from impacket.dcerpc.v5 import transport, rrp
+    except Exception as e:
+        return {"_errors": {"reg_read": f"impacket import: {e}"}}
+
+    rpctransport = transport.SMBTransport(
+        conn.getRemoteName(), conn.getRemoteHost(),
+        filename=r"\winreg", smb_connection=conn,
+    )
+    try:
+        dce = rpctransport.get_dce_rpc()
+        dce.connect()
+        dce.bind(rrp.MSRPC_UUID_RRP)
+    except Exception as e:
+        # Common failure: RemoteRegistry service is Disabled. The agent can
+        # turn this into a finding ("credentialed registry audit unavailable")
+        # but we still return structured detail.
+        return {"_errors": {"reg_read": f"bind \\winreg failed: {type(e).__name__}: {e}"},
+                "remote_registry_available": False}
+
+    results: list[dict] = []
+    try:
+        # Cache open hive handles across reads — opening HKLM 20 times is
+        # wasteful. `dce` owns the handles; they're closed implicitly when
+        # we disconnect in finally.
+        hive_handles: dict[str, Any] = {}
+        for req in reads[:20]:  # hard cap mirrors the backend tool
+            results.append(_do_reg_read(dce, rrp, req, hive_handles))
+    finally:
+        try:
+            dce.disconnect()
+        except Exception:
+            pass
+
+    return {"remote_registry_available": True, "results": results}
+
+
+def _do_reg_read(dce, rrp, req: dict, hive_handles: dict) -> dict:
+    """Run one registry op. All exceptions map to `{error: ...}` on the result."""
+    op = (req.get("op") or "get_value").strip()
+    hive_name = (req.get("hive") or "HKLM").strip().upper()
+    key = (req.get("key") or "").strip()
+    if not key:
+        return {**req, "error": "key is required"}
+    opener = _HIVE_OPENERS.get(hive_name)
+    if not opener:
+        return {**req, "error": f"unknown hive: {hive_name}"}
+
+    try:
+        if hive_name not in hive_handles:
+            hive_handles[hive_name] = getattr(rrp, opener)(dce)["phKey"]
+        hive_h = hive_handles[hive_name]
+    except Exception as e:
+        return {**req, "error": f"open hive failed: {type(e).__name__}: {e}"}
+
+    try:
+        sub_h = rrp.hBaseRegOpenKey(dce, hive_h, key)["phkResult"]
+    except Exception as e:
+        return {**req, "error": f"open key failed: {type(e).__name__}: {e}"}
+
+    try:
+        if op == "get_value":
+            return _reg_get_value(dce, rrp, sub_h, hive_name, key, req.get("value_name") or "")
+        if op == "enum_keys":
+            return {"op": op, "hive": hive_name, "key": key,
+                    "subkeys": _reg_enum_keys(dce, rrp, sub_h)}
+        if op == "enum_values":
+            return {"op": op, "hive": hive_name, "key": key,
+                    "values": _reg_enum_values(dce, rrp, sub_h)}
+        return {**req, "error": f"unknown op: {op}"}
+    except Exception as e:
+        return {**req, "error": f"{op} failed: {type(e).__name__}: {e}"}
+    finally:
+        try:
+            rrp.hBaseRegCloseKey(dce, sub_h)
+        except Exception:
+            pass
+
+
+def _reg_get_value(dce, rrp, sub_h, hive_name: str, key: str, value_name: str) -> dict:
+    try:
+        type_code, data = rrp.hBaseRegQueryValue(dce, sub_h, value_name)
+    except Exception as e:
+        msg = str(e)
+        # ERROR_FILE_NOT_FOUND — value doesn't exist. Not an error per se.
+        if "ERROR_FILE_NOT_FOUND" in msg or "0x2 " in msg or "0x80000002" in msg:
+            return {"op": "get_value", "hive": hive_name, "key": key,
+                    "value_name": value_name, "found": False}
+        raise
+
+    out: dict[str, Any] = {
+        "op": "get_value", "hive": hive_name, "key": key, "value_name": value_name,
+        "found": True, "type": _REG_TYPE_LABELS.get(int(type_code), f"type_{int(type_code)}"),
+    }
+    # rrp.hBaseRegQueryValue already decodes string/int types. Binary comes
+    # back as bytes — encode as hex for JSON transport.
+    if isinstance(data, (bytes, bytearray)):
+        out["data"] = bytes(data).hex()
+    elif isinstance(data, list):
+        out["data"] = [str(x).rstrip("\x00") for x in data]
+    elif isinstance(data, str):
+        out["data"] = data.rstrip("\x00")
+    else:
+        out["data"] = data
+    return out
+
+
+def _reg_enum_keys(dce, rrp, sub_h) -> list[str]:
+    names: list[str] = []
+    i = 0
+    while True:
+        try:
+            r = rrp.hBaseRegEnumKey(dce, sub_h, i)
+        except Exception:
+            break
+        name = r["lpNameOut"] if isinstance(r, dict) else getattr(r, "lpNameOut", None)
+        if not name:
+            break
+        # Impacket returns names with a trailing NUL — strip it for JSON safety.
+        names.append(str(name).rstrip("\x00"))
+        i += 1
+        if i >= 1000:  # sanity cap
+            break
+    return names
+
+
+def _reg_enum_values(dce, rrp, sub_h) -> list[dict]:
+    vals: list[dict] = []
+    i = 0
+    while True:
+        try:
+            r = rrp.hBaseRegEnumValue(dce, sub_h, i)
+        except Exception:
+            break
+        # hBaseRegEnumValue returns (name, type, data). Names carry a NUL.
+        try:
+            name, type_code, _ = r
+        except Exception:
+            break
+        vals.append({
+            "name": str(name).rstrip("\x00"),
+            "type": _REG_TYPE_LABELS.get(int(type_code), f"type_{int(type_code)}"),
+            "type_id": int(type_code),
+        })
+        i += 1
+        if i >= 500:
+            break
+    return vals
 
 
 def _op_guest_bind(target: str, SMBConnection, SessionError) -> dict:

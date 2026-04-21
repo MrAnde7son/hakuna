@@ -301,7 +301,122 @@ def smb_check_named_pipe_tool(db, params: dict) -> dict:
     return result
 
 
+# ── Password policy ──────────────────────────────────────────────────
+
+
+@agent_tool(
+    "smb_samr_password_policy",
+    "Read the domain/local password and lockout policy via SAMR over "
+    "\\PIPE\\samr using the authenticated SMB session. On a DC this returns "
+    "the AD domain policy (may be overridden by Fine-Grained Password "
+    "Policies, which this tool doesn't read); on a member host it returns "
+    "the local SAM policy. Flag: min_length < 12, no complexity, "
+    "lockout_threshold = 0 (no lockout), password_history < 5. Different "
+    "from wmi_get_password_policy — SAMR is authoritative on DCs while "
+    "Win32_NetworkLoginProfile reflects the login's *effective* view.",
+    {"asset_id": {"type": "integer"}},
+)
+def smb_samr_password_policy_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_smb(
+        db, org_id, asset_id, "samr_password_policy", {}, relay, cred,
+    ))
+    if result.get("_errors"):
+        return {"error": (result.get("_errors") or {}).get("samr_password_policy")}
+    domains = result.get("domains") or []
+    # Convert seconds → days for age fields so the agent's reasoning is cleaner.
+    for d in domains:
+        for key in ("max_password_age_seconds", "min_password_age_seconds"):
+            v = d.get(key)
+            if isinstance(v, int):
+                d[key.replace("_seconds", "_days")] = v // 86400
+    return {"total_domains": len(domains), "domains": domains}
+
+
 # ── Registry ──────────────────────────────────────────────────────────
+
+
+@agent_tool(
+    "smb_registry_read",
+    "Read arbitrary registry keys/values on the target via MS-RRP over "
+    "\\PIPE\\winreg. Use this when WMI is blocked or unavailable — MS-RRP "
+    "rides the same SMB session that's already authenticated. "
+    "Supports three ops: `get_value` (read one value — type auto-detected), "
+    "`enum_keys` (list subkeys), `enum_values` (list value names + types). "
+    "Pass up to 20 reads in one call; each runs independently. "
+    "Hives: HKLM (default), HKU, HKCR. "
+    "Requires the RemoteRegistry service to be running on the target; if it's "
+    "Disabled, `remote_registry_available=false` comes back and the agent "
+    "should treat 'credentialed registry audit unavailable' as its own finding. "
+    "Common checks: SMB signing enforcement (HKLM\\\\SYSTEM\\\\CurrentControlSet"
+    "\\\\Services\\\\LanmanServer\\\\Parameters\\\\RequireSecuritySignature), "
+    "LLMNR (HKLM\\\\SOFTWARE\\\\Policies\\\\Microsoft\\\\Windows NT\\\\"
+    "DNSClient\\\\EnableMulticast), autologon credentials "
+    "(HKLM\\\\SOFTWARE\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\"
+    "Winlogon), audit policy, AlwaysInstallElevated.",
+    {
+        "asset_id": {"type": "integer"},
+        "reads": {
+            "type": "array",
+            "description": (
+                "Up to 20 read operations. Each: "
+                "{op: 'get_value'|'enum_keys'|'enum_values', "
+                "hive?: 'HKLM'|'HKU'|'HKCR' (default HKLM), "
+                "key: 'Subkey\\\\Path', value_name?: required for get_value}"
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "op": {"type": "string", "enum": ["get_value", "enum_keys", "enum_values"]},
+                    "hive": {"type": "string"},
+                    "key": {"type": "string"},
+                    "value_name": {"type": "string"},
+                },
+                "required": ["op", "key"],
+            },
+            "maxItems": 20,
+        },
+    },
+)
+def smb_registry_read_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    reads = params.get("reads") or []
+    if not isinstance(reads, list) or not reads:
+        return {"error": "reads must be a non-empty list of read ops"}
+    if len(reads) > 20:
+        reads = reads[:20]
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_smb(
+        db, org_id, asset_id, "reg_read", {"reads": reads}, relay, cred,
+    ))
+
+    if result.get("remote_registry_available") is False:
+        return {
+            "remote_registry_available": False,
+            "error": (result.get("_errors") or {}).get("reg_read")
+                     or "RemoteRegistry unavailable — service may be Disabled",
+        }
+
+    slimmed: list[dict] = []
+    for r in (result.get("results") or []):
+        # Same trimming as the WMI variant — keep payloads LLM-friendly.
+        if r.get("type") == "REG_BINARY" and isinstance(r.get("data"), str) and len(r["data"]) > 256:
+            r = {**r, "data": r["data"][:256], "_truncated": True}
+        if r.get("type") == "REG_MULTI_SZ" and isinstance(r.get("data"), list) and len(r["data"]) > 20:
+            r = {**r, "data": r["data"][:20] + ["..."], "_truncated": True}
+        if r.get("op") == "enum_keys" and isinstance(r.get("subkeys"), list) and len(r["subkeys"]) > 100:
+            r = {**r, "subkeys": r["subkeys"][:100] + ["..."], "_truncated": True}
+        if r.get("op") == "enum_values" and isinstance(r.get("values"), list) and len(r["values"]) > 50:
+            r = {**r, "values": r["values"][:50] + [{"name": "...", "type": "..."}], "_truncated": True}
+        slimmed.append(r)
+    return {
+        "remote_registry_available": True,
+        "total": len(slimmed),
+        "results": slimmed,
+    }
 
 
 _SMB_TOOL_NAMES = [
@@ -312,8 +427,12 @@ _SMB_TOOL_NAMES = [
     # Auth posture
     "smb_check_null_session", "smb_list_shares_anonymous",
     "smb_samr_enum_users_anonymous", "smb_check_guest_access",
+    "smb_samr_password_policy",
     # Coercion
     "smb_check_named_pipe",
+    # Generic registry primitive — covers checks WMI classes don't expose
+    # and works when RemoteRegistry is reachable but WMI/DCOM is blocked.
+    "smb_registry_read",
     # Shared
     "emit_finding",
     "get_asset_profile",

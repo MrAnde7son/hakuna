@@ -682,6 +682,171 @@ def ldap_list_computers_tool(db, params: dict) -> dict:
     }
 
 
+# ── RootDSE / naming contexts / LDAPS posture ────────────────────────
+
+
+@agent_tool(
+    "ldap_get_rootdse",
+    "Read the server's RootDSE (anonymous LDAP base entry) for infrastructure "
+    "inventory: all naming contexts (defaultNamingContext, configurationNC, "
+    "schemaNC, DomainDnsZones, ForestDnsZones), supported LDAP versions and "
+    "SASL mechanisms, supported controls, and — critically — DC capabilities. "
+    "Pair with `bind_transport` to report whether the session is LDAPS vs "
+    "plaintext LDAP. Findings: DCs still allowing unsigned ldap:// binds, "
+    "missing channel binding enforcement, unexpected additional NCs (often "
+    "reveal AD LDS instances you didn't know about).",
+    {"asset_id": {"type": "integer"}},
+)
+def ldap_get_rootdse_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    op_params = {
+        "base_dn": "",
+        "filter": "(objectClass=*)",
+        "attributes": [
+            "namingContexts",
+            "defaultNamingContext", "rootDomainNamingContext",
+            "configurationNamingContext", "schemaNamingContext",
+            "domainFunctionality", "forestFunctionality",
+            "domainControllerFunctionality",
+            "dnsHostName", "serverName",
+            "supportedLDAPVersion", "supportedSASLMechanisms",
+            "supportedControl", "supportedCapabilities",
+            "supportedLDAPPolicies",
+            "ldapServiceName", "currentTime",
+            "isGlobalCatalogReady", "isSynchronized",
+        ],
+    }
+    _, result = _run_async(_dispatch_ldap(
+        db, org_id, asset_id, "search", op_params, relay, cred,
+    ))
+    entries = result.get("entries") or []
+    if not entries:
+        return {"error": "RootDSE query returned no entries — server may not be an LDAP/AD server"}
+    d = entries[0]
+
+    def _listify(v) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        return [str(v)]
+
+    naming_contexts = _listify(d.get("namingContexts"))
+    default_nc = d.get("defaultNamingContext")
+    config_nc = d.get("configurationNamingContext")
+    schema_nc = d.get("schemaNamingContext")
+    # "Extra" naming contexts = anything beyond the three standard ones.
+    # AD LDS instances, DomainDnsZones, ForestDnsZones, app-specific NCs
+    # show up here and are often overlooked in audits.
+    standard = {str(x) for x in [default_nc, config_nc, schema_nc] if x}
+    extras = [nc for nc in naming_contexts if nc not in standard]
+
+    return {
+        "dns_host_name": d.get("dnsHostName"),
+        "server_name": d.get("serverName"),
+        "default_naming_context": default_nc,
+        "configuration_nc": config_nc,
+        "schema_nc": schema_nc,
+        "naming_contexts": naming_contexts,
+        "extra_naming_contexts": extras,
+        "supported_ldap_versions": _listify(d.get("supportedLDAPVersion")),
+        "supported_sasl_mechanisms": _listify(d.get("supportedSASLMechanisms")),
+        "supported_controls": _listify(d.get("supportedControl"))[:40],
+        "supported_capabilities": _listify(d.get("supportedCapabilities")),
+        "domain_functionality": d.get("domainFunctionality"),
+        "forest_functionality": d.get("forestFunctionality"),
+        "dc_functionality": d.get("domainControllerFunctionality"),
+        "is_global_catalog_ready": d.get("isGlobalCatalogReady"),
+        "is_synchronized": d.get("isSynchronized"),
+    }
+
+
+# ── Group Policy Objects ─────────────────────────────────────────────
+
+
+@agent_tool(
+    "ldap_list_gpos",
+    "Enumerate Group Policy Objects under CN=Policies,CN=System. Returns "
+    "one entry per GPO with displayName, GUID, file-system path "
+    "(gPCFileSysPath — points to SYSVOL), flags, and version. The file-system "
+    "side of each GPO often contains scripts, preference XML (including "
+    "legacy GPP cpassword!), and registry.pol files with security settings — "
+    "use smb_list_share_contents on SYSVOL for the GUID folder of any "
+    "suspicious GPO. Flag: GPOs with gPCMachineExtensionNames referencing "
+    "Group Policy Preferences (legacy cpassword risk), GPOs disabled but "
+    "still linked, GPOs with broad apply ACLs.",
+    {"asset_id": {"type": "integer"}},
+)
+def ldap_list_gpos_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    op_params = {
+        # The base_dn override targets the Policies container directly — no
+        # need to walk the whole domain. The relay expands <BASE> if needed;
+        # here we pass an empty override and use the filter to scope.
+        "filter": "(objectClass=groupPolicyContainer)",
+        "attributes": [
+            "displayName", "cn", "name",
+            "gPCFileSysPath", "gPCFunctionalityVersion",
+            "gPCMachineExtensionNames", "gPCUserExtensionNames",
+            "flags", "versionNumber",
+            "whenCreated", "whenChanged",
+        ],
+        "size_limit": 500,
+    }
+    _, result = _run_async(_dispatch_ldap(
+        db, org_id, asset_id, "search", op_params, relay, cred,
+    ))
+    entries = result.get("entries") or []
+
+    # GPP cpassword was deprecated in MS14-025 — any GPO with the Group
+    # Policy Preferences CSE GUID ({17D89FEC-5C44-4972-B12D-241CAEF74509} and
+    # friends) is worth investigating on SYSVOL for legacy cpassword.
+    gpp_guids = {
+        "{17d89fec-5c44-4972-b12d-241caef74509}",  # Drive Maps, Files, etc.
+        "{e437bc1c-aa7d-11d2-a382-00c04f991e27}",  # core GP
+        "{f3ccc681-b74c-4060-9f26-cd84525dca2a}",  # Audit Policy
+    }
+
+    gpos: list[dict] = []
+    for e in entries:
+        machine_exts = str(e.get("gPCMachineExtensionNames") or "").lower()
+        user_exts = str(e.get("gPCUserExtensionNames") or "").lower()
+        flags = e.get("flags")
+        # flags bit 0: user config disabled. bit 1: computer config disabled.
+        try:
+            flags_int = int(flags) if flags is not None else None
+        except Exception:
+            flags_int = None
+        has_gpp = any(g in machine_exts or g in user_exts for g in gpp_guids)
+        gpos.append({
+            "display_name": e.get("displayName"),
+            "guid": e.get("cn") or e.get("name"),
+            "sysvol_path": e.get("gPCFileSysPath"),
+            "version": e.get("versionNumber"),
+            "flags": flags_int,
+            "user_config_disabled": bool(flags_int & 0x1) if flags_int is not None else None,
+            "computer_config_disabled": bool(flags_int & 0x2) if flags_int is not None else None,
+            "uses_group_policy_preferences": has_gpp,
+            "when_created": e.get("whenCreated"),
+            "when_changed": e.get("whenChanged"),
+        })
+
+    return {
+        "total": len(gpos),
+        "gpos": _trim(gpos, 30),
+        "gpp_candidate_count": sum(1 for g in gpos if g["uses_group_policy_preferences"]),
+        "note": (
+            "GPOs flagged `uses_group_policy_preferences=true` may contain legacy "
+            "cpassword in registry.xml/Groups.xml/etc. on SYSVOL — inspect with "
+            "smb_list_share_contents on the GUID path under \\\\<dc>\\SYSVOL."
+        ),
+    }
+
+
 # ── Escape hatch ──────────────────────────────────────────────────────
 
 
@@ -776,6 +941,8 @@ _LDAP_TOOL_NAMES = [
     "ldap_find_rbcd", "ldap_get_object_acl",
     # Structure
     "ldap_list_trusts", "ldap_list_ous", "ldap_list_computers",
+    # RootDSE / infrastructure inventory
+    "ldap_get_rootdse", "ldap_list_gpos",
     # Escape hatch
     "ldap_raw_search",
     # Shared
