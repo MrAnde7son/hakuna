@@ -321,6 +321,268 @@ def ssh_list_processes_tool(db, params: dict) -> dict:
     return {"total": len(processes), "processes": _trim(processes, 80)}
 
 
+# ── Kernel / sysctl hardening ─────────────────────────────────────────
+
+
+@agent_tool(
+    "ssh_sysctl_audit",
+    "Dump live sysctl state (`sysctl -a`) and compare against a baseline of "
+    "kernel hardening settings. Returns: deviations from the hardening "
+    "baseline (e.g., kptr_restrict=0, accept_redirects=1, suid_dumpable=1), "
+    "a focus slice of kernel/fs/net keys, and keys we couldn't read. "
+    "Hardening baseline is consensus-level (Lynis / CIS-aligned); treat "
+    "deviations as hypotheses, not auto-findings — some are intentional in "
+    "routers/edge hosts.",
+    {"asset_id": {"type": "integer"}},
+)
+def ssh_sysctl_audit_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "sysctl", {}, relay, cred))
+    # Trim the focus dict — 60 keys max — to keep token cost bounded.
+    focus = result.get("focus_keys") or {}
+    focus_items = list(focus.items())
+    return {
+        "total_keys": result.get("total_keys"),
+        "hardening_deviations": result.get("hardening_deviations") or [],
+        "unreadable_hardening_keys": result.get("unreadable_hardening_keys") or [],
+        "focus_keys": dict(focus_items[:60]),
+        "focus_truncated": len(focus_items) > 60,
+    }
+
+
+# ── PAM audit ─────────────────────────────────────────────────────────
+
+
+@agent_tool(
+    "ssh_pam_audit",
+    "Audit /etc/pam.d/* for classic weakness patterns. Returns: files "
+    "scanned, every `nullok` occurrence (empty-password acceptance) with "
+    "line reference, whether any lockout module (pam_tally2/pam_faillock) "
+    "is configured anywhere, whether a password-quality module "
+    "(pam_pwquality/pam_cracklib) is configured. Missing lockout or quality "
+    "modules on a general-purpose host is a finding.",
+    {"asset_id": {"type": "integer"}},
+)
+def ssh_pam_audit_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "pam_audit", {}, relay, cred))
+    return {
+        "total_files": result.get("total_files"),
+        "nullok_occurrences": result.get("nullok_occurrences") or [],
+        "lockout_modules_configured": result.get("lockout_modules_configured") or [],
+        "quality_modules_configured": result.get("quality_modules_configured") or [],
+        "lockout_missing": bool(result.get("lockout_missing")),
+        "password_quality_missing": bool(result.get("password_quality_missing")),
+    }
+
+
+# ── Shadow aging audit ────────────────────────────────────────────────
+
+
+@agent_tool(
+    "ssh_shadow_audit",
+    "Audit /etc/shadow for password aging and empty/locked state. NEVER "
+    "returns hashes — output is strictly derived (account name + status). "
+    "Requires read access to /etc/shadow (root or group:shadow). Findings: "
+    "empty_password_accounts (critical), no_expiration_accounts (flag "
+    "non-service users), passwords_older_than_max_age, zero_min_age_accounts.",
+    {"asset_id": {"type": "integer"}},
+)
+def ssh_shadow_audit_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "shadow_audit", {}, relay, cred))
+    if not result.get("readable"):
+        return {"readable": False, "note": result.get("error") or "shadow not readable — need root or group:shadow"}
+    return {
+        "readable": True,
+        "total_users": result.get("total_users"),
+        "empty_password_accounts": result.get("empty_password_accounts") or [],
+        "no_expiration_accounts": result.get("no_expiration_accounts") or [],
+        "passwords_older_than_max_age": result.get("passwords_older_than_max_age") or [],
+        "zero_min_age_accounts": result.get("zero_min_age_accounts") or [],
+        "locked_accounts_sample": (result.get("locked_accounts") or [])[:20],
+    }
+
+
+# ── Firewall state ────────────────────────────────────────────────────
+
+
+@agent_tool(
+    "ssh_firewall_state",
+    "Detect active firewall (nftables / iptables / ufw / firewalld) and "
+    "return the current rule set + default policies. An empty result "
+    "(`no_firewall_detected=true`) on a non-containerized host is a "
+    "finding. Compare default policies to the host's exposure — e.g., a "
+    "public-facing host with default-ACCEPT INPUT chain is critical.",
+    {"asset_id": {"type": "integer"}},
+)
+def ssh_firewall_state_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "firewall", {}, relay, cred))
+    # Truncate big rule dumps — the agent rarely needs the whole thing; it
+    # reasons about defaults + per-chain counts.
+    for key in ("nftables", "iptables_v4", "iptables_v6"):
+        if key in result and isinstance(result[key], dict):
+            rules = result[key].get("rules") or ""
+            if len(rules) > 4000:
+                result[key]["rules"] = rules[:4000]
+                result[key]["_truncated"] = True
+    return result
+
+
+# ── systemd unit audit ────────────────────────────────────────────────
+
+
+@agent_tool(
+    "ssh_systemd_unit_audit",
+    "List systemd service units and their hardening properties "
+    "(NoNewPrivileges, ProtectSystem, ProtectHome, User, etc. via "
+    "`systemctl show`). Returns up to 20 sample units in full + up to 40 "
+    "flagged `unsandboxed_root_units` (running as root with NoNewPrivileges=false). "
+    "Flagged units are not automatic findings — they're the subset worth "
+    "inspecting for privilege escalation and persistence surface.",
+    {
+        "asset_id": {"type": "integer"},
+        "cap": {"type": "integer", "description": "Max units to inspect (default 80)"},
+    },
+)
+def ssh_systemd_unit_audit_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    cap = params.get("cap")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    op_params = {"cap": cap} if cap else {}
+    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "systemd_units", op_params, relay, cred))
+    return {
+        "total_units": result.get("total_units"),
+        "unsandboxed_root_units": result.get("unsandboxed_root_units") or [],
+        "sample": result.get("sample") or [],
+    }
+
+
+# ── MAC posture ───────────────────────────────────────────────────────
+
+
+@agent_tool(
+    "ssh_mac_posture",
+    "Detect SELinux and AppArmor enforcement state. Reports which MAC "
+    "system is present and its mode (enforcing/permissive/disabled). "
+    "`no_mac_enforcement=true` on RHEL/CentOS/Ubuntu hosts is a finding — "
+    "both ship a MAC system enabled by default; an operator turned it off.",
+    {"asset_id": {"type": "integer"}},
+)
+def ssh_mac_posture_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "mac_posture", {}, relay, cred))
+    return result
+
+
+# ── Container runtime surface ─────────────────────────────────────────
+
+
+@agent_tool(
+    "ssh_container_surface",
+    "Detect Docker/Podman/Kubelet and report their risk surface: "
+    "docker.sock permissions (group/world-writable = trivial root privesc), "
+    "running containers (if listable without sudo), kubelet listening "
+    "ports (10250/10255). Chain: non-root user in `docker` group + "
+    "docker.sock group-writable == effective local root via "
+    "`docker run -v /:/host --privileged`.",
+    {"asset_id": {"type": "integer"}},
+)
+def ssh_container_surface_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "containers", {}, relay, cred))
+    return result
+
+
+# ── Audit daemon config ───────────────────────────────────────────────
+
+
+@agent_tool(
+    "ssh_audit_daemon",
+    "Read auditd config (/etc/audit/auditd.conf) + rules "
+    "(/etc/audit/rules.d/*). Reports whether auditd is active, log file "
+    "path, rotation settings, loaded rule count. Findings: auditd inactive "
+    "on a production host, no rule files, loaded_rule_count=0.",
+    {"asset_id": {"type": "integer"}},
+)
+def ssh_audit_daemon_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "audit_daemon", {}, relay, cred))
+    # Trim rule content per file — the agent's reasoning is on rule counts,
+    # not the exact rule text.
+    rule_files = result.get("rule_files") or []
+    for rf in rule_files:
+        content = rf.get("content") or ""
+        if len(content) > 1500:
+            rf["content"] = content[:1500]
+            rf["_truncated"] = True
+    result["rule_files"] = rule_files
+    return result
+
+
+# ── World-writable / unsafe permission scan ───────────────────────────
+
+
+@agent_tool(
+    "ssh_world_writable_scan",
+    "Scan for world-writable files and files with no valid owner/group, "
+    "scoped to /etc /usr /opt /var /root /home (full-fs scans are too "
+    "expensive). Results are capped at 200 world-writable + 100 orphaned "
+    "entries. Any world-writable file under /etc is a finding; orphaned "
+    "files are an indicator of removed users whose data lingers (sometimes "
+    "with sensitive content).",
+    {"asset_id": {"type": "integer"}},
+)
+def ssh_world_writable_scan_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "world_writable", {}, relay, cred))
+    return {
+        "world_writable_total": len(result.get("world_writable_files") or []),
+        "world_writable_files": _trim(result.get("world_writable_files") or [], 60),
+        "orphaned_total": len(result.get("orphaned_files") or []),
+        "orphaned_files": _trim(result.get("orphaned_files") or [], 40),
+    }
+
+
+# ── Cloud instance metadata reachability ──────────────────────────────
+
+
+@agent_tool(
+    "ssh_cloud_metadata_reachable",
+    "Probe AWS/GCP/Azure instance-metadata endpoints from the target. "
+    "The finding isn't 'reachable' per se — every VM reaches its own "
+    "metadata — it's 'IMDSv1 reachable without IMDSv2 enforcement' "
+    "(`aws_imdsv1_without_v2=true`), which makes any SSRF on the host "
+    "exfiltrate the instance role. Also surfaces GCP/Azure reachability "
+    "for correlation with the host's cloud provider.",
+    {"asset_id": {"type": "integer"}},
+)
+def ssh_cloud_metadata_reachable_tool(db, params: dict) -> dict:
+    asset_id = params.get("asset_id")
+    relay, cred = _ctx(params)
+    org_id = params.get("_org_id")
+    _, result = _run_async(_dispatch_ssh(db, org_id, asset_id, "cloud_metadata", {}, relay, cred))
+    return result
+
+
 # ── Registry ──────────────────────────────────────────────────────────
 
 
@@ -333,6 +595,14 @@ _SSH_TOOL_NAMES = [
     "ssh_get_sshd_config", "ssh_find_suid_binaries",
     "ssh_list_listening_ports", "ssh_list_installed_packages",
     "ssh_scan_cron_jobs", "ssh_list_processes",
+    # Kernel / PAM / shadow / MAC
+    "ssh_sysctl_audit", "ssh_pam_audit", "ssh_shadow_audit",
+    "ssh_mac_posture",
+    # Firewall + logging
+    "ssh_firewall_state", "ssh_audit_daemon",
+    # systemd / containers / permission hygiene / cloud
+    "ssh_systemd_unit_audit", "ssh_container_surface",
+    "ssh_world_writable_scan", "ssh_cloud_metadata_reachable",
     # Shared
     "emit_finding",
     "get_asset_profile",

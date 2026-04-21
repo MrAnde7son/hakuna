@@ -83,6 +83,32 @@ _FILE_ALLOWLIST = [
     "/home/*/.ssh/authorized_keys",
     "/proc/version",
     "/proc/cmdline",
+    # Sysctl / kernel hardening config
+    "/etc/sysctl.conf",
+    "/etc/sysctl.d/*",
+    "/usr/lib/sysctl.d/*",
+    # Audit daemon (auditd) config + rules
+    "/etc/audit/auditd.conf",
+    "/etc/audit/audit.rules",
+    "/etc/audit/rules.d/*",
+    # Limits / security policy
+    "/etc/security/limits.conf",
+    "/etc/security/limits.d/*",
+    "/etc/security/access.conf",
+    "/etc/security/pwquality.conf",
+    "/etc/security/pwquality.conf.d/*",
+    "/etc/security/faillock.conf",
+    # Kernel module loading / blacklist policy
+    "/etc/modprobe.conf",
+    "/etc/modprobe.d/*",
+    "/etc/modules-load.d/*",
+    # SELinux / AppArmor config
+    "/etc/selinux/config",
+    "/etc/apparmor/parser.conf",
+    # Firewall config files (not authoritative — we still exec the live
+    # dumper commands — but handy for default-policy checks)
+    "/etc/ufw/ufw.conf",
+    "/etc/nftables.conf",
 ]
 
 _FILE_READ_CAP_BYTES = 256 * 1024
@@ -179,6 +205,26 @@ def _run_sync(target: str, creds: dict, op: str, op_params: dict) -> dict:
             return _op_process_list(client)
         if op == "authorized_keys":
             return _op_authorized_keys(client)
+        if op == "sysctl":
+            return _op_sysctl(client)
+        if op == "pam_audit":
+            return _op_pam_audit(client)
+        if op == "shadow_audit":
+            return _op_shadow_audit(client)
+        if op == "firewall":
+            return _op_firewall(client)
+        if op == "systemd_units":
+            return _op_systemd_units(client, op_params)
+        if op == "mac_posture":
+            return _op_mac_posture(client)
+        if op == "containers":
+            return _op_containers(client)
+        if op == "audit_daemon":
+            return _op_audit_daemon(client)
+        if op == "world_writable":
+            return _op_world_writable(client)
+        if op == "cloud_metadata":
+            return _op_cloud_metadata(client)
         return {"_errors": {op: f"unknown op: {op}"}}
     finally:
         try:
@@ -593,6 +639,592 @@ def _op_authorized_keys(client) -> dict:
                 "has_options": not parts[0].startswith(("ssh-", "ecdsa-", "sk-")),
             })
     return {"files": paths, "total_keys": len(keys), "keys": keys}
+
+
+# ── Kernel / sysctl hardening ────────────────────────────────────────
+
+
+# Sysctl keys we explicitly flag when non-hardened. Values are the *expected
+# safe* value; any deviation is a finding. Not exhaustive — the tool returns
+# the full table so the agent can reason about others by name.
+_SYSCTL_HARDENING_EXPECTED: dict[str, str] = {
+    "kernel.kptr_restrict": "2",                    # 1 or 2 OK; 0 is a leak
+    "kernel.dmesg_restrict": "1",
+    "kernel.yama.ptrace_scope": "1",                # 0 = any process can ptrace any
+    "kernel.unprivileged_bpf_disabled": "1",
+    "kernel.kexec_load_disabled": "1",
+    "fs.suid_dumpable": "0",
+    "fs.protected_hardlinks": "1",
+    "fs.protected_symlinks": "1",
+    "fs.protected_fifos": "2",
+    "fs.protected_regular": "2",
+    "net.ipv4.conf.all.accept_redirects": "0",
+    "net.ipv4.conf.default.accept_redirects": "0",
+    "net.ipv4.conf.all.send_redirects": "0",
+    "net.ipv4.conf.default.send_redirects": "0",
+    "net.ipv4.conf.all.accept_source_route": "0",
+    "net.ipv4.conf.default.accept_source_route": "0",
+    "net.ipv4.icmp_echo_ignore_broadcasts": "1",
+    "net.ipv4.icmp_ignore_bogus_error_responses": "1",
+    "net.ipv4.tcp_syncookies": "1",
+    "net.ipv4.conf.all.rp_filter": "1",
+    "net.ipv4.conf.default.rp_filter": "1",
+    "net.ipv6.conf.all.accept_redirects": "0",
+    "net.ipv6.conf.default.accept_redirects": "0",
+    "net.ipv6.conf.all.accept_source_route": "0",
+}
+
+
+def _op_sysctl(client) -> dict:
+    """Dump live sysctl state and compare against a hardening baseline.
+
+    Runs `sysctl -a` which reads /proc/sys/* — requires root OR appropriate
+    CAP_NET_ADMIN-style privileges for the network branches. Keys we can't
+    read come back as missing in the live map; the tool reports them as
+    `unreadable` rather than assuming a value.
+    """
+    result = _exec(client, "sysctl -a 2>/dev/null", timeout=30)
+    live: dict[str, str] = {}
+    for line in (result.get("stdout") or "").splitlines():
+        if " = " not in line:
+            continue
+        k, v = line.split(" = ", 1)
+        live[k.strip()] = v.strip()
+
+    deviations: list[dict] = []
+    unreadable: list[str] = []
+    for key, expected in _SYSCTL_HARDENING_EXPECTED.items():
+        actual = live.get(key)
+        if actual is None:
+            unreadable.append(key)
+            continue
+        # Many sysctl values are integers; do a numeric-aware equality check.
+        ok = False
+        try:
+            ok = int(actual) == int(expected)
+        except Exception:
+            ok = actual == expected
+        if not ok:
+            deviations.append({"key": key, "expected": expected, "actual": actual})
+
+    # Also surface a focused slice of keys the agent commonly reasons about.
+    focus_prefixes = ("kernel.", "fs.", "net.ipv4.conf.all.", "net.ipv6.conf.all.")
+    focus = {k: v for k, v in live.items() if k.startswith(focus_prefixes)}
+
+    return {
+        "total_keys": len(live),
+        "hardening_deviations": deviations,
+        "unreadable_hardening_keys": unreadable,
+        "focus_keys": focus,
+    }
+
+
+# ── PAM audit ────────────────────────────────────────────────────────
+
+
+def _op_pam_audit(client) -> dict:
+    """Enumerate /etc/pam.d/* and scan for classic weakness patterns.
+
+    What we flag:
+      - `nullok` on auth lines → blank passwords allowed
+      - `password` stack missing `pam_pwquality` or `pam_cracklib`
+      - `auth` stack missing `pam_tally2` / `pam_faillock` → no lockout
+      - Any `pam_rhosts` / `pam_userdb` references → legacy/weak
+    """
+    listing = _exec(client, "ls -1 /etc/pam.d/ 2>/dev/null | head -200")
+    names = [n.strip() for n in (listing.get("stdout") or "").splitlines() if n.strip()]
+
+    files: list[dict] = []
+    nullok_hits: list[dict] = []
+    lockout_modules_seen: set[str] = set()
+    quality_modules_seen: set[str] = set()
+
+    for name in names:
+        f = _read_file(client, f"/etc/pam.d/{name}")
+        if "content" not in f:
+            continue
+        content = f["content"] or ""
+        nullok = []
+        for line_no, raw in enumerate(content.splitlines(), 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            lower = line.lower()
+            if "nullok" in lower and lower.startswith(("auth", "password")):
+                nullok.append({"line": line_no, "content": line})
+            if "pam_tally2" in lower or "pam_faillock" in lower:
+                lockout_modules_seen.add("pam_tally2" if "pam_tally2" in lower else "pam_faillock")
+            if "pam_pwquality" in lower or "pam_cracklib" in lower:
+                quality_modules_seen.add("pam_pwquality" if "pam_pwquality" in lower else "pam_cracklib")
+        files.append({"name": name, "size": f.get("size")})
+        for hit in nullok:
+            nullok_hits.append({"file": name, **hit})
+
+    return {
+        "total_files": len(files),
+        "files": files,
+        "nullok_occurrences": nullok_hits,
+        "lockout_modules_configured": sorted(lockout_modules_seen),
+        "quality_modules_configured": sorted(quality_modules_seen),
+        "lockout_missing": not lockout_modules_seen,
+        "password_quality_missing": not quality_modules_seen,
+    }
+
+
+# ── Shadow aging audit ───────────────────────────────────────────────
+
+
+def _op_shadow_audit(client) -> dict:
+    """Audit /etc/shadow for password aging + empty/locked state.
+
+    Never returns hashes — every output field is derived, not the raw hash.
+    Shadow fields (:-separated): name : pw : last_change : min : max : warn :
+    inactive : expire. last_change/min/max/etc are days since 1970.
+    """
+    shadow = _read_file(client, "/etc/shadow")
+    if "content" not in shadow:
+        return {"readable": False, "error": shadow.get("error")}
+
+    empty_password_accounts: list[str] = []
+    locked_accounts: list[str] = []
+    no_expiration: list[str] = []
+    very_old: list[dict] = []
+    short_min_age: list[dict] = []
+
+    today_days = None  # populated if we can compute it — falls back to None
+    try:
+        dt = _exec(client, "date +%s 2>/dev/null")
+        if dt.get("exit_code") == 0:
+            today_days = int((dt["stdout"] or "0").strip() or "0") // 86400
+    except Exception:
+        today_days = None
+
+    total = 0
+    for raw in (shadow["content"] or "").splitlines():
+        parts = raw.split(":")
+        if len(parts) < 8:
+            continue
+        total += 1
+        name, pw, last_change, min_age, max_age, warn, inactive, expire = parts[:8]
+        if pw in ("", "!!"):
+            # Empty is critical; !! is "never set", lockout-equivalent.
+            if pw == "":
+                empty_password_accounts.append(name)
+            else:
+                locked_accounts.append(name)
+        elif pw.startswith("!") or pw == "*":
+            locked_accounts.append(name)
+        # max_age 99999 = never expires (Red Hat default for service accts).
+        if max_age == "99999":
+            no_expiration.append(name)
+        # If we know today, flag passwords > 365 days old without rotation.
+        if today_days and last_change.isdigit() and max_age.isdigit():
+            age_days = today_days - int(last_change)
+            if int(max_age) < 99999 and age_days > int(max_age):
+                very_old.append({"name": name, "age_days": age_days, "max_days": int(max_age)})
+        # min_age 0 = user can rotate immediately (commonly fine, but some
+        # hardening standards require 1+).
+        if min_age.isdigit() and int(min_age) == 0:
+            short_min_age.append({"name": name, "min_age": 0})
+
+    return {
+        "readable": True,
+        "total_users": total,
+        "empty_password_accounts": empty_password_accounts,
+        "locked_accounts": locked_accounts[:40],
+        "no_expiration_accounts": no_expiration,
+        "passwords_older_than_max_age": very_old[:40],
+        "zero_min_age_accounts": short_min_age[:40],
+    }
+
+
+# ── Firewall state ───────────────────────────────────────────────────
+
+
+def _op_firewall(client) -> dict:
+    """Detect the firewall in use and dump rules.
+
+    Order of preference: nftables > iptables > ufw > firewalld. nftables is
+    the modern Linux firewall — most distros route iptables-translate through
+    it. If both nft and iptables return rules, we report both (migration
+    scenarios often have partial coverage).
+    """
+    out: dict[str, Any] = {"backends": []}
+
+    nft = _exec(client, "nft list ruleset 2>/dev/null", timeout=20)
+    if (nft.get("stdout") or "").strip():
+        out["nftables"] = {
+            "present": True,
+            "rules": (nft["stdout"] or "")[:_CMD_OUTPUT_CAP_BYTES // 2],
+        }
+        out["backends"].append("nftables")
+
+    # iptables-save may require root and often hangs without it; give it 10s.
+    ipt4 = _exec(client, "iptables-save 2>/dev/null || true", timeout=15)
+    if (ipt4.get("stdout") or "").strip():
+        out["iptables_v4"] = {
+            "present": True,
+            "rules": (ipt4["stdout"] or "")[:_CMD_OUTPUT_CAP_BYTES // 4],
+        }
+        out["backends"].append("iptables")
+    ipt6 = _exec(client, "ip6tables-save 2>/dev/null || true", timeout=15)
+    if (ipt6.get("stdout") or "").strip():
+        out["iptables_v6"] = {
+            "rules": (ipt6["stdout"] or "")[:_CMD_OUTPUT_CAP_BYTES // 4],
+        }
+
+    ufw = _exec(client, "ufw status verbose 2>/dev/null || true")
+    if "Status: active" in (ufw.get("stdout") or ""):
+        out["ufw"] = {"active": True, "status": ufw["stdout"]}
+        out["backends"].append("ufw")
+    elif "Status: inactive" in (ufw.get("stdout") or ""):
+        out["ufw"] = {"active": False}
+
+    fwd = _exec(client, "firewall-cmd --state 2>/dev/null || true")
+    if "running" in (fwd.get("stdout") or "").lower():
+        zones = _exec(client, "firewall-cmd --list-all-zones 2>/dev/null || true")
+        out["firewalld"] = {"running": True, "zones": zones.get("stdout") or ""}
+        out["backends"].append("firewalld")
+
+    if not out["backends"]:
+        out["no_firewall_detected"] = True
+    return out
+
+
+# ── systemd unit audit ───────────────────────────────────────────────
+
+
+# systemd properties we care about for hardening review. Reading these via
+# `systemctl show` keeps the output structured (KEY=VALUE lines) vs. parsing
+# the free-form `systemctl cat`.
+_SYSTEMD_SHOW_PROPS = [
+    "Id", "ExecStart", "User", "Group", "CapabilityBoundingSet",
+    "NoNewPrivileges", "PrivateTmp", "PrivateDevices", "PrivateNetwork",
+    "ProtectSystem", "ProtectHome", "ProtectKernelModules",
+    "ProtectKernelTunables", "ProtectControlGroups", "RestrictSUIDSGID",
+    "RestrictNamespaces", "RestrictRealtime", "LockPersonality",
+    "SystemCallFilter", "AmbientCapabilities", "FragmentPath",
+]
+
+
+def _op_systemd_units(client, op_params: dict) -> dict:
+    """Enumerate systemd service units and their hardening properties.
+
+    Default: list all loaded .service units, pull hardening props for up to
+    the first 80 (arbitrary cap — long enough to cover all daemons on most
+    hosts, short enough not to balloon the task output).
+    """
+    cap = int(op_params.get("cap") or 80)
+    listing = _exec(client, "systemctl list-units --type=service --all --no-legend --plain 2>/dev/null",
+                    timeout=20)
+    units: list[str] = []
+    for line in (listing.get("stdout") or "").splitlines():
+        parts = line.split()
+        if parts and parts[0].endswith(".service"):
+            units.append(parts[0])
+    units = units[:cap]
+
+    show = _exec(client,
+                  f"systemctl show {shlex.quote(' '.join(units))} --property="
+                  f"{','.join(_SYSTEMD_SHOW_PROPS)} --no-pager 2>/dev/null",
+                  timeout=30) if units else {"stdout": ""}
+
+    parsed: list[dict] = []
+    current: dict[str, str] = {}
+    for raw in (show.get("stdout") or "").splitlines():
+        if not raw.strip():
+            if current:
+                parsed.append(current)
+                current = {}
+            continue
+        if "=" in raw:
+            k, v = raw.split("=", 1)
+            current[k.strip()] = v.strip()
+    if current:
+        parsed.append(current)
+
+    dangerous: list[dict] = []
+    for entry in parsed:
+        user = entry.get("User") or "root"
+        nnp = entry.get("NoNewPrivileges") == "yes"
+        exec_start = entry.get("ExecStart") or ""
+        fragment = entry.get("FragmentPath") or ""
+        # Flag: services running as root with no sandboxing. Very common on
+        # legacy hosts; not a finding by itself, but worth surfacing.
+        if user in ("", "root") and not nnp:
+            dangerous.append({
+                "unit": entry.get("Id"),
+                "user": user,
+                "no_new_privileges": nnp,
+                "protect_system": entry.get("ProtectSystem"),
+                "protect_home": entry.get("ProtectHome"),
+                "exec_start": exec_start[:200],
+                "fragment_path": fragment,
+            })
+
+    return {
+        "total_units": len(units),
+        "unsandboxed_root_units": dangerous[:40],
+        "sample": parsed[:20],
+    }
+
+
+# ── MAC posture (SELinux + AppArmor) ─────────────────────────────────
+
+
+def _op_mac_posture(client) -> dict:
+    """Detect SELinux/AppArmor enforcement state.
+
+    A host with neither is a misconfiguration on RHEL/CentOS/Fedora (where
+    SELinux is default) or Ubuntu/Debian (where AppArmor is default).
+    """
+    out: dict[str, Any] = {}
+
+    # SELinux
+    getenforce = _exec(client, "getenforce 2>/dev/null || true")
+    sestatus = _exec(client, "sestatus 2>/dev/null || true")
+    selinux_mode = (getenforce.get("stdout") or "").strip() or None
+    if selinux_mode and selinux_mode.lower() in ("enforcing", "permissive", "disabled"):
+        out["selinux"] = {
+            "mode": selinux_mode.lower(),
+            "status_raw": (sestatus.get("stdout") or "")[:4000],
+        }
+    else:
+        out["selinux"] = {"present": False}
+
+    # AppArmor
+    aa_status = _exec(client, "aa-status --json 2>/dev/null || aa-status 2>/dev/null || true")
+    aa_out = (aa_status.get("stdout") or "").strip()
+    if aa_out:
+        # Prefer JSON; fall back to textual summary.
+        out["apparmor"] = {"raw": aa_out[:4000]}
+    else:
+        out["apparmor"] = {"present": False}
+
+    if (out["selinux"].get("mode") in (None, "disabled")
+            and not out["apparmor"].get("raw")):
+        out["no_mac_enforcement"] = True
+    return out
+
+
+# ── Container runtime surface ────────────────────────────────────────
+
+
+def _op_containers(client) -> dict:
+    """Detect Docker/Podman/K8s kubelet and expose their risk surface.
+
+    What we surface (not exploit):
+      - Runtime binaries present
+      - docker.sock permissions + group membership (writable by non-root =
+        trivial privesc to root via `docker run --privileged`)
+      - Running containers (if we can list without sudo)
+      - Kubelet listening on 10250/10255 (common K8s privesc path)
+    """
+    out: dict[str, Any] = {"runtimes": []}
+
+    which = _exec(client, "command -v docker podman kubectl kubelet crictl 2>/dev/null")
+    tools = {}
+    for line in (which.get("stdout") or "").splitlines():
+        line = line.strip()
+        if line:
+            tools[line.rsplit("/", 1)[-1]] = line
+    out["binaries"] = tools
+    for t in ("docker", "podman", "kubelet"):
+        if t in tools:
+            out["runtimes"].append(t)
+
+    # docker.sock perms — one of the most common Linux privesc paths.
+    sock_stat = _exec(client, "stat -c '%a %U %G' /var/run/docker.sock 2>/dev/null || true")
+    if (sock_stat.get("stdout") or "").strip():
+        parts = sock_stat["stdout"].strip().split()
+        if len(parts) == 3:
+            mode, owner, group = parts
+            try:
+                mode_i = int(mode, 8)
+            except ValueError:
+                mode_i = 0
+            out["docker_sock"] = {
+                "mode": mode,
+                "owner": owner,
+                "group": group,
+                "group_writable": bool(mode_i & 0o020),
+                "world_writable": bool(mode_i & 0o002),
+                "path": "/var/run/docker.sock",
+            }
+
+    if "docker" in tools:
+        ps = _exec(client, "docker ps --format '{{.Names}}\\t{{.Image}}\\t{{.Status}}' 2>/dev/null || true",
+                    timeout=10)
+        running = []
+        for line in (ps.get("stdout") or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                running.append({"name": parts[0], "image": parts[1],
+                                "status": parts[2] if len(parts) > 2 else None})
+        out["docker_running"] = running[:40]
+
+    # Kubelet port probe — does NOT try to exploit, just checks reachability
+    # on the local host. An open 10255 (read-only kubelet) is a huge finding.
+    for port in (10250, 10255):
+        probe = _exec(client, f"ss -tlnH 2>/dev/null | awk '{{print $4}}' | grep ':{port}$' || true")
+        if (probe.get("stdout") or "").strip():
+            out.setdefault("kubelet_ports", []).append(port)
+
+    return out
+
+
+# ── Audit daemon config ──────────────────────────────────────────────
+
+
+def _op_audit_daemon(client) -> dict:
+    """Read auditd config + rules and report on logging posture."""
+    out: dict[str, Any] = {}
+
+    # Service state
+    svc = _exec(client, "systemctl is-active auditd 2>/dev/null || true")
+    out["auditd_active"] = (svc.get("stdout") or "").strip() == "active"
+
+    cfg = _read_file(client, "/etc/audit/auditd.conf")
+    if "content" in cfg:
+        directives: dict[str, str] = {}
+        for line in (cfg["content"] or "").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            directives[k.strip().lower()] = v.strip()
+        out["config"] = {
+            "log_file": directives.get("log_file"),
+            "max_log_file": directives.get("max_log_file"),
+            "space_left_action": directives.get("space_left_action"),
+            "disk_full_action": directives.get("disk_full_action"),
+            "flush": directives.get("flush"),
+            "num_logs": directives.get("num_logs"),
+        }
+    else:
+        out["config_error"] = cfg.get("error")
+
+    # Rules: rules.d/*.rules (modern) + fallback audit.rules (legacy).
+    ls = _exec(client, "ls -1 /etc/audit/rules.d/ 2>/dev/null || true")
+    rule_files: list[dict] = []
+    for name in (ls.get("stdout") or "").splitlines():
+        name = name.strip()
+        if not name:
+            continue
+        f = _read_file(client, f"/etc/audit/rules.d/{name}")
+        if "content" in f:
+            rule_files.append({"name": name, "content": f["content"][:8000]})
+    legacy = _read_file(client, "/etc/audit/audit.rules")
+    if "content" in legacy:
+        rule_files.append({"name": "audit.rules (legacy)", "content": legacy["content"][:8000]})
+    out["rule_files"] = rule_files
+
+    # Count rules currently loaded (requires auditctl, usually root-only).
+    live = _exec(client, "auditctl -l 2>/dev/null | wc -l 2>/dev/null || true")
+    try:
+        out["loaded_rule_count"] = int((live.get("stdout") or "0").strip())
+    except ValueError:
+        out["loaded_rule_count"] = None
+
+    return out
+
+
+# ── World-writable / unsafe permission scan ──────────────────────────
+
+
+def _op_world_writable(client) -> dict:
+    """Scan for world-writable files and files with no owner, scoped to
+    common high-value paths. Full-fs scans are too expensive (multi-minute
+    on large systems); we constrain to /etc, /usr, /opt, /var, /root, /home
+    and cap results.
+    """
+    # -xdev prevents crossing mount points → cheaper, though we still run
+    # per-root-path find invocations to keep each one bounded.
+    ww = _exec(client,
+                "find /etc /usr /opt /var /root /home -xdev -type f -perm -0002 "
+                "-printf '%m %u %g %p\\n' 2>/dev/null | head -200",
+                timeout=60)
+    no_owner = _exec(client,
+                      "find /etc /usr /opt /var /root /home -xdev \\( -nouser -o -nogroup \\) "
+                      "-printf '%u %g %p\\n' 2>/dev/null | head -100",
+                      timeout=60)
+
+    ww_rows: list[dict] = []
+    for line in (ww.get("stdout") or "").splitlines():
+        parts = line.split(None, 3)
+        if len(parts) != 4:
+            continue
+        mode, user, group, path = parts
+        ww_rows.append({"path": path, "mode": mode, "owner": user, "group": group})
+
+    orphan_rows: list[dict] = []
+    for line in (no_owner.get("stdout") or "").splitlines():
+        parts = line.split(None, 2)
+        if len(parts) != 3:
+            continue
+        user, group, path = parts
+        orphan_rows.append({"path": path, "owner": user, "group": group})
+
+    return {
+        "world_writable_files": ww_rows,
+        "orphaned_files": orphan_rows,
+    }
+
+
+# ── Cloud instance metadata reachability ─────────────────────────────
+
+
+def _op_cloud_metadata(client) -> dict:
+    """Check whether cloud instance metadata is reachable from the host.
+
+    IMDSv1 reachability from inside a VM is expected — we're NOT checking
+    that as a finding. The finding is when metadata is reachable via
+    IMDSv1 when IMDSv2 would be required policy (e.g., via a scanner from
+    a workload container that shouldn't see the VM's instance role).
+    We surface raw reachability and let the agent + prompt decide.
+    """
+    # AWS IMDSv1 (no token)
+    aws_v1 = _exec(client,
+                    "curl -s -m 2 -o /dev/null -w '%{http_code}' "
+                    "http://169.254.169.254/latest/meta-data/ 2>/dev/null || true")
+    # AWS IMDSv2 (token required)
+    aws_v2_token = _exec(client,
+                    "curl -s -m 2 -X PUT -o /dev/null -w '%{http_code}' "
+                    "-H 'X-aws-ec2-metadata-token-ttl-seconds: 30' "
+                    "http://169.254.169.254/latest/api/token 2>/dev/null || true")
+    # GCP (requires Metadata-Flavor header)
+    gcp = _exec(client,
+                 "curl -s -m 2 -o /dev/null -w '%{http_code}' "
+                 "-H 'Metadata-Flavor: Google' http://169.254.169.254/computeMetadata/v1/ "
+                 "2>/dev/null || true")
+    # Azure (requires Metadata: true + api-version)
+    azure = _exec(client,
+                   "curl -s -m 2 -o /dev/null -w '%{http_code}' "
+                   "-H 'Metadata: true' "
+                   "'http://169.254.169.254/metadata/instance?api-version=2021-02-01' "
+                   "2>/dev/null || true")
+
+    def _code(res: dict) -> str | None:
+        s = (res.get("stdout") or "").strip()
+        return s if s and s.isdigit() else None
+
+    aws_v1_code = _code(aws_v1)
+    aws_v2_code = _code(aws_v2_token)
+    gcp_code = _code(gcp)
+    azure_code = _code(azure)
+
+    return {
+        "aws_imdsv1_reachable": aws_v1_code == "200",
+        "aws_imdsv1_http_code": aws_v1_code,
+        "aws_imdsv2_reachable": aws_v2_code == "200",
+        "aws_imdsv2_http_code": aws_v2_code,
+        "gcp_metadata_reachable": gcp_code == "200",
+        "gcp_http_code": gcp_code,
+        "azure_metadata_reachable": azure_code == "200",
+        "azure_http_code": azure_code,
+        # IMDSv1-only cloud is the classic SSRF amplifier — reachable+no-v2.
+        "aws_imdsv1_without_v2": aws_v1_code == "200" and aws_v2_code != "200",
+    }
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
