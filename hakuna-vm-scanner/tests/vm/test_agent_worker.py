@@ -1088,19 +1088,35 @@ class TestPerSpecialistModelRouting:
     def test_authn_declares_preferred_provider(self):
         """Regression guard — the declaration is what makes the
         routing happen. If someone reverts it, the scan quietly
-        degrades back to Flash for authn."""
+        degrades back to Flash for authn. Routed through Vertex-
+        hosted Claude so billing stays on the existing GCP project."""
         authn = SPECIALISTS["authn"]
-        assert authn.preferred_provider == "anthropic"
-        assert authn.preferred_model == "claude-sonnet-4-6"
+        assert authn.preferred_provider == "vertex_ai"
+        assert authn.preferred_model.startswith("claude-")
+
+    def test_injection_declares_preferred_provider(self):
+        """Injection is the composition-target counterpart to authn
+        (authn is the source). Same multi-step orchestration profile,
+        same need for a stronger model. Empirically Flash yielded
+        enriched runs that produced zero HTTP probes — Sonnet fixes
+        it. Routed via Vertex for GCP billing (same as authn)."""
+        injection = SPECIALISTS["injection"]
+        assert injection.preferred_provider == "vertex_ai"
+        assert injection.preferred_model.startswith("claude-")
 
     def test_authn_max_iterations_bumped(self):
         """Authn's tool sequence is the longest — doubled from the
         pre-composition budget."""
         assert SPECIALISTS["authn"].max_iterations >= 20
 
-    def test_build_adapter_map_uses_preferred_when_available(self, monkeypatch):
-        """When Anthropic is configured, authn routes to it; other
-        specialists keep the default."""
+    def test_build_adapter_map_uses_preferred_when_model_differs(self, monkeypatch):
+        """When the default is vertex_ai/gemini and a spec prefers
+        vertex_ai/claude, the map must build a separate adapter for
+        the spec — not short-circuit to the default just because the
+        provider matches. This is the key fix for single-provider
+        multi-model routing: authn + injection want Claude on Vertex,
+        xss wants Gemini on Vertex, all three via the same GCP
+        project."""
         from scanner.vm.agent_worker import _build_adapter_map
         from scanner.vm.llm_provider import LLMProviderInfo
 
@@ -1111,23 +1127,60 @@ class TestPerSpecialistModelRouting:
         default_adapter = MagicMock(name="default_adapter")
         preferred_adapter = MagicMock(name="preferred_adapter")
 
-        # Stub build_adapter to return distinct mock so we can
-        # verify routing without running real SDK init.
         monkeypatch.setattr(
             "scanner.vm.agent_worker.build_adapter",
             lambda info: preferred_adapter,
         )
 
         integration_configs = {
-            "anthropic": {"is_enabled": True, "api_key": "sk-test"},
+            "vertex_ai": {"is_enabled": True, "project_id": "p"},
         }
 
-        selected = [SPECIALISTS["authn"], SPECIALISTS["injection"]]
+        selected = [
+            SPECIALISTS["authn"], SPECIALISTS["injection"], SPECIALISTS["xss"],
+        ]
         amap = _build_adapter_map(
             selected, integration_configs, default_adapter, default_info,
         )
+        # Both authn and injection declare a claude-* model → routed
+        # to the preferred (Claude) adapter even though the provider
+        # matches the default.
         assert amap["authn"] is preferred_adapter
-        assert amap["injection"] is default_adapter
+        assert amap["injection"] is preferred_adapter
+        # XSS has no preference → default (Gemini) adapter.
+        assert amap["xss"] is default_adapter
+
+    def test_build_adapter_map_short_circuits_when_model_matches(self, monkeypatch):
+        """If a spec's preferred (provider, model) matches the scan
+        default exactly, reuse the default adapter — no point building
+        a second instance of the same thing."""
+        from scanner.vm.agent_worker import _build_adapter_map
+        from scanner.vm.llm_provider import LLMProviderInfo
+        from dataclasses import replace
+
+        default_info = LLMProviderInfo(
+            provider="vertex_ai", model="gemini-2.5-flash",
+            config={"project_id": "p", "location": "us-central1"},
+        )
+        default_adapter = MagicMock(name="default_adapter")
+
+        # Force build_adapter to fail so we can prove it wasn't called.
+        def _should_not_call(info):
+            raise AssertionError(f"build_adapter called for {info!r}")
+        monkeypatch.setattr(
+            "scanner.vm.agent_worker.build_adapter", _should_not_call,
+        )
+
+        # Clone authn with preferred_model matching the default.
+        spec = replace(
+            SPECIALISTS["authn"],
+            preferred_provider="vertex_ai",
+            preferred_model="gemini-2.5-flash",
+        )
+        amap = _build_adapter_map(
+            [spec], {}, default_adapter, default_info,
+        )
+        assert amap["authn"] is default_adapter
 
     def test_build_adapter_map_falls_back_when_preferred_unavailable(self, monkeypatch):
         """Air-gapped / Vertex-only deployment: Anthropic not

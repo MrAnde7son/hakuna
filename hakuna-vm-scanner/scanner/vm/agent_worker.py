@@ -168,18 +168,35 @@ def _build_adapter_map(
     """
     out: dict[str, LLMAdapter] = {}
     for spec in selected:
-        preferred = spec.preferred_provider
-        if not preferred or preferred == default_provider_info.provider:
+        preferred_provider = spec.preferred_provider
+        preferred_model = spec.preferred_model
+
+        # Short-circuit to default only when BOTH provider AND model
+        # match (or no preference is declared). Previously this keyed
+        # on provider alone, which silently swallowed "same provider,
+        # different model" preferences — critical now that vertex_ai
+        # serves both Gemini (gemini-*) and Claude (claude-*) and a
+        # spec may want Claude while the scan default is Gemini.
+        if not preferred_provider:
             out[spec.category] = default_adapter
             continue
+        same_provider = preferred_provider == default_provider_info.provider
+        same_model = (
+            preferred_model is None
+            or preferred_model == default_provider_info.model
+        )
+        if same_provider and same_model:
+            out[spec.category] = default_adapter
+            continue
+
         info = resolve_specific_provider(
-            preferred, integration_configs,
-            model_override=spec.preferred_model,
+            preferred_provider, integration_configs,
+            model_override=preferred_model,
         )
         if info is None:
             logger.info(
                 "agent_worker: preferred provider %s not configured for %s — using default %s",
-                preferred, spec.category, default_provider_info.provider,
+                preferred_provider, spec.category, default_provider_info.provider,
             )
             out[spec.category] = default_adapter
             continue

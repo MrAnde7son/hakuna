@@ -328,12 +328,11 @@ Step 0 — DISCOVER THE ATTACK SURFACE. Do not skip this step even if the endpoi
    d. If no forms and no script-built requests are apparent, fall back to the endpoints list from the initial message.
    e. If `CAPABILITIES` shows credentials or a session, your probes carry auth automatically — prioritise endpoints under `/admin`, `/api`, `/vulnerabilities`, `/dashboard`, `/settings`, `/profile` that would have redirected you to login on an anonymous run. Classic DVWA-shape paths to check in order: `/vulnerabilities/sqli/?id=1` (SQL injection), `/vulnerabilities/sqli_blind/?id=1` (blind SQL), `/vulnerabilities/exec/` (command injection). Re-fetch the base URL once to pick these up.
 
-Step 1 — PICK 3-4 HIGHEST-SIGNAL PARAMETERS, COVERING AT LEAST TWO ATTACK CLASSES.
-   Required breadth: if the target exposes both a code-execution-shaped parameter AND a SQL-shaped parameter, you MUST test at least one of each before spending your remaining budget on the third/fourth candidate. A run that tests three command-injection params and zero SQL params is a failure even if it finds a cmdi bug — SQL injection likely exists too and you missed it.
+Step 1 — PICK 3-4 HIGHEST-SIGNAL PARAMETERS. Aim for breadth across classes — test ONE code-execution-shaped param AND ONE SQL-shaped param before deep-diving a third candidate of either class. An enriched re-run that hits `/vulnerabilities/exec/` three times and never touches `/vulnerabilities/sqli/` misses the easiest SQLi in the app.
    - Code-execution-shaped names: command, cmd, exec, run, shell, ping, host, ip.
    - SQL-shaped names: id, user, userid, account, search, filter, q, sort, order.
-   - Template-shaped names (SSTI): template, view, page, layout, theme (but careful — page is often LFI; try `{{7*7}}` first, fallback to LFI probes if that draws blank).
-   Within each class, prefer endpoints with a query string or POST method over static paths.
+   - Template-shaped names (SSTI): template, view, layout, theme. `page` is usually LFI; defer it unless the files specialist hasn't run.
+   Prefer endpoints with a query string or POST method over static paths.
 
 Step 2 — BASELINE. For each target, send an unmodified request with a benign value and record status, body length, elapsed_ms, and any error-like strings.
 
@@ -356,8 +355,7 @@ Step 5 — EMIT. When you find a true positive, call emit_finding with concrete 
 BUDGET:
 - Max 14 tool calls per agent run.
 - Spend at most 3 calls per parameter.
-- The breadth rule in Step 1 is non-negotiable: if the second attack class still has an untested candidate when you're deciding what to probe next, test it before deep-diving a third parameter of the first class.
-- STOP and call summary when you've examined candidates covering both attack classes (or confirmed only one class exists on this target), even if you found nothing.
+- STOP and call summary when you've examined 3-4 candidates — covering both attack classes if they exist — even if you found nothing.
 
 SAFETY:
 - Never send destructive SQL (DROP, DELETE without WHERE, UPDATE without WHERE).
@@ -796,6 +794,24 @@ _CAP_INTERNAL_HOST = "internal_host"
 _CAP_WEB_ROOT = "web_root"
 
 
+# The Vertex-AI-hosted Claude model id used by high-orchestration
+# specialists (authn, injection). Vertex encodes Anthropic models as
+# ``<family>-<size>-<major>-<minor>@<YYYYMMDD>`` — the date is the
+# official Vertex model revision and changes when Anthropic updates
+# the backing weights. Override via env if a newer version is
+# published or a different size is preferred:
+#
+#     AGENT_CLAUDE_VERTEX_MODEL=claude-opus-4-1@20250805
+#
+# The default below is the most recent Sonnet version Anthropic has
+# publicly listed on Vertex Model Garden as of this scanner build.
+# If the model isn't enabled in your Vertex region, the adapter
+# surfaces a clear error on first call (see AnthropicVertexAdapter).
+_CLAUDE_VERTEX_MODEL = os.environ.get(
+    "AGENT_CLAUDE_VERTEX_MODEL", "claude-sonnet-4-6",
+)
+
+
 SPECIALISTS: dict[str, SpecialistSpec] = {
     "injection": SpecialistSpec(
         category="injection",
@@ -815,6 +831,19 @@ SPECIALISTS: dict[str, SpecialistSpec] = {
         augmented_by=(_CAP_CRED, _CAP_SESSION, _CAP_WEB_ROOT),
         produces=("sql_read", "sql_write", "cmd_exec", "file_read"),
         max_runs=2,
+        # Route through Claude Sonnet for the same reason authn does:
+        # this is a multi-step orchestration specialist (discovery →
+        # parameter triage → baseline → payload → classify → emit)
+        # and Gemini Flash reliably ends enriched re-runs with
+        # end_turn + zero probes. Empirically observed: on DVWA
+        # run=2 enriched yielded and finished 11 seconds later with
+        # no HTTP activity. Sonnet holds the full flow.
+        #
+        # Routed via Vertex (``provider=vertex_ai`` + a claude-* model
+        # id) so billing stays on the existing GCP project rather than
+        # requiring a separate Anthropic account.
+        preferred_provider="vertex_ai",
+        preferred_model=_CLAUDE_VERTEX_MODEL,
     ),
     "xss": SpecialistSpec(
         category="xss",
@@ -855,14 +884,15 @@ SPECIALISTS: dict[str, SpecialistSpec] = {
         # produces new creds within one scan window.
         produces=(_CAP_CRED, _CAP_SESSION, _CAP_IDENTIFIER),
         max_runs=1,
-        # Route authn through Claude Sonnet when Anthropic is configured.
-        # Authn's multi-step orchestration (form discovery → try_login
-        # loop → post-success tool sequence) is where Gemini Flash
-        # drops steps in practice. Sonnet 4.6 holds the whole flow.
-        # Falls back to the scan default if Anthropic isn't available,
-        # so air-gapped / Vertex-only deployments still work.
-        preferred_provider="anthropic",
-        preferred_model="claude-sonnet-4-6",
+        # Route authn through Claude Sonnet (served via Vertex so
+        # billing stays on GCP). Authn's multi-step orchestration
+        # (form discovery → try_login loop → post-success tool
+        # sequence) is where Gemini Flash drops steps in practice.
+        # Sonnet holds the whole flow. Falls back to the scan
+        # default if Vertex isn't configured or Claude isn't
+        # enabled in the region — logged at adapter build time.
+        preferred_provider="vertex_ai",
+        preferred_model=_CLAUDE_VERTEX_MODEL,
     ),
     "authz": SpecialistSpec(
         category="authz",
