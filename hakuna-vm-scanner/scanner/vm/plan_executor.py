@@ -238,7 +238,7 @@ def _build_single_command(
         "-timeout", str(timeout),
         "-rate-limit", str(rate_limit),
         "-c", str(NUCLEI_CONCURRENCY),
-        "-bc", str(NUCLEI_BULK_CONCURRENCY),
+        "-bs", str(NUCLEI_BULK_CONCURRENCY),
         "-retries", str(NUCLEI_RETRIES),
         "-no-color",
         "-stats",

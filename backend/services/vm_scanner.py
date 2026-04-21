@@ -889,10 +889,35 @@ def _rollback_failed_run(db: Session, scan: Scan) -> dict:
         Finding.scan_id == scan.id,
         Finding.scan_run_id == current_run_id,
     ).delete(synchronize_session=False)
-    assets_deleted = db.query(Asset).filter(
-        Asset.scan_id == scan.id,
-        Asset.scan_run_id == current_run_id,
-    ).delete(synchronize_session=False)
+
+    # An asset tagged with current_run_id isn't necessarily *new* to this run —
+    # imports re-stamp pre-existing assets with the in-flight run_id so mid-scan
+    # query scoping works. If the prior run's findings still reference it, the
+    # asset pre-existed and must be preserved (revert its stamp); otherwise it's
+    # safe to delete. Hard-deleting an asset with surviving findings tripped a
+    # FK integrity error on stop/rollback.
+    assets_deleted = 0
+    if previous_run_id:
+        db.query(Asset).filter(
+            Asset.scan_id == scan.id,
+            Asset.scan_run_id == current_run_id,
+            Asset.id.in_(
+                db.query(Finding.asset_id).filter(
+                    Finding.scan_id == scan.id,
+                    Finding.scan_run_id == previous_run_id,
+                )
+            ),
+        ).update({Asset.scan_run_id: previous_run_id}, synchronize_session=False)
+
+        assets_deleted = db.query(Asset).filter(
+            Asset.scan_id == scan.id,
+            Asset.scan_run_id == current_run_id,
+        ).delete(synchronize_session=False)
+    else:
+        assets_deleted = db.query(Asset).filter(
+            Asset.scan_id == scan.id,
+            Asset.scan_run_id == current_run_id,
+        ).delete(synchronize_session=False)
 
     # Restore the previous run_id so mid-scan query scoping falls back to
     # the preserved prior run. If there was no previous run, clear the field.

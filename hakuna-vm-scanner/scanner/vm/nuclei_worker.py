@@ -24,6 +24,23 @@ import uuid
 
 import asyncpg
 
+# Nuclei inspects a handful of provider env vars at startup and aborts with
+# exit=2 if it sees a partial config (e.g. GOOGLE_API_KEY without
+# GOOGLE_API_CX). The agent worker containers share an image/env with the
+# nuclei worker, so LLM keys leak into this process and break every scan.
+# Strip them before spawning nuclei — the binary never needs them.
+_NUCLEI_ENV_STRIP = (
+    "GOOGLE_API_KEY",
+    "GOOGLE_API_CX",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+)
+
+
+def _nuclei_subprocess_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k not in _NUCLEI_ENV_STRIP}
+
+
 from scanner.vm.celery_app import celery_app
 from scanner.vm.config import (
     DATABASE_URL,
@@ -85,9 +102,14 @@ def _nuclei_perf_args() -> list[str]:
     without a code change. Empty NUCLEI_EXCLUDE_TAGS drops the -etags flag
     entirely (passing ``-etags ""`` would make nuclei error).
     """
+    # Nuclei v3.x renamed `-bc` (bulk-concurrency) to `-bs` (bulk-size).
+    # Passing the old flag makes the binary exit=2 with "flag provided but
+    # not defined: -bc" before any request goes out, silently producing
+    # 0-finding scans. Keep the env var name for backcompat with existing
+    # deployments and map it to the current flag.
     args = [
         "-c", str(NUCLEI_CONCURRENCY),
-        "-bc", str(NUCLEI_BULK_CONCURRENCY),
+        "-bs", str(NUCLEI_BULK_CONCURRENCY),
         "-retries", str(NUCLEI_RETRIES),
     ]
     if NUCLEI_EXCLUDE_TAGS.strip():
@@ -566,6 +588,7 @@ async def _run_one_nuclei(cmd: list[str], timeout_seconds: int) -> dict:
         stderr=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.DEVNULL,
         limit=1024 * 1024,
+        env=_nuclei_subprocess_env(),
     )
 
     async def drain_stderr():
@@ -830,6 +853,7 @@ async def _run_nuclei_adhoc_async(
                     stderr=asyncio.subprocess.PIPE,
                     stdin=asyncio.subprocess.DEVNULL,
                     limit=1024 * 1024,
+                    env=_nuclei_subprocess_env(),
                 )
 
                 async def drain_stderr(_proc, _sink: list[str]):
