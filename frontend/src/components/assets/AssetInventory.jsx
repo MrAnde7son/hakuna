@@ -8,6 +8,7 @@ import { getAssets, getAssetTypes, updateAsset, getBlastRadiusBulk, assignTags, 
 import useScanProgress from '../../hooks/useScanProgress.js'
 import { Card, ScoreBar, Table, PageHeader, Select, Spinner, EmptyState, Button, TagPill, TagFilterBar, TagPicker, OwnerBadge, ConfidenceDot, ColumnSelector, SaveAsRuleModal, OwnershipEditPopover, ContextEditPopover, SourceDots, SourceFilter, ErrorBanner, SkeletonTable } from '../shared/ui.jsx'
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
+import { capture } from '../../utils/analytics.js'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
 import BlastRadiusPanel, { BlastRadiusScore } from '../campaigns/BlastRadiusPanel.jsx'
 import NLPSearchBar from '../shared/NLPSearchBar.jsx'
@@ -1001,7 +1002,14 @@ export default function AssetInventory() {
                 </Button>
               </>
             )}
-            <Button variant="ghost" size="sm" onClick={() => exportDownload('assets', { scan_id: activeScanId, environment: filters.env, search: filters.search })}>
+            <Button variant="ghost" size="sm" onClick={() => {
+              capture('assets_exported', {
+                format: 'csv',
+                scan_id: activeScanId,
+                has_filters: !!(filters.env || filters.search),
+              })
+              exportDownload('assets', { scan_id: activeScanId, environment: filters.env, search: filters.search })
+            }}>
               <Download size={14} /> {t('assets.exportCsv')}
             </Button>
             <Button variant="ghost" size="sm" onClick={load}>

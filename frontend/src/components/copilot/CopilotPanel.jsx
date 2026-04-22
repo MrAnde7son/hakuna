@@ -11,6 +11,7 @@ import {
   Search, Tags, LayoutDashboard, Settings,
 } from 'lucide-react'
 import { tryRenderRichBlock } from './RichBlockRenderer.jsx'
+import { capture } from '../../utils/analytics.js'
 import {
   getCopilotConversations,
   createCopilotConversation,
@@ -783,6 +784,13 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
     setThinkingStep(0)
     setRecommendations([])
 
+    const _promptStart = Date.now()
+    capture('copilot_prompt_sent', {
+      prompt_length: msg.length,
+      conversation_id: conv?.id,
+      page: currentPath,
+    })
+
     // Add user message to local state (show original text in chat bubble)
     const userMsg = { role: 'user', content: msg, timestamp: new Date().toISOString() }
     setMessages(prev => [...prev, userMsg])
@@ -897,6 +905,12 @@ export default function CopilotPanel({ open, onClose, currentPath, currentSearch
                 content: event.output || textAccum,
                 timestamp: new Date().toISOString(),
               }])
+              capture('copilot_response_received', {
+                conversation_id: conv?.id,
+                latency_ms: Date.now() - _promptStart,
+                response_length: (event.output || textAccum || '').length,
+                tool_calls: events.filter(e => e.type === 'tool_call').length,
+              })
             } else if (event.type === 'recommendations') {
               setRecommendations(event.recommendations || [])
             } else if (event.type === 'error') {

@@ -287,6 +287,12 @@ export default function FindingDetail() {
       setFinding(prev => ({ ...prev, workflow_status: type, exception_id: -1 }))
       setShowExceptionForm(false)
       setExceptionReason('')
+      capture('finding_exception_created', {
+        exception_type: type,
+        finding_id: finding.id,
+        plugin_id: finding.plugin_id,
+        severity: finding.severity,
+      })
       toast.success('Exception created')
     } catch (e) {
       toast.error('Failed to create exception: ' + e.message)
@@ -298,6 +304,11 @@ export default function FindingDetail() {
     try {
       const updated = await updateFindingContext(id, { [field]: value || null })
       setFinding(prev => ({ ...prev, ...updated }))
+      capture('finding_context_updated', {
+        field,
+        finding_id: id,
+        plugin_id: finding?.plugin_id,
+      })
       toast.success('Ownership updated')
     } finally {
       setCtxSaving(false)

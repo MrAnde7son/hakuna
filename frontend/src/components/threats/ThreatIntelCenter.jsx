@@ -22,6 +22,7 @@ import {
   getProductLifecycles, getProductLifecycle,
   getPatchAdvisories, getPatchStats,
 } from '../../api.js'
+import { capture } from '../../utils/analytics.js'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -2576,13 +2577,16 @@ export default function ThreatIntelCenter() {
   const handleSync = async () => {
     setSyncing(true)
     setSyncResult(null)
+    capture('threat_intel_sync_started')
     try {
       const data = await syncThreatIntel()
       setSyncResult(data)
+      capture('threat_intel_synced', { status: data?.status || 'ok' })
       // Refresh stats after sync
       try { setStats(await getThreatIntelStats()) } catch { /* ignore */ }
     } catch (e) {
       setSyncResult({ status: 'error', message: e.message })
+      capture('threat_intel_synced', { status: 'error', error: e.message })
     } finally {
       setSyncing(false)
     }
@@ -2603,6 +2607,7 @@ export default function ThreatIntelCenter() {
     resetCveFilters()
     setCveInitialSearch(cveId)
     setTab('cves')
+    capture('cve_looked_up', { cve_id: cveId })
   }
 
   const applyStatFilter = useCallback((key) => {

@@ -9,6 +9,7 @@ import {
 import { useScan } from '../../App.jsx'
 import { getCampaigns, createCampaign, deleteCampaign, runCampaign, getWorkflows, createWorkflow, deleteWorkflow, getWorkflowTemplates, createWorkflowFromTemplate, exportConfig, importConfig, authListUsers, getIntegrations, previewCampaignQuery } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, EmptyState, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast } from '../shared/ui.jsx'
+import { capture } from '../../utils/analytics.js'
 
 const STATUS_KEYS = {
   draft:     { key: 'campaigns.draft',     color: 'var(--muted)',   bg: 'rgba(100,116,139,0.1)', border: 'rgba(100,116,139,0.25)', icon: Clock },
@@ -378,6 +379,12 @@ function CreateCampaignModal({ scanId, onClose, onCreate }) {
         }
       }
       const c = await createCampaign(payload)
+      capture('campaign_created', {
+        campaign_id: c.id,
+        template_id: selectedTemplate?.id || null,
+        has_auto_ticket: !!payload.auto_ticket,
+        query_conditions: (payload.query || []).length,
+      })
       toast.success('Campaign created')
       onCreate(c)
     } finally {
@@ -1171,6 +1178,7 @@ export default function Campaigns() {
 
   const handleRun = async (id) => {
     await runCampaign(id)
+    capture('campaign_executed', { campaign_id: id })
     load()
   }
 

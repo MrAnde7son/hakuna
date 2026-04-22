@@ -26,6 +26,7 @@ import {
   getBillingUsage,
 } from '../../api.js'
 import AgentApprovalQueue from './AgentApprovalQueue.jsx'
+import { capture } from '../../utils/analytics.js'
 
 const MODELS = [
   // Anthropic
@@ -148,6 +149,7 @@ export default function AgentBuilder() {
       tools: [],
       guardrails: { max_steps: 10, read_only: true },
     })
+    capture('agent_created', { agent_id: agent.id, from_template: false })
     await refresh()
     selectAgent(agent)
   }
@@ -155,6 +157,12 @@ export default function AgentBuilder() {
   const handleFromTemplate = async (template) => {
     setShowTemplates(false)
     const agent = await createAgentFromTemplate({ template_id: template.id })
+    capture('agent_created', {
+      agent_id: agent.id,
+      from_template: true,
+      template_id: template.id,
+      template_name: template.name,
+    })
     await refresh()
     selectAgent(agent)
   }
@@ -241,6 +249,13 @@ export default function AgentBuilder() {
 
     const input = rawInput.trim()
     setRunInput('')
+
+    capture('agent_executed', {
+      agent_id: agent.id,
+      agent_name: agent.name,
+      model: agent.model,
+      input_length: input.length,
+    })
 
     try {
       // Try streaming first
@@ -1555,6 +1570,10 @@ function SchedulePanel({ agentId, agent, templates, schedules, onRefresh }) {
         agent_id: agentId,
         cron_expression: cronExpr,
         input: schedInput.trim(),
+      })
+      capture('agent_scheduled', {
+        agent_id: agentId,
+        cron_expression: cronExpr,
       })
       onRefresh()
       toast.success('Schedule created')

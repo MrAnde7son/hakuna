@@ -13,6 +13,7 @@ import {
 import RuleBuilder from '../campaigns/RuleBuilder.jsx'
 import { filtersToConditions } from '../../utils/filtersToConditions.js'
 import NLPSearchBar from '../shared/NLPSearchBar.jsx'
+import { capture } from '../../utils/analytics.js'
 import NewSinceBanner from '../notifications/NewSinceBanner.jsx'
 import { getFindingAssetDisplay, getAssetDisplayName } from '../../utils/assetDisplay.js'
 
@@ -1066,15 +1067,29 @@ export default function FindingExplorer() {
           <div style={{ display: 'flex', gap: 8 }}>
             {selectedIds.size > 0 && (
               <>
-                <Button size="sm" variant="ghost" onClick={() => setShowBulkTag(true)}>
+                <Button size="sm" variant="ghost" onClick={() => {
+                  capture('findings_bulk_action', { action: 'tag', count: selectedIds.size })
+                  setShowBulkTag(true)
+                }}>
                   <Tag size={14} /> {t('findings.tagSelected', { count: selectedIds.size })}
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => setShowBulkCampaign(true)}>
+                <Button size="sm" variant="ghost" onClick={() => {
+                  capture('findings_bulk_action', { action: 'campaign', count: selectedIds.size })
+                  setShowBulkCampaign(true)
+                }}>
                   <Zap size={14} /> Campaign
                 </Button>
               </>
             )}
-            <Button variant="ghost" size="sm" onClick={() => exportDownload('findings', { scan_id: activeScanId, severity, plugin_family: family, has_exploit: hasExploit, is_kev: isKev, effort_level: effortLevel, search })}>
+            <Button variant="ghost" size="sm" onClick={() => {
+              capture('findings_exported', {
+                format: 'csv',
+                scan_id: activeScanId,
+                total,
+                has_filters: !!(severity || family || hasExploit || isKev || effortLevel || search),
+              })
+              exportDownload('findings', { scan_id: activeScanId, severity, plugin_family: family, has_exploit: hasExploit, is_kev: isKev, effort_level: effortLevel, search })
+            }}>
               <Download size={14} /> {t('findings.exportCsv')}
             </Button>
           </div>
