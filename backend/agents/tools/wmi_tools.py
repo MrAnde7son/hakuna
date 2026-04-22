@@ -927,6 +927,8 @@ _SHARED_TOOL_NAMES = [
     "wmi_list_startup_commands", "wmi_list_scheduled_tasks_legacy",
     # Generic registry primitive — covers checks no WMI class exposes.
     "wmi_registry_read",
+    # CVE correlation — deterministic inventory→CVE matching pass
+    "correlate_software_to_cves",
     # Shared
     "emit_finding",
     # Generic context tools already registered in agent_tools.py
@@ -968,11 +970,15 @@ register_audit(ProtocolAudit(
         ),
         MissionTemplate(
             key="software_cve",
-            label="Software & CVEs",
-            description="Enumerate installed software + patches and correlate against threat intelligence for known CVEs.",
+            label="CVE Hunt",
+            description=(
+                "Correlate installed software + patches against the threat-intel CVE "
+                "DB, then triage candidates by reading config state (Defender, firewall, "
+                "registry, drivers) to separate truly exploitable from mitigated."
+            ),
             prompt_key="wmi_audit_software_cve",
-            suggested_budget=15,
-            cost_hint="low",
+            suggested_budget=25,
+            cost_hint="medium",
         ),
         MissionTemplate(
             key="network_hygiene",

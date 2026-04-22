@@ -433,6 +433,8 @@ _SMB_TOOL_NAMES = [
     # Generic registry primitive — covers checks WMI classes don't expose
     # and works when RemoteRegistry is reachable but WMI/DCOM is blocked.
     "smb_registry_read",
+    # CVE correlation — deterministic inventory→CVE matching pass
+    "correlate_software_to_cves",
     # Shared
     "emit_finding",
     "get_asset_profile",

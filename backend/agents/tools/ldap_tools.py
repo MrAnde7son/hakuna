@@ -945,6 +945,8 @@ _LDAP_TOOL_NAMES = [
     "ldap_get_rootdse", "ldap_list_gpos",
     # Escape hatch
     "ldap_raw_search",
+    # CVE correlation — deterministic inventory→CVE matching pass
+    "correlate_software_to_cves",
     # Shared
     "emit_finding",
     "get_asset_profile",

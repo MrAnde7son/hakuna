@@ -644,6 +644,38 @@ def get_missing_patches(db: Session, params: dict):
 
 
 @agent_tool(
+    "correlate_software_to_cves",
+    "Correlate the asset's InventorySoftware + InventoryPatch rows against the "
+    "threat-intel CVE database and return a ranked candidate CVE list. This is "
+    "the deterministic coverage pass — version-range matching against ThreatCVE, "
+    "plus MSRC KB→CVE mapping to tag candidates as already-mitigated vs missing. "
+    "Use this at the start of a CVE-hunting mission, then pair with your "
+    "protocol's audit tools (wmi_defender_status, ssh_firewall_state, "
+    "wmi_firewall_profile, etc.) to triage which candidates are actually "
+    "exploitable on this host. "
+    "Candidates are sorted by KEV → EPSS → CVSS, capped at `top_n` (default 40). "
+    "The summary counts (`total_candidate_cves`, `kev_candidates`, etc.) are "
+    "authoritative; the sampled list is for your reasoning. "
+    "Also returns end-of-life components (ProductLifecycle hits) — an EOL OS "
+    "or package is a finding regardless of CVE status.",
+    {
+        "asset_id": {"type": "integer", "description": "Target asset"},
+        "top_n": {"type": "integer", "description": "Max candidates in the sampled list (default 40, max 100)"},
+        "include_eol": {"type": "boolean", "description": "Include EOL lifecycle check (default true)"},
+    },
+)
+def correlate_software_to_cves(db: Session, params: dict):
+    from services.cve_correlator import correlate_asset
+
+    asset_id = params.get("asset_id")
+    if not asset_id:
+        return {"error": "asset_id is required"}
+    top_n = min(int(params.get("top_n") or 40), 100)
+    include_eol = params.get("include_eol", True)
+    return correlate_asset(db, int(asset_id), top_n=top_n, include_eol=bool(include_eol))
+
+
+@agent_tool(
     "tag_assets",
     "Apply a tag to a list of assets by ID. Requires write permission (read_only guardrail must be off).",
     {

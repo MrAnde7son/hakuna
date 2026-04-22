@@ -354,6 +354,8 @@ _SNMP_TOOL_NAMES = [
     "snmp_host_resources", "snmp_list_listeners",
     # Escape hatch
     "snmp_get", "snmp_walk",
+    # CVE correlation — deterministic inventory→CVE matching pass
+    "correlate_software_to_cves",
     # Shared
     "emit_finding",
     "get_asset_profile",

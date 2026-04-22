@@ -603,6 +603,8 @@ _SSH_TOOL_NAMES = [
     # systemd / containers / permission hygiene / cloud
     "ssh_systemd_unit_audit", "ssh_container_surface",
     "ssh_world_writable_scan", "ssh_cloud_metadata_reachable",
+    # CVE correlation — deterministic inventory→CVE matching pass
+    "correlate_software_to_cves",
     # Shared
     "emit_finding",
     "get_asset_profile",
@@ -651,6 +653,18 @@ register_audit(ProtocolAudit(
             prompt_key="ssh_audit_software_inventory",
             suggested_budget=10,
             cost_hint="low",
+        ),
+        MissionTemplate(
+            key="software_cve",
+            label="CVE Hunt",
+            description=(
+                "Correlate installed packages against the threat-intel CVE DB, "
+                "then triage top candidates by checking host config + reachability "
+                "to separate truly exploitable from mitigated/not-applicable."
+            ),
+            prompt_key="ssh_audit_software_cve",
+            suggested_budget=25,
+            cost_hint="medium",
         ),
         MissionTemplate(
             key="explore",
