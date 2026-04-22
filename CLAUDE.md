@@ -192,6 +192,10 @@ Standard query parameters: `page`, `page_size`, `search`, `sort_by`, `order`, pl
 | `OPENAI_API_KEY` | No | GPT API access for AI agents |
 | `GOOGLE_API_KEY` | No | Gemini API access for AI agents |
 | `SENTRY_DSN` | No | Error tracking |
+| `POSTHOG_API_KEY` | No | Backend product analytics (project API key, `phc_…`) |
+| `POSTHOG_HOST` | No | PostHog host, defaults to `https://us.i.posthog.com` |
+| `VITE_POSTHOG_KEY` | No | Frontend product analytics (same key as backend) |
+| `VITE_POSTHOG_HOST` | No | Frontend PostHog host |
 | `SHODAN_API_KEY` | No | Threat intel enrichment |
 
 ## Testing Strategy

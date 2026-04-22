@@ -10,6 +10,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import BlastRadiusPanel from '../campaigns/BlastRadiusPanel.jsx'
 import { getFindingAssetDisplay } from '../../utils/assetDisplay.js'
+import { capture } from '../../utils/analytics.js'
 
 function Section({ title, icon: Icon, children, defaultOpen = true }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -218,6 +219,13 @@ export default function FindingDetail() {
         query_logic: 'AND',
       })
       await runCampaign(campaign.id)
+      capture('remediation_executed', {
+        action: 'create_campaign',
+        finding_id: finding.id,
+        plugin_id: finding.plugin_id,
+        severity: finding.severity,
+        campaign_id: campaign.id,
+      })
       navigate(`/campaigns/${campaign.id}`)
     } finally {
       setCreatingCampaign(false)
@@ -229,6 +237,17 @@ export default function FindingDetail() {
     try {
       const res = await resolveFinding(id)
       setFinding(prev => ({ ...prev, sla_status: 'resolved', resolved_at: res.resolved_at }))
+      capture('remediation_executed', {
+        action: 'mark_resolved',
+        finding_id: finding?.id,
+        plugin_id: finding?.plugin_id,
+        severity: finding?.severity,
+      })
+      capture('exposure_closed', {
+        finding_id: finding?.id,
+        plugin_id: finding?.plugin_id,
+        severity: finding?.severity,
+      })
       toast.success('Finding resolved')
     } finally {
       setResolving(false)

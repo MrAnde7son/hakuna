@@ -656,6 +656,19 @@ def create_integration(body: IntegrationCreate, db: Session = Depends(get_db),
     )
     db.commit()
 
+    try:
+        from services import posthog_client as analytics
+        analytics.capture(user.id, "integration_connected", {
+            "integration_id": integration.id,
+            "template_id": integration.template_id,
+            "transport_type": integration.transport_type,
+            "direction": integration.direction,
+            "entity": integration.entity,
+            "enabled": integration.enabled,
+        }, org_id=user.org_id)
+    except Exception:
+        pass
+
     # For webhook transport, auto-create an ingest endpoint
     ingest_creds = None
     if body.transport_type == "webhook":
