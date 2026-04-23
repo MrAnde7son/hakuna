@@ -339,18 +339,59 @@ _CLOUD_TOOL_NAMES = [
 ]
 
 
-# Connector ids that vend an AWS SigV4 credential shape — any of these is a
-# valid credential source for an AWS audit. Mirrors the credential_connector_ids
-# pattern used by the protocol audits (windows_host / linux_host / etc.).
+# Per-provider credential connector lists — these are connector ids whose
+# credential shape the audit accepts. Mirrors the pattern used by the protocol
+# audits (windows_host / linux_host / etc.). Any pull connector under the
+# provider prefix can in principle vend the credential; we enumerate a few
+# representative ones so the kickoff UI can filter saved credentials sensibly.
 _AWS_CREDENTIAL_CONNECTORS = [
-    "aws_iam_users",
-    "aws_iam_roles",
-    "aws_iam_policies",
-    "aws_s3_buckets",
-    "aws_ec2_instances",
-    "aws_lambda_functions",
+    "aws_iam_users", "aws_iam_roles", "aws_iam_policies",
+    "aws_s3_buckets", "aws_ec2_instances", "aws_lambda_functions",
     "aws_security_hub_findings",
 ]
+
+_AZURE_CREDENTIAL_CONNECTORS = [
+    "azure_ad_identities", "azure_role_assignments", "azure_role_definitions",
+    "azure_storage_accounts", "azure_virtual_machines", "azure_function_apps",
+    "azure_defender_findings",
+]
+
+_GCP_CREDENTIAL_CONNECTORS = [
+    "gcp_iam_service_accounts", "gcp_project_iam_bindings",
+    "gcp_storage_buckets", "gcp_compute_instances", "gcp_cloud_functions",
+    "gcp_scc_findings",
+]
+
+
+def _cloud_missions(provider: str) -> list[MissionTemplate]:
+    """Three-mission template shared across providers. Mission keys are
+    stable (exposure / identity / explore); only the prompt_key varies."""
+    return [
+        MissionTemplate(
+            key="exposure",
+            label="Public Exposure",
+            description="Public storage, open firewall/security-group rules, publicly-reachable serverless endpoints, unauthenticated resources.",
+            prompt_key=f"{provider}_audit_exposure",
+            suggested_budget=25,
+            cost_hint="medium",
+        ),
+        MissionTemplate(
+            key="identity",
+            label="Identity & Access",
+            description="Privilege-escalation paths, over-permissive policies/roles, stale keys, unexpected external trust.",
+            prompt_key=f"{provider}_audit_identity",
+            suggested_budget=30,
+            cost_hint="medium",
+        ),
+        MissionTemplate(
+            key="explore",
+            label="Explore (creative)",
+            description="No fixed checklist — agent reasons freely about control-plane exposure.",
+            prompt_key=f"{provider}_audit_explore",
+            suggested_budget=25,
+            cost_hint="medium",
+        ),
+    ]
 
 
 register_audit(ProtocolAudit(
@@ -368,30 +409,43 @@ register_audit(ProtocolAudit(
     tool_names=_CLOUD_TOOL_NAMES,
     required_ports=(),
     default_wallclock_s=900,
-    missions=[
-        MissionTemplate(
-            key="exposure",
-            label="Public Exposure",
-            description="Public S3 buckets, open security groups, publicly-reachable Lambda URLs, unauthenticated endpoints.",
-            prompt_key="aws_audit_exposure",
-            suggested_budget=25,
-            cost_hint="medium",
-        ),
-        MissionTemplate(
-            key="identity",
-            label="Identity & Access",
-            description="IAM privilege-escalation paths, over-permissive policies, unused access keys, cross-account trust risk.",
-            prompt_key="aws_audit_identity",
-            suggested_budget=30,
-            cost_hint="medium",
-        ),
-        MissionTemplate(
-            key="explore",
-            label="Explore (creative)",
-            description="No fixed checklist — agent reasons freely about AWS control-plane exposure.",
-            prompt_key="aws_audit_explore",
-            suggested_budget=25,
-            cost_hint="medium",
-        ),
-    ],
+    missions=_cloud_missions("aws"),
+))
+
+
+register_audit(ProtocolAudit(
+    protocol="azure",
+    label="Azure Cloud Audit",
+    description=(
+        "Credentialed Azure audit that reasons over Entra ID, RBAC, Storage "
+        "Accounts, Virtual Machines, and other control-plane APIs live. "
+        "Reuses integration-builder connectors as the tool catalog."
+    ),
+    supported_os=["cloud"],
+    auth_modes=["oauth2"],
+    relay_method="none",
+    credential_connector_ids=_AZURE_CREDENTIAL_CONNECTORS,
+    tool_names=_CLOUD_TOOL_NAMES,
+    required_ports=(),
+    default_wallclock_s=900,
+    missions=_cloud_missions("azure"),
+))
+
+
+register_audit(ProtocolAudit(
+    protocol="gcp",
+    label="GCP Cloud Audit",
+    description=(
+        "Credentialed GCP audit that reasons over project IAM bindings, "
+        "service accounts, GCS buckets, Compute, and Cloud Functions live. "
+        "Reuses integration-builder connectors as the tool catalog."
+    ),
+    supported_os=["cloud"],
+    auth_modes=["gcp_service_account"],
+    relay_method="none",
+    credential_connector_ids=_GCP_CREDENTIAL_CONNECTORS,
+    tool_names=_CLOUD_TOOL_NAMES,
+    required_ports=(),
+    default_wallclock_s=900,
+    missions=_cloud_missions("gcp"),
 ))

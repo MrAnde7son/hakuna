@@ -246,23 +246,43 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <SourceOption icon={Globe} label="EASM Audit" description={easmEnabled ? 'Audit a domain' : 'Set up EASM auditing'} color="#0ea5e9" onClick={() => setMode(easmEnabled ? 'easm' : 'easm-setup')} />
             <SourceOption icon={MonitorSmartphone} label="VM Audit" description="Remote vulnerability audit" color="#ec4899" onClick={() => setMode('vm')} />
-            {/* Credentialed protocol audits — one card per registered protocol.
-                Authentication mode (basic/NTLM/anonymous) is a property of each
-                protocol's tool palette, not a separate top-level choice. */}
-            {auditProtocols.map(p => {
-              const meta = AUDIT_CARD_META[p.protocol] || { icon: ShieldAlert, color: '#14b8a6' }
-              return (
-                <SourceOption
-                  key={p.protocol}
-                  icon={meta.icon}
-                  label={meta.label || p.label}
-                  description={meta.description || 'Protocol ReAct audit'}
-                  color={meta.color}
-                  onClick={() => setMode(`audit:${p.protocol}`)}
-                />
-              )
-            })}
+            {/* Credentialed protocol audits collapse into a single card. Picking
+                it reveals the protocol grid (WMI, LDAP, SMB, MSSQL, SNMP, …) so
+                the top-level modal stays a fixed size as protocols are added. */}
+            <SourceOption
+              icon={Key}
+              label="Credentialed Audit"
+              description={auditProtocols.length ? `${auditProtocols.length} protocols available` : 'Configure at least one protocol'}
+              color="#14b8a6"
+              disabled={auditProtocols.length === 0}
+              disabledMessage="No audit protocols registered"
+              onClick={() => setMode('audit-picker')}
+            />
             <SourceOption icon={Upload} label="Import File" description="Nessus XML, HTML, CSV" color="#6366f1" onClick={() => setMode('upload')} />
+          </div>
+        )}
+
+        {mode === 'audit-picker' && (
+          <div>
+            <BackButton onClick={() => setMode(null)} />
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
+              Pick a protocol to run a credentialed audit against.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              {auditProtocols.map(p => {
+                const meta = AUDIT_CARD_META[p.protocol] || { icon: ShieldAlert, color: '#14b8a6' }
+                return (
+                  <SourceOption
+                    key={p.protocol}
+                    icon={meta.icon}
+                    label={meta.label || p.label}
+                    description={meta.description || 'Protocol ReAct audit'}
+                    color={meta.color}
+                    onClick={() => setMode(`audit:${p.protocol}`)}
+                  />
+                )
+              })}
+            </div>
           </div>
         )}
 
@@ -327,7 +347,7 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
         {typeof mode === 'string' && mode.startsWith('audit:') && (
           <AuditScanPanel
             onClose={onClose}
-            onBack={() => setMode(null)}
+            onBack={() => setMode('audit-picker')}
             onAuditScan={onAuditScan}
             preselectedProtocol={mode.slice('audit:'.length)}
             availableProtocols={auditProtocols}
@@ -1074,9 +1094,10 @@ function AuditScanPanel({
   const hasTargetSource = tab === 'manual'
     ? (manualTargets.length > 0 && !manualCountExceedsCap)
     : selectedAssets.size > 0
-  // Protocols whose missions can run without a credential (SMB null sessions).
+  // Protocols whose missions can run without a credential (SMB null sessions,
+  // SNMP default-community sweeps).
   // Must match backend/services/audit_runner.py::_ANON_CAPABLE_PROTOCOLS.
-  const credentialOptional = selectedProtocol === 'smb'
+  const credentialOptional = selectedProtocol === 'smb' || selectedProtocol === 'snmp'
   const canStart = !!selectedProtocol && !!selectedMission
     && (credentialOptional || !!credentialId)
     && !!relayAgentId && hasTargetSource && !scanning && !quotaExhausted

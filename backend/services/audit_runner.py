@@ -39,10 +39,10 @@ logger = logging.getLogger(__name__)
 
 
 # Protocols whose tools support unauthenticated operation (e.g. SMB null
-# sessions). Dispatch without a credential is allowed for these; the tools
-# that actually need auth will surface a clean "no credential provided"
-# error to the LLM when called.
-_ANON_CAPABLE_PROTOCOLS = {"smb"}
+# sessions, SNMP default-community sweeps). Dispatch without a credential
+# is allowed for these; the tools that actually need auth will surface a
+# clean "no credential provided" error to the LLM when called.
+_ANON_CAPABLE_PROTOCOLS = {"smb", "snmp"}
 
 
 class AuditDispatchError(Exception):
