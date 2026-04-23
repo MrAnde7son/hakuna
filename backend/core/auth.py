@@ -2,6 +2,7 @@
 Authentication & authorization utilities.
 JWT token handling, password hashing, and FastAPI dependency injection.
 """
+import hmac
 import os
 from datetime import datetime, timedelta
 from typing import Optional, List
@@ -118,6 +119,11 @@ if JWT_SECRET != _DEFAULT_JWT_SECRET and len(JWT_SECRET) < 32:
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))  # 8 hours
 
+# Shared secret for process-to-process internal RPC (audit workers → backend
+# relay-dispatch). Different from JWT_SECRET so a JWT leak doesn't grant
+# privileged relay dispatch, and a compromised worker can't mint user tokens.
+INTERNAL_SHARED_SECRET = os.environ.get("INTERNAL_SHARED_SECRET", "")
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -215,6 +221,22 @@ async def require_auth(
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user
+
+
+async def require_internal_token(x_internal_token: Optional[str] = Header(None)) -> None:
+    """Gate on a shared secret for process-to-process RPC.
+
+    Used by routes under `/internal/*` that out-of-process workers call to
+    reach capabilities owned by the backend (relay websocket, in-process
+    broker). Workers set `INTERNAL_SHARED_SECRET` in their environment; the
+    backend validates incoming calls here. `hmac.compare_digest` avoids a
+    timing-side-channel; the `not configured → 503` branch makes misconfig
+    loud instead of silently permitting everything.
+    """
+    if not INTERNAL_SHARED_SECRET:
+        raise HTTPException(503, "Internal dispatch disabled (INTERNAL_SHARED_SECRET not set)")
+    if not x_internal_token or not hmac.compare_digest(x_internal_token, INTERNAL_SHARED_SECRET):
+        raise HTTPException(401, "Invalid internal token")
 
 
 def require_role(*roles: str):

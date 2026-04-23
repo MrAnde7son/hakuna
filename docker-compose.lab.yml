@@ -25,6 +25,11 @@ name: hakuna-lab
 networks:
   default:
     name: hakuna-lab
+  hakuna_default:
+    # Main app's network (backend + audit-worker + postgres). Joined by the
+    # optional `relay` service below so it can reach backend:8000 by
+    # hostname — same as production, where the relay talks to a public URL.
+    external: true
 
 services:
   dvwa:
@@ -90,4 +95,26 @@ services:
     hostname: snmp
     ports:
       - "127.0.0.1:1161:161/udp"
+    restart: unless-stopped
+
+  relay:
+    # Dev-only: bring the relay up attached to BOTH the lab network (so it
+    # resolves `smb`, `dvwa`, `ldap`, `ssh`, `snmp` by hostname) and the
+    # main app network (so it reaches `backend:8000` over the Compose DNS
+    # instead of host.docker.internal). On-prem customers use
+    # hakuna-relay-agent/docker-compose.yml, which doesn't need either.
+    #
+    # Opt in with:
+    #   docker compose -f docker-compose.lab.yml --profile relay up -d
+    profiles: [relay]
+    image: hakuna/relay-agent:latest
+    build: ./hakuna-relay-agent
+    container_name: hakuna-relay-agent
+    environment:
+      HAKUNA_AGENT_TOKEN: ${HAKUNA_AGENT_TOKEN:?set HAKUNA_AGENT_TOKEN in .env to the token issued in Settings > Relay Agents}
+      HAKUNA_CLOUD_URL: ${HAKUNA_CLOUD_URL:-ws://backend:8000/ws/relay}
+      HAKUNA_LOG_LEVEL: ${HAKUNA_LOG_LEVEL:-INFO}
+    networks:
+      - default
+      - hakuna_default
     restart: unless-stopped

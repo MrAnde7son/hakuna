@@ -83,6 +83,7 @@ from routes.sbom_routes import router as sbom_router
 from routes.vm_routes import router as vm_router
 from routes.auth_profile_routes import router as auth_profile_router
 from routes.audit_routes import router as audit_router
+from routes.internal_relay_routes import router as internal_relay_router
 from routes.integration_builder_routes import router as integration_builder_router
 from routes.discovery_routes import router as discovery_router
 from routes.billing_routes import router as billing_router
@@ -312,6 +313,7 @@ app.include_router(sbom_router)
 app.include_router(vm_router)
 app.include_router(auth_profile_router)
 app.include_router(audit_router)
+app.include_router(internal_relay_router)
 app.include_router(integration_builder_router)
 app.include_router(discovery_router)
 app.include_router(billing_router)
@@ -383,6 +385,14 @@ def _deferred_startup():
     from services.easm_scheduler import start_scheduler as start_easm_scheduler
     start_easm_scheduler()
     logger.info("EASM scan scheduler started")
+    # Start Protocol Audit scheduler for cron-based audit runs (snmp/ldap/ssh/wmi/smb).
+    # Independent of EASM/VM so one scheduler's failure mode can't cascade.
+    try:
+        from services.audit_scheduler import start_scheduler as start_audit_scheduler
+        start_audit_scheduler()
+        logger.info("Audit scan scheduler started")
+    except Exception as exc:
+        logger.error("Audit scan scheduler failed to start: %s", exc)
     # Start report scheduler for scheduled email delivery of report PDFs
     from services.report_scheduler import start_scheduler as start_report_scheduler
     start_report_scheduler()

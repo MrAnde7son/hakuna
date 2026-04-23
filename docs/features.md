@@ -719,7 +719,7 @@ docker run -d --restart=unless-stopped \
   --name hakuna-relay-agent \
   -e HAKUNA_AGENT_TOKEN=<your-agent-token> \
   -e HAKUNA_CLOUD_URL=wss://<your-hakuna-host>/ws/relay \
-  hakuna/relay-agent:latest
+  me-west1-docker.pkg.dev/hakuna-prod-2026/hakuna-public/relay-agent:latest
 ```
 
 For agent-local credentials, add product-specific env vars (e.g., `JIRA_BASE_URL`, `JIRA_USERNAME`, `JIRA_PASSWORD`).

@@ -2138,8 +2138,12 @@ TOOLS: dict[str, Tool] = {
             "diff, timing delta, or reflected string). The runner will "
             "persist the finding and you can continue probing other "
             "targets. Payload fields are severity, title, description, "
-            "evidence_url, evidence_request, evidence_response, verdict, "
-            "confidence (0-1)."
+            "evidence_url, parameter, evidence_request, evidence_response, "
+            "verdict, confidence (0-1). Always include `parameter` (the "
+            "exact name of the vulnerable input, e.g. 'id', 'ip', 'url') "
+            "when the vuln is tied to one — it's used for dedup, so "
+            "findings on different parameters of the same endpoint stay "
+            "distinct."
         ),
         input_schema={
             "type": "object",
@@ -2148,6 +2152,16 @@ TOOLS: dict[str, Tool] = {
                 "title": {"type": "string"},
                 "description": {"type": "string"},
                 "evidence_url": {"type": "string"},
+                "parameter": {
+                    "type": "string",
+                    "description": (
+                        "Exact name of the vulnerable input (query/body "
+                        "parameter, form field, or header). Used for "
+                        "dedup. Omit only for endpoint-level vulns with "
+                        "no specific input (e.g. default login, exposed "
+                        "admin panel)."
+                    ),
+                },
                 "evidence_request": {"type": "string", "description": "Full HTTP request as a curl command or raw text."},
                 "evidence_response": {"type": "string", "description": "Relevant response snippet."},
                 "verdict": {"type": "string", "enum": ["true_positive", "needs_review"]},

@@ -4,15 +4,12 @@ Every LLM call — the agent loop and any one-shot services.llm_provider call
 — passes through a span here. On span end we flush one row to the
 `llm_interactions` table. A separate async job links each row to an outcome
 signal (finding status, ticket resolution, approval decision, user rating)
-and a nightly job populates the embedding column on Postgres.
+and a nightly job populates the embedding column.
 
 The retrieval path (`retrieve_exemplars`) pulls tenant-scoped, high-outcome
 past interactions via pgvector cosine distance and returns them as few-shot
 examples to inject into a fresh prompt — a lightweight feedback loop that
 personalizes the LLM per org without fine-tuning.
-
-SQLite (dev) has no embedding column; retrieval is disabled there. The
-write path still logs so local work exercises the code path.
 """
 
 from __future__ import annotations
@@ -29,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterator, Optional
 
-from core.database import DATABASE_URL, SessionLocal
+from core.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +35,6 @@ logger = logging.getLogger(__name__)
 _ENABLED = os.environ.get("LLM_FEEDBACK_ENABLED", "1") not in ("0", "false", "False")
 _MAX_PROMPT_BYTES = int(os.environ.get("LLM_FEEDBACK_MAX_PROMPT_BYTES", "32000"))
 _MAX_RESPONSE_BYTES = int(os.environ.get("LLM_FEEDBACK_MAX_RESPONSE_BYTES", "32000"))
-_IS_PG = DATABASE_URL.startswith("postgresql")
 
 
 # ── Redaction ──────────────────────────────────────────────────────────
@@ -377,10 +373,10 @@ def retrieve_exemplars(
     """Return top-K past interactions for this org + surface ranked by
     embedding similarity and positive outcome_score.
 
-    Returns [] on SQLite or when pgvector is unavailable — callers should
-    treat "no exemplars" as the default state.
+    Returns [] when pgvector is unavailable or feedback is disabled —
+    callers should treat "no exemplars" as the default state.
     """
-    if not _IS_PG or not _ENABLED or not query_text:
+    if not _ENABLED or not query_text:
         return []
 
     try:

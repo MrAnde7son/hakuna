@@ -772,8 +772,8 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
     checked = 0
     try:
         # All VM scans that may still be running. The set is small (running
-        # scans, per org), so filter status in Python to stay dialect-agnostic
-        # across SQLite/Postgres JSON access.
+        # scans, per org), so filter status in Python rather than reaching
+        # into the JSON column in SQL.
         candidates = (
             db.query(Scan)
             .filter(Scan.source_type == "vm_scanner")

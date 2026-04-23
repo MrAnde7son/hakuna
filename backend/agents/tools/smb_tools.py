@@ -76,7 +76,13 @@ async def _dispatch_smb(
         smb_creds = {"username": "", "password": "", "domain": ""}
     else:
         if not credential_id:
-            raise ValueError("credential_id missing from audit context")
+            # Dispatched without a credential (e.g. SMB anonymous mission).
+            # Surface a clean message so the LLM falls back to the *_anonymous
+            # tool variants instead of seeing a raw traceback.
+            raise ValueError(
+                "no credential was provided for this audit — use the "
+                "smb_*_anonymous tool variants, or rerun with a credential"
+            )
         raw_creds = await load_credentials(db, credential_id, org_id)
         if not raw_creds:
             raise ValueError(f"credential {credential_id} not found")

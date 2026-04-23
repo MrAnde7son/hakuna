@@ -195,7 +195,7 @@ def run_scheduler_cycle(max_per_cycle: int = 5, min_severity: int = 4) -> dict:
     """
     db: Session = SessionLocal()
     try:
-        # Fetch candidates: need SQLite-safe JSON access
+        # Fetch candidates; JSON filter runs in Python below.
         rows = db.execute(text("""
             SELECT f.id, s.org_id
             FROM findings f

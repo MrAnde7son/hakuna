@@ -30,6 +30,11 @@ output "artifact_registry_url" {
   value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.main.repository_id}"
 }
 
+output "artifact_registry_public_url" {
+  description = "Public Docker registry URL — prefix for customer-pulled images (e.g. relay agent)"
+  value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.public.repository_id}"
+}
+
 output "frontend_bucket" {
   description = "Upload built React app here: gsutil -m rsync -r ./frontend/dist gs://<bucket>"
   value       = google_storage_bucket.frontend.name

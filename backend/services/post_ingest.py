@@ -957,7 +957,7 @@ def _correlate_findings(db, org_id):
 
     Correlation runs CVE corroboration + attack-path BFS + up to 50 LLM
     narration calls. Running inline blocked the post-ingest response for
-    30-60s and caused SQLite writer contention with the APScheduler.
+    30-60s and starved the APScheduler on connection-pool checkouts.
 
     Dispatched via job_manager with per-org debounce: if a correlation
     job is already pending/running, or finished within the last minute

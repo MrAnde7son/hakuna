@@ -1,19 +1,161 @@
 services:
+  postgres:
+    # Mirrors production (Cloud SQL Postgres). SQLite-on-bind-mount isn't safe
+    # once the audit-worker joins as a second writer, so dev uses Postgres too.
+    # Schema is auto-created by backend's init_db() on first boot.
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=hakuna
+      - POSTGRES_PASSWORD=hakuna
+      - POSTGRES_DB=hakuna
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Host-exposed for psql/debugger access. 5433 to avoid clashing with a
+      # system postgres on 5432.
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hakuna -d hakuna"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: ./backend
     ports:
       - "8000:8000"
     volumes:
-      - db-data:/app/data
       - ./intel.json:/app/intel.json:ro
       - ./hakuna:/app/hakuna:ro
+      # Application Default Credentials for Vertex AI (Claude-on-GCP, Gemini).
+      # Host path is the standard `gcloud auth application-default login` output.
+      # In production, Cloud Run injects ADC from the service account — this
+      # mount is dev-only. Safe when the file doesn't exist: bind mounts of
+      # missing host paths simply create an empty file, which won't authenticate
+      # but also won't break other providers.
+      - ~/.config/gcloud/application_default_credentials.json:/gcp/adc.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      - DATABASE_URL=sqlite:////app/data/nessus_remediation.db
+      - DATABASE_URL=postgresql://hakuna:hakuna@postgres:5432/hakuna
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       # Used by the scheduled-report PDF renderer — headless Chromium inside
       # the backend container reaches the sibling `frontend` service by its
       # Compose network hostname. Override via env for custom setups.
       - FRONTEND_BASE_URL=${FRONTEND_BASE_URL:-http://frontend:3000}
+      # Protocol Audit queue (Celery). Backend enqueues; `audit-worker` in
+      # the `audits` profile consumes. If the profile isn't up, dispatch
+      # returns 503 — there's no in-process fallback anymore.
+      - AUDIT_CELERY_BROKER_URL=${AUDIT_CELERY_BROKER_URL:-redis://redis:6379/2}
+      - AUDIT_CELERY_RESULT_BACKEND=${AUDIT_CELERY_RESULT_BACKEND:-redis://redis:6379/2}
+      # Shared secret for /internal/relay/dispatch — the audit-worker presents
+      # this in X-Internal-Token to reach the backend's relay websocket (which
+      # lives only in this process). Generate one with:
+      #   openssl rand -hex 32
+      # and set it in .env.
+      - INTERNAL_SHARED_SECRET=${INTERNAL_SHARED_SECRET:-}
+      # core/auth.py enforces JWT_SECRET at import time. The ENVIRONMENT
+      # variable flips the dev bypass; in non-dev a strong JWT_SECRET is
+      # mandatory.
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - JWT_SECRET=${JWT_SECRET:-}
+      # Credential vault AES key — must match whatever wrote
+      # IntegrationCredential rows. Share the same value with the
+      # audit-worker below.
+      - INTEGRATION_SECRET_KEY=${INTEGRATION_SECRET_KEY}
+      # LLM providers — picked up by on-request agent runs.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
+      # Points the google-auth / AnthropicVertex SDK at the mounted ADC file.
+      # Mirrors what Cloud Run does automatically for the api service account.
+      - GOOGLE_APPLICATION_CREDENTIALS=/gcp/adc.json
+
+  redis:
+    # Shared broker for the audit-worker queue (DB 2) AND the VM scanner's
+    # Celery broker/result backend (DB 0/1). The VM scanner's compose joins
+    # this network as `hakuna_default` (external) rather than spinning up its
+    # own redis — matches prod, where VM scanner has a dedicated Memorystore
+    # but locally we multiplex to keep the stack minimal.
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-data:/data
+    ports:
+      # Exposed on 6380 so a host-running backend (`./start.sh`) can reach it
+      # at `redis://localhost:6380/2`.
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  audit-worker:
+    # Runs the Protocol Audit scratch-agent LLM loop out-of-process so the API
+    # doesn't serialize its own writer lock behind minute-long agent runs.
+    # Same image as the backend (same code + deps); different command.
+    #
+    # Start explicitly: `docker compose up -d audit-worker`. Not started by
+    # start.sh — audit dev usually runs the legacy in-process path unless
+    # you opt into the worker by bringing this container up.
+    build: ./backend
+    command: celery -A services.celery_app:celery_app worker --loglevel=info --concurrency=4 -Q audits
+    volumes:
+      - ./hakuna:/app/hakuna:ro
+      # Same ADC mount as the backend — the worker runs AnthropicVertex/Gemini
+      # calls when agents pick a vertex model (or when Anthropic falls back to
+      # Claude-on-Vertex). Without this, audit runs in the worker fail with
+      # "Anthropic API key not configured" even when GOOGLE_CLOUD_PROJECT is set.
+      - ~/.config/gcloud/application_default_credentials.json:/gcp/adc.json:ro
+    environment:
+      # Celery's prefork pool workers don't reliably inherit WORKDIR on
+      # sys.path — tasks that import top-level modules like `core.database`
+      # raise ModuleNotFoundError under fork. Setting PYTHONPATH explicitly
+      # puts `/app` in every forked worker's sys.path. Safe no-op when it
+      # was already there.
+      - PYTHONPATH=/app
+      # Matches backend — writes to the same shared Postgres DB.
+      - DATABASE_URL=postgresql://hakuna:hakuna@postgres:5432/hakuna
+      # Celery broker/result store (redis service below, DB 2 so we don't
+      # collide with the VM scanner on DBs 0/1).
+      - AUDIT_CELERY_BROKER_URL=redis://redis:6379/2
+      - AUDIT_CELERY_RESULT_BACKEND=redis://redis:6379/2
+      # Flip get_relay_broker() to RemoteRelayBroker — relay dispatch goes
+      # over HTTP to the backend, which owns the websocket. See
+      # services/relay_broker.py for the routing logic.
+      - HAKUNA_PROCESS_ROLE=worker
+      - HAKUNA_BACKEND_URL=http://backend:8000
+      - INTERNAL_SHARED_SECRET=${INTERNAL_SHARED_SECRET}
+      # core/auth.py enforces JWT_SECRET at import time, and the worker
+      # imports it transitively through services/audit_worker. Pass through
+      # the same ENVIRONMENT so the dev bypass applies here too.
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - JWT_SECRET=${JWT_SECRET:-}
+      # Credential vault needs the same AES key the backend used to encrypt
+      # the IntegrationCredential rows — without this, load_credentials
+      # returns garbage and every relay auth fails.
+      - INTEGRATION_SECRET_KEY=${INTEGRATION_SECRET_KEY}
+      # LLM providers — workers pick up the same creds the backend uses.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
+      - GOOGLE_APPLICATION_CREDENTIALS=/gcp/adc.json
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    profiles:
+      # Only activated when you `docker compose --profile audits up -d` or
+      # target the service explicitly. Keeps `docker compose up` minimal
+      # (backend + frontend + minio) when you don't need the worker.
+      - audits
 
   frontend:
     build: ./frontend
@@ -66,5 +208,6 @@ services:
       "
 
 volumes:
-  db-data:
   minio-data:
+  redis-data:
+  postgres-data:

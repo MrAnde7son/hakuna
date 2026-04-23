@@ -52,7 +52,7 @@ def _get_lake_config() -> dict:
 
     return {
         "type": "sql",
-        "uri": os.environ.get("DATABASE_URL", "sqlite:///./nessus_remediation.db"),
+        "uri": os.environ["DATABASE_URL"],
         "warehouse": f"s3://{bucket}/warehouse",
         "s3.endpoint": endpoint,
         "s3.access-key-id": access_key,

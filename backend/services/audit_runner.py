@@ -37,8 +37,147 @@ from agents.agent_prompts import ENHANCED_PROMPTS
 logger = logging.getLogger(__name__)
 
 
+# Protocols whose tools support unauthenticated operation (e.g. SMB null
+# sessions). Dispatch without a credential is allowed for these; the tools
+# that actually need auth will surface a clean "no credential provided"
+# error to the LLM when called.
+_ANON_CAPABLE_PROTOCOLS = {"smb"}
+
+
 class AuditDispatchError(Exception):
     """Raised when an audit can't be kicked off (missing inputs, bad protocol)."""
+
+
+def _validate_dispatch_inputs(
+    protocol: str,
+    mission: str,
+    relay_agent_id: str,
+    credential_id: str | None,
+    asset_ids: list[int] | None,
+    targets: list[str] | None,
+) -> tuple[ProtocolAudit, MissionTemplate]:
+    """Shared validation for both initial dispatch and rescan. Returns the
+    resolved ``(audit, mission_template)`` tuple so callers can pick up the
+    defaults (suggested_budget, label) without re-looking them up."""
+    if protocol not in AUDITS:
+        raise AuditDispatchError(f"unknown protocol {protocol!r}; registered: {sorted(AUDITS.keys())}")
+    audit = AUDITS[protocol]
+    m = audit.mission(mission)
+    if m is None:
+        raise AuditDispatchError(
+            f"unknown mission {mission!r} for protocol {protocol}; "
+            f"available: {[mt.key for mt in audit.missions]}"
+        )
+    if bool(asset_ids) == bool(targets):
+        raise AuditDispatchError("provide exactly one of asset_ids or targets")
+    if not relay_agent_id:
+        raise AuditDispatchError("relay_agent_id is required")
+    # credential_id is optional — protocols/missions that support anonymous
+    # operation (e.g. SMB null sessions) can dispatch without one. Tools that
+    # require authentication surface a clean error to the LLM when called
+    # without a credential.
+    if not credential_id and protocol not in _ANON_CAPABLE_PROTOCOLS:
+        raise AuditDispatchError(
+            f"credential_id is required for protocol {protocol!r}"
+        )
+    return audit, m
+
+
+def _resolve_asset_ids_for_scan(
+    db: Session,
+    org_id: int,
+    scan_id: int,
+    asset_ids: list[int] | None,
+    targets: list[str] | None,
+) -> list[int]:
+    """Free-form target flow: upsert an Asset per target (matched by IP/hostname
+    within org, or created fresh rooted at ``scan_id``). Returns the resolved
+    asset_ids list. If ``asset_ids`` is already populated it's returned as-is."""
+    if targets:
+        resolved: list[int] = []
+        for t in targets:
+            aid = _upsert_asset_by_target(db, org_id, scan_id, t)
+            if aid is not None:
+                resolved.append(aid)
+        if not resolved:
+            raise AuditDispatchError("no valid targets could be resolved")
+        return resolved
+    return list(asset_ids or [])
+
+
+def _spawn_scratch_agents_for_scan(
+    db: Session,
+    org_id: int,
+    scan: Scan,
+    audit: ProtocolAudit,
+    mission_template: MissionTemplate,
+    asset_ids: list[int],
+    max_steps: int,
+    wallclock_s: int,
+    model: str,
+    relay_agent_id: str,
+    credential_id: str | None,
+) -> dict[str, Any]:
+    """Create one scratch Agent per asset, dispatch a Celery run per agent,
+    and stamp ``scratch_agent_ids`` + ``task_ids`` onto the scan's metadata.
+
+    Shared by the initial dispatch path and rescan. Caller is responsible for
+    having set scan.status = 'running' and having written the per-run fields
+    (mission, credential_id, relay_agent_id, asset_ids, …) onto
+    ``scan.raw_metadata`` before calling — this helper only owns the scratch
+    agent + task_id plumbing.
+    """
+    assets = db.query(Asset).filter(Asset.id.in_(asset_ids)).all()
+    asset_by_id = {a.id: a for a in assets}
+    missing = [aid for aid in asset_ids if aid not in asset_by_id]
+    if missing:
+        logger.warning(
+            "audit_runner: protocol=%s %d asset(s) not found: %s",
+            audit.protocol, len(missing), missing,
+        )
+
+    runs_meta: list[dict] = []
+    scratch_agent_ids: list[int] = []
+    # task_ids mirrors scratch_agent_ids — stored on the scan so the cancel
+    # endpoint has handles to revoke. Keyed by agent_id so we can revoke a
+    # single run without touching the others if the UI ever gains per-run
+    # cancel.
+    task_ids_by_agent: dict[int, str] = {}
+    for asset_id in asset_ids:
+        if asset_id not in asset_by_id:
+            continue
+        agent = _create_scratch_agent(
+            db, org_id, audit, mission_template, asset_id,
+            relay_agent_id=relay_agent_id,
+            credential_id=credential_id,
+            max_steps=max_steps,
+            model=model,
+            scan_id=scan.id,
+        )
+        user_input = _build_user_input(audit, mission_template, asset_by_id[asset_id])
+        scratch_agent_ids.append(agent.id)
+        runs_meta.append({
+            "asset_id": asset_id,
+            "agent_id": agent.id,
+            "status": "pending",
+        })
+        task_id = _dispatch_background_run(
+            agent_id=agent.id,
+            user_input=user_input,
+            wallclock_s=wallclock_s,
+        )
+        # Only record string task ids — tests commonly mock
+        # `_dispatch_background_run` with a default MagicMock that returns
+        # another MagicMock, which isn't JSON-serializable and would blow up
+        # the raw_metadata commit below.
+        if isinstance(task_id, str) and task_id:
+            task_ids_by_agent[agent.id] = task_id
+
+    md = dict(scan.raw_metadata or {})
+    md["scratch_agent_ids"] = scratch_agent_ids
+    md["task_ids"] = task_ids_by_agent
+    scan.raw_metadata = md
+    return {"runs": runs_meta, "scratch_agent_ids": scratch_agent_ids}
 
 
 def dispatch_audit_run(
@@ -47,7 +186,7 @@ def dispatch_audit_run(
     protocol: str,
     mission: str,
     relay_agent_id: str,
-    credential_id: str,
+    credential_id: str | None,
     asset_ids: list[int] | None = None,
     targets: list[str] | None = None,
     max_steps: int | None = None,
@@ -69,21 +208,9 @@ def dispatch_audit_run(
           "mission": str,
         }
     """
-    if protocol not in AUDITS:
-        raise AuditDispatchError(f"unknown protocol {protocol!r}; registered: {sorted(AUDITS.keys())}")
-    audit = AUDITS[protocol]
-    m = audit.mission(mission)
-    if m is None:
-        raise AuditDispatchError(
-            f"unknown mission {mission!r} for protocol {protocol}; "
-            f"available: {[mt.key for mt in audit.missions]}"
-        )
-    if bool(asset_ids) == bool(targets):
-        raise AuditDispatchError("provide exactly one of asset_ids or targets")
-    if not relay_agent_id:
-        raise AuditDispatchError("relay_agent_id is required")
-    if not credential_id:
-        raise AuditDispatchError("credential_id is required")
+    audit, m = _validate_dispatch_inputs(
+        protocol, mission, relay_agent_id, credential_id, asset_ids, targets,
+    )
 
     resolved_max_steps = int(max_steps or m.suggested_budget)
     resolved_wallclock = int(wallclock_s or audit.default_wallclock_s)
@@ -112,83 +239,176 @@ def dispatch_audit_run(
             "wallclock_s": resolved_wallclock,
             "model": resolved_model,
             "agent_run_ids": [],                    # filled as runs are created
+            "status": "running",
         },
     )
     db.add(scan)
     db.flush()
 
-    # Free-form target flow: upsert an Asset per target (matched by IP/hostname
-    # within org, or created fresh rooted at this scan). The existing flow from
-    # here on just sees a normal asset_ids list — no downstream changes needed.
-    if targets:
-        asset_ids = []
-        for t in targets:
-            aid = _upsert_asset_by_target(db, org.id, scan.id, t)
-            if aid is not None:
-                asset_ids.append(aid)
-        md = dict(scan.raw_metadata or {})
-        md["ad_hoc_targets"] = list(targets)
-        scan.raw_metadata = md
-        db.flush()
-        if not asset_ids:
-            raise AuditDispatchError("no valid targets could be resolved")
-
-    # Persist the final asset_ids list on the scan's metadata for status UIs.
+    asset_ids = _resolve_asset_ids_for_scan(
+        db, org.id, scan.id, asset_ids=asset_ids, targets=targets,
+    )
     md = dict(scan.raw_metadata or {})
+    if targets:
+        md["ad_hoc_targets"] = list(targets)
     md["asset_ids"] = list(asset_ids)
     scan.raw_metadata = md
+    db.flush()
 
-    # Validate assets belong to the org up-front so a bad ID doesn't waste an LLM call.
-    assets = db.query(Asset).filter(Asset.id.in_(asset_ids)).all()
-    asset_by_id = {a.id: a for a in assets}
-    missing = [aid for aid in asset_ids if aid not in asset_by_id]
-    if missing:
-        logger.warning(
-            "audit_runner: protocol=%s %d asset(s) not found: %s",
-            protocol, len(missing), missing,
-        )
-
-    # ── Per-asset scratch agents ──
-    #
-    # We create an Agent per asset but let `run_agent` create its own AgentRun
-    # in the background job. The Agent.id is the stable link between the Scan
-    # and the eventual AgentRun (AgentRun.agent_id); the Scans API resolves
-    # runs on demand.
-    runs_meta: list[dict] = []
-    scratch_agent_ids: list[int] = []
-    for asset_id in asset_ids:
-        if asset_id not in asset_by_id:
-            continue
-        agent = _create_scratch_agent(
-            db, org.id, audit, m, asset_id,
-            relay_agent_id=relay_agent_id,
-            credential_id=credential_id,
-            max_steps=resolved_max_steps,
-            model=resolved_model,
-            scan_id=scan.id,
-        )
-        user_input = _build_user_input(audit, m, asset_by_id[asset_id])
-        scratch_agent_ids.append(agent.id)
-        runs_meta.append({
-            "asset_id": asset_id,
-            "agent_id": agent.id,
-            "status": "pending",
-        })
-        _dispatch_background_run(
-            agent_id=agent.id,
-            user_input=user_input,
-            wallclock_s=resolved_wallclock,
-        )
-
-    md = dict(scan.raw_metadata or {})
-    md["scratch_agent_ids"] = scratch_agent_ids
-    scan.raw_metadata = md
+    _spawn_scratch_agents_for_scan(
+        db, org.id, scan, audit, m,
+        asset_ids=asset_ids,
+        max_steps=resolved_max_steps,
+        wallclock_s=resolved_wallclock,
+        model=resolved_model,
+        relay_agent_id=relay_agent_id,
+        credential_id=credential_id,
+    )
     db.commit()
 
+    # Re-read runs_meta from the updated scan — the helper wrote them to
+    # raw_metadata but we want the explicit shape the API contract promises.
+    md = scan.raw_metadata or {}
+    runs_meta = [
+        {"asset_id": aid, "agent_id": gid, "status": "pending"}
+        for aid, gid in zip(md.get("asset_ids") or [], md.get("scratch_agent_ids") or [])
+    ]
     return {
         "scan_id": scan.id,
         "protocol": protocol,
         "mission": mission,
+        "status": "running",
+        "runs": runs_meta,
+    }
+
+
+def rescan_audit_scan(
+    db: Session,
+    org: Organization,
+    scan: Scan,
+    mission: str | None = None,
+    credential_id: str | None = None,
+    relay_agent_id: str | None = None,
+    asset_ids: list[int] | None = None,
+    targets: list[str] | None = None,
+    max_steps: int | None = None,
+    wallclock_s: int | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Re-run an existing audit scan in-place — same Scan.id, new batch of
+    scratch agents. Mirrors ``rescan_vm_scan`` so the scan list doesn't grow
+    a new row per rerun.
+
+    Any override left ``None`` inherits the current value from the scan's
+    ``raw_metadata``. The prior run's scratch_agent_ids + task_ids + status
+    get snapshotted into ``raw_metadata["run_history"]`` before the new batch
+    overwrites them, so ``/audits/scans/{id}/history`` can render every past
+    run's AgentRuns.
+    """
+    md = dict(scan.raw_metadata or {})
+    protocol = md.get("protocol")
+    if not protocol:
+        raise AuditDispatchError("scan metadata missing protocol; cannot rescan")
+
+    resolved_mission = mission or md.get("mission")
+    resolved_credential = credential_id if credential_id is not None else md.get("credential_id")
+    resolved_relay = relay_agent_id or md.get("relay_agent_id")
+
+    # Prefer explicit overrides; otherwise inherit targets or asset_ids from
+    # the scan. Exactly one of (asset_ids, targets) must end up populated.
+    inherit_targets = None
+    inherit_asset_ids = None
+    if targets is None and asset_ids is None:
+        if md.get("ad_hoc_targets"):
+            inherit_targets = list(md["ad_hoc_targets"])
+        elif md.get("asset_ids"):
+            inherit_asset_ids = list(md["asset_ids"])
+    effective_targets = targets if targets is not None else inherit_targets
+    effective_asset_ids = asset_ids if asset_ids is not None else inherit_asset_ids
+
+    audit, m = _validate_dispatch_inputs(
+        protocol, resolved_mission, resolved_relay, resolved_credential,
+        effective_asset_ids, effective_targets,
+    )
+
+    resolved_max_steps = int(max_steps or md.get("max_steps") or m.suggested_budget)
+    resolved_wallclock = int(wallclock_s or md.get("wallclock_s") or audit.default_wallclock_s)
+    resolved_model = model or md.get("model") or audit.default_model
+
+    # Snapshot the outgoing run so the history endpoint can walk back through
+    # every past batch of scratch agents. Append-only; capped defensively.
+    run_history = list(md.get("run_history") or [])
+    run_history.append({
+        "scan_date": scan.scan_date,
+        "status": md.get("status") or scan.status,
+        "scratch_agent_ids": list(md.get("scratch_agent_ids") or []),
+        "task_ids": dict(md.get("task_ids") or {}),
+        "asset_ids": list(md.get("asset_ids") or []),
+        "mission": md.get("mission"),
+        "credential_id": md.get("credential_id"),
+        "relay_agent_id": md.get("relay_agent_id"),
+        "ad_hoc_targets": list(md.get("ad_hoc_targets") or []),
+        "error": md.get("error"),
+    })
+
+    # Resolve targets/asset_ids against the existing scan id so upserted
+    # assets stay rooted to it.
+    final_asset_ids = _resolve_asset_ids_for_scan(
+        db, org.id, scan.id,
+        asset_ids=effective_asset_ids, targets=effective_targets,
+    )
+
+    # Rotate run fields in place. Preserve history + protocol, overwrite
+    # everything that describes the current run.
+    now_iso = datetime.utcnow().isoformat()
+    new_md = {
+        "protocol": protocol,
+        "mission": resolved_mission,
+        "asset_ids": list(final_asset_ids),
+        "relay_agent_id": resolved_relay,
+        "credential_id": resolved_credential,
+        "max_steps": resolved_max_steps,
+        "wallclock_s": resolved_wallclock,
+        "model": resolved_model,
+        "agent_run_ids": [],
+        "scratch_agent_ids": [],
+        "task_ids": {},
+        "status": "running",
+        "run_history": run_history,
+    }
+    if effective_targets is not None:
+        new_md["ad_hoc_targets"] = list(effective_targets)
+    elif "ad_hoc_targets" in md and not asset_ids:
+        # Inherited from prior run — keep it.
+        new_md["ad_hoc_targets"] = list(md["ad_hoc_targets"])
+
+    scan.raw_metadata = new_md
+    scan.status = "running"
+    scan.scan_date = now_iso
+    # Refresh the display name so the "N host(s)" suffix matches the new run.
+    scan.scan_name = f"{audit.label} — {m.label} — {len(final_asset_ids)} host(s)"
+    db.flush()
+
+    _spawn_scratch_agents_for_scan(
+        db, org.id, scan, audit, m,
+        asset_ids=final_asset_ids,
+        max_steps=resolved_max_steps,
+        wallclock_s=resolved_wallclock,
+        model=resolved_model,
+        relay_agent_id=resolved_relay,
+        credential_id=resolved_credential,
+    )
+    db.commit()
+
+    md_after = scan.raw_metadata or {}
+    runs_meta = [
+        {"asset_id": aid, "agent_id": gid, "status": "pending"}
+        for aid, gid in zip(md_after.get("asset_ids") or [], md_after.get("scratch_agent_ids") or [])
+    ]
+    return {
+        "scan_id": scan.id,
+        "protocol": protocol,
+        "mission": resolved_mission,
         "status": "running",
         "runs": runs_meta,
     }
@@ -204,7 +424,7 @@ def _create_scratch_agent(
     mission: MissionTemplate,
     asset_id: int,
     relay_agent_id: str,
-    credential_id: str,
+    credential_id: str | None,
     max_steps: int,
     model: str,
     scan_id: int,
@@ -326,31 +546,77 @@ def _upsert_asset_by_target(
 # ── Background dispatch ──────────────────────────────────────────────
 
 
-def _dispatch_background_run(agent_id: int, user_input: str, wallclock_s: int) -> None:
-    """Kick off the agent run on the job manager.
+class AuditWorkerUnavailableError(AuditDispatchError):
+    """Raised when the Celery broker is unreachable at dispatch time.
 
-    Opens a fresh DB session inside the job since the FastAPI request session
-    is closed when the route returns. `run_agent` creates + manages the
-    AgentRun row internally; we just pass in the Agent + user input.
-
-    `wallclock_s` is captured here for future enforcement (not yet wired into
-    agent_engine — tracked separately). For now the engine's own `max_steps`
-    bounds runtime; wall-clock is an upper limit we log but don't enforce.
+    Surfaces as a 503 on the `/api/audits/run` route so callers see an
+    actionable error ("audit worker isn't running") instead of a queued task
+    that nobody drains. Inherits from AuditDispatchError so existing
+    catch-sites pick it up unchanged.
     """
-    from services.job_manager import dispatch
 
-    def _work():
-        from agents.agent_engine import run_agent
-        bg_db = SessionLocal()
+
+def _dispatch_background_run(agent_id: int, user_input: str, wallclock_s: int) -> str:
+    """Enqueue one scratch-agent run on the `audits` Celery queue.
+
+    Returns the Celery task id. The caller stores it on the Scan so the
+    cancel endpoint can revoke the task later — without this, "stop scan"
+    has no handle to reach a running LLM loop in the worker process.
+
+    The audit-worker container (`docker compose --profile audits up -d`)
+    consumes the queue and runs `run_agent` out-of-process. This keeps the
+    LLM loop off uvicorn's event loop so request handlers don't block on it.
+
+    If redis is unreachable (worker not brought up), `apply_async` raises a
+    connection error. We translate that into `AuditWorkerUnavailableError`
+    so the route can return 503 instead of a generic 500.
+
+    `wallclock_s` is captured here for future enforcement. The engine's own
+    `max_steps` + Celery's `task_time_limit` bound runtime today.
+    """
+    from services.audit_worker import run_scratch_agent_task
+
+    try:
+        # countdown=1 hides a race: the API request's final `db.commit()` in
+        # dispatch_audit_run runs *after* this call, so a worker that picks the
+        # task up instantly can miss the Agent row. One second is longer than
+        # any realistic commit path and invisible compared to LLM latency.
+        result = run_scratch_agent_task.apply_async(
+            args=(agent_id, user_input, wallclock_s),
+            queue="audits",
+            countdown=1,
+            # Redundant with the global `task_ignore_result=True` but explicit
+            # here so a reader doesn't have to cross-reference celery_app.conf
+            # to understand why the backend doesn't subscribe to result pubsub.
+            ignore_result=True,
+        )
+        return result.id
+    except Exception as e:
+        # kombu / redis exceptions all funnel here. Narrow the message to
+        # something actionable without swallowing the root cause.
+        raise AuditWorkerUnavailableError(
+            f"audit worker queue unavailable: {e}. "
+            "Bring up the worker with: docker compose --profile audits up -d"
+        ) from e
+
+
+def revoke_audit_tasks(task_ids: list[str]) -> dict:
+    """Revoke queued/running audit tasks. Returns {"revoked": [...], "errors": {...}}.
+
+    `terminate=True` SIGTERMs the worker child if the task is already running
+    — that's the only way to interrupt a mid-LLM-call loop. Tasks still on the
+    queue just get removed. Unknown ids are a no-op.
+    """
+    from services.celery_app import celery_app
+
+    revoked: list[str] = []
+    errors: dict[str, str] = {}
+    for tid in task_ids or []:
+        if not tid:
+            continue
         try:
-            agent = bg_db.query(Agent).filter(Agent.id == agent_id).first()
-            if not agent:
-                logger.warning("audit job: agent=%s not found", agent_id)
-                return
-            run_agent(agent, user_input, bg_db)
-        except Exception:
-            logger.exception("audit job agent=%s failed", agent_id)
-        finally:
-            bg_db.close()
-
-    dispatch(f"audit_agent_{agent_id}", _work)
+            celery_app.control.revoke(tid, terminate=True, signal="SIGTERM")
+            revoked.append(tid)
+        except Exception as e:
+            errors[tid] = str(e)
+    return {"revoked": revoked, "errors": errors}

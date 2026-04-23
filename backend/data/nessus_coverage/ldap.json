@@ -1,0 +1,1645 @@
+{
+  "protocol": "ldap",
+  "total": 51,
+  "credentialed_total": 5,
+  "cve_count": 31,
+  "nbin_count": 7,
+  "family_counts": [
+    [
+      "Misc.",
+      23
+    ],
+    [
+      "Denial of Service",
+      7
+    ],
+    [
+      "",
+      7
+    ],
+    [
+      "Windows",
+      4
+    ],
+    [
+      "Gain a shell remotely",
+      3
+    ],
+    [
+      "Service detection",
+      2
+    ],
+    [
+      "General",
+      2
+    ],
+    [
+      "Netware",
+      1
+    ],
+    [
+      "Brute force attacks",
+      1
+    ],
+    [
+      "Web Servers",
+      1
+    ]
+  ],
+  "cluster_counts": [
+    [
+      "patch_cve",
+      31
+    ],
+    [
+      "service_inventory",
+      13
+    ],
+    [
+      "information_disclosure",
+      11
+    ],
+    [
+      "other",
+      6
+    ],
+    [
+      "authentication_weakness",
+      3
+    ],
+    [
+      "privilege_and_acl",
+      2
+    ],
+    [
+      "misconfiguration",
+      1
+    ]
+  ],
+  "category_counts": [
+    [
+      "ACT_GATHER_INFO",
+      37
+    ],
+    [
+      "",
+      7
+    ],
+    [
+      "ACT_DENIAL",
+      4
+    ],
+    [
+      "ACT_MIXED_ATTACK",
+      3
+    ]
+  ],
+  "plugins": [
+    {
+      "plugin_id": 10722,
+      "source": "nasl_header",
+      "name": "LDAP NULL BASE Search Access",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote LDAP server may disclose sensitive information.",
+      "description": "The remote LDAP server supports search requests with a NULL, or empty,\nbase object. This allows information to be retrieved without any prior\nknowledge of the directory structure. Coupled with a NULL BIND, an\nanonymous user may be able to query your LDAP server using a tool such\nas 'LdapMiner'. \n\nNote that there are valid reasons to allow queries with a NULL base.\nFor example, it is required in version 3 of the LDAP protocol to\nprovide access to the root DSA-Specific Entry (DSE), with information\nabout the supported naming context, authentication types, and the\nlike. It also means that legitimate users can find information in the\ndirectory without any prior knowledge of its structure. As such, this\nfinding may be a false-positive.",
+      "solution": "If the remote LDAP server supports a version of the LDAP protocol\nbefore v3, consider whether to disable NULL BASE queries on your LDAP\nserver.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_detect.nasl"
+      ],
+      "filename": "ldap_null_base.nasl",
+      "clusters": [
+        "service_inventory"
+      ],
+      "primary_cluster": "service_inventory"
+    },
+    {
+      "plugin_id": 10723,
+      "source": "nasl_header",
+      "name": "LDAP Server NULL Bind Connection Information Disclosure",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote LDAP server allows anonymous access.",
+      "description": "The LDAP server on the remote host is currently configured such that a\nuser can connect to it without authentication - via a 'NULL BIND' -\nand query it for information.  Although the queries that are allowed\nare likely to be fairly restricted, this may result in disclosure of\ninformation that an attacker could find useful.\n\nThis plugin does not identify servers that use LDAP v3 since\nanonymous access -- a 'NULL BIND' -- is required by that version\nof the protocol.",
+      "solution": "Configure the service to disallow NULL BINDs.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_detect.nasl"
+      ],
+      "filename": "ldap_null_bind.nasl",
+      "clusters": [
+        "authentication_weakness",
+        "information_disclosure",
+        "misconfiguration"
+      ],
+      "primary_cluster": "authentication_weakness"
+    },
+    {
+      "plugin_id": 12104,
+      "source": "nasl_header",
+      "name": "Novell NetWare LDAP Server Anonymous Bind",
+      "family": "Netware",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "Information can be read on the remote LDAP server.",
+      "description": "The server's directory base is set to NULL. This allows information to be \nenumerated without any prior knowledge of the directory structure.",
+      "solution": "Disable or restrict anonymous binds in LDAP if not required.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_detect.nasl"
+      ],
+      "filename": "netware_ldap_search_request.nasl",
+      "clusters": [
+        "authentication_weakness"
+      ],
+      "primary_cluster": "authentication_weakness"
+    },
+    {
+      "plugin_id": 12204,
+      "source": "nasl_header",
+      "name": "MS04-011: Microsoft Windows SSL Library Malformed Message Remote DoS (835732) (uncredentialed check)",
+      "family": "Windows",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "Arbitrary code can be executed on the remote host.",
+      "description": "The remote host seems to be running a version of Microsoft SSL library\nwhich is vulnerable to several flaws, ranging from a denial of service\nto remote code executing.\n\nAny Microsoft service that utilizes SSL is vulnerable.  This\nincludes IIS 4.0, IIS 5.0, IIS 5.1, Exchange Server 5.5, Exchange Server\n2000, Exchange Server 2003, and Analysis Services 2000 (included with\nSQL Server 2000).",
+      "solution": "Install the Windows cumulative update from Microsoft.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2004-0120"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Transport/SSL",
+        "443",
+        "636"
+      ],
+      "dependencies": [
+        "find_service1.nasl"
+      ],
+      "filename": "ms_kb835732_ssl.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 15877,
+      "source": "nasl_header",
+      "name": "Hydra: LDAP",
+      "family": "Brute force attacks",
+      "category": "ACT_MIXED_ATTACK",
+      "synopsis": "It may be possible to determine LDAP accounts through brute force.",
+      "description": "This plugin runs Hydra to find LDAP accounts and passwords by brute\nforce. \n\nTo use this plugin, enter the 'Logins file' and the 'Passwords file'\nunder the 'Hydra (NASL wrappers options)' advanced settings block.",
+      "solution": "Change the passwords for the affected accounts.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [
+        "Secret/hydra/logins_file",
+        "Secret/hydra/passwords_file",
+        "/tmp/hydra/force_run"
+      ],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "hydra_options.nasl",
+        "find_service1.nasl",
+        "doublecheck_std_services.nasl",
+        "external_svc_ident.nasl",
+        "ldap_detect.nasl"
+      ],
+      "filename": "hydra_ldap.nasl",
+      "clusters": [
+        "authentication_weakness"
+      ],
+      "primary_cluster": "authentication_weakness"
+    },
+    {
+      "plugin_id": 20827,
+      "source": "nasl_header",
+      "name": "CommuniGate Pro Server < 5.0.7 LDAP BER Decoding Multiple Vulnerabilities",
+      "family": "Windows",
+      "category": "ACT_MIXED_ATTACK",
+      "synopsis": "The remote application is prone to denial of service attacks.",
+      "description": "The remote host appears to be running CommuniGate Pro, a commercial\nemail and groupware application. \n\nThe version of CommuniGate Pro installed on the remote host includes\nan LDAP server that reportedly fails to handle requests with negative\nBER lengths.  A user can leverage this issue to crash not just the\nLDAP server but also the entire application on the remote host. \nRemote code execution may even be possible.",
+      "solution": "Upgrade to CommuniGate Pro version 5.0.7 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2006-0468"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/smtp",
+        "Services/ldap",
+        "25",
+        "389"
+      ],
+      "dependencies": [
+        "smtpserver_detect.nasl",
+        "ldap_detect.nasl"
+      ],
+      "filename": "communigatepro_ldap_dos.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 20870,
+      "source": "nasl_header",
+      "name": "LDAP Server Detection",
+      "family": "Service detection",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "An LDAP server was detected on the remote host.",
+      "description": "The remote host is running a Lightweight Directory Access Protocol\n(LDAP) server. LDAP is a protocol for providing access to directory\nservices over TCP/IP.",
+      "solution": "n/a",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/unknown",
+        "www/possible_wls",
+        "389",
+        "626",
+        "3268",
+        "3269"
+      ],
+      "dependencies": [
+        "find_service2.nasl"
+      ],
+      "filename": "ldap_detect.nasl",
+      "clusters": [
+        "service_inventory"
+      ],
+      "primary_cluster": "service_inventory"
+    },
+    {
+      "plugin_id": 20888,
+      "source": "nasl_header",
+      "name": "Sun ONE Directory Server LDAP Malformed Packet DoS",
+      "family": "Denial of Service",
+      "category": "ACT_DENIAL",
+      "synopsis": "The remote LDAP server is prone to denial of service attacks.",
+      "description": "The remote host appears to be running Sun ONE Directory Server, an\nLDAP directory from Sun. \n\nThe version of Sun ONE Directory Server fails to handle certain\nmalformed search requests.  A user can leverage this issue to crash\nnot just the LDAP server but also the entire application on the remote\nhost.",
+      "solution": "Upgrade to Sun ONE Directory Server 5.2patch5.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2006-0647"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "2571"
+      ],
+      "dependencies": [
+        "ldap_detect.nasl"
+      ],
+      "filename": "sunone_ldap_dos.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 20889,
+      "source": "nasl_header",
+      "name": "CommuniGate Pro Server < 5.0.8 LDAP Module Field Handling Remote DoS",
+      "family": "Windows",
+      "category": "ACT_MIXED_ATTACK",
+      "synopsis": "The remote application is prone to denial of service attacks.",
+      "description": "The remote host appears to be running CommuniGate Pro, a commercial\nemail and groupware application. \n\nThe version of CommuniGate Pro installed on the remote host includes\nan LDAP server that fails to handle requests with Distinguished \nNames (DNs) that contain too many elements.  A user can leverage this \nissue to crash not just the LDAP server, but also the entire \napplication on the remote host.",
+      "solution": "Upgrade to CommuniGate Pro version 5.0.8 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2006-0566"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/smtp",
+        "Services/ldap",
+        "25",
+        "389"
+      ],
+      "dependencies": [
+        "smtpserver_detect.nasl",
+        "ldap_detect.nasl"
+      ],
+      "filename": "communigatepro_508_ldap_dos.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 20890,
+      "source": "nasl_header",
+      "name": "Lotus Domino LDAP Server Crafted Packet Remote DoS",
+      "family": "Denial of Service",
+      "category": "ACT_DENIAL",
+      "synopsis": "The remote LDAP server is affected by a denial of service\nvulnerability.",
+      "description": "The LDAP server on the remote host appears to have crashed after being\nsent a malformed request.  The specific request used is known to crash\nthe LDAP server in Lotus Domino 7.0.  By leveraging this flaw, an\nattacker may be able to deny service to legitimate users.",
+      "solution": "Unknown at this time.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2006-0580"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "find_service1.nasl",
+        "ldap_detect.nasl",
+        "external_svc_ident.nasl"
+      ],
+      "filename": "lotus_domino_ldap_dos.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 20903,
+      "source": "nasl_header",
+      "name": "IBM Tivoli Directory Server LDAP Packet Handling DoS",
+      "family": "Denial of Service",
+      "category": "ACT_DENIAL",
+      "synopsis": "The remote LDAP server is prone to denial of service attacks.",
+      "description": "The remote host appears to be running IBM Tivoli Directory Server, an\nLDAP directory from IBM. \n\nThe version of IBM Tivoli Directory Server fails to handle certain\nmalformed search requests.  A user can leverage this issue to crash\nthe LDAP server.",
+      "solution": "Apply the appropriate fix pack listed in the vendor support documents\nreferenced above.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2006-0717"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_detect.nasl"
+      ],
+      "filename": "tivoli_ldap_dn_length_dos.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 23625,
+      "source": "nasl_header",
+      "name": "OpenLDAP SASL authcid Name BIND Request DoS",
+      "family": "Denial of Service",
+      "category": "ACT_DENIAL",
+      "synopsis": "The remote LDAP server is prone to a denial of service attack.",
+      "description": "The remote host appears to be running OpenLDAP, an open source LDAP\ndirectory implementation. \n\nThe version of OpenLDAP installed on the remote host fails to handle\nmalformed SASL bind requests.  An unauthenticated attacker can\nleverage this issue to crash the LDAP server on the affected host.",
+      "solution": "Upgrade to OpenLDAP 2.3.29 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2006-5779"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_detect.nasl"
+      ],
+      "filename": "openldap_sasl_bind_dos.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 23868,
+      "source": "nasl_header",
+      "name": "Kerio MailServer < 6.3.1 Long LDAP Query DoS",
+      "family": "Denial of Service",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote LDAP server is prone to a denial of service attack.",
+      "description": "The remote host is running Kerio MailServer, a commercial mail server\navailable for Windows, Linux, and Mac OS X platforms. \n\nAccording to its banner, the LDAP service associated with the\ninstalled version of Kerio MailServer terminates abnormally when it\nreceives certain malformed LDAP search requests.  An unauthenticated,\nremote attacker can exploit this issue to deny access to legitimate\nusers.",
+      "solution": "Upgrade to Kerio MailServer 6.3.1 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2006-6554"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "Services/smtp",
+        "389",
+        "25"
+      ],
+      "dependencies": [
+        "ldap_detect.nasl",
+        "smtpserver_detect.nasl"
+      ],
+      "filename": "kerio_kms_631.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 25699,
+      "source": "nasl_header",
+      "name": "MS07-039: Vulnerability in Windows Active Directory Could Allow Remote Code Execution (926122) (uncredentialed check)",
+      "family": "Windows",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "It is possible to execute code on the remote host.",
+      "description": "The remote version of Active Directory contains a flaw in the LDAP\nrequest handler code that may allow an attacker to execute code\non the remote host.\n\nOn Windows 2000, an anonymous attacker can exploit this flaw by\nsending a specially crafted LDAP packet.\n\nAdditionally, Active Directory is affected by a remote denial of\nservice vulnerability.",
+      "solution": "Microsoft has released a set of patches for Windows 2000.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2007-0040",
+        "CVE-2007-3028"
+      ],
+      "require_keys": [
+        "Host/OS/smb"
+      ],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "smb_nativelanman.nasl",
+        "ldap_detect.nasl"
+      ],
+      "filename": "smb_kb926122.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 25701,
+      "source": "nasl_header",
+      "name": "LDAP Crafted Search Request Server Information Disclosure",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "It is possible to discover information about the remote LDAP server.",
+      "description": "By sending a search request with a filter set to 'objectClass=*', it\nis possible to extract information about the remote LDAP server.",
+      "solution": "n/a",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_detect.nasl"
+      ],
+      "filename": "ldap_search.nasl",
+      "clusters": [
+        "information_disclosure"
+      ],
+      "primary_cluster": "information_disclosure"
+    },
+    {
+      "plugin_id": 25705,
+      "source": "nasl_header",
+      "name": "Sun Java System Directory Server Multiple Vulnerabilities",
+      "family": "Gain a shell remotely",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote LDAP server has multiple vulnerabilities.",
+      "description": "The remote host is running the Sun Java System Directory Server, an\nLDAP server from Sun Microsystems. \n\nThe remote version of this service is affected by multiple\nvulnerabilities.  Versions 6.0 and prior to 5.2 Patch 5 are affected\nby :\n\n  - list attributes information disclosure\n  - Unauthorized Access (restricted to super users). \n\nVersions prior to 5.2 Patch 5 are affected by :\n\n  - Denial of service due to the BER decoding handler\n  - Memory corruption in the failed request handler.",
+      "solution": "Upgrade to Sun Java System Directory Server 5.2 Patch 5 or 6.1 or\nlater.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2006-4175",
+        "CVE-2007-2466",
+        "CVE-2007-3224",
+        "CVE-2007-3225"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "sun_directory_server_multiple.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 25935,
+      "source": "nasl_header",
+      "name": "SIDVault < 2.0f LDAP Server Malformed Search Request Buffer Overflow",
+      "family": "Gain a shell remotely",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote LDAP server is vulnerable to a buffer overflow attack.",
+      "description": "The remote host is running SIDVault, an LDAP v3 server for Windows and\nLinux. \n\nAccording to its banner, the version of SIDVault on the remote host\nfails to handle certain malformed search requests.  A user reportedly\ncan leverage this issue to crash the affected service or execute\narbitrary code on the affected system with root or SYSTEM-level\nprivileges.",
+      "solution": "Upgrade to SIDVault version 2.0f or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2007-4566"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "Services/www",
+        "389",
+        "636",
+        "6680"
+      ],
+      "dependencies": [
+        "ldap_detect.nasl",
+        "http_version.nasl"
+      ],
+      "filename": "sidvault_20f.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 27855,
+      "source": "nasl_header",
+      "name": "IBM Domino Detection (uncredentialed check)",
+      "family": "Service detection",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "IBM Domino is running on the remote host.",
+      "description": "IBM Domino (formerly IBM Lotus Domino), an enterprise application for\ncollaborative messaging, scheduling, directory services, and web\nservices, is running on the remote host.",
+      "solution": "n/a",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/smtp",
+        "Services/pop3",
+        "Services/imap",
+        "Services/ldap",
+        "Services/www",
+        "25",
+        "110",
+        "143",
+        "389",
+        "80"
+      ],
+      "dependencies": [
+        "smtpserver_detect.nasl",
+        "popserver_detect.nasl",
+        "ldap_search.nasl",
+        "http_version.nasl"
+      ],
+      "filename": "domino_installed.nasl",
+      "clusters": [
+        "service_inventory"
+      ],
+      "primary_cluster": "service_inventory"
+    },
+    {
+      "plugin_id": 32121,
+      "source": "nasl_header",
+      "name": "Sun Java System Directory Server bind-dn Remote Privilege Escalation",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote LDAP proxy server is prone to an unauthorized access\nattack.",
+      "description": "The version of Sun Java System Directory Proxy Server running on the\nremote host is affected by an unauthorized access vulnerability. \nSpecifically, the server fails to properly classify connections in\nrelation to 'bind_dn' parameter.  Successful exploitation of this\nissue might allow an unprivileged user to gain remote administrative\naccess to the system.",
+      "solution": "Upgrade to Sun Java System Directory Server 6.3 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2008-1995"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "sun_directory_remote_admin_unauth_access.nasl",
+      "clusters": [
+        "patch_cve",
+        "privilege_and_acl"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 33397,
+      "source": "nasl_header",
+      "name": "Novell eDirectory < 8.8.2 FTF2 / 8.7.3 SP10b Multiple Remote Overflows",
+      "family": "Gain a shell remotely",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote directory service is affected by multiple buffer overflows.",
+      "description": "The remote host is running eDirectory, a directory service software\nfrom Novell.\n\nThe installed version of eDirectory is affected by an integer overflow\nissue in ds.dlm / dhost.exe (bound by default to TCP port 524) as well\nas a heap-based buffer overflow that can be triggered by passing NULL\nsearch parameters to the LDAP service.  An unauthenticated attacker\nmay be able to leverage either issue to execute code on the remote\nhost with SYSTEM privileges.",
+      "solution": "Upgrade to eDirectory 8.8.2 FTF2 / 8.7.3 SP10b or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2008-1809",
+        "CVE-2008-3159"
+      ],
+      "require_keys": [
+        "Services/ldap"
+      ],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "edirectory_ds_integer_overflow.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 34221,
+      "source": "nasl_header",
+      "name": "Novell eDirectory < 8.8 SP3 Multiple Vulnerabilities (OF, XSS, MC)",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote directory service is affected by multiple vulnerabilities.",
+      "description": "The remote host is running eDirectory, a directory service software\nfrom Novell.  The installed version of Novell eDirectory is affected\nby multiple issues :\n\n  - NDS module is affected by a heap overflow vulnerability \n    (Bugs 396819 and 396817).\n\n  - Windows installs of eDirectory NDS module are affected \n    by a remote memory corruption vulnerability (Bug 373852).\n\n  - LDAP module is affected by a buffer overflow \n    vulnerability (Bug 373853).\n\n  - Windows installs of eDirectory LDAP module are affected\n    by a memory corruption DoS (Bug 359982).\n\n  - HTTPSTK is affected by two heap overflow vulnerabilities \n    affecting 'Language' and 'Content Length' headers in \n    HTTPSTK (Bugs 379882 and 379880).\n\n  - HTTPSTK is also affected by a cross-site scripting \n    vulnerability (Bug 387429).",
+      "solution": "Upgrade to eDirectory 8.8 SP3 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2008-5091",
+        "CVE-2008-5092",
+        "CVE-2008-5093",
+        "CVE-2008-5094",
+        "CVE-2008-5095"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "edirectory_88sp3_multiple_vulns.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 34349,
+      "source": "nasl_header",
+      "name": "Novell eDirectory < 8.7.3 SP10 FTF1 Multiple Vulnerabilities",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote directory service is affected by multiple vulnerabilities.",
+      "description": "The remote host is running eDirectory, a directory service software\nfrom Novell.  The installed version of Novell eDirectory is affected\nby multiple heap overflows and denial of service vulnerabilities :\n\n  - DS module is affected by two heap overflow vulnerabilities\n    (Bugs 407275, 407256).\n\n  - EMBOX module is affected by two denial of service vulnerabilities\n    (Bugs 407243, 407245).",
+      "solution": "Upgrade to eDirectory 8.7.3 SP10 FTF1 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2008-4478",
+        "CVE-2008-4479",
+        "CVE-2008-4480"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "edirectory_873sp10_multiple_vulns.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 35688,
+      "source": "nasl_header",
+      "name": "Sun Java System Directory Server 6.x < 6.3.1 LDAP JDBC Backend DoS",
+      "family": "Denial of Service",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote LDAP server is affected by a denial of service vulnerability.",
+      "description": "The remote host is running the Sun Java System Directory Server, an\nLDAP server from Sun Microsystems.  \n\nThe installed version is older than 6.3.1, and the proxy server\nincluded with such versions is reportedly affected by a denial of\nservice vulnerability.  By sending a specially crafted request to the\nJDBC backend through the proxy server, an unauthenticated, remote\nattacker may be able to trigger a denial of service condition.",
+      "solution": "Upgrade to Sun Java System Directory Server version 6.3.1.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2009-0609"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "sun_directory_server_ldap_req_dos.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 35760,
+      "source": "nasl_header",
+      "name": "Novell eDirectory < 8.8 SP3 FTF3 iMonitor HTTP Accept-Language Header Overflow",
+      "family": "Web Servers",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote web server is affected by a buffer overflow\nvulnerability.",
+      "description": "The remote host is running eDirectory, a directory service software\nfrom Novell. The iMonitor component included with the installed version\nis affected by a buffer overflow vulnerability. By sending a specially\ncrafted HTTP request to the iMonitor component with a malformed\n'Accept-Language' header, it may be possible for a remote attacker\nto execute arbitrary code on the remote system.",
+      "solution": "Upgrade to eDirectory 8.8 SP3 with FTF3 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "Services/www",
+        "389",
+        "8028",
+        "8030"
+      ],
+      "dependencies": [
+        "ldap_search.nasl",
+        "http_version.nasl"
+      ],
+      "filename": "edirectory_88SP3_FTF3.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 39805,
+      "source": "nasl_header",
+      "name": "Novell eDirectory < 8.8 SP5 Multiple Vulnerabilities",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote directory service is affected by multiple vulnerabilities.",
+      "description": "The remote host is running eDirectory, a directory service software\nfrom Novell.  The installed version of this software is affected by\nmultiple issues :\n\n  - Malformed bind LDAP packet causes eDir crash.\n    (Bug 492692)\n\n  - The use of multiple wildcards in RDNs can trigger a\n    remote denial of service vulnerability. (Bug 458504)\n\n  - An HTTP request containing a specially crafted\n    'Accept-Language' header can trigger a stack-based\n    buffer overflow. This issue affects the iMonitor\n    service. (Bugs 484007 and 446342)",
+      "solution": "Upgrade to eDirectory 8.8 SP5 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2009-0192",
+        "CVE-2009-2456",
+        "CVE-2009-2457"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "edirectory_88sp5_multiple_vulns.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 42329,
+      "source": "nasl_header",
+      "name": "LDAP Service STARTTLS Command Support",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote directory service supports encrypting traffic.",
+      "description": "The remote LDAP service supports the use of the 'STARTTLS' command to\nswitch from a cleartext to an encrypted communications channel.",
+      "solution": "n/a",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_detect.nasl"
+      ],
+      "filename": "ldap_starttls.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 42412,
+      "source": "nasl_header",
+      "name": "Novell eDirectory < 8.8.5 ftf1/8.7.3.10 ftf2 NULL Base DN DoS",
+      "family": "Denial of Service",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote directory service is affected by a denial of service\nvulnerability.",
+      "description": "The remote host is running eDirectory, a directory service software\nfrom Novell. \n\nThe installed version of eDirectory is affected by a denial of service\nissue. By sending a search request with an undefined BaseDN, it may be\npossible for an attacker to make the directory server unresponsive.",
+      "solution": "Upgrade to eDirectory 8.8.5 ftf1 / 8.7.3.10 ftf2 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2009-3862"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "edirectory_ldap_null_base_dos.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 43030,
+      "source": "nasl_header",
+      "name": "Novell eDirectory < 8.8.5.2 / 8.7.3.10 ftf2 'NDS Verb' Request Buffer Overflow",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote directory service is affected by a remote buffer overflow\nvulnerability.",
+      "description": "The remote host is running eDirectory, a directory service software\nfrom Novell. \n\nThe installed version of eDirectory is affected by a remote buffer\noverflow vulnerability.  By sending a specially crafted 'NDS Verb 0x1'\nrequest, it may be possible for an attacker to execute arbitrary code\nsubject to the privileges of the affected service.",
+      "solution": "Upgrade to eDirectory 8.8.5.2 / 8.7.3.10 ftf2 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2009-0895"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "edirectory_nds_verb_overflow.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 43615,
+      "source": "nasl_header",
+      "name": "Sun Java System Directory Proxy Server 6.x < 6.3.1.1 Multiple Vulnerabilities.",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote directory service is affected by multiple vulnerabilities.",
+      "description": "The remote host is running the Sun Java System Directory Proxy\nServer, an LDAP application-layer protocol gateway.  It is typically\nprovided with Sun Java System Directory Server Enterprise Edition. \n\nThe installed version of Sun Java System Directory Proxy Server is\nolder than 6.3.1.1 and thus affected by multiple flaws :\n\n  - Under certain conditions, simultaneous long binds are\n    incorrectly assigned the same back-end connection. An\n    attacker may exploit this vulnerability to hijack\n    an authenticated user's session and perform unauthorized\n    operations. (CVE-2009-4440)\n \n  - 'SO_KEEPALIVE' socket option is not enabled, making it\n    possible for a remote attacker to trigger a denial of\n    service condition by exhausting available connection\n    slots. (CVE-2009-4441)\n \n  - 'max-client-connections' configuration setting is not \n    correctly implemented, making it possible for a remote\n    attacker to trigger a denial of service condition.\n    (CVE-2009-4442)\n\n  - An unspecified vulnerability in 'psearch' functionality\n    may allow an attacker to trigger a denial of service\n    condition. (CVE-2009-4443)",
+      "solution": "Upgrade to Sun Java System Directory Server Enterprise Edition version 6.3.1 \nand then install patch 141958-01 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2009-4440",
+        "CVE-2009-4441",
+        "CVE-2009-4442",
+        "CVE-2009-4443"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "sun_directory_proxy_server_multiple.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 44938,
+      "source": "nasl_header",
+      "name": "Novell eDirectory < 8.8 SP5 Patch 3 eMBox SOAP Request DoS",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote web server is affected by a denial of service\nvulnerability.",
+      "description": "The remote host is running eDirectory, a directory service software\nfrom Novell.\n\nThe eMBox service included with the installed version of eDirectory is\naffected by a denial of service vulnerability.  \n\nBy sending a specially crafted HTTP SOAP request, it may be possible\nfor a remote attacker to crash the remote service.",
+      "solution": "Upgrade to eDirectory 8.8 SP5 Patch 3 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2010-0666"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "Services/www",
+        "389",
+        "8028",
+        "8030"
+      ],
+      "dependencies": [
+        "ldap_search.nasl",
+        "http_version.nasl"
+      ],
+      "filename": "edirectory_88sp5_patch3.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 45477,
+      "source": "nasl_header",
+      "name": "LDAP Group Enumeration",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "Nessus was able to get the list of groups on the remote LDAP server.",
+      "description": "By using the search base gathered by plugin ID 25701, Nessus was able\nto enumerate the list of groups in the remote LDAP directory.",
+      "solution": "Configure the LDAP server to require authentication.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "ldap_groups.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 45478,
+      "source": "nasl_header",
+      "name": "LDAP User Enumeration",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "Nessus was able to get the list of users on the remote LDAP server.",
+      "description": "By using the search base gathered by plugin ID 25701, Nessus was able\nto enumerate the list of users in the remote LDAP directory.",
+      "solution": "Configure the LDAP server to require authentication.",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "ldap_users.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 47022,
+      "source": "nasl_header",
+      "name": "Novell eDirectory < 8.8 SP5 Patch 4 Multiple Vulnerabilities",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote directory service is affected by multiple\nvulnerabilities.",
+      "description": "The remote host is running eDirectory, a directory service software\nfrom Novell.  The installed version of this software is affected by\none or more of the following vulnerabilities :\n\n  - A denial of service vulnerability in NDSD when handling\n    a malformed verb. (Bug 571244)\n\n  - A stack-based buffer overflow in the dhost module\n    for Windows. (Bug 588883)\n\n  - A predictable session cookie in DHOST. (Bug 586854)",
+      "solution": "Upgrade to eDirectory 8.8 SP5 Patch 4 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2009-4653"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "edirectory_88sp5_patch4.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 57035,
+      "source": "nasl_header",
+      "name": "CA eTrust Directory SNMP Packet Parsing Denial of Service",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote directory server is affected by a denial of service\nvulnerability.",
+      "description": "CA eTrust Directory, a directory service application, is installed on\nthe remote host.  Versions of CA eTrust Directory 8.1 and R12 earlier\nthan service pack 7 CR1 are potentially affected by a denial of\nservice vulnerability due to the way the application parses SNMP\npackets.  A remote, unauthenticated attacker could exploit this flaw\nto crash the affected service.",
+      "solution": "Upgrade to CA eTrust Directory R12 SP7 CR1 (build 6279) or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2011-3849"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "19289",
+        "19389",
+        "19489"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "ca_directory_server_r12_sp7.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 58038,
+      "source": "nasl_header",
+      "name": "LDAP 'Domain Admins' Group Membership Enumeration",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "Nessus was able to list the members of the 'Domain Admins' group on\nthe remote LDAP server.",
+      "description": "By using the search base gathered by plugin ID 25701 and the supplied credentials, Nessus was able to enumerate the list of members of the\n'Domain Admins' group in the remote LDAP directory. Several Domain Admins groups may be returned if the LDAP port corresponds to a Global Catalog server (i.e. 3268/3269)",
+      "solution": "n/a",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "ldap_domain_admin_members.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 58076,
+      "source": "nasl_header",
+      "name": "OS Identification : LDAP",
+      "family": "General",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "It is possible to identify the remote operating system based on an\nLDAP query.",
+      "description": "The remote operating system can be identified through its response\nto a search request with a filter set to 'objectClass=*'.",
+      "solution": "n/a",
+      "risk_factor": "None",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "os_fingerprint_ldap.nasl",
+      "clusters": [
+        "other"
+      ],
+      "primary_cluster": "other"
+    },
+    {
+      "plugin_id": 61709,
+      "source": "nasl_header",
+      "name": "Novell eDirectory < 8.8 SP6 Patch 5 Multiple Vulnerabilities",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote directory service is affected by multiple vulnerabilities.",
+      "description": "The remote host is running eDirectory, a directory service application\nfrom Novell.  According to its self-reported version number, this\nsoftware is affected by multiple stack-based buffer overflow and memory\ncorruption vulnerabilities.  A remote, unauthenticated attacker could\nexploit the most severe of these vulnerabilities to execute arbitrary\ncode.",
+      "solution": "Upgrade to eDirectory 8.8 SP6 Patch 5 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2010-1929"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "edirectory_88sp6_patch5.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 62574,
+      "source": "nasl_header",
+      "name": "IBM Tivoli Directory Server TLS NULL Cipher (uncredentialed check)",
+      "family": "General",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote IBM Tivoli Directory Server contains an information\ndisclosure vulnerability.",
+      "description": "The IBM Tivoli Directory Server hosted on the remote host supports TLS\nNULL-MD5 or NULL_SHA ciphers.  This allows remote, unauthenticated\nattackers to trigger unencrypted communication via the TLS handshake\nprotocol.\n\nNote that this version of Directory Server likely has other\nvulnerabilities (i.e., CVE-2012-0743), but Nessus has not checked\nfor those issues.",
+      "solution": "Install the appropriate fix based on the vendor's advisory :\n\n  - 6.1.0.47-ISS-ITDS-IF0047\n  - 6.2.0.22-ISS-ITDS-IF0022\n  - 6.3.0.11-ISS-ITDS-IF0011",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2012-0726"
+      ],
+      "require_keys": [
+        "SSL/Supported"
+      ],
+      "require_ports": [
+        "Services/ldap",
+        "636"
+      ],
+      "dependencies": [
+        "ssl_supported_versions.nasl",
+        "ldap_search.nasl"
+      ],
+      "filename": "tivoli_directory_srv_null_cipher.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 63338,
+      "source": "nasl_header",
+      "name": "Novell eDirectory 8.8.x Multiple Security Vulnerabilities",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote directory service is affected by multiple vulnerabilities.",
+      "description": "The remote host is running eDirectory, a directory service software\nfrom Novell.  The installed version of Novell eDirectory is affected by\nmultiple issues :\n\n  - An unspecified cross-site scripting flaw exists.\n    (CVE-2012-0428)\n\n  - It is possible to trigger a remote denial of service \n    vulnerability by sending a malformed HTTP request. \n    (CVE-2012-0429)\n \n  - An unspecified flaw may allow a remote attacker to gain \n    access to administrator cookie information. \n    (CVE-2012-0430)\n\n  - There is an unspecified stack-based buffer overflow in \n    the Novell NCP implementation in eDirectory that has \n    unspecified impact. (CVE-2012-0432)",
+      "solution": "Upgrade to eDirectory 8.8 SP6 Patch 7 / 8.8 SP7 Patch 2 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2012-0428",
+        "CVE-2012-0429",
+        "CVE-2012-0430",
+        "CVE-2012-0432"
+      ],
+      "require_keys": [],
+      "require_ports": [
+        "Services/ldap",
+        "389"
+      ],
+      "dependencies": [
+        "ldap_search.nasl"
+      ],
+      "filename": "edirectory_88sp7_patch2.nasl",
+      "clusters": [
+        "patch_cve"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 72513,
+      "source": "nasl_header",
+      "name": "Symantec Encryption Management Server < 3.3.2 Information Disclosure",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote host is affected by an information disclosure\nvulnerability.",
+      "description": "The version of Symantec Encryption Management Server listening on the\nremote host is earlier than version 3.3.2.  It is, therefore, affected\nby an information disclosure vulnerability due to a flaw in the Web\nEmail Protection component.  A remote, authenticated attacker could\npotentially exploit this vulnerability to view the contents of another\nuser's outbound emails.",
+      "solution": "Upgrade to version 3.3.2 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2014-1643"
+      ],
+      "require_keys": [
+        "LDAP/symantec_encryption_server/detected"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "symantec_encryption_server_detect.nbin"
+      ],
+      "filename": "symantec_encryption_server_3_3_2.nasl",
+      "clusters": [
+        "patch_cve",
+        "information_disclosure",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 81179,
+      "source": "nasl_header",
+      "name": "Symantec Encryption Management Server < 3.3.2 MP7 Multiple Vulnerabilities",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote host is affected by multiple vulnerabilities.",
+      "description": "The version of Symantec Encryption Management Server listening on the\nremote host is prior to version 3.3.2 MP7. It is, therefore, affected\nby multiple vulnerabilities :\n\n  - A flaw exists in the handling of specially formatted PGP\n    keys to the integrated key management server. This\n    allows a remote attacker to inject email headers in\n    order to manipulate fields within the key or\n    confirmation email. (CVE-2014-7287)\n\n  - A flaw exists in '/usr/bin/pgpbackup' when handling\n    filename values. This allows an authenticated, local\n    attacker to execute arbitrary commands with the use of a\n    pipe character. (CVE-2014-7288)",
+      "solution": "Upgrade to version 3.3.2 MP7 or later.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2014-7287",
+        "CVE-2014-7288"
+      ],
+      "require_keys": [
+        "LDAP/symantec_encryption_server/detected"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "symantec_encryption_server_detect.nbin"
+      ],
+      "filename": "symantec_encryption_server_SYM15-002.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 88903,
+      "source": "nasl_header",
+      "name": "Symantec Encryption Management Server 3.3.2 < 3.3.2 MP12 Multiple Vulnerabilities (SYM16-002)",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "A security policy management application running on the remote host is\naffected by multiple vulnerabilities.",
+      "description": "The version of Symantec Encryption Management Server running on the\nremote host is 3.3.2 prior to version 3.3.2 MP12. It is, therefore, \naffected by multiple vulnerabilities :\n\n  - An unspecified flaw in the LDAP service allows a remote\n    attacker, via a crafted LDAP request, to gather\n    sensitive information about valid administrator accounts\n    on the server. (CVE-2015-8148)\n\n  - A denial of service exists in the LDAP service due to a\n    failure to properly validate user-supplied input. An\n    unauthenticated, remote attacker can exploit this, via\n    crafted request packets, to cause corrupted memory block\n    headers, leading to a SIGSEGV fault and resulting in a\n    service halt. (CVE-2015-8149)\n\n  - An unspecified flaw exists that is related to scheduling\n    commands to run via existing batch files, which normally\n    run with root privileges. A local attacker can exploit\n    this to gain elevated privileges on the server.\n    (CVE-2015-8150)\n\n  - A command injection vulnerability exists in the web user\n    interface due to a failure to properly sanitize certain\n    user-supplied input fields. An authenticated, remote\n    attacker can exploit this to run arbitrary commands with\n    elevated privileges on the underlying operating system.\n    (CVE-2015-8151)",
+      "solution": "Upgrade to Symantec Encryption Management Server version 3.3.2 MP12 or\nlater.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2015-8148",
+        "CVE-2015-8149",
+        "CVE-2015-8150",
+        "CVE-2015-8151"
+      ],
+      "require_keys": [
+        "LDAP/symantec_encryption_server/detected"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "symantec_encryption_server_detect.nbin"
+      ],
+      "filename": "symantec_encryption_server_SYM16-002.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 89871,
+      "source": "nasl_header",
+      "name": "Symantec Encryption Management Server Remote Administrator Enumeration",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "The remote host is affected by an information disclosure\nvulnerability.",
+      "description": "The Symantec Encryption Management Server running on the remote host\nis affected by an information disclosure vulnerability when handling\nLDAP requests. An unauthenticated, remote attacker can exploit this,\nvia a crafted request, to obtain sensitive information about\nadministrator accounts.",
+      "solution": "Upgrade to Symantec Encryption Management Server version 3.3.2 MP12",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2015-8148"
+      ],
+      "require_keys": [
+        "LDAP/symantec_encryption_server/detected"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "symantec_encryption_server_detect.nbin"
+      ],
+      "filename": "symantec_encryption_server_CVE-2015-8148.nasl",
+      "clusters": [
+        "patch_cve",
+        "information_disclosure",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": 112155,
+      "source": "nasl_header",
+      "name": "Symantec Encryption Management Server < 3.4.2 MP1 Denial of Service Vulnerability (SYMSA1458)",
+      "family": "Misc.",
+      "category": "ACT_GATHER_INFO",
+      "synopsis": "A security policy management application running on the remote host is\naffected by a denial of service vulnerability.",
+      "description": "The version of Symantec Encryption Management Server running on the\nremote host is prior to version 3.4.2 MP1. It is, therefore,\naffected by an unspecified denial of service vulnerability.",
+      "solution": "Upgrade to Symantec Encryption Management Server version 3.4.2 MP1 or\nlater.",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "remote",
+      "cve_ids": [
+        "CVE-2018-5243"
+      ],
+      "require_keys": [
+        "LDAP/symantec_encryption_server/detected"
+      ],
+      "require_ports": [],
+      "dependencies": [
+        "symantec_encryption_server_detect.nbin"
+      ],
+      "filename": "symantec_encryption_server_SYMSA1458.nasl",
+      "clusters": [
+        "patch_cve",
+        "service_inventory"
+      ],
+      "primary_cluster": "patch_cve"
+    },
+    {
+      "plugin_id": null,
+      "name": "LDAP Enum",
+      "family": "",
+      "category": "",
+      "synopsis": "",
+      "description": "",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [],
+      "source": "nbin_filename",
+      "filename": "ldap_enum.nbin",
+      "clusters": [
+        "information_disclosure"
+      ],
+      "primary_cluster": "information_disclosure"
+    },
+    {
+      "plugin_id": null,
+      "name": "LDAP Enum Computer",
+      "family": "",
+      "category": "",
+      "synopsis": "",
+      "description": "",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [],
+      "source": "nbin_filename",
+      "filename": "ldap_enum_computer.nbin",
+      "clusters": [
+        "information_disclosure"
+      ],
+      "primary_cluster": "information_disclosure"
+    },
+    {
+      "plugin_id": null,
+      "name": "LDAP Enum Crossref",
+      "family": "",
+      "category": "",
+      "synopsis": "",
+      "description": "",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [],
+      "source": "nbin_filename",
+      "filename": "ldap_enum_crossref.nbin",
+      "clusters": [
+        "information_disclosure"
+      ],
+      "primary_cluster": "information_disclosure"
+    },
+    {
+      "plugin_id": null,
+      "name": "LDAP Enum Domaindns",
+      "family": "",
+      "category": "",
+      "synopsis": "",
+      "description": "",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [],
+      "source": "nbin_filename",
+      "filename": "ldap_enum_domaindns.nbin",
+      "clusters": [
+        "information_disclosure"
+      ],
+      "primary_cluster": "information_disclosure"
+    },
+    {
+      "plugin_id": null,
+      "name": "LDAP Enum Group",
+      "family": "",
+      "category": "",
+      "synopsis": "",
+      "description": "",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [],
+      "source": "nbin_filename",
+      "filename": "ldap_enum_group.nbin",
+      "clusters": [
+        "information_disclosure"
+      ],
+      "primary_cluster": "information_disclosure"
+    },
+    {
+      "plugin_id": null,
+      "name": "LDAP Enum Person",
+      "family": "",
+      "category": "",
+      "synopsis": "",
+      "description": "",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [],
+      "source": "nbin_filename",
+      "filename": "ldap_enum_person.nbin",
+      "clusters": [
+        "information_disclosure"
+      ],
+      "primary_cluster": "information_disclosure"
+    },
+    {
+      "plugin_id": null,
+      "name": "LDAP Enum Trusteddomain",
+      "family": "",
+      "category": "",
+      "synopsis": "",
+      "description": "",
+      "solution": "",
+      "risk_factor": "",
+      "cvss3_base_vector": "",
+      "cvss_base_vector": "",
+      "plugin_type": "",
+      "cve_ids": [],
+      "require_keys": [],
+      "require_ports": [],
+      "dependencies": [],
+      "source": "nbin_filename",
+      "filename": "ldap_enum_trusteddomain.nbin",
+      "clusters": [
+        "privilege_and_acl",
+        "information_disclosure"
+      ],
+      "primary_cluster": "privilege_and_acl"
+    }
+  ]
+}

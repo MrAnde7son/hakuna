@@ -199,15 +199,11 @@ def run_linker(batch_size: int = 500) -> int:
 
 def run_embedding_backfill(batch_size: int = 100) -> int:
     """Populate the `embedding` pgvector column for interactions that
-    don't have one yet. No-op on SQLite and when no API key is configured.
+    don't have one yet. No-op when no embeddings API key is configured.
 
     Embedding target: the user input — that's what future `retrieve_exemplars`
     calls will compare against at query time.
     """
-    from core.database import DATABASE_URL
-    if not DATABASE_URL.startswith("postgresql"):
-        return 0
-
     from services.llm_embeddings import embed_text
     from sqlalchemy import text as _sql
 

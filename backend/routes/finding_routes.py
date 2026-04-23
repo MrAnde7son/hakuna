@@ -29,11 +29,8 @@ router = APIRouter()
 
 
 def _json_text_at(col, key: str):
-    """Portable JSON string extraction: json_extract on SQLite, ->> on Postgres."""
-    from core.database import engine as _engine
-    if _engine.dialect.name == "postgresql":
-        return col.op("->>")(key)
-    return func.json_extract(col, f"$.{key}")
+    """Postgres JSON string extraction via the ->> operator."""
+    return col.op("->>")(key)
 
 
 # ─────────────────────────────────────────────

@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from core.database import DATABASE_URL
+from core.database import _IS_SQLITE
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +30,10 @@ def clamp_page_size(page_size: int, maximum: int = MAX_PAGE_SIZE) -> int:
 # ── Statement timeout (Postgres only) ───────────────────────────────────
 
 def set_statement_timeout(db: Session, seconds: int = STATEMENT_TIMEOUT_SECONDS) -> None:
-    """Set a per-transaction statement timeout. No-op on SQLite."""
-    if DATABASE_URL.startswith("postgresql"):
-        db.execute(text(f"SET LOCAL statement_timeout = '{seconds}s'"))
+    """Set a per-transaction statement timeout. No-op under the SQLite test DB."""
+    if _IS_SQLITE:
+        return
+    db.execute(text(f"SET LOCAL statement_timeout = '{seconds}s'"))
 
 
 def disable_statement_timeout(db: Session) -> None:
@@ -43,8 +44,9 @@ def disable_statement_timeout(db: Session) -> None:
     timeout when the connection returns to the pool, so this override is
     contained to the current session.
     """
-    if DATABASE_URL.startswith("postgresql"):
-        db.execute(text("SET statement_timeout = 0"))
+    if _IS_SQLITE:
+        return
+    db.execute(text("SET statement_timeout = 0"))
 
 
 # ── Row count guard for aggregation endpoints ────────────────────────────

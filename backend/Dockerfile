@@ -20,10 +20,8 @@ RUN python -m playwright install chromium
 
 COPY . .
 
-# SQLite DB will be stored in a volume
-VOLUME ["/app/data"]
-
-ENV DATABASE_URL=sqlite:////app/data/nessus_remediation.db
+# DATABASE_URL is required at runtime — supplied by docker-compose / Cloud Run env.
+# No default: fail fast if unset rather than silently pointing at the wrong DB.
 
 EXPOSE 8000
 

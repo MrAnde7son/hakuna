@@ -5722,7 +5722,7 @@ _BLOCKED_SQL_KEYWORDS = {
     "run_sql_query",
     "Execute a read-only SQL SELECT query against the database for ad-hoc analysis that existing tools can't answer. "
     "The query is automatically scoped to the current organization — you do NOT need to add org_id filters. "
-    "Returns up to 200 rows. Use standard SQL; both SQLite and PostgreSQL are supported. "
+    "Returns up to 200 rows. Use PostgreSQL-flavored SQL. "
     "WHEN TO CALL: When the user asks an analytical question that requires custom aggregation, joins, or grouping "
     "that no existing tool directly supports (e.g. 'which assets have the most critical findings older than 30 days?'). "
     "Prefer dedicated query tools (query_findings, query_assets, etc.) for standard lookups.",

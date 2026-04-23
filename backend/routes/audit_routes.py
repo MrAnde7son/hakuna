@@ -22,7 +22,10 @@ from core.subscription import check_scan_limit
 from core.token_quota import check_token_quota, get_token_usage
 from models.models import Agent, AgentRun, Organization, Scan, User
 from agents.audit_registry import AUDITS, describe_all, list_audits
-from services.audit_runner import AuditDispatchError, dispatch_audit_run
+from services.audit_runner import (
+    AuditDispatchError, AuditWorkerUnavailableError,
+    dispatch_audit_run, rescan_audit_scan,
+)
 from services.target_expander import expand_cidr_targets
 
 # Audit runs are N × ~15k LLM tokens per host, so we cap CIDR expansion
@@ -71,7 +74,9 @@ def get_protocol_audit(protocol: str, user: User = Depends(require_auth)):
 class AuditRunRequest(BaseModel):
     protocol: str = Field(..., description="e.g. 'wmi' — must be registered in AUDITS")
     mission: str = Field(..., description="Mission key (identity|privesc|software_cve|network_hygiene|explore)")
-    credential_id: str
+    # Optional — SMB anonymous missions (null sessions) can run without a
+    # credential. Protocols that require auth reject None in audit_runner.
+    credential_id: str | None = None
     relay_agent_id: str
     # Exactly one of asset_ids or targets must be provided.
     # targets accepts IPs, hostnames, URLs, and CIDR subnets (expanded server-side).
@@ -138,6 +143,10 @@ def create_audit_run(
             wallclock_s=body.wallclock_s,
             model=body.model,
         )
+    except AuditWorkerUnavailableError as e:
+        # Worker/redis not up. 503 is the right signal — client should try
+        # again after starting the audits profile.
+        raise HTTPException(503, str(e))
     except AuditDispatchError as e:
         raise HTTPException(400, str(e))
 
@@ -225,4 +234,245 @@ def get_audit_scan(
         "mission": md.get("mission"),
         "status": scan.status,
         "runs": run_entries,
+    }
+
+
+# ── Rescan / Edit-and-rerun ──────────────────────────────────────────
+
+
+class AuditRescanRequest(BaseModel):
+    """Optional overrides for edit-and-rerun. Any field left None inherits
+    the original scan's value from ``raw_metadata``. Matches the shape of
+    VM scanner's rescan (see ``routes/vm_routes.rescan``)."""
+    mission: str | None = None
+    credential_id: str | None = None
+    relay_agent_id: str | None = None
+    asset_ids: list[int] | None = None
+    targets: list[str] | None = None
+    max_steps: int | None = None
+    wallclock_s: int | None = None
+    model: str | None = None
+
+
+def _load_audit_scan(db: Session, scan_id: int, user: User) -> Scan:
+    org = _get_org(db, user)
+    scan = db.query(Scan).filter(Scan.id == scan_id, Scan.org_id == org.id).first()
+    if not scan:
+        raise HTTPException(404, "Audit scan not found")
+    if not (scan.scan_type or "").endswith("_audit"):
+        raise HTTPException(400, f"Scan {scan_id} is not an audit scan")
+    return scan
+
+
+@router.post("/scans/{scan_id}/rescan", dependencies=[Depends(check_scan_limit)])
+def rescan_audit(
+    scan_id: int,
+    body: AuditRescanRequest | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Replay an audit scan in place. Pass overrides to edit-and-rerun; omit
+    to replay as-is.
+
+    Mirrors ``rescan_vm_scan``: the same Scan row is re-used (no duplicate
+    rows in the scan list). The outgoing run's scratch_agent_ids + status get
+    archived into ``raw_metadata["run_history"]`` so ``/history`` can still
+    surface every past run's AgentRuns.
+    """
+    scan = _load_audit_scan(db, scan_id, user)
+    org = _get_org(db, user)
+    check_token_quota(org.id, db)
+
+    body = body or AuditRescanRequest()
+
+    targets = body.targets
+    if targets:
+        try:
+            targets = expand_cidr_targets(targets, max_hosts=AUDIT_MAX_EXPANDED_HOSTS)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    try:
+        result = rescan_audit_scan(
+            db=db,
+            org=org,
+            scan=scan,
+            mission=body.mission,
+            credential_id=body.credential_id,
+            relay_agent_id=body.relay_agent_id,
+            asset_ids=body.asset_ids,
+            targets=targets,
+            max_steps=body.max_steps,
+            wallclock_s=body.wallclock_s,
+            model=body.model,
+        )
+    except AuditWorkerUnavailableError as e:
+        raise HTTPException(503, str(e))
+    except AuditDispatchError as e:
+        raise HTTPException(400, str(e))
+
+    from core.audit import log_audit
+    log_audit(
+        db, "rescan", "scan", entity_id=scan_id,
+        entity_name=scan.scan_name,
+        changes={
+            "source_type": scan.scan_type,
+            "overrides_applied": any(
+                v is not None for v in (
+                    body.mission, body.credential_id, body.relay_agent_id,
+                    body.asset_ids, body.targets, body.max_steps,
+                    body.wallclock_s, body.model,
+                )
+            ),
+        },
+        actor=user,
+    )
+    db.commit()
+
+    return result
+
+
+class AuditScanUpdateRequest(BaseModel):
+    """Patch the *defaults* a scheduled audit scan will use on its next run.
+
+    Only the fields you include are changed. This is the non-executing twin
+    of ``rescan`` — useful when the user edits a schedule's target or
+    credential and doesn't want to fire an immediate run.
+    """
+    mission: str | None = None
+    credential_id: str | None = None
+    relay_agent_id: str | None = None
+    targets: list[str] | None = None
+    asset_ids: list[int] | None = None
+    max_steps: int | None = None
+    wallclock_s: int | None = None
+    model: str | None = None
+
+
+@router.patch("/scans/{scan_id}")
+def update_audit_scan(
+    scan_id: int,
+    body: AuditScanUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """Update the stored parameters on an audit scan (for scheduled reruns).
+
+    The scheduler reads from ``raw_metadata`` at fire time, so writing there
+    is sufficient — no separate "edit" table. We validate mission against the
+    registry so the UI can't save an unknown mission."""
+    scan = _load_audit_scan(db, scan_id, user)
+    md = dict(scan.raw_metadata or {})
+
+    protocol = md.get("protocol")
+    if body.mission is not None:
+        if protocol and protocol in AUDITS:
+            if not any(m.key == body.mission for m in AUDITS[protocol].missions):
+                raise HTTPException(
+                    400,
+                    f"unknown mission {body.mission!r} for protocol {protocol}; "
+                    f"available: {[m.key for m in AUDITS[protocol].missions]}"
+                )
+        md["mission"] = body.mission
+    if body.credential_id is not None:
+        md["credential_id"] = body.credential_id
+    if body.relay_agent_id is not None:
+        md["relay_agent_id"] = body.relay_agent_id
+    if body.targets is not None:
+        try:
+            md["ad_hoc_targets"] = expand_cidr_targets(
+                body.targets, max_hosts=AUDIT_MAX_EXPANDED_HOSTS,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        # Targets + asset_ids are mutually exclusive on dispatch; clear the other.
+        md.pop("asset_ids", None)
+    if body.asset_ids is not None:
+        md["asset_ids"] = list(body.asset_ids)
+        md.pop("ad_hoc_targets", None)
+    if body.max_steps is not None:
+        md["max_steps"] = int(body.max_steps)
+    if body.wallclock_s is not None:
+        md["wallclock_s"] = int(body.wallclock_s)
+    if body.model is not None:
+        md["model"] = body.model
+
+    scan.raw_metadata = md
+    db.commit()
+
+    from core.audit import log_audit
+    log_audit(
+        db, "update", "scan", entity_id=scan.id,
+        entity_name=scan.scan_name,
+        changes={"source_type": scan.scan_type, "edited_fields": [
+            k for k, v in body.model_dump(exclude_none=True).items()
+        ]},
+        actor=user,
+    )
+    db.commit()
+
+    return {
+        "scan_id": scan.id,
+        "protocol": md.get("protocol"),
+        "mission": md.get("mission"),
+        "credential_id": md.get("credential_id"),
+        "relay_agent_id": md.get("relay_agent_id"),
+        "asset_ids": md.get("asset_ids"),
+        "targets": md.get("ad_hoc_targets"),
+    }
+
+
+@router.get("/scans/{scan_id}/history")
+def audit_scan_history(
+    scan_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_auth),
+):
+    """All AgentRuns tied to this scan — current run plus every archived
+    run from ``raw_metadata.run_history``. One row per run, newest first.
+
+    Analog of ``VmScanHistory`` on the frontend — the component already knows
+    how to render a list of runs; we just need to provide them."""
+    scan = _load_audit_scan(db, scan_id, user)
+    md = scan.raw_metadata or {}
+
+    # Flatten all scratch_agent_ids: current run + every archived run.
+    # Use dict.fromkeys to dedupe while preserving order (newest first).
+    scratch_agent_ids: list[int] = list(md.get("scratch_agent_ids") or [])
+    for past in reversed(md.get("run_history") or []):
+        scratch_agent_ids.extend(past.get("scratch_agent_ids") or [])
+    scratch_agent_ids = list(dict.fromkeys(scratch_agent_ids))
+
+    runs = []
+    if scratch_agent_ids:
+        rows = (
+            db.query(AgentRun)
+            .filter(AgentRun.agent_id.in_(scratch_agent_ids))
+            .order_by(AgentRun.id.desc())
+            .all()
+        )
+        agents_by_id = {
+            a.id: a for a in db.query(Agent).filter(Agent.id.in_(scratch_agent_ids)).all()
+        }
+        for r in rows:
+            a = agents_by_id.get(r.agent_id)
+            ctx = (a.memory or {}).get("_run_ctx") if a else {}
+            runs.append({
+                "agent_run_id": r.id,
+                "agent_id": r.agent_id,
+                "asset_id": ctx.get("_asset_id") if ctx else None,
+                "protocol": ctx.get("_protocol") if ctx else None,
+                "mission": ctx.get("_mission") if ctx else None,
+                "scan_id": ctx.get("_scan_id") if ctx else None,
+                "status": r.status,
+                "steps_used": r.steps_used,
+                "created_at": iso_utc(r.created_at),
+                "finished_at": iso_utc(r.finished_at),
+                "error": r.error,
+            })
+
+    return {
+        "scan_id": scan.id,
+        "related_scan_ids": [scan.id],
+        "runs": runs,
     }

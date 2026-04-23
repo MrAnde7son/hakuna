@@ -18,13 +18,12 @@ logger = logging.getLogger(__name__)
 
 
 def _cve_json_filter(cve_id: str):
+    """Return a filter matching rows whose cve_ids JSON array contains `cve_id`.
+
+    A LIKE over the serialized JSON is safe for CVE IDs (no regex chars) and
+    keeps the call site independent of PostgreSQL's jsonb operators for this
+    cold-path lookup.
     """
-    Build a cross-DB filter for JSON array column containing a CVE ID.
-    SQLite stores JSON as text, so LIKE works. PostgreSQL has native JSONB operators
-    but LIKE on the cast also works and keeps the code portable.
-    """
-    # Both SQLite and PG: the JSON array is stored as '["CVE-2024-1234", ...]'
-    # A LIKE match on the serialized string is safe for CVE IDs (no regex chars).
     pattern = f'%"{cve_id}"%'
     return PatchAdvisory.cve_ids.cast(String).like(pattern)
 

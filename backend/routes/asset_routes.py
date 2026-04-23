@@ -28,21 +28,14 @@ router = APIRouter()
 # ─── Helper: sort ────────────────────────────────────────────────────────────
 
 def _json_text_at(col, key: str):
-    """Return a SQL expression that extracts a JSON string value at `key` from a JSON column.
-
-    Portable: uses json_extract on SQLite and the ->> operator on Postgres.
-    """
-    from core.database import engine as _engine
-    if _engine.dialect.name == "postgresql":
-        return col.op("->>")(key)
-    return func.json_extract(col, f"$.{key}")
+    """Return a SQL expression that extracts a JSON string value at `key`."""
+    return col.op("->>")(key)
 
 
 def _apply_sort(q, model, sort_by: str, order: str, default_attr):
     """Apply ORDER BY to a query, falling back to default_attr if sort_by is invalid.
 
-    Supports `custom_fields.<key>` sort via the JSON column — works on both
-    SQLite (json_extract) and Postgres (->> operator).
+    Supports `custom_fields.<key>` sort via the JSON column.
     """
     col = None
     if sort_by and sort_by.startswith("custom_fields.") and hasattr(model, "custom_fields"):

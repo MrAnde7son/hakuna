@@ -1,0 +1,382 @@
+{
+  "scanned": 290911,
+  "parsed": 290783,
+  "nbin_scanned": 3523,
+  "nbin_matched": 89,
+  "protocols": {
+    "snmp": {
+      "total": 113,
+      "credentialed_total": 92,
+      "cve_count": 92,
+      "nbin_count": 0,
+      "top_families": [
+        [
+          "CISCO",
+          70
+        ],
+        [
+          "SNMP",
+          32
+        ],
+        [
+          "Misc.",
+          6
+        ],
+        [
+          "General",
+          3
+        ],
+        [
+          "",
+          1
+        ],
+        [
+          "Netware",
+          1
+        ]
+      ],
+      "clusters": [
+        [
+          "patch_cve",
+          92
+        ],
+        [
+          "service_inventory",
+          23
+        ],
+        [
+          "information_disclosure",
+          11
+        ],
+        [
+          "other",
+          8
+        ],
+        [
+          "privilege_and_acl",
+          6
+        ],
+        [
+          "misconfiguration",
+          2
+        ],
+        [
+          "authentication_weakness",
+          1
+        ],
+        [
+          "malware_detection",
+          1
+        ]
+      ]
+    },
+    "ldap": {
+      "total": 51,
+      "credentialed_total": 5,
+      "cve_count": 31,
+      "nbin_count": 7,
+      "top_families": [
+        [
+          "Misc.",
+          23
+        ],
+        [
+          "Denial of Service",
+          7
+        ],
+        [
+          "",
+          7
+        ],
+        [
+          "Windows",
+          4
+        ],
+        [
+          "Gain a shell remotely",
+          3
+        ],
+        [
+          "Service detection",
+          2
+        ],
+        [
+          "General",
+          2
+        ],
+        [
+          "Netware",
+          1
+        ],
+        [
+          "Brute force attacks",
+          1
+        ],
+        [
+          "Web Servers",
+          1
+        ]
+      ],
+      "clusters": [
+        [
+          "patch_cve",
+          31
+        ],
+        [
+          "service_inventory",
+          13
+        ],
+        [
+          "information_disclosure",
+          11
+        ],
+        [
+          "other",
+          6
+        ],
+        [
+          "authentication_weakness",
+          3
+        ],
+        [
+          "privilege_and_acl",
+          2
+        ],
+        [
+          "misconfiguration",
+          1
+        ]
+      ]
+    },
+    "ssh": {
+      "total": 18196,
+      "credentialed_total": 1,
+      "cve_count": 4314,
+      "nbin_count": 0,
+      "top_families": [
+        [
+          "AIX Local Security Checks",
+          6875
+        ],
+        [
+          "",
+          6631
+        ],
+        [
+          "Solaris Local Security Checks",
+          3010
+        ],
+        [
+          "MacOS X Local Security Checks",
+          1288
+        ],
+        [
+          "Default Unix Accounts",
+          171
+        ],
+        [
+          "Misc.",
+          147
+        ],
+        [
+          "Gain a shell remotely",
+          26
+        ],
+        [
+          "General",
+          11
+        ],
+        [
+          "CISCO",
+          8
+        ],
+        [
+          "Denial of Service",
+          7
+        ]
+      ],
+      "clusters": [
+        [
+          "other",
+          13790
+        ],
+        [
+          "patch_cve",
+          4314
+        ],
+        [
+          "service_inventory",
+          1261
+        ],
+        [
+          "authentication_weakness",
+          164
+        ],
+        [
+          "information_disclosure",
+          66
+        ],
+        [
+          "privilege_and_acl",
+          42
+        ],
+        [
+          "misconfiguration",
+          12
+        ],
+        [
+          "malware_detection",
+          9
+        ],
+        [
+          "credential_material",
+          3
+        ]
+      ]
+    },
+    "smb": {
+      "total": 8446,
+      "credentialed_total": 7892,
+      "cve_count": 7611,
+      "nbin_count": 6,
+      "top_families": [
+        [
+          "Windows",
+          4410
+        ],
+        [
+          "Windows : Microsoft Bulletins",
+          3624
+        ],
+        [
+          "Misc.",
+          177
+        ],
+        [
+          "Databases",
+          62
+        ],
+        [
+          "Windows : User management",
+          29
+        ],
+        [
+          "FTP",
+          22
+        ],
+        [
+          "Peer-To-Peer File Sharing",
+          20
+        ],
+        [
+          "Backdoors",
+          16
+        ],
+        [
+          "CGI abuses",
+          14
+        ],
+        [
+          "",
+          13
+        ]
+      ],
+      "clusters": [
+        [
+          "patch_cve",
+          7662
+        ],
+        [
+          "service_inventory",
+          3973
+        ],
+        [
+          "privilege_and_acl",
+          512
+        ],
+        [
+          "misconfiguration",
+          465
+        ],
+        [
+          "information_disclosure",
+          268
+        ],
+        [
+          "other",
+          199
+        ],
+        [
+          "malware_detection",
+          41
+        ],
+        [
+          "authentication_weakness",
+          15
+        ],
+        [
+          "credential_material",
+          3
+        ]
+      ]
+    },
+    "wmi": {
+      "total": 187,
+      "credentialed_total": 111,
+      "cve_count": 110,
+      "nbin_count": 76,
+      "top_families": [
+        [
+          "Windows",
+          86
+        ],
+        [
+          "",
+          76
+        ],
+        [
+          "Windows : Microsoft Bulletins",
+          24
+        ],
+        [
+          "Misc.",
+          1
+        ]
+      ],
+      "clusters": [
+        [
+          "patch_cve",
+          117
+        ],
+        [
+          "service_inventory",
+          112
+        ],
+        [
+          "information_disclosure",
+          32
+        ],
+        [
+          "malware_detection",
+          19
+        ],
+        [
+          "privilege_and_acl",
+          12
+        ],
+        [
+          "misconfiguration",
+          7
+        ],
+        [
+          "other",
+          7
+        ],
+        [
+          "credential_material",
+          3
+        ]
+      ]
+    }
+  }
+}

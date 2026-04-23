@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from hakuna.utils.token_tracker import get_tracker
 from hakuna.utils.context_manager import rolling_context
 from core.token_quota import check_token_quota, increment_token_usage
+from core.llm_router import router as llm_router, PROVIDER_FOR_MODEL
 
 from models.models import Agent, AgentRun, AgentApproval, IntegrationConfig
 from agents.agent_tools import TOOL_REGISTRY, get_claude_tool_schemas, get_openai_tool_schemas
@@ -22,310 +23,56 @@ from agents.agent_context import compress_tool_result, build_context_section
 
 logger = logging.getLogger(__name__)
 
-# Cache clients per provider+key to avoid recreating on every run
-_client_cache = {}
 
-# ── Model → Provider mapping ──────────────────────────────────────────
-
-PROVIDER_FOR_MODEL = {
-    # Anthropic
-    "claude-sonnet-4-6": "anthropic",
-    "claude-haiku-4-5-20251001": "anthropic",
-    "claude-opus-4-6": "anthropic",
-    # OpenAI
-    "gpt-4o": "openai",
-    "gpt-4o-mini": "openai",
-    "gpt-4.1": "openai",
-    "gpt-4.1-mini": "openai",
-    "o3-mini": "openai",
-    # Google Gemini
-    "gemini-2.5-flash": "google_gemini",
-    "gemini-2.5-pro": "google_gemini",
-    "gemini-2.0-flash": "google_gemini",
-    # Groq
-    "llama-3.3-70b-versatile": "groq",
-    "llama-3.1-8b-instant": "groq",
-    "mixtral-8x7b-32768": "groq",
-    "deepseek-r1-distill-llama-70b": "groq",
-    # Vertex AI (GCP-native Gemini — uses ADC, no API key needed)
-    "vertex/gemini-2.5-flash": "vertex_ai",
-    "vertex/gemini-2.5-pro": "vertex_ai",
-    "vertex/gemini-2.0-flash": "vertex_ai",
-}
-
+# ── Router-backed shims ───────────────────────────────────────────────
+#
+# Provider/model resolution and client construction live in
+# ``core.llm_router``. The wrappers below exist so callers that already
+# import these names from agent_engine don't all have to change at once.
+# New code should import ``core.llm_router.router`` directly.
 
 def detect_provider(model: str) -> str:
-    """Detect provider from model name."""
-    if model in PROVIDER_FOR_MODEL:
-        return PROVIDER_FOR_MODEL[model]
-    if model.startswith("vertex/"):
-        return "vertex_ai"
-    if model.startswith("ollama/"):
-        return "ollama"
-    if model.startswith("claude"):
-        return "anthropic"
-    if model.startswith("gpt") or model.startswith("o3") or model.startswith("o1"):
-        return "openai"
-    if model.startswith("gemini"):
-        return "google_gemini"
-    if model.startswith("llama") or model.startswith("mixtral") or model.startswith("deepseek"):
-        return "groq"
-    return "anthropic"  # default fallback
+    return llm_router.detect_provider(model)
 
 
-# ── Client factories ──────────────────────────────────────────────────
-
-def _get_api_key(db: Session, provider: str, env_var: str) -> str:
-    """Load API key from DB integration config, falling back to env var."""
-    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
-    api_key = None
-    if cfg and cfg.config:
-        api_key = cfg.config.get("api_key")
-    if not api_key:
-        api_key = os.environ.get(env_var)
-    if not api_key:
-        display = provider.replace("_", " ").title()
-        raise RuntimeError(
-            f"{display} API key not configured. "
-            f"Go to Settings > Integrations to set your API key."
-        )
-    return api_key
-
-
-def _get_cached_client(cache_key: str, factory):
-    """Get or create a cached client."""
-    global _client_cache
-    if cache_key not in _client_cache:
-        if len(_client_cache) > 10:
-            _client_cache.clear()
-        _client_cache[cache_key] = factory()
-    return _client_cache[cache_key]
-
-
-def _get_anthropic_client(db: Session):
-    api_key = _get_api_key(db, "anthropic", "ANTHROPIC_API_KEY")
-    from anthropic import Anthropic
-    return _get_cached_client(f"anthropic:{api_key[:12]}", lambda: Anthropic(api_key=api_key))
+def _get_anthropic_client(db: Session, model: str | None = None):
+    return llm_router.get_anthropic_client(db, model)
 
 
 def _get_openai_client(db: Session):
-    api_key = _get_api_key(db, "openai", "OPENAI_API_KEY")
-    from openai import OpenAI
-    return _get_cached_client(f"openai:{api_key[:12]}", lambda: OpenAI(api_key=api_key))
+    return llm_router.get_openai_client(db)
 
 
 def _get_gemini_client(db: Session):
-    api_key = _get_api_key(db, "google_gemini", "GOOGLE_API_KEY")
-    from google import genai
-    return _get_cached_client(f"gemini:{api_key[:12]}", lambda: genai.Client(api_key=api_key))
+    return llm_router.get_gemini_client(db)
 
 
 def _get_groq_client(db: Session):
-    api_key = _get_api_key(db, "groq", "GROQ_API_KEY")
-    from groq import Groq
-    return _get_cached_client(f"groq:{api_key[:12]}", lambda: Groq(api_key=api_key))
+    return llm_router.get_groq_client(db)
 
 
 def _get_ollama_client(db: Session):
-    """Get OpenAI-compatible client pointing at local Ollama server."""
-    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "ollama").first()
-    base_url = "http://localhost:11434/v1"
-    if cfg and cfg.config:
-        base_url = cfg.config.get("base_url", base_url).rstrip("/")
-        if not base_url.endswith("/v1"):
-            base_url = base_url.rstrip("/") + "/v1"
-    from openai import OpenAI
-    return _get_cached_client(f"ollama:{base_url}", lambda: OpenAI(base_url=base_url, api_key="ollama"))
+    return llm_router.get_ollama_client(db)
 
 
 def _get_vertex_client(db: Session):
-    """Get Gemini client configured for Vertex AI (uses Application Default Credentials)."""
-    cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "vertex_ai").first()
-    project = None
-    location = "us-central1"
-    if cfg and cfg.config:
-        project = cfg.config.get("project_id") or None
-        location = cfg.config.get("location") or "us-central1"
-    if not project:
-        project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT")
-    if not project:
-        raise RuntimeError(
-            "Vertex AI requires a GCP project. Set GOOGLE_CLOUD_PROJECT env var "
-            "or configure it in Settings > Integrations."
-        )
-    from google import genai
-    return _get_cached_client(
-        f"vertex:{project}:{location}",
-        lambda: genai.Client(vertexai=True, project=project, location=location),
-    )
+    return llm_router.get_vertex_client(db)
 
 
 def get_available_providers(db: Session) -> list:
-    """Return list of providers that have an API key configured, with their models."""
-    _PROVIDER_INFO = {
-        "anthropic": {
-            "env_var": "ANTHROPIC_API_KEY",
-            "display": "Anthropic (Claude)",
-            "models": ["claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-6"],
-        },
-        "groq": {
-            "env_var": "GROQ_API_KEY",
-            "display": "Groq",
-            "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "deepseek-r1-distill-llama-70b"],
-        },
-        "openai": {
-            "env_var": "OPENAI_API_KEY",
-            "display": "OpenAI",
-            "models": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o3-mini"],
-        },
-        "google_gemini": {
-            "env_var": "GOOGLE_API_KEY",
-            "display": "Google Gemini",
-            "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
-        },
-        "ollama": {
-            "env_var": None,  # No API key — just needs a reachable server
-            "display": "Ollama (Local)",
-            "models": [],  # populated dynamically
-        },
-        "vertex_ai": {
-            "env_var": "GOOGLE_CLOUD_PROJECT",  # presence of project = configured
-            "display": "Google Vertex AI",
-            "models": ["vertex/gemini-2.5-flash", "vertex/gemini-2.5-pro", "vertex/gemini-2.0-flash"],
-        },
-    }
-    result = []
-    for provider, info in _PROVIDER_INFO.items():
-        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
-
-        if provider == "ollama":
-            # Ollama is "configured" if explicitly enabled in integrations
-            is_configured = bool(cfg and cfg.is_enabled)
-            if is_configured:
-                # Try to fetch available models from Ollama server
-                models = _get_ollama_models(cfg)
-                result.append({
-                    "provider": provider,
-                    "display": info["display"],
-                    "models": models,
-                    "configured": True,
-                })
-        elif provider == "vertex_ai":
-            # Vertex AI is configured if project ID is set (DB config or env var)
-            has_project = bool(
-                (cfg and cfg.config and cfg.config.get("project_id"))
-                or os.environ.get("GOOGLE_CLOUD_PROJECT")
-                or os.environ.get("GCLOUD_PROJECT")
-            )
-            if has_project:
-                result.append({
-                    "provider": provider,
-                    "display": info["display"],
-                    "models": info["models"],
-                    "configured": True,
-                })
-        else:
-            has_key = bool((cfg and cfg.config and cfg.config.get("api_key")) or os.environ.get(info["env_var"]))
-            if has_key:
-                result.append({
-                    "provider": provider,
-                    "display": info["display"],
-                    "models": info["models"],
-                    "configured": True,
-                })
-    return result
-
-
-def _get_ollama_models(cfg) -> list:
-    """Fetch available model names from Ollama server, returning ollama/ prefixed names."""
-    base_url = "http://localhost:11434"
-    if cfg and cfg.config:
-        base_url = cfg.config.get("base_url", base_url).rstrip("/")
-    try:
-        import urllib.request
-        req = urllib.request.Request(f"{base_url}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read())
-        return [f"ollama/{m['name']}" for m in data.get("models", [])]
-    except Exception:
-        return ["ollama/llama3", "ollama/mistral", "ollama/codellama"]  # sensible defaults
-
-
-# ── Default model per provider ────────────────────────────────────────
-
-# Provider → (env var, default model)
-_PROVIDER_DEFAULTS = [
-    ("anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-4-6"),
-    ("openai", "OPENAI_API_KEY", "gpt-4o"),
-    ("vertex_ai", "GOOGLE_CLOUD_PROJECT", "vertex/gemini-2.5-flash"),
-    ("google_gemini", "GOOGLE_API_KEY", "gemini-2.5-flash"),
-    ("groq", "GROQ_API_KEY", "llama-3.3-70b-versatile"),
-    ("ollama", None, "ollama/llama3"),
-]
+    return llm_router.get_available_providers(db)
 
 
 def get_default_model(db: Session) -> str:
-    """Get the default model from settings, picking from whichever provider has a key configured.
-
-    Priority order follows _PROVIDER_DEFAULTS.  For each provider we check:
-    1. Is it configured (has credentials / project)?
-    2. If yes, does it have an explicit ``default_model`` override?
-       → return that override; otherwise return the provider's fallback model.
-    This ensures the *highest-priority configured provider* always wins,
-    and its ``default_model`` (if set) is respected.
-    """
-    for provider, env_var, fallback_model in _PROVIDER_DEFAULTS:
-        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
-
-        # Determine whether this provider is configured
-        if provider == "ollama":
-            if not (cfg and cfg.is_enabled):
-                continue
-        elif provider == "vertex_ai":
-            has_project = (
-                (cfg and cfg.config and cfg.config.get("project_id"))
-                or os.environ.get("GOOGLE_CLOUD_PROJECT")
-                or os.environ.get("GCLOUD_PROJECT")
-            )
-            if not has_project:
-                continue
-        else:
-            has_key = (cfg and cfg.config and cfg.config.get("api_key")) or (env_var and os.environ.get(env_var))
-            if not has_key:
-                continue
-
-        # Provider is configured — use its explicit default_model or the fallback
-        if cfg and cfg.config:
-            explicit = cfg.config.get("default_model")
-            if explicit:
-                return explicit
-        return fallback_model
-
-    from hakuna.routing.model_router import SONNET
-    return SONNET  # ultimate fallback
+    return llm_router.get_default_model(db)
 
 
 def _find_fallback_model(db: Session, exclude_providers: set, *, tool_count: int = 0) -> Optional[tuple]:
-    """Find an alternative model/provider, skipping the excluded providers.
+    return llm_router.find_fallback_model(db, exclude=exclude_providers, tool_count=tool_count)
 
-    Returns (model, provider) or None if no fallback is available.
 
-    When tool_count is high (e.g. copilot with 50+ tools), Groq is excluded
-    because the tool schemas alone exceed Groq's on-demand TPM limits.
-    """
-    for provider, env_var, fallback_model in _PROVIDER_DEFAULTS:
-        if provider in exclude_providers:
-            continue
-        # Groq's on-demand tier has strict per-request token limits (~12K TPM).
-        # Agents with many tools generate tool schemas that exceed this limit.
-        if provider == "groq" and tool_count > 10:
-            continue
-        try:
-            _validate_provider_configured(db, provider)
-            return fallback_model, provider
-        except RuntimeError:
-            continue
-    return None
+def _validate_provider_configured(db: Session, provider: str):
+    llm_router.validate_provider(db, provider)
 
 
 # ── Shared helpers ────────────────────────────────────────────────────
@@ -340,33 +87,6 @@ _MAX_INPUT_CHARS = {
     "ollama": 30_000,        # Conservative — depends on model and available VRAM
 }
 _TRUNCATION_NOTICE = "\n\n[Note: Input was truncated to fit model context limits.]"
-
-
-def _validate_provider_configured(db: Session, provider: str):
-    """Check that a provider is configured. Raises RuntimeError if not."""
-    _ENV_VARS = {
-        "anthropic": "ANTHROPIC_API_KEY",
-        "openai": "OPENAI_API_KEY",
-        "google_gemini": "GOOGLE_API_KEY",
-        "groq": "GROQ_API_KEY",
-    }
-    if provider == "ollama":
-        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "ollama").first()
-        if not (cfg and cfg.is_enabled):
-            raise RuntimeError("Ollama not enabled. Go to Settings > Integrations to configure it.")
-        return
-    if provider == "vertex_ai":
-        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "vertex_ai").first()
-        has_project = (
-            (cfg and cfg.config and cfg.config.get("project_id"))
-            or os.environ.get("GOOGLE_CLOUD_PROJECT")
-            or os.environ.get("GCLOUD_PROJECT")
-        )
-        if not has_project:
-            raise RuntimeError("Vertex AI not configured. Set GOOGLE_CLOUD_PROJECT or configure in Settings > Integrations.")
-        return
-    env_var = _ENV_VARS.get(provider, "")
-    _get_api_key(db, provider, env_var)
 
 
 def _truncate_user_input(user_input: str, provider: str) -> str:
@@ -724,7 +444,13 @@ def _check_confirmation(tool_name: str, tool_input: dict):
 # ── Provider-specific execution loops ─────────────────────────────────
 
 def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, model: str):
-    """Run agent using Anthropic Claude API."""
+    """Run agent using Anthropic Claude API — direct or via Vertex AI.
+
+    The router picks between ``Anthropic(api_key=...)`` and
+    ``AnthropicVertex(project_id=...)`` transparently; same
+    ``messages.create`` interface either way. Vertex-prefixed model IDs
+    need the prefix stripped before the SDK call.
+    """
     trace = []
     user_input = _truncate_user_input(user_input, "anthropic")
     messages = [{"role": "user", "content": user_input}]
@@ -733,14 +459,15 @@ def _run_anthropic(agent: Agent, user_input: str, db: Session, run: AgentRun, mo
     tools = get_claude_tool_schemas(agent.tools or [])
     max_steps = (agent.guardrails or {}).get("max_steps", 15)
 
-    cl = _get_anthropic_client(db)
+    cl = _get_anthropic_client(db, model)
+    api_model = model.removeprefix("vertex/") if model.startswith("vertex/") else model
 
     for step in range(max_steps):
         # Apply rolling context compression after 5 turns to cap history size
         compressed_messages = rolling_context(messages, max_turns=5)
 
         create_kwargs = {
-            "model": model,
+            "model": api_model,
             "max_tokens": 4096,
             "system": system,
             "messages": _sanitize_messages(compressed_messages),
@@ -1155,7 +882,10 @@ def run_agent(agent: Agent, user_input: str, db: Session) -> AgentRun:
         provider = detect_provider(model)
 
     def _dispatch(m, p):
-        if p == "anthropic":
+        # Claude on Vertex routes through the Anthropic loop — same
+        # wire protocol, just a different auth path. Gemini on Vertex
+        # stays on the google-genai loop.
+        if p == "anthropic" or (p == "vertex_ai" and llm_router.is_claude_model(m)):
             _run_anthropic(agent, user_input, db, run, m)
         elif p in ("openai", "groq", "ollama"):
             _run_openai_compat(agent, user_input, db, run, m, p)
@@ -1251,7 +981,9 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session,
         provider = detect_provider(model)
 
     def _dispatch_stream(m, p):
-        if p == "anthropic":
+        # Claude-on-Vertex uses the AnthropicVertex SDK — same message
+        # protocol as direct Anthropic, so route through _stream_anthropic.
+        if p == "anthropic" or (p == "vertex_ai" and llm_router.is_claude_model(m)):
             return _stream_anthropic(agent, user_input, db, run, m,
                                      conversation_messages=conversation_messages)
         elif p in ("openai", "groq", "ollama"):
@@ -1333,7 +1065,7 @@ def run_agent_streaming(agent: Agent, user_input: str, db: Session,
 
 
 def _stream_anthropic(agent, user_input, db, run, model, *, conversation_messages=None):
-    """Streaming variant of _run_anthropic."""
+    """Streaming variant of _run_anthropic. Direct Anthropic or Vertex."""
     trace = []
     # Build initial messages: native multi-turn history (if provided) + current user message.
     # Native messages enable Anthropic prompt caching on the conversation prefix.
@@ -1345,7 +1077,8 @@ def _stream_anthropic(agent, user_input, db, run, model, *, conversation_message
     system = _build_system_prompt_cached(agent)
     tools = get_claude_tool_schemas(agent.tools or [])
     max_steps = (agent.guardrails or {}).get("max_steps", 15)
-    cl = _get_anthropic_client(db)
+    cl = _get_anthropic_client(db, model)
+    api_model = model.removeprefix("vertex/") if model.startswith("vertex/") else model
 
     for step in range(max_steps):
         yield {"type": "thinking", "step": step}
@@ -1353,7 +1086,7 @@ def _stream_anthropic(agent, user_input, db, run, model, *, conversation_message
         # Apply rolling context compression after 5 turns to cap history size
         compressed_messages = rolling_context(messages, max_turns=5)
 
-        create_kwargs = {"model": model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
+        create_kwargs = {"model": api_model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
         if tools:
             create_kwargs["tools"] = tools
         try:
@@ -1739,12 +1472,13 @@ def _resume_anthropic(agent, run, approval, decision, reason, model, trace, db):
     remaining = max_steps - approval.current_step - 1
     system = _build_system_prompt_cached(agent)
     tools = get_claude_tool_schemas(agent.tools or [])
-    cl = _get_anthropic_client(db)
+    cl = _get_anthropic_client(db, model)
+    api_model = model.removeprefix("vertex/") if model.startswith("vertex/") else model
     approval_mode = (agent.guardrails or {}).get("approval_mode", "auto")
 
     for step in range(approval.current_step + 1, approval.current_step + 1 + remaining):
         compressed_messages = rolling_context(messages, max_turns=5)
-        create_kwargs = {"model": model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
+        create_kwargs = {"model": api_model, "max_tokens": 4096, "system": system, "messages": _sanitize_messages(compressed_messages)}
         if tools:
             create_kwargs["tools"] = tools
         try:

@@ -3,6 +3,7 @@ Relay agent routes — REST API for agent management + WebSocket endpoint.
 Prefix: /api/relay-agents
 """
 import logging
+import os
 import secrets
 from datetime import datetime
 from typing import Optional, List
@@ -25,6 +26,11 @@ ws_router = APIRouter()
 _pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 TOKEN_PREFIX = "hka_"
+
+# Image published by `./deploy.sh --relay-agent` to the public Artifact Registry
+# repo (see terraform/artifact_registry.tf). Override with HAKUNA_RELAY_IMAGE
+# when testing against a staging tag.
+DEFAULT_RELAY_IMAGE = "me-west1-docker.pkg.dev/hakuna-prod-2026/hakuna-public/relay-agent:latest"
 
 
 # ─────────────────────────────────────────────────────────
@@ -261,13 +267,15 @@ async def get_setup_instructions(
     if not agent:
         raise HTTPException(404, "Relay agent not found")
 
+    relay_image = os.environ.get("HAKUNA_RELAY_IMAGE", DEFAULT_RELAY_IMAGE)
+
     # Build the docker run command
     docker_cmd = (
         "docker run -d --restart=unless-stopped \\\n"
         "  --name hakuna-relay-agent \\\n"
         "  -e HAKUNA_AGENT_TOKEN=<your-agent-token> \\\n"
         "  -e HAKUNA_CLOUD_URL=wss://<your-hakuna-host>/ws/relay \\\n"
-        "  hakuna/relay-agent:latest"
+        f"  {relay_image}"
     )
 
     # Build docker-compose example
@@ -275,7 +283,7 @@ async def get_setup_instructions(
         "version: '3.8'\n"
         "services:\n"
         "  hakuna-relay:\n"
-        "    image: hakuna/relay-agent:latest\n"
+        f"    image: {relay_image}\n"
         "    restart: unless-stopped\n"
         "    environment:\n"
         "      HAKUNA_AGENT_TOKEN: <your-agent-token>\n"

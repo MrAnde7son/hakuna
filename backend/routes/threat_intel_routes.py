@@ -365,18 +365,7 @@ def get_cves(
             if cves:
                 scan_cve_ids.update(c.strip() for c in cves if c)
         if scan_cve_ids:
-            # Use a temp table to avoid SQLite's variable limit with large IN clauses
-            db.execute(text("CREATE TEMP TABLE IF NOT EXISTS _scan_cves (cve_id TEXT PRIMARY KEY)"))
-            db.execute(text("DELETE FROM _scan_cves"))
-            BATCH = 500
-            cve_list = list(scan_cve_ids)
-            for i in range(0, len(cve_list), BATCH):
-                batch = cve_list[i:i+BATCH]
-                db.execute(text("INSERT INTO _scan_cves (cve_id) VALUES " +
-                    ",".join(["(:v%d)" % j for j in range(len(batch))]) +
-                    " ON CONFLICT (cve_id) DO NOTHING"),
-                    {"v%d" % j: v for j, v in enumerate(batch)})
-            q = q.filter(ThreatCVE.cve_id.in_(text("SELECT cve_id FROM _scan_cves")))
+            q = q.filter(ThreatCVE.cve_id.in_(scan_cve_ids))
         else:
             return {"items": [], "total": 0}
 

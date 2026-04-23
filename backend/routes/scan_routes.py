@@ -267,12 +267,56 @@ async def cancel_scan(
         raise HTTPException(404, "Scan not found")
 
     meta = scan.raw_metadata or {}
-    status = meta.get("status")
+    # Audit scans mirror status to both scan.status and raw_metadata.status
+    # (audit_worker._finalize_scan_if_complete writes both). VM + EASM live
+    # on raw_metadata only. Fall back to the column so audits still read
+    # during the window between insert and first worker commit.
+    status = meta.get("status") or scan.status
     if status not in ("running", "queued"):
         raise HTTPException(409, f"Scan is not running (status={status or 'completed'})")
 
     from core.audit import log_audit
     scan_name = scan.scan_name or scan.filename
+
+    if (scan.scan_type or "").endswith("_audit"):
+        from services.audit_runner import revoke_audit_tasks
+        from models.models import AgentRun
+        task_ids_by_agent = meta.get("task_ids") or {}
+        task_ids = list(task_ids_by_agent.values()) if isinstance(task_ids_by_agent, dict) else []
+        revoke_result = revoke_audit_tasks(task_ids)
+        # Mark any still-running/pending AgentRuns as cancelled so the scan UI
+        # reflects the real state. Don't touch already-terminal rows — SIGTERM
+        # on a worker may arrive after the run has already committed `done`.
+        scratch_agent_ids = meta.get("scratch_agent_ids") or []
+        if scratch_agent_ids:
+            from datetime import datetime as _dt
+            now = _dt.utcnow()
+            affected = (
+                db.query(AgentRun)
+                .filter(
+                    AgentRun.agent_id.in_(scratch_agent_ids),
+                    AgentRun.status.in_(("pending", "running")),
+                )
+                .all()
+            )
+            for r in affected:
+                r.status = "cancelled"
+                r.error = "Cancelled by user"
+                r.finished_at = now
+        scan.status = "cancelled"
+        scan.raw_metadata = {
+            **meta,
+            "status": "cancelled",
+            "error": "Cancelled by user",
+        }
+        log_audit(db, "cancel", "scan", scan_id, entity_name=scan_name, org_id=scan.org_id)
+        db.commit()
+        return {
+            "message": "Audit cancelled",
+            "revoked_tasks": revoke_result.get("revoked", []),
+            "revoke_errors": revoke_result.get("errors", {}),
+            "total_tasks": len(task_ids),
+        }
 
     if scan.source_type == "vm_scanner":
         from services.vm_scanner import _revoke_vm_jobs_sync, _rollback_failed_run
@@ -363,6 +407,18 @@ def update_scan_schedule(
             register_scan(scan.id, schedule)
         else:
             deregister_scan(scan.id)
+
+    # Same hook for Protocol Audit scans (snmp_audit, ldap_audit, ssh_audit, ...).
+    # Without this the UI saves the cron string but nothing ever fires.
+    if (scan.scan_type or "").endswith("_audit"):
+        from services.audit_scheduler import (
+            register_scan as register_audit_scan,
+            deregister_scan as deregister_audit_scan,
+        )
+        if schedule:
+            register_audit_scan(scan.id, schedule)
+        else:
+            deregister_audit_scan(scan.id)
 
     return {
         "id": scan.id,

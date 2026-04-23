@@ -14,6 +14,7 @@ import {
   getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
   getCredentials, createCredential, getRelayAgents,
   listAuditProtocols, startAuditRun, getBillingUsage,
+  rescanAuditScan, updateAuditScan, getAuditScanHistory,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, useConfirm, useToast } from '../shared/ui.jsx'
 import { getAssetDisplayName, getAssetTarget } from '../../utils/assetDisplay.js'
@@ -827,24 +828,42 @@ function VmScannerPanel({ onClose, onBack, onVmScan }) {
 //   6. Rough cost estimate ($ per host × host count)
 //   7. Start → scan row + background agent runs
 
-function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, availableProtocols }) {
-  // When the parent modal already fetched the protocol catalog (and the user
-  // picked a specific card), we skip the refetch and preselect the protocol.
+function AuditScanPanel({
+  onClose, onBack, onAuditScan, preselectedProtocol, availableProtocols,
+  // Edit mode — when set, the panel hydrates from the scan's raw_metadata,
+  // locks the protocol (can't change protocol of an existing audit row), and
+  // swaps the submit handler: "Save & rerun" hits /rescan, "Save (no rerun)"
+  // hits PATCH /scans/{id}. Same UX as NewScan so users don't learn two forms.
+  editScan,
+}) {
+  const md = editScan?.raw_metadata || {}
+  const editProtocol = editScan ? (md.protocol || (editScan.scan_type || '').replace('_audit', '')) : null
+  // When this panel is invoked as the edit form, the preselectedProtocol is
+  // implicit (from the scan itself) and the protocol selector is hidden.
+  const effectivePreselected = editProtocol || preselectedProtocol
   const [protocols, setProtocols] = useState(availableProtocols || [])
-  const [selectedProtocol, setSelectedProtocol] = useState(preselectedProtocol || '')
-  const [selectedMission, setSelectedMission] = useState('')
+  const [selectedProtocol, setSelectedProtocol] = useState(effectivePreselected || '')
+  const [selectedMission, setSelectedMission] = useState(editScan ? (md.mission || '') : '')
   const [loadingPrereqs, setLoadingPrereqs] = useState(true)
 
   const [credentials, setCredentials] = useState([])
   const [relayAgents, setRelayAgents] = useState([])
-  const [credentialId, setCredentialId] = useState('')
-  const [relayAgentId, setRelayAgentId] = useState('')
+  const [credentialId, setCredentialId] = useState(editScan ? (md.credential_id || '') : '')
+  const [relayAgentId, setRelayAgentId] = useState(editScan ? (md.relay_agent_id || '') : '')
   const [showCreateCred, setShowCreateCred] = useState(false)
 
   // Target source — mirrors VM scanner UX. 'manual' lets the user type
   // free-form IPs/hostnames/CIDRs; 'assets' picks from the asset inventory.
-  const [tab, setTab] = useState('assets')
-  const [manualTarget, setManualTarget] = useState('')
+  // Pre-pick the correct tab on edit: if the original scan used ad-hoc targets
+  // we land on 'manual' with the targets pre-filled; otherwise we start on
+  // 'assets' with the existing asset_ids pre-selected (seeded below once the
+  // asset list loads).
+  const editAdHocTargets = Array.isArray(md.ad_hoc_targets) ? md.ad_hoc_targets : []
+  const editAssetIds = Array.isArray(md.asset_ids) ? md.asset_ids : []
+  const [tab, setTab] = useState(editScan
+    ? (editAdHocTargets.length ? 'manual' : 'assets')
+    : 'assets')
+  const [manualTarget, setManualTarget] = useState(editScan ? editAdHocTargets.join('\n') : '')
 
   const [assets, setAssets] = useState([])
   const [total, setTotal] = useState(0)
@@ -855,8 +874,8 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
   const [assetSearch, setAssetSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
 
-  const [maxSteps, setMaxSteps] = useState(20)
-  const [wallclockS, setWallclockS] = useState(600)
+  const [maxSteps, setMaxSteps] = useState(editScan && md.max_steps ? md.max_steps : 20)
+  const [wallclockS, setWallclockS] = useState(editScan && md.wallclock_s ? md.wallclock_s : 600)
 
   const [usage, setUsage] = useState(null)     // {used, limit, percentage, warning, exceeded, tier}
 
@@ -946,6 +965,20 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
         const tot = data?.total ?? list.length
         setAssets(list)
         setTotal(tot)
+        // Edit mode: pre-check the scan's existing asset_ids so the user sees
+        // the current selection. We seed on every page load rather than once
+        // because the picker is paginated — if the original asset isn't on
+        // page 1, the seed becomes a no-op until they scroll into it.
+        if (editScan && editAssetIds.length > 0) {
+          const present = list.filter(a => editAssetIds.includes(a.id))
+          if (present.length > 0) {
+            setSelectedAssets(prev => {
+              const next = new Map(prev)
+              present.forEach(a => { if (!next.has(a.id)) next.set(a.id, a) })
+              return next
+            })
+          }
+        }
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
@@ -1032,7 +1065,11 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
   const hasTargetSource = tab === 'manual'
     ? (manualTargets.length > 0 && !manualCountExceedsCap)
     : selectedAssets.size > 0
-  const canStart = !!selectedProtocol && !!selectedMission && !!credentialId
+  // Protocols whose missions can run without a credential (SMB null sessions).
+  // Must match backend/services/audit_runner.py::_ANON_CAPABLE_PROTOCOLS.
+  const credentialOptional = selectedProtocol === 'smb'
+  const canStart = !!selectedProtocol && !!selectedMission
+    && (credentialOptional || !!credentialId)
     && !!relayAgentId && hasTargetSource && !scanning && !quotaExhausted
 
   const handleCreateCredential = async (data) => {
@@ -1053,26 +1090,60 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
     }
   }
 
+  const _buildPayload = () => {
+    const payload = {
+      protocol: selectedProtocol,
+      mission: selectedMission,
+      credential_id: credentialId || null,
+      relay_agent_id: relayAgentId,
+      max_steps: maxSteps,
+      wallclock_s: wallclockS,
+    }
+    if (tab === 'manual') {
+      payload.targets = manualTargets
+    } else {
+      payload.asset_ids = Array.from(selectedAssets.keys())
+    }
+    return payload
+  }
+
   const handleStart = async () => {
     if (!canStart) return
     setScanning(true)
     setError(null)
     try {
-      const payload = {
-        protocol: selectedProtocol,
-        mission: selectedMission,
-        credential_id: credentialId,
-        relay_agent_id: relayAgentId,
-        max_steps: maxSteps,
-        wallclock_s: wallclockS,
-      }
-      if (tab === 'manual') {
-        payload.targets = manualTargets
+      const payload = _buildPayload()
+      // Three dispatch paths, same payload shape:
+      //   - new scan           → POST /audits/run          (startAuditRun)
+      //   - edit + rerun       → POST /audits/scans/.../rescan  (rescanAuditScan)
+      //   - edit, save only    → PATCH /audits/scans/{id}  (updateAuditScan)
+      let res
+      if (editScan) {
+        res = await rescanAuditScan(editScan.id, payload)
       } else {
-        payload.asset_ids = Array.from(selectedAssets.keys())
+        res = await startAuditRun(payload)
       }
-      const res = await startAuditRun(payload)
       if (onAuditScan) onAuditScan(res)
+      onClose()
+    } catch (err) {
+      setError(err.message)
+      setScanning(false)
+    }
+  }
+
+  const handleSaveOnly = async () => {
+    // Edit-only path: don't fire a run now, just persist the defaults the
+    // schedule (and the next manual rescan) will use. Targets + asset_ids
+    // are mutually exclusive on the backend; drop the empty one.
+    if (!editScan) return
+    setScanning(true)
+    setError(null)
+    try {
+      const payload = _buildPayload()
+      if (!payload.targets?.length) delete payload.targets
+      if (!payload.asset_ids?.length) delete payload.asset_ids
+      await updateAuditScan(editScan.id, payload)
+      if (onAuditScan) onAuditScan({ saved: true })
       onClose()
     } catch (err) {
       setError(err.message)
@@ -1104,11 +1175,15 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
 
   return (
     <div>
-      <BackButton onClick={onBack} />
+      {/* Back button only makes sense from the NewScan card flow. In edit
+          mode the modal has its own close X; suppress the Back link so it
+          doesn't read as a second close control. */}
+      {!editScan && <BackButton onClick={onBack} />}
 
       {/* Protocol label (static when preselected from the modal's card click;
-          selectable when this panel is invoked generically). */}
-      {preselectedProtocol && currentProtocol ? (
+          selectable when this panel is invoked generically). Hidden in edit
+          mode — the protocol is already in the modal title and not changeable. */}
+      {editScan ? null : preselectedProtocol && currentProtocol ? (
         <div style={{
           marginBottom: 10, padding: '8px 10px', borderRadius: 6,
           background: 'var(--bg-secondary)',
@@ -1159,14 +1234,19 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
       )}
 
       {/* Credential */}
-      <AuditRow icon={Key} label="Credential">
+      <AuditRow
+        icon={Key}
+        label={credentialOptional ? 'Credential (optional)' : 'Credential'}
+      >
         <div style={{ display: 'flex', gap: 6, flex: 1 }}>
           <select
             value={credentialId}
             onChange={e => setCredentialId(e.target.value)}
             style={{ ..._selectStyle, flex: 1 }}
           >
-            <option value="">Select credential…</option>
+            <option value="">
+              {credentialOptional ? 'None — anonymous / null session' : 'Select credential…'}
+            </option>
             {eligibleCredentials.map(c => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
@@ -1391,21 +1471,44 @@ function AuditScanPanel({ onClose, onBack, onAuditScan, preselectedProtocol, ava
         }}>{error}</div>
       )}
 
-      <Button
-        onClick={handleStart}
-        disabled={!canStart}
-        style={{
-          width: '100%', marginTop: 14,
-          background: canStart ? '#14b8a6' : 'var(--bg-secondary)',
-          opacity: canStart ? 1 : 0.6,
-        }}
-      >
-        {scanning ? (
-          <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Starting…</>
-        ) : (
-          <><Play size={13} /> Run {currentMission?.label || 'Audit'} on {hostCount} host{hostCount === 1 ? '' : 's'}</>
-        )}
-      </Button>
+      {editScan ? (
+        <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+          <Button variant="secondary" onClick={handleSaveOnly} disabled={scanning} style={{ flex: 1 }}>
+            Save (no rerun)
+          </Button>
+          <Button
+            onClick={handleStart}
+            disabled={!canStart}
+            style={{
+              flex: 2,
+              background: canStart ? '#14b8a6' : 'var(--bg-secondary)',
+              opacity: canStart ? 1 : 0.6,
+            }}
+          >
+            {scanning ? (
+              <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Saving…</>
+            ) : (
+              <><Play size={13} /> Save &amp; rerun on {hostCount} host{hostCount === 1 ? '' : 's'}</>
+            )}
+          </Button>
+        </div>
+      ) : (
+        <Button
+          onClick={handleStart}
+          disabled={!canStart}
+          style={{
+            width: '100%', marginTop: 14,
+            background: canStart ? '#14b8a6' : 'var(--bg-secondary)',
+            opacity: canStart ? 1 : 0.6,
+          }}
+        >
+          {scanning ? (
+            <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Starting…</>
+          ) : (
+            <><Play size={13} /> Run {currentMission?.label || 'Audit'} on {hostCount} host{hostCount === 1 ? '' : 's'}</>
+          )}
+        </Button>
+      )}
     </div>
   )
 }
@@ -2385,34 +2488,47 @@ function EditVmScanModal({ scan, onClose, onSaved }) {
   }
 
   return createPortal(
-    <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-    }}>
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
       <div style={{
         background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderRadius: 8, padding: 24, width: 560, maxHeight: '92vh', overflow: 'auto',
+        borderRadius: 14, padding: 28, width: '100%', maxWidth: 520,
+        maxHeight: '92vh', overflow: 'auto',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
       }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 17 }}>Edit &amp; rerun</h2>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <div style={{ fontWeight: 700, fontSize: 16 }}>Edit &amp; rerun</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: 4 }}>
             <X size={18} />
           </button>
         </div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-          Updates this scan's config and re-dispatches. Previous findings are cleared.
+
+        <div style={{
+          padding: '12px 14px', borderRadius: 8, marginBottom: 14,
+          background: '#ec489908', border: '1px solid #ec489922',
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 3 }}>Vulnerability Scanner</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            Updates this scan's config and re-dispatches. Previous findings are cleared.
+          </div>
         </div>
 
         <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4, fontWeight: 500 }}>
-            Targets
-          </div>
+          <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 6, color: 'var(--text-muted)' }}>
+            Target(s) — IP, hostname, or URL
+          </label>
           <textarea
             value={targets}
             onChange={e => setTargets(e.target.value)}
-            rows={5}
+            rows={4}
             style={{
-              width: '100%', padding: '8px 10px', borderRadius: 6,
+              width: '100%', padding: '10px 12px', borderRadius: 8,
               border: '1px solid var(--border)', background: 'var(--bg)',
               color: 'var(--text-primary)', fontSize: 13, fontFamily: 'monospace',
               boxSizing: 'border-box', resize: 'vertical',
@@ -2423,15 +2539,15 @@ function EditVmScanModal({ scan, onClose, onSaved }) {
           </div>
         </div>
 
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4, fontWeight: 500 }}>
-            Auth profile
-          </div>
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4, color: 'var(--text-muted)' }}>
+            Auth profile (optional)
+          </label>
           <select
             value={authProfileId}
             onChange={e => setAuthProfileId(e.target.value)}
             style={{
-              width: '100%', padding: '7px 10px', fontSize: 13,
+              width: '100%', padding: '7px 10px', fontSize: 12,
               background: 'var(--bg-card)', color: 'var(--text-primary)',
               border: '1px solid var(--border)', borderRadius: 6,
             }}
@@ -2446,7 +2562,7 @@ function EditVmScanModal({ scan, onClose, onSaved }) {
         </div>
 
         <div style={{
-          marginBottom: 14, padding: '10px 12px', borderRadius: 8,
+          marginBottom: 12, padding: '10px 12px', borderRadius: 8,
           background: 'var(--bg-secondary)', border: '1px solid var(--border)',
         }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
@@ -2487,10 +2603,136 @@ function EditVmScanModal({ scan, onClose, onSaved }) {
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={onSave} disabled={saving}>
+          <Button onClick={onSave} disabled={saving} style={{ background: '#ec4899' }}>
             <Save size={14} /> {saving ? 'Saving…' : 'Save & Rerun'}
           </Button>
         </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+
+// ── Audit scan history + edit modal ──────────────────────────────────
+
+function AuditScanHistory({ expanded, scanId }) {
+  // Lazy-load: we only hit /audits/scans/{id}/history when the panel opens.
+  // Avoids a per-card fetch on the scan list page.
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState(null)
+
+  useEffect(() => {
+    if (!expanded) return
+    setLoading(true)
+    setErr(null)
+    getAuditScanHistory(scanId)
+      .then(setData)
+      .catch(e => setErr(e.message || 'Failed to load history'))
+      .finally(() => setLoading(false))
+  }, [expanded, scanId])
+
+  if (!expanded) return null
+
+  const statusColor = (s) => {
+    if (s === 'done') return '#22c55e'
+    if (s === 'failed' || s === 'error') return '#dc2626'
+    if (s === 'running' || s === 'pending') return '#0ea5e9'
+    if (s === 'awaiting_approval') return '#f59e0b'
+    return '#71717a'
+  }
+
+  return (
+    <div style={{
+      borderTop: '1px solid var(--border)', padding: '10px 16px 6px',
+      background: 'var(--bg-secondary)',
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8 }}>
+        <History size={11} style={{ marginRight: 4, verticalAlign: -1 }} />
+        Run History
+      </div>
+      {loading && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading...</div>}
+      {err && <div style={{ fontSize: 11, color: '#dc2626' }}>{err}</div>}
+      {!loading && data && (data.runs || []).length === 0 && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>No runs recorded yet.</div>
+      )}
+      {!loading && data && (data.runs || []).length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          {data.runs.map(r => (
+            <div key={r.agent_run_id} style={{
+              display: 'flex', gap: 8, alignItems: 'center', fontSize: 11,
+              padding: '4px 8px', borderRadius: 4,
+              background: 'var(--bg)',
+              border: '1px solid var(--border)',
+            }}>
+              <span style={{
+                width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                background: statusColor(r.status),
+              }} />
+              <span style={{ fontWeight: 500, minWidth: 70 }}>{r.status}</span>
+              <span style={{ color: 'var(--text-muted)' }}>
+                {r.protocol}/{r.mission}
+              </span>
+              <span style={{ color: 'var(--text-muted)' }}>
+                steps {r.steps_used}
+              </span>
+              <span style={{ color: 'var(--text-muted)', flex: 1, textAlign: 'right' }}>
+                {r.finished_at ? formatAge(r.finished_at) : (r.created_at ? formatAge(r.created_at) : '')}
+              </span>
+              {r.error && (
+                <span title={r.error} style={{
+                  color: '#dc2626', maxWidth: 180, overflow: 'hidden',
+                  textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {r.error}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+function EditAuditScanModal({ scan, onClose, onSaved }) {
+  // Reuse AuditScanPanel so the edit form has the same UX as the new-scan
+  // form: mission picker with description, inline "+ New" credential, connected
+  // relay list, Enter-Target / Select-Assets tabs with the actual picker,
+  // max_steps + wall-clock inputs. Users don't learn two forms.
+  const protocol = (scan.raw_metadata || {}).protocol
+    || (scan.scan_type || '').replace('_audit', '')
+  const friendlyLabel = AUDIT_CARD_META[protocol]?.label || `${(protocol || '').toUpperCase()} Audit`
+
+  return createPortal(
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000,
+    }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: 'var(--bg)', borderRadius: 8, padding: 20,
+        width: 520, maxWidth: '90vw', maxHeight: '85vh', overflow: 'auto',
+        border: '1px solid var(--border)',
+      }}>
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          marginBottom: 14,
+        }}>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>Edit {friendlyLabel}</div>
+          <button onClick={onClose} style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: 'var(--text-muted)', padding: 2,
+          }}><X size={16} /></button>
+        </div>
+        <AuditScanPanel
+          editScan={scan}
+          preselectedProtocol={protocol}
+          onClose={onClose}
+          onBack={onClose}
+          onAuditScan={() => onSaved && onSaved()}
+        />
       </div>
     </div>,
     document.body,
@@ -2504,16 +2746,30 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
   const meta = getSourceMeta(scan.source_type)
   const isEasm = scan.source_type === 'easm'
   const isVm = scan.source_type === 'vm_scanner'
+  // Audit scans all share the `*_audit` convention (snmp_audit, ssh_audit, ...).
+  // Detect on source_type or scan_type — dispatch sets both but older rows may
+  // only have scan_type populated.
+  const isAudit = (scan.source_type || '').endsWith('_audit')
+    || (scan.scan_type || '').endsWith('_audit')
+  // Reuse all the "has runtime status + schedule + rescan" plumbing across
+  // EASM/VM/Audit. The only thing that differs is which endpoint each button hits.
+  const isScheduleable = isEasm || isVm || isAudit
   const lastRunAt = scan.last_run_at || scan.created_at
   const age = lastRunAt ? formatAge(lastRunAt) : null
   const domain = isEasm ? scan.raw_metadata?.domain : null
-  const scanStatus = (isEasm || isVm) ? scan.raw_metadata?.status : null
+  // Audit scans stamp the runtime status on scan.status (column) rather than
+  // raw_metadata.status. Read both so audits light up "running" the same way
+  // EASM/VM do.
+  const scanStatus = isScheduleable
+    ? (scan.raw_metadata?.status || (isAudit ? scan.status : null))
+    : null
   const easmStatus = scanStatus  // keep compat
   const isRunning = scanStatus === 'running' || scanStatus === 'queued'
-  const canCancel = isRunning && (isEasm || isVm)
+  const canCancel = isRunning && (isEasm || isVm || isAudit)
   const [showHistory, setShowHistory] = useState(false)
   const [rescanning, setRescanning] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
+  const toast = useToast()
 
   return (
     <div style={{
@@ -2539,10 +2795,10 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
                 style={{ fontWeight: 600, fontSize: 14, cursor: 'pointer', color: 'var(--text-primary)' }}
                 onClick={() => onSelect(scan.id)}
               >
-                {scan.scan_name || scan.filename}
+                {getDisplayScanName(scan)}
               </span>
               <SourceBadge sourceType={scan.source_type} />
-              {(isEasm || isVm) && <EasmStatusBadge status={scanStatus} metadata={scan.raw_metadata} />}
+              {isScheduleable && <EasmStatusBadge status={scanStatus || scan.status} metadata={scan.raw_metadata} />}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               {age && <span><Clock size={11} style={{ marginRight: 3, verticalAlign: -1 }} />{age}</span>}
@@ -2563,10 +2819,10 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
           </div>
 
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
-            {(isEasm || isVm) && (
+            {isScheduleable && (
               <ScheduleDropdown scan={scan} onUpdate={onRefresh} />
             )}
-            {(isEasm || isVm) && (
+            {isScheduleable && (
               <button
                 onClick={() => setShowHistory(h => !h)}
                 title="Scan history"
@@ -2626,7 +2882,12 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
                 disabled={rescanning}
                 onClick={async () => {
                   setRescanning(true)
-                  try { await rescanVmScan(scan.id); if (onRefresh) await onRefresh() } finally { setRescanning(false) }
+                  try {
+                    await rescanVmScan(scan.id)
+                    if (onRefresh) await onRefresh()
+                  } catch (err) {
+                    toast.error(err?.message || 'Failed to rescan')
+                  } finally { setRescanning(false) }
                 }}
                 title="Rescan targets"
                 style={{
@@ -2641,8 +2902,60 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
                 <RefreshCw size={12} style={rescanning ? { animation: 'spin 1s linear infinite' } : undefined} />
               </button>
             )}
-            {editOpen && (
+            {isAudit && !isRunning && (
+              <button
+                onClick={() => setEditOpen(true)}
+                title="Edit & rerun (mission, targets, credential)"
+                style={{
+                  background: 'none', border: '1px solid var(--border)',
+                  borderRadius: 6, padding: '5px 8px', cursor: 'pointer',
+                  color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = '#0ea5e9'; e.currentTarget.style.color = '#0ea5e9' }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}
+              >
+                <Edit2 size={12} />
+              </button>
+            )}
+            {isAudit && !isRunning && (
+              <button
+                disabled={rescanning}
+                onClick={async () => {
+                  setRescanning(true)
+                  try {
+                    await rescanAuditScan(scan.id)
+                    if (onRefresh) await onRefresh()
+                  } catch (err) {
+                    // Surface 503 (worker not running) + 4xx dispatch errors
+                    // to the user instead of dropping into an unhandled promise
+                    // rejection. The backend's 503 message already tells them
+                    // how to fix it ("docker compose --profile audits up -d").
+                    toast.error(err?.message || 'Failed to rerun audit')
+                  } finally { setRescanning(false) }
+                }}
+                title="Rerun audit"
+                style={{
+                  background: 'none', border: '1px solid var(--border)',
+                  borderRadius: 6, padding: '5px 8px', cursor: rescanning ? 'wait' : 'pointer',
+                  color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
+                  transition: 'all 0.15s', opacity: rescanning ? 0.5 : 1,
+                }}
+                onMouseEnter={e => { if (!rescanning) { e.currentTarget.style.borderColor = '#0ea5e9'; e.currentTarget.style.color = '#0ea5e9' }}}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}
+              >
+                <RefreshCw size={12} style={rescanning ? { animation: 'spin 1s linear infinite' } : undefined} />
+              </button>
+            )}
+            {editOpen && isVm && (
               <EditVmScanModal
+                scan={scan}
+                onClose={() => setEditOpen(false)}
+                onSaved={async () => { setEditOpen(false); if (onRefresh) await onRefresh() }}
+              />
+            )}
+            {editOpen && isAudit && (
+              <EditAuditScanModal
                 scan={scan}
                 onClose={() => setEditOpen(false)}
                 onSaved={async () => { setEditOpen(false); if (onRefresh) await onRefresh() }}
@@ -2693,12 +3006,39 @@ function ScanCard({ scan, onDelete, deleting, onSelect, onRescan, onRefresh, onC
       {isVm && isRunning && <VmScanProgress metadata={scan.raw_metadata} />}
       {isEasm && <ScanRunHistory expanded={showHistory} domain={domain} />}
       {isVm && <VmScanHistory expanded={showHistory} metadata={scan.raw_metadata} />}
+      {isAudit && <AuditScanHistory expanded={showHistory} scanId={scan.id} />}
     </div>
   )
 }
 
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+function getDisplayScanName(scan) {
+  // Audit scans are created on the backend with the registry's bare label
+  // ("WMI Audit — Identity Audit — 1 host(s)"). The frontend has a friendlier
+  // outcome-oriented naming in AUDIT_CARD_META ("Endpoint Audit (WMI)") used
+  // everywhere else — on the New Scan cards, in the scan-type filter, etc.
+  // Unify by rewriting audit scan names at render time so the list reads the
+  // same language users see in the picker. Non-audit scans pass through.
+  const scanType = scan.scan_type || ''
+  const isAudit = scanType.endsWith('_audit') || (scan.source_type || '').endsWith('_audit')
+  if (!isAudit) return scan.scan_name || scan.filename
+  const md = scan.raw_metadata || {}
+  const protocol = md.protocol || scanType.replace('_audit', '')
+  const friendly = AUDIT_CARD_META[protocol]?.label
+  if (!friendly) return scan.scan_name || scan.filename
+  // Extract the mission sub-label from the backend-built name if present:
+  //   "WMI Audit — Identity Audit — 1 host(s)" → "Identity Audit"
+  const backendName = scan.scan_name || ''
+  const parts = backendName.split('—').map(p => p.trim()).filter(Boolean)
+  const missionLabel = parts.length >= 2 ? parts[1] : null
+  const hostCount = scan.asset_count ?? (md.asset_ids?.length || 0)
+  return missionLabel
+    ? `${friendly} — ${missionLabel} — ${hostCount} host${hostCount === 1 ? '' : 's'}`
+    : `${friendly} — ${hostCount} host${hostCount === 1 ? '' : 's'}`
+}
+
 
 function formatAge(isoDate) {
   // Backend stores UTC times without 'Z' suffix — ensure correct parsing
@@ -2969,12 +3309,18 @@ export default function ScanManagement() {
   const getNormalizedStatus = (s) => {
     const isEasm = s.source_type === 'easm'
     const isVm = s.source_type === 'vm_scanner'
-    if (!isEasm && !isVm) return 'completed'
-    const raw = s.raw_metadata?.status || 'unknown'
+    // Audit scans (`*_audit`) carry their runtime status on scan.status rather
+    // than raw_metadata.status, because audit_runner stamps the column directly.
+    // Fall through to the same state machine so the filter UI treats them the
+    // same as EASM/VM.
+    const isAudit = (s.source_type || '').endsWith('_audit')
+      || (s.scan_type || '').endsWith('_audit')
+    if (!isEasm && !isVm && !isAudit) return 'completed'
+    const raw = (isAudit ? (s.status || s.raw_metadata?.status) : s.raw_metadata?.status) || 'unknown'
     if (raw === 'running' || raw === 'queued') return raw
     if (raw === 'failed' || raw === 'error') return 'failed'
     if (raw === 'completed_with_errors') return 'partial'
-    if (raw === 'completed') return 'completed'
+    if (raw === 'completed' || raw === 'done') return 'completed'
     return raw
   }
 

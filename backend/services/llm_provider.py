@@ -1,22 +1,17 @@
-"""Shared multi-provider LLM call helper.
+"""Graceful best-effort LLM call helper.
 
-Used by lightweight services that need a one-shot LLM call without the
-full agent loop (tool use, traces, approvals). Examples:
-  - services.llm_vuln_validator (#11) — classify Nuclei findings
-  - services.attack_chain_narrator (#21) — generate attack narratives
-  - hakuna-scanner's llm_js_endpoints (#10) — extract endpoints from JS
+Thin wrapper around ``core.llm_router.router.call`` that:
 
-IMPORTANT: this module follows the SAME provider selection as the agent
-engine so it honors whatever provider the system is currently configured
-for (Anthropic, OpenAI, Gemini direct, **Vertex AI**, Groq, Ollama).
+- Returns ``""`` on any failure (rather than raising) — used by
+  services that should degrade silently when the LLM is unavailable
+  (llm_vuln_validator, attack_chain_narrator, js-endpoint extractor).
+- Wraps the call in an ``llm_feedback`` span for telemetry.
+- Honours a per-feature env-var model override (``model_env``) so ops
+  can pin specific callers to a specific model without touching code.
 
-Provider selection order, handled via agent_engine.get_default_model():
-    1. If an IntegrationConfig row has an explicit default_model, use it.
-    2. Otherwise, pick the highest-priority provider with credentials:
-       vertex_ai → anthropic → openai → google_gemini → groq → ollama.
-
-Call pattern: synchronous, best-effort. Returns "" on any error or when
-no provider is configured — callers treat empty as a soft failure.
+Callers that want exceptions or don't need telemetry should use
+``core.llm_router.router.call`` or ``services.llm_dispatch.call_llm``
+directly.
 """
 
 from __future__ import annotations
@@ -24,6 +19,8 @@ from __future__ import annotations
 import logging
 import os
 from typing import Optional
+
+from core.llm_router import router
 
 logger = logging.getLogger(__name__)
 
@@ -41,40 +38,39 @@ def call_llm(
     surface_ref_type: str | None = None,
     surface_ref_id: str | None = None,
 ) -> str:
-    """Provider-agnostic LLM call.
+    """Provider-agnostic LLM call — returns "" on any failure.
 
     Args:
         system_prompt: System instructions.
         user_prompt: User message content.
         max_tokens: Max output tokens.
         model_env: Env var name to read a per-feature model override
-            (e.g. "LLM_VALIDATION_MODEL"). When set and the env var is
-            present, that model is used (and its provider is detected
-            from the model name).
-        db: Optional SQLAlchemy Session. When provided, IntegrationConfig
-            rows are consulted for model defaults and API keys (this is
-            how the agent engine discovers Vertex AI / Gemini / Ollama).
-            When None, we fall back to env-var-only resolution.
-        surface: Caller identifier for the feedback-loop log (e.g.
-            "vuln_validator", "alert_triage"). Defaults to "llm_provider".
-        org_id: Tenant scope — when set, the call is logged to
-            llm_interactions so future prompts can retrieve tenant-scoped
-            exemplars. When None, logging is skipped (defensive: never
-            cross-tenant).
-        user_id: Optional user ID for attribution.
-        surface_ref_type / surface_ref_id: Optional pointer to the entity
-            this call was made about (finding id, alert id, scan id, …)
-            so the outcome linker can resolve it later.
+            (e.g. "LLM_VALIDATION_MODEL").
+        db: SQLAlchemy session. Required — IntegrationConfig + Vertex
+            project resolution happens against the DB.
+        surface/org_id/user_id/surface_ref_*: telemetry fields routed
+            to ``services.llm_feedback``.
 
     Returns empty string if no provider is configured or on failure.
     """
     from services import llm_feedback
 
-    # Resolve model (feature override → system default → hardcoded fallback)
-    model = _resolve_model(model_env, db)
-    provider = _detect_provider(model)
+    if db is None:
+        logger.debug("call_llm invoked without db session — cannot resolve provider")
+        return ""
 
-    logger.debug("LLM call: provider=%s model=%s max_tokens=%d", provider, model, max_tokens)
+    model_override: Optional[str] = None
+    if model_env:
+        model_override = os.environ.get(model_env) or None
+    if not model_override:
+        model_override = os.environ.get("HAKUNA_DEFAULT_MODEL") or None
+
+    try:
+        model = model_override or router.get_default_model(db)
+        provider = router.detect_provider(model)
+    except Exception as e:
+        logger.debug("provider resolution failed: %s", e)
+        return ""
 
     with llm_feedback.span(
         surface=surface,
@@ -88,263 +84,16 @@ def call_llm(
         messages=[{"role": "user", "content": user_prompt}],
     ):
         try:
-            if provider == "anthropic":
-                out = _call_anthropic(system_prompt, user_prompt, max_tokens, model, db)
-            elif provider == "openai":
-                out = _call_openai(system_prompt, user_prompt, max_tokens, model, db)
-            elif provider in ("vertex_ai", "google_gemini"):
-                out = _call_gemini(system_prompt, user_prompt, max_tokens, model, provider, db)
-            elif provider == "groq":
-                out = _call_groq(system_prompt, user_prompt, max_tokens, model, db)
-            elif provider == "ollama":
-                out = _call_ollama(system_prompt, user_prompt, max_tokens, model, db)
-            else:
-                logger.debug("No LLM provider matched for model=%s", model)
-                return ""
-            llm_feedback.record_response(out)
-            return out
+            text, _ = router.call(
+                db,
+                system=system_prompt,
+                user=user_prompt,
+                max_tokens=max_tokens,
+                model=model,
+            )
+            llm_feedback.record_response(text)
+            return text
         except Exception as e:
             logger.warning("LLM call via %s failed: %s", provider, e)
             llm_feedback.record_error(e)
             return ""
-
-
-# ── Model + provider resolution ────────────────────────────────────────
-
-
-def _resolve_model(model_env: str | None, db) -> str:
-    """Pick the model to use.
-
-    Priority:
-      1. Env var named by `model_env` (feature-specific override).
-      2. agent_engine.get_default_model(db) — respects IntegrationConfig.
-      3. Env var HAKUNA_DEFAULT_MODEL (ops override).
-      4. "claude-haiku-4-5-20251001" (last-ditch fallback; many callers
-         use Haiku-tier tasks anyway).
-    """
-    if model_env:
-        override = os.environ.get(model_env)
-        if override:
-            return override
-
-    if db is not None:
-        try:
-            from agents.agent_engine import get_default_model
-            m = get_default_model(db)
-            if m:
-                return m
-        except Exception as e:
-            logger.debug("get_default_model failed, falling back: %s", e)
-
-    return os.environ.get("HAKUNA_DEFAULT_MODEL") or "claude-haiku-4-5-20251001"
-
-
-def _detect_provider(model: str) -> str:
-    """Detect provider from model name. Mirrors agent_engine.detect_provider."""
-    try:
-        from agents.agent_engine import detect_provider
-        return detect_provider(model)
-    except Exception:
-        pass
-
-    # Fallback heuristic if agent_engine isn't importable (e.g. scanner ctx)
-    if model.startswith("vertex/"):
-        return "vertex_ai"
-    if model.startswith("ollama/"):
-        return "ollama"
-    if model.startswith("claude"):
-        return "anthropic"
-    if model.startswith(("gpt", "o1", "o3")):
-        return "openai"
-    if model.startswith("gemini"):
-        return "google_gemini"
-    if model.startswith(("llama", "mixtral", "deepseek")):
-        return "groq"
-    return "anthropic"
-
-
-# ── Per-provider backends ──────────────────────────────────────────────
-
-
-def _call_anthropic(system_prompt: str, user_prompt: str, max_tokens: int, model: str, db) -> str:
-    import httpx
-
-    api_key = _get_key(db, "anthropic", "ANTHROPIC_API_KEY")
-    if not api_key:
-        return ""
-
-    with httpx.Client() as client:
-        resp = client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": model,
-                "max_tokens": max_tokens,
-                "system": system_prompt,
-                "messages": [{"role": "user", "content": user_prompt}],
-            },
-            timeout=60.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["content"][0]["text"]
-
-
-def _call_openai(system_prompt: str, user_prompt: str, max_tokens: int, model: str, db) -> str:
-    import httpx
-
-    api_key = _get_key(db, "openai", "OPENAI_API_KEY")
-    if not api_key:
-        return ""
-
-    with httpx.Client() as client:
-        resp = client.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "max_tokens": max_tokens,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            },
-            timeout=60.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
-
-
-def _call_gemini(system_prompt: str, user_prompt: str, max_tokens: int, model: str, provider: str, db) -> str:
-    """Call Gemini via Vertex AI (ADC) or direct API key.
-
-    Uses the same google-genai client factory as the agent engine so
-    IntegrationConfig project_id/location settings are respected.
-    """
-    if db is None:
-        logger.debug("Gemini/Vertex call requires db session for client setup")
-        return ""
-
-    if provider == "vertex_ai":
-        # Vertex uses bare model names (the "vertex/" prefix is stripped)
-        model = model.removeprefix("vertex/")
-        from agents.agent_engine import _get_vertex_client
-        try:
-            client = _get_vertex_client(db)
-        except RuntimeError as e:
-            logger.debug("Vertex client unavailable: %s", e)
-            return ""
-    else:
-        from agents.agent_engine import _get_gemini_client
-        try:
-            client = _get_gemini_client(db)
-        except RuntimeError as e:
-            logger.debug("Gemini client unavailable: %s", e)
-            return ""
-
-    from google.genai import types as genai_types
-
-    # Gemini takes system instructions via system_instruction, not a message role
-    resp = client.models.generate_content(
-        model=model,
-        contents=user_prompt,
-        config=genai_types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            max_output_tokens=max_tokens,
-        ),
-    )
-    return (resp.text or "").strip()
-
-
-def _call_groq(system_prompt: str, user_prompt: str, max_tokens: int, model: str, db) -> str:
-    import httpx
-
-    api_key = _get_key(db, "groq", "GROQ_API_KEY")
-    if not api_key:
-        return ""
-
-    with httpx.Client() as client:
-        resp = client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "max_tokens": max_tokens,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            },
-            timeout=60.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
-
-
-def _call_ollama(system_prompt: str, user_prompt: str, max_tokens: int, model: str, db) -> str:
-    """Ollama uses the OpenAI-compatible /v1/chat/completions endpoint."""
-    import httpx
-
-    if db is None:
-        return ""
-
-    try:
-        from models.models import IntegrationConfig
-        cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == "ollama").first()
-        if not cfg or not cfg.is_enabled:
-            return ""
-        base_url = (cfg.config or {}).get("base_url") or "http://localhost:11434"
-    except Exception:
-        base_url = os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434"
-
-    # Strip the "ollama/" prefix from the model name
-    model_name = model.removeprefix("ollama/")
-
-    with httpx.Client() as client:
-        resp = client.post(
-            f"{base_url}/v1/chat/completions",
-            headers={"Content-Type": "application/json"},
-            json={
-                "model": model_name,
-                "max_tokens": max_tokens,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            },
-            timeout=120.0,  # local models can be slow
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
-
-
-def _get_key(db, provider: str, env_var: str) -> Optional[str]:
-    """Resolve an API key from IntegrationConfig (if db available) or env var.
-
-    Returns None instead of raising — callers will return "" to signal
-    the service has gracefully degraded.
-    """
-    if db is not None:
-        try:
-            from models.models import IntegrationConfig
-            cfg = db.query(IntegrationConfig).filter(IntegrationConfig.provider == provider).first()
-            if cfg and cfg.config:
-                key = cfg.config.get("api_key")
-                if key:
-                    return key
-        except Exception as e:
-            logger.debug("IntegrationConfig lookup failed for %s: %s", provider, e)
-    return os.environ.get(env_var)

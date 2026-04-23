@@ -1346,13 +1346,11 @@ class TagAssignment(Base):
         Index(
             "uq_tag_assignment_tag_asset", "tag_id", "asset_id",
             unique=True,
-            sqlite_where=text("asset_id IS NOT NULL"),
             postgresql_where=text("asset_id IS NOT NULL"),
         ),
         Index(
             "uq_tag_assignment_tag_finding", "tag_id", "finding_id",
             unique=True,
-            sqlite_where=text("finding_id IS NOT NULL"),
             postgresql_where=text("finding_id IS NOT NULL"),
         ),
     )
@@ -1925,8 +1923,7 @@ class CopilotConversation(Base):
 class LLMInteraction(Base):
     """One row per LLM call — agent runs and one-shot services.
 
-    Embeddings are populated asynchronously on Postgres only (pgvector).
-    On SQLite (dev) the column is omitted by the migration.
+    Embeddings are populated asynchronously via pgvector.
     """
     __tablename__ = "llm_interactions"
 
@@ -2257,7 +2254,7 @@ class Integration(Base):
     credentials_id = Column(String, ForeignKey("integration_credentials.id"), nullable=True)
     records_path = Column(String, nullable=True)  # dot-path to records array in response
     field_map = Column(JSON, nullable=False, default=list)
-    dedup_key = Column(JSON, nullable=False, default=list)  # stored as JSON array (SQLite has no array type)
+    dedup_key = Column(JSON, nullable=False, default=list)  # stored as a JSON array
     params = Column(JSON, nullable=False, default=dict)
     schedule = Column(String, nullable=True)  # cron expression
     enabled = Column(Boolean, nullable=False, default=False)

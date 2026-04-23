@@ -40,7 +40,7 @@ docker compose up --build
 
 - Backend: `http://localhost:8000`
 - Frontend: `http://localhost:3000`
-- SQLite database is persisted in a Docker volume
+- Postgres runs as the `postgres` compose service; data is persisted in the `postgres-data` volume.
 
 ### Production Build
 
@@ -52,14 +52,14 @@ docker compose -f docker-compose.yml up -d --build
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `sqlite:///./nessus.db` | Database connection string |
+| `DATABASE_URL` | — (required) | Postgres connection string, e.g. `postgresql://hakuna:hakuna@postgres:5432/hakuna` |
 | `JWT_SECRET` | Auto-generated | Secret key for JWT token signing |
 | `CORS_ORIGINS` | `http://localhost:3000` | Allowed CORS origins |
 | `EASM_SERVICE_URL` | — | URL of external EASM scanner service |
 
 ## Data Persistence
 
-The platform uses SQLite by default. The database file (`nessus.db`) is stored in the backend directory. In Docker, it is mounted as a volume for persistence across container restarts.
+The platform runs on PostgreSQL (Cloud SQL in production, a `postgres` compose service in dev). The dev DB is persisted in the `postgres-data` volume across container restarts.
 
 ## Configuration Portability
 

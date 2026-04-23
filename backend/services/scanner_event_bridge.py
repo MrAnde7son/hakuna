@@ -121,7 +121,7 @@ async def _poll_org_once(db: Session, org: Organization) -> dict:
         if event_created_at:
             try:
                 event_dt = datetime.fromisoformat(event_created_at.replace("Z", "+00:00"))
-                # Ensure both sides are tz-aware for comparison (cursor may be naive from SQLite)
+                # Ensure both sides are tz-aware for comparison (legacy rows may be naive)
                 if max_event_at is not None and max_event_at.tzinfo is None:
                     max_event_at = max_event_at.replace(tzinfo=timezone.utc)
                 if max_event_at is None or event_dt > max_event_at:

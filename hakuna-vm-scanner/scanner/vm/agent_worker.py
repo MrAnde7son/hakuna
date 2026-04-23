@@ -369,14 +369,20 @@ def _agent_payload_to_finding(
     title = payload.get("title") or f"{specialist.display_name} finding"
     description = payload.get("description") or ""
     evidence_url = payload.get("evidence_url") or target
+    parameter = (payload.get("parameter") or "").strip().lower()
     request_str = payload.get("evidence_request") or ""
     response_str = payload.get("evidence_response") or ""
 
     # Stable template_id so dedup collapses repeat runs on the same
-    # vuln. Hash over category + title + evidence_url — different
-    # description wording shouldn't create a dupe, but probing the same
-    # endpoint should.
-    digest_src = f"{specialist.category}|{title.lower()}|{evidence_url}"
+    # vuln. Key on category + evidence_url + parameter. Title is
+    # deliberately excluded — the LLM rewords it between runs
+    # ("parameter in" vs "Parameter at", etc.), so including it defeats
+    # dedup. Parameter keeps two genuinely distinct vulns on the same
+    # endpoint (e.g. SQLi on ?id= AND SQLi on ?name=) as separate
+    # findings. Empty parameter is normalised to "-" so endpoint-level
+    # vulns (default login, exposed panel) still collapse cleanly.
+    param_key = parameter or "-"
+    digest_src = f"{specialist.category}|{evidence_url}|{param_key}"
     digest = hashlib.sha256(digest_src.encode("utf-8")).hexdigest()[:12]
     template_id = f"agent-{specialist.category}-{digest}"
 

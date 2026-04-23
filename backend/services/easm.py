@@ -496,70 +496,63 @@ def _clear_scan_data(db: Session, scan_id: int):
     """
     from models.models import AssetObservation
 
-    is_sqlite = db.bind.dialect.name == "sqlite"
-    if is_sqlite:
-        db.execute(sa_text("PRAGMA foreign_keys=OFF"))
-    try:
-        # Delete finding dependents + findings
-        finding_ids = [r[0] for r in db.query(Finding.id).filter(Finding.scan_id == scan_id).all()]
-        if finding_ids:
-            for model in (AutomateClick, FindingOwnership, CampaignFinding, SBOMVulnerability):
-                db.query(model).filter(model.finding_id.in_(finding_ids)).delete(synchronize_session=False)
-        db.query(Finding).filter(Finding.scan_id == scan_id).delete(synchronize_session=False)
+    # Delete finding dependents + findings
+    finding_ids = [r[0] for r in db.query(Finding.id).filter(Finding.scan_id == scan_id).all()]
+    if finding_ids:
+        for model in (AutomateClick, FindingOwnership, CampaignFinding, SBOMVulnerability):
+            db.query(model).filter(model.finding_id.in_(finding_ids)).delete(synchronize_session=False)
+    db.query(Finding).filter(Finding.scan_id == scan_id).delete(synchronize_session=False)
 
-        # Collect asset IDs to preserve (any non-EASM provenance)
-        scan_asset_ids = {r[0] for r in db.query(Asset.id).filter(Asset.scan_id == scan_id).all()}
-        if not scan_asset_ids:
-            db.flush()
-            return
-
-        preserve_ids = set()
-
-        # 1. Referenced by findings from another scan
-        preserve_ids.update(
-            r[0] for r in db.query(Finding.asset_id).filter(
-                Finding.asset_id.in_(scan_asset_ids),
-                Finding.scan_id != scan_id,
-            ).all()
-        )
-
-        # 2. Carries source_systems from a source other than "easm"
-        for asset in db.query(Asset).filter(Asset.id.in_(scan_asset_ids)).all():
-            sources = asset.source_systems or []
-            if any(s and s != "easm" for s in sources):
-                preserve_ids.add(asset.id)
-
-        # 3. Has an observation row from a non-EASM source
-        preserve_ids.update(
-            r[0] for r in db.query(AssetObservation.asset_id).filter(
-                AssetObservation.asset_id.in_(scan_asset_ids),
-                AssetObservation.source_system != "easm",
-            ).all()
-        )
-
-        q_del = db.query(Asset).filter(Asset.scan_id == scan_id)
-        if preserve_ids:
-            q_del = q_del.filter(~Asset.id.in_(preserve_ids))
-        q_del.delete(synchronize_session=False)
-
-        # For preserved assets, drop their EASM observation row so the
-        # re-import records a fresh one. Other sources' observations
-        # stay put. source_systems stays intact.
-        if preserve_ids:
-            db.query(AssetObservation).filter(
-                AssetObservation.asset_id.in_(preserve_ids),
-                AssetObservation.source_system == "easm",
-            ).delete(synchronize_session=False)
-            # Reset enrichment timestamps so the next scan re-enriches these assets.
-            db.query(Asset).filter(Asset.id.in_(preserve_ids)).update(
-                {"last_enriched": None, "last_js_fingerprinted": None},
-                synchronize_session=False,
-            )
-
+    # Collect asset IDs to preserve (any non-EASM provenance)
+    scan_asset_ids = {r[0] for r in db.query(Asset.id).filter(Asset.scan_id == scan_id).all()}
+    if not scan_asset_ids:
         db.flush()
-    finally:
-        if is_sqlite:
-            db.execute(sa_text("PRAGMA foreign_keys=ON"))
+        return
+
+    preserve_ids = set()
+
+    # 1. Referenced by findings from another scan
+    preserve_ids.update(
+        r[0] for r in db.query(Finding.asset_id).filter(
+            Finding.asset_id.in_(scan_asset_ids),
+            Finding.scan_id != scan_id,
+        ).all()
+    )
+
+    # 2. Carries source_systems from a source other than "easm"
+    for asset in db.query(Asset).filter(Asset.id.in_(scan_asset_ids)).all():
+        sources = asset.source_systems or []
+        if any(s and s != "easm" for s in sources):
+            preserve_ids.add(asset.id)
+
+    # 3. Has an observation row from a non-EASM source
+    preserve_ids.update(
+        r[0] for r in db.query(AssetObservation.asset_id).filter(
+            AssetObservation.asset_id.in_(scan_asset_ids),
+            AssetObservation.source_system != "easm",
+        ).all()
+    )
+
+    q_del = db.query(Asset).filter(Asset.scan_id == scan_id)
+    if preserve_ids:
+        q_del = q_del.filter(~Asset.id.in_(preserve_ids))
+    q_del.delete(synchronize_session=False)
+
+    # For preserved assets, drop their EASM observation row so the
+    # re-import records a fresh one. Other sources' observations
+    # stay put. source_systems stays intact.
+    if preserve_ids:
+        db.query(AssetObservation).filter(
+            AssetObservation.asset_id.in_(preserve_ids),
+            AssetObservation.source_system == "easm",
+        ).delete(synchronize_session=False)
+        # Reset enrichment timestamps so the next scan re-enriches these assets.
+        db.query(Asset).filter(Asset.id.in_(preserve_ids)).update(
+            {"last_enriched": None, "last_js_fingerprinted": None},
+            synchronize_session=False,
+        )
+
+    db.flush()
 
 
 _SEVERITY_KEY = {4: "critical_count", 3: "high_count", 2: "medium_count", 1: "low_count", 0: "info_count"}
@@ -2069,7 +2062,7 @@ async def scan_domain(
     Self-heals when ``org.easm_org_id`` references an org that no longer
     exists in the scanner DB (404 on the trigger call) — this happens when
     the scanner Postgres is wiped (``docker compose down -v``) but the
-    backend SQLite still has the stale UUID. On 404 we clear the cached
+    backend DB still has the stale UUID. On 404 we clear the cached
     UUID, re-create the org via ``create_easm_org``, and retry once.
     """
     if not org.easm_org_id:

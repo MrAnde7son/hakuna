@@ -8,6 +8,7 @@
 #   --all           Run all steps (default if no flags given)
 #   --api           Build & push API image, update Cloud Run
 #   --scanners      Build & push scanner images, pull & restart on VM
+#   --relay-agent   Build & push the on-prem relay agent image (customer-pulled, public)
 #   --frontend      Build React app and sync to GCS
 #   --infra         Run terraform apply (use for infra changes)
 #   --migrate       Run all database migrations (backend via Cloud Run job + scanner via VM)
@@ -26,10 +27,12 @@ PROJECT_ID="hakuna-prod-2026"
 REGION="me-west1"
 ZONE="me-west1-a"
 REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/hakuna"
+PUBLIC_REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/hakuna-public"
 
 API_IMAGE="${REGISTRY}/api:latest"
 SCANNER_IMAGE="${REGISTRY}/hakuna-scanner:latest"
 VM_SCANNER_IMAGE="${REGISTRY}/vm-scanner:latest"
+RELAY_AGENT_IMAGE="${PUBLIC_REGISTRY}/relay-agent:latest"
 
 CLOUD_RUN_SERVICE="hakuna-api"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,6 +49,7 @@ step()    { echo -e "\n${BLUE}════════════════�
 # ── Parse flags ───────────────────────────────────────────────────────────────
 DO_API=false
 DO_SCANNERS=false
+DO_RELAY_AGENT=false
 DO_FRONTEND=false
 DO_INFRA=false
 DO_MIGRATE=false
@@ -55,12 +59,13 @@ if [[ $# -eq 0 ]]; then
 else
   for arg in "$@"; do
     case "$arg" in
-      --all)       DO_API=true; DO_SCANNERS=true; DO_FRONTEND=true; DO_MIGRATE=true ;;
-      --api)       DO_API=true ;;
-      --scanners)  DO_SCANNERS=true ;;
-      --frontend)  DO_FRONTEND=true ;;
-      --infra)     DO_INFRA=true ;;
-      --migrate)   DO_MIGRATE=true ;;
+      --all)          DO_API=true; DO_SCANNERS=true; DO_FRONTEND=true; DO_MIGRATE=true ;;
+      --api)          DO_API=true ;;
+      --scanners)     DO_SCANNERS=true ;;
+      --relay-agent)  DO_RELAY_AGENT=true ;;
+      --frontend)     DO_FRONTEND=true ;;
+      --infra)        DO_INFRA=true ;;
+      --migrate)      DO_MIGRATE=true ;;
       --help|-h)
         sed -n '/^# Usage:/,/^[^#]/p' "$0" | grep '^#' | sed 's/^# \?//'
         exit 0 ;;
@@ -211,6 +216,25 @@ if $DO_SCANNERS; then
   success "Scanner containers restarted on VM (alembic migrations run on startup)"
 fi
 
+# ── Step: Build & push on-prem relay agent image ──────────────────────────────
+# Customers pull this image from their on-prem network, so it lives in the
+# public `hakuna-public` Artifact Registry repo (allUsers reader granted via
+# terraform/artifact_registry.tf).
+if $DO_RELAY_AGENT; then
+  step "Building hakuna-relay-agent image"
+  cd "${SCRIPT_DIR}"
+
+  docker build \
+    --platform linux/amd64 \
+    -f hakuna-relay-agent/Dockerfile \
+    -t "${RELAY_AGENT_IMAGE}" \
+    hakuna-relay-agent/
+
+  info "Pushing ${RELAY_AGENT_IMAGE}"
+  docker push "${RELAY_AGENT_IMAGE}"
+  success "hakuna-relay-agent image pushed to public registry"
+fi
+
 # ── Step: Frontend build & deploy to GCS ──────────────────────────────────────
 if $DO_FRONTEND; then
   step "Building React frontend"
@@ -343,11 +367,12 @@ echo -e "${GREEN}═════════════════════
 echo -e "${GREEN}  Deploy complete!${NC}"
 echo -e "${GREEN}════════════════════════════════════════${NC}"
 
-$DO_API       && echo "  API      → Cloud Run (${REGION})"
-$DO_SCANNERS  && echo "  Scanners → Built, pushed, and restarted on VM"
-$DO_FRONTEND  && echo "  Frontend → GCS + CDN invalidated"
-$DO_INFRA     && echo "  Infra    → Terraform applied"
-$DO_MIGRATE   && echo "  Database → Backend + scanner migrations applied"
+$DO_API          && echo "  API         → Cloud Run (${REGION})"
+$DO_SCANNERS     && echo "  Scanners    → Built, pushed, and restarted on VM"
+$DO_RELAY_AGENT  && echo "  Relay agent → Pushed to ${RELAY_AGENT_IMAGE}"
+$DO_FRONTEND     && echo "  Frontend    → GCS + CDN invalidated"
+$DO_INFRA        && echo "  Infra       → Terraform applied"
+$DO_MIGRATE      && echo "  Database    → Backend + scanner migrations applied"
 
 echo ""
 echo "  Verify: curl https://app.hakunahq.com/api/health"

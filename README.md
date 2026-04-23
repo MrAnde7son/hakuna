@@ -132,7 +132,7 @@ This will:
 docker compose up --build
 ```
 
-Backend on port 8000, frontend on port 3000. SQLite data is persisted in a Docker volume.
+Backend on port 8000, frontend on port 3000. Postgres runs as the `postgres` service and persists in the `postgres-data` volume.
 
 ### Manual setup
 
@@ -170,7 +170,7 @@ npm run dev
 │   ├── core/
 │   │   ├── auth.py                  # JWT auth, RBAC, multi-tenancy
 │   │   ├── audit.py                 # Audit logging
-│   │   ├── database.py              # SQLite/SQLAlchemy setup
+│   │   ├── database.py              # Postgres/SQLAlchemy setup
 │   │   ├── i18n.py                  # Internationalization (12 languages)
 │   │   └── risk_config.py           # Risk scoring configuration
 │   ├── models/
@@ -286,7 +286,7 @@ npm run dev
 └── start.sh                         # One-command launcher
 ```
 
-**Stack:** FastAPI + SQLAlchemy + SQLite (backend) · React 18 + Vite + Recharts + React Flow (frontend)
+**Stack:** FastAPI + SQLAlchemy + PostgreSQL (backend) · React 18 + Vite + Recharts + React Flow (frontend)
 
 ## API
 

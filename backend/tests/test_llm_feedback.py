@@ -364,8 +364,12 @@ def test_linker_scores_failed_run_negative(monkeypatch, engine, unique_org):
         db.close()
 
 
-def test_retrieve_exemplars_returns_empty_on_sqlite(unique_org):
-    """Retrieval is a Postgres-only feature. On SQLite it must no-op."""
+def test_retrieve_exemplars_returns_empty_when_unavailable(unique_org):
+    """Retrieval needs pgvector + an embeddings key. Without either it no-ops.
+
+    The test fixture runs on in-memory sqlite and has no OpenAI key, so this
+    covers both degraded paths.
+    """
     from services.llm_feedback import retrieve_exemplars
 
     out = retrieve_exemplars(

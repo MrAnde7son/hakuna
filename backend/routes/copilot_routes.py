@@ -25,9 +25,8 @@ from agents.agent_tools import TOOL_REGISTRY
 from agents.tool_categories import select_tools_for_message
 from agents.agent_engine import (
     run_agent_streaming, get_default_model, get_available_providers,
-    PROVIDER_FOR_MODEL, _get_anthropic_client, _get_openai_client,
-    _get_gemini_client, _get_ollama_client, _get_vertex_client,
 )
+from core.llm_router import router as llm_router
 from agents.copilot_prompt import COPILOT_SYSTEM_PROMPT
 from models.models import Organization
 
@@ -473,51 +472,15 @@ def _generate_recommendations(db: Session, model: str, messages: list) -> list:
     conversation_text = "\n".join(summary_parts)
     full_prompt = f"{_RECOMMENDATION_PROMPT}\n\nConversation:\n{conversation_text}"
 
-    provider = PROVIDER_FOR_MODEL.get(model, "")
-
     try:
-        if provider == "anthropic":
-            client = _get_anthropic_client(db)
-            resp = client.messages.create(
-                model=model,
-                max_tokens=200,
-                messages=[{"role": "user", "content": full_prompt}],
-            )
-            text = resp.content[0].text.strip()
-        elif provider == "openai":
-            client = _get_openai_client(db)
-            resp = client.chat.completions.create(
-                model=model,
-                max_tokens=200,
-                messages=[{"role": "user", "content": full_prompt}],
-            )
-            text = resp.choices[0].message.content.strip()
-        elif provider == "google_gemini":
-            client = _get_gemini_client(db)
-            resp = client.models.generate_content(
-                model=f"models/{model}",
-                contents=full_prompt,
-                config={"max_output_tokens": 200},
-            )
-            text = resp.text.strip()
-        elif provider == "vertex_ai":
-            client = _get_vertex_client(db)
-            base_model = model.replace("vertex/", "")
-            resp = client.models.generate_content(
-                model=f"models/{base_model}",
-                contents=full_prompt,
-                config={"max_output_tokens": 200},
-            )
-            text = resp.text.strip()
-        elif model and model.startswith("ollama/"):
-            client = _get_ollama_client(db)
-            resp = client.chat.completions.create(
-                model=model.replace("ollama/", ""),
-                max_tokens=200,
-                messages=[{"role": "user", "content": full_prompt}],
-            )
-            text = resp.choices[0].message.content.strip()
-        else:
+        text, _ = llm_router.call(
+            db,
+            user=full_prompt,
+            max_tokens=200,
+            model=model,
+        )
+        text = (text or "").strip()
+        if not text:
             return []
 
         # Parse JSON array from response (handle markdown code blocks)

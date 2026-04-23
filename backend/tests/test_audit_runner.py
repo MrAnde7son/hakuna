@@ -13,6 +13,14 @@ import pytest
 
 from models.models import Agent, Asset, Finding, Scan
 
+# Side-effect import: each agents/tools/*_tools.py module calls
+# `register_audit(...)` on import, populating `agents.audit_registry.AUDITS`.
+# Without this, individual tests that touch `dispatch_audit_run` before
+# `test_registry_populates_all_audits` has run see an empty registry and fail
+# with "unknown protocol 'wmi'". Making it a top-of-file import means any
+# test file ordering works.
+import agents.agent_tools  # noqa: F401
+
 
 # ── Registry + tool palette ──────────────────────────────────────────
 
@@ -388,6 +396,93 @@ def test_dispatch_audit_run_rejects_neither_source(db_session, test_org):
         )
 
 
+# ── Background dispatch routing ──────────────────────────────────────
+
+
+def test_dispatch_enqueues_on_audits_queue(monkeypatch):
+    """Dispatch always enqueues the scratch-agent Celery task on the `audits`
+    queue with countdown=1 (race guard: the API request's final commit may
+    land after the worker picks up the task; the delay absorbs that window).
+    Returns the task id so the caller can persist it for cancel/revoke.
+
+    There's no legacy in-process fallback — bringing up the `audits` compose
+    profile is the single way to run audits.
+    """
+    from services import audit_runner
+
+    enqueued = {}
+
+    class FakeResult:
+        id = "fake-task-id-42"
+
+    class FakeTask:
+        def apply_async(self, args, queue, countdown, **kwargs):
+            # Absorb optional kwargs (`ignore_result`, etc.) so the test
+            # stays stable when we add more apply_async options.
+            enqueued["args"] = args
+            enqueued["queue"] = queue
+            enqueued["countdown"] = countdown
+            enqueued["kwargs"] = kwargs
+            return FakeResult()
+
+    import services.audit_worker as worker_mod
+    monkeypatch.setattr(worker_mod, "run_scratch_agent_task", FakeTask())
+
+    task_id = audit_runner._dispatch_background_run(agent_id=42, user_input="hi", wallclock_s=120)
+
+    assert enqueued["queue"] == "audits"
+    assert enqueued["countdown"] == 1
+    assert enqueued["args"] == (42, "hi", 120)
+    assert task_id == "fake-task-id-42"
+
+
+def test_dispatch_audit_run_persists_task_ids(db_session, test_org, audit_asset):
+    """Task ids land on scan.raw_metadata.task_ids so the cancel endpoint can
+    revoke them — without this, Stop has no handle to reach running LLM loops."""
+    from services import audit_runner
+    from services.audit_runner import dispatch_audit_run
+    from models.models import Scan as _Scan
+
+    class FakeResult:
+        def __init__(self, tid): self.id = tid
+    class FakeTask:
+        def __init__(self): self._n = 0
+        def apply_async(self, args, queue, countdown, **kwargs):
+            self._n += 1
+            return FakeResult(f"task-{self._n}")
+
+    import services.audit_worker as worker_mod
+    worker_mod.run_scratch_agent_task = FakeTask()
+
+    result = dispatch_audit_run(
+        db=db_session, org=test_org,
+        protocol="wmi", mission="identity",
+        asset_ids=[audit_asset.id],
+        relay_agent_id="relay-1", credential_id="cred-1",
+    )
+    scan = db_session.query(_Scan).filter_by(id=result["scan_id"]).first()
+    task_ids = scan.raw_metadata.get("task_ids") or {}
+    agent_id = result["runs"][0]["agent_id"]
+    assert str(agent_id) in {str(k) for k in task_ids.keys()}
+    assert list(task_ids.values())[0].startswith("task-")
+
+
+def test_dispatch_raises_worker_unavailable_when_broker_down(monkeypatch):
+    """If the Celery broker can't be reached, translate to a typed error so
+    the route returns 503 instead of a bare 500. Caller-actionable message."""
+    from services import audit_runner
+
+    class BrokenTask:
+        def apply_async(self, args, queue, countdown, **kwargs):
+            raise ConnectionRefusedError("redis://broker unavailable")
+
+    import services.audit_worker as worker_mod
+    monkeypatch.setattr(worker_mod, "run_scratch_agent_task", BrokenTask())
+
+    with pytest.raises(audit_runner.AuditWorkerUnavailableError, match="worker queue unavailable"):
+        audit_runner._dispatch_background_run(agent_id=42, user_input="x", wallclock_s=60)
+
+
 # ── emit_finding tool ────────────────────────────────────────────────
 
 
@@ -500,3 +595,316 @@ def test_audit_run_route_pre_flight_quota_check(db_session, test_org, audit_asse
     assert "quota" in resp.text.lower()
     mock_dispatch.assert_not_called()
     main_app.app.dependency_overrides.clear()
+
+
+# ── Rescan (in-place) ────────────────────────────────────────────────
+
+
+def test_rescan_audit_scan_reuses_same_row(db_session, test_org, audit_asset):
+    """Rescanning an audit scan must update the existing Scan row, not create
+    a new one. Mirrors rescan_vm_scan — the scan list shouldn't grow a second
+    entry per rerun."""
+    from services.audit_runner import dispatch_audit_run, rescan_audit_scan
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        first = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="wmi", mission="identity",
+            asset_ids=[audit_asset.id],
+            relay_agent_id="relay-1", credential_id="cred-1",
+        )
+
+    scan = db_session.query(Scan).filter_by(id=first["scan_id"]).first()
+    original_scan_id = scan.id
+    original_scratch_agents = list(scan.raw_metadata["scratch_agent_ids"])
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        second = rescan_audit_scan(
+            db=db_session, org=test_org, scan=scan,
+        )
+
+    assert second["scan_id"] == original_scan_id, "rescan must reuse the same Scan.id"
+    # Only one Scan row for this mission in the org.
+    assert db_session.query(Scan).filter_by(
+        scan_type="wmi_audit", org_id=test_org.id,
+    ).count() == 1
+    # New batch of scratch agents replaced the old ones.
+    new_scratch_agents = list(scan.raw_metadata["scratch_agent_ids"])
+    assert new_scratch_agents != original_scratch_agents
+    assert len(new_scratch_agents) == 1
+    # Status is rotated back to running.
+    assert scan.status == "running"
+    assert scan.raw_metadata["status"] == "running"
+
+
+def test_rescan_audit_scan_archives_prior_run(db_session, test_org, audit_asset):
+    """The outgoing run's scratch_agent_ids, status, and params land in
+    raw_metadata.run_history so the history endpoint can still surface past
+    AgentRuns."""
+    from services.audit_runner import dispatch_audit_run, rescan_audit_scan
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        first = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="wmi", mission="identity",
+            asset_ids=[audit_asset.id],
+            relay_agent_id="relay-1", credential_id="cred-1",
+        )
+
+    scan = db_session.query(Scan).filter_by(id=first["scan_id"]).first()
+    first_batch = list(scan.raw_metadata["scratch_agent_ids"])
+    md = dict(scan.raw_metadata)
+    md["task_ids"] = {str(first_batch[0]): "fake-task-1"}
+    scan.raw_metadata = md
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        rescan_audit_scan(
+            db=db_session, org=test_org, scan=scan,
+        )
+
+    run_history = scan.raw_metadata.get("run_history") or []
+    assert len(run_history) == 1, "exactly one archived run after one rescan"
+    archived = run_history[0]
+    assert archived["scratch_agent_ids"] == first_batch
+    assert archived["task_ids"] == {str(first_batch[0]): "fake-task-1"}
+    assert archived["mission"] == "identity"
+    assert archived["asset_ids"] == [audit_asset.id]
+
+
+def test_rescan_audit_scan_applies_overrides(db_session, test_org, audit_asset):
+    """Mission, credential_id, relay_agent_id overrides all take effect on rescan."""
+    from services.audit_runner import dispatch_audit_run, rescan_audit_scan
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        first = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="wmi", mission="identity",
+            asset_ids=[audit_asset.id],
+            relay_agent_id="relay-1", credential_id="cred-1",
+        )
+
+    scan = db_session.query(Scan).filter_by(id=first["scan_id"]).first()
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        rescan_audit_scan(
+            db=db_session, org=test_org, scan=scan,
+            mission="privesc",
+            credential_id="cred-2",
+            relay_agent_id="relay-2",
+        )
+
+    assert scan.raw_metadata["mission"] == "privesc"
+    assert scan.raw_metadata["credential_id"] == "cred-2"
+    assert scan.raw_metadata["relay_agent_id"] == "relay-2"
+    new_agent_id = scan.raw_metadata["scratch_agent_ids"][0]
+    new_agent = db_session.query(Agent).filter_by(id=new_agent_id).first()
+    ctx = new_agent.memory["_run_ctx"]
+    assert ctx["_mission"] == "privesc"
+    assert ctx["_credential_id"] == "cred-2"
+    assert ctx["_relay_agent_id"] == "relay-2"
+
+
+def test_audit_scan_history_flattens_run_history(db_session, test_org, audit_asset):
+    """The history endpoint returns AgentRuns from both the current run and
+    every archived run in raw_metadata.run_history."""
+    from fastapi.testclient import TestClient
+    from core.auth import create_access_token
+    from core.database import get_db
+    from models.models import AgentRun, User
+    from services.audit_runner import dispatch_audit_run, rescan_audit_scan
+    import app as main_app
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        first = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="wmi", mission="identity",
+            asset_ids=[audit_asset.id],
+            relay_agent_id="relay-1", credential_id="cred-1",
+        )
+    scan = db_session.query(Scan).filter_by(id=first["scan_id"]).first()
+    first_agent_id = scan.raw_metadata["scratch_agent_ids"][0]
+    db_session.add(AgentRun(
+        agent_id=first_agent_id, input="first", status="done",
+        steps_used=3,
+    ))
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        rescan_audit_scan(db=db_session, org=test_org, scan=scan)
+    second_agent_id = scan.raw_metadata["scratch_agent_ids"][0]
+    db_session.add(AgentRun(
+        agent_id=second_agent_id, input="second", status="running",
+        steps_used=1,
+    ))
+    db_session.flush()
+
+    user = User(
+        email="history@test.com", hashed_password="x",
+        display_name="History Tester", role="org_admin",
+        org_id=test_org.id, is_active=True,
+    )
+    db_session.add(user)
+    db_session.flush()
+    token = create_access_token(user.id, test_org.id, user.role)
+    headers = {"Authorization": f"Bearer {token}", "X-Org-Context": str(test_org.id)}
+
+    main_app.app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        client = TestClient(main_app.app)
+        resp = client.get(f"/api/audits/scans/{scan.id}/history", headers=headers)
+    finally:
+        main_app.app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    agent_ids_in_runs = {r["agent_id"] for r in body["runs"]}
+    assert first_agent_id in agent_ids_in_runs, "archived run's agent missing"
+    assert second_agent_id in agent_ids_in_runs, "current run's agent missing"
+    assert body["related_scan_ids"] == [scan.id]
+
+
+# ── Worker: scan finalization ────────────────────────────────────────
+
+
+def test_finalize_scan_if_complete_flips_to_completed(db_session, test_org, audit_asset):
+    """When every scratch agent for a scan's current run hits a terminal
+    AgentRun, _finalize_scan_if_complete flips Scan.status to 'completed'
+    (≥1 success → completed)."""
+    from models.models import AgentRun
+    from services.audit_runner import dispatch_audit_run
+    from services.audit_worker import _finalize_scan_if_complete
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        result = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="wmi", mission="identity",
+            asset_ids=[audit_asset.id],
+            relay_agent_id="relay-1", credential_id="cred-1",
+        )
+    scan = db_session.query(Scan).filter_by(id=result["scan_id"]).first()
+    agent_id = scan.raw_metadata["scratch_agent_ids"][0]
+    assert scan.status == "running"
+
+    _finalize_scan_if_complete(db_session, agent_id)
+    db_session.refresh(scan)
+    assert scan.status == "running"
+
+    db_session.add(AgentRun(
+        agent_id=agent_id, input="x", status="done", steps_used=5,
+    ))
+    db_session.flush()
+
+    _finalize_scan_if_complete(db_session, agent_id)
+    db_session.refresh(scan)
+    assert scan.status == "completed"
+    assert scan.raw_metadata["status"] == "completed"
+
+
+def test_finalize_scan_if_complete_marks_failed_when_all_fail(db_session, test_org, audit_asset):
+    """If every scratch agent's latest AgentRun is non-'done', the scan
+    finalizes as 'failed' — addresses the bug where a worker error (e.g. no
+    Anthropic key) left scans stuck on 'Scanning…' forever."""
+    from models.models import AgentRun
+    from services.audit_runner import dispatch_audit_run
+    from services.audit_worker import _finalize_scan_if_complete
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        result = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="wmi", mission="identity",
+            asset_ids=[audit_asset.id],
+            relay_agent_id="relay-1", credential_id="cred-1",
+        )
+    scan = db_session.query(Scan).filter_by(id=result["scan_id"]).first()
+    agent_id = scan.raw_metadata["scratch_agent_ids"][0]
+
+    db_session.add(AgentRun(
+        agent_id=agent_id, input="x", status="failed",
+        error="Anthropic API key not configured",
+    ))
+    db_session.flush()
+
+    _finalize_scan_if_complete(db_session, agent_id)
+    db_session.refresh(scan)
+    assert scan.status == "failed"
+    assert scan.raw_metadata["status"] == "failed"
+
+
+def test_finalize_scan_if_complete_waits_for_all_agents(db_session, test_org):
+    """Multi-asset scan: finalize must wait until every scratch agent is
+    terminal before flipping the scan."""
+    from models.models import Asset, AgentRun
+    from services.audit_runner import dispatch_audit_run
+    from services.audit_worker import _finalize_scan_if_complete
+
+    placeholder_scan = Scan(
+        filename="placeholder", scan_type="manual", source_type="manual",
+        org_id=test_org.id,
+    )
+    db_session.add(placeholder_scan)
+    db_session.flush()
+    a1 = Asset(scan_id=placeholder_scan.id, hostname="h1", ip="10.0.0.1", os="Windows")
+    a2 = Asset(scan_id=placeholder_scan.id, hostname="h2", ip="10.0.0.2", os="Windows")
+    db_session.add_all([a1, a2])
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        result = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="wmi", mission="identity",
+            asset_ids=[a1.id, a2.id],
+            relay_agent_id="relay-1", credential_id="cred-1",
+        )
+    scan = db_session.query(Scan).filter_by(id=result["scan_id"]).first()
+    scratch_agent_ids = scan.raw_metadata["scratch_agent_ids"]
+    assert len(scratch_agent_ids) == 2
+
+    db_session.add(AgentRun(
+        agent_id=scratch_agent_ids[0], input="x", status="done", steps_used=3,
+    ))
+    db_session.flush()
+    _finalize_scan_if_complete(db_session, scratch_agent_ids[0])
+    db_session.refresh(scan)
+    assert scan.status == "running"
+
+    db_session.add(AgentRun(
+        agent_id=scratch_agent_ids[1], input="x", status="done", steps_used=2,
+    ))
+    db_session.flush()
+    _finalize_scan_if_complete(db_session, scratch_agent_ids[1])
+    db_session.refresh(scan)
+    assert scan.status == "completed"
+
+
+def test_finalize_scan_if_complete_preserves_cancelled(db_session, test_org, audit_asset):
+    """A user-cancelled scan must stay 'cancelled' even if the worker later
+    flushes a terminal AgentRun (SIGTERM race)."""
+    from models.models import AgentRun
+    from services.audit_runner import dispatch_audit_run
+    from services.audit_worker import _finalize_scan_if_complete
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        result = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="wmi", mission="identity",
+            asset_ids=[audit_asset.id],
+            relay_agent_id="relay-1", credential_id="cred-1",
+        )
+    scan = db_session.query(Scan).filter_by(id=result["scan_id"]).first()
+    agent_id = scan.raw_metadata["scratch_agent_ids"][0]
+    scan.status = "cancelled"
+    md = dict(scan.raw_metadata)
+    md["status"] = "cancelled"
+    scan.raw_metadata = md
+    db_session.flush()
+
+    db_session.add(AgentRun(
+        agent_id=agent_id, input="x", status="done", steps_used=1,
+    ))
+    db_session.flush()
+
+    _finalize_scan_if_complete(db_session, agent_id)
+    db_session.refresh(scan)
+    assert scan.status == "cancelled"
+    assert scan.raw_metadata["status"] == "cancelled"

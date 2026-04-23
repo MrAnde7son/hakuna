@@ -8,8 +8,6 @@ treat None as "retrieval disabled for this call."
 Used by:
   - services.llm_feedback.retrieve_exemplars → embed the incoming query
   - services.llm_outcome_linker.backfill_embeddings → embed past logs
-
-Not a fit for SQLite — retrieval skips embedding lookup there anyway.
 """
 
 from __future__ import annotations

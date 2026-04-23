@@ -6,7 +6,7 @@ User description: $ARGUMENTS
 
 - **ORM**: SQLAlchemy 2.0, models in `backend/models/models.py` (and `backend/models/threat_intel_models.py`)
 - **Migrations**: Alembic, configured in `backend/alembic.ini` and `backend/alembic/`
-- **DB**: PostgreSQL in production (GCP Cloud SQL, project `hakuna-prod-2026`); SQLite for local dev if no `DATABASE_URL` set
+- **DB**: PostgreSQL everywhere — Cloud SQL (project `hakuna-prod-2026`) in production, the `postgres` docker-compose service in dev. `DATABASE_URL` is required; SQLite is not supported.
 - **Session**: `backend/core/database.py` — `get_db()`, `init_db()`
 
 ## Steps

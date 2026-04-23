@@ -511,8 +511,8 @@ def resolve_asset_by_dedup_keys(db, asset_data: dict, org_id: int | None,
         """Build a SQLAlchemy filter for a single key field."""
         if field in _HOST_COLUMN_FIELDS and hasattr(Asset, field):
             return getattr(Asset, field) == value
-        # Non-host key field — lives in asset_identity JSON
-        # Use func.json_extract for SQLite, ->> for PostgreSQL (both work via SA)
+        # Non-host key field — lives in asset_identity JSON; SA maps `[]` to
+        # Postgres `->>`.
         return Asset.asset_identity[field].as_string() == value
 
     if key_mode == "or":
@@ -1120,10 +1120,8 @@ def run_cross_scan_asset_dedup(db, org_id, cfg: dict, ENTITY_MODEL_MAP: dict) ->
     # logic below. Tiebreakers (scan.id, asset.id) keep the ordering deterministic.
     #
     # NULL last_seen (legacy rows, never-run integration syncs) must sort FIRST
-    # so they get overwritten by anything with real data. SQLite and PostgreSQL
-    # disagree on the default NULL ordering with ASC, and SQLite rejects the
-    # explicit ``NULLS FIRST`` clause — so we use COALESCE to a constant epoch
-    # date, which is portable across both dialects.
+    # so they get overwritten by anything with real data. COALESCE to a constant
+    # epoch rather than ``NULLS FIRST`` so the ordering stays explicit in logs.
     _NULL_EPOCH = datetime(1970, 1, 1)
     last_seen_sort = func.coalesce(Asset.last_seen, _NULL_EPOCH)
     q = (

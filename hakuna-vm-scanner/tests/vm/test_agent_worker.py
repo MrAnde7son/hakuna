@@ -348,17 +348,96 @@ class TestAgentPayloadToFinding:
 
     def test_template_id_stable_across_calls(self):
         """Dedup relies on a stable template_id per vuln. Same
-        category + title + evidence_url → same template_id, so
+        category + evidence_url + parameter → same template_id, so
         re-running the scan doesn't create dupes."""
         payload = {
             "severity": "medium", "title": "t", "description": "d",
-            "evidence_url": "https://x/a", "verdict": "true_positive",
+            "evidence_url": "https://x/a", "parameter": "id",
+            "verdict": "true_positive",
         }
         f1 = _agent_payload_to_finding(
             specialist=self._spec("injection"), payload=payload, target="https://x",
         )
         f2 = _agent_payload_to_finding(
             specialist=self._spec("injection"), payload=payload, target="https://x",
+        )
+        assert f1["template_id"] == f2["template_id"]
+
+    def test_template_id_stable_when_llm_rewords_title(self):
+        """The LLM rewords titles between runs on the same vuln (e.g.
+        'parameter in /path' vs 'Parameter at /path'). Those must still
+        collapse to one template_id — otherwise the backend's
+        plugin_id-keyed dedup treats them as distinct findings."""
+        base = {
+            "severity": "critical", "description": "d",
+            "evidence_url": "http://dvwa/vulnerabilities/exec/",
+            "parameter": "ip",
+            "verdict": "true_positive",
+        }
+        f1 = _agent_payload_to_finding(
+            specialist=self._spec("injection"),
+            payload={**base, "title": "OS Command Injection via `ip` parameter in /vulnerabilities/exec/"},
+            target="http://dvwa",
+        )
+        f2 = _agent_payload_to_finding(
+            specialist=self._spec("injection"),
+            payload={**base, "title": "OS Command Injection via `ip` Parameter at /vulnerabilities/exec/"},
+            target="http://dvwa",
+        )
+        assert f1["template_id"] == f2["template_id"]
+
+    def test_template_id_differs_across_parameters_on_same_endpoint(self):
+        """Two genuinely distinct vulns on the same endpoint but
+        different input parameters (e.g. SQLi on ?id= AND SQLi on
+        ?name=) must remain distinct findings."""
+        base = {
+            "severity": "high", "title": "SQLi", "description": "d",
+            "evidence_url": "http://dvwa/vulnerabilities/sqli/",
+            "verdict": "true_positive",
+        }
+        f_id = _agent_payload_to_finding(
+            specialist=self._spec("injection"),
+            payload={**base, "parameter": "id"}, target="http://dvwa",
+        )
+        f_name = _agent_payload_to_finding(
+            specialist=self._spec("injection"),
+            payload={**base, "parameter": "name"}, target="http://dvwa",
+        )
+        assert f_id["template_id"] != f_name["template_id"]
+
+    def test_template_id_parameter_case_insensitive(self):
+        """LLM capitalization of param names ('ID' vs 'id') must not
+        fragment dedup — the translator lowercases before hashing."""
+        base = {
+            "severity": "high", "title": "SQLi", "description": "d",
+            "evidence_url": "http://dvwa/vulnerabilities/sqli/",
+            "verdict": "true_positive",
+        }
+        f_lower = _agent_payload_to_finding(
+            specialist=self._spec("injection"),
+            payload={**base, "parameter": "id"}, target="http://dvwa",
+        )
+        f_upper = _agent_payload_to_finding(
+            specialist=self._spec("injection"),
+            payload={**base, "parameter": "ID"}, target="http://dvwa",
+        )
+        assert f_lower["template_id"] == f_upper["template_id"]
+
+    def test_template_id_missing_parameter_collapses(self):
+        """Endpoint-level vulns without a specific input (default
+        login, exposed admin panel) should still dedup across runs
+        even when the LLM omits the parameter field entirely."""
+        base = {
+            "severity": "critical", "title": "default creds",
+            "description": "d", "evidence_url": "http://dvwa/login.php",
+            "verdict": "true_positive",
+        }
+        f1 = _agent_payload_to_finding(
+            specialist=self._spec("authn"), payload=base, target="http://dvwa",
+        )
+        f2 = _agent_payload_to_finding(
+            specialist=self._spec("authn"),
+            payload={**base, "parameter": ""}, target="http://dvwa",
         )
         assert f1["template_id"] == f2["template_id"]
 

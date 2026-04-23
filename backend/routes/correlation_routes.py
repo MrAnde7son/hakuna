@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
-from core.database import get_db, DATABASE_URL
+from core.database import get_db
 from core.auth import get_accessible_org_ids, get_current_user, require_permission
 from core.time_utils import iso_utc
 from core.builtin_team_roles import user_owner_scopes
@@ -17,11 +17,7 @@ from services.finding_correlator import correlate_findings
 
 
 def _iso(value):
-    """Serialize a TIMESTAMP column value to ISO-8601.
-
-    Raw text() queries return strings on SQLite and datetime on Postgres —
-    normalize so the response is consistent and never blows up on either.
-    """
+    """Serialize a TIMESTAMP column value from text() results to ISO-8601."""
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -30,12 +26,11 @@ def _iso(value):
 
 
 def _jsonify(value):
-    """Normalize a JSON column value to a python object.
+    """Normalize a JSON column value from text() results to a python object.
 
-    Raw text() queries return JSON columns as strings on SQLite (the driver
-    has no type awareness without the ORM) and as dicts/lists on Postgres.
-    Return a python object either way so the frontend always receives
-    parsed JSON, not a string it has to re-parse.
+    The psycopg2 driver returns jsonb columns as dicts/lists for the ORM but
+    as strings for raw text() — parse the string form so callers always get
+    structured data.
     """
     if value is None or isinstance(value, (dict, list)):
         return value
@@ -46,7 +41,6 @@ def _jsonify(value):
             return value
     return value
 
-_SQLITE = DATABASE_URL.startswith("sqlite")
 
 router = APIRouter(prefix="/api/correlations", tags=["Correlations"])
 
@@ -226,19 +220,11 @@ async def list_attack_paths(
         # in the chosen scan. Paths are stitched across scans, so an "all
         # steps from this scan" rule would be too strict — show paths the
         # selected scan participates in.
-        if _SQLITE:
-            where_parts.append(
-                "EXISTS (SELECT 1 FROM json_each(ap.steps) je "
-                "JOIN findings f "
-                "  ON f.id = CAST(json_extract(je.value, '$.finding_id') AS INTEGER) "
-                "WHERE f.scan_id = :scan_id)"
-            )
-        else:
-            where_parts.append(
-                "EXISTS (SELECT 1 FROM jsonb_array_elements(ap.steps::jsonb) je "
-                "JOIN findings f ON f.id = (je->>'finding_id')::int "
-                "WHERE f.scan_id = :scan_id)"
-            )
+        where_parts.append(
+            "EXISTS (SELECT 1 FROM jsonb_array_elements(ap.steps::jsonb) je "
+            "JOIN findings f ON f.id = (je->>'finding_id')::int "
+            "WHERE f.scan_id = :scan_id)"
+        )
         params["scan_id"] = scan_id
 
     # team_clause carries its own leading " AND " (or is empty) so it composes
@@ -376,13 +362,10 @@ async def list_corroborated_findings(
 
     offset = (page - 1) * page_size
 
-    if _SQLITE:
-        corr_filter = "json_extract(f.custom_fields, '$.corroboration.corroborated') = 1"
-    else:
-        corr_filter = (
-            "f.custom_fields::jsonb ? 'corroboration' "
-            "AND (f.custom_fields->'corroboration'->>'corroborated')::boolean = true"
-        )
+    corr_filter = (
+        "f.custom_fields::jsonb ? 'corroboration' "
+        "AND (f.custom_fields->'corroboration'->>'corroborated')::boolean = true"
+    )
 
     stmt = text(
         f"""

@@ -4282,7 +4282,7 @@ function GlobalTagFilterBar({ globalTags, setGlobalTags, globalTagLogic, setGlob
 
 function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
   const { t } = useTranslation()
-  const { activeScanId, scans, scansLoaded } = useScan()
+  const { activeScanId } = useScan()
   const navigate = useNavigate()
   const [widgets, setWidgets] = useState(report.widgets || [])
   const [name, setName] = useState(report.name || t('reports.untitledReport'))
@@ -4459,38 +4459,6 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
             </div>
           )}
 
-          {preview && scansLoaded && (!scans || scans.length === 0) && (
-            <div style={{
-              maxWidth: 560, margin: '0 auto 28px', padding: '32px 28px',
-              background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.06))',
-              border: '1px solid rgba(99,102,241,0.25)', borderRadius: 14,
-              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, textAlign: 'center',
-            }}>
-              <div style={{
-                width: 52, height: 52, borderRadius: 14,
-                background: 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <Upload size={26} color="#818cf8" />
-              </div>
-              <div>
-                <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--text-primary)' }}>{t('reports.uploadFirstScan')}</div>
-                <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.5 }}>
-                  {t('reports.uploadFirstScanDesc')}
-                </div>
-              </div>
-              <button
-                onClick={() => navigate('/settings?tab=upload')}
-                style={{
-                  marginTop: 4, padding: '10px 24px', background: 'var(--accent)', border: 'none',
-                  color: '#fff', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14,
-                  display: 'flex', alignItems: 'center', gap: 8,
-                }}
-              >
-                <Upload size={16} /> {t('reports.uploadScan')}
-              </button>
-            </div>
-          )}
-
           {widgets.length === 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, color: 'var(--text-muted)', gap: 12 }}>
               <LayoutGrid size={48} color="var(--text-muted)" style={{ opacity: 0.4 }} />
@@ -4546,43 +4514,12 @@ function Builder({ report, onSave, onBack, isLanding, onSetLanding }) {
 
 function ReportList({ reports, onCreate, onOpen, onDelete, onDuplicate, landingId, onSetLanding, onRefresh }) {
   const { t } = useTranslation()
-  const navigate = useNavigate()
-  const { scans, scansLoaded } = useScan()
   const [search, setSearch] = useState('')
   const filtered = search.trim()
     ? reports.filter(r => r.name.toLowerCase().includes(search.trim().toLowerCase()))
     : reports
   return (
     <div>
-      {scansLoaded && scans.length === 0 && (
-        <div style={{
-          maxWidth: '100%', marginBottom: 24, padding: '20px 28px',
-          background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.06))',
-          border: '1px solid rgba(99,102,241,0.25)', borderRadius: 14,
-          display: 'flex', alignItems: 'center', gap: 20,
-        }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 12, flexShrink: 0,
-            background: 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Upload size={22} color="#818cf8" />
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 3 }}>{t('reports.uploadFirstScan')}</div>
-            <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>{t('reports.uploadFirstScanDesc')}</div>
-          </div>
-          <button
-            onClick={() => navigate('/settings?tab=upload')}
-            style={{
-              flexShrink: 0, padding: '9px 20px', background: 'var(--accent)', border: 'none',
-              color: '#fff', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 14,
-              display: 'flex', alignItems: 'center', gap: 8,
-            }}
-          >
-            <Upload size={15} /> {t('reports.uploadScan')}
-          </button>
-        </div>
-      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <div>
           <h2 style={{ fontSize: 18, fontWeight: 700 }}>{t('reports.title')}</h2>

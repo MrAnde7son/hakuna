@@ -111,6 +111,20 @@ def _nuclei_perf_args() -> list[str]:
         "-c", str(NUCLEI_CONCURRENCY),
         "-bs", str(NUCLEI_BULK_CONCURRENCY),
         "-retries", str(NUCLEI_RETRIES),
+        # Disable nuclei's "skip host after N errors" throttle. Against a
+        # single web target, 10k+ templates routinely generate 50+ errors
+        # in the first few seconds (templates probing vendor-specific
+        # endpoints, weird URL encodings, non-existent services). Once the
+        # default -mhe 50 trips, nuclei marks the host "unresponsive
+        # permanently" and silently skips every remaining template — the
+        # scan completes exit=0 with 0 matches even when real vulns are
+        # present (e.g. DVWA default login, exposed .gitignore).
+        "-nmhe",
+        # Fall back to /etc/resolv.conf when nuclei's bundled public DNS
+        # can't resolve the target. Keeps docker-internal and k8s-internal
+        # hostnames resolvable without maintaining a separate resolvers
+        # file.
+        "-sr",
     ]
     if NUCLEI_EXCLUDE_TAGS.strip():
         args.extend(["-etags", NUCLEI_EXCLUDE_TAGS])

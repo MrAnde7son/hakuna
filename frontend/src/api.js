@@ -1146,6 +1146,18 @@ export const startAuditRun = (data) => request('/audits/run', {
   body: JSON.stringify(data),
 })
 export const getAuditScan = (scanId) => request(`/audits/scans/${scanId}`)
+export const getAuditScanHistory = (scanId) => request(`/audits/scans/${scanId}/history`)
+export const rescanAuditScan = (scanId, overrides = null) => request(`/audits/scans/${scanId}/rescan`, {
+  method: 'POST',
+  ...(overrides
+    ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(overrides) }
+    : {}),
+})
+export const updateAuditScan = (scanId, patch) => request(`/audits/scans/${scanId}`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(patch),
+})
 
 // ── Auth Profiles (authenticated VM scans) ────────────────
 export const listAuthProfiles = () => request('/auth-profiles')
