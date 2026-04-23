@@ -253,11 +253,11 @@ jobs:
         run: |
           docker build \
             --platform linux/amd64 \
-            -t "${{ env.REGISTRY }}/hakuna-vm-scanner:${{ github.sha }}" \
-            -t "${{ env.REGISTRY }}/hakuna-vm-scanner:latest" \
+            -t "${{ env.REGISTRY }}/vm-scanner:${{ github.sha }}" \
+            -t "${{ env.REGISTRY }}/vm-scanner:latest" \
             hakuna-vm-scanner/
-          docker push "${{ env.REGISTRY }}/hakuna-vm-scanner:${{ github.sha }}"
-          docker push "${{ env.REGISTRY }}/hakuna-vm-scanner:latest"
+          docker push "${{ env.REGISTRY }}/vm-scanner:${{ github.sha }}"
+          docker push "${{ env.REGISTRY }}/vm-scanner:latest"
 
       - name: Pull and restart on scanner VM
         run: |
