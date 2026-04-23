@@ -65,6 +65,12 @@ async def dispatch(
         raise HTTPException(502, str(e))
     except TimeoutError as e:
         raise HTTPException(504, str(e))
+    except RuntimeError as e:
+        # Agent reported a task_error (bad creds, target refused, op failed).
+        # 422 lets RemoteRelayBroker re-raise as RuntimeError with the original
+        # message, so worker-side tools see the same exception a local broker
+        # would raise — not a generic 500.
+        raise HTTPException(422, str(e))
     return {"result": result}
 
 

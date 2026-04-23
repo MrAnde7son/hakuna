@@ -293,6 +293,10 @@ class RemoteRelayBroker:
             raise ConnectionError((r.json() or {}).get("detail", "relay not connected"))
         if r.status_code == 504:
             raise TimeoutError((r.json() or {}).get("detail", "relay timeout"))
+        if r.status_code == 422:
+            # Agent task_error — preserve the original message so tools see
+            # the same RuntimeError a local broker would raise.
+            raise RuntimeError((r.json() or {}).get("detail", "relay task error"))
         if r.status_code >= 400:
             detail = (r.json() or {}).get("detail", r.text[:200])
             raise RuntimeError(f"relay dispatch HTTP {r.status_code}: {detail}")

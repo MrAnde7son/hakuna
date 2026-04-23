@@ -51,6 +51,13 @@ class ProtocolAudit:
     only these tools plus the shared read-only context set (scratchpad,
     clarification, get_asset_profile). This keeps WMI tools unavailable to
     unrelated agents and vice versa.
+
+    `required_ports` is the list of TCP (or UDP for SNMP) ports the protocol
+    depends on. Used by the audit_runner preflight: if the asset has been
+    port-scanned and none of these ports are open, the audit is marked
+    unreachable before any scratch agent is dispatched — saving an LLM loop
+    that would certainly fail. Empty open_ports (asset never scanned) is
+    treated conservatively: skip preflight and dispatch as usual.
     """
     protocol: str                   # "wmi" | "ldap" | "smb" | ...
     label: str                      # "WMI Audit"
@@ -63,6 +70,7 @@ class ProtocolAudit:
     missions: list[MissionTemplate]
     default_model: str = "claude-sonnet-4-6"
     default_wallclock_s: int = 600
+    required_ports: tuple[int, ...] = ()  # ports the protocol listens on
 
     def mission(self, key: str) -> MissionTemplate | None:
         for m in self.missions:

@@ -61,6 +61,7 @@ from scanner.vm.agent_scheduler import FrontierScheduler
 from scanner.vm.celery_app import celery_app
 from scanner.vm.config import DATABASE_URL, SCAN_TIMEOUT_SECONDS
 from scanner.vm.db import _normalize_dsn
+from scanner.vm.preflight import probe_http, should_preflight
 from scanner.vm.llm_provider import (
     LLMAdapter,
     LLMProviderError,
@@ -523,6 +524,32 @@ async def _run_agent_scan_async(
     finally:
         await conn.close()
 
+    target = _resolve_target(asset)
+
+    # Preflight — bail before the LLM adapter is built so an unreachable
+    # target doesn't burn a provider init + six specialist summarise loops.
+    # Only HTTP targets are probed here; bare IPs / hostnames without a
+    # known scheme fall through and the specialists run as before.
+    if should_preflight(target):
+        pre = await asyncio.to_thread(probe_http, target)
+        if not pre.reachable:
+            logger.info(
+                "agent_worker preflight failed asset=%s target=%s reason=%s detail=%s",
+                asset_id, target, pre.reason, pre.detail,
+            )
+            return {
+                "asset_id": asset_id,
+                "org_id": str(asset["org_id"]) if asset["org_id"] is not None else None,
+                "target": target,
+                "findings": [],
+                "specialists_run": [],
+                "duration_seconds": round(time.monotonic() - start, 2),
+                "status": "unreachable",
+                "error": f"target unreachable ({pre.reason}): {pre.detail}",
+                "preflight": pre.to_dict(),
+                "scanner": "agent",
+            }
+
     try:
         adapter = build_adapter(provider_info)
     except LLMProviderError as e:
@@ -541,7 +568,6 @@ async def _run_agent_scan_async(
         }
 
     endpoints = [_coerce_endpoint(dict(r)) for r in endpoint_rows]
-    target = _resolve_target(asset)
     headers = _credentials_to_headers(credentials)
 
     # If prior scanners (katana, ffuf, openapi) produced no endpoints,
@@ -741,6 +767,27 @@ async def _run_agent_scan_adhoc_async(
             ),
             "scanner": "agent",
         }
+
+    # Preflight — see asset-path for rationale. Run before adapter build
+    # so an unreachable adhoc target doesn't pay for provider init.
+    if should_preflight(target):
+        pre = await asyncio.to_thread(probe_http, target)
+        if not pre.reachable:
+            logger.info(
+                "agent_worker adhoc preflight failed target=%s reason=%s detail=%s",
+                target, pre.reason, pre.detail,
+            )
+            return {
+                "target": target,
+                "org_id": org_id,
+                "findings": [],
+                "specialists_run": [],
+                "duration_seconds": round(time.monotonic() - start, 2),
+                "status": "unreachable",
+                "error": f"target unreachable ({pre.reason}): {pre.detail}",
+                "preflight": pre.to_dict(),
+                "scanner": "agent",
+            }
 
     try:
         adapter = build_adapter(provider_info)

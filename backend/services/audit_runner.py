@@ -30,7 +30,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
-from models.models import Agent, Asset, Organization, Scan
+from models.models import Agent, AgentRun, Asset, Organization, Scan
 from agents.audit_registry import AUDITS, MissionTemplate, ProtocolAudit
 from agents.agent_prompts import ENHANCED_PROMPTS
 
@@ -46,6 +46,69 @@ _ANON_CAPABLE_PROTOCOLS = {"smb"}
 
 class AuditDispatchError(Exception):
     """Raised when an audit can't be kicked off (missing inputs, bad protocol)."""
+
+
+def _asset_open_ports(asset: Asset) -> list[int]:
+    """Best-effort read of an asset's discovered open ports.
+
+    open_ports lives inside the ``easm_data`` JSON blob (alongside
+    tech_stack, tls_cert, etc.). Returns a list of ints; malformed
+    entries are dropped. Empty result means "no evidence either way" —
+    callers must treat that as unknown, not "closed."
+    """
+    data = asset.easm_data or {}
+    raw = data.get("open_ports") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out: list[int] = []
+    for p in raw:
+        try:
+            n = int(p)
+        except (TypeError, ValueError):
+            continue
+        if 0 < n <= 65535:
+            out.append(n)
+    return out
+
+
+def _preflight_audit_asset(
+    asset: Asset, audit: ProtocolAudit,
+) -> tuple[bool, str | None]:
+    """Decide whether the audit should run against this asset.
+
+    Returns ``(ok, reason)``:
+      - ``(True, None)``  — reachable, or no evidence to conclude
+        otherwise (asset never scanned, protocol has no required_ports)
+      - ``(False, reason)`` — positive evidence the port is closed:
+        asset has a discovered open_ports list, and none of
+        ``audit.required_ports`` appear in it.
+
+    Backend-side preflight using asset.easm_data.open_ports. Does NOT
+    probe the network — relay topology means most audit targets are
+    unreachable from the backend anyway, and a failed probe wouldn't
+    prove they're down. Using pre-existing discovery data is both
+    cheaper and correct: a VM scan already observed whether the port
+    answers; re-probing from here would just duplicate work (and for
+    relay-only targets, produce false negatives).
+    """
+    required = list(audit.required_ports or ())
+    if not required:
+        return True, None
+    observed = _asset_open_ports(asset)
+    if not observed:
+        # Never scanned / no evidence. Don't false-flag — dispatch
+        # and let the audit itself surface unreachability at the
+        # first relay tool call.
+        return True, None
+    if any(p in observed for p in required):
+        return True, None
+    target = asset.fqdn or asset.hostname or asset.ip or f"asset {asset.id}"
+    req_str = "/".join(str(p) for p in required)
+    return False, (
+        f"target {target} has no {audit.protocol.upper()}-compatible port open "
+        f"(required: {req_str}; observed open: {sorted(observed)}). "
+        f"Re-run a discovery scan if the service is listening on a non-standard port."
+    )
 
 
 def _validate_dispatch_inputs(
@@ -154,8 +217,37 @@ def _spawn_scratch_agents_for_scan(
             model=model,
             scan_id=scan.id,
         )
-        user_input = _build_user_input(audit, mission_template, asset_by_id[asset_id])
         scratch_agent_ids.append(agent.id)
+
+        # Preflight — if the asset's discovered open_ports exclude every
+        # port the protocol needs, fail the run before dispatching a
+        # Celery task. Creates the scratch agent (so the UI still has
+        # something to link to) but records a failed AgentRun with the
+        # unreachable reason and skips _dispatch_background_run. The
+        # _finalize_scan_if_complete path already handles AgentRuns that
+        # terminate at creation time.
+        ok, unreachable_reason = _preflight_audit_asset(asset_by_id[asset_id], audit)
+        if not ok:
+            logger.info(
+                "audit preflight skipped dispatch protocol=%s asset=%s agent=%s reason=%s",
+                audit.protocol, asset_id, agent.id, unreachable_reason,
+            )
+            db.add(AgentRun(
+                agent_id=agent.id,
+                input="(skipped — target unreachable)",
+                status="failed",
+                error=unreachable_reason,
+                finished_at=datetime.utcnow(),
+            ))
+            runs_meta.append({
+                "asset_id": asset_id,
+                "agent_id": agent.id,
+                "status": "unreachable",
+                "error": unreachable_reason,
+            })
+            continue
+
+        user_input = _build_user_input(audit, mission_template, asset_by_id[asset_id])
         runs_meta.append({
             "asset_id": asset_id,
             "agent_id": agent.id,
@@ -255,7 +347,7 @@ def dispatch_audit_run(
     scan.raw_metadata = md
     db.flush()
 
-    _spawn_scratch_agents_for_scan(
+    spawn_result = _spawn_scratch_agents_for_scan(
         db, org.id, scan, audit, m,
         asset_ids=asset_ids,
         max_steps=resolved_max_steps,
@@ -266,19 +358,15 @@ def dispatch_audit_run(
     )
     db.commit()
 
-    # Re-read runs_meta from the updated scan — the helper wrote them to
-    # raw_metadata but we want the explicit shape the API contract promises.
-    md = scan.raw_metadata or {}
-    runs_meta = [
-        {"asset_id": aid, "agent_id": gid, "status": "pending"}
-        for aid, gid in zip(md.get("asset_ids") or [], md.get("scratch_agent_ids") or [])
-    ]
+    # Use the helper's per-run status — it's the only source of truth
+    # for preflight short-circuits (unreachable runs have their
+    # AgentRow pre-flipped to failed and never got enqueued).
     return {
         "scan_id": scan.id,
         "protocol": protocol,
         "mission": mission,
         "status": "running",
-        "runs": runs_meta,
+        "runs": spawn_result["runs"],
     }
 
 
@@ -389,7 +477,7 @@ def rescan_audit_scan(
     scan.scan_name = f"{audit.label} — {m.label} — {len(final_asset_ids)} host(s)"
     db.flush()
 
-    _spawn_scratch_agents_for_scan(
+    spawn_result = _spawn_scratch_agents_for_scan(
         db, org.id, scan, audit, m,
         asset_ids=final_asset_ids,
         max_steps=resolved_max_steps,
@@ -400,17 +488,12 @@ def rescan_audit_scan(
     )
     db.commit()
 
-    md_after = scan.raw_metadata or {}
-    runs_meta = [
-        {"asset_id": aid, "agent_id": gid, "status": "pending"}
-        for aid, gid in zip(md_after.get("asset_ids") or [], md_after.get("scratch_agent_ids") or [])
-    ]
     return {
         "scan_id": scan.id,
         "protocol": protocol,
         "mission": resolved_mission,
         "status": "running",
-        "runs": runs_meta,
+        "runs": spawn_result["runs"],
     }
 
 

@@ -49,6 +49,11 @@ services:
       # returns 503 — there's no in-process fallback anymore.
       - AUDIT_CELERY_BROKER_URL=${AUDIT_CELERY_BROKER_URL:-redis://redis:6379/2}
       - AUDIT_CELERY_RESULT_BACKEND=${AUDIT_CELERY_RESULT_BACKEND:-redis://redis:6379/2}
+      # VM scanner API. vm-api runs in hakuna-vm-scanner/docker-compose.yml
+      # and joins hakuna_default (external), so the backend reaches it by
+      # compose service hostname. Default in services/vm_scanner.py is
+      # localhost:8002 which only works when the backend runs on the host.
+      - VM_SCANNER_URL=${VM_SCANNER_URL:-http://vm-api:8002}
       # Shared secret for /internal/relay/dispatch — the audit-worker presents
       # this in X-Internal-Token to reach the backend's relay websocket (which
       # lives only in this process). Generate one with:

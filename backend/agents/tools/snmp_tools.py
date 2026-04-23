@@ -378,6 +378,10 @@ register_audit(ProtocolAudit(
     relay_method="snmp_query",
     credential_connector_ids=["snmp_device", "snmp-device"],
     tool_names=_SNMP_TOOL_NAMES,
+    # UDP 161 is the only way into SNMP. Listed here for open_ports-based
+    # preflight — note that our discovery scanners do record UDP-open ports
+    # when they observe them, so this is still actionable when positive.
+    required_ports=(161,),
     missions=[
         MissionTemplate(
             key="device_posture",

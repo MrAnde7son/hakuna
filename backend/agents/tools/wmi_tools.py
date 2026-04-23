@@ -951,6 +951,10 @@ register_audit(ProtocolAudit(
     relay_method="wmi_query",
     credential_connector_ids=["windows_host", "windows-host"],
     tool_names=_SHARED_TOOL_NAMES,
+    # DCE/RPC endpoint mapper on 135 is required to start WMI. SMB (445)
+    # is the usual transport fallback for impacket-style DCOM over SMB;
+    # either open is sufficient for the audit to proceed.
+    required_ports=(135, 445),
     missions=[
         MissionTemplate(
             key="identity",

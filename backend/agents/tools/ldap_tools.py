@@ -968,6 +968,7 @@ register_audit(ProtocolAudit(
     relay_method="ldap_query",
     credential_connector_ids=["windows_host", "windows-host"],
     tool_names=_LDAP_TOOL_NAMES,
+    required_ports=(389, 636, 3268, 3269),  # LDAP, LDAPS, Global Catalog, GC LDAPS
     missions=[
         MissionTemplate(
             key="identity",

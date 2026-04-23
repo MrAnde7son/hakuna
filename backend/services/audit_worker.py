@@ -82,6 +82,22 @@ def _finalize_scan_if_complete(db, agent_id: int) -> None:
     scan.status = new_status
     md["status"] = new_status
     scan.raw_metadata = md
+
+    # Run the full post-ingest pipeline now that every emit_finding for this
+    # audit run has landed. finalize_batch already ran per-finding from the
+    # emit_finding tool, but scan-level rollups (SLA, cross-scan dedup,
+    # corporate-tree sync, control assessment, etc.) only belong at terminal
+    # transition. Without this, audit scans would never pick up those
+    # rollups and would drift from VM/EASM ingestion behaviour.
+    try:
+        from services.post_ingest import finalize_scan
+        finalize_scan(db, scan_id=scan.id, org_id=scan.org_id)
+    except Exception:
+        logger.exception(
+            "audit finalize: finalize_scan failed for scan_id=%s (non-fatal)",
+            scan.id,
+        )
+
     db.commit()
 
 

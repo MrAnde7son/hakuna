@@ -62,6 +62,7 @@ from scanner.vm.config import (
 # routing table into memory for what's otherwise a string check).
 _ADHOC_WEB_PORTS: frozenset[int] = frozenset({80, 443, 3000, 5000, 8000, 8001, 8080, 8443, 8888, 9090, 9443})
 from scanner.vm.db import _normalize_dsn
+from scanner.vm.preflight import probe_http, probe_tcp, should_preflight
 from scanner.vm.plan_executor import (
     ScanPlanInvalidError,
     build_nuclei_commands_from_plan,
@@ -419,6 +420,32 @@ async def _run_nuclei_scan_async(
         org_id = asset["org_id"]
         open_ports = asset["open_ports"] or []
 
+        # Preflight — bail before we load templates or spawn nuclei on a
+        # dead target. Asset path: HTTP probe when we have a URL, TCP
+        # probe on the first known open port when we don't. No preflight
+        # for assets with neither (rare — the router will skip them).
+        pre = await asyncio.to_thread(
+            _nuclei_preflight, target, open_ports,
+        )
+        if pre is not None and not pre.reachable:
+            logger.info(
+                "nuclei_worker preflight failed asset=%s target=%s reason=%s detail=%s",
+                asset_id, target, pre.reason, pre.detail,
+            )
+            return {
+                "asset_id": asset_id,
+                "org_id": str(org_id) if org_id is not None else None,
+                "target": target,
+                "findings": [],
+                "templates_matched": 0,
+                "templates_loaded": 0,
+                "requests_sent": 0,
+                "duration_seconds": round(time.monotonic() - start, 2),
+                "status": "unreachable",
+                "error": f"target unreachable ({pre.reason}): {pre.detail}",
+                "preflight": pre.to_dict(),
+            }
+
         cpe_list = _extract_cpe_list(asset.get("cpe_list"))
         tech_stack = asset.get("tech_stack")
 
@@ -669,6 +696,37 @@ def _resolve_target(asset) -> str:
     return str(ip) if ip else ""
 
 
+def _nuclei_preflight(target: str, open_ports: list):
+    """Choose HTTP or TCP preflight based on the target shape.
+
+    Returns None when no probe is meaningful (no known scheme, no known
+    open ports) — nuclei's router will decide whether to skip or try
+    generic probes, and a negative preflight here would false-flag the
+    asset. That's intentional: preflight only short-circuits when we
+    have positive evidence the target is down, not when we're unsure.
+    """
+    if should_preflight(target):
+        return probe_http(target)
+    # Bare IP/hostname with discovered ports — probe the first one.
+    # Any open port listening proves the host is routable; per-protocol
+    # auth failures are the scanner's problem, not ours.
+    host = (target or "").strip()
+    if not host:
+        return None
+    first_port: int | None = None
+    for p in open_ports or []:
+        try:
+            n = int(p)
+        except (TypeError, ValueError):
+            continue
+        if 0 < n <= 65535:
+            first_port = n
+            break
+    if first_port is None:
+        return None
+    return probe_tcp(host, first_port)
+
+
 def _extract_cpe_list(cpe_data) -> list[str] | None:
     """Normalize cpe_list from JSONB (may be list of strings or list of dicts)."""
     if not cpe_data:
@@ -750,6 +808,30 @@ async def _run_nuclei_adhoc_async(
     persists findings to the findings table via _emit_finding().
     """
     start = time.monotonic()
+
+    # Preflight — HTTP probe only in the adhoc path. Bare IP/hostname
+    # targets here lack the open_ports context the asset path has, so
+    # we can't safely TCP-probe a guessed port.
+    if should_preflight(target):
+        pre = await asyncio.to_thread(probe_http, target)
+        if not pre.reachable:
+            logger.info(
+                "nuclei_worker adhoc preflight failed target=%s reason=%s detail=%s",
+                target, pre.reason, pre.detail,
+            )
+            return {
+                "target": target,
+                "org_id": org_id,
+                "findings": [],
+                "templates_matched": 0,
+                "templates_loaded": 0,
+                "requests_sent": 0,
+                "duration_seconds": round(time.monotonic() - start, 2),
+                "status": "unreachable",
+                "error": f"target unreachable ({pre.reason}): {pre.detail}",
+                "preflight": pre.to_dict(),
+            }
+
     dsn = _normalize_dsn(DATABASE_URL)
     conn = await asyncpg.connect(dsn) if org_id else None
 

@@ -251,6 +251,16 @@ export default function AuthProfileForm({ profile, onClose, onSaved }) {
           </div>
         </Field>
 
+        {!isNew && profileType !== (profile?.profile_type || 'form_login') && (
+          <div style={{
+            margin: '0 0 14px', padding: '8px 10px', borderRadius: 4,
+            background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.25)',
+            color: '#a16207', fontSize: 11, lineHeight: 1.4,
+          }}>
+            {t('authProfiles.typeSwitchWarn', 'Switching profile type will clear type-specific settings (login URL, flow, success condition) when you save.')}
+          </div>
+        )}
+
         <Field label={t('authProfiles.fieldName', 'Name')}>
           <Input value={name} onChange={setName} placeholder="e.g. prod-app-admin" />
         </Field>

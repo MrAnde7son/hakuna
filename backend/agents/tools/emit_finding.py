@@ -118,6 +118,27 @@ def emit_finding_tool(db, params: dict) -> dict:
         protocol, mission, asset_id, severity, finding_type, finding.id,
     )
 
+    # Stream the new row through the incremental post-ingest pipeline so the
+    # UI sees a real priority_score and the parent asset's severity counters
+    # update immediately — otherwise audit findings sit at priority_score=0
+    # and assets show no finding counts until the next full scan finalize.
+    # Every other ingestion path (VM scanner, EASM, integrations) already
+    # does this; audits were the only stream that skipped it.
+    try:
+        from services.post_ingest import finalize_batch
+        finalize_batch(
+            db,
+            scan_id=asset.scan_id,
+            org_id=params.get("_org_id"),
+            new_finding_ids=[finding.id],
+            new_asset_ids=None,
+        )
+    except Exception:
+        logger.exception(
+            "emit_finding: finalize_batch failed for finding_id=%s (non-fatal)",
+            finding.id,
+        )
+
     return {
         "finding_id": finding.id,
         "plugin_id": plugin_id,

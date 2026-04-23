@@ -908,3 +908,130 @@ def test_finalize_scan_if_complete_preserves_cancelled(db_session, test_org, aud
     db_session.refresh(scan)
     assert scan.status == "cancelled"
     assert scan.raw_metadata["status"] == "cancelled"
+
+
+# ── Preflight (open_ports → unreachable short-circuit) ───────────────
+
+
+def test_registry_required_ports_coverage():
+    """Every audit protocol that speaks over TCP must declare its ports
+    so the preflight has signal. SNMP lists 161 even though the probe is
+    UDP-only — the check matches against asset.open_ports which stores
+    both families."""
+    from agents.audit_registry import AUDITS
+    assert 445 in AUDITS["smb"].required_ports
+    assert 389 in AUDITS["ldap"].required_ports
+    assert 22 in AUDITS["ssh"].required_ports
+    assert 135 in AUDITS["wmi"].required_ports
+    assert 161 in AUDITS["snmp"].required_ports
+
+
+def test_preflight_skips_when_no_open_ports_known(db_session, test_org, audit_asset):
+    """Conservative: an asset that's never been discovery-scanned has an
+    empty open_ports list. We must NOT false-flag it as unreachable —
+    the audit dispatches normally and the tools handle actual
+    reachability at runtime."""
+    from services.audit_runner import _preflight_audit_asset
+    from agents.audit_registry import AUDITS
+
+    audit_asset.easm_data = None
+    db_session.flush()
+    ok, reason = _preflight_audit_asset(audit_asset, AUDITS["smb"])
+    assert ok is True
+    assert reason is None
+
+
+def test_preflight_passes_when_required_port_observed(db_session, audit_asset):
+    """Positive case: 445 showed up in discovery, SMB audit proceeds."""
+    from services.audit_runner import _preflight_audit_asset
+    from agents.audit_registry import AUDITS
+
+    audit_asset.easm_data = {"open_ports": [80, 443, 445]}
+    db_session.flush()
+    ok, reason = _preflight_audit_asset(audit_asset, AUDITS["smb"])
+    assert ok is True
+    assert reason is None
+
+
+def test_preflight_fails_when_all_required_ports_closed(db_session, audit_asset):
+    """Positive evidence of closed ports — SMB audit against a host
+    whose discovery found only 80/443 open should bail."""
+    from services.audit_runner import _preflight_audit_asset
+    from agents.audit_registry import AUDITS
+
+    audit_asset.easm_data = {"open_ports": [80, 443]}
+    db_session.flush()
+    ok, reason = _preflight_audit_asset(audit_asset, AUDITS["smb"])
+    assert ok is False
+    assert reason is not None
+    assert "SMB" in reason
+    # Reason must name the target and the observed open ports so the UI
+    # can render something useful without the user chasing logs.
+    assert (audit_asset.hostname or audit_asset.ip) in reason
+    assert "80" in reason
+
+
+def test_preflight_allows_any_required_port(db_session, audit_asset):
+    """LDAP has multiple candidate ports (389 + 636 + GC). Any one open
+    is enough for the audit to run."""
+    from services.audit_runner import _preflight_audit_asset
+    from agents.audit_registry import AUDITS
+
+    # Only LDAPS (636) is open — common for hardened DCs.
+    audit_asset.easm_data = {"open_ports": [636]}
+    db_session.flush()
+    ok, reason = _preflight_audit_asset(audit_asset, AUDITS["ldap"])
+    assert ok is True
+    assert reason is None
+
+
+def test_dispatch_skips_background_when_preflight_fails(db_session, test_org, audit_asset):
+    """End-to-end wiring: dispatching an SMB audit against an asset with
+    open_ports=[80] records an unreachable AgentRun and does NOT enqueue
+    a Celery task. Prevents the scratch agent from burning LLM tokens
+    against a target its own discovery said was closed."""
+    from services.audit_runner import dispatch_audit_run
+    from models.models import AgentRun
+
+    audit_asset.easm_data = {"open_ports": [80, 443]}
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run") as mock_dispatch:
+        result = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="smb", mission="share_audit",
+            asset_ids=[audit_asset.id],
+            relay_agent_id="relay-1", credential_id=None,
+        )
+
+    # Scratch agent was still created (so the UI can link to it), but no
+    # background job fired and the AgentRun terminates immediately as
+    # failed with the reachability reason.
+    assert mock_dispatch.call_count == 0
+    assert result["runs"][0]["status"] == "unreachable"
+    assert result["runs"][0]["error"]
+    agent_id = result["runs"][0]["agent_id"]
+    run = db_session.query(AgentRun).filter_by(agent_id=agent_id).first()
+    assert run is not None
+    assert run.status == "failed"
+    assert "SMB" in (run.error or "")
+
+
+def test_dispatch_proceeds_when_required_port_open(db_session, test_org, audit_asset):
+    """Control case — the same dispatch path with 445 in open_ports
+    runs normally and enqueues the Celery task."""
+    from services.audit_runner import dispatch_audit_run
+
+    audit_asset.easm_data = {"open_ports": [80, 445]}
+    db_session.flush()
+
+    with patch("services.audit_runner._dispatch_background_run") as mock_dispatch:
+        result = dispatch_audit_run(
+            db=db_session, org=test_org,
+            protocol="smb", mission="share_audit",
+            asset_ids=[audit_asset.id],
+            relay_agent_id="relay-1", credential_id=None,
+        )
+
+    assert mock_dispatch.call_count == 1
+    assert result["runs"][0]["status"] == "pending"

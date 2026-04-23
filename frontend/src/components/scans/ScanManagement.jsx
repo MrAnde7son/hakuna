@@ -882,6 +882,15 @@ function AuditScanPanel({
   const [scanning, setScanning] = useState(false)
   const [error, setError] = useState(null)
 
+  // Refetch credentials — call on dropdown focus so creds created elsewhere
+  // (Settings → Credentials, another tab) show up without
+  // needing to close and reopen the scan modal.
+  const refreshCredentials = () => {
+    getCredentials()
+      .then(rows => setCredentials(Array.isArray(rows) ? rows : []))
+      .catch(() => {})
+  }
+
   // ── Load protocols (if not passed in) + credentials + relays + token usage ──
   useEffect(() => {
     let cancelled = false
@@ -1074,14 +1083,11 @@ function AuditScanPanel({
 
   const handleCreateCredential = async (data) => {
     try {
-      const created = await createCredential({
-        ...data,
-        connector_id: currentProtocol?.credential_connector_ids?.[0] || 'windows_host',
-        auth_type: 'basic',
-      })
+      const connector_id = currentProtocol?.credential_connector_ids?.[0] || 'windows_host'
+      const auth_type = 'basic'
+      const created = await createCredential({ ...data, connector_id, auth_type })
       setCredentials(prev => [...prev, {
-        id: created.id, name: created.name,
-        connector_id: created.connector_id, auth_type: created.auth_type,
+        id: created.id, name: created.name, connector_id, auth_type,
       }])
       setCredentialId(created.id)
       setShowCreateCred(false)
@@ -1242,6 +1248,7 @@ function AuditScanPanel({
           <select
             value={credentialId}
             onChange={e => setCredentialId(e.target.value)}
+            onFocus={refreshCredentials}
             style={{ ..._selectStyle, flex: 1 }}
           >
             <option value="">
@@ -1585,7 +1592,7 @@ function AuditInlineCredForm({ onSave, onCancel }) {
       <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
         <button onClick={onCancel} style={_compactBtnStyle}>Cancel</button>
         <button
-          onClick={() => onSave({ name: name.trim(), encrypted_values: { username, password, domain } })}
+          onClick={() => onSave({ name: name.trim(), values: { username, password, domain } })}
           disabled={!valid}
           style={{ ..._compactBtnStyle, background: valid ? '#14b8a6' : 'var(--bg)', color: valid ? 'white' : 'var(--text-muted)', border: 'none' }}
         >

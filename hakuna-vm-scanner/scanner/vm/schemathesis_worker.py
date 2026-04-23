@@ -45,6 +45,7 @@ import asyncpg
 from scanner.vm.celery_app import celery_app
 from scanner.vm.config import DATABASE_URL, SCAN_TIMEOUT_SECONDS
 from scanner.vm.db import _normalize_dsn
+from scanner.vm.preflight import probe_http, should_preflight
 
 logger = logging.getLogger(__name__)
 
@@ -430,6 +431,30 @@ async def _run_schemathesis_scan_async(
 
     target = _resolve_target(asset)
     headers = _credentials_to_headers(credentials)
+
+    # Preflight — schemathesis always speaks HTTP/HTTPS. If the target
+    # won't answer a HEAD, there's no point loading a schema or fuzzing.
+    if should_preflight(target):
+        pre = await asyncio.to_thread(probe_http, target)
+        if not pre.reachable:
+            logger.info(
+                "schemathesis preflight failed asset=%s target=%s reason=%s detail=%s",
+                asset_id, target, pre.reason, pre.detail,
+            )
+            return {
+                "asset_id": asset_id,
+                "org_id": str(asset["org_id"]) if asset["org_id"] is not None else None,
+                "target": target,
+                "findings": [],
+                "endpoints_scanned": 0,
+                "specs_scanned": 0,
+                "duration_seconds": round(time.monotonic() - start, 2),
+                "status": "unreachable",
+                "error": f"target unreachable ({pre.reason}): {pre.detail}",
+                "preflight": pre.to_dict(),
+                "scanner": "schemathesis",
+            }
+
     logger.info(
         "schemathesis start asset=%s target=%s endpoints=%d headers=%s",
         asset_id, target, len(endpoint_rows), list(_redacted_headers_for_log(headers)),

@@ -629,6 +629,7 @@ register_audit(ProtocolAudit(
     relay_method="ssh_query",
     credential_connector_ids=["linux_host", "linux-host"],
     tool_names=_SSH_TOOL_NAMES,
+    required_ports=(22,),
     missions=[
         MissionTemplate(
             key="hardening_posture",

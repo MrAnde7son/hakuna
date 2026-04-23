@@ -548,7 +548,7 @@ export default function Settings() {
       label: 'Data Ingestion',
       items: [
         { id: 'upload',              label: 'Scans',               icon: <Upload size={14} /> },
-        { id: 'auth-profiles',       label: 'Auth Profiles',       icon: <KeyRound size={14} /> },
+        { id: 'auth-profiles',       label: 'Credentials',         icon: <KeyRound size={14} /> },
         { id: 'relay-agents',        label: 'Relay Agents',        icon: <Antenna size={14} /> },
         { id: 'integration-builder', label: 'Integration Builder', icon: <Blocks size={14} /> },
       ],

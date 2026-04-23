@@ -79,18 +79,33 @@ def _run_sync(target: str, creds: dict, op: str, op_params: dict) -> dict:
 
     # Build the LDAP URL. Prefer ldaps (636) for security; fall back to ldap (389)
     # if ldaps fails (self-signed certs are common on internal DCs).
+    attempts = _build_bind_attempts(username, password, domain, lmhash, nthash)
     conn = None
-    last_err: Exception | None = None
+    errors: list[str] = []
     for url in (f"ldaps://{target}", f"ldap://{target}"):
-        try:
-            conn = ldap.LDAPConnection(url)
-            conn.login(username, password, domain, lmhash, nthash)
+        for label, bind in attempts:
+            # Every bind needs a fresh connection — impacket keeps bind state
+            # on the socket and won't let us retry a different auth on the
+            # same LDAPConnection.
+            try:
+                c = ldap.LDAPConnection(url)
+            except Exception as e:
+                errors.append(f"{url}: connect: {e}")
+                break  # URL unreachable; skip remaining auth attempts on it
+            try:
+                bind(c)
+                conn = c
+                break
+            except Exception as e:
+                errors.append(f"{url} {label}: {e}")
+                try:
+                    c.close()
+                except Exception:
+                    pass
+        if conn is not None:
             break
-        except Exception as e:
-            last_err = e
-            conn = None
     if conn is None:
-        raise LDAPError(f"LDAP bind failed: {last_err}")
+        raise LDAPError(f"LDAP bind failed: {'; '.join(errors) or 'no attempts succeeded'}")
 
     try:
         if op == "domain_info":
@@ -111,17 +126,95 @@ def _run_sync(target: str, creds: dict, op: str, op_params: dict) -> dict:
             pass
 
 
+# ── Bind strategy ────────────────────────────────────────────────────
+#
+# AD domain controllers accept NTLM (SASL sicilyNegotiate). OpenLDAP and many
+# hardened AD setups only accept simple bind, which needs a full bind DN — so
+# we try NTLM first, then simple bind against a short list of DN shapes built
+# from whatever the user entered in the credential form.
+#
+# The credential form asks for "domain", and users give us anything: a UPN
+# suffix (`lab.local`), a NetBIOS name (`LAB`), or a DN (`dc=lab,dc=local`).
+# `_domain_to_dn` normalizes all three to a DN suffix we can concatenate onto
+# the username. If the username already looks like a DN (contains `=`), we
+# use it verbatim and skip DN construction.
+
+
+def _domain_to_dn(domain: str) -> str:
+    """Accept `lab.local` | `dc=lab,dc=local` | `LAB` and return a DN suffix.
+
+    Empty input → empty string (caller skips DN-based attempts).
+    """
+    d = (domain or "").strip()
+    if not d:
+        return ""
+    if "=" in d:
+        return d  # already a DN
+    if "." in d:
+        parts = [p for p in d.split(".") if p]
+        return ",".join(f"dc={p}" for p in parts)
+    # Bare NetBIOS-ish name — not enough to build a real DN. Return empty
+    # so we don't fabricate something misleading; NTLM will still be tried.
+    return ""
+
+
+def _build_bind_attempts(username: str, password: str, domain: str,
+                         lmhash: str, nthash: str) -> list:
+    """Ordered list of (label, bind_fn) to try against each LDAP URL.
+
+    1. NTLM — works for real AD.
+    2. Simple bind with a full DN — works for OpenLDAP and for AD when the
+       user supplied creds as a DN already. Covers the common OpenLDAP
+       layouts (`cn=admin,<dn>`, `uid=user,ou=users,<dn>`).
+
+    Every lambda binds its own `c` (connection) so the caller can create a
+    fresh LDAPConnection per attempt.
+    """
+    attempts: list = []
+
+    # NTLM first. Impacket's default is sicilyNegotiate.
+    attempts.append((
+        "ntlm",
+        lambda c: c.login(username, password, domain, lmhash, nthash),
+    ))
+
+    # Simple-bind variants. If the username is already a DN, trust it verbatim.
+    # Otherwise, derive a DN suffix from whatever shape of "domain" we got and
+    # try the common RDNs. Pass domain='' so impacket doesn't prepend
+    # `user@domain` or `DOMAIN\user` — we want the bind DN sent as-is.
+    simple_dns: list[str] = []
+    if "=" in username:
+        simple_dns.append(username)
+    else:
+        dn_suffix = _domain_to_dn(domain)
+        if dn_suffix:
+            simple_dns.append(f"cn={username},{dn_suffix}")
+            simple_dns.append(f"uid={username},ou=users,{dn_suffix}")
+            simple_dns.append(f"uid={username},{dn_suffix}")
+
+    for dn in simple_dns:
+        attempts.append((
+            f"simple({dn})",
+            lambda c, _dn=dn: c.login(_dn, password, "", "", "", authenticationChoice="simple"),
+        ))
+
+    return attempts
+
+
 # ── Ops ──────────────────────────────────────────────────────────────
 
 
 def _op_domain_info(conn) -> dict:
     """Read RootDSE + domain object for functional levels and base DN."""
-    # RootDSE
-    root = conn.search(
-        searchBase="",
-        searchFilter="(objectClass=*)",
+    # RootDSE. Per RFC 4511 §5.1, RootDSE lookup requires scope=baseObject on
+    # an empty search base. AD tolerates wholeSubtree here, but OpenLDAP (and
+    # other RFC-strict servers) return noSuchObject for subtree searches on
+    # an empty base, so we must ask for baseObject explicitly.
+    root = _rootdse_search(
+        conn,
         attributes=[
-            "defaultNamingContext", "rootDomainNamingContext",
+            "defaultNamingContext", "namingContexts",
+            "rootDomainNamingContext",
             "configurationNamingContext", "schemaNamingContext",
             "domainFunctionality", "forestFunctionality",
             "domainControllerFunctionality", "dnsHostName",
@@ -134,6 +227,11 @@ def _op_domain_info(conn) -> dict:
         d = _entry_to_dict(r)
         if d.get("defaultNamingContext"):
             base_dn = _as_str(d["defaultNamingContext"])
+        elif d.get("namingContexts"):
+            # OpenLDAP / RFC LDAP servers don't have defaultNamingContext; fall
+            # back to the first namingContexts entry (it's multi-valued).
+            nc = d["namingContexts"]
+            base_dn = _as_str(nc[0] if isinstance(nc, list) else nc) or ""
         if d.get("rootDomainNamingContext"):
             forest_dn = _as_str(d["rootDomainNamingContext"])
         info.update({
@@ -683,15 +781,34 @@ def _coerce_bin(v) -> str:
 
 
 def _base_dn(conn) -> str:
-    """Pull defaultNamingContext from RootDSE."""
-    root = conn.search(
-        searchBase="",
-        searchFilter="(objectClass=*)",
-        attributes=["defaultNamingContext"],
+    """Pull base DN from RootDSE.
+
+    AD exposes `defaultNamingContext`; OpenLDAP / RFC servers only publish
+    `namingContexts` (multi-valued). Query both and prefer the AD attribute
+    when present so multi-domain ADs still point at the right NC.
+    """
+    root = _rootdse_search(
+        conn,
+        attributes=["defaultNamingContext", "namingContexts"],
     )
     for r in root:
         d = _entry_to_dict(r)
         v = d.get("defaultNamingContext")
         if v:
             return _as_str(v) or ""
+        nc = d.get("namingContexts")
+        if nc:
+            first = nc[0] if isinstance(nc, list) else nc
+            return _as_str(first) or ""
     return ""
+
+
+def _rootdse_search(conn, attributes: list[str]) -> list:
+    """Issue a RootDSE-compliant LDAP search (empty base, scope=baseObject)."""
+    _, ldapasn1 = _impacket()
+    return conn.search(
+        searchBase="",
+        scope=ldapasn1.Scope("baseObject"),
+        searchFilter="(objectClass=*)",
+        attributes=attributes,
+    )

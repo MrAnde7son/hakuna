@@ -462,6 +462,7 @@ register_audit(ProtocolAudit(
     relay_method="smb_query",
     credential_connector_ids=["windows_host", "windows-host"],
     tool_names=_SMB_TOOL_NAMES,
+    required_ports=(445, 139),
     missions=[
         MissionTemplate(
             key="share_audit",
