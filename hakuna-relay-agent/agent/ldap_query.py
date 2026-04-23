@@ -51,6 +51,7 @@ async def ldap_query_handler(ws, task, transport_config, credentials, params) ->
     target = (transport_config or {}).get("target")
     if not target:
         raise LDAPError("transport_config.target is required")
+    port = (transport_config or {}).get("port")
 
     op = (params or {}).get("op") or "search"
     op_params = (params or {}).get("op_params") or {}
@@ -61,14 +62,14 @@ async def ldap_query_handler(ws, task, transport_config, credentials, params) ->
 
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(_run_sync, target, credentials, op, op_params),
+            asyncio.to_thread(_run_sync, target, port, credentials, op, op_params),
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
         raise LDAPError(f"LDAP op '{op}' timed out after {timeout_s}s for {target}")
 
 
-def _run_sync(target: str, creds: dict, op: str, op_params: dict) -> dict:
+def _run_sync(target: str, port: int | None, creds: dict, op: str, op_params: dict) -> dict:
     ldap, _ = _impacket()
 
     username = creds.get("username", "")
@@ -78,11 +79,21 @@ def _run_sync(target: str, creds: dict, op: str, op_params: dict) -> dict:
     nthash = creds.get("nthash", "") or ""
 
     # Build the LDAP URL. Prefer ldaps (636) for security; fall back to ldap (389)
-    # if ldaps fails (self-signed certs are common on internal DCs).
+    # if ldaps fails (self-signed certs are common on internal DCs). When the
+    # caller pinned a port, skip the scheme we know won't answer on it.
     attempts = _build_bind_attempts(username, password, domain, lmhash, nthash)
     conn = None
     errors: list[str] = []
-    for url in (f"ldaps://{target}", f"ldap://{target}"):
+    if port:
+        host_port = f"{target}:{port}"
+        urls = (f"ldap://{host_port}",) if port == 389 else (
+            (f"ldaps://{host_port}",) if port == 636 else (
+                f"ldaps://{host_port}", f"ldap://{host_port}"
+            )
+        )
+    else:
+        urls = (f"ldaps://{target}", f"ldap://{target}")
+    for url in urls:
         for label, bind in attempts:
             # Every bind needs a fresh connection — impacket keeps bind state
             # on the socket and won't let us retry a different auth on the

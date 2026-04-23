@@ -33,6 +33,7 @@ from core.database import SessionLocal
 from models.models import Agent, AgentRun, Asset, Organization, Scan
 from agents.audit_registry import AUDITS, MissionTemplate, ProtocolAudit
 from agents.agent_prompts import ENHANCED_PROMPTS
+from agents.tools._target_utils import split_host_port
 
 logger = logging.getLogger(__name__)
 
@@ -57,17 +58,29 @@ def _asset_open_ports(asset: Asset) -> list[int]:
     callers must treat that as unknown, not "closed."
     """
     data = asset.easm_data or {}
-    raw = data.get("open_ports") if isinstance(data, dict) else None
-    if not isinstance(raw, list):
+    if not isinstance(data, dict):
         return []
+    raw = data.get("open_ports")
     out: list[int] = []
-    for p in raw:
-        try:
-            n = int(p)
-        except (TypeError, ValueError):
-            continue
-        if 0 < n <= 65535:
-            out.append(n)
+    if isinstance(raw, list):
+        for p in raw:
+            try:
+                n = int(p)
+            except (TypeError, ValueError):
+                continue
+            if 0 < n <= 65535:
+                out.append(n)
+    # A user-supplied audit port (via "host:port" in the free-form target
+    # flow) is authoritative — treat it as observed so preflight doesn't
+    # reject a legitimate non-standard-port audit when the discovery scan
+    # never saw that port.
+    atp = data.get("audit_target_port")
+    try:
+        atp_n = int(atp) if atp is not None else None
+    except (TypeError, ValueError):
+        atp_n = None
+    if atp_n is not None and 0 < atp_n <= 65535 and atp_n not in out:
+        out.append(atp_n)
     return out
 
 
@@ -133,7 +146,9 @@ def _validate_dispatch_inputs(
         )
     if bool(asset_ids) == bool(targets):
         raise AuditDispatchError("provide exactly one of asset_ids or targets")
-    if not relay_agent_id:
+    # Cloud audits (relay_method="none") run in-process against the cloud
+    # control plane — no relay needed. All other protocols require a relay.
+    if audit.relay_method != "none" and not relay_agent_id:
         raise AuditDispatchError("relay_agent_id is required")
     # credential_id is optional — protocols/missions that support anonymous
     # operation (e.g. SMB null sessions) can dispatch without one. Tools that
@@ -569,29 +584,32 @@ def _build_user_input(audit: ProtocolAudit, mission: MissionTemplate, asset: Ass
 # ── Free-form target resolution ──────────────────────────────────────
 
 
-def _classify_target(target: str) -> dict[str, str | None]:
-    """Split a user-entered target string into ip / hostname / fqdn fields.
+def _classify_target(target: str) -> tuple[dict[str, str | None], int | None]:
+    """Split a user-entered target string into ip / hostname / fqdn fields + port.
 
-    Accepts bare IPs, hostnames, FQDNs, and URLs (scheme is stripped). Returns
-    a dict with only the populated keys. Used by the free-form audit flow to
-    seed Asset rows with enough identity to be matched on rescan.
+    Accepts bare IPs, hostnames, FQDNs, URLs (scheme stripped), and any of
+    those suffixed with ``:port`` (e.g. ``ssh:2222``, ``10.0.0.5:1389``).
+    Returns ``(identity_dict, port_or_none)``. The port is split OUT of the
+    identity so we don't contaminate asset.hostname/fqdn with a port number —
+    it's threaded separately to the protocol tool via easm_data.
     """
     raw = (target or "").strip()
     if not raw:
-        return {}
+        return {}, None
     host = raw
     if raw.startswith(("http://", "https://")):
         parsed = urlparse(raw)
         host = parsed.hostname or raw
+    host, port = split_host_port(host)
     try:
         ipaddress.ip_address(host)
-        return {"ip": host}
+        return {"ip": host}, port
     except ValueError:
         pass
     # Dotted name → treat as both hostname and fqdn so either match path hits.
     if "." in host:
-        return {"hostname": host, "fqdn": host}
-    return {"hostname": host}
+        return {"hostname": host, "fqdn": host}, port
+    return {"hostname": host}, port
 
 
 def _upsert_asset_by_target(
@@ -600,8 +618,13 @@ def _upsert_asset_by_target(
     """Find an Asset in the org matching the target's IP/hostname/FQDN, or
     create a new one rooted at ``scan_id``. Returns the asset id, or None if
     the target couldn't be classified.
+
+    If the user-entered target included a non-standard port (``ssh:2222``),
+    the port is stripped from the stored identity and persisted to
+    ``easm_data['audit_target_port']`` on the asset. Protocol tools read it
+    back when dispatching so the port still reaches the relay.
     """
-    ident = _classify_target(target)
+    ident, port = _classify_target(target)
     if not ident:
         return None
 
@@ -613,17 +636,24 @@ def _upsert_asset_by_target(
         name = ident.get("fqdn") or ident.get("hostname")
         existing = q.filter(or_(Asset.hostname == name, Asset.fqdn == name)).first()
     if existing:
-        return existing.id
+        asset = existing
+    else:
+        asset = Asset(
+            scan_id=scan_id,
+            ip=ident.get("ip"),
+            hostname=ident.get("hostname"),
+            fqdn=ident.get("fqdn"),
+        )
+        db.add(asset)
+        db.flush()
 
-    new_asset = Asset(
-        scan_id=scan_id,
-        ip=ident.get("ip"),
-        hostname=ident.get("hostname"),
-        fqdn=ident.get("fqdn"),
-    )
-    db.add(new_asset)
-    db.flush()
-    return new_asset.id
+    if port is not None:
+        easm = dict(asset.easm_data or {})
+        easm["audit_target_port"] = port
+        asset.easm_data = easm
+        db.flush()
+
+    return asset.id
 
 
 # ── Background dispatch ──────────────────────────────────────────────
