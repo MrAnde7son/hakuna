@@ -274,13 +274,30 @@ def _build_context(config: dict, credentials: dict, params: dict = None):
     }
 
 
+# Cloud connector templates hardcode the public cloud endpoint in `base_url`
+# (e.g. https://iam.amazonaws.com) and don't template it, so the normal
+# {{instance_url}} substitution that SaaS connectors use doesn't apply. For
+# lab/e2e runs against an emulator (LocalStack, Azurite, fake-gcs-server), let
+# the *credential* carry an `endpoint_url` that overrides the hardcoded base_url.
+# Scoped to cloud auth strategies so setting it on an unrelated credential is a
+# no-op. Prod credentials leave it unset — no behavior change.
+_CLOUD_AUTH_STRATEGIES = frozenset({"aws_sigv4", "gcp_service_account", "oauth2"})
+
+
+def _maybe_override_base_url(base_url: str, config: dict, credentials: dict) -> str:
+    if config.get("auth_strategy") not in _CLOUD_AUTH_STRATEGIES:
+        return base_url
+    override = (credentials or {}).get("endpoint_url")
+    return override.rstrip("/") if override else base_url
+
+
 class ApiTransport(BaseTransport):
 
     async def connect(self, config: dict, credentials: dict) -> ConnectResult:
         """Make a single request and return sample records."""
         try:
             ctx = _build_context(config, credentials)
-            base_url = _substitute(config.get("base_url", ""), ctx)
+            base_url = _maybe_override_base_url(_substitute(config.get("base_url", ""), ctx), config, credentials)
             path = _substitute(config.get("path", ""), ctx)
             method = config.get("method", "GET").upper()
             headers = _substitute(config.get("headers", {}), ctx)
@@ -405,7 +422,7 @@ class ApiTransport(BaseTransport):
     async def _make_request(self, config, credentials, params, extra_query=None, extra_body=None):
         """Helper: make a single HTTP request and return (records, raw_response)."""
         ctx = _build_context(config, credentials, params)
-        base_url = _substitute(config.get("base_url", ""), ctx)
+        base_url = _maybe_override_base_url(_substitute(config.get("base_url", ""), ctx), config, credentials)
         path = _substitute(config.get("path", ""), ctx)
         method = config.get("method", "GET").upper()
         headers = _substitute(config.get("headers", {}), ctx)

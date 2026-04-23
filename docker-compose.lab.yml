@@ -19,6 +19,8 @@
 #           alice / Password1, bob / bob, svc_backup / Summer2024!
 #   SSH   — lab / labpass                      (port 2222)
 #   SNMP  — community `public` (v1/v2c, read-only)
+#   AWS   — access_key_id=test / secret_access_key=test / region=us-east-1
+#           endpoint_url=http://localstack:4566  (LocalStack accepts any creds)
 
 name: hakuna-lab
 
@@ -95,6 +97,32 @@ services:
     hostname: snmp
     ports:
       - "127.0.0.1:1161:161/udp"
+    restart: unless-stopped
+
+  localstack:
+    # AWS emulator for cloud-audit e2e. One endpoint serves IAM, S3, EC2,
+    # Lambda, STS — matching the connectors the cloud audit agent uses. Pair
+    # with an AWS credential in the vault that carries
+    #   endpoint_url=http://localstack:4566
+    # (hostname, from the backend/audit-worker containers on `hakuna_default`)
+    # or http://localhost:4566 for a host-running backend.
+    image: localstack/localstack:latest
+    container_name: lab-localstack
+    hostname: localstack
+    environment:
+      SERVICES: "iam,s3,ec2,lambda,sts"
+      DEBUG: "0"
+      PERSISTENCE: "0"
+    ports:
+      - "127.0.0.1:4566:4566"
+    networks:
+      - default
+      - hakuna_default
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   relay:
