@@ -25,6 +25,7 @@ from typing import Any
 from models.models import Asset
 from agents.agent_tools import agent_tool
 from agents.audit_registry import MissionTemplate, ProtocolAudit, register_audit
+from agents.tools._target_utils import resolve_asset_target, split_host_port
 from services.credential_manager import load_credentials
 from services.relay_broker import get_relay_broker
 
@@ -61,11 +62,19 @@ async def _dispatch_snmp(
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
     if not asset:
         raise ValueError(f"asset {asset_id} not found")
-    target = asset.ip or asset.fqdn or asset.hostname
-    if not target:
+    # SNMP prefers the IP over hostname (UDP, no TLS SNI to care about).
+    raw_target = asset.ip or asset.fqdn or asset.hostname
+    if not raw_target:
         raise ValueError(f"asset {asset_id} has no ip or hostname")
     if not relay_agent_id:
         raise ValueError("relay_agent_id missing from audit context")
+
+    target, target_port = split_host_port(raw_target)
+    if target_port is None:
+        # Fall back to the user-supplied audit port stashed by the free-form
+        # target flow, since _upsert_asset_by_target no longer stores it in
+        # the identity fields.
+        _, target_port = resolve_asset_target(asset)
 
     broker = get_relay_broker()
     if not broker.is_connected(relay_agent_id):
@@ -93,7 +102,7 @@ async def _dispatch_snmp(
     result = await broker.send_task(
         agent_id=relay_agent_id,
         method="snmp_query",
-        config={"target": target, "port": 161},
+        config={"target": target, "port": target_port or 161},
         credentials=snmp_creds,
         params={"op": op, "op_params": op_params, "timeout_s": _SNMP_TIMEOUT_S},
     )

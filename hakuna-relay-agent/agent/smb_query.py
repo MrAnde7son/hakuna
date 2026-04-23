@@ -46,6 +46,7 @@ async def smb_query_handler(ws, task, transport_config, credentials, params) -> 
     target = (transport_config or {}).get("target")
     if not target:
         raise SMBError("transport_config.target is required")
+    port = int((transport_config or {}).get("port") or 445)
 
     op = (params or {}).get("op") or "server_info"
     op_params = (params or {}).get("op_params") or {}
@@ -54,14 +55,14 @@ async def smb_query_handler(ws, task, transport_config, credentials, params) -> 
 
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(_run_sync, target, credentials or {}, op, op_params, anonymous),
+            asyncio.to_thread(_run_sync, target, port, credentials or {}, op, op_params, anonymous),
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
         raise SMBError(f"SMB op '{op}' timed out after {timeout_s}s for {target}")
 
 
-def _run_sync(target: str, creds: dict, op: str, op_params: dict, anonymous: bool) -> dict:
+def _run_sync(target: str, port: int, creds: dict, op: str, op_params: dict, anonymous: bool) -> dict:
     SMBConnection, SessionError = _impacket()
 
     username = "" if anonymous else (creds.get("username", "") or "")
@@ -71,7 +72,7 @@ def _run_sync(target: str, creds: dict, op: str, op_params: dict, anonymous: boo
     nthash = "" if anonymous else (creds.get("nthash", "") or "")
 
     try:
-        conn = SMBConnection(target, target, sess_port=445, timeout=20)
+        conn = SMBConnection(target, target, sess_port=port, timeout=20)
     except Exception as e:
         return {"_errors": {op: f"connect failed: {type(e).__name__}: {e}"}}
 
@@ -89,7 +90,7 @@ def _run_sync(target: str, creds: dict, op: str, op_params: dict, anonymous: boo
             # If we reached here with anonymous=True, the login succeeded.
             return {"null_session": True, "dialect": _dialect(conn)}
         if op == "guest_bind":
-            return _op_guest_bind(target, SMBConnection, SessionError)
+            return _op_guest_bind(target, port, SMBConnection, SessionError)
         if op == "list_shares":
             return _op_list_shares(conn)
         if op == "list_contents":
@@ -610,10 +611,10 @@ def _reg_enum_values(dce, rrp, sub_h) -> list[dict]:
     return vals
 
 
-def _op_guest_bind(target: str, SMBConnection, SessionError) -> dict:
+def _op_guest_bind(target: str, port: int, SMBConnection, SessionError) -> dict:
     """Open a fresh connection and try logging in as Guest."""
     try:
-        c = SMBConnection(target, target, sess_port=445, timeout=15)
+        c = SMBConnection(target, target, sess_port=port, timeout=15)
         c.login("guest", "", "")
         ok = True
     except Exception as e:

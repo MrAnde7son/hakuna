@@ -23,6 +23,11 @@ celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
     worker_concurrency=4,
+    # Must exceed the longest nuclei run; observed ~1.5h in prod and the
+    # backend reaps at 3h, so 4h leaves headroom without letting truly-stuck
+    # tasks linger. Kombu's redis default is 1h, which caused acks_late tasks
+    # to be re-delivered mid-run (same job id succeeded twice).
+    broker_transport_options={"visibility_timeout": 4 * 3600},
     include=[
         "scanner.vm.nuclei_worker",
         "scanner.vm.schemathesis_worker",

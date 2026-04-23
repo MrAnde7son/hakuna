@@ -425,6 +425,29 @@ def _deferred_startup():
         logger.info("VM scan reaper scheduled (every 5 minutes)")
     except Exception as exc:
         logger.error("VM scan reaper failed to start: %s", exc)
+    # Poll in-flight VM scans so results land without a user watching the
+    # scan page. refresh_vm_scan only runs on user-driven GETs otherwise,
+    # so a scan completing while no one is looking would sit at
+    # status=running until the 3h reaper marks it failed — even though
+    # the scanner already has the results. Runs every 60s.
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler as _VMPollBG
+        from apscheduler.triggers.interval import IntervalTrigger as _VMPollInterval
+        from services.vm_scanner import poll_running_vm_scans
+        _vm_poll_scheduler = _VMPollBG()
+        _vm_poll_scheduler.add_job(
+            poll_running_vm_scans,
+            _VMPollInterval(seconds=60),
+            id="vm_scan_poller",
+            replace_existing=True,
+            misfire_grace_time=60,
+            coalesce=True,
+            max_instances=1,
+        )
+        _vm_poll_scheduler.start()
+        logger.info("VM scan poller scheduled (every 60 seconds)")
+    except Exception as exc:
+        logger.error("VM scan poller failed to start: %s", exc)
     # Replan stale Adaptive Scan Plans (every 6 hours).
     # Plans are normally refreshed at the tail of the enrichment pipeline,
     # but assets that haven't been re-enriched in a while still benefit

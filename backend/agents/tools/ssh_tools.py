@@ -28,6 +28,7 @@ import logging
 from models.models import Asset
 from agents.agent_tools import agent_tool
 from agents.audit_registry import MissionTemplate, ProtocolAudit, register_audit
+from agents.tools._target_utils import resolve_asset_target
 from services.credential_manager import load_credentials
 from services.relay_broker import get_relay_broker
 
@@ -63,7 +64,7 @@ async def _dispatch_ssh(
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
     if not asset:
         raise ValueError(f"asset {asset_id} not found")
-    target = asset.fqdn or asset.hostname or asset.ip
+    target, target_port = resolve_asset_target(asset)
     if not target:
         raise ValueError(f"asset {asset_id} has no hostname or ip")
     if not relay_agent_id:
@@ -84,7 +85,7 @@ async def _dispatch_ssh(
         "password": raw_creds.get("password", "") or "",
         "private_key": raw_creds.get("private_key", "") or "",
         "private_key_passphrase": raw_creds.get("private_key_passphrase", "") or "",
-        "port": raw_creds.get("port") or 22,
+        "port": target_port or raw_creds.get("port") or 22,
     }
 
     result = await broker.send_task(

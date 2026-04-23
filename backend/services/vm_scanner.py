@@ -853,6 +853,61 @@ def reap_stale_vm_scans(db: Session | None = None) -> dict:
     return {"checked": checked, "reaped": reaped}
 
 
+def poll_running_vm_scans(db: Session | None = None) -> dict:
+    """Refresh every in-flight VM scan so results land without a user polling.
+
+    ``refresh_vm_scan`` is what imports findings and flips scans to
+    ``completed``/``failed``; until now it only ran on user-driven GETs and
+    the 5-min reaper (which just ages scans out at 3h). That left a window
+    where jobs finished on the scanner but their results expired in Redis
+    before anyone asked — user sees "Failed" for a scan that actually
+    succeeded. This poller closes the gap.
+
+    Returns ``{"polled": n, "completed": m, "failed": k}``.
+    """
+    import asyncio
+
+    from core.database import SessionLocal
+
+    own_session = db is None
+    if own_session:
+        db = SessionLocal()
+
+    polled = 0
+    completed = 0
+    failed = 0
+    try:
+        candidates = (
+            db.query(Scan)
+            .filter(Scan.source_type == "vm_scanner")
+            .all()
+        )
+        for scan in candidates:
+            meta = scan.raw_metadata or {}
+            if meta.get("status") != "running":
+                continue
+            polled += 1
+            try:
+                # Each refresh owns its own async context; failures on one
+                # scan shouldn't stop the sweep.
+                result = asyncio.run(refresh_vm_scan(db, scan.id))
+            except Exception:
+                logger.exception("poll_running_vm_scans: refresh failed for scan %d", scan.id)
+                continue
+            status = (result or {}).get("status")
+            if status == "completed":
+                completed += 1
+            elif status == "failed":
+                failed += 1
+    except Exception:
+        logger.exception("poll_running_vm_scans sweep failed")
+    finally:
+        if own_session:
+            db.close()
+
+    return {"polled": polled, "completed": completed, "failed": failed}
+
+
 def current_run_scope(scan: Scan, column):
     """Return a SQLAlchemy filter clause that scopes rows to the scan's
     current run_id (NULL-safe so legacy rows and non-VM scans aren't dropped).

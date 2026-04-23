@@ -13,3 +13,4 @@ from agents.tools import ldap_tools  # noqa: F401
 from agents.tools import smb_tools  # noqa: F401
 from agents.tools import snmp_tools  # noqa: F401
 from agents.tools import ssh_tools  # noqa: F401
+from agents.tools import cloud_tools  # noqa: F401

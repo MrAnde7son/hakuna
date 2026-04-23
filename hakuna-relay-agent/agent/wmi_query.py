@@ -61,8 +61,18 @@ class WMIError(Exception):
 
 @register_method("wmi_query")
 async def wmi_query_handler(ws, task, transport_config, credentials, params) -> dict:
-    """Task method handler — adapts the executor's uniform signature to run_wmi_queries."""
+    """Task method handler — adapts the executor's uniform signature to run_wmi_queries.
+
+    ``transport_config.port`` is accepted for API symmetry with the other
+    protocol handlers but ignored: DCOM/WMI resolves the service port via the
+    endpoint mapper on 135, so a caller-provided port has nowhere to go.
+    """
     target = (transport_config or {}).get("target")
+    if (transport_config or {}).get("port"):
+        logger.info(
+            "wmi_query: ignoring transport_config.port=%s — DCOM resolves via endpoint mapper",
+            (transport_config or {}).get("port"),
+        )
     profiles = (params or {}).get("profiles") or []
     registry_reads = (params or {}).get("registry_reads") or []
     timeout_s = int((params or {}).get("timeout_s") or 120)

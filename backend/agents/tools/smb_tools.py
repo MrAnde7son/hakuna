@@ -25,6 +25,7 @@ from typing import Any
 from models.models import Asset
 from agents.agent_tools import agent_tool
 from agents.audit_registry import MissionTemplate, ProtocolAudit, register_audit
+from agents.tools._target_utils import resolve_asset_target
 from services.credential_manager import load_credentials
 from services.relay_broker import get_relay_broker
 
@@ -61,7 +62,7 @@ async def _dispatch_smb(
     asset = db.query(Asset).filter(Asset.id == asset_id).first()
     if not asset:
         raise ValueError(f"asset {asset_id} not found")
-    target = asset.fqdn or asset.hostname or asset.ip
+    target, target_port = resolve_asset_target(asset)
     if not target:
         raise ValueError(f"asset {asset_id} has no hostname or ip")
     if not relay_agent_id:
@@ -96,10 +97,14 @@ async def _dispatch_smb(
             smb_creds["lmhash"] = raw_creds.get("lmhash", "")
             smb_creds["nthash"] = raw_creds.get("nthash", "")
 
+    config: dict[str, Any] = {"target": target}
+    if target_port:
+        config["port"] = target_port
+
     result = await broker.send_task(
         agent_id=relay_agent_id,
         method="smb_query",
-        config={"target": target},
+        config=config,
         credentials=smb_creds,
         params={"op": op, "op_params": op_params, "timeout_s": _SMB_TIMEOUT_S,
                 "anonymous": bool(anonymous)},

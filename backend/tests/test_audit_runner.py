@@ -374,6 +374,33 @@ def test_dispatch_audit_run_with_targets_reuses_existing_asset(db_session, test_
     assert scan.raw_metadata["asset_ids"] == [audit_asset.id]
 
 
+def test_dispatch_audit_run_strips_port_from_identity(db_session, test_org):
+    """Free-form targets like ``ssh:2222`` must not embed the port in the
+    asset's hostname/fqdn/ip fields — the port goes to easm_data so the UI
+    stays clean and protocol tools still pick it up at dispatch."""
+    from services.audit_runner import dispatch_audit_run
+
+    with patch("services.audit_runner._dispatch_background_run"):
+        result = dispatch_audit_run(
+            db=db_session, org=test_org, protocol="ssh", mission="explore",
+            targets=["ssh:2222", "10.0.0.5:1389"],
+            relay_agent_id="relay-1", credential_id="cred-1",
+        )
+
+    assets = db_session.query(Asset).filter(
+        Asset.id.in_(result["runs"][i]["asset_id"] for i in range(2))
+    ).all()
+    by_port = {(a.easm_data or {}).get("audit_target_port"): a for a in assets}
+    assert 2222 in by_port and 1389 in by_port
+    # The identity fields never contain the ":port" suffix.
+    for a in assets:
+        for field in (a.hostname, a.fqdn, a.ip):
+            if field:
+                assert ":" not in field
+    assert by_port[2222].hostname == "ssh"
+    assert by_port[1389].ip == "10.0.0.5"
+
+
 def test_dispatch_audit_run_rejects_both_sources(db_session, test_org, audit_asset):
     """asset_ids + targets together is an error — exactly one allowed."""
     from services.audit_runner import AuditDispatchError, dispatch_audit_run
