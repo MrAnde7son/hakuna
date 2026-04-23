@@ -199,6 +199,72 @@ jobs:
           BUCKET="${{ steps.bucket.outputs.name || format('hakuna-frontend-{0}', env.PROJECT_ID) }}"
           gsutil -m rsync -r -d -x "^index\.html$" frontend/dist "gs://${BUCKET}" || true
 
+  scanner-changes:
+    name: Detect scanner changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.filter.outputs.scanners }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            scanners:
+              - 'hakuna-scanner/**'
+              - 'hakuna-vm-scanner/**'
+
+  deploy-scanners:
+    name: Deploy Scanner VM
+    needs: [test, scanner-changes]
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'push' && needs.scanner-changes.outputs.changed == 'true') ||
+      contains(github.event.inputs.components, 'scanners')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build and push hakuna-scanner (EASM)
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            -t "${{ env.REGISTRY }}/hakuna-scanner:${{ github.sha }}" \
+            -t "${{ env.REGISTRY }}/hakuna-scanner:latest" \
+            hakuna-scanner/
+          docker push "${{ env.REGISTRY }}/hakuna-scanner:${{ github.sha }}"
+          docker push "${{ env.REGISTRY }}/hakuna-scanner:latest"
+
+      - name: Build and push hakuna-vm-scanner
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            -t "${{ env.REGISTRY }}/hakuna-vm-scanner:${{ github.sha }}" \
+            -t "${{ env.REGISTRY }}/hakuna-vm-scanner:latest" \
+            hakuna-vm-scanner/
+          docker push "${{ env.REGISTRY }}/hakuna-vm-scanner:${{ github.sha }}"
+          docker push "${{ env.REGISTRY }}/hakuna-vm-scanner:latest"
+
+      - name: Pull and restart on scanner VM
+        run: |
+          gcloud compute ssh hakuna-scanners --zone="${{ env.ZONE }}" --tunnel-through-iap \
+            --command="cd /opt/hakuna-scanners && sudo docker compose pull && sudo docker compose up -d" \
+            --quiet
+
   migrate:
     name: Run Migrations
     needs: deploy-api
