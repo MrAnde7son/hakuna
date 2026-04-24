@@ -164,6 +164,10 @@ jobs:
         run: |
           export VITE_GOOGLE_CLIENT_ID=$(gcloud secrets versions access latest --secret="google-oauth-client-id")
           export VITE_SENTRY_DSN=$(gcloud secrets versions access latest --secret="sentry-dsn-frontend" 2>/dev/null || true)
+          VITE_POSTHOG_KEY=$(gcloud secrets versions access latest --secret="hakuna-posthog-api-key" 2>/dev/null || true)
+          [[ "${VITE_POSTHOG_KEY}" == "disabled" ]] && VITE_POSTHOG_KEY=""
+          export VITE_POSTHOG_KEY
+          export VITE_POSTHOG_HOST="https://us.i.posthog.com"
           export VITE_ENVIRONMENT=production
           npm ci
           npm run build
