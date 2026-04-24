@@ -1438,15 +1438,22 @@ def get_matching_assets(
     logic: str,
     db: Session,
     scan_id=None,
+    org_ids=None,
 ) -> list:
     """
     Return Asset ORM objects that match the given conditions.
     Used by campaign queries and auto-tag asset-level rules.
+
+    org_ids scopes the asset pool to the caller's tenant(s). Pass None only
+    from trusted contexts that must span all orgs.
     """
-    from models.models import Asset, Finding
+    from models.models import Asset, Finding, Scan
     from sqlalchemy import select
 
     q = db.query(Asset)
+    if org_ids is not None:
+        # Asset has no org_id column — tenant scope flows through Scan.
+        q = q.join(Scan, Asset.scan_id == Scan.id).filter(Scan.org_id.in_(org_ids))
     if scan_id:
         # Assets are deduplicated across scans — their scan_id reflects the latest scan.
         # Match assets that have *any finding* in this scan, not just Asset.scan_id == scan_id.

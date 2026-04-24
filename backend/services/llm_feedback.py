@@ -349,15 +349,40 @@ def _flush(s: _Span) -> None:
     # Short-lived write session — do not reuse the caller's session since
     # a caller rollback would also drop our audit row.
     db = SessionLocal()
+    interaction_id: Optional[int] = None
     try:
         from models.models import LLMInteraction
-        db.add(LLMInteraction(**row))
+        obj = LLMInteraction(**row)
+        db.add(obj)
         db.commit()
+        interaction_id = obj.id
     except Exception:
         db.rollback()
         logger.exception("llm_feedback: insert failed")
     finally:
         db.close()
+
+    # Mirror to BigQuery for COGS tracking. Best-effort, non-blocking,
+    # no-ops when COGS_BQ_DATASET is unset (dev/test).
+    try:
+        from services import cogs_writer
+        cogs_writer.post(
+            interaction_id=interaction_id,
+            org_id=s.org_id,
+            user_id=s.user_id,
+            surface=s.surface,
+            agent_id=s.agent_id,
+            agent_run_id=s.agent_run_id,
+            provider=s.provider,
+            model=s.model,
+            input_tokens=s.input_tokens or None,
+            output_tokens=s.output_tokens or None,
+            latency_ms=latency_ms,
+            status=s.status,
+            created_at=row["created_at"],
+        )
+    except Exception:
+        logger.debug("cogs_writer.post raised (non-fatal)", exc_info=True)
 
 
 # ── Retrieval (Postgres + pgvector only) ───────────────────────────────

@@ -7,6 +7,13 @@ resource "google_cloud_run_v2_service" "api" {
   # Only accept traffic from the load balancer — not directly from the internet
   ingress = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
 
+  # Labels flow into the detailed billing export as `labels[].{key,value}` on
+  # every SKU row — used by cogs.v_infra_cost_daily to attribute spend.
+  labels = {
+    hakuna_service = "api"
+    environment    = var.environment
+  }
+
   template {
     timeout = "300s" # match LB backend timeout — allows large Nessus scans to fully process
 
@@ -157,6 +164,18 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         name  = "GOOGLE_CLOUD_PROJECT"
         value = var.project_id
+      }
+
+      # COGS tracking — services.cogs_writer streams llm_interactions rows
+      # to this BigQuery table in addition to Postgres. Unset the dataset
+      # to disable BQ streaming entirely.
+      env {
+        name  = "COGS_BQ_DATASET"
+        value = google_bigquery_dataset.cogs.dataset_id
+      }
+      env {
+        name  = "COGS_BQ_TABLE"
+        value = google_bigquery_table.llm_usage.table_id
       }
 
       # CORS — set to your app domain

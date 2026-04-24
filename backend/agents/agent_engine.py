@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from hakuna.utils.token_tracker import get_tracker
 from hakuna.utils.context_manager import rolling_context
+from core.database import SessionLocal
 from core.token_quota import check_token_quota, increment_token_usage
 from core.llm_router import router as llm_router, PROVIDER_FOR_MODEL
 
@@ -68,7 +69,16 @@ def get_default_model(db: Session) -> str:
 
 
 def _find_fallback_model(db: Session, exclude_providers: set, *, tool_count: int = 0) -> Optional[tuple]:
-    return llm_router.find_fallback_model(db, exclude=exclude_providers, tool_count=tool_count)
+    # Called from the primary-dispatch error handler, where `db` may have a
+    # broken transaction (Cloud SQL reaping the connection while a long LLM
+    # HTTP call held the session). Rollback defensively and issue the lookup
+    # on a fresh session so we don't cascade into PendingRollbackError.
+    try:
+        db.rollback()
+    except Exception:
+        logger.warning("Rollback before fallback lookup failed; using fresh session anyway", exc_info=True)
+    with SessionLocal() as fallback_db:
+        return llm_router.find_fallback_model(fallback_db, exclude=exclude_providers, tool_count=tool_count)
 
 
 def _validate_provider_configured(db: Session, provider: str):

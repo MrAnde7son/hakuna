@@ -18,7 +18,11 @@ CONDITION_CATALOG = engine.CONDITION_CATALOG
 
 
 def _resolve_sbom_finding_ids(db, sbom_conds, asset_id, scan_id):
-    """Return set of finding IDs matching product/cpe SBOM conditions for an asset."""
+    """Return set of finding IDs matching product/cpe SBOM conditions for an asset.
+
+    Tenant isolation is inherited from asset_id — the caller is expected to
+    have already scoped asset_id to the org.
+    """
     from models.models import SBOMComponent, SBOMVulnerability
     q = (
         db.query(SBOMVulnerability.finding_id)
@@ -44,10 +48,13 @@ def _resolve_sbom_finding_ids(db, sbom_conds, asset_id, scan_id):
     return {r[0] for r in q.all()}
 
 
-def run_query(db: Session, conditions: list, logic: str, scan_id) -> list:
+def run_query(db: Session, conditions: list, logic: str, scan_id, org_ids=None) -> list:
     """
     Execute a campaign query against the database.
     Returns a list of dicts: {asset, findings, matched_conditions}
+
+    org_ids scopes the query to the caller's tenant(s). Pass None only from
+    trusted contexts that intentionally span all orgs.
 
     Accepts both old-style {type, value} conditions (auto-migrated) and
     new-style {field, op, value} conditions.
@@ -58,7 +65,7 @@ def run_query(db: Session, conditions: list, logic: str, scan_id) -> list:
     # Migrate any old-format conditions
     migrated = engine.migrate_conditions(conditions, mode="campaign")
 
-    matching_assets = engine.get_matching_assets(migrated, logic, db, scan_id)
+    matching_assets = engine.get_matching_assets(migrated, logic, db, scan_id, org_ids=org_ids)
 
     results = []
     for asset in matching_assets:

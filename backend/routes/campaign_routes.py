@@ -200,9 +200,13 @@ def get_condition_catalog(db: Session = Depends(get_db), org_ids: Optional[List[
 
 
 @router.post("/api/campaigns/preview")
-def preview_campaign_query(body: CampaignCreateBody, db: Session = Depends(get_db)):
+def preview_campaign_query(
+    body: CampaignCreateBody,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
     """Run a query and return matching assets + finding counts without saving."""
-    results = cq.run_query(db, body.query, body.query_logic, body.scan_id)
+    results = cq.run_query(db, body.query, body.query_logic, body.scan_id, org_ids=org_ids)
     return {
         "asset_count": len(results),
         "finding_count": sum(len(r["findings"]) for r in results),
@@ -224,12 +228,16 @@ def preview_campaign_query(body: CampaignCreateBody, db: Session = Depends(get_d
 
 
 @router.post("/api/search/advanced")
-def advanced_search(body: AdvancedSearchBody, db: Session = Depends(get_db)):
+def advanced_search(
+    body: AdvancedSearchBody,
+    db: Session = Depends(get_db),
+    org_ids: Optional[List[int]] = Depends(get_accessible_org_ids),
+):
     """Run a rule-engine query and return findings or assets in table format."""
     from routes.asset_routes import _asset_to_dict
     from routes.finding_routes import _finding_to_dict
     from services.blast_radius import resolve_dc_asset_ids as _resolve_dc_asset_ids
-    results = cq.run_query(db, body.query, body.query_logic, body.scan_id)
+    results = cq.run_query(db, body.query, body.query_logic, body.scan_id, org_ids=org_ids)
 
     if body.type == "asset":
         asset_ids = [r["asset"].id for r in results]
@@ -453,7 +461,9 @@ def run_campaign(campaign_id: int, db: Session = Depends(get_db)):
                 camp.scan_id = None
                 scan_id = None
 
-            results = cq.run_query(db2, camp.query or [], camp.query_logic or "AND", scan_id)
+            # Scope to the campaign's own org so cross-tenant assets/findings can't leak in.
+            camp_org_ids = [camp.org_id] if camp.org_id is not None else None
+            results = cq.run_query(db2, camp.query or [], camp.query_logic or "AND", scan_id, org_ids=camp_org_ids)
 
             added = 0
             for r in results:
