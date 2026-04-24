@@ -30,9 +30,30 @@ from core.subscription import check_user_invite_limit
 from core.builtin_team_roles import seed_builtin_team_roles
 from services.easm import trigger_easm_for_new_org
 from services.brevo import APP_URL
+from services import posthog_client as analytics
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+def _track_auth(user: User, org: Organization, event: str) -> None:
+    """Identify the user + org and fire a lifecycle event to PostHog."""
+    analytics.identify(user.id, {
+        "email": user.email,
+        "display_name": user.display_name,
+        "role": user.role,
+        "org_id": org.id,
+        "org_name": org.name,
+        "email_verified": bool(user.email_verified),
+    })
+    analytics.group_identify("company", org.id, {
+        "name": org.name,
+        "slug": org.slug,
+        "org_type": org.org_type,
+        "subscription_tier": org.subscription_tier or "free",
+        "subscription_status": org.subscription_status,
+    })
+    analytics.capture(user.id, event, {"role": user.role}, org_id=org.id)
 
 
 # ── Pydantic schemas ─────────────────────────────────────
@@ -213,6 +234,8 @@ async def register(body: RegisterRequest, request: Request, db: Session = Depend
     except Exception as e:
         logger.warning(f"EASM trigger failed (non-fatal): {e}")
 
+    _track_auth(user, org, "user_registered")
+
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -309,6 +332,8 @@ async def login(body: LoginRequest, request: Request, db: Session = Depends(get_
 
     token = create_access_token(user.id, org.id, user.role)
 
+    _track_auth(user, org, "user_logged_in")
+
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -371,6 +396,7 @@ async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = D
         db.commit()
 
         token = create_access_token(user.id, org.id, user.role)
+        _track_auth(user, org, "user_logged_in")
         return {
             "access_token": token,
             "token_type": "bearer",
@@ -423,6 +449,8 @@ async def google_auth(body: GoogleAuthRequest, request: Request, db: Session = D
             await trigger_easm_for_new_org(db, org, email)
         except Exception as e:
             logger.warning(f"EASM trigger failed (non-fatal): {e}")
+
+        _track_auth(user, org, "user_registered")
 
         return {
             "access_token": token,

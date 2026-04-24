@@ -57,6 +57,7 @@ import {
   getSiemRecentAlerts,
 } from '../../api.js'
 import { Card, SeverityBadge, ScoreBar, Spinner, EffortBadge, OwnerBadge, Button, Pill, ExportImportButtons, ErrorBanner, SkeletonCard, useToast, useConfirm } from '../shared/ui.jsx'
+import { capture } from '../../utils/analytics.js'
 
 // ─── Storage helpers ─────────────────────────────────────────────────────────
 
@@ -4135,6 +4136,7 @@ function ExportDropdown({ canvasRef, reportName, disabled }) {
   const run = async (format) => {
     setOpen(false)
     setExporting(format)
+    capture('report_exported', { format, report_name: reportName })
     try {
       if (format === 'png') await exportAsPNG(canvasRef.current, reportName)
       else if (format === 'pdf') await exportAsPDF(canvasRef.current, reportName)
@@ -4803,6 +4805,7 @@ export default function ReportBuilder() {
         || window.alert(t('reports.nameRequired', 'Please rename the report before saving.'))
       return
     }
+    const isNew = !updated.id
     try {
       if (updated.id) {
         await updateReportTemplate(updated.id, {
@@ -4816,6 +4819,11 @@ export default function ReportBuilder() {
         })
         updated = { ...updated, id: result.id, name: proposedName }
       }
+      capture('report_saved', {
+        report_id: updated.id,
+        is_new: isNew,
+        widget_count: (updated.widgets || []).length,
+      })
       setActiveReport(updated)
       loadFromApi()
     } catch (e) {

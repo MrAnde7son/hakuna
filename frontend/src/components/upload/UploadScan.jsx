@@ -5,6 +5,7 @@ import { Upload, CheckCircle, AlertCircle, FileText, X } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import { uploadScan, deleteScan, getScanStatus } from '../../api.js'
 import { Card, PageHeader, Button, useConfirm, useToast } from '../shared/ui.jsx'
+import { capture } from '../../utils/analytics.js'
 
 function DropZone({ onFile, disabled }) {
   const { t } = useTranslation()
@@ -103,6 +104,11 @@ export default function UploadScan() {
   const handleFile = async (file) => {
     const id = Date.now()
     setUploads(prev => [...prev, { id, file, status: 'uploading', result: null, error: null }])
+    capture('scan_started', {
+      file_name: file.name,
+      file_size_bytes: file.size,
+      file_extension: (file.name.split('.').pop() || '').toLowerCase(),
+    })
 
     try {
       const result = await uploadScan(file)
@@ -125,10 +131,16 @@ export default function UploadScan() {
             }
             if (statusData.status === 'failed') {
               setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'error', error: 'Scan processing failed' } : u))
+              capture('scan_failed', { scan_id: result.scan_id })
             } else {
               setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'done', result: finalResult } : u))
               await refreshScans()
               setActiveScanId(result.scan_id)
+              capture('scan_ingested', {
+                scan_id: result.scan_id,
+                assets: finalResult.assets,
+                findings: finalResult.findings,
+              })
             }
             return
           }
@@ -140,9 +152,15 @@ export default function UploadScan() {
         setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'done', result } : u))
         await refreshScans()
         setActiveScanId(result.scan_id)
+        capture('scan_ingested', {
+          scan_id: result.scan_id,
+          assets: result.assets,
+          findings: result.findings,
+        })
       }
     } catch (err) {
       setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'error', error: err.message } : u))
+      capture('scan_failed', { error: err.message })
     }
   }
 

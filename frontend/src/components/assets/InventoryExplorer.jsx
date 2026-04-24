@@ -26,6 +26,7 @@ import {
   getEasmAssets, getEasmBreaches, getEasmSubsidiaries, getEasmScreenshotUrl,
 } from '../../api.js'
 import { useScan } from '../../App.jsx'
+import { capture } from '../../utils/analytics.js'
 
 const INV_PAGE_SIZE = 25
 
@@ -3945,7 +3946,10 @@ export default function InventoryExplorer() {
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get('tab')
   const activeTab = resolveTabSlug(tabParam) || 'surface'
-  const setActiveTab = (key) => setSearchParams(prev => { prev.set('tab', key); return prev })
+  const setActiveTab = (key) => {
+    if (key !== activeTab) capture('inventory_tab_opened', { tab: key })
+    setSearchParams(prev => { prev.set('tab', key); return prev })
+  }
   const assetId = searchParams.get('asset_id')
   const assetName = searchParams.get('asset_name')
   const tabGroups = useMemo(() => getTabGroups(t), [t])
@@ -3994,7 +3998,10 @@ export default function InventoryExplorer() {
         title={t('inventory.title')}
         subtitle="Structured entities extracted from scan data — users, groups, computers, shares, software, security controls, and more."
         action={TAB_EXPORT_MAP[activeTab] ? (
-          <Button variant="ghost" size="sm" onClick={() => exportDownload(TAB_EXPORT_MAP[activeTab], { scan_id: activeScanId })}>
+          <Button variant="ghost" size="sm" onClick={() => {
+            capture('inventory_exported', { format: 'csv', tab: activeTab, scan_id: activeScanId })
+            exportDownload(TAB_EXPORT_MAP[activeTab], { scan_id: activeScanId })
+          }}>
             <Download size={14} /> {t('inventory.exportCsv')}
           </Button>
         ) : null}

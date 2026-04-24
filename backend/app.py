@@ -571,6 +571,15 @@ def startup():
     logger.info("Startup complete — deferred tasks running in background")
 
 
+@app.on_event("shutdown")
+def shutdown():
+    try:
+        from services import posthog_client as analytics
+        analytics.shutdown()
+    except Exception:
+        pass
+
+
 # ─────────────────────────────────────────────
 # Temporal Tracking Helpers
 # ─────────────────────────────────────────────
@@ -1627,6 +1636,17 @@ async def upload_scan(
         user.email,
         getattr(user, "display_name", None),
     )
+
+    try:
+        from services import posthog_client as analytics
+        analytics.capture(user.id, "scan_started", {
+            "scan_id": scan_id,
+            "source_type": source_parser.source_type,
+            "file_size_bytes": total,
+            "filename": file.filename,
+        }, org_id=effective_org_id)
+    except Exception:
+        pass
 
     return {
         "scan_id": scan_id,

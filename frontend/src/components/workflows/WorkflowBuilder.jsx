@@ -12,6 +12,7 @@ import {
   getWorkflowExecution, getNodeCatalog, getIntegration, getAgents,
 } from '../../api.js'
 import { Button, Spinner, EmptyState, Pill, ErrorBanner } from '../shared/ui.jsx'
+import { capture } from '../../utils/analytics.js'
 
 // ─── Icon map ─────────────────────────────
 const ICON_MAP = {
@@ -127,6 +128,11 @@ export default function WorkflowBuilder() {
       const updated = await updateWorkflow(id, data)
       setWorkflow(updated)
       setDirty(false)
+      capture('workflow_saved', {
+        workflow_id: id,
+        node_count: nodes.length,
+        edge_count: edges.length,
+      })
     } catch (e) { console.error(e) }
     setSaving(false)
   }, [id, nodes, edges])
@@ -181,6 +187,7 @@ export default function WorkflowBuilder() {
     if (dirty) await handleSave()
     setExecuting(true)
     setExecDetail(null)
+    capture('workflow_executed', { workflow_id: id })
     try {
       const result = await executeWorkflow(id)
       setLastExecResult(result)

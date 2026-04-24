@@ -16,6 +16,7 @@ import {
   getOnboardingDomainInfo,
   skipOnboarding,
 } from '../../api.js'
+import { capture } from '../../utils/analytics.js'
 
 // ── Icon map for objectives ─────────────────────────────────────
 const ICON_MAP = {
@@ -689,6 +690,12 @@ export default function OnboardingWizard() {
   }, [data])
 
   const handleNext = async () => {
+    const currentStepId = STEPS[step]?.id
+    capture('onboarding_step_completed', {
+      step,
+      step_id: currentStepId,
+      total_steps: STEPS.length,
+    })
     if (step === 3) {
       // Moving from notifications → packages: fetch recommendations
       await fetchRecommendations()
@@ -709,6 +716,12 @@ export default function OnboardingWizard() {
           selected_packages: selectedPkgs,
         })
         setResult(res.created)
+        capture('onboarding_completed', {
+          industry: data.industry,
+          org_size: data.org_size,
+          selected_packages: selectedPkgs,
+          package_count: selectedPkgs.length,
+        })
       } catch (err) {
         setError(err.message || 'Failed to apply packages')
       } finally {

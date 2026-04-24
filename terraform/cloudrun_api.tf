@@ -136,6 +136,23 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
 
+      # PostHog product analytics — project API key (shared with frontend build).
+      # services/posthog_client.py no-ops if the key is "disabled" (see secrets.tf).
+      env {
+        name = "POSTHOG_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.posthog_api_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name  = "POSTHOG_HOST"
+        value = var.posthog_host
+      }
+
       # Cloud Trace — Cloud Run automatically injects PROJECT_ID
       env {
         name  = "GOOGLE_CLOUD_PROJECT"
@@ -315,6 +332,7 @@ resource "google_cloud_run_v2_service" "api" {
     google_secret_manager_secret_version.redis_url,
     google_secret_manager_secret_version.jwt_secret,
     google_secret_manager_secret_version.sentry_dsn,
+    google_secret_manager_secret_version.posthog_api_key,
     google_secret_manager_secret_version.brevo_smtp_pass,
     google_secret_manager_secret_version.integration_secret_key,
     google_secret_manager_secret_version.stripe_secret_key,

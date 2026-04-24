@@ -529,6 +529,7 @@ def get_remediation_queue(
 def log_automate_click(
     finding_id: int,
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     finding = db.query(Finding).filter(Finding.id == finding_id).first()
     if not finding:
@@ -544,6 +545,20 @@ def log_automate_click(
     )
     db.add(click)
     db.commit()
+
+    if current_user is not None:
+        try:
+            from services import posthog_client as analytics
+            analytics.capture(current_user.id, "remediation_executed", {
+                "finding_id": finding_id,
+                "plugin_id": finding.plugin_id,
+                "plugin_name": finding.plugin_name,
+                "severity": getattr(finding, "severity", None),
+                "asset_ip": asset.ip if asset else None,
+            }, org_id=current_user.org_id)
+        except Exception:
+            pass
+
     return {"message": "Click logged", "finding_id": finding_id}
 
 

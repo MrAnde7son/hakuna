@@ -14,6 +14,7 @@ import {
 import StepAuthenticate from './steps/StepAuthenticate.jsx'
 import StepFieldMapper from './steps/StepFieldMapper.jsx'
 import ActiveDirectoryConfig from './ActiveDirectoryConfig.jsx'
+import { capture } from '../../utils/analytics.js'
 
 const STEPS_API = [
   { key: 'source', label: 'Choose Source' },
@@ -577,6 +578,16 @@ export default function IntegrationBuilder({ embedded, editId: embeddedEditId, o
         setStep(stepKeyIndex('setup'))
         return
       }
+
+      capture('integration_connected', {
+        integration_id: result.id,
+        template_id: selectedConnector || null,
+        transport_type: useRelay ? 'relay' : transportType,
+        direction,
+        entity,
+        is_edit: !!editId,
+        run_after_save: !!andRun,
+      })
 
       if (andRun && result.id) {
         // Fire run in background — don't block the UI

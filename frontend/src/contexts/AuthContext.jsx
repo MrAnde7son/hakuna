@@ -6,6 +6,7 @@ import {
   setStoredToken, clearStoredToken, getStoredToken,
   setOrgContext, getOrgContext,
 } from '../api.js'
+import { identifyUser, resetAnalytics, capture } from '../utils/analytics.js'
 
 const AuthContext = createContext(null)
 
@@ -35,6 +36,7 @@ export function AuthProvider({ children }) {
         setEffectivePermissions(data.effective_permissions || {})
         setIsAuthenticated(true)
         Sentry.setUser({ id: data.id, email: data.email })
+        identifyUser(data, data.org)
         // Sync UI language with user's stored locale preference
         if (data.locale && data.locale !== i18n.language) {
           i18n.changeLanguage(data.locale)
@@ -55,6 +57,8 @@ export function AuthProvider({ children }) {
     setUser(data.user)
     setOrg(data.user.org)
     setIsAuthenticated(true)
+    identifyUser(data.user, data.user.org)
+    capture('user_logged_in', { method: 'password' })
     // Fetch full user info (includes accessible_orgs for MSSP)
     try {
       const me = await authMe()
@@ -62,6 +66,7 @@ export function AuthProvider({ children }) {
       setOrg(me.org)
       setAccessibleOrgs(me.accessible_orgs || [me.org])
       setEffectivePermissions(me.effective_permissions || {})
+      identifyUser(me, me.org)
     } catch {}
     return data
   }, [])
@@ -73,6 +78,8 @@ export function AuthProvider({ children }) {
     setOrg(data.user.org)
     setAccessibleOrgs([data.user.org])
     setIsAuthenticated(true)
+    identifyUser(data.user, data.user.org)
+    capture('user_registered', { method: 'password', org_name: orgName })
     // Fetch full user info (includes effective_permissions for nav visibility)
     try {
       const me = await authMe()
@@ -80,6 +87,7 @@ export function AuthProvider({ children }) {
       setOrg(me.org)
       setAccessibleOrgs(me.accessible_orgs || [me.org])
       setEffectivePermissions(me.effective_permissions || {})
+      identifyUser(me, me.org)
     } catch {}
     return data
   }, [])
@@ -90,12 +98,15 @@ export function AuthProvider({ children }) {
     setUser(data.user)
     setOrg(data.user.org)
     setIsAuthenticated(true)
+    identifyUser(data.user, data.user.org)
+    capture('user_logged_in', { method: 'google' })
     try {
       const me = await authMe()
       setUser(me)
       setOrg(me.org)
       setAccessibleOrgs(me.accessible_orgs || [me.org])
       setEffectivePermissions(me.effective_permissions || {})
+      identifyUser(me, me.org)
     } catch {}
     return data
   }, [])
@@ -116,6 +127,8 @@ export function AuthProvider({ children }) {
   const logout = useCallback(() => {
     clearStoredToken()
     Sentry.setUser(null)
+    capture('user_logged_out')
+    resetAnalytics()
     setUser(null)
     setOrg(null)
     setAccessibleOrgs([])
