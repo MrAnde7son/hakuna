@@ -40,6 +40,19 @@ variable "sentry_dsn" {
   sensitive   = true
 }
 
+variable "posthog_api_key" {
+  type        = string
+  description = "PostHog project API key (phc_...) — shared by backend (POSTHOG_API_KEY) and frontend build (VITE_POSTHOG_KEY). Leave empty to disable product analytics."
+  default     = ""
+  sensitive   = true
+}
+
+variable "posthog_host" {
+  type        = string
+  description = "PostHog API host. Defaults to US cloud; set to https://eu.i.posthog.com for EU cloud or a self-hosted URL."
+  default     = "https://us.i.posthog.com"
+}
+
 variable "jwt_secret" {
   type        = string
   description = "JWT signing secret. Generate with: openssl rand -hex 32"

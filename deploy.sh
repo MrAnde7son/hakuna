@@ -229,6 +229,16 @@ if $DO_FRONTEND; then
   export VITE_SENTRY_DSN
   export VITE_ENVIRONMENT="${VITE_ENVIRONMENT:-production}"
 
+  # PostHog project API key for frontend product analytics — shared with
+  # backend (same secret, managed by terraform/secrets.tf). The "disabled"
+  # sentinel is stored when the tfvar is empty, so analytics.js no-ops.
+  if [[ -z "${VITE_POSTHOG_KEY:-}" ]]; then
+    VITE_POSTHOG_KEY=$(gcloud secrets versions access latest --secret="hakuna-posthog-api-key" 2>/dev/null || true)
+  fi
+  [[ "${VITE_POSTHOG_KEY:-}" == "disabled" ]] && VITE_POSTHOG_KEY=""
+  export VITE_POSTHOG_KEY
+  export VITE_POSTHOG_HOST="${VITE_POSTHOG_HOST:-https://us.i.posthog.com}"
+
   npm ci --silent
   npm run build
   success "Frontend built → frontend/dist"
