@@ -1,6 +1,6 @@
 # Hakuna Exposure Management Platform
 
-An open-source vulnerability management platform that imports scan results from multiple scanners, prioritizes vulnerabilities with AI-powered analysis, and helps security teams plan, track, and automate remediation — all from a single dashboard.
+A vulnerability management platform that supports multi domain scans and integration, prioritizes vulnerabilities with AI-powered analysis, and helps security teams plan, track, and automate remediation — all from a single dashboard.
 
 ![Python](https://img.shields.io/badge/python-3.8+-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)
