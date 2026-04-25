@@ -20,7 +20,7 @@ from core.database import get_db
 from core.time_utils import iso_utc
 from core.subscription import check_scan_limit
 from core.token_quota import check_token_quota, get_token_usage
-from models.models import Agent, AgentRun, Organization, Scan, User
+from models.models import Agent, AgentRun, Asset, Finding, Organization, Scan, User
 from agents.audit_registry import AUDITS, describe_all, list_audits
 from services.audit_runner import (
     AuditDispatchError, AuditWorkerUnavailableError,
@@ -454,18 +454,66 @@ def audit_scan_history(
         agents_by_id = {
             a.id: a for a in db.query(Agent).filter(Agent.id.in_(scratch_agent_ids)).all()
         }
+
+        # Resolve asset labels and findings counts in two bulk queries so the
+        # row count doesn't drive N+1 lookups.
+        asset_ids: list[int] = []
+        for a in agents_by_id.values():
+            ctx = (a.memory or {}).get("_run_ctx") or {}
+            aid = ctx.get("_asset_id")
+            if isinstance(aid, int):
+                asset_ids.append(aid)
+        assets_by_id = {
+            asset.id: asset
+            for asset in db.query(Asset).filter(Asset.id.in_(asset_ids)).all()
+        } if asset_ids else {}
+
+        from sqlalchemy import func
+        finding_pairs = []
+        for a in agents_by_id.values():
+            ctx = (a.memory or {}).get("_run_ctx") or {}
+            sid, aid = ctx.get("_scan_id"), ctx.get("_asset_id")
+            if isinstance(sid, int) and isinstance(aid, int):
+                finding_pairs.append((sid, aid))
+        findings_by_pair: dict[tuple[int, int], int] = {}
+        if finding_pairs:
+            scan_ids = list({p[0] for p in finding_pairs})
+            aids = list({p[1] for p in finding_pairs})
+            counts = (
+                db.query(Finding.scan_id, Finding.asset_id, func.count(Finding.id))
+                .filter(Finding.scan_id.in_(scan_ids), Finding.asset_id.in_(aids))
+                .group_by(Finding.scan_id, Finding.asset_id)
+                .all()
+            )
+            findings_by_pair = {(s, a_): c for s, a_, c in counts}
+
         for r in rows:
             a = agents_by_id.get(r.agent_id)
             ctx = (a.memory or {}).get("_run_ctx") if a else {}
+            asset_id = ctx.get("_asset_id") if ctx else None
+            scan_ctx_id = ctx.get("_scan_id") if ctx else None
+            asset = assets_by_id.get(asset_id) if isinstance(asset_id, int) else None
+            asset_label = None
+            if asset:
+                asset_label = asset.fqdn or asset.hostname or asset.ip or f"asset-{asset.id}"
+            duration_s = None
+            if r.created_at and r.finished_at:
+                duration_s = round((r.finished_at - r.created_at).total_seconds(), 1)
+            findings_count = findings_by_pair.get(
+                (scan_ctx_id, asset_id), 0
+            ) if isinstance(scan_ctx_id, int) and isinstance(asset_id, int) else None
             runs.append({
                 "agent_run_id": r.id,
                 "agent_id": r.agent_id,
-                "asset_id": ctx.get("_asset_id") if ctx else None,
+                "asset_id": asset_id,
+                "asset_label": asset_label,
                 "protocol": ctx.get("_protocol") if ctx else None,
                 "mission": ctx.get("_mission") if ctx else None,
-                "scan_id": ctx.get("_scan_id") if ctx else None,
+                "scan_id": scan_ctx_id,
                 "status": r.status,
                 "steps_used": r.steps_used,
+                "findings_count": findings_count,
+                "duration_s": duration_s,
                 "created_at": iso_utc(r.created_at),
                 "finished_at": iso_utc(r.finished_at),
                 "error": r.error,

@@ -91,6 +91,7 @@ from routes.copilot_routes import router as copilot_router
 from routes.workflow_routes import router as workflow_router
 from routes.notification_routes import router as notification_router
 from routes.control_assessment_routes import router as control_assessment_router
+from routes.compliance_routes import router as compliance_router
 from routes.onboarding_routes import router as onboarding_router
 from routes.saml_routes import router as saml_router
 from routes.relay_routes import router as relay_router, ws_router as relay_ws_router
@@ -320,6 +321,7 @@ app.include_router(billing_router)
 app.include_router(workflow_router)
 app.include_router(notification_router)
 app.include_router(control_assessment_router)
+app.include_router(compliance_router)
 app.include_router(onboarding_router)
 app.include_router(saml_router)
 app.include_router(relay_router)
@@ -555,6 +557,28 @@ def _deferred_startup():
             _db.close()
     except Exception as _e:
         logger.warning(f"SLA startup seeding failed (non-fatal): {_e}")
+    # Compliance frameworks — load shipped YAML mappings (sha256-gated, idempotent)
+    try:
+        from core.database import SessionLocal as _SL
+        from services.compliance_loader import load_all_frameworks
+        _db = _SL()
+        try:
+            results = load_all_frameworks(_db)
+            for r in results:
+                if r.get("status") in ("loaded", "updated"):
+                    logger.info(
+                        "Compliance framework %s %s (%d controls)",
+                        r.get("framework_slug"), r["status"], r.get("controls_loaded", 0),
+                    )
+                elif r.get("status") in ("validation_error", "parse_error", "schema_error", "error"):
+                    logger.warning(
+                        "Compliance framework load failed (%s): %s — %s",
+                        r["status"], r.get("path"), r.get("error"),
+                    )
+        finally:
+            _db.close()
+    except Exception as _e:
+        logger.warning(f"Compliance framework loading failed (non-fatal): {_e}")
     logger.info("Deferred startup complete")
 
 
@@ -1536,8 +1560,40 @@ def _run_scan_ingest(
                 metadata={"count": new_assets, "scan_name": scan.scan_name or filename})
 
         scan.status = "completed"
+
+        # ── Activation milestone ──
+        # Fire `activated` exactly once per org, the first time a scan with
+        # ≥1 finding completes. Set activated_at in the same transaction so
+        # concurrent scans can't double-fire.
+        org_activated_now = False
+        if total_findings > 0:
+            org = db.query(Organization).filter(Organization.id == effective_org_id).first()
+            if org and org.activated_at is None:
+                org.activated_at = datetime.utcnow()
+                org_activated_now = True
+
         db.commit()
         _endpoint_cache.clear()
+
+        # Analytics — fire after commit so we don't emit if the txn rolls back.
+        try:
+            from services import posthog_client as analytics
+            analytics.capture(user_id, "scan_ingested", {
+                "scan_id": scan.id,
+                "source_type": source_parser.source_type,
+                "assets": total_assets,
+                "findings": total_findings,
+                "critical_high": crit_high,
+            }, org_id=effective_org_id)
+            if org_activated_now:
+                analytics.capture(user_id, "activated", {
+                    "scan_id": scan.id,
+                    "source_type": source_parser.source_type,
+                    "assets": total_assets,
+                    "findings": total_findings,
+                }, org_id=effective_org_id)
+        except Exception:
+            pass
 
     except Exception as e:
         logger.exception(f"Background scan processing failed for scan {scan_id}: {e}")

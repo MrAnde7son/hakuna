@@ -726,7 +726,18 @@ def register_numeric_op(name: str, handler: callable) -> None:
 
 def _str_op(asset_val: str, op: str, value: str) -> bool:
     av = asset_val.lower()
-    v  = str(value or "").lower()
+    # in / not_in accept a list (or comma-separated string) of allowed values.
+    # Compliance YAMLs lean on these heavily for "workflow_status in [resolved,
+    # false_positive]" style guardrails — handle here so the comparison stays
+    # case-insensitive end-to-end without callers having to lowercase.
+    if op in ("in", "not_in"):
+        if isinstance(value, (list, tuple, set)):
+            choices = {str(x).lower() for x in value if x is not None}
+        else:
+            choices = {s.strip().lower() for s in str(value or "").split(",") if s.strip()}
+        present = av in choices
+        return present if op == "in" else not present
+    v = str(value or "").lower()
     # Check raw-value operators first (regex, cidr, custom)
     if op in _STRING_RAW_OPS:
         return _STRING_RAW_OPS[op](asset_val, str(value or ""))
@@ -737,6 +748,19 @@ def _str_op(asset_val: str, op: str, value: str) -> bool:
 
 
 def _num_op(asset_num: float, op: str, value) -> bool:
+    if op in ("in", "not_in"):
+        if isinstance(value, (list, tuple, set)):
+            raw_choices = list(value)
+        else:
+            raw_choices = [s.strip() for s in str(value or "").split(",") if s.strip()]
+        choices: set[float] = set()
+        for c in raw_choices:
+            try:
+                choices.add(float(c))
+            except (TypeError, ValueError):
+                continue
+        present = asset_num in choices
+        return present if op == "in" else not present
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -940,7 +964,7 @@ def _eval_finding_row(cond: dict, finding) -> bool:
     if sub == "owner":
         return _str_op(finding.owner_suggestion or "", op, value)
     if sub == "sla_status":
-        return _str_op(finding.sla_status or "", op, str(value or ""))
+        return _str_op(finding.sla_status or "", op, value)
     if sub == "sla_days_remaining":
         from datetime import date
         if not finding.sla_due_date:
@@ -961,16 +985,16 @@ def _eval_finding_row(cond: dict, finding) -> bool:
     if sub == "epss_score":
         return _num_op(float(finding.epss_score or 0), op, value)
     if sub == "vulnerability_state":
-        return _str_op(finding.vulnerability_state or "", op, str(value or ""))
+        return _str_op(finding.vulnerability_state or "", op, value)
     if sub == "exploit_maturity":
-        return _str_op(finding.exploit_maturity or "", op, str(value or ""))
+        return _str_op(finding.exploit_maturity or "", op, value)
     if sub == "is_regression":
         result = bool(finding.is_regression)
         return result if op == "is_true" else not result
     if sub == "times_seen":
         return _num_op(float(finding.times_seen or 1), op, value)
     if sub == "workflow_status":
-        return _str_op(finding.workflow_status or "open", op, str(value or ""))
+        return _str_op(finding.workflow_status or "open", op, value)
     if sub == "has_exception":
         result = finding.exception_id is not None
         return result if op == "is_true" else not result

@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { AlertTriangle, X, Lock } from 'lucide-react'
+import { capture } from '../../utils/analytics.js'
 
 export default function SubscriptionBanner() {
   const { org, isPro } = useAuth()
@@ -26,7 +27,10 @@ export default function SubscriptionBanner() {
           Your payment failed. Update your payment method to avoid service interruption.
         </span>
         <button
-          onClick={() => navigate('/profile')}
+          onClick={() => {
+            capture('upgrade_clicked', { source: 'past_due_banner', target_tier: 'pro' })
+            navigate('/profile')
+          }}
           style={{
             padding: '4px 12px', borderRadius: 5, border: '1px solid var(--warning)',
             background: 'transparent', color: 'var(--warning)', fontSize: 12,
@@ -63,7 +67,14 @@ export function ProFeatureGate({ feature }) {
         {feature || "You've reached your plan limit"}. Upgrade for higher quotas.
       </span>
       <button
-        onClick={() => navigate('/profile')}
+        onClick={() => {
+          capture('upgrade_clicked', {
+            source: 'paywall_gate',
+            target_tier: 'pro',
+            feature: feature || null,
+          })
+          navigate('/profile')
+        }}
         style={{
           padding: '8px 20px', borderRadius: 6, border: 'none',
           background: 'var(--accent)', color: '#fff', fontSize: 13,

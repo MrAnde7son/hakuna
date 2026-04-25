@@ -39,6 +39,10 @@ class Organization(Base):
     ai_tokens_used = Column(Integer, default=0)
     ai_tokens_reset_at = Column(DateTime, nullable=True)
 
+    # PLG activation milestone — set once, when org's first scan with ≥1 finding ingests.
+    # Drives the `activated` PostHog event and downstream retention/conversion analysis.
+    activated_at = Column(DateTime, nullable=True)
+
     parent = relationship("Organization", remote_side=[id], backref="children")
     users = relationship("User", back_populates="organization")
 
@@ -2632,3 +2636,301 @@ class SuppressionRule(Base):
     suppressed_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ─────────────────────────────────────────────────────────
+# Compliance frameworks & controls
+# ─────────────────────────────────────────────────────────
+#
+# Two-tier model:
+#   1. Canonical reference tables (frameworks, controls, control_mappings,
+#      framework_releases) — global, no org_id, seeded from YAML shipped
+#      in backend/compliance/frameworks/. Mirrors the BenchmarkReference /
+#      ThreatCVE / CWEEntry pattern.
+#   2. Tenant-owned tables (org_framework_subscriptions,
+#      compliance_control_status, compliance_finding_status,
+#      compliance_compensating_controls, compliance_report_runs) — strict
+#      org_id NOT NULL, indexed on (org_id, …) per the SecurityControlPolicy
+#      pattern. compliance_finding_status.org_id is intentionally
+#      denormalized (Finding has no direct org_id) so per-framework
+#      dashboard queries don't pay the 2-hop join on every page load.
+
+class ComplianceFramework(Base):
+    """Canonical compliance framework (PCI DSS, SOC 2, NIST CSF, CIS v8, …).
+
+    Loaded from versioned YAML in backend/compliance/frameworks/<slug>/<version>.yaml
+    by services/compliance_loader on first boot or when the file's sha256 changes.
+    Tenants opt in via ``org_framework_subscriptions`` rather than editing rules.
+    """
+    __tablename__ = "compliance_frameworks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    slug = Column(String, unique=True, nullable=False, index=True)  # "pci_dss_4_0", "soc2_2017_tsc"
+    name = Column(String, nullable=False)                           # "PCI DSS"
+    version = Column(String, nullable=False)                        # "4.0.1"
+    authority = Column(String, nullable=True)                       # "PCI SSC"
+    published_at = Column(DateTime, nullable=True)                  # framework publication date
+    description = Column(Text, nullable=True)
+    categories = Column(JSON, default=list, nullable=False)         # ["Payments"], etc.
+    # Bumped when control_mappings.rule schema changes — the loader compares to
+    # the value in the YAML so we can refuse stale tenant evaluator cache.
+    mapping_schema_version = Column(Integer, default=1, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    controls = relationship("ComplianceControl", back_populates="framework",
+                            cascade="all, delete-orphan")
+    releases = relationship("ComplianceFrameworkRelease", back_populates="framework",
+                            cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("slug", "version", name="uq_compliance_framework_slug_version"),
+    )
+
+
+class ComplianceControl(Base):
+    """A single control / requirement under a framework (e.g. PCI 6.3.3, SOC 2 CC6.1)."""
+    __tablename__ = "compliance_controls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    framework_id = Column(Integer, ForeignKey("compliance_frameworks.id", ondelete="CASCADE"),
+                          nullable=False, index=True)
+    ref = Column(String, nullable=False)                            # "6.3.3", "CC6.1", "PR.PS-02"
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    parent_ref = Column(String, nullable=True)                      # for sub-requirements (e.g. 6.3.3.a → 6.3.3)
+    domain = Column(String, nullable=True)                          # "Vulnerability Management", "Access Control"
+    # automated: rules cover it end-to-end
+    # partial:   some rules automated, some require manual evidence
+    # manual_only: no automated mappings — surfaces as not_applicable
+    testability = Column(String, default="automated", nullable=False)
+    # If any matched finding meets or exceeds this severity, the control fails
+    # regardless of count. Null means count-based logic only.
+    default_severity_floor = Column(Integer, nullable=True)
+    canonical_guidance = Column(Text, nullable=True)                # auditor-facing description
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    framework = relationship("ComplianceFramework", back_populates="controls")
+    mappings = relationship("ComplianceControlMapping", back_populates="control",
+                            cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("framework_id", "ref", name="uq_compliance_control_framework_ref"),
+        Index("ix_compliance_control_framework_domain", "framework_id", "domain"),
+    )
+
+
+class ComplianceControlMapping(Base):
+    """A single rule (rule_engine condition list) that asserts whether a finding
+    matches a control. One control may have many mappings (covering different
+    scanners / detection classes). Identified by ``mapping_key`` rather than id
+    so YAML re-releases don't orphan compliance_finding_status rows.
+    """
+    __tablename__ = "compliance_control_mappings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    control_id = Column(Integer, ForeignKey("compliance_controls.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    # Stable key from YAML — survives renumbering / re-release. Globally unique
+    # across all frameworks so compliance_finding_status doesn't have to also
+    # carry control_id when joining.
+    mapping_key = Column(String, nullable=False)
+    rule = Column(JSON, nullable=False)                             # rule_engine condition list
+    rule_version = Column(Integer, default=1, nullable=False)       # bumped when rule body changes
+    testability = Column(String, nullable=True)                     # per-rule override of control.testability
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    control = relationship("ComplianceControl", back_populates="mappings")
+
+    __table_args__ = (
+        UniqueConstraint("mapping_key", name="uq_compliance_control_mapping_key"),
+    )
+
+
+class ComplianceFrameworkRelease(Base):
+    """Audit trail of framework YAML loads. One row per (framework, release_tag).
+
+    Lets us answer "which mapping version was in effect when this finding was
+    last evaluated?" without consulting git history.
+    """
+    __tablename__ = "compliance_framework_releases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    framework_id = Column(Integer, ForeignKey("compliance_frameworks.id", ondelete="CASCADE"),
+                          nullable=False, index=True)
+    release_tag = Column(String, nullable=False)                    # "2026.04.24-v1"
+    release_notes = Column(Text, nullable=True)
+    mapping_file_sha256 = Column(String, nullable=True)             # hex digest of the YAML
+    released_at = Column(DateTime, default=datetime.utcnow)
+
+    framework = relationship("ComplianceFramework", back_populates="releases")
+
+    __table_args__ = (
+        UniqueConstraint("framework_id", "release_tag",
+                         name="uq_compliance_framework_release_tag"),
+    )
+
+
+class OrgFrameworkSubscription(Base):
+    """An org's opt-in to a compliance framework, plus the asset scope rule.
+
+    scope_rule is rule_engine JSON — a superset of FindingException.scope_tags.
+    Empty/null scope means "all assets in the org". scope_tag_expr is a UI
+    convenience: when the user authors via the simple tag picker, the comma
+    string lives here and scope_rule mirrors it as a one-condition rule.
+    """
+    __tablename__ = "org_framework_subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    framework_id = Column(Integer, ForeignKey("compliance_frameworks.id", ondelete="CASCADE"),
+                          nullable=False, index=True)
+    enabled = Column(Boolean, default=True, nullable=False)
+    scope_rule = Column(JSON, nullable=True)                        # rule_engine condition list
+    scope_tag_expr = Column(String, nullable=True)                  # UI mirror, e.g. "env:prod,cde:yes"
+    activated_at = Column(DateTime, default=datetime.utcnow)
+    activated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "framework_id", name="uq_org_framework_subscription"),
+        Index("ix_org_framework_subscription_org", "org_id"),
+    )
+
+
+class ComplianceCompensatingControl(Base):
+    """A documented compensating control covering a subset of failing findings
+    for a specific compliance control. Bridges to FindingException so the
+    auditor-facing compliance surface and the existing risk-acceptance model
+    stay in sync rather than holding two parallel free-text fields.
+    """
+    __tablename__ = "compliance_compensating_controls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    control_id = Column(Integer, ForeignKey("compliance_controls.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    scope_rule = Column(JSON, nullable=True)                        # which finding/asset subset this covers
+    rationale = Column(Text, nullable=False)                        # auditor-facing explanation
+    # Bridge to FindingException — written when an exception of type
+    # "compensating_control" backs this entry. The compliance evaluator
+    # follows this link to mark matched findings as
+    # verdict="satisfied_by_compensating".
+    linked_exception_id = Column(Integer, ForeignKey("finding_exceptions.id", ondelete="SET NULL"),
+                                  nullable=True)
+    linked_ticket_ids = Column(JSON, default=list, nullable=False)  # [{system, external_id}, ...]
+    valid_until = Column(DateTime, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_compliance_comp_org_control", "org_id", "control_id"),
+    )
+
+
+class ComplianceControlStatus(Base):
+    """Materialized state per (org, control). Recomputed by the compliance
+    evaluator after finalize_batch. The Compliance tab queries this table
+    directly for tab counts and the controls list.
+    """
+    __tablename__ = "compliance_control_status"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    control_id = Column(Integer, ForeignKey("compliance_controls.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    # passing | failing | partial | compensating_control | not_applicable
+    state = Column(String, default="not_applicable", nullable=False)
+    in_scope_asset_count = Column(Integer, default=0, nullable=False)
+    failing_finding_count = Column(Integer, default=0, nullable=False)
+    failing_asset_count = Column(Integer, default=0, nullable=False)
+    # Set when state == compensating_control / partial. SET NULL on delete so
+    # the status row survives a removed compensating-control note.
+    compensating_note_id = Column(
+        Integer,
+        ForeignKey("compliance_compensating_controls.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_evaluated_at = Column(DateTime, nullable=True)
+    # Bumped in code when evaluator logic changes; next finalize re-evaluates
+    # rows whose stored version is below the current evaluator_version.
+    evaluator_version = Column(Integer, default=1, nullable=False)
+    first_failed_at = Column(DateTime, nullable=True)               # earliest "failing" entry, for trend reports
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "control_id", name="uq_compliance_status_org_control"),
+        Index("ix_compliance_status_org_state", "org_id", "state"),
+        Index("ix_compliance_status_org_evaluated", "org_id", "last_evaluated_at"),
+    )
+
+
+class ComplianceFindingStatus(Base):
+    """One row per (finding × control mapping) the evaluator matched.
+
+    org_id is denormalized (Finding has no direct org_id — see Finding model
+    note) so per-framework dashboards don't pay the 2-hop join.
+    """
+    __tablename__ = "compliance_finding_status"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    control_id = Column(Integer, ForeignKey("compliance_controls.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    mapping_key = Column(String, nullable=False)                    # from compliance_control_mappings.mapping_key
+    # failing | satisfied_by_compensating | exception_suppressed | resolved
+    verdict = Column(String, default="failing", nullable=False)
+    # cve_cwe | plugin_family | plugin_id | ttp | inventory | source_vuln_id
+    matched_via = Column(String, nullable=True)
+    match_signal = Column(JSON, default=dict, nullable=False)       # {cve, cwe, plugin_id, ...}
+    scored_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("finding_id", "control_id", "mapping_key",
+                         name="uq_compliance_finding_status_finding_control_key"),
+        Index("ix_compliance_finding_status_org_control_verdict",
+              "org_id", "control_id", "verdict"),
+        Index("ix_compliance_finding_status_control_finding",
+              "control_id", "finding_id"),
+    )
+
+
+class ComplianceReportRun(Base):
+    """One row per generated compliance report (PDF / CSV / JSON). The artifact
+    lives in MinIO; this row carries the metadata + a frozen ``snapshot`` of
+    the control_status rollup at generation time so the report is reproducible
+    even if compliance state has moved on.
+    """
+    __tablename__ = "compliance_report_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"),
+                    nullable=False, index=True)
+    framework_id = Column(Integer, ForeignKey("compliance_frameworks.id", ondelete="CASCADE"),
+                          nullable=False, index=True)
+    format = Column(String, nullable=False)                         # "pdf" | "csv" | "json"
+    artifact_uri = Column(String, nullable=True)                    # minio://bucket/key
+    sha256 = Column(String, nullable=True)
+    status = Column(String, default="queued", nullable=False)       # queued | running | succeeded | failed
+    error = Column(Text, nullable=True)
+    generated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    generated_at = Column(DateTime, nullable=True)                  # set when status flips to succeeded/failed
+    snapshot = Column(JSON, default=dict, nullable=False)           # frozen control rollup
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_compliance_report_run_org_framework_generated",
+              "org_id", "framework_id", "generated_at"),
+    )

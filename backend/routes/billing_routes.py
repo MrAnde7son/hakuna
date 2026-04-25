@@ -238,11 +238,38 @@ def _handle_checkout_completed(session: dict, db: Session):
     if org.subscription_tier == "pro" and org.subscription_status == "active":
         return
 
+    previous_tier = org.subscription_tier or "free"
     org.subscription_tier = "pro"
     org.subscription_status = "active"
     org.stripe_subscription_id = subscription_id
     db.commit()
     logger.info(f"Org {org.id} upgraded to Pro via checkout")
+
+    # Analytics — authoritative paid-conversion event. Distinct_id is the
+    # admin who completed checkout (from Stripe metadata), falling back to
+    # the org's first admin so the event is always attached to a person.
+    try:
+        from services import posthog_client as analytics
+        admin_user_id = (session.get("metadata") or {}).get("user_id")
+        if not admin_user_id:
+            first_admin = (
+                db.query(User)
+                .filter(User.org_id == org.id, User.role.in_(("superadmin", "org_admin")))
+                .order_by(User.id.asc())
+                .first()
+            )
+            admin_user_id = first_admin.id if first_admin else None
+        if admin_user_id:
+            amount_total = session.get("amount_total")  # cents
+            analytics.capture(admin_user_id, "subscription_started", {
+                "tier": "pro",
+                "previous_tier": previous_tier,
+                "stripe_subscription_id": subscription_id,
+                "amount_total_cents": amount_total,
+                "currency": session.get("currency"),
+            }, org_id=org.id)
+    except Exception:
+        pass
 
 
 def _handle_invoice_paid(invoice: dict, db: Session):
