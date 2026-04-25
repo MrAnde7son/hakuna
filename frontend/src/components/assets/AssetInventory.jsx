@@ -1135,17 +1135,27 @@ export default function AssetInventory() {
             onChange={v => setFilter('assetType', v)}
             placeholder={t('assets.anyType', 'Any type')}
             options={(() => {
-              const all = [
+              const known = [
                 'host', 'web_app', 'cloud_instance', 'api_endpoint',
                 'identity', 'container_image', 'code_repo', 'k8s_workload',
                 'ai_inference', 'ai_service', 'ai_agent', 'ai_notebook', 'vector_db',
                 'iot_gateway', 'camera', 'nas', 'printer',
                 'plc', 'scada', 'smart_building',
               ]
-              const present = availableAssetTypes == null ? all : new Set(availableAssetTypes)
+              // Union known types with whatever is actually present in the DB, so
+              // customer-defined types (mcp_server, etc.) ingested via the
+              // integration builder show up in the filter.
+              const fromDb = Array.isArray(availableAssetTypes) ? availableAssetTypes : []
+              const dbSet = new Set(fromDb)
               const visible = availableAssetTypes == null
-                ? all
-                : all.filter(v => present.has(v) || v === filters.assetType)
+                ? known
+                : [
+                    ...known.filter(v => dbSet.has(v) || v === filters.assetType),
+                    ...fromDb.filter(v => !known.includes(v)),
+                  ]
+              if (filters.assetType && !visible.includes(filters.assetType)) {
+                visible.push(filters.assetType)
+              }
               return visible.map(v => ({ value: v, label: getAssetTypeLabel(v) }))
             })()}
           />

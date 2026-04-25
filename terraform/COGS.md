@@ -18,18 +18,35 @@ Cloud Run + Cloud SQL + Vertex         GCP Billing Export
                                      ├──► cogs.v_cogs_per_org_daily ◄── cogs.v_infra_cost_daily
 ```
 
-## One-time Console step
+## Setup order
 
-GCP does not expose the billing-export toggle via Terraform. Enable it once:
+BigQuery refuses to validate a view whose wildcard table reference has zero
+matching tables — so the two infra-cost views are gated behind
+`billing_export_ready` and get created on a **second** apply, after GCP has
+written at least one export table.
 
+**Step 1 — initial apply (creates datasets + LLM views):**
+```bash
+terraform apply   # billing_export_ready defaults to false
+```
+
+**Step 2 — enable detailed billing export (one-time Console step):**
 1. GCP Console → **Billing** → **Billing export** → **BigQuery export**.
-2. Under **Detailed usage cost**, click **Edit settings**.
-3. Project: `hakuna-prod`. Dataset: `billing_export` (created by Terraform).
+2. **Detailed usage cost** tab → **Edit settings**.
+3. Project: `hakuna-prod-2026`. Dataset: `billing_export` (just created by Terraform).
 4. Save.
 
-Data starts flowing within ~4 hours. The export table name looks like
-`gcp_billing_export_resource_v1_01ABCD_EFGH_IJKL` — the views use a
-wildcard suffix (`gcp_billing_export_resource_v1_*`) so no hardcoding.
+**Step 3 — wait ~4 hours, then confirm tables exist:**
+```sql
+SELECT table_name FROM `hakuna-prod-2026.billing_export.INFORMATION_SCHEMA.TABLES`
+WHERE table_name LIKE 'gcp_billing_export_resource_v1_%';
+```
+
+**Step 4 — second apply (creates the infra views):**
+```bash
+terraform apply -var="billing_export_ready=true"
+# Or add billing_export_ready = true to terraform.tfvars
+```
 
 ## Verifying
 

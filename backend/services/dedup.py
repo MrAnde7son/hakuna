@@ -412,8 +412,9 @@ def _is_legacy_asset_config(assets_cfg: dict) -> bool:
 def get_asset_type_config(cfg: dict, asset_type: str) -> dict:
     """Get dedup config for a specific asset type, with fallback chain:
     1. cfg["assets"][asset_type]  (per-type config)
-    2. cfg["assets"]["host"]     (host fallback for unknown types)
-    3. Legacy flat cfg["assets"] (backward compat for old config files)
+    2. cfg["assets"]["_default"] (operator-defined default for custom types)
+    3. Integration-builder fallback: (source_system, source_id)
+    4. Legacy flat cfg["assets"] (backward compat for old config files)
     """
     assets_cfg = cfg.get("assets", {})
     # Legacy flat config (pre per-type migration)
@@ -422,10 +423,16 @@ def get_asset_type_config(cfg: dict, asset_type: str) -> dict:
     # Per-type lookup
     if asset_type in assets_cfg:
         return assets_cfg[asset_type]
-    # Unknown custom type — use reasonable defaults
+    # Operator-defined default (lets admins set their own fallback without code)
+    if "_default" in assets_cfg:
+        return assets_cfg["_default"]
+    # Unknown custom type (e.g. ai_agent, mcp_server ingested via the integration
+    # builder). Dedup by (source_system, source_id) — the provenance columns
+    # populated by the field mapper. These uniquely identify a record within a
+    # source, so this avoids both over-merging and per-scan duplicates.
     return {
         "enabled": True,
-        "key_fields": list((cfg.get("assets", {}).get(asset_type) or {}).get("key_fields", [])),
+        "key_fields": ["source_system", "source_id"],
         "key_mode": "and",
         "strategy": "merge",
         "scope": "cross_scan",
@@ -454,6 +461,9 @@ def _get_asset_field(asset_or_dict, field: str):
 
 
 _HOST_COLUMN_FIELDS = {"ip", "hostname", "fqdn", "netbios_name", "mac_address", "os"}
+# Provenance columns also live on the Asset model and can serve as dedup keys
+# for custom asset_types ingested via the integration builder.
+_PROVENANCE_COLUMN_FIELDS = {"source_system", "source_id"}
 
 
 def resolve_asset_by_dedup_keys(db, asset_data: dict, org_id: int | None,
@@ -510,6 +520,8 @@ def resolve_asset_by_dedup_keys(db, asset_data: dict, org_id: int | None,
     def _field_clause(field: str, value: str):
         """Build a SQLAlchemy filter for a single key field."""
         if field in _HOST_COLUMN_FIELDS and hasattr(Asset, field):
+            return getattr(Asset, field) == value
+        if field in _PROVENANCE_COLUMN_FIELDS and hasattr(Asset, field):
             return getattr(Asset, field) == value
         # Non-host key field — lives in asset_identity JSON; SA maps `[]` to
         # Postgres `->>`.

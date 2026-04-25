@@ -180,6 +180,7 @@ resource "google_bigquery_table" "v_llm_cost_daily" {
 # billing account id with colons replaced by underscores. We pull it
 # dynamically via a wildcard suffix so this view stays portable.
 resource "google_bigquery_table" "v_infra_cost_daily" {
+  count               = var.billing_export_ready ? 1 : 0
   dataset_id          = google_bigquery_dataset.cogs.dataset_id
   table_id            = "v_infra_cost_daily"
   deletion_protection = false
@@ -212,6 +213,7 @@ resource "google_bigquery_table" "v_infra_cost_daily" {
 # Replace the allocation key with request_count from an access log when that
 # becomes available.
 resource "google_bigquery_table" "v_cogs_per_org_daily" {
+  count               = var.billing_export_ready ? 1 : 0
   dataset_id          = google_bigquery_dataset.cogs.dataset_id
   table_id            = "v_cogs_per_org_daily"
   deletion_protection = false
@@ -251,6 +253,12 @@ resource "google_bigquery_table" "v_cogs_per_org_daily" {
     google_bigquery_table.v_infra_cost_daily,
   ]
 }
+
+# When billing export isn't ready yet, the above is count=0. The view can be
+# queried directly from BQ console once you set billing_export_ready=true
+# and re-apply. Nothing downstream reads these views programmatically, so
+# skipping them on the first apply is safe.
+
 
 # ── IAM — let the API service account stream LLM usage rows ───────────────────
 

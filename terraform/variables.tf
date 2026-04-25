@@ -169,3 +169,11 @@ variable "stripe_price_id_annual" {
   type        = string
   description = "Stripe Price ID for the annual Pro plan"
 }
+
+# ── COGS ──────────────────────────────────────────────────────────────────────
+
+variable "billing_export_ready" {
+  type        = bool
+  description = "Set to true after GCP Billing Export has started writing to the billing_export dataset (~4h after enabling in Console). Gates creation of v_infra_cost_daily and v_cogs_per_org_daily, whose wildcard table reference fails to validate before any export table exists."
+  default     = false
+}

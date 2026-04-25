@@ -5,7 +5,7 @@ import {
   Upload, CheckCircle, AlertCircle, FileText, X, Radar, Globe, Plus,
   RefreshCw, Trash2, Search, Clock, Server, Shield, Loader,
   Play, MonitorSmartphone, History, ChevronDown, ChevronUp, Edit2, Save,
-  Square, Terminal, Key, Radio, ShieldAlert, Users, HardDrive, Database, Network,
+  Square, Terminal, Key, Radio, ShieldAlert, Users, HardDrive, Database, Network, Cloud,
 } from 'lucide-react'
 import { useScan } from '../../App.jsx'
 import useURLFilters from '../../hooks/useURLFilters.js'
@@ -175,7 +175,13 @@ const AUDIT_CARD_META = {
   smb:   { icon: HardDrive, color: '#f97316', label: 'Windows Share Audit (SMB)',     description: 'Inventory shares and exposure' },
   mssql: { icon: Database,  color: '#0284c7', label: 'Database Audit (MSSQL)',        description: 'Inspect SQL Server config' },
   snmp:  { icon: Network,   color: '#65a30d', label: 'Network Device Audit (SNMP)',   description: 'Query routers, switches, printers' },
+  ssh:   { icon: Terminal,  color: '#14b8a6', label: 'Linux Audit (SSH)',             description: 'Inspect Linux host config' },
+  aws:   { icon: Cloud,     color: '#f59e0b', label: 'AWS Cloud Audit',               description: 'IAM, exposure, posture' },
+  azure: { icon: Cloud,     color: '#0284c7', label: 'Azure Cloud Audit',             description: 'IAM, exposure, posture' },
+  gcp:   { icon: Cloud,     color: '#16a34a', label: 'GCP Cloud Audit',               description: 'IAM, exposure, posture' },
 }
+
+const CLOUD_PROTOCOLS = new Set(['aws', 'azure', 'gcp'])
 
 function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, onSetupEasm, onVmScan, onAuditScan }) {
   const [mode, setMode] = useState(null)
@@ -184,6 +190,8 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
   const [scanning, setScanning] = useState(false)
   const [error, setError] = useState(null)
   const [auditProtocols, setAuditProtocols] = useState([])   // flattened from /api/audits/protocols
+  const cloudProtocols = useMemo(() => auditProtocols.filter(p => CLOUD_PROTOCOLS.has(p.protocol)), [auditProtocols])
+  const hostProtocols  = useMemo(() => auditProtocols.filter(p => !CLOUD_PROTOCOLS.has(p.protocol)), [auditProtocols])
 
   // Load registered protocol audits so each gets its own top-level card.
   // Cards render immediately for EASM/VM/Import; audit cards append as the
@@ -244,32 +252,44 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
 
         {!mode && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <SourceOption icon={Globe} label="EASM Audit" description={easmEnabled ? 'Audit a domain' : 'Set up EASM auditing'} color="#0ea5e9" onClick={() => setMode(easmEnabled ? 'easm' : 'easm-setup')} />
-            <SourceOption icon={MonitorSmartphone} label="VM Audit" description="Remote vulnerability audit" color="#ec4899" onClick={() => setMode('vm')} />
-            {/* Credentialed protocol audits collapse into a single card. Picking
-                it reveals the protocol grid (WMI, LDAP, SMB, MSSQL, SNMP, …) so
-                the top-level modal stays a fixed size as protocols are added. */}
+            <SourceOption icon={Globe} label="External Surface" description={easmEnabled ? 'Discover internet-facing assets' : 'Set up EASM auditing'} color="#0ea5e9" onClick={() => setMode(easmEnabled ? 'easm' : 'easm-setup')} />
+            <SourceOption icon={MonitorSmartphone} label="Network Scan" description="Vulnerability scan — auth optional" color="#ec4899" onClick={() => setMode('vm')} />
+            {/* Protocol audits split by target: cloud providers vs. hosts /
+                directory services. Some host audits (SMB anonymous shares,
+                SNMP public community) don't require creds, so we avoid the
+                "Credentialed" label at the top level. */}
+            <SourceOption
+              icon={Cloud}
+              label="Cloud Posture"
+              description={cloudProtocols.length ? `${cloudProtocols.length} providers` : 'AWS, Azure, GCP'}
+              color="#0284c7"
+              disabled={cloudProtocols.length === 0}
+              disabledMessage="No cloud audits registered"
+              onClick={() => setMode('cloud-picker')}
+            />
             <SourceOption
               icon={Key}
-              label="Credentialed Audit"
-              description={auditProtocols.length ? `${auditProtocols.length} protocols available` : 'Configure at least one protocol'}
+              label="Host & Directory Audit"
+              description={hostProtocols.length ? `${hostProtocols.length} protocols` : 'WMI, SSH, SMB, LDAP, SNMP'}
               color="#14b8a6"
-              disabled={auditProtocols.length === 0}
-              disabledMessage="No audit protocols registered"
-              onClick={() => setMode('audit-picker')}
+              disabled={hostProtocols.length === 0}
+              disabledMessage="No host audits registered"
+              onClick={() => setMode('host-picker')}
             />
             <SourceOption icon={Upload} label="Import File" description="Nessus XML, HTML, CSV" color="#6366f1" onClick={() => setMode('upload')} />
           </div>
         )}
 
-        {mode === 'audit-picker' && (
+        {(mode === 'cloud-picker' || mode === 'host-picker') && (
           <div>
             <BackButton onClick={() => setMode(null)} />
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12 }}>
-              Pick a protocol to run a credentialed audit against.
+              {mode === 'cloud-picker'
+                ? 'Pick a cloud provider to audit.'
+                : 'Pick a protocol to audit. Some support unauthenticated discovery; others require credentials.'}
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              {auditProtocols.map(p => {
+              {(mode === 'cloud-picker' ? cloudProtocols : hostProtocols).map(p => {
                 const meta = AUDIT_CARD_META[p.protocol] || { icon: ShieldAlert, color: '#14b8a6' }
                 return (
                   <SourceOption
