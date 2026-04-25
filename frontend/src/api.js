@@ -1525,3 +1525,68 @@ export const getValidationStatus = (findingId) =>
 export const getValidationQueue = (limit = 50) =>
   request(`/validation/queue?limit=${limit}`)
 export const deleteSuppressionRule = (id) => request(`/suppression-rules/${id}`, { method: 'DELETE' })
+
+// ── Compliance ───────────────────────────────────────────
+
+export const getComplianceFrameworks = () => request('/compliance/frameworks')
+
+export const subscribeFramework = (slug, body = {}) => request(
+  `/compliance/frameworks/${slug}/subscribe`,
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+)
+export const unsubscribeFramework = (slug) => request(
+  `/compliance/frameworks/${slug}/subscribe`, { method: 'DELETE' },
+)
+export const updateFrameworkScope = (slug, body) => request(
+  `/compliance/frameworks/${slug}/scope`,
+  { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+)
+
+export const getComplianceControls = (slug, params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/compliance/frameworks/${slug}/controls?${q}`)
+}
+export const getComplianceControl = (controlId) => request(`/compliance/controls/${controlId}`)
+export const getComplianceControlFindings = (controlId, params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/compliance/controls/${controlId}/findings?${q}`)
+}
+
+export const createCompensatingControl = (controlId, body) => request(
+  `/compliance/controls/${controlId}/compensating-controls`,
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+)
+export const deleteCompensatingControl = (id) => request(
+  `/compliance/compensating-controls/${id}`, { method: 'DELETE' },
+)
+
+// Reports
+export const createComplianceReport = (body) => request(
+  '/compliance/reports',
+  { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+)
+export const listComplianceReports = (params = {}) => {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+  return request(`/compliance/reports?${q}`)
+}
+export const getComplianceReport = (runId) => request(`/compliance/reports/${runId}`)
+
+// Download a report artifact (CSV/JSON) — mirrors exportDownload's blob-link flow.
+export const downloadComplianceReport = async (runId, frameworkSlug = 'framework', fmt = 'csv') => {
+  const headers = {}
+  const token = getStoredToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const orgContext = getOrgContext()
+  if (orgContext) headers['X-Org-Context'] = orgContext
+  const res = await fetch(`${BASE}/compliance/reports/${runId}/download`, { headers })
+  if (!res.ok) throw new Error(`Download failed (${res.status})`)
+  const blob = await res.blob()
+  const blobUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = blobUrl
+  a.download = `compliance_${frameworkSlug}_${runId}.${fmt}`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(blobUrl)
+}

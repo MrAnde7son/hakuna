@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -45,6 +46,11 @@ from services.compliance_evaluator import (
     evaluate as evaluate_compliance,
     revoke_compensating_control,
 )
+from services.compliance_report import (
+    SUPPORTED_FORMATS as REPORT_SUPPORTED_FORMATS,
+    generate_report,
+    serialize_run,
+)
 
 
 router = APIRouter()
@@ -74,12 +80,22 @@ class CompensatingControlCreate(BaseModel):
     linked_ticket_ids: Optional[List[dict]] = None
 
 
+class ReportCreate(BaseModel):
+    framework_slug: str
+    format: str = "csv"  # csv | json (pdf deferred — see services/compliance_report)
+
+
 # ─────────────────────────────────────────────
 # Serializers
 # ─────────────────────────────────────────────
 
 
-def _framework_to_dict(fw: ComplianceFramework, *, subscribed: Optional[bool] = None) -> dict:
+def _framework_to_dict(
+    fw: ComplianceFramework,
+    *,
+    subscribed: Optional[bool] = None,
+    scope_tag_expr: Optional[str] = None,
+) -> dict:
     return {
         "id": fw.id,
         "slug": fw.slug,
@@ -91,6 +107,7 @@ def _framework_to_dict(fw: ComplianceFramework, *, subscribed: Optional[bool] = 
         "categories": fw.categories or [],
         "mapping_schema_version": fw.mapping_schema_version,
         "subscribed": subscribed,
+        "scope_tag_expr": scope_tag_expr,
     }
 
 
@@ -232,16 +249,20 @@ def list_frameworks(
         .all()
     )
     org_id = user.org_id
-    sub_ids = set()
+    sub_by_fw: dict[int, OrgFrameworkSubscription] = {}
     if org_id:
-        sub_ids = {
-            s.framework_id for s in
+        sub_by_fw = {
+            s.framework_id: s for s in
             db.query(OrgFrameworkSubscription)
             .filter_by(org_id=org_id, enabled=True)
             .all()
         }
     return [
-        _framework_to_dict(fw, subscribed=fw.id in sub_ids)
+        _framework_to_dict(
+            fw,
+            subscribed=fw.id in sub_by_fw,
+            scope_tag_expr=sub_by_fw[fw.id].scope_tag_expr if fw.id in sub_by_fw else None,
+        )
         for fw in frameworks
     ]
 
@@ -642,3 +663,170 @@ def satisfies_controls(
         }
         for status, ctrl, fw in rows
     ]
+
+
+# ─────────────────────────────────────────────
+# Reports
+# ─────────────────────────────────────────────
+
+
+def _report_run_to_dict(run: ComplianceReportRun, fw_slug: Optional[str] = None) -> dict:
+    return {
+        "id": run.id,
+        "org_id": run.org_id,
+        "framework_id": run.framework_id,
+        "framework_slug": fw_slug,
+        "format": run.format,
+        "status": run.status,
+        "error": run.error,
+        "sha256": run.sha256,
+        "generated_by": run.generated_by,
+        "generated_at": iso_utc(run.generated_at),
+        "created_at": iso_utc(run.created_at),
+        # Summary fields lifted from the snapshot for list-view rendering.
+        "framework_name": (run.snapshot or {}).get("framework", {}).get("name"),
+        "framework_version": (run.snapshot or {}).get("framework", {}).get("version"),
+        "rollup": (run.snapshot or {}).get("rollup"),
+    }
+
+
+@router.post("/api/compliance/reports")
+def create_report(
+    body: ReportCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("page_compliance")),
+):
+    """Generate a compliance report. v1 supports csv | json.
+
+    The snapshot is frozen at request time and stored on the row, so a
+    follow-up download returns identical bytes regardless of how compliance
+    state has shifted in the meantime.
+    """
+    fmt = (body.format or "csv").lower()
+    if fmt == "pdf":
+        # Wired but not implemented — surface explicitly so the UI can
+        # disable the PDF button and link to docs once the renderer ships.
+        raise HTTPException(
+            501,
+            "PDF reports are not implemented in v1; use format=csv or format=json. "
+            "PDF will reuse services/report_renderer once a /compliance/report/{id} "
+            "React route is added.",
+        )
+    if fmt not in REPORT_SUPPORTED_FORMATS:
+        raise HTTPException(
+            400,
+            f"Unsupported format {fmt!r}; expected one of {sorted(REPORT_SUPPORTED_FORMATS)}",
+        )
+    org_id = user.org_id
+    if not org_id:
+        raise HTTPException(400, "user has no org_id")
+    fw = _get_framework_or_404(db, body.framework_slug)
+
+    # Confirm the org actually subscribes to the framework — generating a
+    # report for a framework you don't run would be misleading (zero data).
+    sub = (
+        db.query(OrgFrameworkSubscription)
+        .filter_by(org_id=org_id, framework_id=fw.id)
+        .first()
+    )
+    if sub is None or not sub.enabled:
+        raise HTTPException(
+            400,
+            f"Org is not subscribed to framework {body.framework_slug!r}; "
+            "subscribe first via POST /api/compliance/frameworks/{slug}/subscribe.",
+        )
+
+    try:
+        run = generate_report(db, org_id=org_id, framework=fw, fmt=fmt, user_id=user.id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    log_audit(db, "create", "compliance_report_run", run.id,
+              entity_name=fw.slug,
+              changes={"format": fmt, "sha256": run.sha256[:16] if run.sha256 else None},
+              actor=user)
+    db.commit()
+    return _report_run_to_dict(run, fw_slug=fw.slug)
+
+
+@router.get("/api/compliance/reports")
+def list_reports(
+    framework_slug: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("page_compliance")),
+):
+    """List recent report runs for the caller's org, newest first."""
+    org_id = user.org_id
+    if not org_id:
+        raise HTTPException(400, "user has no org_id")
+    q = (
+        db.query(ComplianceReportRun, ComplianceFramework)
+        .join(ComplianceFramework, ComplianceFramework.id == ComplianceReportRun.framework_id)
+        .filter(ComplianceReportRun.org_id == org_id)
+    )
+    if framework_slug:
+        q = q.filter(ComplianceFramework.slug == framework_slug)
+    q = q.order_by(ComplianceReportRun.created_at.desc()).limit(limit)
+    rows = q.all()
+    return [_report_run_to_dict(r, fw_slug=fw.slug) for r, fw in rows]
+
+
+@router.get("/api/compliance/reports/{run_id}")
+def get_report(
+    run_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("page_compliance")),
+):
+    """Return report metadata + the embedded snapshot. Use the /download
+    endpoint when you want the raw artifact bytes instead."""
+    org_id = user.org_id
+    run = (
+        db.query(ComplianceReportRun)
+        .filter_by(id=run_id, org_id=org_id)
+        .first()
+    )
+    if run is None:
+        raise HTTPException(404, "report not found")
+    fw = db.query(ComplianceFramework).filter_by(id=run.framework_id).first()
+    out = _report_run_to_dict(run, fw_slug=fw.slug if fw else None)
+    out["snapshot"] = run.snapshot
+    return out
+
+
+@router.get("/api/compliance/reports/{run_id}/download")
+def download_report(
+    run_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("page_compliance")),
+):
+    """Stream the artifact bytes. Re-serializes from the stored snapshot so
+    every download returns identical bytes — the run.sha256 covers the
+    serialized output, not the raw snapshot dict."""
+    org_id = user.org_id
+    run = (
+        db.query(ComplianceReportRun)
+        .filter_by(id=run_id, org_id=org_id)
+        .first()
+    )
+    if run is None:
+        raise HTTPException(404, "report not found")
+    if run.status != "succeeded":
+        raise HTTPException(409, f"report status={run.status}; cannot download")
+
+    fw = db.query(ComplianceFramework).filter_by(id=run.framework_id).first()
+    fw_slug = fw.slug if fw else "framework"
+    try:
+        body = serialize_run(run)
+    except ValueError as exc:
+        raise HTTPException(500, f"failed to serialize report: {exc}")
+
+    media_type = "text/csv" if run.format == "csv" else "application/json"
+    extension = run.format
+    filename = f"compliance_{fw_slug}_{run.id}.{extension}"
+
+    return StreamingResponse(
+        iter([body]),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

@@ -1,0 +1,268 @@
+# PCI DSS 4.0 — initial mapping pack.
+#
+# Scope: requirements that map cleanly to Hakuna's current detection surface.
+# Manual-only requirements (policy review, training, third-party
+# attestations, segmentation diagrams, etc.) are listed as testability=
+# manual_only with empty mappings so they surface in the Compliance tab as
+# not_applicable rather than silently dropped from the framework view.
+
+framework:
+  slug: pci_dss_4_0
+  name: PCI DSS
+  version: "4.0.1"
+  authority: PCI Security Standards Council
+  published_at: 2024-06-11
+  description: |
+    Payment Card Industry Data Security Standard v4.0.1 — the global
+    baseline for protecting cardholder data and the systems that process
+    or store it.
+  categories: [Payments]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.04.25-v1"
+  notes: |
+    Initial PCI DSS 4.0 mapping pack covering Requirements 1, 4, 6, 7, 8,
+    11, 12. Uses CWE / KEV / SLA / plugin_family signals only — no
+    inventory.* fields (those don't yet evaluate at the finding row).
+
+controls:
+
+  # ── Requirement 1: Network Security Controls ───────────────
+  - ref: "1.4.1"
+    title: NSCs are implemented between trusted and untrusted networks
+    domain: Network Security Controls
+    testability: automated
+    canonical_guidance: |
+      Network security controls (NSCs — firewalls, gateways) must restrict
+      traffic between trusted CDE networks and untrusted networks. EASM-
+      reachable database/admin services on a CDE asset are evidence the
+      NSC is missing or misconfigured.
+    mappings:
+      - key: pci_4_0_1_4_1_easm_exposed_db
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  # ── Requirement 4: Protect Cardholder Data with Strong Cryptography ──
+  - ref: "4.2.1"
+    title: Strong cryptography for transmission over open public networks
+    domain: Data in Transit
+    testability: automated
+    canonical_guidance: |
+      Cardholder data sent over public networks must use strong cryptography
+      and security protocols (TLS 1.2+ with strong cipher suites). Findings
+      mapped to CWE-319 (cleartext), CWE-326/327 (broken or weak crypto)
+      indicate this requirement is not met.
+    mappings:
+      - key: pci_4_0_4_2_1_cleartext_or_weak_crypto
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-319", "CWE-326", "CWE-327"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── Requirement 6: Develop and Maintain Secure Systems ─────
+  - ref: "6.2.4"
+    title: Software engineering techniques prevent or mitigate common attacks
+    domain: Secure Development
+    testability: automated
+    canonical_guidance: |
+      Code-level vulnerabilities — injection (CWE-77/78/79/89/90/91/94),
+      path traversal (CWE-22), insecure deserialization (CWE-502) — fail
+      this requirement when present in any in-scope application.
+    mappings:
+      - key: pci_4_0_6_2_4_injection_or_traversal
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value:
+                - "CWE-22"
+                - "CWE-77"
+                - "CWE-78"
+                - "CWE-79"
+                - "CWE-89"
+                - "CWE-90"
+                - "CWE-91"
+                - "CWE-94"
+                - "CWE-502"
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  - ref: "6.3.3"
+    title: Security patches/updates are installed within applicable timeframes
+    domain: Vulnerability Management
+    testability: automated
+    canonical_guidance: |
+      Critical/High-severity patches must land within one month; all others
+      within an appropriate timeframe. KEV-listed CVEs past SLA, or any
+      Patch Management family finding at High+ severity, fail this control.
+    mappings:
+      - key: pci_4_0_6_3_3_kev_breached_sla
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+      - key: pci_4_0_6_3_3_patch_mgmt_high_critical
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Patch Management"
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "6.4.1"
+    title: Public-facing web applications are protected against attacks
+    domain: Application Security
+    testability: automated
+    canonical_guidance: |
+      Public web apps must be reviewed (annually + after changes) and
+      either covered by a WAF or assessed by an automated tool. EASM HTTP
+      header / cookie / TLS findings on internet-facing assets, or SQLi/
+      XSS-class CWEs on a public surface, are direct evidence.
+    mappings:
+      - key: pci_4_0_6_4_1_xss_sqli_on_public_surface
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-79", "CWE-89"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── Requirement 7: Restrict Access by Need to Know ─────────
+  - ref: "7.2.5"
+    title: System and application accounts and related access are managed
+    domain: Access Control
+    testability: partial
+    canonical_guidance: |
+      System / service accounts must be inventoried, justified, and
+      monitored. Inventory-driven evaluation lands in a follow-up; today
+      we surface CWE-798 (hardcoded credentials) and CWE-1391 (use of
+      weak credentials) findings as evidence of poor account hygiene.
+    mappings:
+      - key: pci_4_0_7_2_5_hardcoded_credential_findings
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-798", "CWE-1391"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  # ── Requirement 8: Identify Users and Authenticate Access ──
+  - ref: "8.3.6"
+    title: Strong authentication via passwords/passphrases
+    domain: Authentication
+    testability: automated
+    canonical_guidance: |
+      Minimum 12-character passwords or passphrases (8+ if MFA is in use).
+      Findings mapped to CWE-521 (weak password), CWE-522 (insufficiently
+      protected creds), CWE-798 (hardcoded creds), CWE-1391 (use of
+      weak credentials) indicate non-conformance.
+    mappings:
+      - key: pci_4_0_8_3_6_weak_or_default_credentials
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-521", "CWE-522", "CWE-798", "CWE-1391"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "8.4.2"
+    title: MFA is implemented for all access into the CDE
+    domain: Authentication
+    testability: manual_only
+    canonical_guidance: |
+      MFA enforcement is an identity-provider configuration, not a network
+      observation. Mark satisfied via a compensating-control note that
+      links to the IdP configuration evidence.
+    mappings: []
+
+  # ── Requirement 11: Test Security of Systems and Networks ──
+  - ref: "11.3.1"
+    title: Internal vulnerability scans are performed at least every 3 months
+    domain: Vulnerability Management
+    testability: automated
+    canonical_guidance: |
+      Quarterly internal vuln scans must be performed and findings
+      remediated. Any unresolved High+ severity CVE older than 90 days is
+      an indicator the cycle isn't closing.
+    mappings:
+      - key: pci_4_0_11_3_1_unresolved_high_critical
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_cve
+              op: is_true
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  - ref: "11.4.4"
+    title: Penetration test exploitable vulnerabilities are corrected
+    domain: Penetration Testing
+    testability: automated
+    canonical_guidance: |
+      Findings that are exploitable per pen-test (or KEV-listed) must be
+      corrected and re-tested. Any unresolved KEV finding fails this control.
+    mappings:
+      - key: pci_4_0_11_4_4_kev_unresolved
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive, accepted_risk]
+
+  # ── Requirement 12: Support Information Security with Org Policies ──
+  - ref: "12.10.1"
+    title: An incident response plan exists and is ready to activate
+    domain: Incident Response
+    testability: manual_only
+    canonical_guidance: |
+      IR plan must be documented, tested annually, and assignable. Mark
+      satisfied via a compensating-control note that links to the plan
+      document and the most recent tabletop exercise.
+    mappings: []

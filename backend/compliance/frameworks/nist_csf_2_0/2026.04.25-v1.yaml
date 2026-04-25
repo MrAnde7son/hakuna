@@ -1,0 +1,236 @@
+# NIST Cybersecurity Framework 2.0 — initial mapping pack.
+#
+# Scope: subcategories under PROTECT, DETECT, and RESPOND that map to
+# Hakuna's current detection surface. GOVERN and IDENTIFY subcategories
+# are mostly evidence-based and ship as testability=manual_only.
+
+framework:
+  slug: nist_csf_2_0
+  name: NIST CSF
+  version: "2.0"
+  authority: NIST
+  published_at: 2024-02-26
+  description: |
+    NIST Cybersecurity Framework v2.0 — risk-based outcomes across the
+    GOVERN, IDENTIFY, PROTECT, DETECT, RESPOND, and RECOVER functions.
+  categories: [Security Framework]
+  mapping_schema_version: 1
+
+release:
+  tag: "2026.04.25-v1"
+  notes: |
+    Initial NIST CSF 2.0 mapping pack covering ID.RA, PR.AA, PR.DS, PR.PS,
+    DE.CM, RS.MA. Manual-only governance/policy subcategories are listed
+    so they appear in the framework view as not_applicable.
+
+controls:
+
+  # ── IDENTIFY ───────────────────────────────────────────────
+  - ref: "ID.RA-01"
+    title: Vulnerabilities in assets are identified, validated, and recorded
+    domain: Risk Assessment
+    testability: automated
+    canonical_guidance: |
+      The organization must identify and validate vulnerabilities. Any
+      unresolved High+ severity finding with a CVE that has breached or
+      is at risk of breaching SLA is direct evidence the identify-and-
+      record process is incomplete.
+    mappings:
+      - key: nist_csf_2_0_id_ra_01_unresolved_high_critical
+        when:
+          logic: AND
+          conditions:
+            - field: finding.has_cve
+              op: is_true
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  - ref: "ID.RA-08"
+    title: Processes for receiving, analyzing, and responding to vulnerability disclosures
+    domain: Vulnerability Disclosure
+    testability: manual_only
+    canonical_guidance: |
+      Vulnerability disclosure / coordinated-disclosure programs are
+      process-based. Mark satisfied via a compensating-control note that
+      links to the published policy and recent ticket samples.
+    mappings: []
+
+  # ── PROTECT ────────────────────────────────────────────────
+  - ref: "PR.AA-01"
+    title: Identities and credentials for authorized users, services, and hardware are managed
+    domain: Identity & Access
+    testability: automated
+    canonical_guidance: |
+      Findings indicating hardcoded credentials (CWE-798), weak passwords
+      (CWE-521), or insufficiently protected credentials (CWE-522) are
+      direct evidence the identity/credential lifecycle is failing.
+    mappings:
+      - key: nist_csf_2_0_pr_aa_01_credential_weakness
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-521", "CWE-522", "CWE-798", "CWE-1391"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "PR.AA-05"
+    title: Access permissions, entitlements, and authorizations are defined, managed, and enforced
+    domain: Access Control
+    testability: manual_only
+    canonical_guidance: |
+      Entitlement reviews and least-privilege enforcement are evidence-
+      based. Mark satisfied via a compensating-control note that links to
+      the most recent access review.
+    mappings: []
+
+  - ref: "PR.DS-02"
+    title: The confidentiality, integrity, and availability of data-in-transit are protected
+    domain: Data in Transit
+    testability: automated
+    canonical_guidance: |
+      Findings tied to cleartext transmission (CWE-319) or weak / broken
+      cryptography (CWE-326, CWE-327) fail this subcategory.
+    mappings:
+      - key: nist_csf_2_0_pr_ds_02_transit_crypto_weakness
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value: ["CWE-319", "CWE-326", "CWE-327"]
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "PR.PS-02"
+    title: Software is maintained, replaced, and removed commensurate with risk
+    domain: Patch Management
+    testability: automated
+    canonical_guidance: |
+      Software maintenance is the patch loop. KEV-listed CVEs past SLA, or
+      Patch Management family findings at High+ severity, indicate the
+      maintenance cycle isn't keeping pace with risk.
+    mappings:
+      - key: nist_csf_2_0_pr_ps_02_kev_breached_sla
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.sla_status
+              op: in
+              value: [breached, at_risk]
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+      - key: nist_csf_2_0_pr_ps_02_patch_mgmt_high_critical
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "Patch Management"
+            - field: finding.severity
+              op: gte
+              value: 3
+            - field: finding.workflow_status
+              op: neq
+              value: resolved
+
+  - ref: "PR.PS-06"
+    title: Secure software development practices are integrated and performance is monitored
+    domain: Secure Development
+    testability: automated
+    canonical_guidance: |
+      Code-level vulnerability classes — injection, XSS, path traversal,
+      insecure deserialization — present in any in-scope application
+      indicate secure-development practice gaps.
+    mappings:
+      - key: nist_csf_2_0_pr_ps_06_injection_or_traversal
+        when:
+          logic: AND
+          conditions:
+            - field: finding.cwe
+              op: contains_any
+              value:
+                - "CWE-22"
+                - "CWE-77"
+                - "CWE-78"
+                - "CWE-79"
+                - "CWE-89"
+                - "CWE-90"
+                - "CWE-94"
+                - "CWE-502"
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  # ── DETECT ─────────────────────────────────────────────────
+  - ref: "DE.CM-09"
+    title: Computing hardware and software, runtime environments, and their data are monitored
+    domain: Continuous Monitoring
+    testability: automated
+    canonical_guidance: |
+      EASM-discovered exposed services on in-scope assets indicate the
+      monitoring/inventory loop didn't catch the exposure before an
+      external scanner did.
+    mappings:
+      - key: nist_csf_2_0_de_cm_09_easm_exposed_service
+        when:
+          logic: AND
+          conditions:
+            - field: finding.plugin_family
+              op: eq
+              value: "EASM: Exposed Service"
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive]
+
+  # ── RESPOND ────────────────────────────────────────────────
+  - ref: "RS.MA-01"
+    title: The incident response plan is executed in coordination with relevant third parties
+    domain: Incident Response
+    testability: manual_only
+    canonical_guidance: |
+      IR plan execution is evidence-based. Mark satisfied via a
+      compensating-control note that links to the IR runbook and the
+      most recent post-incident report.
+    mappings: []
+
+  - ref: "RS.MI-02"
+    title: Incidents are eradicated
+    domain: Incident Mitigation
+    testability: automated
+    canonical_guidance: |
+      Eradication closes the loop on identified threats. Any unresolved
+      KEV-listed finding is direct evidence eradication is incomplete.
+    mappings:
+      - key: nist_csf_2_0_rs_mi_02_unresolved_kev
+        when:
+          logic: AND
+          conditions:
+            - field: finding.is_kev
+              op: is_true
+            - field: finding.workflow_status
+              op: not_in
+              value: [resolved, false_positive, accepted_risk]
+
+  # ── GOVERN ─────────────────────────────────────────────────
+  - ref: "GV.PO-01"
+    title: Organizational cybersecurity policy is established and communicated
+    domain: Governance
+    testability: manual_only
+    canonical_guidance: |
+      Policy artifacts and communications evidence are uploaded
+      out-of-band. Mark satisfied via a compensating-control note.
+    mappings: []

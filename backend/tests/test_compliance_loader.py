@@ -260,3 +260,37 @@ class TestBundledCisV8:
             db_session.query(ComplianceControlMapping)
             .filter_by(control_id=ctrl.id).count() == 0
         )
+
+
+# ─── All bundled framework YAMLs round-trip ────────────────────
+
+class TestAllBundledFrameworks:
+    """Every YAML under backend/compliance/frameworks/ must validate, load,
+    and be a no-op on a second call (sha256-stable)."""
+
+    EXPECTED_SLUGS = {
+        "cis_v8",
+        "pci_dss_4_0",
+        "soc2_2017",
+        "nist_csf_2_0",
+        "iso_27001_2022",
+        "hipaa_security",
+    }
+
+    def test_all_frameworks_load_cleanly(self, db_session):
+        results = compliance_loader.load_all_frameworks(db_session)
+        slugs = {r.get("framework_slug") for r in results if r.get("framework_slug")}
+        missing = self.EXPECTED_SLUGS - slugs
+        assert not missing, f"missing frameworks: {missing}; got: {slugs}"
+        for r in results:
+            assert r["status"] in ("loaded", "updated", "skipped"), r
+
+    def test_reload_is_skipped_for_all(self, db_session):
+        compliance_loader.load_all_frameworks(db_session)
+        second = compliance_loader.load_all_frameworks(db_session)
+        for r in second:
+            if r.get("framework_slug") in self.EXPECTED_SLUGS:
+                assert r["status"] == "skipped", (
+                    f"framework {r.get('framework_slug')!r} should be sha-stable on reload, "
+                    f"got status={r.get('status')!r}"
+                )
