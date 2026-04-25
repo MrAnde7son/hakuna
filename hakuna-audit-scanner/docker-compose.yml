@@ -1,0 +1,23 @@
+services:
+  audit-api:
+    build: .
+    image: hakuna-audit-scanner:dev
+    env_file: .env
+    ports:
+      - "8001:8001"
+    depends_on:
+      - redis
+    command: ["uvicorn", "scanner.audit.api:app", "--host", "0.0.0.0", "--port", "8001"]
+
+  audit-worker:
+    image: hakuna-audit-scanner:dev
+    env_file: .env
+    depends_on:
+      - redis
+    command: ["celery", "-A", "scanner.audit.celery_app", "worker",
+              "--loglevel=info", "--queues=audit_queue", "--concurrency=2"]
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
