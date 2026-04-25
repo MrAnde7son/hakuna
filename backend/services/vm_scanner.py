@@ -995,6 +995,136 @@ def _rollback_failed_run(db: Session, scan: Scan) -> dict:
 
 
 _CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.IGNORECASE)
+_CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
+
+
+# Template-path prefix / tag → family mapping. Order matters: more specific
+# prefixes come first so `http/default-logins/*` matches DefaultLogin, not HTTP.
+# Compliance mappings key off these families, so values must stay stable.
+_NUCLEI_FAMILY_RULES: list[tuple[str, str]] = [
+    ("cves/", "CVE"),
+    ("/default-logins/", "DefaultLogin"),
+    ("/misconfiguration/", "Misconfiguration"),
+    ("/misconfigurations/", "Misconfiguration"),
+    ("/exposed-panels/", "ExposedPanel"),
+    ("/exposures/", "Exposure"),
+    ("/takeovers/", "Takeover"),
+    ("/vulnerabilities/", "Vulnerability"),
+    ("/iot/", "IoT"),
+    ("dns/", "DNS"),
+    ("network/", "Network"),
+    ("ssl/", "TLS"),
+    ("tcp/", "Network"),
+    ("file/", "File"),
+]
+
+_NUCLEI_TAG_FAMILY_FALLBACKS: dict[str, str] = {
+    "cve": "CVE",
+    "default-login": "DefaultLogin",
+    "misconfig": "Misconfiguration",
+    "exposure": "Exposure",
+    "exposed-panel": "ExposedPanel",
+    "takeover": "Takeover",
+    "dns": "DNS",
+    "network": "Network",
+    "ssl": "TLS",
+    "tls": "TLS",
+}
+
+
+def _extract_nuclei_cwes(f: dict) -> list[str]:
+    """Pull CWE IDs off a Nuclei result.
+
+    Nuclei reports CWEs under info.classification["cwe-id"] (string or list,
+    e.g. "CWE-79" or ["CWE-74", "CWE-79"]). Returned values are uppercased
+    and deduped, preserving first-seen order.
+    """
+    cwes: list[str] = []
+    classification = f.get("classification") or {}
+    raw = classification.get("cwe-id") if isinstance(classification, dict) else None
+    if isinstance(raw, str):
+        cwes.extend(m.group(0).upper() for m in _CWE_RE.finditer(raw))
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str):
+                cwes.extend(m.group(0).upper() for m in _CWE_RE.finditer(item))
+    seen: set[str] = set()
+    unique: list[str] = []
+    for c in cwes:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    return unique
+
+
+def _classify_nuclei_plugin_family(f: dict) -> str:
+    """Derive a stable plugin_family from a Nuclei result.
+
+    Reads the template_id path prefix and info.tags. Template IDs in Nuclei's
+    public catalog follow the on-disk path (e.g. "http/default-logins/apache"),
+    so path-based classification is deterministic where paths are preserved.
+    Falls back to info.tags for templates whose IDs are opaque, then to the
+    literal string "Nuclei" so legacy consumers don't see NULL.
+    """
+    template_id = (f.get("template_id") or "").lower()
+    for needle, family in _NUCLEI_FAMILY_RULES:
+        if needle in template_id or template_id.startswith(needle.lstrip("/")):
+            return family
+
+    tags = f.get("tags") or []
+    if isinstance(tags, list):
+        for tag in tags:
+            if not isinstance(tag, str):
+                continue
+            family = _NUCLEI_TAG_FAMILY_FALLBACKS.get(tag.lower())
+            if family:
+                return family
+
+    return "Nuclei"
+
+
+def _extract_nuclei_references(f: dict) -> dict:
+    """Return the references dict to persist on Finding.references.
+
+    Nuclei's info.reference is a list of URLs (vendor advisories, PoCs, CVE
+    pages). The Finding schema stores references as a JSON dict, so we wrap
+    the list under ``urls`` to leave room for future reference kinds without
+    breaking consumers of the existing shape.
+    """
+    raw = f.get("reference")
+    urls: list[str] = []
+    if isinstance(raw, list):
+        urls = [str(u) for u in raw if isinstance(u, str) and u.strip()]
+    elif isinstance(raw, str) and raw.strip():
+        urls = [raw.strip()]
+    return {"urls": urls} if urls else {}
+
+
+_SEVERITY_LABEL_BY_STR = {
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+    "info": "Info",
+}
+
+
+def _seed_nuclei_context(f: dict, asset: Asset, authenticated: bool) -> dict:
+    """Derive ctx_* fields from scan evidence.
+
+    A Nuclei match empirically proved network reachability and exploitability
+    at the moment of scan. ctx_accessibility tracks whether credentials were
+    used to reach the surface. Leaving these NULL wastes ground truth; scan-
+    time defaults can always be overridden by an analyst (the upsert handler
+    honours Finding.user_edited_fields to protect manual edits on re-ingest).
+    """
+    reachable = "internet_facing" if bool(asset.is_internet_facing) else "internal_only"
+    accessible = "authenticated_only" if authenticated else "public"
+    return {
+        "ctx_reachability": reachable,
+        "ctx_accessibility": accessible,
+        "ctx_exploitability": "easily_exploitable",
+    }
 
 
 def _extract_nuclei_cves(f: dict) -> list[str]:
@@ -1206,6 +1336,11 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
     now = datetime.utcnow()
     severity_map = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
+    # Whether this Celery job ran authenticated. Used to seed ctx_accessibility
+    # on every finding. Nuclei worker sets `authenticated=True` when credentials
+    # were passed; absent/False means the scan ran unauthenticated.
+    authenticated = bool(job_result.get("authenticated"))
+
     for f in findings_data:
         severity_str = (f.get("severity") or "info").lower()
         if severity_str not in severity_map:
@@ -1228,7 +1363,10 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         # agent LLM-driven findings — all three flow through this
         # worker → backend path via identical payload shape, but
         # downstream (llm validator, rule engine, UI badge) wants to
-        # treat them differently.
+        # treat them differently. Nuclei itself is further subdivided
+        # (CVE / DefaultLogin / Misconfiguration / …) so compliance
+        # mappings can key on the specific family without inspecting
+        # the template_id string at rule-eval time.
         _finding_type = (f.get("type") or "").lower()
         if _finding_type == "agent-vuln":
             plugin_family = "Agent"
@@ -1237,7 +1375,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         elif _finding_type == "content-discovery":
             plugin_family = "ContentDiscovery"
         else:
-            plugin_family = "Nuclei"
+            plugin_family = _classify_nuclei_plugin_family(f)
 
         # Schemathesis pre-seeds llm_validation.verdict on its results so
         # high-confidence findings (server errors, schema violations)
@@ -1247,7 +1385,17 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
         llm_validation = f.get("llm_validation") if isinstance(f.get("llm_validation"), dict) else None
 
         cves = _extract_nuclei_cves(f)
+        cwes = _extract_nuclei_cwes(f)
         cvss3_score, cvss3_vector = _extract_nuclei_cvss(f)
+        ctx = _seed_nuclei_context(f, asset, authenticated)
+
+        # Persist Nuclei tags so the post-ingest TTP matcher can use them
+        # as technique hints for non-CVE templates (default-login, takeover,
+        # misconfig) where keyword + family matching misses.
+        nuclei_tags = [
+            t for t in (f.get("tags") or []) if isinstance(t, str) and t.strip()
+        ]
+        custom_fields = {"nuclei_tags": nuclei_tags} if nuclei_tags else {}
 
         finding = Finding(
             scan_id=scan.id,
@@ -1258,6 +1406,7 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
             plugin_id=f.get("template_id", ""),
             plugin_name=f.get("name", ""),
             severity=severity_map.get(severity_str, 0),
+            severity_label=_SEVERITY_LABEL_BY_STR.get(severity_str, "Info"),
             description=f.get("description", ""),
             solution="",
             plugin_family=plugin_family,
@@ -1267,9 +1416,15 @@ def _import_nuclei_job_findings(db: Session, scan: Scan, job_result: dict) -> di
             last_seen=now,
             llm_validation=llm_validation,
             cves=cves,
+            cwe_ids=cwes,
+            references=_extract_nuclei_references(f),
             normalized_id=cves[0] if cves else None,
             cvss3_score=cvss3_score,
             cvss3_vector=cvss3_vector,
+            ctx_reachability=ctx["ctx_reachability"],
+            ctx_accessibility=ctx["ctx_accessibility"],
+            ctx_exploitability=ctx["ctx_exploitability"],
+            custom_fields=custom_fields,
         )
         db.add(finding)
         db.flush()

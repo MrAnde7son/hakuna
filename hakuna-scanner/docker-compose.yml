@@ -41,6 +41,15 @@ services:
     volumes:
       - .:/app
       - screenshots:/data/screenshots
+    # Reach the scanner's own postgres/redis on `default`, and expose the
+    # API to the main hakuna stack on `hakuna_default` under the alias
+    # `easm-api` (referenced by backend's HAKUNA_SCANNER_URL). Aliasing
+    # avoids the bare `api` hostname colliding on the shared network.
+    networks:
+      default:
+      hakuna_default:
+        aliases:
+          - easm-api
     depends_on:
       postgres:
         condition: service_healthy
@@ -126,3 +135,12 @@ services:
 volumes:
   pg_data:
   screenshots:
+
+# `default` is this stack's private network (postgres + redis + workers).
+# `hakuna_default` is created by ../docker-compose.yml; the api service joins
+# it so the main backend can reach it as `easm-api:8001`. Bring the main
+# stack up first so the network exists.
+networks:
+  default:
+  hakuna_default:
+    external: true

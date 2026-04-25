@@ -54,6 +54,11 @@ services:
       # compose service hostname. Default in services/vm_scanner.py is
       # localhost:8002 which only works when the backend runs on the host.
       - VM_SCANNER_URL=${VM_SCANNER_URL:-http://vm-api:8002}
+      # EASM scanner API. easm-api runs in hakuna-scanner/docker-compose.yml
+      # and joins hakuna_default (external) under that network alias, so the
+      # backend reaches it by hostname. Default in services/easm.py is
+      # localhost:8001 which only works when the backend runs on the host.
+      - HAKUNA_SCANNER_URL=${HAKUNA_SCANNER_URL:-http://easm-api:8001}
       # Shared secret for /internal/relay/dispatch — the audit-worker presents
       # this in X-Internal-Token to reach the backend's relay websocket (which
       # lives only in this process). Generate one with:

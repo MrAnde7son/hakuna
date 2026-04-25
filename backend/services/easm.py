@@ -25,6 +25,12 @@ from models.models import (
 
 from apscheduler.triggers.cron import CronTrigger
 from services.asset_observations import record_observation
+from services.easm_taxonomy import (
+    cwe_ids_for_subissues,
+    metadata_for as easm_metadata_for,
+    references_dict as easm_references_dict,
+    seed_easm_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -947,6 +953,37 @@ def _build_easm_data(ea: dict) -> dict:
 SEVERITY_LABELS = {0: "Info", 1: "Low", 2: "Medium", 3: "High", 4: "Critical"}
 
 
+def _easm_metadata_kwargs(
+    plugin_id: str,
+    *,
+    extra_cwes: Optional[list[str]] = None,
+    is_kev: bool = False,
+    exploit_available: bool = False,
+) -> dict:
+    """Resolve plugin_family / cwe_ids / references / ctx_* for an EASM finding.
+
+    Pulled out so every Finding constructor in _generate_easm_findings sets
+    these consistently. extra_cwes is unioned with the registry value (used
+    by HEADER/COOKIE bundles where CWEs come from sub-issue ids).
+    """
+    meta = easm_metadata_for(plugin_id)
+    cwes = list(meta.get("cwe_ids", []))
+    for c in (extra_cwes or []):
+        if c and c not in cwes:
+            cwes.append(c)
+    ctx = seed_easm_context(is_kev=is_kev, exploit_available=exploit_available)
+    kwargs = {
+        "plugin_family": meta.get("family", "EASM: Other"),
+        "cwe_ids": cwes,
+        "references": easm_references_dict(meta.get("references", [])),
+        "ctx_reachability": ctx["ctx_reachability"],
+        "ctx_accessibility": ctx["ctx_accessibility"],
+    }
+    if ctx["ctx_exploitability"] is not None:
+        kwargs["ctx_exploitability"] = ctx["ctx_exploitability"]
+    return kwargs
+
+
 def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -> Tuple[int, list]:
     """Generate one finding per EASM observation. Idempotent: skips existing plugin_id+asset combos.
 
@@ -983,7 +1020,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
             source_type="easm", source_vuln_id=pid,
             plugin_id=pid,
             plugin_name=f"{tech_name} Detected",
-            plugin_family="EASM: Web Technology",
             severity=0, severity_label="Info", risk_factor="None",
             priority_score=tech_priority, effort_level=effort,
             owner_suggestion="SecOps",
@@ -993,6 +1029,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
             solution="No action required. Review if this technology should be publicly exposed.",
             plugin_output=f"Detected technology: {tech_name}\nHost: {hostname}",
             first_seen=now, last_seen=now,
+            **_easm_metadata_kwargs(pid),
         ))
 
     # ── Open ports: one finding per port ──────────────────────────
@@ -1022,7 +1059,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
             source_type="easm", source_vuln_id=pid,
             plugin_id=pid,
             plugin_name=f"Open Port: {port}/tcp ({svc_name})",
-            plugin_family="EASM: Port Scan",
             severity=0, severity_label="Info", risk_factor="None",
             priority_score=port_priority, effort_level="quick_win",
             owner_suggestion="IT",
@@ -1033,6 +1069,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
             solution="Review if this port needs to be publicly accessible. Close unnecessary ports.",
             plugin_output="\n".join(output_lines),
             first_seen=now, last_seen=now,
+            **_easm_metadata_kwargs(pid),
         ))
 
     # ── Exposed database ports ────────────────────────────────────
@@ -1101,11 +1138,11 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 source_type="easm", source_vuln_id=pid,
                 plugin_id=pid,
                 plugin_name=f"Exposed {db_name} Database ({port_int}/tcp)",
-                plugin_family="EASM: Exposed Service",
                 severity=db_sev, severity_label=db_sev_label, risk_factor=db_risk,
                 priority_score=db_priority, effort_level="medium",
                 owner_suggestion="IT",
                 port=str(port_int), protocol="tcp",
+                **_easm_metadata_kwargs(pid),
                 synopsis=f"{db_name} database port {port_int}/tcp is reachable from the internet on {hostname}.",
                 description=(
                     f"External port scanning found {db_name} port {port_int}/tcp open on {hostname}. "
@@ -1178,7 +1215,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 plugin_name="TLS Certificate" if sev == 0 else (
                     "TLS Certificate Expired" if days_left < 0 else "TLS Certificate Expiring Soon"
                 ),
-                plugin_family="EASM: TLS/SSL",
                 severity=sev, severity_label=sev_label, risk_factor=risk,
                 priority_score=tls_priority, effort_level=tls_effort,
                 owner_suggestion="IT",
@@ -1189,6 +1225,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 solution="Renew the certificate before expiry." if sev > 0 else "No action required.",
                 plugin_output=_build_tls_output(hostname, cert, days_left),
                 first_seen=now, last_seen=now,
+                **_easm_metadata_kwargs(pid),
             ))
 
     # ── Weak TLS protocols / ciphers ──────────────────────────────
@@ -1255,7 +1292,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     source_type="easm", source_vuln_id=pid,
                     plugin_id=pid,
                     plugin_name="Weak TLS Configuration",
-                    plugin_family="EASM: TLS/SSL",
                     severity=weak_sev, severity_label=weak_sev_label, risk_factor=weak_risk,
                     priority_score=weak_priority, effort_level=weak_effort,
                     owner_suggestion="IT",
@@ -1275,6 +1311,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     ),
                     plugin_output="\n".join(output_lines),
                     first_seen=now, last_seen=now,
+                    **_easm_metadata_kwargs(pid),
                 ))
 
     # ── HTTP security headers / cookies ───────────────────────────
@@ -1296,7 +1333,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
             "cookie-samesite-missing", "cookie-samesite-none-insecure",
         }
 
-        def _emit_audit_finding(pid, title, family, owner, synopsis, description, solution, matching_ids):
+        def _emit_audit_finding(pid, title, owner, synopsis, description, solution, matching_ids):
             matches = [i for i in audit_issues if i.get("id") in matching_ids]
             if not matches:
                 return
@@ -1311,6 +1348,11 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
             output_lines.append("Issues:")
             output_lines.extend(f"  - {i.get('detail', i.get('id'))}" for i in matches)
 
+            # CWE union for the bundled finding — pulled from the per-issue
+            # map so adding a new sub-issue requires editing easm_taxonomy
+            # only, not this code path.
+            subissue_cwes = cwe_ids_for_subissues(i.get("id", "") for i in matches)
+
             if pid in existing_plugins:
                 db.query(Finding).filter(
                     Finding.scan_id == scan_id,
@@ -1323,6 +1365,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     "priority_score": priority,
                     "last_seen": now,
                     "plugin_output": "\n".join(output_lines),
+                    "cwe_ids": subissue_cwes,
                 })
             else:
                 findings_to_add.append(Finding(
@@ -1330,7 +1373,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     source_type="easm", source_vuln_id=pid,
                     plugin_id=pid,
                     plugin_name=title,
-                    plugin_family=family,
                     severity=sev, severity_label=sev_label, risk_factor=sev_label,
                     priority_score=priority, effort_level=effort,
                     owner_suggestion=owner,
@@ -1339,12 +1381,12 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     solution=solution,
                     plugin_output="\n".join(output_lines),
                     first_seen=now, last_seen=now,
+                    **_easm_metadata_kwargs(pid, extra_cwes=subissue_cwes),
                 ))
 
         _emit_audit_finding(
             pid="EASM-HTTP-HEADER-WEAK",
             title="Weak HTTP Security Headers",
-            family="EASM: HTTP",
             owner="IT",
             synopsis=f"{hostname} is missing or weakly configuring one or more HTTP security headers.",
             description=(
@@ -1367,7 +1409,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
         _emit_audit_finding(
             pid="EASM-COOKIE-WEAK",
             title="Insecure Cookie Attributes",
-            family="EASM: HTTP",
             owner="IT",
             synopsis=f"{hostname} emits cookies without Secure, HttpOnly, or SameSite flags.",
             description=(
@@ -1392,7 +1433,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
     deep_audit = ea.get("tls_deep_audit") or {}
     deep_issues = deep_audit.get("issues") or []
     if deep_issues:
-        def _emit_deep_finding(pid, title, family, owner, synopsis, description, solution, matching_ids, effort="medium"):
+        def _emit_deep_finding(pid, title, owner, synopsis, description, solution, matching_ids, effort="medium"):
             matches = [i for i in deep_issues if i.get("id") in matching_ids]
             if not matches:
                 return
@@ -1426,7 +1467,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     source_type="easm", source_vuln_id=pid,
                     plugin_id=pid,
                     plugin_name=title,
-                    plugin_family=family,
                     severity=sev, severity_label=sev_label, risk_factor=sev_label,
                     priority_score=priority, effort_level=effort,
                     owner_suggestion=owner,
@@ -1435,12 +1475,12 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     solution=solution,
                     plugin_output="\n".join(output_lines),
                     first_seen=now, last_seen=now,
+                    **_easm_metadata_kwargs(pid),
                 ))
 
         _emit_deep_finding(
             pid="EASM-TLS-CIPHER-ACCEPTED",
             title="Server Accepts Weak TLS Ciphers or Deprecated Versions",
-            family="EASM: TLS/SSL",
             owner="IT",
             synopsis=f"{hostname} accepts weak cipher suites or deprecated TLS versions during negotiation.",
             description=(
@@ -1463,7 +1503,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
         _emit_deep_finding(
             pid="EASM-CERT-CHAIN-UNTRUSTED",
             title="Certificate Chain Does Not Validate to a Trusted Root",
-            family="EASM: TLS/SSL",
             owner="IT",
             synopsis=f"{hostname} presents a certificate chain that fails trust store validation.",
             description=(
@@ -1484,7 +1523,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
         _emit_deep_finding(
             pid="EASM-CERT-OCSP",
             title="OCSP Reports Certificate as Revoked",
-            family="EASM: TLS/SSL",
             owner="IT",
             synopsis=f"{hostname} is serving a revoked certificate according to OCSP.",
             description=(
@@ -1507,7 +1545,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
         _emit_deep_finding(
             pid="EASM-CERT-CAA-MISMATCH",
             title="CAA Records Do Not Authorize Certificate Issuer",
-            family="EASM: DNS",
             owner="IT",
             synopsis=f"{hostname} has CAA DNS records that do not include the issuing CA.",
             description=(
@@ -1539,7 +1576,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 source_type="easm", source_vuln_id=pid,
                 plugin_id=pid,
                 plugin_name=f"CDN Detected: {cdn}",
-                plugin_family="EASM: Infrastructure",
                 severity=0, severity_label="Info", risk_factor="None",
                 priority_score=0.5, effort_level="quick_win", owner_suggestion="IT",
                 synopsis=f"{hostname} is behind CDN provider '{cdn}'.",
@@ -1548,6 +1584,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 solution="No action required. Ensure CDN configuration is properly secured.",
                 plugin_output=f"CDN Provider: {cdn}\nHost: {hostname}",
                 first_seen=now, last_seen=now,
+                **_easm_metadata_kwargs(pid),
             ))
 
     # ── WAF detection ─────────────────────────────────────────────
@@ -1560,7 +1597,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 source_type="easm", source_vuln_id=pid,
                 plugin_id=pid,
                 plugin_name=f"WAF Detected: {waf}",
-                plugin_family="EASM: Infrastructure",
                 severity=0, severity_label="Info", risk_factor="None",
                 priority_score=0.5, effort_level="quick_win", owner_suggestion="SecOps",
                 synopsis=f"{hostname} is protected by WAF '{waf}'.",
@@ -1568,6 +1604,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 solution="No action required. Ensure WAF rules are kept up to date.",
                 plugin_output=f"WAF: {waf}\nHost: {hostname}",
                 first_seen=now, last_seen=now,
+                **_easm_metadata_kwargs(pid),
             ))
 
     # ── HTTP service ──────────────────────────────────────────────
@@ -1582,7 +1619,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 source_type="easm", source_vuln_id=pid,
                 plugin_id=pid,
                 plugin_name=f"HTTP Service Detected ({http_status})",
-                plugin_family="EASM: Web Service",
                 severity=0, severity_label="Info", risk_factor="None",
                 priority_score=1.0, effort_level="quick_win", owner_suggestion="IT",
                 port="443" if http_url.startswith("https") else "80", protocol="tcp",
@@ -1591,6 +1627,7 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 solution="No action required. Verify the service should be publicly accessible.",
                 plugin_output=f"URL: {http_url}\nStatus: {http_status}\nTitle: {http_title}",
                 first_seen=now, last_seen=now,
+                **_easm_metadata_kwargs(pid),
             ))
         else:
             db.query(Finding).filter(
@@ -1619,7 +1656,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 source_type="easm", source_vuln_id=pid,
                 plugin_id=pid,
                 plugin_name="DNS Records",
-                plugin_family="EASM: DNS",
                 severity=0, severity_label="Info", risk_factor="None",
                 priority_score=0.5, effort_level="quick_win", owner_suggestion="IT",
                 synopsis=f"DNS records for {hostname}.",
@@ -1627,7 +1663,139 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 solution="No action required. Review DNS records for accuracy.",
                 plugin_output="\n".join(output_lines),
                 first_seen=now, last_seen=now,
+                **_easm_metadata_kwargs(pid),
             ))
+
+    # ── Pending upstream detections ───────────────────────────────
+    # These plugin_ids are registered in services.easm_taxonomy so compliance
+    # rules referencing CWE-1385 / CWE-284 / CWE-548 / CWE-798 validate at
+    # mapping load time. They emit only when hakuna-scanner populates the
+    # corresponding signal field on ea — until then the loops are no-ops.
+    for tk in (ea.get("subdomain_takeovers") or []):
+        target = (tk.get("target") or "").strip()
+        cname = (tk.get("cname") or "").strip()
+        fingerprint = (tk.get("fingerprint") or "").strip()
+        if not target:
+            continue
+        pid = "EASM-SUBDOMAIN-TAKEOVER"
+        if pid in existing_plugins:
+            continue
+        findings_to_add.append(Finding(
+            scan_id=scan_id, asset_id=asset.id,
+            source_type="easm", source_vuln_id=pid,
+            plugin_id=pid,
+            plugin_name=f"Subdomain Takeover: {target}",
+            severity=4, severity_label="Critical", risk_factor="Critical",
+            priority_score=9.0, effort_level="medium", owner_suggestion="SecOps",
+            synopsis=f"{target} resolves to a dangling CNAME ({cname}) on a takeover-prone provider.",
+            description=(
+                f"External DNS resolution shows {target} CNAME → {cname}. The target "
+                f"resource appears unclaimed on its hosting provider, allowing an "
+                f"attacker to register the resource and serve arbitrary content under "
+                f"your domain. Fingerprint: {fingerprint or 'unknown'}."
+            ),
+            solution=(
+                "Either reclaim the resource on the upstream provider or remove the "
+                "DNS record. Audit all CNAMEs pointing at third-party infrastructure "
+                "for similar dangling references."
+            ),
+            plugin_output=f"Target: {target}\nCNAME: {cname}\nFingerprint: {fingerprint}",
+            first_seen=now, last_seen=now,
+            **_easm_metadata_kwargs(pid, exploit_available=True),
+        ))
+
+    for panel in (ea.get("exposed_admin_panels") or []):
+        url = (panel.get("url") or "").strip()
+        panel_type = (panel.get("panel_type") or "Admin Panel").strip()
+        if not url:
+            continue
+        pid = "EASM-EXPOSED-ADMIN-PANEL"
+        if pid in existing_plugins:
+            continue
+        findings_to_add.append(Finding(
+            scan_id=scan_id, asset_id=asset.id,
+            source_type="easm", source_vuln_id=pid,
+            plugin_id=pid,
+            plugin_name=f"Exposed Admin Panel: {panel_type}",
+            severity=3, severity_label="High", risk_factor="High",
+            priority_score=7.5, effort_level="medium", owner_suggestion="SecOps",
+            synopsis=f"Administrative interface for {panel_type} is reachable from the internet at {url}.",
+            description=(
+                f"External probing identified a {panel_type} login at {url} reachable "
+                f"from the public internet. Admin interfaces should sit behind a VPN, "
+                f"IP allowlist, or zero-trust proxy."
+            ),
+            solution=(
+                "Restrict the admin interface to internal networks or a VPN. If public "
+                "exposure is required, enforce SSO/MFA, rate limit logins, and monitor "
+                "for credential stuffing."
+            ),
+            plugin_output=f"URL: {url}\nPanel: {panel_type}",
+            first_seen=now, last_seen=now,
+            **_easm_metadata_kwargs(pid),
+        ))
+
+    for listing in (ea.get("directory_listings") or []):
+        url = (listing.get("url") or "").strip()
+        files_count = listing.get("files_count")
+        if not url:
+            continue
+        pid = "EASM-DIRECTORY-LISTING"
+        if pid in existing_plugins:
+            continue
+        findings_to_add.append(Finding(
+            scan_id=scan_id, asset_id=asset.id,
+            source_type="easm", source_vuln_id=pid,
+            plugin_id=pid,
+            plugin_name="Directory Listing Enabled",
+            severity=2, severity_label="Medium", risk_factor="Medium",
+            priority_score=5.5, effort_level="quick_win", owner_suggestion="IT",
+            synopsis=f"Directory listing is enabled at {url}.",
+            description=(
+                f"External probing of {url} returned a directory index. Auto-generated "
+                f"directory listings expose filenames, sizes, and timestamps to anyone "
+                f"who can reach the URL — useful reconnaissance for attackers and a "
+                f"common path to leaked backups, configs, or source archives."
+            ),
+            solution=(
+                "Disable autoindex / directory listing at the web server (e.g. nginx "
+                "`autoindex off`, Apache `Options -Indexes`). Audit the directory for "
+                "files that should not be web-accessible."
+            ),
+            plugin_output=f"URL: {url}\nFiles: {files_count if files_count is not None else 'unknown'}",
+            first_seen=now, last_seen=now,
+            **_easm_metadata_kwargs(pid),
+        ))
+
+    for leak in (ea.get("leaked_credentials") or []):
+        source = (leak.get("source") or "external").strip()
+        snippet = (leak.get("snippet") or "").strip()
+        pid = "EASM-LEAKED-CREDENTIAL"
+        if pid in existing_plugins:
+            continue
+        findings_to_add.append(Finding(
+            scan_id=scan_id, asset_id=asset.id,
+            source_type="easm", source_vuln_id=pid,
+            plugin_id=pid,
+            plugin_name=f"Leaked Credential ({source})",
+            severity=4, severity_label="Critical", risk_factor="Critical",
+            priority_score=9.0, effort_level="medium", owner_suggestion="SecOps",
+            synopsis=f"A credential associated with {hostname} was found exposed in {source}.",
+            description=(
+                f"External monitoring detected a credential matching {hostname} in "
+                f"{source}. Leaked credentials enable account takeover and lateral "
+                f"movement; they require immediate rotation and an investigation into "
+                f"whether they have been used."
+            ),
+            solution=(
+                "Rotate the credential immediately. Audit recent authentication logs "
+                "for use of the leaked value. If the credential was hardcoded in "
+                "source, scrub git history and add a secret-scanning policy."
+            ),
+            plugin_output=f"Host: {hostname}\nSource: {source}\nSnippet: {snippet[:200]}",
+            first_seen=now, last_seen=now,
+            **_easm_metadata_kwargs(pid, exploit_available=True),
+        ))
 
     # ── CVEs via CPE → CVE correlation ────────────────────────────
     # Matches CPEs (populated by hakuna-scanner's CPE inference layer) against
@@ -1690,7 +1858,6 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                 source_type="easm", source_vuln_id=cve_id,
                 plugin_id=pid,
                 plugin_name=f"{cve_id}: Known vulnerability{badge_str}",
-                plugin_family="EASM: CVE",
                 severity=sev, severity_label=sev_label, risk_factor=risk,
                 priority_score=round(priority, 1),
                 effort_level="medium",
@@ -1727,6 +1894,11 @@ def _generate_easm_findings(db: Session, scan_id: int, asset: Asset, ea: dict) -
                     f"Exploit maturity: {cve.get('exploit_maturity_level', 'N/A')}"
                 ),
                 first_seen=now, last_seen=now,
+                **_easm_metadata_kwargs(
+                    pid,
+                    is_kev=bool(cve.get("in_kev")),
+                    exploit_available=bool(cve.get("has_public_exploit")),
+                ),
             ))
 
     for f in findings_to_add:
@@ -2428,6 +2600,21 @@ async def refresh_easm_scan(db: Session, org: Organization, scan_id: int) -> Opt
             db, org.id, scan, domain, error_msg=error_msg, phase="scanner",
         )
         return {"scan_id": scan.id, "status": "failed", "domain": domain, "error": error_msg}
+
+    elif hakuna_status == "cancelled":
+        # User-initiated (via /api/scans/{id}/cancel) or scanner-initiated
+        # (timeout, abort). Either way it's terminal — stop polling, but
+        # don't emit a failure notification: the local cancel handler
+        # already stamped raw_metadata.status, and a "scan failed" alert
+        # for a deliberate cancel is noise.
+        scan.raw_metadata = {
+            **meta,
+            "status": "cancelled",
+            "error": meta.get("error") or "Scan cancelled",
+        }
+        scan.status = "cancelled"
+        db.commit()
+        return {"scan_id": scan.id, "status": "cancelled", "domain": domain}
 
     else:
         # Still running/queued — relay progress info AND stream any assets

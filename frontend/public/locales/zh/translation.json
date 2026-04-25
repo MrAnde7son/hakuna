@@ -85,6 +85,7 @@
     "owner": "负责人",
     "effort": "工作量",
     "cve": "CVE",
+    "cwe": "CWE",
     "rootCause": "根本原因",
     "search": "搜索发现...",
     "noResults": "没有符合条件的发现",

@@ -364,15 +364,19 @@ function NewScanModal({ onClose, onFile, uploading, easmEnabled, onScanDomain, o
           />
         )}
 
-        {typeof mode === 'string' && mode.startsWith('audit:') && (
-          <AuditScanPanel
-            onClose={onClose}
-            onBack={() => setMode('audit-picker')}
-            onAuditScan={onAuditScan}
-            preselectedProtocol={mode.slice('audit:'.length)}
-            availableProtocols={auditProtocols}
-          />
-        )}
+        {typeof mode === 'string' && mode.startsWith('audit:') && (() => {
+          const proto = mode.slice('audit:'.length)
+          const backMode = CLOUD_PROTOCOLS.has(proto) ? 'cloud-picker' : 'host-picker'
+          return (
+            <AuditScanPanel
+              onClose={onClose}
+              onBack={() => setMode(backMode)}
+              onAuditScan={onAuditScan}
+              preselectedProtocol={proto}
+              availableProtocols={auditProtocols}
+            />
+          )
+        })()}
 
         {mode === 'easm' && (
           <div>

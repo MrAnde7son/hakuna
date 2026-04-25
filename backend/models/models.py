@@ -532,6 +532,11 @@ class Finding(Base):
 
     # CVE references
     cves = Column(JSON, default=list)
+    # CWE identifiers (e.g. ["CWE-79", "CWE-89"]). Populated at ingest by scanner
+    # parsers when available, and backfilled post-ingest via CVE → ThreatCVE.cwe_ids.
+    # Primary taxonomy key for scanner-agnostic compliance mapping.
+    cwe_ids = Column(JSON, default=list, nullable=False)
+    cwe_names = Column(JSON, default=list, nullable=False)
     references = Column(JSON, default=dict)
 
     # Content

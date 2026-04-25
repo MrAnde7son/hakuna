@@ -1770,6 +1770,7 @@ export const SOURCE_TYPES = {
   rapid7:     { label: 'Rapid7',   color: '#f97316', bg: '#f9731622' },
   openvas:    { label: 'OpenVAS',  color: '#22c55e', bg: '#22c55e22' },
   vm_scanner: { label: 'VM',       color: '#ec4899', bg: '#ec489922' },
+  audit_agent:{ label: 'Audit',    color: '#14b8a6', bg: '#14b8a622' },
 }
 
 export function getSourceMeta(type) {

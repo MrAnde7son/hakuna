@@ -12,8 +12,8 @@ Field namespaces:
                 medium_count, low_count, info_count
     Findings:   finding.severity, finding.cvss3, finding.vpr,
                 finding.exploit, finding.zero_day, finding.has_cve,
-                finding.missing_patches, finding.plugin_family,
-                finding.plugin_name, finding.cve, finding.effort, finding.owner,
+                finding.has_cwe, finding.missing_patches, finding.plugin_family,
+                finding.plugin_name, finding.cve, finding.cwe, finding.effort, finding.owner,
                 finding.sla_status, finding.sla_days_remaining, finding.sla_due_date
     Inventory:  inventory.is_internet_facing, inventory.is_domain_controller,
                 inventory.domain_admin_present, inventory.admin_logged_in,
@@ -180,6 +180,8 @@ CONDITION_CATALOG = [
             {"field": "finding.description",     "label": "Description",        "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "buffer overflow"},
             {"field": "finding.solution",        "label": "Solution",           "ops": ["contains", "not_contains", "regex"], "value_type": "string", "placeholder": "Upgrade to"},
             {"field": "finding.cve",             "label": "CVE",    "ops": ["contains", "eq"],                "value_type": "string", "placeholder": "CVE-2021-44228"},
+            {"field": "finding.cwe",             "label": "CWE",    "ops": ["contains", "eq", "contains_any", "contains_all"], "value_type": "string", "placeholder": "CWE-79"},
+            {"field": "finding.has_cwe",         "label": "Has CWE",            "ops": ["is_true", "is_false"],           "value_type": "none"},
             {
                 "field": "finding.sla_status", "label": "SLA Status",
                 "ops": ["eq", "neq"],
@@ -916,6 +918,22 @@ def _eval_finding_row(cond: dict, finding) -> bool:
         vals = [v.strip() for v in val.split(",") if v.strip()]
         if op == "eq":       return any(v in cves for v in vals)
         if op == "contains": return any(v in c for v in vals for c in cves)
+        return False
+    if sub == "has_cwe":
+        result = len(getattr(finding, "cwe_ids", None) or []) > 0
+        return result if op == "is_true" else not result
+    if sub == "cwe":
+        cwes = [c.upper() for c in (getattr(finding, "cwe_ids", None) or [])]
+        if isinstance(value, (list, tuple, set)):
+            vals = [str(v).strip().upper() for v in value if str(v).strip()]
+        else:
+            vals = [v.strip().upper() for v in str(value or "").split(",") if v.strip()]
+        if op in ("eq", "contains_any"):
+            return any(v in cwes for v in vals)
+        if op == "contains":
+            return any(v in c for v in vals for c in cwes)
+        if op == "contains_all":
+            return all(v in cwes for v in vals)
         return False
     if sub == "effort":
         return _str_op(finding.effort_level or "", op, value)

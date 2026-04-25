@@ -525,6 +525,8 @@ def _finding_to_dict(f: Finding, db: Session, include_full: bool = False, asset:
         "cvss4_score": f.cvss4_score,
         "vpr_score": f.vpr_score,
         "cves": f.cves or [],
+        "cwe_ids": f.cwe_ids or [],
+        "cwe_names": f.cwe_names or [],
         "synopsis": f.synopsis,
         "port": f.port,
         "protocol": f.protocol,

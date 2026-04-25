@@ -1031,6 +1031,12 @@ def enrich_findings_from_threat_intel(db, scan_id: int = None) -> dict:
         best_cvss3_vec = None
         best_cvss4 = None
         best_cvss4_vec = None
+        # Union CWEs across every matching ThreatCVE. Preserve any CWEs already
+        # written by the scanner (Nuclei classification.cwe-id, EASM taxonomy).
+        existing_cwe_ids = {str(c).upper() for c in (f.cwe_ids or [])}
+        existing_cwe_names = {str(n) for n in (f.cwe_names or [])}
+        cwe_ids_union = set(existing_cwe_ids)
+        cwe_names_union = set(existing_cwe_names)
 
         for cve_id in f.cves:
             tc = cve_lookup.get(cve_id.strip() if cve_id else None)
@@ -1055,6 +1061,12 @@ def enrich_findings_from_threat_intel(db, scan_id: int = None) -> dict:
             if tc.cvss4_score is not None and (best_cvss4 is None or tc.cvss4_score > best_cvss4):
                 best_cvss4 = tc.cvss4_score
                 best_cvss4_vec = tc.cvss4_vector
+            for cwe_id in (tc.cwe_ids or []):
+                if cwe_id:
+                    cwe_ids_union.add(str(cwe_id).upper())
+            for cwe_name in (tc.cwe_names or []):
+                if cwe_name:
+                    cwe_names_union.add(str(cwe_name))
 
         changed = False
         if f.is_kev != is_kev:
@@ -1083,6 +1095,12 @@ def enrich_findings_from_threat_intel(db, scan_id: int = None) -> dict:
             f.cvss4_score = best_cvss4
             if best_cvss4_vec:
                 f.cvss4_vector = best_cvss4_vec
+            changed = True
+        if cwe_ids_union != existing_cwe_ids:
+            f.cwe_ids = sorted(cwe_ids_union)
+            changed = True
+        if cwe_names_union != existing_cwe_names:
+            f.cwe_names = sorted(cwe_names_union)
             changed = True
 
         if changed:

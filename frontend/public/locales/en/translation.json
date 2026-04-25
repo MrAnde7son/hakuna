@@ -103,6 +103,7 @@
     "owner": "Owner",
     "effort": "Effort",
     "cve": "CVE",
+    "cwe": "CWE",
     "rootCause": "Root Cause",
     "search": "Search findings...",
     "noResults": "No findings match your criteria",

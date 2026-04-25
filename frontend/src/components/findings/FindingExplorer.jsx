@@ -841,6 +841,48 @@ export default function FindingExplorer() {
       }
     },
     {
+      key: 'cves', label: t('findings.cve'), width: '160px',
+      render: (v) => {
+        const list = Array.isArray(v) ? v.filter(Boolean) : []
+        if (list.length === 0) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const shown = list.slice(0, 2)
+        const more = list.length - shown.length
+        return (
+          <span title={list.join(', ')} style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+            {shown.map(c => (
+              <span key={c} style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-secondary)', background: 'var(--bg-subtle)', padding: '1px 6px', borderRadius: 4 }}>{c}</span>
+            ))}
+            {more > 0 && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>+{more}</span>
+            )}
+          </span>
+        )
+      }
+    },
+    {
+      key: 'cwe_ids', label: t('findings.cwe'), width: '160px',
+      render: (v, row) => {
+        const list = Array.isArray(v) ? v.filter(Boolean) : []
+        if (list.length === 0) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>
+        const names = Array.isArray(row.cwe_names) ? row.cwe_names : []
+        const shown = list.slice(0, 2)
+        const more = list.length - shown.length
+        const tooltip = names.length === list.length
+          ? list.map((id, i) => `${id}: ${names[i]}`).join('\n')
+          : list.join(', ')
+        return (
+          <span title={tooltip} style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+            {shown.map(c => (
+              <span key={c} style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-secondary)', background: 'var(--bg-subtle)', padding: '1px 6px', borderRadius: 4 }}>{c}</span>
+            ))}
+            {more > 0 && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>+{more}</span>
+            )}
+          </span>
+        )
+      }
+    },
+    {
       key: 'effort_level', label: t('findings.effort'),
       render: (v) => <EffortBadge effort={v} />
     },
@@ -1045,7 +1087,7 @@ export default function FindingExplorer() {
   ]
 
   // Filter columns by visibility (all visible by default, KEV/EPSS/Ransomware/Trending hidden by default)
-  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen', 'vulnerability_state', 'vpr_score', 'risk_factor', 'port', 'workflow_status', 'workflow_assigned_to', 'exploit_maturity', 'ssvc_decision', 'exploit_count', 'exploit_maturity_level', 'source_systems', 'has_ticket'])
+  const defaultHidden = new Set(['cvss2_score', 'cvss4_score', 'cves', 'cwe_ids', 'is_kev', 'epss_score', 'ransomware_linked', 'trending_in_news', 'first_seen', 'last_seen', 'vulnerability_state', 'vpr_score', 'risk_factor', 'port', 'workflow_status', 'workflow_assigned_to', 'exploit_maturity', 'ssvc_decision', 'exploit_count', 'exploit_maturity_level', 'source_systems', 'has_ticket'])
   const visibleColumns = allColumns.filter(c => {
     if (c.key === '_select') return true
     if (c._isCustomField) {
