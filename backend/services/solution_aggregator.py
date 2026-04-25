@@ -107,19 +107,231 @@ _DEPRECATED_PROTOCOL_RE = re.compile(
     re.I,
 )
 
-# Misconfiguration keywords
+# Vulnerability class taxonomy — used as a scanner-agnostic fingerprint
+# fallback for app-layer findings (EASM, agent, DAST) that don't fit the
+# Nessus-shaped patterns above. Keyed by CWE; values are display names used
+# as the aggregation `component`.
+_CWE_TO_VULN_CLASS = {
+    "CWE-89": "SQL Injection",
+    "CWE-79": "Cross-Site Scripting",
+    "CWE-78": "OS Command Injection",
+    "CWE-77": "Command Injection",
+    "CWE-94": "Code Injection / RCE",
+    "CWE-22": "Path Traversal",
+    "CWE-918": "Server-Side Request Forgery",
+    "CWE-352": "Cross-Site Request Forgery",
+    "CWE-611": "XML External Entity",
+    "CWE-502": "Insecure Deserialization",
+    "CWE-434": "Unrestricted File Upload",
+    "CWE-601": "Open Redirect",
+    "CWE-798": "Hardcoded Credentials",
+    "CWE-287": "Improper Authentication",
+    "CWE-306": "Missing Authentication",
+    "CWE-862": "Missing Authorization",
+    "CWE-863": "Broken Access Control",
+    "CWE-200": "Information Disclosure",
+    "CWE-269": "Privilege Management",
+    "CWE-330": "Weak Randomness",
+    "CWE-327": "Weak Cryptography",
+    "CWE-319": "Cleartext Transmission",
+}
+
+# Heuristic: derive a vuln-class from plugin_name when cwe_ids is empty.
+_VULN_CLASS_NAME_RULES = [
+    (re.compile(r"\bSQL\s*Injection\b", re.I), "SQL Injection"),
+    (re.compile(r"\bCross[-\s]Site\s+Scripting\b|\bXSS\b", re.I), "Cross-Site Scripting"),
+    (re.compile(r"\b(?:OS\s+)?Command\s+Injection\b", re.I), "OS Command Injection"),
+    (re.compile(r"\bRemote\s+Code\s+Execution\b|\bRCE\b|\bCode\s+Injection\b", re.I), "Code Injection / RCE"),
+    (re.compile(r"\bPath\s+Traversal\b|\bDirectory\s+Traversal\b", re.I), "Path Traversal"),
+    (re.compile(r"\bSSRF\b|\bServer[-\s]Side\s+Request\s+Forgery\b", re.I), "Server-Side Request Forgery"),
+    (re.compile(r"\bCSRF\b|\bCross[-\s]Site\s+Request\s+Forgery\b", re.I), "Cross-Site Request Forgery"),
+    (re.compile(r"\bXXE\b|\bXML\s+External\s+Entity\b", re.I), "XML External Entity"),
+    (re.compile(r"\b(?:Insecure|Unsafe)\s+Deserialization\b", re.I), "Insecure Deserialization"),
+    (re.compile(r"\bUnrestricted\s+File\s+Upload\b|\bArbitrary\s+File\s+Upload\b", re.I), "Unrestricted File Upload"),
+    (re.compile(r"\bOpen\s+Redirect\b", re.I), "Open Redirect"),
+    (re.compile(r"\bHardcoded\s+(?:Credential|Password|Secret)\b", re.I), "Hardcoded Credentials"),
+    (re.compile(r"\bMissing\s+Authentication\b", re.I), "Missing Authentication"),
+    (re.compile(r"\bBroken\s+Access\s+Control\b|\bIDOR\b|\bInsecure\s+Direct\s+Object\b", re.I), "Broken Access Control"),
+    (re.compile(r"\bInformation\s+Disclosure\b", re.I), "Information Disclosure"),
+]
+
+
+# Class-specific remediation guidance. Surfaced in the aggregated solution
+# description; mirrors the per-finding CWE guidance in prioritizer.py but
+# framed as a cross-asset code-fix action.
+_VULN_CLASS_GUIDANCE = {
+    "SQL Injection":
+        "1. Replace string-concatenated SQL with parameterized queries / prepared statements\n"
+        "2. Apply allow-list input validation at the boundary\n"
+        "3. Reduce DB credentials to least privilege so a successful injection can't pivot\n"
+        "4. Add a WAF rule for the affected endpoint as short-term mitigation",
+    "Cross-Site Scripting":
+        "1. Apply context-aware output encoding (HTML, JS, URL, attribute) at render time\n"
+        "2. Set a strict Content-Security-Policy (`default-src 'self'`, no `unsafe-inline`)\n"
+        "3. Sanitize stored content via a vetted library (DOMPurify, OWASP Java Encoder)",
+    "OS Command Injection":
+        "1. Replace shell invocations with direct OS API calls\n"
+        "2. If a shell call is unavoidable, pass arguments as an array (never a concatenated string)\n"
+        "3. Validate inputs against an allow-list and drop privileges before invocation",
+    "Command Injection":
+        "1. Replace string-concatenated commands with structured APIs\n"
+        "2. Validate inputs against an allow-list; quote/escape any remaining user-controlled values",
+    "Code Injection / RCE":
+        "1. Eliminate dynamic code evaluation (`eval`, `exec`, `Function()`)\n"
+        "2. Replace with a fixed allow-list of handlers keyed by a sanitized identifier\n"
+        "3. Patch the affected library/runtime if the RCE path is in a dependency",
+    "Path Traversal":
+        "1. Resolve user-supplied paths against a fixed base directory\n"
+        "2. Reject any resolved path that escapes the base (`realpath` + `startswith` check)\n"
+        "3. Map filenames to opaque server-side IDs instead of trusting input",
+    "Server-Side Request Forgery":
+        "1. Validate outbound URLs against an allow-list of hosts\n"
+        "2. Resolve DNS once and reuse the resolved IP for the request\n"
+        "3. Block requests to RFC1918, link-local (incl. 169.254.169.254 metadata), and loopback ranges",
+    "Cross-Site Request Forgery":
+        "1. Require an unguessable per-session anti-CSRF token on every state-changing request\n"
+        "2. Use `SameSite=Lax` (or `Strict`) cookies\n"
+        "3. Verify the `Origin`/`Referer` header on sensitive endpoints",
+    "XML External Entity":
+        "1. Disable external entity resolution in the XML parser\n"
+        "2. Prefer a parser configured for XXE-safety by default (defusedxml, etc.)",
+    "Insecure Deserialization":
+        "1. Do not deserialize untrusted input with native deserializers (`pickle`, Java `ObjectInputStream`)\n"
+        "2. Switch to a data-only format (JSON) with strict schema validation",
+    "Unrestricted File Upload":
+        "1. Validate uploads by content type and magic bytes, not extension\n"
+        "2. Store outside the web root; generate a server-side filename\n"
+        "3. Serve via a download handler that sets `Content-Disposition: attachment`",
+    "Open Redirect":
+        "1. Validate redirect targets against an allow-list of internal paths\n"
+        "2. Never echo a user-supplied URL into a `Location` header without verification",
+    "Hardcoded Credentials":
+        "1. Remove the hardcoded credential from source\n"
+        "2. Rotate the secret immediately (assume compromise)\n"
+        "3. Load it from a secret manager (Vault, AWS/GCP Secrets Manager) at runtime",
+    "Improper Authentication":
+        "1. Enforce authentication at the framework/middleware layer, not per-handler\n"
+        "2. Add automated tests for unauthenticated access on each protected endpoint\n"
+        "3. Audit recent access logs for exploitation",
+    "Missing Authentication":
+        "1. Add the standard auth middleware/guard to the affected route(s)\n"
+        "2. Verify the route is no longer reachable anonymously",
+    "Missing Authorization":
+        "1. Add explicit authorization checks for each protected resource\n"
+        "2. Verify the principal has the required role/permission before returning data",
+    "Broken Access Control":
+        "1. Re-check object ownership/tenant scoping server-side\n"
+        "2. Do not rely on client-supplied IDs or hidden form fields",
+    "Information Disclosure":
+        "1. Audit responses for sensitive fields (stack traces, internal IDs, tokens, PII) and strip them\n"
+        "2. Disable verbose error pages in production",
+}
+
+
+def _classify_vuln_class(finding):
+    """Return a vuln-class display name, or None."""
+    for raw in (getattr(finding, "cwe_ids", None) or []):
+        if not isinstance(raw, str):
+            continue
+        cls = _CWE_TO_VULN_CLASS.get(raw.upper().strip())
+        if cls:
+            return cls
+    name = getattr(finding, "plugin_name", None) or ""
+    for pattern, cls in _VULN_CLASS_NAME_RULES:
+        if pattern.search(name):
+            return cls
+    return None
+
+
+# ── Agent CVE Hunt support (audit families) ───────────────────────────────
+
+# Per-protocol fallback bucket when a CVE Hunt finding's title is too generic
+# to extract a component name. First slot = outdated_version bucket (CVE
+# present), second slot = misconfiguration bucket (no CVE).
+_AUDIT_FAMILY_BUCKETS = {
+    "audit: windows":         ("Windows Software", "Windows Audit"),
+    "audit: ssh":             ("Linux Packages",   "SSH Audit"),
+    "audit: smb":             ("Windows Software", "SMB Hardening"),
+    "audit: kerberos":        ("Active Directory", "Kerberos Config"),
+    "audit: winrm":           ("Windows Software", "WinRM Audit"),
+    "audit: snmp":            ("Network Devices",  "SNMP Hardening"),
+    "audit: active directory": ("Active Directory", "Active Directory Hardening"),
+    "audit: ldap":            ("Active Directory", "LDAP Hardening"),
+    "audit: cloud (aws)":     ("AWS Resources",    "Cloud (AWS) Audit"),
+    "audit: cloud (azure)":   ("Azure Resources",  "Cloud (Azure) Audit"),
+    "audit: cloud (gcp)":     ("GCP Resources",    "Cloud (GCP) Audit"),
+}
+
+_AUDIT_TITLE_PREFIX_RE = re.compile(
+    r"^\s*(?:Outdated|Vulnerable|Unpatched|Missing\s+patch\s+for|"
+    r"End[-\s]of[-\s]life|EOL)\s+",
+    re.I,
+)
+_AUDIT_TITLE_CVE_TAIL_RE = re.compile(r"\s+CVE-\d{4}-\d+.*$", re.I)
+_AUDIT_TITLE_VERSION_TAIL_RE = re.compile(r"\s+v?\d+(?:[.\w]+)*\s*$")
+
+
+def _extract_audit_component(name):
+    """Best-effort component extraction from a free-form agent title.
+
+    The CVE Hunt mission emits titles like 'Outdated Google Chrome 119 — RCE
+    (CVE-2024-1234)'. Strip the noise and return 'Google Chrome'. Return
+    None if the result is too short to be a useful aggregation key.
+    """
+    if not name:
+        return None
+    cleaned = _AUDIT_TITLE_PREFIX_RE.sub("", name.strip())
+    # Cut at the first separator: em/en-dash, colon, parenthesis
+    cleaned = re.split(r"\s*[—–:(]\s*", cleaned, maxsplit=1)[0]
+    # Cut at " - " (with spaces) to avoid splitting hyphenated names
+    cleaned = re.split(r"\s+-\s+", cleaned, maxsplit=1)[0]
+    cleaned = _AUDIT_TITLE_CVE_TAIL_RE.sub("", cleaned)
+    cleaned = _AUDIT_TITLE_VERSION_TAIL_RE.sub("", cleaned)
+    cleaned = cleaned.strip(" ,;.")
+    if not cleaned or len(cleaned) < 3:
+        return None
+    if re.match(r"^CVE-\d", cleaned, re.I):
+        return None
+    return _normalize_component(cleaned)
+
+# Misconfiguration keywords. Covers Nessus-shaped finding names and the
+# audit-profile output (SMB / WMI / SNMP / LDAP) used by host-credentialed scans.
 _MISCONFIG_PATTERNS = [
+    # TLS / certificates
     (re.compile(r"SSL\s+(?:Medium|Weak)\s+Strength\s+Cipher", re.I), "SSL/TLS Cipher Config"),
     (re.compile(r"SSL\s+Certificate\s+(?:Cannot\s+Be\s+Trusted|Expir|Self.Signed|Chain)", re.I), "SSL Certificate"),
     (re.compile(r"SSL\s+(?:RC4|CBC|NULL|Anonymous|Export)\s+Cipher", re.I), "SSL/TLS Cipher Config"),
-    (re.compile(r"SMB\s+Signing\s+(?:not\s+required|disabled)", re.I), "SMB Signing"),
-    (re.compile(r"(?:SSH|SSHD).*(?:Weak|CBC|Deprecated|Enabled)", re.I), "SSH Config"),
-    (re.compile(r"(?:Default|Weak)\s+(?:Credential|Password|Account)", re.I), "Default Credentials"),
-    (re.compile(r"Kerberos\s+.*(?:Pre.authentication|Weak\s+Encryption)", re.I), "Kerberos Config"),
-    (re.compile(r"(?:NFS|RPC|SNMP).*(?:Enabled|Open|Public|Community)", re.I), "Service Hardening"),
+    # SMB hardening (audit profile)
+    (re.compile(r"SMB\s+Signing\s+(?:not\s+required|disabled|not\s+enabled)", re.I), "SMB Signing"),
+    (re.compile(r"SMB\s+(?:Null\s+Session|Anonymous(?:\s+(?:Access|Enumeration))?|Guest\s+Access)", re.I), "SMB Hardening"),
+    (re.compile(r"SMB\s+(?:Encryption\s+(?:Disabled|Not\s+Required)|Use\s+Host\s+SIDs)", re.I), "SMB Hardening"),
+    # WMI hardening
+    (re.compile(r"WMI\s+(?:Anonymous|Remote|Hardening|DCOM|Authentication)", re.I), "WMI Hardening"),
+    (re.compile(r"DCOM\s+(?:Hardening|Authentication|Remote\s+Activation)", re.I), "WMI Hardening"),
+    # SNMP hardening (audit profile)
+    (re.compile(r"SNMP(?:v?[12c]?)?\s+(?:Default\s+Community|Public\s+Community|Private\s+Community|Weak\s+Community|Community\s+String|Enabled|Detection\s+w?/?\s*default)", re.I), "SNMP Hardening"),
+    (re.compile(r"SNMPv[12c]?\s+(?:Supported|Enabled)", re.I), "SNMP Hardening"),
+    # LDAP / AD hardening (audit profile)
+    (re.compile(r"LDAP\s+(?:Anonymous\s+Bind|Signing(?:\s+Not\s+Required)?|Channel\s+Binding|Null\s+Bind)", re.I), "LDAP Hardening"),
+    (re.compile(r"LDAPS?\s+(?:Not\s+Enforced|Disabled|Not\s+Configured)", re.I), "LDAP Hardening"),
+    (re.compile(r"Active\s+Directory\s+(?:Anonymous|Signing|Hardening|Pre.Windows\s+2000)", re.I), "Active Directory Hardening"),
+    # SSH hardening
+    (re.compile(r"(?:SSH|SSHD).*(?:Weak|CBC|Deprecated|Enabled|Algorithm|Cipher|MAC)", re.I), "SSH Config"),
+    # Credentials / accounts
+    (re.compile(r"(?:Default|Weak|Blank)\s+(?:Credential|Password|Account)", re.I), "Default Credentials"),
+    (re.compile(r"Password\s+Policy\s+(?:Weak|Misconfigured|Insufficient)", re.I), "Password Policy"),
+    # Kerberos
+    (re.compile(r"Kerberos\s+.*(?:Pre.authentication|Weak\s+Encryption|RC4|DES)", re.I), "Kerberos Config"),
+    # NFS / RPC / NTP / DNS open services
+    (re.compile(r"(?:NFS|RPC|NTP|DNS)\s+.*(?:Open|Anonymous|Recursive|Amplification|Cache\s+Snooping)", re.I), "Service Hardening"),
+    # Windows config
     (re.compile(r"(?:AutoAdmin|Autologon)\s+Enabled", re.I), "Windows Autologon"),
     (re.compile(r"Speculative\s+Execution", re.I), "Speculative Execution Mitigations"),
     (re.compile(r"Insecure\s+Windows\s+Service\s+Permissions", re.I), "Windows Service Permissions"),
+    (re.compile(r"UAC\s+(?:Disabled|Misconfigured|Bypass)", re.I), "Windows UAC"),
+    (re.compile(r"Windows\s+Firewall\s+(?:Disabled|Misconfigured)", re.I), "Windows Firewall"),
+    # Compliance / audit-profile generic catchers (CIS / DISA STIG / Nessus audit policies)
+    (re.compile(r"(?:CIS|DISA\s+STIG|Nessus\s+Audit)\b.*(?:Failed|Non[-\s]Compliant|Violation)", re.I), "Compliance Baseline"),
 ]
 
 
@@ -268,6 +480,75 @@ def fingerprint_finding(finding):
         fp.group_key = ("__patch__" + fp.component, fp.root_cause_type)
         return fp
 
+    family_lower = family.lower()
+
+    # ── Rule 8.5: Agent CVE Hunt — audit family + CVEs → outdated_version ──
+    # WMI/SSH/SMB/SNMP/LDAP CVE Hunt missions emit findings with an
+    # `Audit: <protocol>` family and a CVE list. Group them as
+    # outdated_version so multiple CVEs against the same component on
+    # multiple hosts collapse into one "Update X" remediation. Runs before
+    # the misconfig fallback below so an "Audit: SMB" finding *with* CVEs
+    # isn't mis-routed to SMB Hardening.
+    if family_lower.startswith("audit:") and (finding.cves or []):
+        component = _extract_audit_component(name)
+        if component is None:
+            bucket = _AUDIT_FAMILY_BUCKETS.get(family_lower)
+            if bucket:
+                component = bucket[0]
+        if component:
+            fp.component = component
+            fp.target_version = _extract_target_version(solution)
+            fp.root_cause_type = "outdated_version"
+            fp.group_key = (fp.component, fp.root_cause_type)
+            return fp
+
+    # ── Rule 8.6: Configuration-audit family fallback ─────
+    # Catches audit-profile output (SMB / WMI / SNMP / LDAP / Policy
+    # Compliance) whose finding name doesn't match a specific misconfig
+    # regex but whose plugin_family signals a configuration check.
+    audit_family_component = None
+    if "policy compliance" in family_lower or "compliance check" in family_lower:
+        audit_family_component = "Compliance Baseline"
+    elif "snmp" in family_lower:
+        audit_family_component = "SNMP Hardening"
+    elif "ldap" in family_lower or "active directory" in family_lower:
+        audit_family_component = "LDAP Hardening"
+    elif "smb" in family_lower or "cifs" in family_lower:
+        audit_family_component = "SMB Hardening"
+    elif family_lower.startswith("settings") or family_lower == "misc.":
+        if re.search(r"\b(?:disabled|enabled|misconfigur|hardening|signing|policy|baseline)\b",
+                     name, re.I):
+            audit_family_component = "Configuration Audit"
+    if audit_family_component:
+        fp.component = audit_family_component
+        fp.root_cause_type = "misconfiguration"
+        fp.group_key = (fp.component, fp.root_cause_type)
+        return fp
+
+    # ── Rule 8.7: Catch-all audit family → misconfiguration ──
+    # Audit-profile findings (Audit: Windows / Audit: SSH / Audit: Cloud)
+    # without CVEs route to a per-protocol misconfig bucket so they
+    # don't silently disappear from aggregation.
+    if family_lower.startswith("audit:"):
+        bucket = _AUDIT_FAMILY_BUCKETS.get(family_lower)
+        if bucket:
+            fp.component = bucket[1]
+            fp.root_cause_type = "misconfiguration"
+            fp.group_key = (fp.component, fp.root_cause_type)
+            return fp
+
+    # ── Rule 9: CWE / vuln-class fallback ─────────────────
+    # Catches app-layer findings (EASM, agent, DAST) where the rules above
+    # — built around Nessus-shaped plugin metadata — don't match. Groups by
+    # vulnerability class so e.g. all SQL injections aggregate into one
+    # remediation action.
+    vuln_class = _classify_vuln_class(finding)
+    if vuln_class:
+        fp.component = vuln_class
+        fp.root_cause_type = "vuln_class"
+        fp.group_key = (fp.component, fp.root_cause_type)
+        return fp
+
     return None
 
 
@@ -283,6 +564,7 @@ def _determine_action_type(root_cause_type):
         "outdated_version": "upgrade_component",
         "misconfiguration": "remediate_config",
         "missing_patch": "apply_patch",
+        "vuln_class": "fix_code_defect",
     }.get(root_cause_type, "upgrade_component")
 
 
@@ -300,6 +582,11 @@ def _determine_effort(root_cause_type, finding_count, asset_count):
         return "quick_win"
     if root_cause_type == "outdated_version" and asset_count <= 5:
         return "quick_win"
+    if root_cause_type == "vuln_class":
+        # Code-level fixes need dev cycles; scale with finding count
+        if finding_count > 10:
+            return "complex"
+        return "medium"
     if asset_count > 10:
         return "complex"
     return "medium"
@@ -314,6 +601,8 @@ def _determine_owner(root_cause_type, component):
         if "kerberos" in comp_lower or "credential" in comp_lower:
             return "SecOps"
         return "IT"
+    if root_cause_type == "vuln_class":
+        return "AppSec"
     if root_cause_type in ("eol_software", "deprecated_protocol", "missing_patch"):
         return "IT"
     return "IT"
@@ -349,6 +638,11 @@ def _build_title(action_type, component, target_version, asset_count, finding_co
     if action_type == "remediate_config":
         if asset_count > 1:
             return "Fix %s across %d hosts" % (comp, asset_count)
+        return "Fix %s" % comp
+
+    if action_type == "fix_code_defect":
+        if finding_count > 1:
+            return "Fix %d %s findings" % (finding_count, comp)
         return "Fix %s" % comp
 
     return "Remediate %s (%d findings)" % (comp, finding_count)
@@ -438,6 +732,24 @@ def _build_description(root_cause_type, action_type, component, fingerprints,
                 "\n1. Change all default credentials immediately\n"
                 "2. Use strong, unique passwords (16+ chars)\n"
                 "3. Disable unused accounts")
+
+    elif action_type == "fix_code_defect":
+        parts.append(
+            "**%s** — %d findings across %d %s share the same vulnerability "
+            "class. Fix the underlying defect at the code/library layer rather "
+            "than per-finding." % (
+                component, n, len(asset_hostnames),
+                "host" if len(asset_hostnames) == 1 else "hosts"))
+        parts.append("\n**Affected hosts:** %s" % hosts)
+        guidance = _VULN_CLASS_GUIDANCE.get(component)
+        if guidance:
+            parts.append("\n**Recommended action:**\n" + guidance)
+        else:
+            parts.append(
+                "\n**Recommended action:** Identify the shared input-handling or "
+                "auth/authorization code path and apply a class-appropriate fix "
+                "(input validation, output encoding, parameterization, or access "
+                "checks) at that single location.")
 
     else:
         parts.append("%d findings can be resolved by addressing **%s**." % (n, component))

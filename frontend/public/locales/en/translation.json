@@ -936,7 +936,8 @@
       "deprecated_protocol": "Deprecated Protocol",
       "outdated_version": "Outdated Version",
       "misconfiguration": "Misconfiguration",
-      "missing_patch": "Missing Patches"
+      "missing_patch": "Missing Patches",
+      "vuln_class": "Vulnerability Class"
     },
     "actionLabels": {
       "migrate_to_supported": "Migrate",
@@ -944,7 +945,8 @@
       "upgrade_component": "Upgrade",
       "remediate_config": "Fix Config",
       "apply_patch": "Patch",
-      "bulk_patch": "Bulk Patch"
+      "bulk_patch": "Bulk Patch",
+      "fix_code_defect": "Fix Code"
     }
   },
   "workflows": {

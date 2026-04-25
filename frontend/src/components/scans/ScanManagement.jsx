@@ -14,7 +14,7 @@ import {
   getEasmScanRuns, startVmScan, refreshVmScan, rescanVmScan, getAssets, updateScanSchedule,
   getCredentials, createCredential, getRelayAgents,
   listAuditProtocols, startAuditRun, getBillingUsage,
-  rescanAuditScan, updateAuditScan, getAuditScanHistory,
+  rescanAuditScan, updateAuditScan, getAuditScanHistory, getAgentRun,
 } from '../../api.js'
 import { Card, PageHeader, Button, Spinner, useConfirm, useToast } from '../shared/ui.jsx'
 import { getAssetDisplayName, getAssetTarget } from '../../utils/assetDisplay.js'
@@ -2674,6 +2674,7 @@ function AuditScanHistory({ expanded, scanId }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState(null)
+  const [traceTarget, setTraceTarget] = useState(null)  // {agentId, runId, label}
 
   useEffect(() => {
     if (!expanded) return
@@ -2694,6 +2695,16 @@ function AuditScanHistory({ expanded, scanId }) {
     if (s === 'awaiting_approval') return '#f59e0b'
     return '#71717a'
   }
+  const statusLabel = (s) => {
+    if (s === 'done') return 'ok'
+    if (s === 'awaiting_approval') return 'approval'
+    return s || 'unknown'
+  }
+
+  const runs = (data?.runs) || []
+  const total = runs.length
+  const completed = runs.filter(r => r.status === 'done' || r.status === 'failed' || r.status === 'error').length
+  const totalFindings = runs.reduce((sum, r) => sum + (r.findings_count || 0), 0)
 
   return (
     <div style={{
@@ -2702,49 +2713,201 @@ function AuditScanHistory({ expanded, scanId }) {
     }}>
       <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8 }}>
         <History size={11} style={{ marginRight: 4, verticalAlign: -1 }} />
-        Run History
+        Scan Details
       </div>
+
       {loading && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Loading...</div>}
       {err && <div style={{ fontSize: 11, color: '#dc2626' }}>{err}</div>}
-      {!loading && data && (data.runs || []).length === 0 && (
+      {!loading && total === 0 && (
         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>No runs recorded yet.</div>
       )}
-      {!loading && data && (data.runs || []).length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-          {data.runs.map(r => (
-            <div key={r.agent_run_id} style={{
-              display: 'flex', gap: 8, alignItems: 'center', fontSize: 11,
-              padding: '4px 8px', borderRadius: 4,
-              background: 'var(--bg)',
-              border: '1px solid var(--border)',
-            }}>
-              <span style={{
-                width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
-                background: statusColor(r.status),
-              }} />
-              <span style={{ fontWeight: 500, minWidth: 70 }}>{r.status}</span>
-              <span style={{ color: 'var(--text-muted)' }}>
-                {r.protocol}/{r.mission}
-              </span>
-              <span style={{ color: 'var(--text-muted)' }}>
-                steps {r.steps_used}
-              </span>
-              <span style={{ color: 'var(--text-muted)', flex: 1, textAlign: 'right' }}>
-                {r.finished_at ? formatAge(r.finished_at) : (r.created_at ? formatAge(r.created_at) : '')}
-              </span>
-              {r.error && (
-                <span title={r.error} style={{
-                  color: '#dc2626', maxWidth: 180, overflow: 'hidden',
-                  textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                }}>
-                  {r.error}
-                </span>
-              )}
-            </div>
-          ))}
-        </div>
+
+      {!loading && total > 0 && (
+        <>
+          {/* Summary row — mirrors VM scan summary */}
+          <div style={{
+            display: 'flex', gap: 10, alignItems: 'center', fontSize: 12,
+            padding: '5px 8px', borderRadius: 5, background: 'var(--bg)',
+            border: '1px solid var(--border)', marginBottom: 4,
+          }}>
+            <span style={{ color: 'var(--text-muted)', flex: 1 }}>
+              {completed}/{total} runs done
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>
+              {totalFindings} finding{totalFindings !== 1 ? 's' : ''}
+            </span>
+          </div>
+
+          {/* Per-run rows — same shape as VM target rows */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 4 }}>
+            {runs.map(r => {
+              const label = r.asset_label || (r.asset_id ? `asset ${r.asset_id}` : 'asset ?')
+              const mission = [r.protocol, r.mission].filter(Boolean).join('/')
+              const meta = []
+              if (r.findings_count != null) meta.push(`${r.findings_count} finding${r.findings_count !== 1 ? 's' : ''}`)
+              if (r.steps_used != null) meta.push(`${r.steps_used} step${r.steps_used !== 1 ? 's' : ''}`)
+              if (r.duration_s != null) meta.push(`${r.duration_s}s`)
+              const traceLabel = `${label} — ${mission || 'audit'}`
+              return (
+                <div key={r.agent_run_id} style={{ display: 'flex', flexDirection: 'column' }}>
+                  <div style={{
+                    display: 'flex', gap: 8, alignItems: 'center', fontSize: 11,
+                    padding: '4px 8px', borderRadius: 4,
+                    color: 'var(--text-muted)',
+                  }}>
+                    <span style={{
+                      width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                      background: statusColor(r.status),
+                    }} />
+                    <span style={{ fontFamily: 'monospace', fontWeight: 500, color: 'var(--text-secondary)', flex: 1 }}>
+                      {label}
+                      {mission && (
+                        <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> — {mission}</span>
+                      )}
+                    </span>
+                    <span style={{ fontSize: 10, color: statusColor(r.status), fontWeight: 500 }}>
+                      {statusLabel(r.status)}
+                    </span>
+                    {meta.length > 0 && (
+                      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                        {meta.join(' · ')}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => setTraceTarget({ agentId: r.agent_id, runId: r.agent_run_id, label: traceLabel })}
+                      style={{
+                        fontSize: 10, padding: '2px 6px', borderRadius: 3,
+                        background: 'var(--bg-secondary)', border: '1px solid var(--border)',
+                        color: 'var(--text-secondary)', cursor: 'pointer',
+                      }}
+                      title="View agent trace"
+                    >
+                      Trace
+                    </button>
+                  </div>
+                  {r.error && (
+                    <div style={{
+                      margin: '0 8px 2px 22px', padding: '4px 8px',
+                      borderRadius: 4, background: '#fef2f2',
+                      border: '1px solid #fecaca', fontSize: 10,
+                      color: '#991b1b', fontFamily: 'monospace',
+                      whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                    }}>
+                      {r.error}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+
+      {traceTarget && (
+        <AuditTraceModal
+          agentId={traceTarget.agentId}
+          runId={traceTarget.runId}
+          label={traceTarget.label}
+          onClose={() => setTraceTarget(null)}
+        />
       )}
     </div>
+  )
+}
+
+
+function AuditTraceModal({ agentId, runId, label, onClose }) {
+  const [run, setRun] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState(null)
+
+  useEffect(() => {
+    setLoading(true)
+    setErr(null)
+    getAgentRun(agentId, runId)
+      .then(setRun)
+      .catch(e => setErr(e.message || 'Failed to load trace'))
+      .finally(() => setLoading(false))
+  }, [agentId, runId])
+
+  const trace = Array.isArray(run?.trace) ? run.trace : []
+
+  return createPortal(
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: 'var(--bg)', borderRadius: 8, padding: 16,
+          width: 760, maxWidth: '92vw', maxHeight: '85vh',
+          display: 'flex', flexDirection: 'column',
+          border: '1px solid var(--border)',
+        }}
+      >
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          marginBottom: 10, paddingBottom: 8, borderBottom: '1px solid var(--border)',
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Agent Trace</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{label}</div>
+          </div>
+          <button onClick={onClose} style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: 'var(--text-muted)', padding: 2,
+          }}><X size={16} /></button>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {loading && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading trace...</div>}
+          {err && <div style={{ fontSize: 12, color: '#dc2626' }}>{err}</div>}
+          {!loading && !err && trace.length === 0 && (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No trace recorded.</div>
+          )}
+          {!loading && trace.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {trace.map((entry, i) => (
+                <div key={i} style={{
+                  padding: 8, borderRadius: 6, fontSize: 12, fontFamily: 'monospace',
+                  background: entry.role === 'tool' ? '#1a1a2e' : 'var(--bg-secondary)',
+                  border: '1px solid var(--border)',
+                }}>
+                  <div style={{
+                    fontWeight: 600,
+                    color: entry.role === 'tool' ? '#818cf8' : 'var(--accent)',
+                    marginBottom: 4,
+                  }}>
+                    {entry.role === 'tool'
+                      ? `tool: ${entry.tool_name || '?'}`
+                      : `assistant${entry.step != null ? ` (step ${entry.step})` : ''}`}
+                  </div>
+                  <pre style={{
+                    margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                    color: entry.role === 'tool' ? '#e2e8f0' : 'var(--text-secondary)',
+                    maxHeight: 240, overflow: 'auto',
+                  }}>
+                    {entry.role === 'tool'
+                      ? (typeof entry.output === 'string'
+                          ? entry.output
+                          : JSON.stringify(entry.output, null, 2))
+                      : (Array.isArray(entry.content)
+                          ? entry.content.map(b => b.type === 'text'
+                              ? b.text
+                              : `[tool_use: ${b.name}(${JSON.stringify(b.input)})]`).join('\n')
+                          : (typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content, null, 2)))}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
   )
 }
 
