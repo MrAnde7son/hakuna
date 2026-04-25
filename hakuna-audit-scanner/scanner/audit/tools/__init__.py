@@ -9,6 +9,14 @@ debuggability.
 """
 
 from scanner.audit.tools import emit_finding  # noqa: F401
+# Shared cross-protocol tools — every audit's palette references some
+# of these. Imported before protocol modules so their tool_names
+# declarations resolve.
+from scanner.audit.tools import asset_profile  # noqa: F401
+from scanner.audit.tools import clarification  # noqa: F401
+from scanner.audit.tools import cve_correlator  # noqa: F401
+from scanner.audit.tools import scratchpad  # noqa: F401
+# Protocol-specific palettes.
 from scanner.audit.tools import ssh_tools  # noqa: F401
 
 # Phase 2 — port the rest one at a time:

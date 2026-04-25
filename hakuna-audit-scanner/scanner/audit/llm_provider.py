@@ -387,7 +387,11 @@ class AnthropicAdapter(LLMAdapter):
                     "name": getattr(b, "name", ""),
                     "input": getattr(b, "input", {}) or {},
                 })
-        return {"content": blocks, "stop_reason": getattr(resp, "stop_reason", "")}
+        return {
+            "content": blocks,
+            "stop_reason": getattr(resp, "stop_reason", ""),
+            "usage": _extract_anthropic_usage(resp),
+        }
 
 
 # ── Anthropic-on-Vertex adapter ──────────────────────────────────
@@ -460,7 +464,11 @@ class AnthropicVertexAdapter(LLMAdapter):
                     "name": getattr(b, "name", ""),
                     "input": getattr(b, "input", {}) or {},
                 })
-        return {"content": blocks, "stop_reason": getattr(resp, "stop_reason", "")}
+        return {
+            "content": blocks,
+            "stop_reason": getattr(resp, "stop_reason", ""),
+            "usage": _extract_anthropic_usage(resp),
+        }
 
 
 # ── OpenAI-compatible adapter (OpenAI, Groq, Ollama) ─────────────
@@ -549,7 +557,11 @@ class OpenAIAdapter(LLMAdapter):
                 "input": args,
             })
 
-        return {"content": blocks, "stop_reason": choice.finish_reason or ""}
+        return {
+            "content": blocks,
+            "stop_reason": choice.finish_reason or "",
+            "usage": _extract_openai_usage(resp),
+        }
 
 
 def _anthropic_to_openai_messages(messages: list[dict]) -> list[dict]:
@@ -717,7 +729,56 @@ class GoogleGenAIAdapter(LLMAdapter):
                 if text:
                     blocks.append({"type": "text", "text": text})
 
-        return {"content": blocks, "stop_reason": str(stop_reason)}
+        return {
+            "content": blocks,
+            "stop_reason": str(stop_reason),
+            "usage": _extract_gemini_usage(resp),
+        }
+
+
+def _extract_anthropic_usage(resp: Any) -> dict:
+    """Anthropic SDK returns ``resp.usage.input_tokens`` /
+    ``output_tokens``. Both AnthropicAdapter and AnthropicVertexAdapter
+    use the same shape so one helper covers them."""
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    return {
+        "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+        "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+    }
+
+
+def _extract_openai_usage(resp: Any) -> dict:
+    """OpenAI/Groq/Ollama all share ``resp.usage.prompt_tokens`` /
+    ``completion_tokens``. Ollama may return None — coerce to 0."""
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    return {
+        "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+        "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+    }
+
+
+def _extract_gemini_usage(resp: Any) -> dict:
+    """google-genai exposes ``resp.usage_metadata.prompt_token_count`` /
+    ``candidates_token_count``. Older SDK versions used ``input_token_count``
+    — try both."""
+    meta = getattr(resp, "usage_metadata", None)
+    if meta is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    in_t = (
+        getattr(meta, "prompt_token_count", None)
+        or getattr(meta, "input_token_count", 0)
+        or 0
+    )
+    out_t = (
+        getattr(meta, "candidates_token_count", None)
+        or getattr(meta, "output_token_count", 0)
+        or 0
+    )
+    return {"input_tokens": int(in_t), "output_tokens": int(out_t)}
 
 
 def _clean_gemini_schema(schema: dict) -> dict:

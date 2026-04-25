@@ -38,8 +38,9 @@ from scanner.audit.config import (
     AUDIT_DEFAULT_MAX_STEPS,
     AUDIT_DEFAULT_WALLCLOCK_S,
     DATABASE_URL,
+    REDIS_PUBSUB_URL,
 )
-from scanner.audit.db import _normalize_dsn
+from scanner.audit.db import _normalize_dsn, get_pool
 from scanner.audit.llm_provider import (
     LLMProviderError,
     build_adapter,
@@ -47,6 +48,9 @@ from scanner.audit.llm_provider import (
     resolve_provider,
     resolve_specific_provider,
 )
+from scanner.audit.publisher import make_publisher
+from scanner.audit.quota import QuotaExceeded, get_provider as get_quota_provider
+from scanner.audit.relay_client import get_transport as get_relay_transport
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +226,23 @@ async def _run_audit_scan_async(
             return _skip(asset_id, protocol, mission_key, start,
                          f"required ports {audit.required_ports} not open on asset")
 
+    # Publisher, quota, and transport are resolved from module-level
+    # singletons (or constructed here for the publisher because it
+    # needs the run-level Redis URL). Backend overrides via
+    # ``set_provider`` / ``set_transport`` before workers boot — same
+    # pattern Celery itself uses for its result backend.
+    publisher = make_publisher(REDIS_PUBSUB_URL)
+    quota = get_quota_provider()
+    relay_transport = get_relay_transport()
+
+    # Pre-emptive quota check — blocks the run before adapter init when
+    # the org is already over. Avoids paying for SDK construction +
+    # ADC token fetch on a doomed run.
+    try:
+        quota.check(str(asset.get("org_id")) if asset.get("org_id") else org_id)
+    except QuotaExceeded as e:
+        return _skip(asset_id, protocol, mission_key, start, f"quota exceeded: {e}")
+
     ctx = AuditContext(
         run_id=run_id,
         agent_id=run_id,  # OSS runs have no persistent Agent record; reuse run_id
@@ -234,6 +255,10 @@ async def _run_audit_scan_async(
         credentials=credentials or {},
         protocol=protocol,
         mission_key=mission_key,
+        relay_transport=relay_transport,
+        publisher=publisher,
+        quota=quota,
+        db_pool=await get_pool(),
     )
 
     # ── 6: load mission prompt + run loop ─────────────────────────
@@ -265,8 +290,10 @@ async def _run_audit_scan_async(
         "steps": result["steps"],
         "iterations": result["iterations"],
         "stop_reason": result["stop_reason"],
+        "input_tokens": result.get("input_tokens", 0),
+        "output_tokens": result.get("output_tokens", 0),
         "duration_seconds": round(time.monotonic() - start, 2),
-        "status": "ok",
+        "status": "ok" if result["stop_reason"] != "quota_exceeded" else "quota_exceeded",
         "scanner": "audit",
         "llm_provider": provider_info.provider,
         "llm_model": provider_info.model,

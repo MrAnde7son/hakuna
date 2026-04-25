@@ -20,6 +20,11 @@ from typing import Any, Optional
 
 from scanner.audit.config import SCRATCHPAD_DIR
 
+if False:  # type-only — avoid runtime cycle with publisher importing config
+    from scanner.audit.publisher import RunPublisher  # noqa: F401
+    from scanner.audit.quota import QuotaProvider  # noqa: F401
+    from scanner.audit.relay_client import RelayTransport  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
 
@@ -128,6 +133,10 @@ class AuditContext:
         credentials: dict,
         protocol: str,
         mission_key: str,
+        relay_transport: "RelayTransport | None" = None,
+        publisher: "RunPublisher | None" = None,
+        quota: "QuotaProvider | None" = None,
+        db_pool: Any = None,
     ):
         self.run_id = run_id
         self.agent_id = agent_id
@@ -142,6 +151,43 @@ class AuditContext:
         self.mission_key = mission_key
         self.findings: list[dict] = []
         self.steps: list[dict] = []
+
+        # Lazily resolved by the engine when None — keeps tests free of
+        # wiring boilerplate (they can construct an AuditContext with
+        # just asset/protocol/mission and let the engine fill in
+        # defaults from the module-level singletons).
+        self._relay_transport = relay_transport
+        self._publisher = publisher
+        self._quota = quota
+        # asyncpg pool — set by the worker for tools that read from
+        # the shared Postgres (get_asset_profile, etc.). None in OSS
+        # standalone runs that ship asset context inline.
+        self.db_pool = db_pool
+
+    # Lazy resolution — first access triggers the module-level singleton.
+    # Keeps the singleton-vs-injection trade-off in one place rather
+    # than spreading ``or get_xxx()`` defaulting across every tool.
+
+    @property
+    def relay_transport(self) -> "RelayTransport":
+        if self._relay_transport is None:
+            from scanner.audit.relay_client import get_transport
+            self._relay_transport = get_transport()
+        return self._relay_transport
+
+    @property
+    def publisher(self) -> "RunPublisher":
+        if self._publisher is None:
+            from scanner.audit.publisher import NullPublisher
+            self._publisher = NullPublisher()
+        return self._publisher
+
+    @property
+    def quota(self) -> "QuotaProvider":
+        if self._quota is None:
+            from scanner.audit.quota import get_provider
+            self._quota = get_provider()
+        return self._quota
 
     def emit_finding(self, finding: dict) -> None:
         """Append a finding dict to the run accumulator. Called by the

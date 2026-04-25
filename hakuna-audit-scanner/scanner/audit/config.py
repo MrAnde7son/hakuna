@@ -52,6 +52,18 @@ TEMPLATES_DIR = os.environ.get(
 MISSIONS_DIR = os.path.join(TEMPLATES_DIR, "missions")
 CUSTOM_MISSIONS_DIR = os.path.join(TEMPLATES_DIR, "custom", "missions")
 
+# ── Streaming (Redis pub-sub) ────────────────────────────────────
+# When set, the engine publishes per-iteration events (thinking,
+# tool_call, tool_result, finding, run_end) to ``audit:run:{run_id}``.
+# Backend's SSE endpoint subscribes and forwards to the agent-run
+# viewer. Unset → engine uses NullPublisher; transcript still arrives
+# in the Celery result payload, just without live updates.
+#
+# Default falls through to the Celery broker URL — same Redis is fine
+# for almost every deployment. Set to a different DSN only when you
+# want pub-sub on a dedicated Redis.
+REDIS_PUBSUB_URL = os.environ.get("REDIS_PUBSUB_URL", CELERY_BROKER_URL)
+
 # ── Scratchpad persistence ───────────────────────────────────────
 # File-based per-agent state. In OSS mode this is a local volume; in
 # Hakuna deployment it lives on the worker's persistent disk. Path is

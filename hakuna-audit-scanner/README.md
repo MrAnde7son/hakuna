@@ -14,20 +14,25 @@ graceful no-LLM degradation).
 
 What's in:
 
-- `audit_engine.py` — ReAct loop, `@agent_tool` registry, multi-provider tool-use
-- `audit_worker.py` — Celery task, asset/credential context fetch
-- `llm_provider.py` — verbatim copy of the VM scanner's resolver (Anthropic → OpenAI → Vertex → Gemini → Groq → Ollama)
-- `relay_client.py` — HTTP client to `hakuna-relay-agent`
-- `tools/ssh_tools.py` — Linux audit palette (12 tools), ported from `backend/agents/tools/ssh_tools.py`
-- `tools/emit_finding.py` — shared finding-capture tool
+- `audit_engine.py` — ReAct loop, `@agent_tool` registry, multi-provider tool-use, **per-iteration event publishing**, **per-turn quota check + record**
+- `audit_worker.py` — Celery task, asset/credential context fetch, wires publisher + quota + transport onto the run context
+- `llm_provider.py` — multi-provider resolver (Anthropic → OpenAI → Vertex → Gemini → Groq → Ollama). All four adapters return `{content, stop_reason, usage: {input_tokens, output_tokens}}`.
+- `publisher.py` — `RunPublisher` Protocol + `NullPublisher` + `RedisPublisher`. Engine publishes to `audit:run:{run_id}`; backend's SSE endpoint subscribes.
+- `quota.py` — `QuotaProvider` Protocol + `NullQuotaProvider` + `InMemoryQuotaProvider`. Backend installs `SqlAlchemyQuotaProvider` via `set_provider(...)` at startup.
+- `relay_client.py` — `RelayTransport` Protocol + `HttpRelayTransport` (default) + `NullRelayTransport`. Backend installs a WebSocket-broker adapter via `set_transport(...)` for multi-tenant relays.
+- `tools/ssh_tools.py` — Linux audit palette (12 protocol tools), ported from `backend/agents/tools/ssh_tools.py`
+- `tools/emit_finding.py` — shared finding-capture tool (no ORM dep)
+- `tools/asset_profile.py` — `get_asset_profile` (asyncpg port; gracefully degrades when inventory tables are missing)
+- `tools/cve_correlator.py` — `correlate_software_to_cves` (pluggable; `NullCveCorrelator` default; backend wires `SqlAlchemyCveCorrelator`)
+- `tools/scratchpad.py` — `read_scratchpad` / `write_scratchpad` / `clear_scratchpad`
+- `tools/clarification.py` — `request_clarification` (publishes a structured event; backend's approval flow listens)
 - `mission_loader.py` + `templates/missions/*.yaml` — operator-editable mission prompts (replaces the backend's 3.7 k-line `agent_prompts.py`)
 - `api.py` — FastAPI service (`POST /audit/scans/`, `GET /audit/scans/{id}`, mission validator)
 
 Phase 2 ports:
 
 - `tools/{wmi,ldap,smb,snmp,cloud}_tools.py` — same mechanical edit as `ssh_tools.py`
-- Streaming SSE for live step output
-- WebSocket relay broker mode for Hakuna's multi-tenant deployment
+- True pause-and-resume on `request_clarification` (today the OSS run continues; backend approval flow needs `resume_audit_run` Celery task)
 
 ## Architecture (mirrors `hakuna-vm-scanner`)
 
@@ -85,55 +90,110 @@ curl http://localhost:8001/audit/scans/<job_id>
 |---|---|---|
 | ORM | SQLAlchemy `models.models` | Raw asyncpg + plain dicts |
 | LLM router | `core.llm_router` | `llm_provider.build_adapter` (copy of VM scanner) |
-| Token quota | `core.token_quota` | None — backend wraps with quota at the dispatch layer |
-| Run state | `AgentRun` rows + step writes mid-loop | In-memory; returned in Celery result; backend writes after task completes |
-| Credentials | `services.credential_manager` | Plaintext dict in `AuditContext`; resolved upstream |
-| Relay | `services.relay_broker` (WebSocket fan-out) | HTTPS to a single relay node |
+| Token quota | `core.token_quota` (raises 429 on Organization row) | `QuotaProvider` Protocol — `NullQuotaProvider` default, backend ships `SqlAlchemyQuotaProvider` |
+| Run state | `AgentRun` rows + step writes mid-loop | In-memory + live Redis pub-sub events; Celery result has the full transcript |
+| Credentials | `services.credential_manager` | Plaintext dict on `AuditContext`; resolved upstream |
+| Relay | `services.relay_broker` (WebSocket fan-out) | `RelayTransport` Protocol — `HttpRelayTransport` default, backend installs a broker-adapter for multi-tenant |
+| Streaming | `run_agent_streaming` SSE generator | `RunPublisher` Protocol — `NullPublisher` default, `RedisPublisher` writes `audit:run:{run_id}`; backend SSE endpoint subscribes |
+| CVE correlation | `services.cve_correlator.correlate_asset` | `CveCorrelator` Protocol — `NullCveCorrelator` default, backend wires `SqlAlchemyCveCorrelator` |
 | Mission prompts | `agents.agent_prompts.ENHANCED_PROMPTS` (3.7 k LOC dict) | YAML files under `templates/missions/` |
-| Copilot tools | 267 tools in `agents.agent_tools` | Out of scope — stay in the backend |
+| UI Copilot tools | ~260 tools in `agents.agent_tools` (`query_findings`, `tag_assets`, `build_report`, ...) | Out of scope — stay in the backend, only power the chat copilot |
 
 ## How the backend integrates
 
-`backend/services/audit_runner.py` becomes a thin Celery dispatcher:
+Two integration paths — pick one per deployment.
+
+### (a) In-process — recommended for the multi-tenant deployment
+
+The backend imports `run_audit` directly. No Celery hop, no extra
+broker, no HTTP — and the WebSocket relay broker stays where it is.
+Backend wires its providers once at startup:
 
 ```python
-from celery import Celery
-audit_celery = Celery(broker=os.environ["AUDIT_BROKER_URL"])
+# backend/services/audit_runner.py
+from scanner.audit.audit_engine import run_audit
+from scanner.audit.agent_context import AuditContext
+from scanner.audit.publisher import RedisPublisher
+from scanner.audit.quota import set_provider as set_quota_provider
+from scanner.audit.relay_client import set_transport
+from scanner.audit.tools.cve_correlator import set_correlator
 
-def kick_off_audit(db, run: AgentRun, asset, mission, credential):
-    plaintext = credential_vault.decrypt(credential)
-    job = audit_celery.send_task(
-        "scanner.audit.audit_worker.run_audit_scan",
-        kwargs={
-            "asset_id": str(asset.id),
-            "protocol": run.protocol,
-            "mission_key": mission.key,
-            "credentials": plaintext,
-            "relay_agent_id": run.relay_agent_id,
-            "credential_id": str(credential.id),
-            "org_id": str(asset.org_id),
-        },
-        queue="audit_queue",
-    )
-    run.celery_task_id = job.id
-    db.commit()
+# At backend boot:
+set_quota_provider(SqlAlchemyQuotaProvider())          # uses core.token_quota
+set_transport(RelayBrokerWsAdapter(get_relay_broker()))  # WebSocket fan-out
+set_correlator(SqlAlchemyCveCorrelator())              # services.cve_correlator
+
+# Per dispatch:
+ctx = AuditContext(
+    run_id=str(run.id), agent_id=run.agent_id, org_id=run.org_id,
+    asset=asset_dict, target=target, target_port=port,
+    relay_agent_id=run.relay_agent_id, credential_id=str(credential.id),
+    credentials=credential_vault.decrypt(credential),
+    protocol=run.protocol, mission_key=mission.key,
+    publisher=RedisPublisher(REDIS_URL),
+    db_pool=await get_audit_pool(),
+)
+result = await run_audit(ctx=ctx, adapter=adapter, ...)
+write_agent_run_steps(db, run, result["steps"])
+import_audit_findings(db, run, result["findings"])
 ```
 
-When the task completes, the existing ingest loop reads `findings`
-out of the result payload and writes `Finding` rows — same path that
-already handles `nuclei_worker` output.
+### (b) Celery hop — recommended for OSS / standalone deployments
 
-## Limitations to discuss before merging
+Backend dispatches to the audit-scanner's Celery worker; worker
+returns findings in the result payload. Streaming flows through
+the same Redis pub-sub channel.
 
-- **No mid-run streaming.** Backend's live "agent run viewer" reads
-  from `AgentRun.steps`; with this design, steps land in one batch
-  when the Celery task completes. Phase 2: add a Redis pub-sub channel
-  the engine writes to per iteration, the backend subscribes.
-- **One-relay HTTP transport only.** Hakuna's multi-tenant deployment
-  needs the WebSocket broker; that path stays in the backend.
-- **YAML missions are minimal.** Phase 1 ships one example
-  (`ssh_hardening_posture.yaml`); the rest of the existing prompts
-  need migrating from `agent_prompts.py`.
-- **`agent_pipeline.py` and `copilot_*` are not ported** — they're
-  Hakuna-specific orchestration / copilot UX that doesn't belong in
-  OSS.
+```python
+job = audit_celery.send_task(
+    "scanner.audit.audit_worker.run_audit_scan",
+    kwargs={
+        "asset_id": str(asset.id),
+        "protocol": run.protocol, "mission_key": mission.key,
+        "credentials": credential_vault.decrypt(credential),
+        "relay_agent_id": run.relay_agent_id,
+        "credential_id": str(credential.id),
+        "org_id": str(asset.org_id),
+    },
+    queue="audit_queue",
+)
+```
+
+In path (a) the Celery worker is unused — the backend invokes the
+engine directly. In path (b) the worker reads provider singletons
+from its own process at boot; backend calls `set_*` in the worker's
+startup module.
+
+### Live step streaming (both paths)
+
+Backend exposes:
+
+```python
+@router.get("/api/audits/runs/{run_id}/stream")
+async def stream(run_id: str):
+    async def gen():
+        sub = redis.pubsub()
+        sub.subscribe(f"audit:run:{run_id}")
+        for msg in sub.listen():
+            if msg["type"] == "message":
+                yield f"data: {msg['data']}\n\n"
+    return StreamingResponse(gen(), media_type="text/event-stream")
+```
+
+The frontend agent-run viewer subscribes and renders `thinking`,
+`tool_call`, `tool_result`, `text`, `finding`, and `run_end` events
+exactly as it already does for the in-process streaming path.
+
+## Phase-2 follow-ups
+
+- **WMI / LDAP / SMB / SNMP / Cloud tool ports** — same mechanical
+  edit as `ssh_tools.py`. Backend versions in `backend/agents/tools/`.
+- **Pause-and-resume on `request_clarification`** — today the OSS run
+  continues after publishing the `clarification` event. Backend
+  approval flow needs a `resume_audit_run` Celery task that injects
+  the user's reply as a tool_result block.
+- **More YAML missions.** Phase 1 ships `ssh_hardening_posture.yaml`;
+  migrate the rest from `agent_prompts.ENHANCED_PROMPTS`.
+- **`agent_pipeline.py` and `copilot_*` stay in the backend** —
+  Hakuna-specific orchestration + chat-copilot UX, not part of the
+  audit scanner.
