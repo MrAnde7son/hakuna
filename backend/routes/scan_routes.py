@@ -32,7 +32,12 @@ router = APIRouter()
 # ─────────────────────────────────────────────
 
 @router.get("/api/health")
-def health_check():
+async def health_check():
+    # Async so Cloud Run liveness probes are served directly on the event loop
+    # and never queue behind the FastAPI threadpool. A sync handler ends up in
+    # anyio's bounded threadpool — when finalize_scan / httpx polls saturate it,
+    # the trivial /api/health request stalls past the 1s probe timeout and the
+    # instance gets killed even though the API is healthy.
     return {"status": "ok"}
 
 

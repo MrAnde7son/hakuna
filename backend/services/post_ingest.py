@@ -306,18 +306,44 @@ def finalize_scan(
 def _step(db: Session, name: str, fn):
     """Execute a pipeline step, catching and logging failures.
 
-    Uses a savepoint so that a failure in one step doesn't roll back
-    the entire transaction (and undo previous steps' work).
+    Uses a savepoint so that a failure in one step doesn't roll back the
+    entire transaction (and undo previous steps' work).
+
+    Tolerates step bodies that call `db.commit()` themselves. Several pipeline
+    steps (os_software_tags, tags, ownership_inference, compliance_evaluator,
+    the EASM→VM trigger flag) commit their own work — that releases the
+    SAVEPOINT we opened, so `nested.commit()` afterward would raise "This
+    transaction is closed". Before this fix, that raise produced a misleading
+    "failed (non-fatal)" warning even though the work had succeeded; in
+    production it cascaded across the whole pipeline because each subsequent
+    step inherited the closed-transaction state. The savepoint's isolation
+    guarantee is illusory for body-commits regardless — once the body
+    committed, the work is durable and can't be rolled back by us.
+
+    Also recovers a session left in a closed-transaction state by an
+    upstream caller (e.g. a transient Cloud SQL proxy connection drop)
+    so the step can still run on a fresh transaction.
     """
-    # Try savepoint-based isolation first
+    # Defensive recovery: if a previous step (or upstream code) left the
+    # session in a closed-transaction state, reset it before doing anything.
+    if not db.is_active:
+        try:
+            db.rollback()
+        except Exception:
+            logger.warning("%s: pre-step session rollback failed", name)
+
     nested = None
     try:
         nested = db.begin_nested()  # SAVEPOINT
         result = fn()
-        nested.commit()
+        # Only commit the savepoint if it's still active. A body that called
+        # `db.commit()` will have released it already; commiting again raises
+        # "This transaction is closed".
+        if nested.is_active:
+            nested.commit()
         return result
     except Exception as e:
-        if nested is not None:
+        if nested is not None and nested.is_active:
             try:
                 nested.rollback()  # roll back only this step's changes
             except Exception:
@@ -326,6 +352,15 @@ def _step(db: Session, name: str, fn):
                     db.rollback()
                 except Exception:
                     pass
+        else:
+            # Either begin_nested itself raised, or the savepoint was already
+            # released (body committed and then we hit a real error after).
+            # Either way, roll the outer session back so the next step can
+            # open a fresh savepoint instead of inheriting broken state.
+            try:
+                db.rollback()
+            except Exception:
+                pass
         logger.warning("%s failed (non-fatal): %s", name, e)
         return None
 

@@ -608,9 +608,22 @@ def _deferred_startup():
 
 
 @app.on_event("startup")
-def startup():
+async def startup():
+    # async so we can resize anyio's threadpool — `current_default_thread_limiter`
+    # only resolves inside a running event loop.
     init_db()
     init_parsers()
+    # Bump anyio's default threadpool from 40 → 100. FastAPI dispatches every
+    # sync `def` handler through this pool, so under load (heavy finalize_scan,
+    # httpx polls, LLM calls), trivial endpoints like /api/health were queuing
+    # behind it and Cloud Run's 1s probe timeout was firing. 100 leaves plenty
+    # of headroom above the DB pool ceiling (10+20 in core/database.py) — most
+    # blocked threads are on httpx / LLM I/O, not DB.
+    try:
+        import anyio
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 100
+    except Exception:
+        logger.exception("Failed to resize anyio threadpool (non-fatal)")
     logger.info("Database initialized, parsers registered")
     # ENTITY_MODEL_MAP is now populated at import time via models.entity_registry
     # Run heavy tasks (schedulers, SLA backfill) in background so the port

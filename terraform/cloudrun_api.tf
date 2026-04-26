@@ -284,14 +284,22 @@ resource "google_cloud_run_v2_service" "api" {
       }
 
       # Health check
+      # timeout_seconds bumped from the Cloud Run default (1s) because the
+      # API serves both probes and heavy work (post_ingest, httpx polls) on
+      # the same process; a 1s timeout under load was killing healthy
+      # instances. period+failure widened to ~5 min of unresponsiveness
+      # before kill, vs. the previous ~90s — long enough to ride out a
+      # transient finalize_scan spike, short enough to recover from a true
+      # deadlock without manual intervention.
       liveness_probe {
         http_get {
           path = "/api/health"
           port = 8000
         }
         initial_delay_seconds = 30
-        period_seconds        = 30
-        failure_threshold     = 3
+        period_seconds        = 60
+        timeout_seconds       = 10
+        failure_threshold     = 5
       }
 
       startup_probe {
@@ -301,6 +309,7 @@ resource "google_cloud_run_v2_service" "api" {
         }
         initial_delay_seconds = 10
         period_seconds        = 5
+        timeout_seconds       = 5
         failure_threshold     = 12 # 60s total startup time
       }
     }
